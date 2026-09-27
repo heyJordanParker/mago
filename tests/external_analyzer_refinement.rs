@@ -161,17 +161,17 @@ fn declaration_refinements_reach_declarations_bodies_and_incremental_removal() {
             .is_some_and(|messages| messages.iter().any(|m| m.contains("Proof\\Spec"))),
         "the method body reads the refined parameter through the refined class template: {first:#?}"
     );
-    let invalid_returns = first.get("invalid-return-statement").cloned().unwrap_or_default();
+    let broader_returns = first.get("less-specific-return-statement").cloned().unwrap_or_default();
     assert!(
-        invalid_returns.iter().any(|message| message.contains("Holder::broad")),
+        broader_returns.iter().any(|message| message.contains("Holder::broad")),
         "a broader generic value returned from a refined narrower declaration is refused: {first:#?}"
     );
     assert!(
-        !invalid_returns.iter().any(|message| message.contains("Holder::subtype")),
+        !first.values().flatten().any(|message| message.contains("Holder::subtype")),
         "a subtype of a refined return is still accepted: {first:#?}"
     );
     assert!(
-        invalid_returns.iter().any(|message| message.contains("Heir::broad")),
+        broader_returns.iter().any(|message| message.contains("Heir::broad")),
         "an override inheriting a refined return is held to that contract: {first:#?}"
     );
 
