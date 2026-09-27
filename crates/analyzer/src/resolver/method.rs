@@ -16,11 +16,14 @@ use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::atomic::object::named::TNamedObject;
 use mago_codex::ttype::comparator::ComparisonResult;
 use mago_codex::ttype::comparator::union_comparator::is_contained_by;
+use mago_codex::ttype::expander;
 use mago_codex::ttype::expander::StaticClassType;
+use mago_codex::ttype::expander::TypeExpansionOptions;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_specialized_template_type;
 use mago_codex::ttype::template::GenericTemplate;
 use mago_codex::ttype::template::TemplateResult;
+use mago_codex::ttype::union::TUnion;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -38,6 +41,7 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::resolver::class_name::report_non_existent_class_like;
+use crate::resolver::property::localize_property_type;
 use crate::resolver::selector::resolve_member_selector;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_method_name;
@@ -251,7 +255,7 @@ where
             let resolved_magic_call_method = resolve_method_from_object(
                 context,
                 block_context,
-                object,
+                object.span(),
                 selector,
                 obj_type,
                 word(b"__call"),
@@ -264,7 +268,7 @@ where
                 let resolved_methods = resolve_method_from_object(
                     context,
                     block_context,
-                    object,
+                    object.span(),
                     selector,
                     obj_type,
                     method_name,
@@ -320,7 +324,17 @@ where
 
                                     result.has_invalid_target = true;
                                 }
-                            } else {
+                            } else if !resolve_forwarded_call(
+                                context,
+                                block_context,
+                                object.span(),
+                                selector,
+                                classname,
+                                method_name,
+                                obj_type,
+                                access_span,
+                                &mut result,
+                            ) {
                                 result.undocumented_methods.extend(resolved_magic_call_method.iter().cloned().map(
                                     |magic_method| UndocumentedMethod {
                                         classname,
@@ -381,6 +395,174 @@ where
     Ok(result)
 }
 
+/// Resolves a magic call through the call an external provider says it forwards to.
+///
+/// Every forwarded method but the last runs with no arguments on the receiver; the last
+/// resolves as a mixin candidate on what they answer, so the call's own arguments are
+/// checked once and its generics infer. A forwarded call never asks a forwarding provider
+/// again: when its last method is itself magic, the call is left to that object's own
+/// magic method. Answers false when no provider forwards the call.
+pub(crate) fn resolve_forwarded_call<'ctx, 'arena, A>(
+    context: &mut Context<'ctx, 'arena, A>,
+    block_context: &BlockContext<'ctx>,
+    target_span: Span,
+    selector: &ClassLikeMemberSelector<'arena>,
+    classname: Word,
+    method_name: Word,
+    receiver: &TObject,
+    access_span: Span,
+    result: &mut MethodResolutionResult,
+) -> bool
+where
+    A: Arena,
+{
+    let Some(objects) = forwarded_receivers(context, classname, method_name, receiver) else {
+        return false;
+    };
+
+    let mut resolved = false;
+    for object in objects {
+        let Some(name) = object.get_name() else {
+            continue;
+        };
+
+        let magic_call = resolve_method_from_object(
+            context,
+            block_context,
+            target_span,
+            selector,
+            &object,
+            word(b"__call"),
+            access_span,
+            true,
+            result,
+        );
+        let methods = resolve_method_from_object(
+            context,
+            block_context,
+            target_span,
+            selector,
+            &object,
+            method_name,
+            access_span,
+            !magic_call.is_empty(),
+            result,
+        );
+
+        if !methods.is_empty() {
+            result.resolved_methods.extend(methods);
+            resolved = true;
+        } else if !magic_call.is_empty() {
+            result.undocumented_methods.extend(magic_call.into_iter().map(|magic_method| UndocumentedMethod {
+                classname: name,
+                method_name,
+                target_span,
+                selector_span: selector.span(),
+                magic_method,
+            }));
+            resolved = true;
+        }
+    }
+
+    resolved
+}
+
+/// The objects a forwarded call's last method runs on.
+fn forwarded_receivers<A>(
+    context: &Context<'_, '_, A>,
+    classname: Word,
+    method_name: Word,
+    receiver: &TObject,
+) -> Option<Vec<TObject>>
+where
+    A: Arena,
+{
+    let forwarded = context.plugin_registry.get_forwarded_call(
+        context.codebase,
+        classname.as_bytes(),
+        method_name.as_bytes(),
+        false,
+        &TUnion::from_atomic(TAtomic::Object(receiver.clone())),
+        context.external_analysis_session,
+    )?;
+    let (_, leading) = forwarded.methods.split_last()?;
+
+    run_forwarded_methods(context, forwarded.receiver, leading)?
+        .types
+        .iter()
+        .map(|atomic| match atomic {
+            TAtomic::Object(object) => Some(object.clone()),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()
+        .filter(|objects| !objects.is_empty())
+}
+
+/// What the methods answer when each runs with no arguments on what the one before it
+/// answered, or `None` when one of them cannot run on an object.
+pub(crate) fn run_forwarded_methods<A>(
+    context: &Context<'_, '_, A>,
+    receiver: TUnion,
+    methods: &[Word],
+) -> Option<TUnion>
+where
+    A: Arena,
+{
+    let mut current = receiver;
+    for &method in methods {
+        let mut answered = Vec::new();
+        for atomic in current.types.iter() {
+            let TAtomic::Object(object) = atomic else {
+                return None;
+            };
+
+            answered.extend(forwarded_return_type(context, object, method)?.types.iter().cloned());
+        }
+
+        current = TUnion::from_vec(answered);
+    }
+
+    Some(current)
+}
+
+/// What a method answers when it runs with no arguments on an object: its declared
+/// return, with `static` bound to the object and the object's template arguments applied.
+fn forwarded_return_type<A>(context: &Context<'_, '_, A>, object: &TObject, method: Word) -> Option<TUnion>
+where
+    A: Arena,
+{
+    let class_metadata = context.codebase.get_class_like(object.get_name()?.as_bytes())?;
+    let method_id =
+        context.codebase.get_declaring_method_identifier(&MethodIdentifier::new(class_metadata.original_name, method));
+    let function_like = context.codebase.get_method_by_id(&method_id)?;
+    let declaring_metadata = context.codebase.get_class_like(method_id.get_class_name().as_bytes())?;
+    let mut returned = function_like.return_type_metadata.as_ref()?.type_union.clone();
+
+    expander::expand_union(
+        context.codebase,
+        &mut returned,
+        &TypeExpansionOptions {
+            self_class: Some(declaring_metadata.name),
+            static_class_type: StaticClassType::Object(object.clone()),
+            ..Default::default()
+        },
+    );
+
+    if !declaring_metadata.template_types.is_empty()
+        && let TObject::Named(named_object) = object
+    {
+        returned = localize_property_type(
+            context,
+            &returned,
+            named_object.get_type_parameters().unwrap_or_default(),
+            class_metadata,
+            declaring_metadata,
+        );
+    }
+
+    Some(returned)
+}
+
 /// Records references to child methods that can satisfy a `method_exists()` assertion.
 fn collect_asserted_descendant_method_references<'ctx, A>(
     context: &Context<'ctx, '_, A>,
@@ -414,11 +596,11 @@ fn collect_asserted_descendant_method_references<'ctx, A>(
     }
 }
 
-pub fn resolve_method_from_object<'ctx, 'ast, 'arena, A>(
+pub fn resolve_method_from_object<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
     block_context: &BlockContext<'ctx>,
-    object: &'ast Expression<'arena>,
-    selector: &'ast ClassLikeMemberSelector<'arena>,
+    object_span: Span,
+    selector: &ClassLikeMemberSelector<'arena>,
     object_type: &TObject,
     method_name: Word,
     access_span: Span,
@@ -433,7 +615,7 @@ where
     let candidates = get_method_candidates_from_object(
         context,
         block_context,
-        object,
+        object_span,
         selector,
         object_type,
         object_type,
@@ -509,11 +691,11 @@ where
     resolved_methods
 }
 
-pub fn get_method_candidates_from_object<'ctx, 'ast, 'arena, 'object, A>(
+pub fn get_method_candidates_from_object<'ctx, 'arena, 'object, A>(
     context: &mut Context<'ctx, 'arena, A>,
     block_context: &BlockContext<'ctx>,
-    object: &'ast Expression<'arena>,
-    selector: &'ast ClassLikeMemberSelector<'arena>,
+    object_span: Span,
+    selector: &ClassLikeMemberSelector<'arena>,
     object_type: &'object TObject,
     outer_object: &'object TObject,
     method_name: Word,
@@ -534,7 +716,7 @@ where
                 let method_name_bytes: &[u8] = method_name.as_ref();
                 let has_method_assertion = type_has_method_assertion(object_type, method_name_bytes);
                 if !has_method_assertion {
-                    report_call_on_ambiguous_object(context, object.span(), selector.span());
+                    report_call_on_ambiguous_object(context, object_span, selector.span());
                 }
             }
         }
@@ -544,7 +726,7 @@ where
 
     let Some(class_metadata) = context.codebase.get_class_like(name.as_bytes()) else {
         result.has_invalid_target = true;
-        report_non_existent_class_like(context, object.span(), name);
+        report_non_existent_class_like(context, object_span, name);
         return candidates;
     };
 
@@ -568,7 +750,7 @@ where
         if !check_where_method_constraints(
             context,
             object_type,
-            object,
+            object_span,
             selector,
             class_metadata,
             function_like_metadata,
@@ -606,7 +788,7 @@ where
 
                 report_dynamic_static_method_call(
                     context,
-                    object.span(),
+                    object_span,
                     selector.span(),
                     class_metadata.original_name,
                     method_name,
@@ -616,7 +798,7 @@ where
                 if class_metadata.flags.is_final() && !class_metadata.flags.is_abstract() {
                     report_magic_call_without_call_method(
                         context,
-                        object.span(),
+                        object_span,
                         selector.span(),
                         class_metadata.original_name,
                         method_name,
@@ -625,7 +807,7 @@ where
                 } else {
                     report_possibly_missing_magic_call(
                         context,
-                        object.span(),
+                        object_span,
                         selector.span(),
                         class_metadata.original_name,
                         method_name,
@@ -670,8 +852,16 @@ where
         // Search mixins for the method. If has_magic_call is false, we track that
         // the method was found in a mixin without the required magic method.
         let mixin_types = collect_mixin_types(context.codebase, class_metadata, outer_object, &class_metadata.mixins);
+        // A mixin that declares the method answers the call itself, so the call never
+        // reaches the mixins it carries.
+        let mut answering = HashSet::default();
 
-        for (mixin_class_name, mixin_object) in mixin_types {
+        for (mixin_class_name, mixin_object, carrier) in mixin_types {
+            if carrier.is_some_and(|carrier| answering.contains(&carrier)) {
+                answering.insert(mixin_class_name);
+                continue;
+            }
+
             let Some(mixin_metadata) = context.codebase.get_class_like(mixin_class_name.as_bytes()) else {
                 continue;
             };
@@ -682,6 +872,8 @@ where
             }
 
             if let Some(function_like_metadata) = context.codebase.get_method_by_id(&mixin_method_id) {
+                answering.insert(mixin_class_name);
+
                 if !check_method_visibility(
                     context,
                     block_context.scope.get_class_like_name(),
@@ -730,7 +922,7 @@ where
                     candidates.extend(get_method_candidates_from_object(
                         context,
                         block_context,
-                        object,
+                        object_span,
                         selector,
                         intersected_object,
                         object_type,
@@ -748,7 +940,7 @@ where
                             candidates.extend(get_method_candidates_from_object(
                                 context,
                                 block_context,
-                                object,
+                                object_span,
                                 selector,
                                 intersected_object,
                                 object_type,
@@ -776,7 +968,7 @@ where
 fn check_where_method_constraints<A>(
     context: &mut Context<'_, '_, A>,
     object_type: &TObject,
-    object: &Expression,
+    object_span: Span,
     selector: &ClassLikeMemberSelector,
     class_like_metadata: &ClassLikeMetadata,
     function_like_metadata: &FunctionLikeMetadata,
@@ -828,7 +1020,7 @@ where
                     .with_message("This method cannot be called here..."),
             )
             .with_annotation(
-                Annotation::secondary(object.span())
+                Annotation::secondary(object_span)
                     .with_message(format!(
                         "...because this object's template parameter `{template_name}` is type `{actual_template_type_str}`...",
                     )),
@@ -1172,20 +1364,23 @@ fn collect_mixin_types(
     class_metadata: &ClassLikeMetadata,
     outer_object: &TObject,
     mixins: &[TypeMetadata],
-) -> Vec<(Word, TObject)> {
+) -> Vec<(Word, TObject, Option<Word>)> {
     let mut results = Vec::new();
     let mut visited = HashSet::default();
-    collect_mixin_types_into(codebase, class_metadata, outer_object, mixins, &mut results, &mut visited);
+    collect_mixin_types_into(codebase, class_metadata, outer_object, mixins, None, &mut results, &mut visited);
 
     results
 }
 
+/// Collects mixins depth first, each with the mixin that declared it, so a nested
+/// mixin always follows its carrier.
 fn collect_mixin_types_into(
     codebase: &CodebaseMetadata,
     class_metadata: &ClassLikeMetadata,
     outer_object: &TObject,
     mixins: &[TypeMetadata],
-    results: &mut Vec<(Word, TObject)>,
+    carrier: Option<Word>,
+    results: &mut Vec<(Word, TObject, Option<Word>)>,
     visited: &mut HashSet<Word>,
 ) {
     let mut direct: Vec<(Word, &TObject)> = Vec::new();
@@ -1253,12 +1448,20 @@ fn collect_mixin_types_into(
         let specialized_obj = specialize_mixin_object(codebase, class_metadata, outer_object, obj);
         let obj = specialized_obj.as_ref().unwrap_or(obj);
 
-        results.push((name, obj.clone()));
+        results.push((name, obj.clone(), carrier));
 
         if let Some(mixin_metadata) = codebase.get_class_like(name.as_bytes())
             && !mixin_metadata.mixins.is_empty()
         {
-            collect_mixin_types_into(codebase, mixin_metadata, obj, &mixin_metadata.mixins, results, visited);
+            collect_mixin_types_into(
+                codebase,
+                mixin_metadata,
+                obj,
+                &mixin_metadata.mixins,
+                Some(name),
+                results,
+                visited,
+            );
         }
     }
 }

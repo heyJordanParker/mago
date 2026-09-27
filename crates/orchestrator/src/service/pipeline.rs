@@ -183,11 +183,21 @@ where
     /// - `result`: The aggregated result from the reducer
     /// - `codebase`: The final codebase metadata after all processing
     /// - `symbol_references`: The final symbol references
-    pub fn run<F, B, C, S>(self, capture: C, before_map: B, map_function: F) -> Result<R, OrchestratorError>
+    /// * `capture`: Runs on each first parse and keeps what `refine` needs from the live syntax tree.
+    /// * `refine`: Receives every file's partial metadata beside its capture before the partials are
+    ///   merged and populated, so declaration changes reach inheritance and analysis.
+    pub fn run<F, B, C, E, S>(
+        self,
+        capture: C,
+        refine: E,
+        before_map: B,
+        map_function: F,
+    ) -> Result<R, OrchestratorError>
     where
         F: Fn(T, &LocalArena, Arc<File>, Arc<CodebaseMetadata>) -> Result<I, OrchestratorError> + Send + Sync + 'static,
-        B: FnOnce(&mut CodebaseMetadata, &mut SymbolReferences, Vec<S>) -> Result<Option<I>, OrchestratorError>,
+        B: FnOnce(&mut CodebaseMetadata, &mut SymbolReferences) -> Result<Option<I>, OrchestratorError>,
         C: Fn(&Arc<File>, &Program<'_>, &ResolvedNames<'_>) -> Result<Option<S>, OrchestratorError> + Send + Sync,
+        E: FnOnce(&mut [(CodebaseMetadata, Option<S>)]) -> Result<(), OrchestratorError>,
         S: Send,
     {
         #[cfg(not(target_arch = "wasm32"))]
@@ -224,7 +234,7 @@ where
         let source_count = source_files.len();
 
         let mut compile_parallel_duration = Duration::ZERO;
-        let compiled: Vec<(CodebaseMetadata, Option<S>)> = measure!(
+        let mut compiled: Vec<(CodebaseMetadata, Option<S>)> = measure!(
             trace_enabled,
             compile_parallel_duration,
             source_files
@@ -261,15 +271,15 @@ where
                 .collect::<Result<Vec<_>, _>>()?
         );
 
+        refine(&mut compiled)?;
+
         let mut merged_codex = self.codebase;
-        let mut captures = Vec::new();
         let mut safe_symbols = std::mem::take(&mut merged_codex.safe_symbols);
         let mut safe_symbol_members = std::mem::take(&mut merged_codex.safe_symbol_members);
         let mut replaced_classes = (!safe_symbol_members.is_empty()).then(WordSet::default);
         let mut merge_duration = Duration::ZERO;
         measure!(trace_enabled, merge_duration, {
-            for (partial, captured) in compiled {
-                captures.extend(captured);
+            for (partial, _) in compiled {
                 for name in partial.class_likes.keys().chain(partial.patch_class_likes.keys()) {
                     safe_symbols.remove(name);
                     if let Some(replaced_classes) = &mut replaced_classes {
@@ -316,7 +326,7 @@ where
             self.database.files().filter(|f| f.file_type == FileType::Host).collect::<Vec<_>>()
         );
 
-        let before_map_result = before_map(&mut merged_codex, &mut symbol_references, captures)?;
+        let before_map_result = before_map(&mut merged_codex, &mut symbol_references)?;
 
         if host_files.is_empty() {
             tracing::warn!("No host files found for analysis after compilation.");

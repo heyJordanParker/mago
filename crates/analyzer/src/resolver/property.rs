@@ -44,6 +44,7 @@ use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::external::PropertyAccessKind;
 use crate::resolver::class_name::report_non_existent_class_like;
+use crate::resolver::method::run_forwarded_methods;
 use crate::resolver::selector::resolve_member_selector;
 use crate::utils::names::display_class_like_name;
 use crate::utils::template::get_template_types_for_class_member;
@@ -891,6 +892,28 @@ where
                 find_property_in_intersection_types(context, named_object, prop_name, for_assignment)
         {
             return Some(resolved);
+        }
+
+        if has_magic_method
+            && !for_assignment
+            && let Some(forwarded) = context.plugin_registry.get_forwarded_call(
+                context.codebase,
+                class_metadata.original_name.as_bytes(),
+                trim_start_byte(prop_name.as_bytes(), b'$'),
+                true,
+                &TUnion::from_atomic(TAtomic::Object(object.clone())),
+                context.external_analysis_session,
+            )
+            && let Some(property_type) = run_forwarded_methods(context, forwarded.receiver, &forwarded.methods)
+        {
+            return Some(ResolvedProperty {
+                property_span: None,
+                property_name: prop_name,
+                declaring_class_id: Some(class_id),
+                property_type,
+                is_magic: true,
+                read_type: None,
+            });
         }
 
         if has_magic_method {

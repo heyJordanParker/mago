@@ -9,10 +9,16 @@ use Mago\Sdk\Analyzer\CallableSignatureOverride;
 use Mago\Sdk\Analyzer\CallableSignatureProvider;
 use Mago\Sdk\Analyzer\ClassLikeTarget;
 use Mago\Sdk\Analyzer\ClassTarget;
+use Mago\Sdk\Analyzer\Declaration\ClassLikeRefinement;
+use Mago\Sdk\Analyzer\Declaration\FunctionLikeRefinement;
+use Mago\Sdk\Analyzer\Declaration\RefinedType;
+use Mago\Sdk\Analyzer\Declaration\SignatureRefinement;
+use Mago\Sdk\Analyzer\Declaration\TypeParameter;
 use Mago\Sdk\Analyzer\EffectiveCallableSignature;
 use Mago\Sdk\Analyzer\ExpressionType;
 use Mago\Sdk\Analyzer\FileAnalysis;
 use Mago\Sdk\Analyzer\FileAnalysisRequirement;
+use Mago\Sdk\Analyzer\ForwardedCall;
 use Mago\Sdk\Analyzer\FunctionTarget;
 use Mago\Sdk\Analyzer\Invocation;
 use Mago\Sdk\Analyzer\InvocationAssertions;
@@ -32,6 +38,7 @@ use Mago\Sdk\Analyzer\SymbolReferences;
 use Mago\Sdk\Analyzer\TargetedAnalysisHook;
 use Mago\Sdk\Analyzer\Type;
 use Mago\Sdk\Analyzer\Type\FunctionLikeIdentifier;
+use Mago\Sdk\Analyzer\Type\Variance;
 use Mago\Sdk\Analyzer\TypeComparison;
 use Mago\Sdk\Analyzer\UndeclaredReturnTypeProvider;
 use Mago\Sdk\Analyzer\VariableDefinedness;
@@ -88,6 +95,7 @@ final class Protocol
     public const CLASS_INITIALIZER_REQUEST = 17;
     public const ASSERTION_REQUEST = 18;
     public const CODEBASE_SCAN_REQUEST = 19;
+    public const CALL_FORWARDING_REQUEST = 20;
     public const GET_EXPRESSION_TYPES = 1;
     public const GET_ALL_EXPRESSION_TYPES = 2;
     public const GET_INFERRED_RETURN_TYPES = 3;
@@ -144,7 +152,7 @@ final class Protocol
     private const TYPE_COMPARISON_BATCH_REQUEST = 16;
     private const MAGIC_U32 = 0x4D41_4E41;
     private const MAJOR = 1;
-    private const MINOR = 1;
+    private const MINOR = 4;
     private const VERSION_U32 = (self::MAJOR << 16) | self::MINOR;
     private const DESCRIBE_RESPONSE = 0x8001;
     private const RETURN_TYPE_RESPONSE = 0x8002;
@@ -165,16 +173,17 @@ final class Protocol
     private const CLASS_INITIALIZER_RESPONSE = 0x8011;
     private const ASSERTION_RESPONSE = 0x8012;
     private const CODEBASE_SCAN_RESPONSE = 0x8013;
+    private const CALL_FORWARDING_RESPONSE = 0x8014;
     private const MAXIMUM_ISSUES = 1_000_000;
     private const MAXIMUM_ISSUE_NOTES = 0x0001_0000;
     private const MAXIMUM_ISSUE_ANNOTATIONS = 0x0001_0000;
     private const MAXIMUM_ISSUE_EDITS = 0x0001_0000;
-    private const RETURN_TYPE_REQUEST_HEADER = "MANA\x00\x01\x00\x01\x00\x02\x00\x00";
-    private const CALLABLE_SIGNATURE_REQUEST_HEADER = "MANA\x00\x01\x00\x01\x00\x0C\x00\x00";
-    private const ASSERTION_REQUEST_HEADER = "MANA\x00\x01\x00\x01\x00\x12\x00\x00";
-    private const UNHANDLED_RETURN_TYPE_RESPONSE = "MANA\x00\x01\x00\x01\x80\x02\x00\x00\x00";
-    private const UNHANDLED_CALLABLE_SIGNATURE_RESPONSE = "MANA\x00\x01\x00\x01\x80\x0C\x00\x00\x00";
-    private const UNHANDLED_ASSERTION_RESPONSE = "MANA\x00\x01\x00\x01\x80\x12\x00\x00\x00";
+    private const RETURN_TYPE_REQUEST_HEADER = "MANA\x00\x01\x00\x03\x00\x02\x00\x00";
+    private const CALLABLE_SIGNATURE_REQUEST_HEADER = "MANA\x00\x01\x00\x03\x00\x0C\x00\x00";
+    private const ASSERTION_REQUEST_HEADER = "MANA\x00\x01\x00\x03\x00\x12\x00\x00";
+    private const UNHANDLED_RETURN_TYPE_RESPONSE = "MANA\x00\x01\x00\x03\x80\x02\x00\x00\x00";
+    private const UNHANDLED_CALLABLE_SIGNATURE_RESPONSE = "MANA\x00\x01\x00\x03\x80\x0C\x00\x00\x00";
+    private const UNHANDLED_ASSERTION_RESPONSE = "MANA\x00\x01\x00\x03\x80\x12\x00\x00\x00";
     private const INVOCATION_FUNCTION = 1;
     private const INVOCATION_INSTANCE_METHOD = 2;
     private const INVOCATION_STATIC_METHOD = 3;
@@ -360,6 +369,7 @@ final class Protocol
                     $plugin->memoizeProviders,
                 );
                 self::writeTargetRegistrations($writer, $plugin->codebaseScanHooks);
+                self::writeTargetRegistrations($writer, $plugin->callForwardingProviders);
             }
         }
 
@@ -530,9 +540,146 @@ final class Protocol
         return [$firstBatch, $lastBatch, $activeHooks, $filesByHook];
     }
 
-    public static function writeCodebaseScanResponse(): string
+    /**
+     * @param list<array{int<0, 65535>, ClassLikeRefinement|FunctionLikeRefinement}> $refinements each paired with the hook that described it
+     */
+    public static function writeCodebaseScanResponse(array $refinements): string
     {
-        return self::createMessage(self::CODEBASE_SCAN_RESPONSE)->finish();
+        $writer = self::createMessage(self::CODEBASE_SCAN_RESPONSE);
+        $writer->writeCount($refinements);
+        foreach ($refinements as [$hook, $refinement]) {
+            $writer->writeU16($hook);
+            $writer->writeBytes($refinement->file);
+            self::writeDeclaration($writer, $refinement);
+            $writer->writeCount($refinement->issues);
+            foreach ($refinement->issues as $issue) {
+                $writer->writeU8($issue->level->value);
+                $writer->writeString($issue->code);
+                $writer->writeString($issue->message);
+                $writer->writeU32($issue->span->start);
+                $writer->writeU32($issue->span->end);
+            }
+        }
+
+        return $writer->finish();
+    }
+
+    private static function writeDeclaration(
+        PayloadWriter $writer,
+        ClassLikeRefinement|FunctionLikeRefinement $refinement,
+    ): void {
+        if ($refinement instanceof FunctionLikeRefinement) {
+            $writer->writeU8(2);
+            self::writeDeclarationName($writer, $refinement->declaredAt, $refinement->function);
+            self::writeSignature($writer, $refinement->signature);
+
+            return;
+        }
+
+        $writer->writeU8(1);
+        self::writeDeclarationName($writer, $refinement->declaredAt, $refinement->class);
+        self::writeTypeParameters($writer, $refinement->typeParameters);
+        $writer->writeCount($refinement->inherited);
+        foreach ($refinement->inherited as $inherited) {
+            $writer->writeBytes($inherited->ancestor);
+            $writer->writeU32($inherited->span->start);
+            $writer->writeU32($inherited->span->end);
+            $writer->writeCount($inherited->arguments);
+            foreach ($inherited->arguments as $argument) {
+                self::writeDeclaredType($writer, $argument);
+            }
+        }
+
+        $writer->writeCount($refinement->requiredExtends);
+        foreach ($refinement->requiredExtends as $required) {
+            $writer->writeBytes($required);
+        }
+
+        self::writeRefinedMembers($writer, $refinement->properties);
+        $writer->writeCount($refinement->methods);
+        foreach ($refinement->methods as $method => $signature) {
+            $writer->writeBytes($method);
+            self::writeSignature($writer, $signature);
+        }
+    }
+
+    /**
+     * An anonymous declaration is named by the offset it starts at.
+     *
+     * @param int<0, max>|null $declaredAt
+     */
+    private static function writeDeclarationName(PayloadWriter $writer, ?int $declaredAt, string $name): void
+    {
+        $writer->writeBoolean($declaredAt !== null);
+        if ($declaredAt !== null) {
+            $writer->writeU32($declaredAt);
+
+            return;
+        }
+
+        $writer->writeBytes($name);
+    }
+
+    private static function writeSignature(PayloadWriter $writer, SignatureRefinement $signature): void
+    {
+        self::writeTypeParameters($writer, $signature->typeParameters);
+        self::writeRefinedMembers($writer, $signature->parameters);
+        self::writeRefinedMembers($writer, $signature->closureThis);
+        $writer->writeBoolean($signature->return !== null);
+        if ($signature->return !== null) {
+            self::writeRefinedType($writer, $signature->return);
+        }
+
+        $writer->writeBoolean($signature->receiver !== null);
+        if ($signature->receiver !== null) {
+            self::writeRefinedType($writer, $signature->receiver);
+        }
+
+        $writer->writeBoolean($signature->returnFromBody);
+    }
+
+    /** @param array<non-empty-string, RefinedType> $members */
+    private static function writeRefinedMembers(PayloadWriter $writer, array $members): void
+    {
+        $writer->writeCount($members);
+        foreach ($members as $name => $type) {
+            $writer->writeBytes($name);
+            self::writeRefinedType($writer, $type);
+        }
+    }
+
+    /** @param list<TypeParameter> $typeParameters */
+    private static function writeTypeParameters(PayloadWriter $writer, array $typeParameters): void
+    {
+        $writer->writeCount($typeParameters);
+        foreach ($typeParameters as $typeParameter) {
+            $writer->writeBytes($typeParameter->name);
+            self::writeRefinedType($writer, $typeParameter->bound);
+            $writer->writeU8(match ($typeParameter->variance) {
+                Variance::Invariant => 1,
+                Variance::Covariant => 2,
+                Variance::Contravariant => 3,
+                Variance::Bivariant => throw new ProtocolException('A type parameter is never bivariant.'),
+            });
+        }
+    }
+
+    private static function writeRefinedType(PayloadWriter $writer, RefinedType $type): void
+    {
+        self::writeDeclaredType($writer, $type->type);
+        $writer->writeU32($type->span->start);
+        $writer->writeU32($type->span->end);
+    }
+
+    private static function writeDeclaredType(PayloadWriter $writer, Type $type): void
+    {
+        if ($type->isRequestReference()) {
+            throw new ProtocolException(
+                'A declaration refinement cannot use a type borrowed from an analyzer request.',
+            );
+        }
+
+        $writer->writeRaw($type->encode());
     }
 
     /** @param array<string, Span> $spans */
@@ -1078,12 +1225,14 @@ final class Protocol
             $arguments[] = new Argument($argumentName, $unpacked, $placeholder, $argumentSpan, $expression, $type);
         }
 
+        $callingFunctionLike = $reader->readBoolean() ? TypeCodec::readFunctionLikeIdentifier($reader) : null;
+
         $reader->finish();
 
         return new ReturnTypeRequest(
             $generation,
             $providers,
-            new Invocation($kind, $name, $declaringClass, $receiverType, $span, $arguments),
+            new Invocation($kind, $name, $declaringClass, $receiverType, $span, $arguments, $callingFunctionLike),
         );
     }
 
@@ -1190,6 +1339,47 @@ final class Protocol
         $writer->writeBoolean($type->writeType !== null);
         if ($type->writeType !== null) {
             $writer->writeRaw($type->writeType->encode());
+        }
+
+        return $writer->finish();
+    }
+
+    public static function readCallForwardingRequest(PayloadReader $reader): CallForwardingRequest
+    {
+        $generation = $reader->readU64();
+        $providerCount = $reader->readU16();
+        if ($providerCount === 0) {
+            throw new ProtocolException('A call-forwarding request contains no providers.');
+        }
+
+        $providers = [];
+        for ($index = 0; $index < $providerCount; ++$index) {
+            $providers[] = $reader->readU16();
+        }
+
+        $class = $reader->readBytes();
+        $member = $reader->readBytes();
+        if ($class === '' || $member === '') {
+            throw new ProtocolException('A call-forwarding request names no class or member.');
+        }
+
+        $property = $reader->readBoolean();
+        $receiverType = TypeCodec::read($reader);
+        $reader->finish();
+
+        return new CallForwardingRequest($generation, $providers, $class, $member, $property, $receiverType);
+    }
+
+    public static function writeCallForwardingResponse(?ForwardedCall $forwarded): string
+    {
+        $writer = self::createMessage(self::CALL_FORWARDING_RESPONSE);
+        $writer->writeBoolean($forwarded !== null);
+        if ($forwarded !== null) {
+            $writer->writeRaw($forwarded->receiver->encode());
+            $writer->writeCount($forwarded->methods);
+            foreach ($forwarded->methods as $method) {
+                $writer->writeBytes($method);
+            }
         }
 
         return $writer->finish();

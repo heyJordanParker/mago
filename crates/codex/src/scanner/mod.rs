@@ -83,6 +83,8 @@ mod property;
 mod ttype;
 mod version_claim;
 
+pub use ttype::merge_type_preserving_nullability;
+
 /// Scans a parsed PHP program into a [`CodebaseMetadata`] snapshot, gating
 /// each `Mago\AvailableSince` / `Mago\AvailableUntil` symbol against the
 /// configured PHP version on the way in.

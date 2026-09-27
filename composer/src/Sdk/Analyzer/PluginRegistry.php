@@ -61,6 +61,11 @@ final class PluginRegistry
     private array $classInitializerProviders = [];
 
     /**
+     * @var list<CallForwardingProvider>
+     */
+    private array $callForwardingProviders = [];
+
+    /**
      * @var list<MethodTarget>
      */
     private array $entryPoints = [];
@@ -148,6 +153,11 @@ final class PluginRegistry
     public function registerClassInitializerProvider(ClassInitializerProvider $provider): void
     {
         $this->classInitializerProviders[] = $provider;
+    }
+
+    public function registerCallForwardingProvider(CallForwardingProvider $provider): void
+    {
+        $this->callForwardingProviders[] = $provider;
     }
 
     /**
@@ -284,6 +294,15 @@ final class PluginRegistry
     public function getClassInitializerProviders(): array
     {
         return $this->classInitializerProviders;
+    }
+
+    /**
+     * @internal
+     * @return list<CallForwardingProvider>
+     */
+    public function getCallForwardingProviders(): array
+    {
+        return $this->callForwardingProviders;
     }
 
     /**

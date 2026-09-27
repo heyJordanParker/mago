@@ -37,6 +37,7 @@ use crate::external::AfterFileAnalysisResult;
 use crate::external::BeforeAnalysisResult;
 use crate::external::CodebaseScanFile;
 use crate::external::CodebaseScanPlan;
+use crate::external::DeclarationRefinement;
 use crate::external::EffectivePropertyType;
 use crate::external::ExternalAnalysisSession;
 use crate::external::ExternalAnalyzer;
@@ -44,6 +45,7 @@ use crate::external::ExternalAnalyzerCapabilities;
 use crate::external::ExternalAnalyzerError;
 use crate::external::ExternalAnalyzerHandle;
 use crate::external::FileAnalysisSnapshot;
+use crate::external::ForwardedCall;
 use crate::external::NodeAnalysisRequirements;
 use crate::external::PropertyAccessKind;
 use crate::invocation::EffectiveCallableSignature;
@@ -104,6 +106,7 @@ where
 pub struct PluginRegistry {
     external_analyzer: Option<Arc<ExternalAnalyzerHandle>>,
     external_capabilities: OnceLock<ExternalAnalyzerCapabilities>,
+    project_sources: Vec<String>,
     function_exact: WordMap<Vec<usize>>,
     function_prefix: Vec<(Word, usize)>,
     function_namespace: Vec<(Word, usize)>,
@@ -179,6 +182,12 @@ impl PluginRegistry {
         self.external_analyzer = Some(analyzer);
     }
 
+    /// Names the project's own source paths a scoped run loads as context, so external
+    /// codebase-scan hooks read them as they read the analyzed files.
+    pub fn set_project_sources(&mut self, paths: Vec<String>) {
+        self.project_sources = paths;
+    }
+
     /// Completes concurrent external analyzer initialization before file analysis.
     ///
     /// # Errors
@@ -228,20 +237,23 @@ impl PluginRegistry {
     /// Returns an error when the external analyzer cannot initialize or a hook advertises an invalid path pattern.
     pub fn external_codebase_scan_plan(&self) -> PluginResult<Option<CodebaseScanPlan>> {
         self.prepare_external_analyzer()?;
-        self.external_analyzer
+        let plan = self
+            .external_analyzer
             .as_deref()
             .map(|analyzer| analyzer.with(ExternalAnalyzer::codebase_scan_plan))
             .transpose()
             .map(Option::flatten)
-            .map_err(PluginError::from)
+            .map_err(PluginError::from)?;
+        plan.map(|plan| plan.with_project_sources(&self.project_sources)).transpose().map_err(PluginError::from)
     }
 
-    /// Replaces each external worker's selected codebase-scan source state.
+    /// Replaces each external worker's selected codebase-scan source state and returns the
+    /// declaration refinements its hooks describe.
     ///
     /// # Errors
     ///
     /// Returns an error when a worker cannot accept or validate the snapshot sequence.
-    pub fn run_external_codebase_scan(&self, files: Vec<CodebaseScanFile>) -> PluginResult<()> {
+    pub fn run_external_codebase_scan(&self, files: Vec<CodebaseScanFile>) -> PluginResult<Vec<DeclarationRefinement>> {
         self.external_analyzer
             .as_deref()
             .map(|analyzer| analyzer.with(|analyzer| analyzer.run_codebase_scan(files)))
@@ -1392,6 +1404,7 @@ impl PluginRegistry {
                             source_file,
                             codebase,
                             session,
+                            block_context.scope.get_function_like_identifier(),
                         )
                     }),
                 )
@@ -1447,6 +1460,7 @@ impl PluginRegistry {
                             source_file,
                             codebase,
                             session,
+                            block_context.scope.get_function_like_identifier(),
                         )
                     }),
                 )
@@ -1492,6 +1506,32 @@ impl PluginRegistry {
                 "property type provider",
                 analyzer.with(|analyzer| {
                     analyzer.get_property_type(class, property, access, receiver_type, span, codebase, session)
+                }),
+            )
+        })
+    }
+
+    /// Requests the call an external provider says a magic method or property forwards to.
+    ///
+    /// Provider failures are logged and preserve native magic-call resolution.
+    pub(crate) fn get_forwarded_call(
+        &self,
+        codebase: &CodebaseMetadata,
+        class: &[u8],
+        member: &[u8],
+        property: bool,
+        receiver_type: &TUnion,
+        external_session: Option<&ExternalAnalysisSession>,
+    ) -> Option<ForwardedCall> {
+        if !self.has_external_capability(|capabilities| capabilities.call_forwarding) {
+            return None;
+        }
+
+        self.external_analyzer.as_deref().zip(external_session).and_then(|(analyzer, session)| {
+            optional_external_hint(
+                "call forwarding provider",
+                analyzer.with(|analyzer| {
+                    analyzer.get_forwarded_call(class, member, property, receiver_type, codebase, session)
                 }),
             )
         })
@@ -1714,6 +1754,7 @@ impl PluginRegistry {
                         source_file,
                         codebase,
                         session,
+                        block_context.scope.get_function_like_identifier(),
                     )
                 }),
             )
@@ -1772,6 +1813,7 @@ impl PluginRegistry {
                         source_file,
                         codebase,
                         session,
+                        block_context.scope.get_function_like_identifier(),
                     )
                 }),
             )

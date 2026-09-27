@@ -16,7 +16,9 @@ use mago_analyzer::analysis_result::AnalysisResult;
 use mago_analyzer::analysis_result::LateSymbolReferenceIssueReconciler;
 use mago_analyzer::error::AnalysisError;
 use mago_analyzer::external::AFTER_FILE_ANALYSIS_BATCH_SIZE;
+use mago_analyzer::external::CodebaseScanFile;
 use mago_analyzer::external::FileAnalysisSnapshot;
+use mago_analyzer::external::apply_refinements;
 use mago_analyzer::plugin::PluginRegistry;
 use mago_analyzer::settings::Settings;
 #[cfg(not(target_arch = "wasm32"))]
@@ -29,6 +31,7 @@ use mago_database::DatabaseReader;
 use mago_database::ReadDatabase;
 use mago_database::file::File;
 use mago_database::file::FileId;
+use mago_database::file::FileType;
 use mago_names::resolver::NameResolver;
 use mago_reporting::Issue;
 use mago_reporting::IssueCollection;
@@ -38,6 +41,7 @@ use mago_syntax::settings::ParserSettings;
 use mago_word::WordSet;
 
 use crate::error::OrchestratorError;
+use crate::service::body_return::resolve_body_returns;
 use crate::service::issue_reconciliation::DeferredIssueReconciler;
 use crate::service::pipeline::ParallelPipeline;
 use crate::service::pipeline::Reducer;
@@ -126,8 +130,7 @@ impl AnalysisService {
         let semantics_checker = SemanticsChecker::new(self.settings.version);
         issues.extend(semantics_checker.check(&file, program, &resolved_names));
 
-        let user_codebase = scan_program(&arena, &file, program, &resolved_names, self.settings.version);
-        self.codebase.extend(user_codebase);
+        let mut user_codebase = scan_program(&arena, &file, program, &resolved_names, self.settings.version);
         let codebase_scan = self
             .plugin_registry
             .external_codebase_scan_plan()
@@ -137,12 +140,25 @@ impl AnalysisService {
             .map_err(AnalysisError::from)?
             .flatten();
 
-        populate_codebase(&mut self.codebase, &mut self.symbol_references, WordSet::default(), HashSet::default());
-
         self.plugin_registry.prepare_external_analyzer().map_err(AnalysisError::from)?;
-        self.plugin_registry
+        let refinements = self
+            .plugin_registry
             .run_external_codebase_scan(codebase_scan.into_iter().collect())
             .map_err(AnalysisError::from)?;
+        apply_refinements(refinements, [(file.id, &mut user_codebase)]).map_err(AnalysisError::from)?;
+        self.codebase.extend(user_codebase);
+
+        populate_codebase(&mut self.codebase, &mut self.symbol_references, WordSet::default(), HashSet::default());
+
+        let host_files = self.database.files().filter(|file| file.file_type == FileType::Host).collect::<Vec<_>>();
+        resolve_body_returns(
+            &mut self.codebase,
+            &host_files,
+            &self.plugin_registry,
+            &self.settings,
+            self.parser_settings,
+            external_session.as_ref(),
+        )?;
 
         let before = self
             .plugin_registry
@@ -166,9 +182,7 @@ impl AnalysisService {
         if let Some(requirements) = node_analysis_requirements.as_ref() {
             analyzer = analyzer.with_node_analysis_requirements(requirements);
         }
-        if after_file || after_analysis {
-            analyzer = analyzer.with_deferred_pragmas();
-        }
+        analyzer = analyzer.with_deferred_pragmas();
         if let Some(session) = external_session.as_ref() {
             analyzer = analyzer.with_external_analysis_session(session);
         }
@@ -200,11 +214,11 @@ impl AnalysisService {
             }
         }
 
+        analysis_result.issues.extend(self.codebase.take_issues(true));
         let mut pragma_reconciler =
             DeferredIssueReconciler::new(analysis_result.take_deferred_pragmas(), self.database.files());
         analysis_result.issues = pragma_reconciler.reconcile(std::mem::take(&mut analysis_result.issues))?;
         issues.extend(analysis_result.issues.iter().cloned());
-        issues.extend(self.codebase.take_issues(true));
         if after_analysis {
             let snapshot = Arc::new(FileAnalysisSnapshot::new(
                 &file,
@@ -248,14 +262,14 @@ impl AnalysisService {
             self.plugin_registry.external_codebase_scan_plan().map_err(AnalysisError::from)?.map(Arc::new);
         let lifecycle_capabilities = Arc::new(OnceLock::new());
         let additional_symbol_references = Arc::new(OnceLock::new());
+        let body_return_files =
+            self.database.files().filter(|file| file.file_type == FileType::Host).collect::<Vec<_>>();
+        let body_return_settings = self.settings.clone();
+        let body_return_parser_settings = self.parser_settings;
         let reducer = AnalysisResultReducer {
             plugin_registry: Arc::clone(&self.plugin_registry),
             external_session: external_session.clone(),
-            files: if external_session.is_some() {
-                self.database.files().collect::<Vec<_>>().into()
-            } else {
-                Arc::from([])
-            },
+            files: self.database.files().collect::<Vec<_>>().into(),
         };
 
         let pipeline = ParallelPipeline::new(
@@ -271,6 +285,7 @@ impl AnalysisService {
         );
 
         let plugin_registry = Arc::clone(&self.plugin_registry);
+        let refine_plugin_registry = Arc::clone(&self.plugin_registry);
         let before_plugin_registry = Arc::clone(&self.plugin_registry);
         let before_external_session = external_session.clone();
         let before_capabilities = Arc::clone(&lifecycle_capabilities);
@@ -295,9 +310,21 @@ impl AnalysisService {
                     .map_err(AnalysisError::from)
                     .map_err(OrchestratorError::from)
             },
-            move |codebase, symbol_references, codebase_scan_files| {
-                before_plugin_registry.prepare_external_analyzer().map_err(AnalysisError::from)?;
-                before_plugin_registry.run_external_codebase_scan(codebase_scan_files).map_err(AnalysisError::from)?;
+            move |compiled: &mut [(CodebaseMetadata, Option<CodebaseScanFile>)]| {
+                refine_plugin_registry.prepare_external_analyzer().map_err(AnalysisError::from)?;
+                let refinements = refine_plugin_registry
+                    .run_external_codebase_scan(compiled.iter().filter_map(|(_, file)| file.clone()).collect())
+                    .map_err(AnalysisError::from)?;
+                apply_refinements(
+                    refinements,
+                    compiled
+                        .iter_mut()
+                        .filter_map(|(metadata, file)| file.as_ref().map(|file| (file.file_id(), metadata))),
+                )
+                .map_err(AnalysisError::from)?;
+                Ok(())
+            },
+            move |codebase, symbol_references| {
                 let capabilities = (
                     before_plugin_registry.has_external_after_file_analysis_hooks().map_err(AnalysisError::from)?,
                     before_plugin_registry.has_external_after_analysis_hooks().map_err(AnalysisError::from)?,
@@ -305,6 +332,14 @@ impl AnalysisService {
                 );
 
                 let _result = before_capabilities.set(capabilities);
+                resolve_body_returns(
+                    codebase,
+                    &body_return_files,
+                    &before_plugin_registry,
+                    &body_return_settings,
+                    body_return_parser_settings,
+                    before_external_session.as_deref(),
+                )?;
                 #[cfg(not(target_arch = "wasm32"))]
                 let lifecycle_start = trace_enabled.then(Instant::now);
                 let before = before_plugin_registry
@@ -370,9 +405,7 @@ impl AnalysisService {
                 if let Some(requirements) = node_analysis_requirements.as_ref() {
                     analyzer = analyzer.with_node_analysis_requirements(requirements);
                 }
-                if after_file || after_analysis {
-                    analyzer = analyzer.with_deferred_pragmas();
-                }
+                analyzer = analyzer.with_deferred_pragmas();
                 if let Some(session) = external_session.as_deref() {
                     analyzer = analyzer.with_external_analysis_session(session);
                 }

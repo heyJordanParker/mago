@@ -40,6 +40,7 @@ use crate::resolver::method::UnresolvedMethod;
 use crate::resolver::method::report_magic_call_without_call_method;
 use crate::resolver::method::report_non_existent_method;
 use crate::resolver::method::report_possibly_missing_magic_call;
+use crate::resolver::method::resolve_forwarded_call;
 use crate::resolver::selector::resolve_member_selector;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_method_name;
@@ -356,15 +357,32 @@ where
                         report_non_existent_method(context, class_span, method_span, fq_class_id, method_name);
                     }
                 } else {
-                    result.undocumented_methods.extend(magic_call_methods.into_iter().map(|magic_method| {
-                        UndocumentedMethod {
-                            classname: magic_method.classname,
-                            method_name,
-                            target_span: class_span,
-                            selector_span: method_span,
-                            magic_method,
-                        }
-                    }));
+                    let receiver_name = context
+                        .codebase
+                        .get_class_like(fq_class_id.as_bytes())
+                        .map_or(fq_class_id, |m| m.original_name);
+
+                    if !resolve_forwarded_call(
+                        context,
+                        block_context,
+                        class_span,
+                        selector,
+                        receiver_name,
+                        method_name,
+                        &TObject::Named(TNamedObject::new(receiver_name)),
+                        access_span,
+                        result,
+                    ) {
+                        result.undocumented_methods.extend(magic_call_methods.into_iter().map(|magic_method| {
+                            UndocumentedMethod {
+                                classname: magic_method.classname,
+                                method_name,
+                                target_span: class_span,
+                                selector_span: method_span,
+                                magic_method,
+                            }
+                        }));
+                    }
                 }
             } else {
                 result.has_invalid_target = true;

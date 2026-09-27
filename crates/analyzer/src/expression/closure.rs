@@ -21,6 +21,7 @@ use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::statement::function_like::FunctionLikeBody;
 use crate::statement::function_like::analyze_function_like;
+use crate::statement::function_like::receiver_class;
 use crate::statement::function_like::resolve_closure_like_type;
 use crate::statement::function_like::unused_parameter;
 
@@ -49,7 +50,10 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Closure<'arena> {
 
         let mut scope = ScopeContext::new(block_context.scope.get_reference_origin());
         scope.set_function_like(Some(function_metadata));
-        if let Some(bind_scope) = &artifacts.closure_bind_scope {
+        if let Some(receiver) = &function_metadata.refined_this_type {
+            scope.set_class_like(receiver_class(context, &receiver.type_union));
+            scope.set_static(false);
+        } else if let Some(bind_scope) = &artifacts.closure_bind_scope {
             if let Some(class_name) = bind_scope.class_name {
                 scope.set_class_like(context.codebase.get_class_like(class_name.as_bytes()));
             } else {

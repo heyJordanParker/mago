@@ -6,6 +6,8 @@ use mago_word::word;
 
 use mago_codex::identifier::method::MethodIdentifier;
 use mago_codex::reference::ReferenceOrigin;
+use mago_codex::ttype::add_optional_union_type;
+use mago_codex::ttype::union::TUnion;
 
 use mago_span::HasSpan;
 use mago_syntax::cst::Method;
@@ -87,7 +89,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
 
             method_block_context.flags.set_collect_initializations(true);
 
-            analyze_function_like(
+            let method_artifacts = analyze_function_like(
                 context,
                 artifacts,
                 &mut method_block_context,
@@ -98,6 +100,17 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
             )?;
 
             let method_key = (class_like_metadata.name, lowercase_method_name);
+
+            if method_metadata.return_from_body.is_some() {
+                let mut returned: Option<TUnion> = None;
+                for inferred in method_artifacts.inferred_return_types {
+                    returned = Some(add_optional_union_type((*inferred).clone(), returned.as_ref(), context.codebase));
+                }
+
+                if let Some(returned) = returned {
+                    artifacts.body_returns.insert(method_key, returned);
+                }
+            }
 
             artifacts
                 .method_initialized_properties

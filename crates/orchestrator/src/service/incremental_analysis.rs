@@ -21,6 +21,7 @@ use mago_analyzer::external::AFTER_FILE_ANALYSIS_BATCH_SIZE;
 use mago_analyzer::external::CodebaseScanFile;
 use mago_analyzer::external::CodebaseScanPlan;
 use mago_analyzer::external::FileAnalysisSnapshot;
+use mago_analyzer::external::apply_refinements;
 use mago_analyzer::plugin::PluginRegistry;
 use mago_analyzer::settings::Settings;
 use mago_codex::diff::CodebaseDiff;
@@ -360,7 +361,7 @@ impl IncrementalAnalysisService {
         let parser_settings = self.parser_settings;
         let php_version = self.settings.version;
         let codebase_scan_plan = self.codebase_scan_plan.clone();
-        let per_file_results: Vec<(FileId, u64, CodebaseMetadata, Option<CodebaseScanFile>)> = source_files
+        let mut per_file_results: Vec<(FileId, u64, CodebaseMetadata, Option<CodebaseScanFile>)> = source_files
             .into_par_iter()
             .map_init(LocalArena::new, |arena, file| {
                 let content_hash = xxhash_rust::xxh3::xxh3_64(file.contents.as_ref());
@@ -396,13 +397,23 @@ impl IncrementalAnalysisService {
 
         let mut merged_codebase = (*self.base_codebase).clone();
 
-        self.codebase_scan_files.clear();
+        self.codebase_scan_files = per_file_results
+            .iter_mut()
+            .filter_map(|(file_id, _, _, codebase_scan)| codebase_scan.take().map(|scan| (*file_id, scan)))
+            .collect();
+        let refinements = self
+            .plugin_registry
+            .run_external_codebase_scan(self.codebase_scan_files.values().cloned().collect())
+            .map_err(mago_analyzer::error::AnalysisError::from)?;
+        apply_refinements(
+            refinements,
+            per_file_results.iter_mut().map(|(file_id, _, metadata, _)| (*file_id, metadata)),
+        )
+        .map_err(mago_analyzer::error::AnalysisError::from)?;
+
         let staged: Vec<(FileId, u64, CodebaseMetadata)> = per_file_results
             .into_iter()
-            .map(|(file_id, content_hash, metadata, codebase_scan)| {
-                if let Some(codebase_scan) = codebase_scan {
-                    self.codebase_scan_files.insert(file_id, codebase_scan);
-                }
+            .map(|(file_id, content_hash, metadata, _)| {
                 let clone_for_ownership = metadata.clone();
                 merged_codebase.extend(metadata);
                 (file_id, content_hash, clone_for_ownership)
@@ -412,9 +423,6 @@ impl IncrementalAnalysisService {
 
         let mut symbol_references = (*self.base_symbol_references).clone();
         populate_codebase(&mut merged_codebase, &mut symbol_references, WordSet::default(), HashSet::default());
-        self.plugin_registry
-            .run_external_codebase_scan(self.codebase_scan_files.values().cloned().collect())
-            .map_err(mago_analyzer::error::AnalysisError::from)?;
         let mut file_states: HashMap<FileId, FileState> = HashMap::default();
         for (file_id, content_hash, metadata) in staged {
             let entry_keys = metadata.extract_owned_keys(&merged_codebase);
@@ -691,8 +699,14 @@ impl IncrementalAnalysisService {
             new_file_scans.push((file_id, metadata));
         }
         if scan_state_changed {
-            self.plugin_registry
+            // Every selected file is rescanned so workers keep complete state, but refinements are
+            // installed only into files that changed: an unchanged file's refinement is already part
+            // of the merged codebase, and a refinement reads nothing outside its own file.
+            let refinements = self
+                .plugin_registry
                 .run_external_codebase_scan(self.codebase_scan_files.values().cloned().collect())
+                .map_err(mago_analyzer::error::AnalysisError::from)?;
+            apply_refinements(refinements, new_file_scans.iter_mut().map(|(file_id, metadata)| (*file_id, metadata)))
                 .map_err(mago_analyzer::error::AnalysisError::from)?;
         }
 
@@ -1352,9 +1366,7 @@ impl IncrementalAnalysisService {
                 if let Some(requirements) = node_analysis_requirements.as_ref() {
                     analyzer = analyzer.with_node_analysis_requirements(requirements);
                 }
-                if after_file || after_analysis {
-                    analyzer = analyzer.with_deferred_pragmas();
-                }
+                analyzer = analyzer.with_deferred_pragmas();
                 if let Some(session) = external_session.as_deref() {
                     analyzer = analyzer.with_external_analysis_session(session);
                 }
@@ -1498,6 +1510,7 @@ impl IncrementalAnalysisService {
         for issues in per_file_issues.values_mut() {
             *issues = pragma_reconciler.reconcile(std::mem::take(issues))?;
         }
+        let codebase_issues = pragma_reconciler.reconcile(codebase.take_issues(true))?;
         for (file_id, pragmas) in &mut per_file_pragmas {
             if let Some(reconciled) = pragma_reconciler.state(*file_id) {
                 *pragmas = reconciled.clone();
@@ -1508,7 +1521,6 @@ impl IncrementalAnalysisService {
         aggregated_result.symbol_references.extend(external_symbol_references.clone());
         aggregated_result.symbol_references.extend(late_symbol_references.clone());
 
-        let codebase_issues = codebase.take_issues(true);
         if after_analysis {
             let analyzed = snapshots.iter().map(|snapshot| snapshot.file_id()).collect::<HashSet<_>>();
             let current = self
@@ -2425,6 +2437,40 @@ mod tests {
             only_incr.is_empty() && only_full.is_empty(),
             "Body-only change to file with codebase issues lost them.\n  Only in incremental: {only_incr:?}\n  Only in full: {only_full:?}"
         );
+    }
+
+    /// An `@mago-expect` pragma fulfils a codebase-level issue the same way it fulfils an issue
+    /// reported while analyzing the file, on the first run and on later incremental runs.
+    #[test]
+    fn test_expect_pragma_fulfils_codebase_issue() {
+        let child = concat!(
+            "<?php\n",
+            "class Base {}\n",
+            "// @mago-expect analysis:invalid-extends-tag\n",
+            "/** @extends Missing<int> */\n",
+            "final class Child extends Base {}\n",
+        );
+        let unrelated = "<?php\nfunction greet(): string { return 'hello'; }\n";
+        let mut db = make_database(vec![("src/Child.php", child), ("src/Unrelated.php", unrelated)]);
+        let reported = |issues: &IssueCollection| {
+            issues
+                .iter()
+                .filter_map(|issue| issue.code.clone())
+                .filter(|code| code == "invalid-extends-tag" || code == "unfulfilled-expect")
+                .collect::<Vec<_>>()
+        };
+
+        let mut service = make_service(&db);
+        let initial = service.analyze().expect("Full analysis failed.");
+        assert_eq!(reported(&initial.issues), Vec::<String>::new());
+
+        db.update(
+            FileId::new(b"src/Unrelated.php"),
+            Cow::Owned(b"<?php\nfunction greet(): string { return 'hi'; }\n".to_vec()),
+        );
+        service.update_database(db.read_only());
+        let incremental = service.analyze_incremental(None).expect("Incremental analysis failed.");
+        assert_eq!(reported(&incremental.issues), Vec::<String>::new());
     }
 
     /// Regression test: signature change in one file must preserve codebase-level

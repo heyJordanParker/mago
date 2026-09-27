@@ -11,6 +11,8 @@ use Mago\Sdk\Analyzer\AssertionProviderContext;
 use Mago\Sdk\Analyzer\BeforeAnalysisContext;
 use Mago\Sdk\Analyzer\CallableSignatureProvider;
 use Mago\Sdk\Analyzer\CallableSignatureProviderContext;
+use Mago\Sdk\Analyzer\CallForwardingProvider;
+use Mago\Sdk\Analyzer\CallForwardingProviderContext;
 use Mago\Sdk\Analyzer\ClassInitializerProvider;
 use Mago\Sdk\Analyzer\ClassInitializerProviderContext;
 use Mago\Sdk\Analyzer\ClassLikeTarget;
@@ -135,6 +137,9 @@ final class Worker
     /** @var list<RegisteredTargetedCallback<ClassInitializerProvider, ClassTarget>> */
     private readonly array $classInitializerProviders;
 
+    /** @var list<RegisteredTargetedCallback<CallForwardingProvider, MethodTarget>> */
+    private readonly array $callForwardingProviders;
+
     /** @var list<RegisteredTargetedCallback<IssueFilterHook, string>> */
     private readonly array $issueFilterHooks;
 
@@ -178,6 +183,7 @@ final class Worker
         $propertyProviders = [];
         $propertyInitializationProviders = [];
         $classInitializerProviders = [];
+        $callForwardingProviders = [];
         $issueFilterHooks = [];
         $codebaseScanHooks = [];
         $nodeAnalysisHooks = [];
@@ -270,6 +276,12 @@ final class Worker
                     $classInitializerProviders,
                     $definition->identifier,
                     'class initializer provider',
+                );
+                $registeredCallForwardingProviders = self::registerTargetedCallbacks(
+                    $registry->getCallForwardingProviders(),
+                    $callForwardingProviders,
+                    $definition->identifier,
+                    'call forwarding provider',
                 );
 
                 $registeredIssueFilterHooks = [];
@@ -390,6 +402,7 @@ final class Worker
                     $registeredClassLikeAnalysisHooksByIndex,
                     $registry->getAfterAnalysisHooks(),
                     $registry->shouldMemoizeProviders(),
+                    $registeredCallForwardingProviders,
                 );
             }
         }
@@ -405,6 +418,7 @@ final class Worker
         $this->propertyTypeProviders = $propertyProviders;
         $this->propertyInitializationProviders = $propertyInitializationProviders;
         $this->classInitializerProviders = $classInitializerProviders;
+        $this->callForwardingProviders = $callForwardingProviders;
         $this->issueFilterHooks = $issueFilterHooks;
         $this->codebaseScanHooks = $codebaseScanHooks;
     }
@@ -781,6 +795,49 @@ final class Worker
             return AnalyzerProtocol::writePropertyTypeResponse(null);
         }
 
+        if ($kind === AnalyzerProtocol::CALL_FORWARDING_REQUEST) {
+            $request = AnalyzerProtocol::readCallForwardingRequest($reader);
+            if ($this->metadataCache === null || $this->metadataCache->generation !== $request->generation) {
+                $this->metadataCache = new MetadataCache($request->generation);
+            }
+
+            $context = new CallForwardingProviderContext(
+                $this->phpVersion,
+                new Codebase($host, $requestId, $cancellation, $this->metadataCache),
+                $request->class,
+                $request->member,
+                $request->property,
+                $request->receiverType,
+                new TypeComparator($host, $requestId, $cancellation, $this->metadataCache),
+                $cancellation,
+            );
+            foreach ($request->providerIndices as $providerIndex) {
+                $registered = $this->callForwardingProviders[$providerIndex] ?? null;
+                if ($registered === null) {
+                    throw new ProtocolException(
+                        "Mago requested unregistered call forwarding provider index {$providerIndex}.",
+                    );
+                }
+
+                $cancellation->throwIfCancelled();
+                try {
+                    $forwarded = $registered->callback->getForwardedCall($context);
+                } catch (Throwable $throwable) {
+                    throw new ProtocolException(
+                        "Call forwarding provider in `{$registered->plugin}` failed: {$throwable->getMessage()}",
+                        0,
+                        $throwable,
+                    );
+                }
+
+                if ($forwarded !== null) {
+                    return AnalyzerProtocol::writeCallForwardingResponse($forwarded);
+                }
+            }
+
+            return AnalyzerProtocol::writeCallForwardingResponse(null);
+        }
+
         if ($kind === AnalyzerProtocol::PROPERTY_INITIALIZATION_REQUEST) {
             $request = AnalyzerProtocol::readPropertyInitializationRequest($reader);
             if ($this->metadataCache === null || $this->metadataCache->generation !== $request->generation) {
@@ -1089,22 +1146,22 @@ final class Worker
             $this->phpVersion,
             $this->nodeKinds,
         );
+        $refinements = [];
         foreach ($activeHooks as $hookIndex) {
             $registered = $this->codebaseScanHooks[$hookIndex] ?? null;
             if ($registered === null) {
                 throw new ProtocolException("Codebase-scan request targets unknown hook {$hookIndex}.");
             }
             $cancellation->throwIfCancelled();
+            $context = new CodebaseScanContext(
+                $this->phpVersion,
+                $cancellation,
+                $filesByHook[$registered->index] ?? [],
+                $firstBatch,
+                $lastBatch,
+            );
             try {
-                $registered->callback->scan(
-                    new CodebaseScanContext(
-                        $this->phpVersion,
-                        $cancellation,
-                        $filesByHook[$registered->index] ?? [],
-                        $firstBatch,
-                        $lastBatch,
-                    ),
-                );
+                $registered->callback->scan($context);
             } catch (Throwable $throwable) {
                 throw new ProtocolException(
                     "Codebase-scan hook in `{$registered->plugin}` failed: {$throwable->getMessage()}",
@@ -1112,9 +1169,13 @@ final class Worker
                     $throwable,
                 );
             }
+
+            foreach ($context->getRefinements() as $refinement) {
+                $refinements[] = [$registered->index, $refinement];
+            }
         }
 
-        return AnalyzerProtocol::writeCodebaseScanResponse();
+        return AnalyzerProtocol::writeCodebaseScanResponse($refinements);
     }
 
     /**

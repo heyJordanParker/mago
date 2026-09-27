@@ -39,6 +39,7 @@ use Mago\Sdk\Analyzer\PropertyTypeProviderContext;
 use Mago\Sdk\Analyzer\ReturnTypeProviderContext;
 use Mago\Sdk\Analyzer\Type;
 use Mago\Sdk\Analyzer\Type\CallableParameter;
+use Mago\Sdk\Analyzer\Type\FunctionLikeKind;
 use Mago\Sdk\Analyzer\Type\NamedObjectType;
 use Mago\Sdk\Analyzer\TypeComparison;
 use Mago\Sdk\Extension;
@@ -471,6 +472,9 @@ final class InvocationMethodProvider implements MethodReturnTypeProvider, Callab
             self::assertInvocation($context, InvocationKind::InstanceMethod, 'BaseModel');
             self::assertNamed($named, 'User', 0, 0);
             self::assertEqual($context, $receiver, Type::namedObject('User'));
+            if ($invocation->callingFunctionLike !== null) {
+                throw new RuntimeException('A call outside any function-like reported a calling function-like.');
+            }
             InvocationAudit::record('instance');
 
             return Type::namedObject('Builder', Type::namedObject('User'));
@@ -553,6 +557,14 @@ final class InvocationMethodProvider implements MethodReturnTypeProvider, Callab
             sort($names);
             if ($names !== ['basemodel', 'marker']) {
                 throw new RuntimeException('The intersected receiver did not survive the binary round trip.');
+            }
+            $calling = $invocation->callingFunctionLike;
+            if (
+                $calling === null
+                || $calling->kind !== FunctionLikeKind::Function_
+                || strtolower($calling->name) !== 'inspect_intersection'
+            ) {
+                throw new RuntimeException('A call inside a function did not report that function as its caller.');
             }
             InvocationAudit::record('intersection');
 

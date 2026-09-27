@@ -8,6 +8,7 @@ use Mago\Sdk\Analyzer\AfterAnalysisHook;
 use Mago\Sdk\Analyzer\AfterFileAnalysisHook;
 use Mago\Sdk\Analyzer\AttributedEntryPoint;
 use Mago\Sdk\Analyzer\BeforeAnalysisHook;
+use Mago\Sdk\Analyzer\CallForwardingProvider;
 use Mago\Sdk\Analyzer\ClassInitializerProvider;
 use Mago\Sdk\Analyzer\ClassLikeAnalysisHook;
 use Mago\Sdk\Analyzer\ClassLikeTarget;
@@ -59,6 +60,7 @@ final class RegisteredPlugin
      * @param list<RegisteredTargetedCallback<ClassLikeAnalysisHook, ClassLikeTarget>> $classLikeAnalysisHooks
      * @param array<int<0, 65535>, RegisteredTargetedCallback<ClassLikeAnalysisHook, ClassLikeTarget>> $classLikeAnalysisHooksByIndex
      * @param list<AfterAnalysisHook> $afterAnalysisHooks
+     * @param list<RegisteredTargetedCallback<CallForwardingProvider, MethodTarget>> $callForwardingProviders
      */
     public function __construct(
         public readonly int $index,
@@ -87,5 +89,6 @@ final class RegisteredPlugin
         public readonly array $classLikeAnalysisHooksByIndex,
         public readonly array $afterAnalysisHooks,
         public readonly bool $memoizeProviders,
+        public readonly array $callForwardingProviders,
     ) {}
 }
