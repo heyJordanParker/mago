@@ -23,6 +23,7 @@ use mago_codex::ttype::combine_union_types;
 use mago_codex::ttype::combiner::CombinerOptions;
 use mago_codex::ttype::comparator::ComparisonResult;
 use mago_codex::ttype::comparator::union_comparator;
+use mago_codex::ttype::expander::StaticClassType;
 use mago_codex::ttype::expander::TypeExpansionOptions;
 use mago_codex::ttype::expander::expand_union;
 use mago_codex::ttype::get_never;
@@ -63,6 +64,7 @@ use crate::error::AnalysisError;
 use crate::plugin::context::HookContext;
 use crate::statement::attributes::analyze_class_like_attributes;
 use crate::statement::class_like::method_signature::SignatureCompatibilityIssue;
+use crate::statement::function_like::report_invalid_template_arguments;
 use crate::statement::function_like::report_undefined_type_references;
 use crate::utils::missing_type_hints;
 
@@ -1113,11 +1115,13 @@ where
                         && let Some(type_meta) = &prop_meta.type_metadata
                     {
                         report_undefined_type_references(context, type_meta);
+                        report_invalid_template_arguments(context, type_meta);
 
                         if type_meta.from_docblock
                             && let Some(type_decl_meta) = &prop_meta.type_declaration_metadata
                         {
                             report_undefined_type_references(context, type_decl_meta);
+                            report_property_type_mismatch(context, class_like_metadata, type_meta, type_decl_meta);
                         }
                     }
                 }
@@ -3001,6 +3005,55 @@ fn report_signature_compatibility_issue<'ctx, A>(
             );
         }
     }
+}
+
+/// Reports a property whose docblock type cannot hold what its native declaration promises.
+///
+/// Parameters and returns already get this check; a property never did, so a `@var` narrowing a
+/// native type to something unrelated was silently trusted everywhere the property was read.
+fn report_property_type_mismatch<A>(
+    context: &mut Context<'_, '_, A>,
+    class_like_metadata: &ClassLikeMetadata,
+    docblock_type: &TypeMetadata,
+    native_type: &TypeMetadata,
+) where
+    A: Arena,
+{
+    let options = TypeExpansionOptions {
+        self_class: Some(class_like_metadata.name),
+        static_class_type: StaticClassType::Name(class_like_metadata.name),
+        ..Default::default()
+    };
+    let mut expanded_docblock = docblock_type.type_union.clone();
+    expand_union(context.codebase, &mut expanded_docblock, &options);
+    let mut expanded_native = native_type.type_union.clone();
+    expand_union(context.codebase, &mut expanded_native, &options);
+
+    if union_comparator::is_contained_by_with_erased_template_arguments(
+        context.codebase,
+        &expanded_docblock,
+        &expanded_native,
+        &mut ComparisonResult::default(),
+    ) {
+        return;
+    }
+
+    let docblock_type_str = expanded_docblock.get_id();
+    let native_type_str = native_type.type_union.get_id();
+    context.collector.report_with_code(
+        IssueCode::DocblockTypeMismatch,
+        Issue::error(format!(
+            "Docblock property type `{docblock_type_str}` is incompatible with native property type `{native_type_str}`."
+        ))
+        .with_annotation(Annotation::primary(native_type.span).with_message(format!("Native type is `{native_type_str}`...")))
+        .with_annotation(
+            Annotation::secondary(docblock_type.span).with_message(format!("...but docblock declares `{docblock_type_str}`")),
+        )
+        .with_note("The docblock type must be compatible with the native type declaration.")
+        .with_help(format!(
+            "Either change the docblock type to match `{native_type_str}`, or update the native type to be compatible with `{docblock_type_str}`."
+        )),
+    );
 }
 
 /// Reports undefined type references in the `@method`, `@property` and `@mixin`

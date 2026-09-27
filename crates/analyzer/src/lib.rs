@@ -121,7 +121,7 @@ where
         self
     }
 
-    /// Defers unused and unfulfilled pragma reporting until external lifecycle
+    /// Defers unused and unfulfilled pragma reporting until codebase and external lifecycle
     /// diagnostics have been collected.
     #[must_use]
     pub fn with_deferred_pragmas(mut self) -> Self {

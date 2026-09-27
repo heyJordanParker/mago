@@ -131,6 +131,7 @@ impl<'cfg> Orchestrator<'cfg> {
         let mut registry =
             create_registry_with_plugins(&self.config.analyzer_plugins, self.config.disable_default_analyzer_plugins);
         registry.set_external_analyzer(analyzer);
+        registry.set_project_sources(self.context_paths.clone());
         let result = self.plugin_registry.set(Arc::new(registry));
         debug_assert!(result.is_ok(), "analyzer plugin registry was initialized before external plugins were attached");
     }

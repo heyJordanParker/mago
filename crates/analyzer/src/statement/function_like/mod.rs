@@ -180,6 +180,7 @@ where
 
     if let Some(return_type) = &function_like_metadata.return_type_metadata {
         report_undefined_type_references(context, return_type);
+        report_invalid_template_arguments(context, return_type);
 
         // Only check native declaration if effective type is from docblock (to avoid duplicates)
         if return_type.from_docblock
@@ -241,7 +242,11 @@ where
         inferred_parameter_types,
     )?;
 
-    if !block_context.scope.is_static()
+    // A closure that declares its receiver is analyzed against that receiver, whatever class
+    // it is written in.
+    if let Some(receiver) = &function_like_metadata.refined_this_type {
+        block_context.locals.insert(Word::from("$this"), Rc::new(expand_receiver(context, &receiver.type_union)));
+    } else if !block_context.scope.is_static()
         && let Some(class_like_metadata) = block_context.scope.get_class_like()
     {
         block_context.locals.insert(
@@ -373,6 +378,7 @@ where
 
         if let Some(parameter_type) = parameter_metadata.get_type_metadata() {
             report_undefined_type_references(context, parameter_type);
+            report_invalid_template_arguments(context, parameter_type);
 
             // Only check native declaration if effective type is from docblock (to avoid duplicates)
             if parameter_type.from_docblock
@@ -757,6 +763,29 @@ where
     }
 
     Ok(())
+}
+
+/// A closure's declared receiver with its class references resolved, as the body holds `$this`.
+pub fn expand_receiver<A>(context: &Context<'_, '_, A>, receiver: &TUnion) -> TUnion
+where
+    A: Arena,
+{
+    let mut expanded = receiver.clone();
+    expander::expand_union(context.codebase, &mut expanded, &TypeExpansionOptions::default());
+    expanded
+}
+
+/// The class a closure's declared receiver names, which member access in its body resolves
+/// against. A receiver bounded by a type parameter names its bound's class.
+pub fn receiver_class<'ctx, A>(context: &Context<'ctx, '_, A>, receiver: &TUnion) -> Option<&'ctx ClassLikeMetadata>
+where
+    A: Arena,
+{
+    expand_receiver(context, receiver).types.iter().find_map(|atomic| match atomic {
+        TAtomic::Object(TObject::Named(named)) => context.codebase.get_class_like(named.name.as_bytes()),
+        TAtomic::GenericParameter(TGenericParameter { constraint, .. }) => receiver_class(context, constraint),
+        _ => None,
+    })
 }
 
 /// Constructs the `$this` type for instance methods/hooks.
@@ -1496,5 +1525,110 @@ where
                 .with_note("If this type comes from an optional dependency or extension, you can safely suppress this issue using `@mago-ignore` or `@mago-expect`.")
                 .with_help("Verify the type name is spelled correctly, the file containing it is included in analysis, and any required `use` statements are present."),
         );
+    }
+}
+
+/// Reports generic classes a declared type applies with the wrong number of arguments, or with an
+/// argument outside its type parameter's bound.
+///
+/// A declaration is checked where it is written, so the mistake is reported at the declaration
+/// rather than at whichever call first happens to reach it.
+pub fn report_invalid_template_arguments<A>(context: &mut Context<'_, '_, A>, type_metadata: &TypeMetadata)
+where
+    A: Arena,
+{
+    if type_metadata.inferred {
+        return;
+    }
+
+    let codebase = context.codebase;
+    for type_ref in type_metadata.type_union.get_all_child_nodes() {
+        let TypeRef::Atomic(TAtomic::Object(TObject::Named(named))) = type_ref else {
+            continue;
+        };
+        let (Some(arguments), Some(class)) = (&named.type_parameters, codebase.get_class_like(named.name.as_bytes()))
+        else {
+            continue;
+        };
+
+        let class_name = class.original_name;
+        let expected = class.template_types.len();
+        let required = class.template_types.values().take_while(|template| template.default.is_none()).count();
+        if arguments.len() < required || arguments.len() > expected {
+            let (code, message) = if arguments.len() < required {
+                (
+                    IssueCode::MissingTemplateParameter,
+                    format!(
+                        "Too few template arguments for `{class_name}`: expected at least {required}, but found {}.",
+                        arguments.len()
+                    ),
+                )
+            } else {
+                (
+                    IssueCode::ExcessTemplateParameter,
+                    format!(
+                        "Too many template arguments for `{class_name}`: expected {expected}, but found {}.",
+                        arguments.len()
+                    ),
+                )
+            };
+
+            context.collector.report_with_code(
+                code,
+                Issue::error(message)
+                    .with_annotation(
+                        Annotation::primary(type_metadata.span)
+                            .with_message(format!("`{class_name}` is applied here.")),
+                    )
+                    .with_annotation(
+                        Annotation::secondary(class.name_span.unwrap_or(class.span))
+                            .with_message(format!("`{class_name}` declares {expected} template parameters.")),
+                    ),
+            );
+            continue;
+        }
+
+        for (argument, (template_name, template)) in arguments.iter().zip(class.template_types.iter()) {
+            // An explicit `mixed` argument is the written form of "any argument", which Mago accepts
+            // for every bound.
+            if argument.is_mixed() || template.constraint.is_mixed() || template.constraint.has_template_types() {
+                continue;
+            }
+
+            let options = TypeExpansionOptions::default();
+            let mut expanded_argument = argument.clone();
+            expander::expand_union(codebase, &mut expanded_argument, &options);
+            let mut constraint = template.constraint.clone();
+            expander::expand_union(codebase, &mut constraint, &options);
+            if union_comparator::is_contained_by(
+                codebase,
+                &expanded_argument,
+                &constraint,
+                false,
+                false,
+                false,
+                &mut ComparisonResult::default(),
+            ) {
+                continue;
+            }
+
+            let argument_id = expanded_argument.get_id();
+            let constraint_id = constraint.get_id();
+            context.collector.report_with_code(
+                IssueCode::TemplateConstraintViolation,
+                Issue::error(format!(
+                    "Template argument `{argument_id}` does not satisfy `{class_name}`'s `{template_name}`."
+                ))
+                .with_annotation(
+                    Annotation::primary(type_metadata.span)
+                        .with_message(format!("`{argument_id}` is supplied for `{template_name}` here...")),
+                )
+                .with_annotation(
+                    Annotation::secondary(class.name_span.unwrap_or(class.span))
+                        .with_message(format!("...but `{template_name}` is bounded by `{constraint_id}`.")),
+                )
+                .with_help(format!("Supply a type contained by `{constraint_id}`.")),
+            );
+        }
     }
 }

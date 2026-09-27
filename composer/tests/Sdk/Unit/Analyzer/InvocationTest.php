@@ -6,6 +6,8 @@ namespace Mago\Tests\Sdk\Unit\Analyzer;
 
 use Mago\Sdk\Analyzer\InvocationKind;
 use Mago\Sdk\Analyzer\Type;
+use Mago\Sdk\Analyzer\Type\FunctionLikeIdentifier;
+use Mago\Sdk\Analyzer\Type\FunctionLikeKind;
 use Mago\Sdk\Exception\ProtocolException;
 use Mago\Sdk\Internal\Analyzer\Protocol;
 use Mago\Sdk\Internal\Analyzer\ReturnTypeRequest;
@@ -53,6 +55,16 @@ final class InvocationTest extends TestCase
             $receiver,
             $request->invocation->receiverType === null ? null : (string) $request->invocation->receiverType,
         );
+    }
+
+    public function testCallingFunctionLikeRoundTrips(): void
+    {
+        $calling = new FunctionLikeIdentifier(FunctionLikeKind::Method, 'subject', 'Remark');
+        $request = self::decode(self::request(2, 'BaseModel', Type::namedObject('User'), $calling));
+
+        self::assertNotNull($request->invocation->callingFunctionLike);
+        self::assertTrue($calling->equals($request->invocation->callingFunctionLike));
+        self::assertNull(self::decode(self::request(1))->invocation->callingFunctionLike);
     }
 
     public function testUnknownInvocationKindIsRejected(): void
@@ -119,8 +131,12 @@ final class InvocationTest extends TestCase
         self::decode(self::request(2, '', Type::namedObject('User')));
     }
 
-    private static function request(int $kind, ?string $declaringClass = null, ?Type $receiver = null): string
-    {
+    private static function request(
+        int $kind,
+        ?string $declaringClass = null,
+        ?Type $receiver = null,
+        ?FunctionLikeIdentifier $callingFunctionLike = null,
+    ): string {
         $writer = self::requestPrefix($kind);
         if ($declaringClass !== null) {
             $writer->writeBytes($declaringClass);
@@ -132,6 +148,10 @@ final class InvocationTest extends TestCase
         $writer->writeU32(1);
         $writer->writeU32(2);
         $writer->writeU16(0);
+        $writer->writeBoolean($callingFunctionLike !== null);
+        if ($callingFunctionLike !== null) {
+            TypeCodec::writeFunctionLikeIdentifier($writer, $callingFunctionLike);
+        }
 
         return self::message($writer);
     }
@@ -160,7 +180,7 @@ final class InvocationTest extends TestCase
 
     private static function messagePayload(string $payload): string
     {
-        return pack('N3', 0x4D41_4E41, 0x0001_0001, 2 << 16) . $payload;
+        return pack('N3', 0x4D41_4E41, 0x0001_0003, 2 << 16) . $payload;
     }
 
     private static function decode(string $payload): ReturnTypeRequest

@@ -1543,6 +1543,8 @@ fn create_enum_method(
         parameters,
         return_type_declaration_metadata: Some(TypeMetadata::new(return_type.clone(), enum_method_span)),
         return_type_metadata: Some(TypeMetadata::new(return_type, enum_method_span)),
+        refined_this_type: None,
+        return_from_body: None,
         template_types: TemplateTypes::default(),
         attributes: vec![],
         method_metadata: Some(MethodMetadata {

@@ -110,6 +110,7 @@ use crate::external::EntryPoint;
 use crate::external::ExternalAnalysisSession;
 use crate::external::ExternalExtension;
 use crate::external::ExternalPlugin;
+use crate::external::ForwardedCall;
 use crate::external::FunctionProvider;
 use crate::external::FunctionTarget;
 use crate::external::IssueFilterHookRegistration;
@@ -132,7 +133,7 @@ use crate::invocation::MethodTargetContext;
 
 pub const ANALYZER_PROTOCOL_MAGIC: [u8; 4] = *b"MANA";
 pub const ANALYZER_PROTOCOL_MAJOR: u16 = 1;
-pub const ANALYZER_PROTOCOL_MINOR: u16 = 1;
+pub const ANALYZER_PROTOCOL_MINOR: u16 = 4;
 
 const HEADER_LENGTH: usize = 12;
 const INITIAL_MESSAGE_CAPACITY: usize = 256;
@@ -148,6 +149,7 @@ const TYPE_COMPARISON_BATCH_REQUEST: u16 = 16;
 const CLASS_INITIALIZER_REQUEST: u16 = 17;
 const ASSERTION_REQUEST: u16 = 18;
 pub(super) const CODEBASE_SCAN_REQUEST: u16 = 19;
+const CALL_FORWARDING_REQUEST: u16 = 20;
 const DESCRIBE_RESPONSE: u16 = 0x8001;
 const RETURN_TYPE_RESPONSE: u16 = 0x8002;
 const TYPE_COMPARISON_RESPONSE: u16 = 0x8003;
@@ -160,6 +162,7 @@ const TYPE_COMPARISON_BATCH_RESPONSE: u16 = 0x8010;
 const CLASS_INITIALIZER_RESPONSE: u16 = 0x8011;
 const ASSERTION_RESPONSE: u16 = 0x8012;
 const CODEBASE_SCAN_RESPONSE: u16 = 0x8013;
+const CALL_FORWARDING_RESPONSE: u16 = 0x8014;
 const MAXIMUM_EXTENSIONS: usize = 0x4000;
 const MAXIMUM_PLUGINS: usize = 0x4000;
 const MAXIMUM_PROVIDERS: usize = 0x0001_0000;
@@ -244,6 +247,7 @@ pub(super) struct Registration {
     pub method_call_analysis_hooks: Vec<MethodCallAnalysisHookRegistration>,
     pub class_like_analysis_hooks: Vec<ClassLikeAnalysisHookRegistration>,
     pub codebase_scan_hooks: Vec<CodebaseScanHookRegistration>,
+    pub call_forwarding_providers: Vec<MethodProvider>,
     pub initialization_plugins: Vec<u16>,
     pub before_analysis_plugins: Vec<u16>,
     pub after_file_analysis_plugins: Vec<u16>,
@@ -299,9 +303,32 @@ pub(super) fn encode_describe_request(php_version: PHPVersion) -> Vec<u8> {
     writer.finish()
 }
 
-pub(super) fn decode_codebase_scan_response(payload: &[u8]) -> Result<(), ExternalAnalyzerError> {
-    message_reader(payload, CODEBASE_SCAN_RESPONSE)?.finish()?;
-    Ok(())
+pub(super) fn decode_codebase_scan_response(
+    payload: &[u8],
+    files: &foldhash::HashMap<&[u8], &File>,
+    plugin_of_hook: &dyn Fn(u16) -> Option<String>,
+) -> Result<Vec<crate::external::DeclarationRefinement>, ExternalAnalyzerError> {
+    let mut reader = message_kind_reader(payload, CODEBASE_SCAN_RESPONSE)?;
+    let refinements = crate::external::refinement::decode(&mut reader, files, plugin_of_hook)?;
+    reader.finish()?;
+    Ok(refinements)
+}
+
+pub(super) fn decode_refined_type(reader: &mut PayloadReader<'_>) -> Result<TUnion, ExternalAnalyzerError> {
+    decode_type(reader, &|_| None, 0)
+}
+
+/// Reads a message whose body layout changed with the current minor version, so a worker built
+/// against an older protocol is refused instead of being read as if it spoke this one.
+fn message_kind_reader(payload: &[u8], expected_kind: u16) -> Result<PayloadReader<'_>, ExternalAnalyzerError> {
+    let kind = message_kind(payload)?;
+    if kind != expected_kind {
+        return Err(protocol(format!("expected analyzer message kind {expected_kind}, received {kind}")));
+    }
+
+    let mut reader = PayloadReader::new(payload);
+    reader.read_array::<HEADER_LENGTH>("analyzer header")?;
+    Ok(reader)
 }
 
 pub(super) fn encode_initialization_request(plugins: &[u16]) -> Result<Vec<u8>, ExternalAnalyzerError> {
@@ -383,6 +410,7 @@ pub(super) fn decode_registration(payload: &[u8]) -> Result<Registration, Extern
     let mut method_call_analysis_hooks = Vec::new();
     let mut class_like_analysis_hooks = Vec::new();
     let mut codebase_scan_hooks = Vec::new();
+    let mut call_forwarding_providers = Vec::new();
     let mut initialization_plugins = Vec::new();
     let mut before_analysis_plugins = Vec::new();
     let mut after_file_analysis_plugins = Vec::new();
@@ -579,6 +607,14 @@ pub(super) fn decode_registration(payload: &[u8]) -> Result<Registration, Extern
                 no_capabilities,
                 read_source_file_target,
             )?);
+            call_forwarding_providers.extend(read_providers(
+                &mut reader,
+                index,
+                "call forwarding providers",
+                "call forwarding provider",
+                no_capabilities,
+                read_method_target,
+            )?);
 
             let plugin = ExternalPlugin {
                 index,
@@ -637,6 +673,10 @@ pub(super) fn decode_registration(payload: &[u8]) -> Result<Registration, Extern
         "method assertion provider",
     )?;
     validate_provider_indices(codebase_scan_hooks.iter().map(|hook| hook.index), "codebase-scan hook")?;
+    validate_provider_indices(
+        call_forwarding_providers.iter().map(|provider| provider.index),
+        "call forwarding provider",
+    )?;
     Ok(Registration {
         extensions,
         plugins,
@@ -655,6 +695,7 @@ pub(super) fn decode_registration(payload: &[u8]) -> Result<Registration, Extern
         method_call_analysis_hooks,
         class_like_analysis_hooks,
         codebase_scan_hooks,
+        call_forwarding_providers,
         initialization_plugins,
         before_analysis_plugins,
         after_file_analysis_plugins,
@@ -870,6 +911,7 @@ pub(super) fn encode_provider_request<'type_info>(
     generation: u64,
     memoize: bool,
     trace_enabled: bool,
+    calling_function_like: Option<FunctionLikeIdentifier>,
 ) -> Result<ReturnTypeRequest<'type_info>, ExternalAnalyzerError> {
     let message_kind = match request_kind {
         ProviderRequestKind::ReturnType => RETURN_TYPE_REQUEST,
@@ -906,6 +948,7 @@ pub(super) fn encode_provider_request<'type_info>(
         generation,
         memoize,
         trace_enabled,
+        calling_function_like,
     )
 }
 
@@ -975,6 +1018,66 @@ pub(super) fn decode_property_type_response<'type_info>(
 
     reader.finish()?;
     Ok(Some(EffectivePropertyType { read_type, write_type }))
+}
+
+pub(super) fn encode_call_forwarding_request<'type_info>(
+    provider_indices: &[u16],
+    class: &[u8],
+    member: &[u8],
+    property: bool,
+    receiver_type: &'type_info TUnion,
+    generation: u64,
+    trace_enabled: bool,
+) -> Result<PropertyTypeRequest<'type_info>, ExternalAnalyzerError> {
+    let mut writer = message_writer(CALL_FORWARDING_REQUEST);
+    writer.write_u64(generation);
+    writer.write_u16(
+        u16::try_from(provider_indices.len()).map_err(|_| protocol("more than u16::MAX providers matched"))?,
+    );
+    for index in provider_indices {
+        writer.write_u16(*index);
+    }
+
+    writer.write_bytes(class)?;
+    writer.write_bytes(member)?;
+    writer.write_bool(property);
+    let snapshot_start = trace_enabled.then(Instant::now);
+    let mut references = Vec::new();
+    encode_union_snapshot(&mut writer, receiver_type, &mut references, 0)?;
+    let type_snapshot_duration = snapshot_start.map_or(Duration::ZERO, |start| start.elapsed());
+
+    Ok(PropertyTypeRequest {
+        payload: writer.finish(),
+        snapshotted_types: references.len(),
+        types: references.into_iter().map(Cow::Borrowed).collect(),
+        type_snapshot_duration,
+    })
+}
+
+pub(super) fn decode_call_forwarding_response<'type_info>(
+    payload: &[u8],
+    resolve: impl Fn(usize) -> Option<&'type_info TUnion>,
+) -> Result<Option<ForwardedCall>, ExternalAnalyzerError> {
+    let mut reader = message_reader(payload, CALL_FORWARDING_RESPONSE)?;
+    if !reader.read_bool("call forwarding handled flag")? {
+        reader.finish()?;
+        return Ok(None);
+    }
+
+    let receiver = decode_type(&mut reader, &resolve, 0)?;
+    let count = reader.read_count("forwarded methods", MAXIMUM_TARGETS)?;
+    if count == 0 {
+        return Err(protocol("a forwarded call names no method"));
+    }
+
+    let mut methods = Vec::with_capacity(count);
+    for _ in 0..count {
+        let method = non_empty(reader.read_bytes("forwarded method")?.to_vec(), "forwarded method")?;
+        methods.push(ascii_lowercase_word(&method));
+    }
+
+    reader.finish()?;
+    Ok(Some(ForwardedCall { receiver, methods }))
 }
 
 pub(super) fn encode_property_initialization_request(
@@ -1210,6 +1313,7 @@ fn encode_return_type_request<'type_info>(
     generation: u64,
     memoize: bool,
     trace_enabled: bool,
+    calling_function_like: Option<FunctionLikeIdentifier>,
 ) -> Result<ReturnTypeRequest<'type_info>, ExternalAnalyzerError> {
     let mut writer = message_writer(message_kind);
     let include_argument_types = message_kind == RETURN_TYPE_REQUEST || message_kind == ASSERTION_REQUEST;
@@ -1250,6 +1354,7 @@ fn encode_return_type_request<'type_info>(
                 memoize,
                 trace_enabled,
                 include_argument_types,
+                calling_function_like,
             );
         }
         _ => return Err(protocol("analyzer invocation kind, declaring class, and receiver type are inconsistent")),
@@ -1270,6 +1375,7 @@ fn encode_return_type_request<'type_info>(
         memoize,
         trace_enabled,
         include_argument_types,
+        calling_function_like,
     )
 }
 
@@ -1285,6 +1391,7 @@ fn encode_return_type_arguments<'type_info>(
     memoize: bool,
     trace_enabled: bool,
     include_argument_types: bool,
+    calling_function_like: Option<FunctionLikeIdentifier>,
 ) -> Result<ReturnTypeRequest<'type_info>, ExternalAnalyzerError> {
     let receiver_type_count = receiver_types.len();
     let mut argument_types = Vec::new();
@@ -1317,6 +1424,13 @@ fn encode_return_type_arguments<'type_info>(
                 type_snapshot_duration = type_snapshot_duration.saturating_add(start.elapsed());
             }
         }
+    }
+
+    // The function-like whose body makes this call, so a provider can answer from
+    // the declaration it is written in. A call outside any function-like has none.
+    writer.write_bool(calling_function_like.is_some());
+    if let Some(calling_function_like) = calling_function_like {
+        encode_function_like_identifier(&mut writer, calling_function_like)?;
     }
 
     let mut types = Vec::with_capacity(receiver_type_count + argument_types.len());
@@ -3410,6 +3524,7 @@ pub(super) mod testing {
         writer.write_u16(0);
         writer.write_u32(1);
         writer.write_string("database/migrations/**/*.php").unwrap();
+        writer.write_u32(0);
 
         let registration = decode_registration(&writer.finish()).unwrap();
         assert_eq!(registration.entry_points.len(), 1);
@@ -3479,6 +3594,7 @@ pub(super) mod testing {
         writer.write_u32(0);
         writer.write_u32(0);
         writer.write_u32(0);
+        writer.write_u32(0);
         writer.finish()
     }
 
@@ -3507,6 +3623,7 @@ pub(super) mod testing {
         writer.write_u32(1);
         writer.write_u8(TARGET_EXACT);
         writer.write_bytes(b"demo_service").unwrap();
+        writer.write_u32(0);
         writer.write_u32(0);
         writer.write_u32(0);
         writer.write_u32(0);

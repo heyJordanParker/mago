@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use foldhash::HashMap;
+
 use mago_database::GlobSettings;
 use mago_database::file::File;
 use mago_database::file::FileId;
@@ -13,6 +15,7 @@ use mago_syntax::cst::Program;
 
 use crate::external::AnalyzerTransport;
 use crate::external::Backend;
+use crate::external::DeclarationRefinement;
 use crate::external::ExternalAnalyzerError;
 use crate::external::error::protocol;
 use crate::external::protocol;
@@ -36,6 +39,7 @@ struct BackendPlan {
 #[derive(Debug, Clone)]
 pub struct CodebaseScanPlan {
     backends: Arc<[BackendPlan]>,
+    project_sources: Option<Arc<ExclusionMatcher<String>>>,
 }
 
 impl CodebaseScanPlan {
@@ -72,13 +76,26 @@ impl CodebaseScanPlan {
             targets = target_count,
             "Compiled external codebase-scan selectors."
         );
-        Ok((!plans.is_empty()).then(|| Self { backends: plans.into() }))
+        Ok((!plans.is_empty()).then(|| Self { backends: plans.into(), project_sources: None }))
     }
 
-    /// Captures one matching host file while its first parsed syntax tree is live.
+    /// Also captures the project's own source files a scoped run loads as vendored context,
+    /// so a declaration refined outside the named files reaches the files that use it.
     ///
-    /// Returns `None` without walking or encoding the tree when no hook target
-    /// matches the file's logical path.
+    /// # Errors
+    ///
+    /// Returns an error when a source path is an invalid glob pattern.
+    pub fn with_project_sources(mut self, paths: &[String]) -> Result<Self, ExternalAnalyzerError> {
+        let matcher = ExclusionMatcher::compile(paths.iter().cloned(), GlobSettings::default())
+            .map_err(|error| protocol(format!("a project source path is an invalid pattern: {error}")))?;
+        self.project_sources = Some(Arc::new(matcher));
+        Ok(self)
+    }
+
+    /// Captures one matching project file while its first parsed syntax tree is live.
+    ///
+    /// Returns `None` without walking or encoding the tree when the file is not the
+    /// project's own source or no hook target matches the file's logical path.
     ///
     /// # Errors
     ///
@@ -89,13 +106,19 @@ impl CodebaseScanPlan {
         program: &Program<'_>,
         resolved_names: &ResolvedNames<'_>,
     ) -> Result<Option<CodebaseScanFile>, ExternalAnalyzerError> {
-        if file.file_type != FileType::Host {
-            return Ok(None);
-        }
-
         let Ok(path) = std::str::from_utf8(&file.name) else {
             return Ok(None);
         };
+
+        let project_file = match file.file_type {
+            FileType::Host => true,
+            FileType::Vendored => self.project_sources.as_ref().is_some_and(|sources| sources.is_match(path)),
+            _ => false,
+        };
+        if !project_file {
+            return Ok(None);
+        }
+
         let mut routes = Vec::new();
         for backend in self.backends.iter() {
             let hooks = backend
@@ -162,11 +185,12 @@ impl CodebaseScanFile {
 pub(super) fn dispatch<T>(
     backends: &[Backend<T>],
     mut files: Vec<CodebaseScanFile>,
-) -> Result<(), ExternalAnalyzerError>
+) -> Result<Vec<DeclarationRefinement>, ExternalAnalyzerError>
 where
     T: AnalyzerTransport,
 {
     files.sort_unstable_by(|left, right| left.file.name.cmp(&right.file.name));
+    let mut refinements = Vec::new();
     for (backend_index, backend) in backends.iter().enumerate() {
         if backend.registration.codebase_scan_hooks.is_empty() {
             continue;
@@ -189,10 +213,31 @@ where
             "Broadcasting filtered codebase-scan snapshots."
         );
         let responses = backend.transport.broadcast_sequence(BOOTSTRAP_GROUP, &batches)?;
+        let selected_files = selected
+            .iter()
+            .map(|(file, _)| (file.file.name.as_ref(), file.file.as_ref()))
+            .collect::<HashMap<&[u8], &File>>();
+        let plugin_of_hook = |index: u16| {
+            let hook = backend.registration.codebase_scan_hooks.iter().find(|hook| hook.index == index)?;
+            backend
+                .registration
+                .plugins
+                .iter()
+                .find(|plugin| plugin.index == hook.plugin)
+                .map(|plugin| plugin.identifier.clone())
+        };
         for batch in responses {
-            for response in batch {
-                protocol::decode_codebase_scan_response(&response)?;
+            let mut workers = batch.into_iter();
+            let response =
+                workers.next().ok_or_else(|| protocol("a codebase-scan batch returned no worker response"))?;
+            // Every worker receives every batch, so each must describe the same declarations; a
+            // worker that disagrees would make analysis depend on which worker answered.
+            if workers.any(|other| other != response) {
+                return Err(protocol(format!(
+                    "codebase-scan workers of backend {backend_index} returned different declaration refinements"
+                )));
             }
+            refinements.extend(protocol::decode_codebase_scan_response(&response, &selected_files, &plugin_of_hook)?);
         }
         if let Some(started_at) = started_at {
             tracing::trace!(
@@ -206,7 +251,7 @@ where
         }
     }
 
-    Ok(())
+    Ok(refinements)
 }
 
 fn encode_batches(

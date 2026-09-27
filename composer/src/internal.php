@@ -351,7 +351,7 @@ function get_archive_extension(string $os, string $suffix): string
  */
 function build_download_url(string $version, string $storageDir, string $archiveExtension): string
 {
-    return "https://github.com/carthage-software/mago/releases/download/{$version}/{$storageDir}{$archiveExtension}";
+    return "https://github.com/heyJordanParker/mago/releases/download/{$version}/{$storageDir}{$archiveExtension}";
 }
 
 /**

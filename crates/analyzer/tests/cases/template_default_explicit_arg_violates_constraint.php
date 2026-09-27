@@ -13,6 +13,7 @@ final class Bag
     public function __construct(public readonly mixed $value) {}
 }
 
+// @mago-expect analysis:template-constraint-violation
 /**
  * @mago-expect analysis:docblock-type-mismatch
  *

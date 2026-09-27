@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mago\Sdk\Analyzer;
 
+use Mago\Sdk\Analyzer\Type\FunctionLikeIdentifier;
 use Mago\Sdk\Exception\InvalidArgumentException;
 use Mago\Sdk\Span;
 
@@ -24,6 +25,8 @@ final class Invocation
 
     /**
      * @param list<Argument> $arguments
+     * @param null|FunctionLikeIdentifier $callingFunctionLike the function-like whose body makes the call; null
+     *     outside any function-like, and for a callable-signature request, which is settled before any body is analyzed
      */
     public function __construct(
         public readonly InvocationKind $kind,
@@ -32,6 +35,7 @@ final class Invocation
         public readonly ?Type $receiverType,
         public readonly Span $span,
         public readonly array $arguments,
+        public readonly ?FunctionLikeIdentifier $callingFunctionLike = null,
     ) {
         if ($name === '') {
             throw new InvalidArgumentException('An analyzer invocation name cannot be empty.');

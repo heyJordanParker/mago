@@ -58,10 +58,12 @@ use crate::scanner::ttype::get_type_metadata_from_type;
 use crate::scanner::ttype::merge_type_preserving_nullability;
 use crate::scanner::typing_error_issue;
 use crate::scanner::version_claim::evaluate_version_attributes;
+use crate::ttype::atomic::TAtomic;
 use crate::ttype::builder;
 use crate::ttype::get_mixed;
 use crate::ttype::resolution::TypeResolutionContext;
 use crate::ttype::template::GenericTemplate;
+use crate::ttype::union::TUnion;
 use crate::visibility::Visibility;
 
 #[inline]
@@ -679,7 +681,19 @@ fn scan_function_like_docblock<A>(
 
     if let Some(return_type) = return_tag.as_ref() {
         match get_type_metadata_from_type(return_type.r#type, classname, &type_context, scope) {
-            Ok(return_type_signature) => {
+            Ok(mut return_type_signature) => {
+                // `void` beside other types documents a path that ends without a value, which
+                // a caller receives as null; only a bare `void` means nothing is returned.
+                let union = &return_type_signature.type_union;
+                if union.types.len() > 1 && union.types.iter().any(|atomic| matches!(atomic, TAtomic::Void)) {
+                    let types = union
+                        .types
+                        .iter()
+                        .map(|atomic| if matches!(atomic, TAtomic::Void) { TAtomic::Null } else { atomic.clone() })
+                        .collect::<Vec<_>>();
+                    return_type_signature.type_union = TUnion::from_vec(types);
+                }
+
                 metadata.set_return_type_metadata(Some(return_type_signature));
             }
             Err(typing_error) => {

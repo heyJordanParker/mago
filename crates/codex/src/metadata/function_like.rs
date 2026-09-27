@@ -109,6 +109,16 @@ pub struct FunctionLikeMetadata {
     /// `None` if neither is specified.
     pub return_type_metadata: Option<TypeMetadata>,
 
+    /// The object a closure or arrow function declares as its `$this`, installed by a
+    /// declaration refinement. It describes the binding the closure is written for, so its
+    /// body is analyzed against that receiver rather than the class it is written in.
+    pub refined_this_type: Option<TypeMetadata>,
+
+    /// Set when a declaration refinement asks for this method's return to be taken from its
+    /// body once the codebase is populated. It holds the issue reported at the declaration
+    /// when the body's returned type cannot be resolved, which keeps the native return.
+    pub return_from_body: Option<Issue>,
+
     /// Generic type parameters (templates) defined for the function/method (e.g., `@template T`).
     /// Stores the template name and its constraint (defining entity and bound type).
     /// Example: `{ "T" => (GenericParent::FunctionLike(("funcName", "")), TUnion::object()) }`
@@ -220,6 +230,8 @@ impl FunctionLikeMetadata {
             parameters: vec![],
             return_type_declaration_metadata: None,
             return_type_metadata: None,
+            refined_this_type: None,
+            return_from_body: None,
             template_types: TemplateTypes::default(),
             attributes: vec![],
             method_metadata,

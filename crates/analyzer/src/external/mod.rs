@@ -13,6 +13,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crate::plugin::provider::assertion::InvocationAssertions;
+use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
 use mago_codex::reference::SymbolReferences;
@@ -51,8 +52,11 @@ mod error;
 mod lifecycle;
 mod metadata;
 pub mod protocol;
+mod refinement;
 mod scan;
 
+pub use refinement::DeclarationRefinement;
+pub use refinement::apply_refinements;
 pub use scan::CodebaseScanFile;
 pub use scan::CodebaseScanPlan;
 
@@ -98,6 +102,13 @@ pub(crate) enum PropertyAccessKind {
 pub(crate) struct EffectivePropertyType {
     pub read_type: Option<TUnion>,
     pub write_type: Option<TUnion>,
+}
+
+/// The methods a magic call or property runs, in order, starting on the receiver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ForwardedCall {
+    pub receiver: TUnion,
+    pub methods: Vec<Word>,
 }
 
 /// Immutable request context shared by every external hook in one analysis run.
@@ -796,6 +807,8 @@ struct Backend<T> {
     property_initialization_wildcard: ProviderWildcardIndex<PropertyTarget>,
     class_initializer_exact: ProviderExactIndex,
     class_initializer_wildcard: ProviderWildcardIndex<Vec<u8>>,
+    call_forwarding_exact: WordMap<Vec<u16>>,
+    call_forwarding_wildcard: Vec<(u16, Vec<MethodTarget>)>,
     issue_filter_indices: Box<[u16]>,
     issue_filter_codes: foldhash::HashSet<String>,
 }
@@ -866,6 +879,8 @@ impl<T> Backend<T> {
             index_property_providers(&registration.property_initialization_providers);
         let (class_initializer_exact, class_initializer_wildcard) =
             index_class_providers(&registration.class_initializer_providers);
+        let (call_forwarding_exact, call_forwarding_wildcard) =
+            index_method_providers(&registration.call_forwarding_providers);
         let issue_filter_indices = registration.issue_filter_hooks.iter().map(|hook| hook.index).collect::<Box<[_]>>();
         let issue_filter_codes =
             registration.issue_filter_hooks.iter().flat_map(|hook| hook.targets.iter().cloned()).collect();
@@ -900,9 +915,26 @@ impl<T> Backend<T> {
             property_initialization_wildcard,
             class_initializer_exact,
             class_initializer_wildcard,
+            call_forwarding_exact,
+            call_forwarding_wildcard,
             issue_filter_indices,
             issue_filter_codes,
         }
+    }
+
+    fn matching_call_forwarding_providers(
+        &self,
+        codebase: &CodebaseMetadata,
+        class: &[u8],
+        member: &[u8],
+    ) -> (Option<ProviderIndices>, usize) {
+        matching_method_provider_indices(
+            &self.call_forwarding_exact,
+            &self.call_forwarding_wildcard,
+            codebase,
+            class,
+            member,
+        )
     }
 
     fn matching_function_providers(&self, function: &[u8], declared: bool) -> (Option<ProviderIndices>, usize) {
@@ -1404,6 +1436,7 @@ pub(crate) struct ExternalAnalyzerCapabilities {
     pub property_types: bool,
     pub property_initialization: bool,
     pub class_initializers: bool,
+    pub call_forwarding: bool,
     pub issue_filters: bool,
     pub method_call_analysis: bool,
     pub after_file_analysis: bool,
@@ -1609,6 +1642,7 @@ impl<T> ExternalAnalyzer<T> {
             property_types: any(|backend| !backend.registration.property_providers.is_empty()),
             property_initialization: any(|backend| !backend.registration.property_initialization_providers.is_empty()),
             class_initializers: any(|backend| !backend.registration.class_initializer_providers.is_empty()),
+            call_forwarding: any(|backend| !backend.registration.call_forwarding_providers.is_empty()),
             issue_filters: any(|backend| !backend.issue_filter_indices.is_empty()),
             method_call_analysis: any(|backend| !backend.registration.method_call_analysis_hooks.is_empty()),
             after_file_analysis: any(|backend| {
@@ -1661,7 +1695,10 @@ where
         CodebaseScanPlan::compile(&self.backends)
     }
 
-    pub(crate) fn run_codebase_scan(&self, files: Vec<CodebaseScanFile>) -> Result<(), ExternalAnalyzerError> {
+    pub(crate) fn run_codebase_scan(
+        &self,
+        files: Vec<CodebaseScanFile>,
+    ) -> Result<Vec<DeclarationRefinement>, ExternalAnalyzerError> {
         scan::dispatch(&self.backends, files)
     }
 
@@ -2283,6 +2320,7 @@ where
         Ok(result)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn get_function_assertions(
         &self,
         function: &[u8],
@@ -2291,10 +2329,20 @@ where
         source_file: &File,
         codebase: &CodebaseMetadata,
         session: &ExternalAnalysisSession,
+        calling_function_like: Option<FunctionLikeIdentifier>,
     ) -> Result<Option<InvocationAssertions>, ExternalAnalyzerError> {
-        self.get_assertions(CallableTarget::Function(function), invocation, artifacts, source_file, codebase, session)
+        self.get_assertions(
+            CallableTarget::Function(function),
+            invocation,
+            artifacts,
+            source_file,
+            codebase,
+            session,
+            calling_function_like,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn get_method_assertions(
         &self,
         class: &[u8],
@@ -2304,6 +2352,7 @@ where
         source_file: &File,
         codebase: &CodebaseMetadata,
         session: &ExternalAnalysisSession,
+        calling_function_like: Option<FunctionLikeIdentifier>,
     ) -> Result<Option<InvocationAssertions>, ExternalAnalyzerError> {
         self.get_assertions(
             CallableTarget::Method { class, method },
@@ -2312,9 +2361,11 @@ where
             source_file,
             codebase,
             session,
+            calling_function_like,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn get_assertions(
         &self,
         target: CallableTarget<'_>,
@@ -2323,6 +2374,7 @@ where
         source_file: &File,
         codebase: &CodebaseMetadata,
         session: &ExternalAnalysisSession,
+        calling_function_like: Option<FunctionLikeIdentifier>,
     ) -> Result<Option<InvocationAssertions>, ExternalAnalyzerError> {
         let _lookup_trace =
             self.trace_enabled.then(|| LookupTrace { telemetry: &self.telemetry, started_at: Instant::now() });
@@ -2376,6 +2428,7 @@ where
                 session.generation(),
                 memoize,
                 self.trace_enabled,
+                calling_function_like,
             )?;
             if let Some(start) = encode_start {
                 self.telemetry.encode_ns.fetch_add(duration_nanos(start.elapsed()), Ordering::Relaxed);
@@ -2537,6 +2590,9 @@ where
                 session.generation(),
                 memoize,
                 self.trace_enabled,
+                // A signature is settled before the call is analyzed in any
+                // block, so no calling function-like is known here.
+                None,
             )
             .inspect_err(|_| self.record_error())?;
 
@@ -2566,6 +2622,7 @@ where
         Ok(None)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn get_function_return_type(
         &self,
         function: &[u8],
@@ -2574,10 +2631,20 @@ where
         source_file: &File,
         codebase: &CodebaseMetadata,
         session: &ExternalAnalysisSession,
+        calling_function_like: Option<FunctionLikeIdentifier>,
     ) -> Result<Option<TUnion>, ExternalAnalyzerError> {
-        self.get_return_type(CallableTarget::Function(function), invocation, artifacts, source_file, codebase, session)
+        self.get_return_type(
+            CallableTarget::Function(function),
+            invocation,
+            artifacts,
+            source_file,
+            codebase,
+            session,
+            calling_function_like,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn get_method_return_type(
         &self,
         class: &[u8],
@@ -2587,6 +2654,7 @@ where
         source_file: &File,
         codebase: &CodebaseMetadata,
         session: &ExternalAnalysisSession,
+        calling_function_like: Option<FunctionLikeIdentifier>,
     ) -> Result<Option<TUnion>, ExternalAnalyzerError> {
         self.get_return_type(
             CallableTarget::Method { class, method },
@@ -2595,9 +2663,11 @@ where
             source_file,
             codebase,
             session,
+            calling_function_like,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn get_return_type(
         &self,
         target: CallableTarget<'_>,
@@ -2606,6 +2676,7 @@ where
         source_file: &File,
         codebase: &CodebaseMetadata,
         session: &ExternalAnalysisSession,
+        calling_function_like: Option<FunctionLikeIdentifier>,
     ) -> Result<Option<TUnion>, ExternalAnalyzerError> {
         let _lookup_trace =
             self.trace_enabled.then(|| LookupTrace { telemetry: &self.telemetry, started_at: Instant::now() });
@@ -2669,6 +2740,7 @@ where
                 session.generation(),
                 memoize,
                 self.trace_enabled,
+                calling_function_like,
             )
             .inspect_err(|_| self.record_error())?;
 
@@ -2822,6 +2894,52 @@ where
 
         if self.trace_enabled && !dispatched {
             self.telemetry.unmatched_lookups.fetch_add(1, Ordering::Relaxed);
+        }
+
+        Ok(None)
+    }
+
+    pub(crate) fn get_forwarded_call(
+        &self,
+        class: &[u8],
+        member: &[u8],
+        property: bool,
+        receiver_type: &TUnion,
+        codebase: &CodebaseMetadata,
+        session: &ExternalAnalysisSession,
+    ) -> Result<Option<ForwardedCall>, ExternalAnalyzerError> {
+        for backend in &self.backends {
+            let (indices, _) = backend.matching_call_forwarding_providers(codebase, class, member);
+            let Some(indices) = indices else {
+                continue;
+            };
+
+            let original_class =
+                codebase.get_class_like(class).map_or(class, |metadata| metadata.original_name.as_bytes());
+            let request = protocol::encode_call_forwarding_request(
+                indices.as_slice(),
+                original_class,
+                member,
+                property,
+                receiver_type,
+                session.generation(),
+                self.trace_enabled,
+            )
+            .inspect_err(|_| self.record_error())?;
+
+            let response =
+                self.exchange_provider_payload(backend, request.payload, class, codebase, session, |handle| {
+                    protocol::resolve_type_handle(&request.types, handle)
+                })?;
+
+            let result = protocol::decode_call_forwarding_response(&response, |handle| {
+                protocol::resolve_type_handle(&request.types, handle)
+            })
+            .inspect_err(|_| self.record_error())?;
+
+            if result.is_some() {
+                return Ok(result);
+            }
         }
 
         Ok(None)
@@ -3125,6 +3243,7 @@ where
             registration.method_call_analysis_hooks.retain(|hook| enabled.contains(&hook.plugin));
             registration.class_like_analysis_hooks.retain(|hook| enabled.contains(&hook.plugin));
             registration.codebase_scan_hooks.retain(|hook| enabled.contains(&hook.plugin));
+            registration.call_forwarding_providers.retain(|provider| enabled.contains(&provider.plugin));
             let backend_route = u16::try_from(backend_index)
                 .map_err(|_| error::protocol("more than 65,536 external analyzer backends were configured"))?;
             for hook in &mut registration.method_call_analysis_hooks {
