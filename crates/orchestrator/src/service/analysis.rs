@@ -56,6 +56,7 @@ pub struct AnalysisService {
     parser_settings: ParserSettings,
     use_progress_bars: bool,
     plugin_registry: Arc<PluginRegistry>,
+    scan_only: bool,
 }
 
 impl std::fmt::Debug for AnalysisService {
@@ -68,6 +69,7 @@ impl std::fmt::Debug for AnalysisService {
             .field("parser_settings", &self.parser_settings)
             .field("use_progress_bars", &self.use_progress_bars)
             .field("plugin_registry", &self.plugin_registry)
+            .field("scan_only", &self.scan_only)
             .finish()
     }
 }
@@ -83,7 +85,22 @@ impl AnalysisService {
         use_progress_bars: bool,
         plugin_registry: Arc<PluginRegistry>,
     ) -> Self {
-        Self { database, codebase, symbol_references, settings, parser_settings, use_progress_bars, plugin_registry }
+        Self {
+            database,
+            codebase,
+            symbol_references,
+            settings,
+            parser_settings,
+            use_progress_bars,
+            plugin_registry,
+            scan_only: false,
+        }
+    }
+
+    #[must_use]
+    pub fn scan_only(mut self) -> Self {
+        self.scan_only = true;
+        self
     }
 
     /// Analyzes a single file synchronously without using parallel processing.
@@ -135,7 +152,7 @@ impl AnalysisService {
             .plugin_registry
             .external_codebase_scan_plan()
             .map_err(AnalysisError::from)?
-            .map(|plan| plan.capture(&file, program, &resolved_names))
+            .map(|plan| plan.capture(&file, &user_codebase))
             .transpose()
             .map_err(AnalysisError::from)?
             .flatten();
@@ -266,13 +283,15 @@ impl AnalysisService {
             self.database.files().filter(|file| file.file_type == FileType::Host).collect::<Vec<_>>();
         let body_return_settings = self.settings.clone();
         let body_return_parser_settings = self.parser_settings;
+        let scan_only = self.scan_only;
         let reducer = AnalysisResultReducer {
             plugin_registry: Arc::clone(&self.plugin_registry),
             external_session: external_session.clone(),
             files: self.database.files().collect::<Vec<_>>().into(),
+            scan_only,
         };
 
-        let pipeline = ParallelPipeline::new(
+        let mut pipeline = ParallelPipeline::new(
             ANALYSIS_PROGRESS_PREFIX,
             self.database,
             self.codebase,
@@ -283,6 +302,9 @@ impl AnalysisService {
             Box::new(reducer),
             self.use_progress_bars,
         );
+        if scan_only {
+            pipeline = pipeline.without_host_analysis();
+        }
 
         let plugin_registry = Arc::clone(&self.plugin_registry);
         let refine_plugin_registry = Arc::clone(&self.plugin_registry);
@@ -301,10 +323,10 @@ impl AnalysisService {
         let telemetry_for_closure = Arc::clone(&telemetry);
 
         let result = pipeline.run(
-            move |file, program, resolved_names| {
+            move |file, metadata| {
                 codebase_scan_plan
                     .as_deref()
-                    .map(|plan| plan.capture(file, program, resolved_names))
+                    .map(|plan| plan.capture(file, metadata))
                     .transpose()
                     .map(Option::flatten)
                     .map_err(AnalysisError::from)
@@ -505,6 +527,7 @@ struct AnalysisResultReducer {
     plugin_registry: Arc<PluginRegistry>,
     external_session: Option<Arc<mago_analyzer::external::ExternalAnalysisSession>>,
     files: Arc<[Arc<File>]>,
+    scan_only: bool,
 }
 
 impl Reducer<AnalysisTaskResult, AnalysisResult> for AnalysisResultReducer {
@@ -519,6 +542,10 @@ impl Reducer<AnalysisTaskResult, AnalysisResult> for AnalysisResultReducer {
         for result in results {
             aggregated_result.extend(result.result);
             snapshots.extend(result.snapshot);
+        }
+
+        if self.scan_only {
+            return Ok(aggregated_result);
         }
 
         aggregated_result.issues.extend(codebase.take_issues(true));

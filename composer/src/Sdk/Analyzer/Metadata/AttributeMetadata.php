@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace Mago\Sdk\Analyzer\Metadata;
 
+use Mago\Sdk\Exception\InvalidArgumentException;
 use Mago\Sdk\SourceLocation;
 
 use function in_array;
 
 /**
  * @api
+ * @mago-expect lint:cyclomatic-complexity
  */
 final class AttributeMetadata
 {
@@ -41,5 +43,34 @@ final class AttributeMetadata
         }
 
         return null;
+    }
+
+    /**
+     * Evaluates the arguments as PHP's `ReflectionAttribute::getArguments()` does.
+     *
+     * @return array<int|string, mixed>
+     */
+    public function getArguments(): array
+    {
+        $arguments = [];
+        foreach ($this->arguments as $argument) {
+            if ($argument->value === null) {
+                throw new InvalidArgumentException("An argument of `{$this->name}` is a placeholder.");
+            }
+
+            $arguments[] = [$argument->name, $argument->value];
+        }
+
+        return ConstantExpression::evaluateArguments($arguments);
+    }
+
+    /**
+     * Instantiates the attribute as PHP's `ReflectionAttribute::newInstance()` does.
+     *
+     * @mago-expect analysis:unknown-class-instantiation An attribute names its class only in the scanned source.
+     */
+    public function newInstance(): object
+    {
+        return new $this->name(...$this->getArguments());
     }
 }

@@ -171,6 +171,13 @@ pub struct AnalyzeCommand {
     #[arg(long, conflicts_with_all = ["list_codes", "watch", "staged"])]
     pub stdin_input: bool,
 
+    /// Build the codebase and run the extensions' before-analysis hooks, then analyze no file.
+    ///
+    /// Reports only the issues those hooks raise, without the baseline. Useful for extensions
+    /// that write what they read from the codebase, such as a discovery manifest.
+    #[arg(long, conflicts_with_all = ["list_codes", "watch", "staged", "stdin_input"])]
+    pub scan_only: bool,
+
     /// Hidden flag to catch `--only` usage and show a helpful error.
     #[arg(long, hide = true, num_args = 1..)]
     pub only: Vec<String>,
@@ -331,7 +338,10 @@ impl AnalyzeCommand {
         }
 
         let service_run_start = trace_enabled.then(Instant::now);
-        let service = orchestrator.get_analysis_service(database.read_only(), metadata, symbol_references);
+        let mut service = orchestrator.get_analysis_service(database.read_only(), metadata, symbol_references);
+        if self.scan_only {
+            service = service.scan_only();
+        }
         let analysis_result = service.run()?;
         let service_run_duration = service_run_start.map(|s| s.elapsed());
         let report_start = trace_enabled.then(Instant::now);
@@ -342,7 +352,7 @@ impl AnalyzeCommand {
             database.get_ref(&file_id).ok().map(|f| String::from_utf8_lossy(&f.name).into_owned())
         });
 
-        let baseline = configuration.analyzer.baseline.as_deref();
+        let baseline = if self.scan_only { None } else { configuration.analyzer.baseline.as_deref() };
         let baseline_variant = configuration.analyzer.baseline_variant;
         let processor = self.baseline_reporting.get_processor(
             color_choice,

@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Mago\Sdk\Syntax;
 
 use Mago\Sdk\Exception\InvalidArgumentException;
-use Mago\Sdk\Internal\Syntax\LiteralStringStore;
 use Mago\Sdk\Internal\Syntax\NodeStore;
 use Mago\Sdk\Internal\Syntax\ResolvedNameStore;
 use Mago\Sdk\Internal\Syntax\TriviaStore;
@@ -49,7 +48,6 @@ final class SourceFile
         private readonly NodeStore $nodes,
         private readonly ResolvedNameStore $resolvedNames,
         private readonly TriviaStore $trivia,
-        private readonly ?LiteralStringStore $literalStrings,
     ) {
         $this->targetNodeIds = $targetNodeIds;
     }
@@ -175,16 +173,6 @@ final class SourceFile
         $span = $selection instanceof Node ? $selection->span : $selection;
 
         return $this->resolvedNames->find($span->start);
-    }
-
-    /**
-     * Returns the decoded value of a literal-string node.
-     *
-     * Snapshots that do not request decoded literals return `null`.
-     */
-    public function getLiteralString(Node $node): ?string
-    {
-        return $this->literalStrings?->find($node->id);
     }
 
     /**

@@ -9,6 +9,7 @@ use Mago\Sdk\Analyzer\CallableSignatureOverride;
 use Mago\Sdk\Analyzer\CallableSignatureProvider;
 use Mago\Sdk\Analyzer\ClassLikeTarget;
 use Mago\Sdk\Analyzer\ClassTarget;
+use Mago\Sdk\Analyzer\CodebaseScanFile;
 use Mago\Sdk\Analyzer\Declaration\ClassLikeRefinement;
 use Mago\Sdk\Analyzer\Declaration\FunctionLikeRefinement;
 use Mago\Sdk\Analyzer\Declaration\RefinedType;
@@ -152,7 +153,7 @@ final class Protocol
     private const TYPE_COMPARISON_BATCH_REQUEST = 16;
     private const MAGIC_U32 = 0x4D41_4E41;
     private const MAJOR = 1;
-    private const MINOR = 4;
+    private const MINOR = 5;
     private const VERSION_U32 = (self::MAJOR << 16) | self::MINOR;
     private const DESCRIBE_RESPONSE = 0x8001;
     private const RETURN_TYPE_RESPONSE = 0x8002;
@@ -178,12 +179,12 @@ final class Protocol
     private const MAXIMUM_ISSUE_NOTES = 0x0001_0000;
     private const MAXIMUM_ISSUE_ANNOTATIONS = 0x0001_0000;
     private const MAXIMUM_ISSUE_EDITS = 0x0001_0000;
-    private const RETURN_TYPE_REQUEST_HEADER = "MANA\x00\x01\x00\x03\x00\x02\x00\x00";
-    private const CALLABLE_SIGNATURE_REQUEST_HEADER = "MANA\x00\x01\x00\x03\x00\x0C\x00\x00";
-    private const ASSERTION_REQUEST_HEADER = "MANA\x00\x01\x00\x03\x00\x12\x00\x00";
-    private const UNHANDLED_RETURN_TYPE_RESPONSE = "MANA\x00\x01\x00\x03\x80\x02\x00\x00\x00";
-    private const UNHANDLED_CALLABLE_SIGNATURE_RESPONSE = "MANA\x00\x01\x00\x03\x80\x0C\x00\x00\x00";
-    private const UNHANDLED_ASSERTION_RESPONSE = "MANA\x00\x01\x00\x03\x80\x12\x00\x00\x00";
+    private const RETURN_TYPE_REQUEST_HEADER = "MANA\x00\x01\x00\x05\x00\x02\x00\x00";
+    private const CALLABLE_SIGNATURE_REQUEST_HEADER = "MANA\x00\x01\x00\x05\x00\x0C\x00\x00";
+    private const ASSERTION_REQUEST_HEADER = "MANA\x00\x01\x00\x05\x00\x12\x00\x00";
+    private const UNHANDLED_RETURN_TYPE_RESPONSE = "MANA\x00\x01\x00\x05\x80\x02\x00\x00\x00";
+    private const UNHANDLED_CALLABLE_SIGNATURE_RESPONSE = "MANA\x00\x01\x00\x05\x80\x0C\x00\x00\x00";
+    private const UNHANDLED_ASSERTION_RESPONSE = "MANA\x00\x01\x00\x05\x80\x12\x00\x00\x00";
     private const INVOCATION_FUNCTION = 1;
     private const INVOCATION_INSTANCE_METHOD = 2;
     private const INVOCATION_STATIC_METHOD = 3;
@@ -487,15 +488,10 @@ final class Protocol
     }
 
     /**
-     * @param list<NodeKind> $nodeKinds
-     *
-     * @return array{bool, bool, list<int<0, 65535>>, array<int<0, 65535>, list<SourceFile>>}
+     * @return array{bool, bool, list<int<0, 65535>>, array<int<0, 65535>, list<CodebaseScanFile>>}
      */
-    public static function readCodebaseScanRequest(
-        PayloadReader $reader,
-        PHPVersion $phpVersion,
-        array $nodeKinds,
-    ): array {
+    public static function readCodebaseScanRequest(PayloadReader $reader): array
+    {
         $firstBatch = $reader->readBoolean();
         $lastBatch = $reader->readBoolean();
         $activeHookCount = $reader->readCount(65_536);
@@ -524,20 +520,37 @@ final class Protocol
             if ($path === '') {
                 throw new ProtocolException('A codebase-scan file has an empty path.');
             }
-            $source = SourceFileCodec::readWithLiteralStrings(
-                $reader,
-                $phpVersion,
-                $nodeKinds,
-                $path,
-                $reader->readBytes(),
-            );
+            $file = self::readCodebaseScanFile($reader, $path);
             foreach ($hooks as $hook) {
-                $filesByHook[$hook][] = $source;
+                $filesByHook[$hook][] = $file;
             }
         }
         $reader->finish();
 
         return [$firstBatch, $lastBatch, $activeHooks, $filesByHook];
+    }
+
+    private static function readCodebaseScanFile(PayloadReader $reader, string $path): CodebaseScanFile
+    {
+        $classLikes = [];
+        $properties = [];
+        $classLikeCount = $reader->readCount(1_000_000);
+        for ($classLikeIndex = 0; $classLikeIndex < $classLikeCount; ++$classLikeIndex) {
+            $classLike = MetadataCodec::readClassLike($reader);
+            $classLikes[] = $classLike;
+            $propertyCount = $reader->readCount(65_536);
+            for ($propertyIndex = 0; $propertyIndex < $propertyCount; ++$propertyIndex) {
+                $properties[$classLike->name][] = MetadataCodec::readProperty($reader);
+            }
+        }
+
+        $functionLikes = [];
+        $functionLikeCount = $reader->readCount(1_000_000);
+        for ($functionLikeIndex = 0; $functionLikeIndex < $functionLikeCount; ++$functionLikeIndex) {
+            $functionLikes[] = MetadataCodec::readFunctionLike($reader);
+        }
+
+        return new CodebaseScanFile($path, $classLikes, $properties, $functionLikes);
     }
 
     /**

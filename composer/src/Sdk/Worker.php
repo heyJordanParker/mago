@@ -1141,11 +1141,7 @@ final class Worker
 
     private function handleCodebaseScanRequest(PayloadReader $reader, CancellationTokenInterface $cancellation): string
     {
-        [$firstBatch, $lastBatch, $activeHooks, $filesByHook] = AnalyzerProtocol::readCodebaseScanRequest(
-            $reader,
-            $this->phpVersion,
-            $this->nodeKinds,
-        );
+        [$firstBatch, $lastBatch, $activeHooks, $filesByHook] = AnalyzerProtocol::readCodebaseScanRequest($reader);
         $refinements = [];
         foreach ($activeHooks as $hookIndex) {
             $registered = $this->codebaseScanHooks[$hookIndex] ?? null;

@@ -32,6 +32,7 @@ Global flags must come before `analyze`. See the [CLI overview](/fundamentals/co
 | `--substitute <ORIG=TEMP>` | Replace one host file with another for this invocation. Intended for mutation testing. Repeatable. |
 | `--watch` | Run continuously, re-analysing on file changes. See [watch mode](#watch-mode). |
 | `--list-codes` | List every analyzer issue code as JSON. |
+| `--scan-only` | Build the codebase and run the extensions' before-analysis hooks, then analyze no file. Reports only the issues those hooks raise, without the baseline. |
 | `-h`, `--help` | Print help and exit. |
 
 The shared flags for reporting, fixing, and baselines are documented on the [reporting and fixing options](/fundamentals/shared-reporting-options/) page.

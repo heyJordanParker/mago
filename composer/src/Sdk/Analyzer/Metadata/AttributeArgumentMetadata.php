@@ -11,6 +11,7 @@ use Mago\Sdk\SourceLocation;
  * One positional or named constant argument supplied to an attribute.
  *
  * @api
+ * @mago-expect lint:excessive-parameter-list
  */
 final class AttributeArgumentMetadata
 {
@@ -20,5 +21,6 @@ final class AttributeArgumentMetadata
         public readonly ?SourceLocation $nameLocation,
         public readonly ?SourceLocation $valueLocation,
         public readonly ?Type $valueType,
+        public readonly ?ConstantExpression $value,
     ) {}
 }

@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use mago_codex::assertion::Assertion;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::identifier::method::MethodIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::attribute::AttributeMetadata;
+use mago_codex::metadata::attribute::ConstantExpression;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
 use mago_codex::metadata::class_like::TemplateTypes;
 use mago_codex::metadata::class_like_constant::ClassLikeConstantMetadata;
@@ -23,6 +25,7 @@ use mago_codex::ttype::atomic::array::key::ArrayKey;
 use mago_codex::ttype::template::variance::Variance;
 use mago_codex::ttype::union::TUnion;
 use mago_codex::visibility::Visibility;
+use mago_database::file::File;
 use mago_extension::PayloadReader;
 use mago_extension::PayloadWriter;
 use mago_span::Span;
@@ -690,6 +693,45 @@ pub(super) fn write_class_like(
     Ok(())
 }
 
+pub(super) fn write_declarations(
+    writer: &mut PayloadWriter,
+    metadata: &CodebaseMetadata,
+    file: &Arc<File>,
+) -> Result<(), ExternalAnalyzerError> {
+    let session = ExternalAnalysisSession::from_files([Arc::clone(file)]);
+    let mut class_likes = metadata.class_likes.values().collect::<Vec<_>>();
+    class_likes.sort_unstable_by_key(|class_like| class_like.span.start.offset);
+    writer.write_u32(class_likes.len() as u32);
+    for class_like in class_likes {
+        write_class_like(writer, class_like, &session)?;
+        let mut properties = class_like.properties.values().collect::<Vec<_>>();
+        properties.sort_unstable_by(|left, right| left.name.0.as_bytes().cmp(right.name.0.as_bytes()));
+        writer.write_u32(properties.len() as u32);
+        for property in properties {
+            write_property(writer, property, &session)?;
+        }
+    }
+
+    let mut function_likes = metadata.function_likes.iter().collect::<Vec<_>>();
+    function_likes.sort_unstable_by_key(|(_, function_like)| function_like.span.start.offset);
+    writer.write_u32(function_likes.len() as u32);
+    for ((scope, _), function_like) in function_likes {
+        let identifier = match function_like.kind {
+            FunctionLikeKind::Function => FunctionLikeIdentifier::Function(function_like.original_name),
+            FunctionLikeKind::Method => FunctionLikeIdentifier::Method(
+                metadata.class_likes.get(scope).map_or(*scope, |class_like| class_like.original_name),
+                function_like.original_name,
+            ),
+            FunctionLikeKind::Closure | FunctionLikeKind::ArrowFunction => {
+                FunctionLikeIdentifier::Closure(function_like.name)
+            }
+        };
+        write_function_like(writer, identifier, function_like, &session)?;
+    }
+
+    Ok(())
+}
+
 fn write_function_like(
     writer: &mut PayloadWriter,
     identifier: FunctionLikeIdentifier,
@@ -1122,6 +1164,71 @@ fn write_attributes(
             write_optional_location(writer, argument.name_span, session)?;
             write_optional_location(writer, argument.value_span, session)?;
             write_optional_union(writer, argument.value_type.as_ref())?;
+            write_optional(writer, argument.value.as_ref(), |writer, value| {
+                write_constant_expression(writer, value, session)
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+fn write_constant_expression(
+    writer: &mut PayloadWriter,
+    expression: &ConstantExpression,
+    session: &ExternalAnalysisSession,
+) -> Result<(), ExternalAnalyzerError> {
+    match expression {
+        ConstantExpression::Null => writer.write_u8(1),
+        ConstantExpression::Bool(value) => {
+            writer.write_u8(2);
+            writer.write_bool(*value);
+        }
+        ConstantExpression::Int(value) => {
+            writer.write_u8(3);
+            writer.write_u64(*value as u64);
+        }
+        ConstantExpression::Float(value) => {
+            writer.write_u8(4);
+            writer.write_u64(value.into_inner().to_bits());
+        }
+        ConstantExpression::String(value) => {
+            writer.write_u8(5);
+            writer.write_bytes(value.as_bytes())?;
+        }
+        ConstantExpression::Array(entries) => {
+            writer.write_u8(6);
+            writer.write_u32(entries.len() as u32);
+            for (key, value) in entries {
+                write_optional(writer, key.as_ref(), |writer, key| write_constant_expression(writer, key, session))?;
+                write_constant_expression(writer, value, session)?;
+            }
+        }
+        ConstantExpression::ClassName(class) => {
+            writer.write_u8(7);
+            writer.write_bytes(class.as_bytes())?;
+        }
+        ConstantExpression::ClassConstant(class, constant) => {
+            writer.write_u8(8);
+            writer.write_bytes(class.as_bytes())?;
+            writer.write_bytes(constant.as_bytes())?;
+        }
+        ConstantExpression::Constant(constant) => {
+            writer.write_u8(9);
+            writer.write_bytes(constant.as_bytes())?;
+        }
+        ConstantExpression::New(class, arguments) => {
+            writer.write_u8(10);
+            writer.write_bytes(class.as_bytes())?;
+            writer.write_u32(arguments.len() as u32);
+            for (name, argument) in arguments {
+                write_optional_word(writer, *name)?;
+                write_constant_expression(writer, argument, session)?;
+            }
+        }
+        ConstantExpression::Unsupported(span) => {
+            writer.write_u8(11);
+            write_location(writer, *span, session)?;
         }
     }
 
