@@ -82,7 +82,7 @@ See [Analyzer plugins](/extensions/analyzer/overview/).
 | Hook | Context and data |
 | :--- | :--- |
 | `InitializationHook` | `InitializationContext`: PHP version, cancellation, in-memory stubs |
-| `CodebaseScanHook` | `CodebaseScanContext`: deterministic batches of selected host source |
+| `CodebaseScanHook` | `CodebaseScanContext`: deterministic batches of `CodebaseScanFile`, the scanned declarations of selected host files |
 | `BeforeAnalysisHook` | `BeforeAnalysisContext`: frozen codebase and project-wide reference registry |
 | `AfterFileAnalysisHook` | `AfterFileAnalysisContext`: completed `FileAnalysis` and file references |
 | `AfterAnalysisHook` | `AfterAnalysisContext`: merged `ProjectAnalysis` and final reference graph |
@@ -179,6 +179,7 @@ See [Analysis results and references](/extensions/analyzer/analysis-results-and-
 - `Metadata\ClassConstantMetadata`, `EnumCaseMetadata`, and `ConstantMetadata`;
 - `Metadata\TemplateMetadata` and `TypeMetadata`;
 - `Metadata\AttributeMetadata` and `AttributeArgumentMetadata`;
+- `Metadata\ConstantExpression` and `ConstantExpressionKind`;
 - `Metadata\MemberIdentifier`;
 - `Metadata\MethodMetadataProjection` and `MethodFields`;
 - `Metadata\MetadataFlags` and `VersionRange`.

@@ -6,6 +6,7 @@ namespace Mago\Tests\Sdk\Fixtures;
 
 use LogicException;
 use Mago\Sdk\Analyzer\CodebaseScanContext;
+use Mago\Sdk\Analyzer\CodebaseScanFile;
 use Mago\Sdk\Analyzer\CodebaseScanHook;
 use Mago\Sdk\Analyzer\Declaration\ClassLikeRefinement;
 use Mago\Sdk\Analyzer\Declaration\RefinedType;
@@ -24,12 +25,9 @@ use Mago\Sdk\Analyzer\Type\ReferenceTypeKind;
 use Mago\Sdk\Extension;
 use Mago\Sdk\Reporting\Level;
 use Mago\Sdk\Span;
-use Mago\Sdk\Syntax\SourceFile;
 use Mago\Sdk\Worker;
 
 use function dirname;
-use function strlen;
-use function strpos;
 
 require_once dirname(__DIR__, 4) . '/vendor/autoload.php';
 
@@ -41,7 +39,7 @@ require_once dirname(__DIR__, 4) . '/vendor/autoload.php';
  */
 final class DeclarationRefinementProofPlugin implements CodebaseScanHook, Plugin
 {
-    private const MARKER = '// refined';
+    private const MARKER = 'Proof\Refined';
 
     public function getTargets(): array
     {
@@ -65,21 +63,23 @@ final class DeclarationRefinementProofPlugin implements CodebaseScanHook, Plugin
     public function scan(CodebaseScanContext $context): void
     {
         foreach ($context->files as $file) {
-            $marker = strpos($file->contents, self::MARKER);
-            if ($marker === false) {
-                continue;
-            }
+            foreach ($file->classLikes as $classLike) {
+                foreach ($classLike->attributes as $attribute) {
+                    if ($attribute->name !== self::MARKER) {
+                        continue;
+                    }
 
-            $span = new Span($marker, $marker + strlen(self::MARKER));
-            $context->refine(match ($file->path) {
-                'src/Box.php' => self::box($file, $span),
-                'src/Holder.php' => self::holder($file, $span),
-                default => throw new LogicException("Unexpected refined file `{$file->path}`."),
-            });
+                    $context->refine(match ($classLike->originalName) {
+                        'Proof\Box' => self::box($file, $attribute->location->span),
+                        'Proof\Holder' => self::holder($file, $attribute->location->span),
+                        default => throw new LogicException("Unexpected refined class `{$classLike->originalName}`."),
+                    });
+                }
+            }
         }
     }
 
-    private static function box(SourceFile $file, Span $span): ClassLikeRefinement
+    private static function box(CodebaseScanFile $file, Span $span): ClassLikeRefinement
     {
         $item = Type::fromAtomic(
             new GenericParameterType(
@@ -99,7 +99,7 @@ final class DeclarationRefinementProofPlugin implements CodebaseScanHook, Plugin
         );
     }
 
-    private static function holder(SourceFile $file, Span $span): ClassLikeRefinement
+    private static function holder(CodebaseScanFile $file, Span $span): ClassLikeRefinement
     {
         return new ClassLikeRefinement(
             $file->path,

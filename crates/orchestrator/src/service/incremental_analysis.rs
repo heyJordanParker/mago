@@ -383,11 +383,8 @@ impl IncrementalAnalysisService {
                 if file.file_type.is_patch() {
                     metadata.convert_partial_to_patch();
                 }
-                let codebase_scan = codebase_scan_plan
-                    .as_deref()
-                    .map(|plan| plan.capture(&file, program, &resolved_names))
-                    .transpose()?
-                    .flatten();
+                let codebase_scan =
+                    codebase_scan_plan.as_deref().map(|plan| plan.capture(&file, &metadata)).transpose()?.flatten();
 
                 arena.reset();
 
@@ -656,11 +653,8 @@ impl IncrementalAnalysisService {
                 if file.file_type.is_patch() {
                     metadata.convert_partial_to_patch();
                 }
-                let codebase_scan = codebase_scan_plan
-                    .as_deref()
-                    .map(|plan| plan.capture(file, program, &resolved_names))
-                    .transpose()?
-                    .flatten();
+                let codebase_scan =
+                    codebase_scan_plan.as_deref().map(|plan| plan.capture(file, &metadata)).transpose()?.flatten();
 
                 arena.reset();
 

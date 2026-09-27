@@ -36,7 +36,7 @@ final class Special extends Spec {}
 
 final class Other {}
 
-// refined
+#[Refined]
 final class Box
 {
     public function __construct(public object $item) {}
@@ -85,7 +85,7 @@ final class Heir extends Holder
     }}
 }}
 ",
-        if refined { "// refined" } else { "// plain" }
+        if refined { "#[Refined]" } else { "" }
     )
 }
 

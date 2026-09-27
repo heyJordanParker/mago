@@ -32,6 +32,7 @@ Usage: mago analyze [OPTIONS] [PATHS]...
 | `--substitute <ORIG=TEMP>` | 在本次调用中以另一个文件替换某个宿主文件。用于变异测试。可重复使用。 |
 | `--watch` | 持续运行,在文件变化时重新分析。参见[监视模式](#watch-mode)。 |
 | `--list-codes` | 以 JSON 列出每一项分析器问题的代码。 |
+| `--scan-only` | 构建代码库并运行扩展的分析前 hook,但不分析任何文件。只报告这些 hook 提出的问题,不使用 baseline。 |
 | `-h`, `--help` | 打印帮助并退出。 |
 
 报告、修复和 baseline 的共享标志记录在[报告和修复选项](/fundamentals/shared-reporting-options/)页面。

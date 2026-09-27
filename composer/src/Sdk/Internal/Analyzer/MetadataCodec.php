@@ -22,6 +22,8 @@ use Mago\Sdk\Analyzer\Metadata\AttributeMetadata;
 use Mago\Sdk\Analyzer\Metadata\ClassConstantMetadata;
 use Mago\Sdk\Analyzer\Metadata\ClassLikeKind;
 use Mago\Sdk\Analyzer\Metadata\ClassLikeMetadata;
+use Mago\Sdk\Analyzer\Metadata\ConstantExpression;
+use Mago\Sdk\Analyzer\Metadata\ConstantExpressionKind;
 use Mago\Sdk\Analyzer\Metadata\ConstantMetadata;
 use Mago\Sdk\Analyzer\Metadata\EnumCaseMetadata;
 use Mago\Sdk\Analyzer\Metadata\FunctionLikeKind;
@@ -559,12 +561,69 @@ final class MetadataCodec
                     self::readOptionalLocation($reader),
                     self::readOptionalLocation($reader),
                     self::readOptionalType($reader),
+                    $reader->readBoolean() ? self::readConstantExpression($reader) : null,
                 );
             }
             $attributes[] = new AttributeMetadata($name, $location, $arguments);
         }
 
         return $attributes;
+    }
+
+    private static function readConstantExpression(PayloadReader $reader): ConstantExpression
+    {
+        return match ($kind = $reader->readU8()) {
+            1 => new ConstantExpression(ConstantExpressionKind::Literal),
+            2 => new ConstantExpression(ConstantExpressionKind::Literal, $reader->readBoolean()),
+            3 => new ConstantExpression(ConstantExpressionKind::Literal, $reader->readI64()),
+            4 => new ConstantExpression(ConstantExpressionKind::Literal, $reader->readF64()),
+            5 => new ConstantExpression(ConstantExpressionKind::Literal, $reader->readBytes()),
+            6 => new ConstantExpression(
+                ConstantExpressionKind::Array_,
+                items: self::readConstantExpressionItems($reader),
+            ),
+            7 => new ConstantExpression(ConstantExpressionKind::ClassName, $reader->readBytes()),
+            8 => new ConstantExpression(
+                ConstantExpressionKind::ClassConstant,
+                $reader->readBytes(),
+                $reader->readBytes(),
+            ),
+            9 => new ConstantExpression(ConstantExpressionKind::Constant, $reader->readBytes()),
+            10 => new ConstantExpression(
+                ConstantExpressionKind::New_,
+                $reader->readBytes(),
+                arguments: self::readConstantExpressionArguments($reader),
+            ),
+            11 => new ConstantExpression(ConstantExpressionKind::Unsupported, location: self::readLocation($reader)),
+            default => throw new ProtocolException("Unknown constant expression kind {$kind}."),
+        };
+    }
+
+    /** @return list<array{ConstantExpression|null, ConstantExpression}> */
+    private static function readConstantExpressionItems(PayloadReader $reader): array
+    {
+        $count = $reader->readCount(self::MAXIMUM_MEMBERS);
+        $items = [];
+        for ($index = 0; $index < $count; ++$index) {
+            $items[] = [
+                $reader->readBoolean() ? self::readConstantExpression($reader) : null,
+                self::readConstantExpression($reader),
+            ];
+        }
+
+        return $items;
+    }
+
+    /** @return list<array{string|null, ConstantExpression}> */
+    private static function readConstantExpressionArguments(PayloadReader $reader): array
+    {
+        $count = $reader->readCount(self::MAXIMUM_MEMBERS);
+        $arguments = [];
+        for ($index = 0; $index < $count; ++$index) {
+            $arguments[] = [$reader->readOptionalString(), self::readConstantExpression($reader)];
+        }
+
+        return $arguments;
     }
 
     /** @return array<string, TypeMetadata> */

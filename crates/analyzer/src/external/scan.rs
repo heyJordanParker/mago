@@ -3,21 +3,20 @@ use std::time::Instant;
 
 use foldhash::HashMap;
 
+use mago_codex::metadata::CodebaseMetadata;
 use mago_database::GlobSettings;
 use mago_database::file::File;
 use mago_database::file::FileId;
 use mago_database::file::FileType;
 use mago_database::matcher::ExclusionMatcher;
 use mago_extension::PayloadWriter;
-use mago_extension::source::SourceSnapshot;
-use mago_names::ResolvedNames;
-use mago_syntax::cst::Program;
 
 use crate::external::AnalyzerTransport;
 use crate::external::Backend;
 use crate::external::DeclarationRefinement;
 use crate::external::ExternalAnalyzerError;
 use crate::external::error::protocol;
+use crate::external::metadata;
 use crate::external::protocol;
 
 const BOOTSTRAP_GROUP: u64 = 0x434F_4445_5343_414E;
@@ -92,19 +91,18 @@ impl CodebaseScanPlan {
         Ok(self)
     }
 
-    /// Captures one matching project file while its first parsed syntax tree is live.
+    /// Captures the declarations one matching project file's scan produced.
     ///
-    /// Returns `None` without walking or encoding the tree when the file is not the
-    /// project's own source or no hook target matches the file's logical path.
+    /// Returns `None` without encoding anything when the file is not the project's own
+    /// source or no hook target matches the file's logical path.
     ///
     /// # Errors
     ///
-    /// Returns an error when the syntax snapshot exceeds protocol limits.
+    /// Returns an error when the declarations exceed protocol limits.
     pub fn capture(
         &self,
         file: &Arc<File>,
-        program: &Program<'_>,
-        resolved_names: &ResolvedNames<'_>,
+        metadata: &CodebaseMetadata,
     ) -> Result<Option<CodebaseScanFile>, ExternalAnalyzerError> {
         let Ok(path) = std::str::from_utf8(&file.name) else {
             return Ok(None);
@@ -135,12 +133,11 @@ impl CodebaseScanPlan {
             return Ok(None);
         }
 
-        let snapshot = SourceSnapshot::complete_with_literals(program, resolved_names)?;
-        let mut writer = PayloadWriter::with_capacity(snapshot.encoded_len_with_literals());
-        snapshot.write_to_with_literals(&mut writer)?;
+        let mut writer = PayloadWriter::default();
+        metadata::write_declarations(&mut writer, metadata, file)?;
         Ok(Some(CodebaseScanFile {
             file: Arc::clone(file),
-            snapshot: writer.finish().into(),
+            declarations: writer.finish().into(),
             routes: routes.into_boxed_slice(),
         }))
     }
@@ -152,11 +149,11 @@ struct CodebaseScanRoute {
     hooks: Box<[u16]>,
 }
 
-/// An owned selected-source snapshot that can outlive its parser arena.
+/// The encoded declarations of one selected source file.
 #[derive(Debug, Clone)]
 pub struct CodebaseScanFile {
     file: Arc<File>,
-    snapshot: Arc<[u8]>,
+    declarations: Arc<[u8]>,
     routes: Box<[CodebaseScanRoute]>,
 }
 
@@ -176,9 +173,7 @@ impl CodebaseScanFile {
             .saturating_add(hooks.len().saturating_mul(2))
             .saturating_add(4)
             .saturating_add(self.file.name.len())
-            .saturating_add(4)
-            .saturating_add(self.file.contents.len())
-            .saturating_add(self.snapshot.len())
+            .saturating_add(self.declarations.len())
     }
 }
 
@@ -305,8 +300,7 @@ fn encode_batches(
                     writer.write_u16(*hook);
                 }
                 writer.write_bytes(&file.file.name)?;
-                writer.write_bytes(&file.file.contents)?;
-                writer.write_raw(&file.snapshot);
+                writer.write_raw(&file.declarations);
             }
             Ok(writer.finish())
         })

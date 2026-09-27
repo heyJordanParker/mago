@@ -35,7 +35,7 @@ $calls = $source->getDescendants($node, NodeKind::FunctionCall);
 
 `Span::$start` is inclusive and `Span::$end` is exclusive. `length()` returns their difference. `contains()` tests full range containment.
 
-The traversal methods operate only on nodes included in the current snapshot. Codebase-scan snapshots and `FileAnalysis::getSourceFile()` contain complete syntax. Linter and targeted-analysis snapshots are deliberately filtered to active targets and requested structural data; do not assume `getNodes()` represents every node in the original file.
+The traversal methods operate only on nodes included in the current snapshot. `FileAnalysis::getSourceFile()` contains complete syntax. Linter and targeted-analysis snapshots are deliberately filtered to active targets and requested structural data; do not assume `getNodes()` represents every node in the original file.
 
 ## Target nodes
 
@@ -57,10 +57,6 @@ if ($resolved !== null) {
 ```
 
 Use resolved names instead of manually interpreting namespaces and imports. `getResolvedNames($within)` returns all available names, optionally restricted to a node or span.
-
-## Literal strings
-
-`getLiteralString(Node $node)` returns the decoded value of an included literal-string node when the protocol supplied a literal table. Codebase-scan snapshots include this table. Linter snapshots, targeted-analysis snapshots, and lazy complete `FileAnalysis` snapshots currently do not, so this method returns `null` for them even when the node is a literal string.
 
 ## Comment trivia
 

@@ -10,7 +10,6 @@ use Mago\Sdk\Analyzer\Plugin;
 use Mago\Sdk\Analyzer\PluginDefinition;
 use Mago\Sdk\Analyzer\PluginRegistry;
 use Mago\Sdk\Extension;
-use Mago\Sdk\Syntax\NodeKind;
 use Mago\Sdk\Worker;
 use RuntimeException;
 
@@ -60,15 +59,18 @@ final class CodebaseScanProofPlugin implements CodebaseScanHook, Plugin
             $this->values = [];
         }
 
-        foreach ($context->files as $source) {
+        foreach ($context->files as $file) {
             $values = [];
-            foreach ($source->getNodes(NodeKind::LiteralString) as $literal) {
-                $value = $source->getLiteralString($literal);
-                if ($value !== null) {
-                    $values[] = $value;
+            foreach ($file->functionLikes as $function) {
+                foreach ($function->attributes as $attribute) {
+                    if ($attribute->name !== 'Marker') {
+                        continue;
+                    }
+
+                    $values[] = (string) $attribute->getArgument(0)?->value?->value;
                 }
             }
-            $this->values[$source->path] = $values;
+            $this->values[$file->path] = $values;
         }
 
         if (!$context->lastBatch) {

@@ -34,7 +34,7 @@ fn database(first: &str, ignored: usize) -> (Database<'static>, FileId, FileId) 
         Cow::Borrowed(b"database/migrations/001.php"),
         FileType::Host,
         None,
-        Cow::Owned(format!("<?php\n\n$value = \"{first}\";\n").into_bytes()),
+        Cow::Owned(format!("<?php\n\n#[Marker(\"{first}\")]\nfunction first(): void {{}}\n").into_bytes()),
     );
     let first_id = first.id;
     database.add(first);
@@ -42,7 +42,7 @@ fn database(first: &str, ignored: usize) -> (Database<'static>, FileId, FileId) 
         Cow::Borrowed(b"database/migrations/nested/002.php"),
         FileType::Host,
         None,
-        Cow::Borrowed(b"<?php\n\n$value = 'two';\n"),
+        Cow::Borrowed(b"<?php\n\n#[Marker('two')]\nfunction second(): void {}\n"),
     ));
     let ignored = File::new(
         Cow::Borrowed(b"src/ignored.php"),
@@ -71,7 +71,7 @@ fn audit(path: &Path) -> Vec<AuditEntry> {
 }
 
 #[test]
-fn filtered_first_parse_snapshots_refresh_every_worker_incrementally() {
+fn selected_declarations_refresh_every_worker_incrementally() {
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
     if !common::php_sdk_is_available(repository, "the external analyzer scan test") {
         return;

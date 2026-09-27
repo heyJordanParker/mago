@@ -23,9 +23,7 @@ use mago_database::file::File;
 use mago_database::file::FileId;
 use mago_database::file::FileType;
 
-use mago_names::ResolvedNames;
 use mago_names::resolver::NameResolver;
-use mago_syntax::cst::Program;
 use mago_syntax::parser::parse_file_with_settings;
 use mago_syntax::settings::ParserSettings;
 
@@ -103,6 +101,7 @@ pub struct ParallelPipeline<T, I, R> {
     php_version: PHPVersion,
     reducer: Box<dyn Reducer<I, R> + Send + Sync>,
     should_use_progress_bar: bool,
+    analyze_hosts: bool,
 }
 
 impl<T, I, R> std::fmt::Debug for ParallelPipeline<T, I, R>
@@ -120,6 +119,7 @@ where
             .field("php_version", &self.php_version)
             .field("reducer", &"<reducer>")
             .field("should_use_progress_bar", &self.should_use_progress_bar)
+            .field("analyze_hosts", &self.analyze_hosts)
             .finish()
     }
 }
@@ -166,7 +166,14 @@ where
             php_version,
             reducer,
             should_use_progress_bar,
+            analyze_hosts: true,
         }
+    }
+
+    #[must_use]
+    pub fn without_host_analysis(mut self) -> Self {
+        self.analyze_hosts = false;
+        self
     }
 
     /// Executes the full pipeline with a given map function.
@@ -183,7 +190,7 @@ where
     /// - `result`: The aggregated result from the reducer
     /// - `codebase`: The final codebase metadata after all processing
     /// - `symbol_references`: The final symbol references
-    /// * `capture`: Runs on each first parse and keeps what `refine` needs from the live syntax tree.
+    /// * `capture`: Runs on each file's scanned metadata and keeps what `refine` needs from it.
     /// * `refine`: Receives every file's partial metadata beside its capture before the partials are
     ///   merged and populated, so declaration changes reach inheritance and analysis.
     pub fn run<F, B, C, E, S>(
@@ -196,7 +203,7 @@ where
     where
         F: Fn(T, &LocalArena, Arc<File>, Arc<CodebaseMetadata>) -> Result<I, OrchestratorError> + Send + Sync + 'static,
         B: FnOnce(&mut CodebaseMetadata, &mut SymbolReferences) -> Result<Option<I>, OrchestratorError>,
-        C: Fn(&Arc<File>, &Program<'_>, &ResolvedNames<'_>) -> Result<Option<S>, OrchestratorError> + Send + Sync,
+        C: Fn(&Arc<File>, &CodebaseMetadata) -> Result<Option<S>, OrchestratorError> + Send + Sync,
         E: FnOnce(&mut [(CodebaseMetadata, Option<S>)]) -> Result<(), OrchestratorError>,
         S: Send,
     {
@@ -259,7 +266,7 @@ where
                     if file.file_type.is_patch() {
                         metadata.convert_partial_to_patch();
                     }
-                    let captured = capture(&file, program, &resolved_names)?;
+                    let captured = capture(&file, &metadata)?;
 
                     arena.reset();
                     if let Some(compiling_bar) = &compiling_bar {
@@ -327,6 +334,10 @@ where
         );
 
         let before_map_result = before_map(&mut merged_codex, &mut symbol_references)?;
+
+        if !self.analyze_hosts {
+            return self.reducer.reduce(merged_codex, symbol_references, before_map_result.into_iter().collect());
+        }
 
         if host_files.is_empty() {
             tracing::warn!("No host files found for analysis after compilation.");

@@ -9,7 +9,6 @@ use Mago\Sdk\Analyzer\Declaration\FunctionLikeRefinement;
 use Mago\Sdk\CancellationTokenInterface;
 use Mago\Sdk\Exception\InvalidArgumentException;
 use Mago\Sdk\PHPVersion;
-use Mago\Sdk\Syntax\SourceFile;
 
 /**
  * A deterministic batch of source files selected during codebase scanning.
@@ -25,7 +24,7 @@ final class CodebaseScanContext
     private array $refinements = [];
 
     /**
-     * @param list<SourceFile> $files
+     * @param list<CodebaseScanFile> $files
      * @internal
      */
     public function __construct(

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Mago\Tests\Sdk\Unit\Syntax;
 
-use Mago\Sdk\Internal\Syntax\LiteralStringStore;
 use Mago\Sdk\Internal\Syntax\NodeStore;
 use Mago\Sdk\Internal\Syntax\ResolvedNameStore;
 use Mago\Sdk\Internal\Syntax\TriviaStore;
@@ -32,7 +31,6 @@ final class SourceFileTest extends TestCase
         $nameRecords = pack('NNNC', 4, 0, strlen($resolvedName), 0);
         $nameStore = new ResolvedNameStore($nameStarts, $nameRecords, $resolvedName, 1);
         $triviaStore = new TriviaStore(pack('CNN', 4, 0, 10), 1);
-        $literalStringStore = new LiteralStringStore(pack('N3', 1, 0, 7), 'decoded', 1);
         $sourceFile = new SourceFile(
             PHPVersion::fromParts(8, 3),
             'fixture.php',
@@ -41,7 +39,6 @@ final class SourceFileTest extends TestCase
             $nodeStore,
             $nameStore,
             $triviaStore,
-            $literalStringStore,
         );
 
         $targets = $sourceFile->getTargetNodes();
@@ -55,8 +52,6 @@ final class SourceFileTest extends TestCase
         self::assertSame(0, $sourceFile->getParent($targets[0])?->id);
         self::assertSame('123', $sourceFile->getText($targets[0]));
         self::assertSame($resolvedName, $sourceFile->getResolvedName($targets[0])?->name);
-        self::assertSame('decoded', $sourceFile->getLiteralString($targets[0]));
-        self::assertNull($sourceFile->getLiteralString($targets[1]));
         self::assertSame(TriviaKind::DocBlockComment, $sourceFile->getTrivia()[0]->kind);
     }
 }

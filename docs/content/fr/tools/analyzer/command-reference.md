@@ -32,6 +32,7 @@ Les indicateurs globaux doivent venir avant `analyze`. Voir l'[aperçu de la CLI
 | `--substitute <ORIG=TEMP>` | Remplace un fichier hôte par un autre pour cette invocation. Destiné aux tests de mutation. Répétable. |
 | `--watch` | Exécute en continu, ré-analysant aux changements de fichiers. Voir [mode watch](#watch-mode). |
 | `--list-codes` | Liste tous les codes de problèmes de l'analyseur en JSON. |
+| `--scan-only` | Construit la base de code et exécute les hooks avant-analyse des extensions, sans analyser aucun fichier. Signale uniquement les problèmes levés par ces hooks, sans la baseline. |
 | `-h`, `--help` | Affiche l'aide et quitte. |
 
 Les indicateurs partagés pour le rapport, la correction et les baselines sont documentés sur la page [options de rapport et de correction](/fundamentals/shared-reporting-options/).

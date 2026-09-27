@@ -14,7 +14,7 @@ Place lifecycle hook implementations under `src/Mago/Analyzer/Hooks/`, with one 
 ```mermaid
 flowchart TB
     Register["Register extensions and plugins"] --> Init["Initialization hook<br/>add in-memory stubs"]
-    Init --> FirstParse["First parse and metadata scan<br/>capture matching host snapshots"]
+    Init --> FirstParse["First parse and metadata scan<br/>capture matching host declarations"]
     FirstParse --> Freeze["Merge, populate, and freeze<br/>native codebase metadata"]
     Freeze --> Scan["Dispatch codebase scan batches<br/>to every active worker"]
     Scan --> Before["Before-analysis hook"]
@@ -66,7 +66,7 @@ Use stubs for declarations that Mago should understand before it builds metadata
 
 ## Codebase scanning
 
-`CodebaseScanHook` receives selected host source without asking PHP to parse files again. Mago captures matching snapshots during its first parse and name-resolution pass, then dispatches the completed batches after native metadata has been merged, populated, and frozen.
+`CodebaseScanHook` receives the declarations Mago scanned from selected host files, without asking PHP to parse or load them. Mago captures each matching file's metadata during its first parse and scan, then dispatches the completed batches before the per-file metadata is merged and populated, so refinements a hook returns reach inheritance and analysis.
 
 ```php
 <?php
@@ -92,7 +92,11 @@ final class RouteScanner implements CodebaseScanHook
         }
 
         foreach ($context->files as $file) {
-            // Inspect Mago's SourceFile snapshot.
+            foreach ($file->classLikes as $class) {
+                foreach ($class->attributes as $attribute) {
+                    // $attribute->newInstance() builds the attribute as PHP's reflection would.
+                }
+            }
         }
 
         if ($context->lastBatch) {
@@ -104,7 +108,7 @@ final class RouteScanner implements CodebaseScanHook
 
 `getTargets()` returns a non-empty list of path or glob patterns. Patterns containing `*`, `?`, `[`, or `{` use Mago's default glob settings. Other values are exact logical paths or directory prefixes: `src` matches both `src` and paths below `src/`. Only UTF-8 logical paths for host files are eligible; dependencies and in-memory stubs are excluded.
 
-Each batch contains complete syntax, decoded literals, resolved names, the selected `SourceFile` values, and `firstBatch`/`lastBatch` markers. Files are delivered in deterministic path order and split to respect protocol payload limits. Every active worker receives the complete scan sequence, and workers started or restarted later replay it, so every process can construct equivalent local state before providers run. Even an empty match produces one batch with both markers set.
+Each batch contains one `CodebaseScanFile` per selected file and `firstBatch`/`lastBatch` markers. A `CodebaseScanFile` holds the file's `path`, its `classLikes`, their declared properties through `getProperties()`, and its `functionLikes`: every function, method, closure, and arrow function. Anonymous classes and closures are included. The metadata is the file's own scan, so inherited members and ancestors are not resolved yet; a before-analysis hook sees the populated codebase. Attribute arguments carry their evaluated `ConstantExpression`, and `AttributeMetadata::getArguments()` and `newInstance()` evaluate them as PHP's `ReflectionAttribute` does, reading constants and constructing nested `new` expressions in the worker. Files are delivered in deterministic path order and split to respect protocol payload limits. Every active worker receives the complete scan sequence, and workers started or restarted later replay it, so every process can construct equivalent local state before providers run. Even an empty match produces one batch with both markers set.
 
 Do not request every PHP file unless every file is genuinely relevant. Narrow scan targets are one of the most important extension performance controls.
 
