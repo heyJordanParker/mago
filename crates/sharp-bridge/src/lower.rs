@@ -36,7 +36,9 @@ use mago_syntax::cst::Program;
 use mago_syntax::cst::Statement;
 use mago_syntax::cst::UnaryPostfixOperator;
 use mago_syntax::cst::UnaryPrefixOperator;
-use mago_syntax::parser::parse_file;
+use mago_syntax::dialect::Dialect;
+use mago_syntax::parser::parse_file_with_dialect;
+use mago_syntax::settings::ParserSettings;
 use mago_syntax_core::utils::parse_literal_integer_as_float;
 
 use crate::Diagnostic;
@@ -104,11 +106,12 @@ const ZEND_IS_SMALLER_OR_EQUAL: u32 = 21;
 const NULL: u32 = u32::MAX;
 
 /// Runs the PHP# file at `path` through the parser, the binder and the semantic checks, and lowers it into the tree
-/// php-src builds for the equivalent PHP. Any error returns diagnostics and no nodes.
+/// php-src builds for the equivalent PHP. Any error returns diagnostics and no nodes. The file is PHP# whatever its
+/// name, because `ext/sharp` decided that before calling.
 pub(crate) fn lower(path: Vec<u8>, source: Vec<u8>) -> Box<Unit> {
     let file = File::ephemeral(Cow::Owned(path), Cow::Owned(source));
     let arena = LocalArena::new();
-    let program = parse_file(&arena, &file);
+    let program = parse_file_with_dialect(&arena, &file, Dialect::Sharp, ParserSettings::default());
     if !program.errors.is_empty() {
         return Unit::failed(
             program
@@ -649,7 +652,7 @@ mod tests {
         catch_panic(|| {
             let file = File::ephemeral(Cow::Borrowed(b"src/Report.sharp"), Cow::Owned(source.into_bytes()));
             let arena = LocalArena::new();
-            let program = parse_file(&arena, &file);
+            let program = parse_file_with_dialect(&arena, &file, Dialect::Sharp, ParserSettings::default());
             let names = NameResolver::new(&arena).resolve(program);
 
             Lowering::new(&file, &names).program(program)

@@ -26,8 +26,10 @@ struct Lowered(*mut sharp_unit);
 
 impl Lowered {
     fn new(code: &str) -> Self {
-        let path = "src/Report.sharp";
+        Self::named("src/Report.sharp", code)
+    }
 
+    fn named(path: &str, code: &str) -> Self {
         // SAFETY: both pointers point to as many bytes as their lengths say.
         Self(unsafe {
             sharp_lower(path.as_ptr().cast::<c_char>(), path.len(), code.as_ptr().cast::<c_char>(), code.len())
@@ -203,6 +205,16 @@ fn a_method_without_a_body_returns_the_checker_error() {
         lowered.diagnostics(),
         ["3:21 compile error: Non-Abstract method `Report::run` must have a concrete body."]
     );
+}
+
+/// `ext/sharp` decides the dialect from the file name, so the bridge parses and checks PHP# whatever name it gets.
+#[test]
+fn a_file_of_any_name_is_parsed_and_checked_as_php_sharp() {
+    let lowered = Lowered::named("src/Upper.SHARP", "namespace App.Tenant;\n\nclass Report\n{\n}\n");
+    assert_eq!(lowered.diagnostics(), Vec::<String>::new());
+
+    let refused = Lowered::named("src/Upper.SHARP", &method("        echo extra;\n        return 1;\n"));
+    assert_eq!(refused.diagnostics(), ["9:9 compile error: This statement is not supported yet in PHP#."]);
 }
 
 /// The Zend scanner ends a line at `\n`, `\r\n` and a lone `\r`, and stops on the line after the last line ending.
