@@ -45,6 +45,7 @@ use mago_reporting::IssueCollection;
 use mago_semantics::SemanticsChecker;
 use mago_syntax::parser::parse_file_with_settings;
 use mago_syntax::settings::ParserSettings;
+use mago_word::Word;
 use mago_word::WordSet;
 
 use crate::error::OrchestratorError;
@@ -454,7 +455,9 @@ impl IncrementalAnalysisService {
             remove_progress_bar(&compiling_bar);
         }
 
-        let mut merged_codebase = (*self.base_codebase).clone();
+        // Until the first analysis, the working codebase is still the base, so it moves instead of cloning.
+        let mut merged_codebase =
+            if self.initialized { (*self.base_codebase).clone() } else { std::mem::take(&mut self.codebase) };
 
         self.codebase_scan_files = per_file_results
             .iter_mut()
@@ -470,21 +473,23 @@ impl IncrementalAnalysisService {
         )
         .map_err(mago_analyzer::error::AnalysisError::from)?;
 
-        let staged: Vec<(FileId, u64, CodebaseMetadata)> = per_file_results
+        let staged: Vec<(FileId, u64, CodebaseEntryKeys)> = per_file_results
             .into_iter()
             .map(|(file_id, content_hash, metadata, _)| {
-                let clone_for_ownership = metadata.clone();
+                let declared_keys = metadata.extract_owned_keys(&metadata);
                 merged_codebase.extend(metadata);
-                (file_id, content_hash, clone_for_ownership)
+                (file_id, content_hash, declared_keys)
             })
             .collect();
         merged_codebase.apply_patches_pass();
 
         let mut symbol_references = (*self.base_symbol_references).clone();
         populate_codebase(&mut merged_codebase, &mut symbol_references, WordSet::default(), HashSet::default());
+        let merged_aliases =
+            merged_codebase.class_like_alias_declarations().map(|(alias, _, span)| (alias, span.file_id)).collect();
         let mut file_states: HashMap<FileId, FileState> = HashMap::default();
-        for (file_id, content_hash, metadata) in staged {
-            let entry_keys = metadata.extract_owned_keys(&merged_codebase);
+        for (file_id, content_hash, mut entry_keys) in staged {
+            retain_owned_keys(&mut entry_keys, file_id, &merged_codebase, &merged_aliases);
             file_states.insert(
                 file_id,
                 FileState {
@@ -1713,6 +1718,25 @@ impl IncrementalAnalysisService {
     }
 }
 
+/// Keeps the keys whose entry in the merged codebase `file_id` declared.
+///
+/// This is [`CodebaseMetadata::extract_owned_keys`] applied after the merge, so a file's scan
+/// need not outlive it: an entry's span names the file that declared it, and one file declares
+/// at most one entry per name.
+fn retain_owned_keys(
+    keys: &mut CodebaseEntryKeys,
+    file_id: FileId,
+    merged: &CodebaseMetadata,
+    merged_aliases: &HashSet<(Word, FileId)>,
+) {
+    keys.class_like_names
+        .retain(|name| merged.class_likes.get(name).is_some_and(|entry| entry.span.file_id == file_id));
+    keys.class_like_aliases.retain(|(alias, _, _)| merged_aliases.contains(&(*alias, file_id)));
+    keys.function_like_keys
+        .retain(|key| merged.function_likes.get(key).is_some_and(|entry| entry.span.file_id == file_id));
+    keys.constant_names.retain(|name| merged.constants.get(name).is_some_and(|entry| entry.span.file_id == file_id));
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::similar_names)]
 mod tests {
@@ -1820,6 +1844,38 @@ mod tests {
         ordered.sort();
         assert_eq!(reported.len(), files.len(), "{issues:#?}");
         assert_eq!(reported, ordered);
+    }
+
+    #[test]
+    fn a_name_declared_in_two_files_survives_signature_edits_to_either_file() {
+        let declarations = |value: &str, kind: &str| {
+            format!(
+                "<?php\nclass Shared {{ public function value(): {kind} {{ return {value}; }} }}\nclass_alias(Shared::class, 'Alias');\nfunction shared(): {kind} {{ return {value}; }}\nconst SHARED = {value};\n"
+            )
+        };
+        let user = "<?php\nfunction user(): int { return (new Shared())->value() + (new Alias())->value() + shared() + SHARED; }\n";
+        let first = declarations("1", "int");
+        let second = declarations("2", "int");
+        let mut db = make_database(vec![
+            ("src/first.php", first.as_str()),
+            ("src/second.php", second.as_str()),
+            ("src/user.php", user),
+        ]);
+        let mut service = make_watch_service(&db);
+        service.analyze().expect("Initial analysis failed.");
+        assert_matches_full(&service, &db, "initial");
+
+        for (name, contents) in [
+            ("src/second.php", declarations("'2'", "string")),
+            ("src/second.php", second),
+            ("src/first.php", declarations("'1'", "string")),
+            ("src/first.php", first),
+        ] {
+            db.update(FileId::new(name.as_bytes()), Cow::Owned(contents.into_bytes()));
+            service.update_database(db.read_only());
+            service.analyze_incremental(None).expect("Incremental analysis failed.");
+            assert_matches_full(&service, &db, name);
+        }
     }
 
     #[test]
