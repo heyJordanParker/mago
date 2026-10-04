@@ -275,7 +275,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     fn parameter(&mut self, parameter: &FunctionLikeParameter) -> u32 {
-        let hint = parameter.hint.as_ref().map_or(NULL, |hint| self.hint(hint));
+        let Some(hint) = &parameter.hint else {
+            unreachable!("check_slice refuses a parameter without a type");
+        };
+        let hint = self.hint(hint);
         let name = self.string(0, self.line(parameter.variable.span), parameter.variable.name);
         let default = parameter.default_value.as_ref().map_or(NULL, |default| self.expression(default.value));
 
@@ -639,9 +642,9 @@ mod tests {
     use super::*;
     use crate::catch_panic;
 
-    /// Lowers `body` as the body of a method, skipping the semantic checks that would refuse it.
-    fn lower_unchecked(body: &str) -> Box<Unit> {
-        let source = format!("class Report\n{{\n    public void run()\n    {{\n{body}    }}\n}}\n");
+    /// Lowers a method with `parameters` and `body`, skipping the semantic checks that would refuse them.
+    fn lower_unchecked(parameters: &str, body: &str) -> Box<Unit> {
+        let source = format!("class Report\n{{\n    public void run({parameters})\n    {{\n{body}    }}\n}}\n");
 
         catch_panic(|| {
             let file = File::ephemeral(Cow::Borrowed(b"src/Report.sharp"), Cow::Owned(source.into_bytes()));
@@ -656,11 +659,20 @@ mod tests {
     #[test]
     fn a_write_to_anything_but_a_local_or_a_member_returns_an_internal_error_and_no_nodes() {
         for body in ["        PHP_INT_MAX = 1;\n", "        PHP_INT_MAX += 1;\n", "        PHP_INT_MAX++;\n"] {
-            let unit = lower_unchecked(body);
+            let unit = lower_unchecked("", body);
 
             assert_eq!(unit.abi.node_count, 0, "{body}");
             assert_eq!(unit.diagnostics.len(), 1, "{body}");
             assert!(unit.texts[0].starts_with(b"internal error in the PHP# front end: "), "{body}");
         }
+    }
+
+    #[test]
+    fn a_parameter_without_a_type_returns_an_internal_error_and_no_nodes() {
+        let unit = lower_unchecked("$extra", "");
+
+        assert_eq!(unit.abi.node_count, 0);
+        assert_eq!(unit.diagnostics.len(), 1);
+        assert!(unit.texts[0].starts_with(b"internal error in the PHP# front end: "));
     }
 }
