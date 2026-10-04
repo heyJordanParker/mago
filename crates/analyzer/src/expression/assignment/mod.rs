@@ -623,7 +623,7 @@ pub fn analyze_assignment_to_variable<'ctx, 'arena, A>(
         let local_type_str = local_type.get_id();
 
         context.collector.report_with_code(
-            IssueCode::InvalidLocalAssignment,
+            IssueCode::InvalidLocalAssignmentValue,
             Issue::error(format!("Invalid assignment to `{name}`: it is declared as `{local_type_str}`."))
                 .with_annotation(
                     Annotation::primary(source_expression.map_or(variable_span, HasSpan::span))

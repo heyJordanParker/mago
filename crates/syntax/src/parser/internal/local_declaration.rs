@@ -32,7 +32,8 @@ where
             _ => None,
         };
         let is_let = keyword.as_ref().is_some_and(|keyword| keyword.value == b"let");
-        let hint = if !is_let && self.is_at_typed_local()? { Some(self.parse_type_hint()?) } else { None };
+        let hint =
+            if !is_let && self.is_at_typed_local()? { Some(&*self.arena.alloc(self.parse_type_hint()?)) } else { None };
 
         Ok(LocalDeclaration {
             keyword,

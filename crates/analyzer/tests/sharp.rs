@@ -465,15 +465,32 @@ fn a_value_that_is_not_the_written_type_of_a_local_is_reported() {
     assert_eq!(
         issues(("src/Demo/Report.sharp", sharp), &[]),
         [
-            "7:21 invalid-local-assignment",
-            "9:17 invalid-local-assignment",
-            "10:17 invalid-local-assignment",
-            "11:30 invalid-local-assignment",
+            "7:21 invalid-local-assignment-value",
+            "9:17 invalid-local-assignment-value",
+            "10:17 invalid-local-assignment-value",
+            "11:30 invalid-local-assignment-value",
         ]
     );
 
     let first = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[]).remove(0);
     assert_eq!(first.message, "Invalid assignment to `count`: it is declared as `int`.");
+}
+
+#[test]
+fn the_nullable_return_help_writes_the_nullable_type_as_the_file_does() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(int? extra)\n    {\n        return extra;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function total(?int $extra): int\n    {\n        return $extra;\n    }\n}\n";
+
+    let help = |analyzed| {
+        analyze(&PLUGIN_REGISTRY, settings(), analyzed, &[])
+            .into_iter()
+            .find(|issue| issue.code.as_deref() == Some("nullable-return-statement"))
+            .and_then(|issue| issue.help)
+            .expect("a nullable-return-statement help")
+    };
+
+    assert!(help(("src/Demo/Report.sharp", sharp)).contains("(e.g., 'int?')"));
+    assert!(help(("src/Demo/Report.php", php)).contains("(e.g., '?int')"));
 }
 
 #[test]

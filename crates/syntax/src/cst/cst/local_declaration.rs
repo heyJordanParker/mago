@@ -16,7 +16,7 @@ use crate::cst::cst::type_hint::Hint;
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct LocalDeclaration<'arena> {
     pub keyword: Option<Keyword<'arena>>,
-    pub hint: Option<Hint<'arena>>,
+    pub hint: Option<&'arena Hint<'arena>>,
     pub name: LocalIdentifier<'arena>,
     pub equals: Span,
     pub value: &'arena Expression<'arena>,
