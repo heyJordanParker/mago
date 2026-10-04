@@ -3,6 +3,7 @@ use crate::Fingerprintable;
 use mago_names::ResolvedNames;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::Parenthesized;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 
 impl Fingerprintable for Expression<'_> {
     #[inline]
@@ -14,7 +15,7 @@ impl Fingerprintable for Expression<'_> {
     ) where
         H: std::hash::Hasher,
     {
-        match self {
+        ensure_sufficient_stack(|| match self {
             Expression::Binary(node) => node.fingerprint_with_hasher(hasher, resolved_names, options),
             Expression::UnaryPrefix(node) => node.fingerprint_with_hasher(hasher, resolved_names, options),
             Expression::UnaryPostfix(node) => node.fingerprint_with_hasher(hasher, resolved_names, options),
@@ -56,7 +57,7 @@ impl Fingerprintable for Expression<'_> {
                 // fingerprint stays deterministic if the CST gains a new shape we haven't covered.
                 hasher.write(b"__unhandled_expression__");
             }
-        }
+        });
     }
 }
 

@@ -16,6 +16,7 @@ use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::Identifier;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::Statement;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_word::Word;
 
 use crate::Context;
@@ -60,190 +61,192 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Statement<'arena> {
     where
         A: Arena,
     {
-        let last_statement_span = context.statement_span;
-        context.statement_span = self.span();
-        artifacts.record_variable_definedness(Node::Statement(self), block_context);
+        ensure_sufficient_stack(|| {
+            let last_statement_span = context.statement_span;
+            context.statement_span = self.span();
+            artifacts.record_variable_definedness(Node::Statement(self), block_context);
 
-        // Call plugin before_statement hooks
-        if context.plugin_registry.has_statement_hooks() {
-            let mut hook_context = HookContext::new(context, block_context, artifacts);
-            if context.plugin_registry.before_statement(self, &mut hook_context)? == HookAction::Skip {
+            // Call plugin before_statement hooks
+            if context.plugin_registry.has_statement_hooks() {
+                let mut hook_context = HookContext::new(context, block_context, artifacts);
+                if context.plugin_registry.before_statement(self, &mut hook_context)? == HookAction::Skip {
+                    for reported in hook_context.take_issues() {
+                        context.collector.report_with_code(reported.code, reported.issue);
+                    }
+
+                    context.statement_span = last_statement_span;
+                    return Ok(());
+                }
+
                 for reported in hook_context.take_issues() {
                     context.collector.report_with_code(reported.code, reported.issue);
                 }
-
-                context.statement_span = last_statement_span;
-                return Ok(());
             }
 
-            for reported in hook_context.take_issues() {
-                context.collector.report_with_code(reported.code, reported.issue);
-            }
-        }
-
-        // For assignment statements, we populate all @var annotations except the one
-        // for the assignment target variable. The assignment analyzer handles that one
-        // to support the pattern: /** @var Type */ $var = something();
-        if let Statement::Expression(ExpressionStatement { expression, .. }) = self
-            && let Some(target_var) = get_block_expression_id(expression, context, block_context)
-        {
-            populate_docblock_variables_excluding(
-                context,
-                block_context,
-                artifacts,
-                true, // override existing for non-target variables
-                Some(target_var),
-            );
-        } else {
-            let override_existing = !matches!(self, Statement::Foreach(_));
-
-            populate_docblock_variables(context, block_context, artifacts, override_existing);
-        }
-
-        let result = match self {
-            Statement::Inline(_)
-            | Statement::OpeningTag(_)
-            | Statement::Declare(_)
-            | Statement::Noop(_)
-            | Statement::ClosingTag(_)
-            | Statement::HaltCompiler(_) => {
-                // ignore
-                Ok(())
-            }
-            Statement::Goto(_) | Statement::Label(_) => {
-                // not supported, unlikely to be supported
-                Ok(())
-            }
-            Statement::Use(r#use) => {
-                context.scope.populate_from_use(r#use);
-                if context.settings.check_use_statements {
-                    r#use.analyze(context, block_context, artifacts)?;
-                }
-                if context.settings.check_name_casing {
-                    crate::utils::casing::check_use_statement_casing(context, r#use);
-                }
-
-                Ok(())
-            }
-            Statement::Namespace(namespace) => {
-                match &namespace.name {
-                    Some(name) => {
-                        context.scope = NamespaceScope::for_namespace(php_name(name));
-                    }
-                    None => {
-                        context.scope = NamespaceScope::global();
-                    }
-                }
-
-                analyze_statements(namespace.statements().as_slice(), context, block_context, artifacts)
-            }
-            Statement::Class(class) => {
-                let class_name = context.resolved_names.get(&class.name);
-
-                context.scope.add(NameKind::Default, class_name, &None::<&str>);
-
-                class.analyze(context, block_context, artifacts)
-            }
-            Statement::Interface(interface) => {
-                let interface_name = context.resolved_names.get(&interface.name);
-
-                context.scope.add(NameKind::Default, interface_name, &None::<&str>);
-
-                interface.analyze(context, block_context, artifacts)
-            }
-            Statement::Trait(r#trait) => {
-                let trait_name = context.resolved_names.get(&r#trait.name);
-
-                context.scope.add(NameKind::Default, trait_name, &None::<&str>);
-
-                r#trait.analyze(context, block_context, artifacts)
-            }
-            Statement::Enum(r#enum) => {
-                let enum_name = context.resolved_names.get(&r#enum.name);
-
-                context.scope.add(NameKind::Default, enum_name, &None::<&str>);
-
-                r#enum.analyze(context, block_context, artifacts)
-            }
-            Statement::Constant(constant) => {
-                for item in &constant.items {
-                    let constant_item_name = context.resolved_names.get(&item.name);
-
-                    context.scope.add(NameKind::Constant, constant_item_name, &None::<&str>);
-                }
-
-                constant.analyze(context, block_context, artifacts)
-            }
-            Statement::Function(function) => {
-                let function_name = context.resolved_names.get(&function.name);
-
-                context.scope.add(NameKind::Function, function_name, &None::<&str>);
-
-                function.analyze(context, block_context, artifacts)
-            }
-            Statement::Block(block) => {
-                analyze_statements(block.statements.as_slice(), context, block_context, artifacts)
-            }
-            Statement::Expression(expression) => expression.expression.analyze(context, block_context, artifacts),
-            Statement::LocalDeclaration(local_declaration) => {
-                // A PHP# local declaration runs as the PHP assignment of its value to the variable it declares.
-                let name = context.arena.alloc(Expression::ConstantAccess(ConstantAccess {
-                    name: Identifier::Local(local_declaration.name),
-                }));
-
-                analyze_assignment(
+            // For assignment statements, we populate all @var annotations except the one
+            // for the assignment target variable. The assignment analyzer handles that one
+            // to support the pattern: /** @var Type */ $var = something();
+            if let Statement::Expression(ExpressionStatement { expression, .. }) = self
+                && let Some(target_var) = get_block_expression_id(expression, context, block_context)
+            {
+                populate_docblock_variables_excluding(
                     context,
                     block_context,
                     artifacts,
-                    Some(local_declaration.name.span.join(local_declaration.value.span())),
-                    name,
-                    None,
-                    Some(local_declaration.value),
-                    None,
-                )
+                    true, // override existing for non-target variables
+                    Some(target_var),
+                );
+            } else {
+                let override_existing = !matches!(self, Statement::Foreach(_));
+
+                populate_docblock_variables(context, block_context, artifacts, override_existing);
             }
-            Statement::Try(r#try) => r#try.analyze(context, block_context, artifacts),
-            Statement::Foreach(foreach) => foreach.analyze(context, block_context, artifacts),
-            Statement::For(r#for) => r#for.analyze(context, block_context, artifacts),
-            Statement::While(r#while) => r#while.analyze(context, block_context, artifacts),
-            Statement::DoWhile(do_while) => do_while.analyze(context, block_context, artifacts),
-            Statement::Continue(r#continue) => r#continue.analyze(context, block_context, artifacts),
-            Statement::Break(r#break) => r#break.analyze(context, block_context, artifacts),
-            Statement::If(r#if) => r#if.analyze(context, block_context, artifacts),
-            Statement::Return(r#return) => r#return.analyze(context, block_context, artifacts),
-            Statement::Echo(echo) => echo.analyze(context, block_context, artifacts),
-            Statement::EchoTag(echo) => echo.analyze(context, block_context, artifacts),
-            Statement::Global(global) => global.analyze(context, block_context, artifacts),
-            Statement::Static(r#static) => r#static.analyze(context, block_context, artifacts),
-            Statement::Unset(unset) => unset.analyze(context, block_context, artifacts),
-            Statement::Switch(r#switch) => r#switch.analyze(context, block_context, artifacts),
-            #[allow(clippy::unreachable)]
-            _ => unreachable!("A statement variant was not handled in analyzer: {self:?}"),
-        };
 
-        result?;
+            let result = match self {
+                Statement::Inline(_)
+                | Statement::OpeningTag(_)
+                | Statement::Declare(_)
+                | Statement::Noop(_)
+                | Statement::ClosingTag(_)
+                | Statement::HaltCompiler(_) => {
+                    // ignore
+                    Ok(())
+                }
+                Statement::Goto(_) | Statement::Label(_) => {
+                    // not supported, unlikely to be supported
+                    Ok(())
+                }
+                Statement::Use(r#use) => {
+                    context.scope.populate_from_use(r#use);
+                    if context.settings.check_use_statements {
+                        r#use.analyze(context, block_context, artifacts)?;
+                    }
+                    if context.settings.check_name_casing {
+                        crate::utils::casing::check_use_statement_casing(context, r#use);
+                    }
 
-        if let Statement::Expression(expression) = self
-            && context.settings.find_unused_expressions
-        {
-            detect_unused_statement_expressions(expression.expression, self, context, artifacts);
-        }
+                    Ok(())
+                }
+                Statement::Namespace(namespace) => {
+                    match &namespace.name {
+                        Some(name) => {
+                            context.scope = NamespaceScope::for_namespace(php_name(name));
+                        }
+                        None => {
+                            context.scope = NamespaceScope::global();
+                        }
+                    }
 
-        // Call plugin after_statement hooks
-        if context.plugin_registry.has_statement_hooks() {
-            let mut hook_context = HookContext::new(context, block_context, artifacts);
-            context.plugin_registry.after_statement(self, &mut hook_context)?;
-            for reported in hook_context.take_issues() {
-                context.collector.report_with_code(reported.code, reported.issue);
+                    analyze_statements(namespace.statements().as_slice(), context, block_context, artifacts)
+                }
+                Statement::Class(class) => {
+                    let class_name = context.resolved_names.get(&class.name);
+
+                    context.scope.add(NameKind::Default, class_name, &None::<&str>);
+
+                    class.analyze(context, block_context, artifacts)
+                }
+                Statement::Interface(interface) => {
+                    let interface_name = context.resolved_names.get(&interface.name);
+
+                    context.scope.add(NameKind::Default, interface_name, &None::<&str>);
+
+                    interface.analyze(context, block_context, artifacts)
+                }
+                Statement::Trait(r#trait) => {
+                    let trait_name = context.resolved_names.get(&r#trait.name);
+
+                    context.scope.add(NameKind::Default, trait_name, &None::<&str>);
+
+                    r#trait.analyze(context, block_context, artifacts)
+                }
+                Statement::Enum(r#enum) => {
+                    let enum_name = context.resolved_names.get(&r#enum.name);
+
+                    context.scope.add(NameKind::Default, enum_name, &None::<&str>);
+
+                    r#enum.analyze(context, block_context, artifacts)
+                }
+                Statement::Constant(constant) => {
+                    for item in &constant.items {
+                        let constant_item_name = context.resolved_names.get(&item.name);
+
+                        context.scope.add(NameKind::Constant, constant_item_name, &None::<&str>);
+                    }
+
+                    constant.analyze(context, block_context, artifacts)
+                }
+                Statement::Function(function) => {
+                    let function_name = context.resolved_names.get(&function.name);
+
+                    context.scope.add(NameKind::Function, function_name, &None::<&str>);
+
+                    function.analyze(context, block_context, artifacts)
+                }
+                Statement::Block(block) => {
+                    analyze_statements(block.statements.as_slice(), context, block_context, artifacts)
+                }
+                Statement::Expression(expression) => expression.expression.analyze(context, block_context, artifacts),
+                Statement::LocalDeclaration(local_declaration) => {
+                    // A PHP# local declaration runs as the PHP assignment of its value to the variable it declares.
+                    let name = context.arena.alloc(Expression::ConstantAccess(ConstantAccess {
+                        name: Identifier::Local(local_declaration.name),
+                    }));
+
+                    analyze_assignment(
+                        context,
+                        block_context,
+                        artifacts,
+                        Some(local_declaration.name.span.join(local_declaration.value.span())),
+                        name,
+                        None,
+                        Some(local_declaration.value),
+                        None,
+                    )
+                }
+                Statement::Try(r#try) => r#try.analyze(context, block_context, artifacts),
+                Statement::Foreach(foreach) => foreach.analyze(context, block_context, artifacts),
+                Statement::For(r#for) => r#for.analyze(context, block_context, artifacts),
+                Statement::While(r#while) => r#while.analyze(context, block_context, artifacts),
+                Statement::DoWhile(do_while) => do_while.analyze(context, block_context, artifacts),
+                Statement::Continue(r#continue) => r#continue.analyze(context, block_context, artifacts),
+                Statement::Break(r#break) => r#break.analyze(context, block_context, artifacts),
+                Statement::If(r#if) => r#if.analyze(context, block_context, artifacts),
+                Statement::Return(r#return) => r#return.analyze(context, block_context, artifacts),
+                Statement::Echo(echo) => echo.analyze(context, block_context, artifacts),
+                Statement::EchoTag(echo) => echo.analyze(context, block_context, artifacts),
+                Statement::Global(global) => global.analyze(context, block_context, artifacts),
+                Statement::Static(r#static) => r#static.analyze(context, block_context, artifacts),
+                Statement::Unset(unset) => unset.analyze(context, block_context, artifacts),
+                Statement::Switch(r#switch) => r#switch.analyze(context, block_context, artifacts),
+                #[allow(clippy::unreachable)]
+                _ => unreachable!("A statement variant was not handled in analyzer: {self:?}"),
+            };
+
+            result?;
+
+            if let Statement::Expression(expression) = self
+                && context.settings.find_unused_expressions
+            {
+                detect_unused_statement_expressions(expression.expression, self, context, artifacts);
             }
-        }
 
-        context.statement_span = last_statement_span;
-        block_context.conditionally_referenced_variable_ids.clear();
+            // Call plugin after_statement hooks
+            if context.plugin_registry.has_statement_hooks() {
+                let mut hook_context = HookContext::new(context, block_context, artifacts);
+                context.plugin_registry.after_statement(self, &mut hook_context)?;
+                for reported in hook_context.take_issues() {
+                    context.collector.report_with_code(reported.code, reported.issue);
+                }
+            }
 
-        artifacts.record_static_local_types(block_context, context.codebase, context.settings.combiner_options());
+            context.statement_span = last_statement_span;
+            block_context.conditionally_referenced_variable_ids.clear();
 
-        Ok(())
+            artifacts.record_static_local_types(block_context, context.codebase, context.settings.combiner_options());
+
+            Ok(())
+        })
     }
 }
 
