@@ -3,6 +3,7 @@
 //! A `.sharp` file goes through `sharp_lower`, as the engine compiles it. Any other file goes through the parser, the
 //! binder and the semantic checks in the dialect its name selects, as the checker reads it. `--until parse`,
 //! `--until names` or `--until checks` stops after that pass, so the difference between two counts is one pass's cost.
+//! A diagnostic, a parse error or a semantic issue panics, so a count never measures a front end that failed.
 //! `bench.sh` beside this crate generates the classes and runs this example on them.
 
 #![allow(clippy::print_stdout, clippy::expect_used)]
@@ -40,25 +41,29 @@ fn main() {
             // SAFETY: `sharp_lower` returned the unit, and nothing reads it after this.
             unsafe { sharp_unit_free(unit) };
 
-            println!("{path}: {nodes} nodes, {diagnostics} diagnostics");
+            assert_eq!(diagnostics, 0, "{path} lowers without diagnostics");
+            println!("{path}: {nodes} nodes");
         } else {
             let file = File::ephemeral(Cow::Owned(path.clone().into_bytes()), Cow::Owned(source));
             let arena = LocalArena::new();
             let program = parse_file(&arena, &file);
+            assert!(program.errors.is_empty(), "{path} parses without errors: {:?}", program.errors);
             if until.as_deref() == Some("parse") {
-                println!("{path}: {} parse errors", program.errors.len());
+                println!("{path}: parsed");
                 continue;
             }
 
             let names = NameResolver::new(&arena).resolve(program);
             if until.as_deref() == Some("names") {
-                println!("{path}: {} names, {} parse errors", names.len(), program.errors.len());
+                println!("{path}: {} names", names.len());
                 continue;
             }
 
             let issues = SemanticsChecker::new(PHPVersion::PHP85).check(&file, program, &names);
+            let messages = issues.iter().map(|issue| &issue.message).collect::<Vec<_>>();
+            assert!(messages.is_empty(), "{path} checks without issues: {messages:?}");
 
-            println!("{path}: {} names, {} parse errors, {} issues", names.len(), program.errors.len(), issues.len());
+            println!("{path}: {} names", names.len());
         }
     }
 }

@@ -6,7 +6,10 @@
 # also counted stopped after parsing, after binding names and after the semantic checks, so each difference is one
 # pass, and `sharp_lower` adds the lowering.
 #
-# Usage: crates/sharp-bridge/bench.sh [methods...]
+# A folder argument, such as Laravel's `src`, counts the checker and `php -l` on every `.php` file in it, each in one
+# process. Each command first runs once on its own, so a failing file stops the bench before any count.
+#
+# Usage: crates/sharp-bridge/bench.sh [methods or folder...]
 
 set -eu
 
@@ -17,21 +20,38 @@ front_end=target/memory-debug/examples/front_end
 classes=$(mktemp -d)
 trap 'rm -rf "$classes"' EXIT
 
-instructions() {
+# Prints `label` and three instruction counts of the command after it.
+count() {
+    label=$1
+    shift
+    "$@" > /dev/null
+    printf '  %-20s' "$label"
     for run in 1 2 3; do
         /usr/bin/time -l "$@" 2>&1 >/dev/null | awk '/instructions retired/ { printf " %.3fe9", $1 / 1e9 }'
     done
+    echo
 }
 
 : > "$classes/Empty.sharp"
 echo "<?php" > "$classes/Empty.php"
 echo "empty file, the startup of each process:"
-echo "  sharp_lower .sharp:$(instructions "$front_end" "$classes/Empty.sharp")"
-echo "  checker .php:      $(instructions "$front_end" "$classes/Empty.php")"
-echo "  php -l .php:       $(instructions php -l "$classes/Empty.php")"
+count "sharp_lower .sharp:" "$front_end" "$classes/Empty.sharp"
+count "front end .php:" "$front_end" "$classes/Empty.php"
+count "php -l .php:" php -l "$classes/Empty.php"
 
 [ $# -gt 0 ] || set -- 10000 20000
-for methods in "$@"; do
+for argument in "$@"; do
+    if [ -d "$argument" ]; then
+        find "$argument" -name '*.php' | sort > "$classes/files"
+        echo "$(wc -l < "$classes/files" | tr -d ' ') .php files in $argument:"
+        # shellcheck disable=SC2046 # one argument per path, and no path holds a space
+        count "front end .php:" "$front_end" $(cat "$classes/files")
+        # shellcheck disable=SC2046
+        count "php -l .php:" php -l $(cat "$classes/files")
+        continue
+    fi
+
+    methods=$argument
     awk -v methods="$methods" 'BEGIN {
         print "namespace App;\n\nclass Big\n{"
         for (i = 0; i < methods; i++) printf "    public int m%d(int value)\n    {\n        return value + %d;\n    }\n\n", i, i
@@ -44,10 +64,10 @@ for methods in "$@"; do
     }' > "$classes/Big$methods.php"
 
     echo "$methods methods, $(wc -c < "$classes/Big$methods.sharp" | tr -d ' ') bytes of PHP#:"
-    echo "  parse .sharp:      $(instructions "$front_end" --until parse "$classes/Big$methods.sharp")"
-    echo "  + names .sharp:    $(instructions "$front_end" --until names "$classes/Big$methods.sharp")"
-    echo "  + checks .sharp:   $(instructions "$front_end" --until checks "$classes/Big$methods.sharp")"
-    echo "  sharp_lower .sharp:$(instructions "$front_end" "$classes/Big$methods.sharp")"
-    echo "  checker .php:      $(instructions "$front_end" "$classes/Big$methods.php")"
-    echo "  php -l .php:       $(instructions php -l "$classes/Big$methods.php")"
+    count "parse .sharp:" "$front_end" --until parse "$classes/Big$methods.sharp"
+    count "+ names .sharp:" "$front_end" --until names "$classes/Big$methods.sharp"
+    count "+ checks .sharp:" "$front_end" --until checks "$classes/Big$methods.sharp"
+    count "sharp_lower .sharp:" "$front_end" "$classes/Big$methods.sharp"
+    count "front end .php:" "$front_end" "$classes/Big$methods.php"
+    count "php -l .php:" php -l "$classes/Big$methods.php"
 done
