@@ -23,7 +23,6 @@ use mago_syntax::cst::MethodCall;
 use mago_syntax::cst::NullSafeMethodCall;
 use mago_syntax::cst::Program;
 use mago_syntax::cst::Statement;
-use mago_syntax::cst::StaticMethodCall;
 use mago_syntax::cst::Trait;
 use mago_word::Word;
 use mago_word::WordMap;
@@ -70,6 +69,7 @@ use crate::plugin::hook::MethodCallHook;
 use crate::plugin::hook::NullSafeMethodCallHook;
 use crate::plugin::hook::ProgramHook;
 use crate::plugin::hook::StatementHook;
+use crate::plugin::hook::StaticCall;
 use crate::plugin::hook::StaticMethodCallHook;
 use crate::plugin::hook::TraitDeclarationHook;
 use crate::plugin::provider::assertion::FunctionAssertionProvider;
@@ -976,7 +976,7 @@ impl PluginRegistry {
     /// Returns [`PluginError`] if any registered hook propagates one.
     pub fn before_static_method_call(
         &self,
-        call: &StaticMethodCall<'_>,
+        call: &StaticCall<'_, '_>,
         context: &mut HookContext<'_, '_>,
     ) -> PluginResult<ExpressionHookResult> {
         for hook in &self.static_method_call_hooks {
@@ -995,7 +995,7 @@ impl PluginRegistry {
     /// Returns [`PluginError`] if any registered hook propagates one.
     pub fn after_static_method_call(
         &self,
-        call: &StaticMethodCall<'_>,
+        call: &StaticCall<'_, '_>,
         context: &mut HookContext<'_, '_>,
     ) -> PluginResult<()> {
         for hook in &self.static_method_call_hooks {

@@ -17,7 +17,9 @@
 //! - [`IssueFilterHook`]: Filter issues at the end of analysis
 //!
 //! All hooks receive real CST references and a [`HookContext`](crate::plugin::context::HookContext)
-//! that provides mutable access to the analysis state.
+//! that provides mutable access to the analysis state. [`StaticMethodCallHook`] receives the
+//! [`StaticCall`] parts of the call instead, because PHP# writes a static call without a
+//! [`StaticMethodCall`](mago_syntax::cst::StaticMethodCall) node.
 
 mod action;
 mod call;

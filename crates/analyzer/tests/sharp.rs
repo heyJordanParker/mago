@@ -1,7 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::borrow::Cow;
+use std::sync::Arc;
 use std::sync::LazyLock;
+use std::sync::Mutex;
 
 use foldhash::HashSet;
 
@@ -9,6 +11,13 @@ use mago_allocator::LocalArena;
 use mago_analyzer::Analyzer;
 use mago_analyzer::analysis_result::AnalysisResult;
 use mago_analyzer::plugin::PluginRegistry;
+use mago_analyzer::plugin::context::HookContext;
+use mago_analyzer::plugin::hook::ExpressionHookResult;
+use mago_analyzer::plugin::hook::HookResult;
+use mago_analyzer::plugin::hook::StaticCall;
+use mago_analyzer::plugin::hook::StaticMethodCallHook;
+use mago_analyzer::plugin::provider::Provider;
+use mago_analyzer::plugin::provider::ProviderMeta;
 use mago_analyzer::settings::Settings;
 use mago_codex::populator::populate_codebase;
 use mago_codex::scanner::scan_program;
@@ -16,6 +25,8 @@ use mago_database::DatabaseReader;
 use mago_database::file::File;
 use mago_names::resolver::NameResolver;
 use mago_prelude::Prelude;
+use mago_span::HasSpan;
+use mago_span::Span;
 use mago_syntax::parser::parse_file;
 use mago_word::WordSet;
 
@@ -36,6 +47,17 @@ fn issues(analyzed: (&'static str, &'static str), others: &[(&'static str, &'sta
 
 /// Analyzes `analyzed` together with `others` under `settings`, and returns its issues as `line:column code`.
 fn issues_with(
+    settings: Settings,
+    analyzed: (&'static str, &'static str),
+    others: &[(&'static str, &'static str)],
+) -> Vec<String> {
+    issues_in(&PLUGIN_REGISTRY, settings, analyzed, others)
+}
+
+/// Analyzes `analyzed` together with `others` under `settings` and the plugins of `registry`, and returns its issues
+/// as `line:column code`.
+fn issues_in(
+    registry: &PluginRegistry,
     settings: Settings,
     analyzed: (&'static str, &'static str),
     others: &[(&'static str, &'static str)],
@@ -65,7 +87,7 @@ fn issues_with(
 
     let (file, program, names) = &programs[0];
     let mut result = AnalysisResult::new(symbol_references);
-    Analyzer::new(&arena, file, names, &metadata, &PLUGIN_REGISTRY, settings)
+    Analyzer::new(&arena, file, names, &metadata, registry, settings)
         .analyze(program, &mut result)
         .expect("analysis succeeds");
 
@@ -154,6 +176,18 @@ fn assigning_to_a_let_local_changes_its_type_as_in_php() {
     let php_issues = issues(("src/Demo/Report.php", php), &[]);
 
     assert_eq!(sharp_issues, ["9:16 invalid-return-statement"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn incrementing_and_decrementing_a_let_local_changes_its_type_as_in_php() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static string total()\n    {\n        let up = 0;\n        let down = 0;\n        up++;\n        down--;\n        ++up;\n        --down;\n        return up * down;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function total(): string\n    {\n        $up = 0;\n        $down = 0;\n        $up++;\n        $down--;\n        ++$up;\n        --$down;\n        return $up * $down;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[]);
+
+    assert_eq!(sharp_issues, ["13:16 invalid-return-statement"]);
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
 }
 
@@ -316,4 +350,81 @@ fn adding_a_string_is_not_supported_yet() {
     let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
 
     assert!(sharp_issues.contains(&"8:16 not-supported-yet".to_string()), "{sharp_issues:?}");
+}
+
+/// Each hook event, with the spans of the call's class, method, arguments and whole call.
+type StaticCallEvents = Vec<(&'static str, [Span; 4])>;
+
+/// Records every static call its hooks see.
+#[derive(Clone, Default)]
+struct StaticCallRecorder(Arc<Mutex<StaticCallEvents>>);
+
+impl Provider for StaticCallRecorder {
+    fn meta() -> &'static ProviderMeta {
+        static META: ProviderMeta = ProviderMeta::new("test::static-call", "static call", "Records static calls.");
+
+        &META
+    }
+}
+
+impl StaticCallRecorder {
+    fn record(&self, event: &'static str, call: &StaticCall<'_, '_>) {
+        let spans = [call.class.span(), call.method.span(), call.argument_list.span(), call.span];
+        self.0.lock().unwrap().push((event, spans));
+    }
+
+    /// The recorded calls, each span read back from `code`.
+    fn seen(&self, code: &str) -> Vec<String> {
+        let text = |span: Span| &code[span.start.offset as usize..span.end.offset as usize];
+
+        self.0.lock().unwrap().iter().map(|(event, spans)| format!("{event} {}", spans.map(text).join(" "))).collect()
+    }
+}
+
+impl StaticMethodCallHook for StaticCallRecorder {
+    fn before_static_method_call(
+        &self,
+        call: &StaticCall<'_, '_>,
+        _context: &mut HookContext<'_, '_>,
+    ) -> HookResult<ExpressionHookResult> {
+        self.record("before", call);
+
+        Ok(ExpressionHookResult::Continue)
+    }
+
+    fn after_static_method_call(
+        &self,
+        call: &StaticCall<'_, '_>,
+        _context: &mut HookContext<'_, '_>,
+    ) -> HookResult<()> {
+        self.record("after", call);
+
+        Ok(())
+    }
+}
+
+#[test]
+fn static_call_hooks_see_a_sharp_static_call_as_its_parts_as_in_php() {
+    let sharp = "namespace Demo;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public static Calc total()\n    {\n        return Calc.make();\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Calc;\n\nclass Report\n{\n    public static function total(): Calc\n    {\n        return Calc::make();\n    }\n}\n";
+
+    let seen = |analyzed: (&'static str, &'static str)| {
+        let recorder = StaticCallRecorder::default();
+        let mut registry = PluginRegistry::default();
+        registry.register_static_method_call_hook(recorder.clone());
+
+        let issues = issues_in(&registry, settings(), analyzed, &[("src/Lib/Calc.php", CALC)]);
+        assert_eq!(issues, Vec::<String>::new());
+
+        recorder.seen(analyzed.1)
+    };
+
+    assert_eq!(
+        seen(("src/Demo/Report.sharp", sharp)),
+        ["before Calc make () Calc.make()", "after Calc make () Calc.make()"]
+    );
+    assert_eq!(
+        seen(("src/Demo/Report.php", php)),
+        ["before Calc make () Calc::make()", "after Calc make () Calc::make()"]
+    );
 }
