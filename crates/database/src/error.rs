@@ -28,10 +28,13 @@ pub enum DatabaseError {
     /// data in an unrecoverable and potentially inconsistent state.
     PoisonedLogMutex,
     /// Failed to initialize the file system watcher.
+    #[cfg(feature = "watcher")]
     WatcherInit(notify::Error),
     /// Failed to add a path to the file system watcher.
+    #[cfg(feature = "watcher")]
     WatcherWatch(notify::Error),
     /// Attempted to wait on a watcher that is not currently watching.
+    #[cfg(feature = "watcher")]
     WatcherNotActive,
 }
 
@@ -58,8 +61,11 @@ impl std::fmt::Display for DatabaseError {
             Self::PoisonedLogMutex => {
                 write!(f, "changelog is in an unrecoverable state because a thread panicked while modifying it")
             }
+            #[cfg(feature = "watcher")]
             Self::WatcherInit(err) => write!(f, "failed to initialize file watcher: {err}"),
+            #[cfg(feature = "watcher")]
             Self::WatcherWatch(err) => write!(f, "failed to watch path: {err}"),
+            #[cfg(feature = "watcher")]
             Self::WatcherNotActive => write!(f, "watcher is not currently watching - call watch() first"),
         }
     }
@@ -71,6 +77,7 @@ impl std::error::Error for DatabaseError {
         match self {
             Self::IOError(err) => Some(err),
             Self::InvalidGlobSet(err) => Some(err),
+            #[cfg(feature = "watcher")]
             Self::WatcherInit(err) | Self::WatcherWatch(err) => Some(err),
             _ => None,
         }

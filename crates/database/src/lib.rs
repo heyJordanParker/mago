@@ -88,9 +88,12 @@ pub mod change;
 pub mod error;
 pub mod exclusion;
 pub mod file;
+#[cfg(feature = "loader")]
 pub mod loader;
 pub mod matcher;
+#[cfg(feature = "loader")]
 pub mod membership;
+#[cfg(feature = "watcher")]
 pub mod watcher;
 
 mod operation;
@@ -218,6 +221,7 @@ impl<'config> DatabaseConfiguration<'config> {
 pub struct Database<'config> {
     files: HashMap<Cow<'static, [u8]>, Arc<File>>,
     id_to_name: HashMap<FileId, Cow<'static, [u8]>>,
+    #[cfg_attr(not(feature = "loader"), allow(dead_code, reason = "the loader and the watcher read it"))]
     pub(crate) configuration: DatabaseConfiguration<'config>,
 }
 

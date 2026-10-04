@@ -1,9 +1,11 @@
 use std::borrow::Cow;
+#[cfg(feature = "loader")]
 use std::ffi::OsStr;
 use std::fs::read;
-#[cfg(unix)]
+#[cfg(all(unix, feature = "loader"))]
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
+#[cfg(feature = "loader")]
 use std::path::PathBuf;
 
 use crate::error::DatabaseError;
@@ -15,6 +17,7 @@ use crate::file::FileType;
 /// On Unix, paths are arbitrary byte sequences; the borrow is direct. On Windows
 /// (and other non-Unix platforms), paths are UTF-8 — invalid sequences fall back to
 /// lossy decoding with replacement characters.
+#[cfg(feature = "loader")]
 pub(crate) fn bytes_to_os_str(bytes: &[u8]) -> Cow<'_, OsStr> {
     #[cfg(unix)]
     {
@@ -30,6 +33,7 @@ pub(crate) fn bytes_to_os_str(bytes: &[u8]) -> Cow<'_, OsStr> {
 }
 
 /// Borrows `bytes` as a [`Path`].
+#[cfg(feature = "loader")]
 pub(crate) fn bytes_to_path(bytes: &[u8]) -> Cow<'_, Path> {
     match bytes_to_os_str(bytes) {
         Cow::Borrowed(s) => Cow::Borrowed(Path::new(s)),
@@ -38,6 +42,7 @@ pub(crate) fn bytes_to_path(bytes: &[u8]) -> Cow<'_, Path> {
 }
 
 /// Returns `bytes` as a UTF-8 string, replacing invalid sequences.
+#[cfg(feature = "loader")]
 #[inline]
 pub(crate) fn bytes_to_string_lossy(bytes: &[u8]) -> Cow<'_, str> {
     String::from_utf8_lossy(bytes)

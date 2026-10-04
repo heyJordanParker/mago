@@ -19,18 +19,19 @@ mago-text-edit = { workspace = true }
 foldhash = { workspace = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-codespan-reporting = { workspace = true }
-termcolor = { workspace = true }
+codespan-reporting = { workspace = true, optional = true }
+termcolor = { workspace = true, optional = true }
 strum = { workspace = true }
 blake3 = { workspace = true }
-ariadne = { workspace = true }
+ariadne = { workspace = true, optional = true }
 serde-sarif = { workspace = true, optional = true }
 schemars = { workspace = true }
 tracing = { workspace = true }
 regex = { workspace = true }
 
 [features]
-default = []
+default = ["renderers"]
+renderers = ["dep:codespan-reporting", "dep:termcolor", "dep:ariadne"]
 serde = [
     "dep:serde",
     "dep:serde_json",

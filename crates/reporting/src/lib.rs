@@ -29,20 +29,30 @@ use mago_database::matcher::ExclusionMatcher;
 use mago_span::Span;
 use mago_text_edit::TextEdit;
 
+#[cfg(feature = "renderers")]
 mod formatter;
-#[cfg(feature = "serde")]
+#[cfg(all(feature = "serde", feature = "renderers"))]
 mod internal;
 
 pub mod baseline;
+#[cfg(feature = "renderers")]
 pub mod color;
+#[cfg(feature = "renderers")]
 pub mod error;
+#[cfg(feature = "renderers")]
 pub mod output;
+#[cfg(feature = "renderers")]
 pub mod reporter;
 
+#[cfg(feature = "renderers")]
 pub use color::ColorChoice;
+#[cfg(feature = "renderers")]
 pub use formatter::ReportingFormat;
+#[cfg(feature = "renderers")]
 pub use formatter::utils::osc8_file_hyperlink;
+#[cfg(feature = "renderers")]
 pub use formatter::utils::osc8_hyperlink;
+#[cfg(feature = "renderers")]
 pub use output::ReportingTarget;
 
 /// Represents an entry in the analyzer's `ignore` configuration.

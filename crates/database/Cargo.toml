@@ -14,18 +14,20 @@ workspace = true
 
 [dependencies]
 memchr = { workspace = true }
-glob = { workspace = true }
+glob = { workspace = true, optional = true }
 tracing = { workspace = true }
-walkdir = { workspace = true }
+walkdir = { workspace = true, optional = true }
 foldhash = { workspace = true }
 globset = { workspace = true }
 serde = { workspace = true, features = ["rc"], optional = true }
 rayon = { workspace = true }
-notify = { workspace = true }
+notify = { workspace = true, optional = true }
 
 [features]
-default = []
+default = ["loader", "watcher"]
 serde = ["dep:serde"]
+loader = ["dep:glob", "dep:walkdir"]
+watcher = ["loader", "dep:notify"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
