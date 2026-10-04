@@ -7,6 +7,7 @@ use mago_syntax_core::input::Input;
 
 use crate::cst::Program;
 use crate::cst::sequence::Sequence;
+use crate::dialect::Dialect;
 use crate::error::ParseError;
 use crate::lexer::Lexer;
 use crate::parser::stream::TokenStream;
@@ -37,6 +38,7 @@ where
     A: Arena,
 {
     pub(crate) arena: &'arena A,
+    pub(crate) dialect: Dialect,
     pub(crate) state: State,
     pub(crate) stream: TokenStream<'input, 'arena, A>,
     pub(crate) errors: Vec<'arena, ParseError, A>,
@@ -46,7 +48,7 @@ impl<'input, 'arena, A> Parser<'input, 'arena, A>
 where
     A: Arena,
 {
-    /// Creates a new parser for the given content.
+    /// Creates a new parser for the given PHP content.
     ///
     /// # Parameters
     ///
@@ -60,14 +62,27 @@ where
     /// A new `Parser` instance.
     #[inline]
     pub fn new(arena: &'arena A, file_id: FileId, content: &'input [u8], settings: ParserSettings) -> Self {
-        let input = Input::new(file_id, content);
-        let lexer = Lexer::new(input, settings.lexer);
-        let stream = TokenStream::new(arena, lexer);
-
-        Self { arena, state: State::default(), stream, errors: Vec::new_in(arena) }
+        Self::for_dialect(arena, file_id, content, Dialect::Php, settings)
     }
 
-    /// Creates a new parser for the given file.
+    fn for_dialect(
+        arena: &'arena A,
+        file_id: FileId,
+        content: &'input [u8],
+        dialect: Dialect,
+        settings: ParserSettings,
+    ) -> Self {
+        let input = Input::new(file_id, content);
+        let lexer = match dialect {
+            Dialect::Php => Lexer::new(input, settings.lexer),
+            Dialect::Sharp => Lexer::scripting(input, settings.lexer),
+        };
+        let stream = TokenStream::new(arena, lexer);
+
+        Self { arena, dialect, state: State::default(), stream, errors: Vec::new_in(arena) }
+    }
+
+    /// Creates a new parser for the given file, in the dialect its name selects.
     ///
     /// # Parameters
     ///
@@ -79,7 +94,7 @@ where
     ///
     /// A new `Parser` instance.
     pub fn for_file(arena: &'arena A, file: &'input File, settings: ParserSettings) -> Self {
-        Self::new(arena, file.file_id(), file.contents.as_ref(), settings)
+        Self::for_dialect(arena, file.file_id(), file.contents.as_ref(), Dialect::of(file), settings)
     }
 
     /// Parses and returns the program CST.
@@ -121,6 +136,7 @@ where
 
         self.arena.alloc(Program {
             file_id,
+            dialect: self.dialect,
             source_text,
             statements: Sequence::new(statements),
             trivia: self.stream.get_trivia(),
@@ -129,7 +145,7 @@ where
     }
 }
 
-/// Parses the given file and returns the program CST.
+/// Parses the given file in the dialect its name selects and returns the program CST.
 ///
 /// # Parameters
 ///
@@ -144,10 +160,10 @@ pub fn parse_file<'arena, A>(arena: &'arena A, file: &File) -> &'arena Program<'
 where
     A: Arena,
 {
-    parse_file_content(arena, file.file_id(), file.contents.as_ref())
+    parse_file_with_settings(arena, file, ParserSettings::default())
 }
 
-/// Parses the given file with custom settings and returns the program CST.
+/// Parses the given file with custom settings, in the dialect its name selects, and returns the program CST.
 ///
 /// # Parameters
 ///
@@ -167,10 +183,12 @@ pub fn parse_file_with_settings<'arena, A>(
 where
     A: Arena,
 {
-    parse_file_content_with_settings(arena, file.file_id(), file.contents.as_ref(), settings)
+    let file_id = file.file_id();
+    let source_text = arena.alloc_slice_copy(file.contents.as_ref());
+    Parser::for_dialect(arena, file_id, source_text, Dialect::of(file), settings).parse(source_text, file_id)
 }
 
-/// Parses the given file content and returns the program CST.
+/// Parses the given PHP file content and returns the program CST.
 ///
 /// # Parameters
 ///
@@ -189,7 +207,7 @@ where
     Parser::new(arena, file_id, source_text, ParserSettings::default()).parse(source_text, file_id)
 }
 
-/// Parses the given file content with custom settings and returns the program CST.
+/// Parses the given PHP file content with custom settings and returns the program CST.
 ///
 /// # Parameters
 ///

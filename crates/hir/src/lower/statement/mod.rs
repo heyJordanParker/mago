@@ -793,6 +793,7 @@ fn use_identifier_kind(identifier: &cst::Identifier<'_>) -> IdentifierKind {
         cst::Identifier::Local(_) => IdentifierKind::Local,
         cst::Identifier::Qualified(_) => IdentifierKind::Qualified,
         cst::Identifier::FullyQualified(_) => IdentifierKind::FullyQualified,
+        cst::Identifier::Dotted(_) => IdentifierKind::Dotted,
     }
 }
 

@@ -479,6 +479,7 @@ where
                 Identifier::Local(i) => i.format(f),
                 Identifier::Qualified(i) => i.format(f),
                 Identifier::FullyQualified(i) => i.format(f),
+                Identifier::Dotted(i) => Document::String(i.value),
             }
         })
     }

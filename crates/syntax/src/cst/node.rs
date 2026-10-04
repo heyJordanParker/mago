@@ -55,6 +55,7 @@ use crate::cst::cst::DieConstruct;
 use crate::cst::cst::DirectVariable;
 use crate::cst::cst::DoWhile;
 use crate::cst::cst::DocumentString;
+use crate::cst::cst::DottedIdentifier;
 use crate::cst::cst::Echo;
 use crate::cst::cst::EchoTag;
 use crate::cst::cst::EmptyConstruct;
@@ -379,6 +380,7 @@ pub enum NodeKind {
     Label,
     HaltCompiler,
     FullyQualifiedIdentifier,
+    DottedIdentifier,
     Identifier,
     LocalIdentifier,
     QualifiedIdentifier,
@@ -614,6 +616,7 @@ pub enum Node<'ast, 'arena> {
     Label(&'ast Label<'arena>),
     HaltCompiler(&'ast HaltCompiler<'arena>),
     FullyQualifiedIdentifier(&'ast FullyQualifiedIdentifier<'arena>),
+    DottedIdentifier(&'ast DottedIdentifier<'arena>),
     Identifier(&'ast Identifier<'arena>),
     LocalIdentifier(&'ast LocalIdentifier<'arena>),
     QualifiedIdentifier(&'ast QualifiedIdentifier<'arena>),
@@ -923,6 +926,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Self::Label(_) => NodeKind::Label,
             Self::HaltCompiler(_) => NodeKind::HaltCompiler,
             Self::FullyQualifiedIdentifier(_) => NodeKind::FullyQualifiedIdentifier,
+            Self::DottedIdentifier(_) => NodeKind::DottedIdentifier,
             Self::Identifier(_) => NodeKind::Identifier,
             Self::LocalIdentifier(_) => NodeKind::LocalIdentifier,
             Self::QualifiedIdentifier(_) => NodeKind::QualifiedIdentifier,
@@ -1930,10 +1934,12 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 f(Node::Keyword(&node.halt_compiler));
             }
             Node::FullyQualifiedIdentifier(_) => {}
+            Node::DottedIdentifier(_) => {}
             Node::Identifier(node) => f(match node {
                 Identifier::Local(node) => Node::LocalIdentifier(node),
                 Identifier::Qualified(node) => Node::QualifiedIdentifier(node),
                 Identifier::FullyQualified(node) => Node::FullyQualifiedIdentifier(node),
+                Identifier::Dotted(node) => Node::DottedIdentifier(node),
             }),
             Node::LocalIdentifier(_) => {}
             Node::QualifiedIdentifier(_) => {}
@@ -2550,6 +2556,7 @@ impl HasSpan for Node<'_, '_> {
             Self::Label(node) => node.span(),
             Self::HaltCompiler(node) => node.span(),
             Self::FullyQualifiedIdentifier(node) => node.span(),
+            Self::DottedIdentifier(node) => node.span(),
             Self::Identifier(node) => node.span(),
             Self::LocalIdentifier(node) => node.span(),
             Self::QualifiedIdentifier(node) => node.span(),

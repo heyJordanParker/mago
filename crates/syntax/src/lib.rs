@@ -2,6 +2,7 @@
 
 pub mod comments;
 pub mod cst;
+pub mod dialect;
 pub mod error;
 pub mod lexer;
 pub mod macros;

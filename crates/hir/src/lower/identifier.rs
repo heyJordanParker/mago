@@ -21,6 +21,7 @@ where
             cst::Identifier::Local(_) => IdentifierKind::Local,
             cst::Identifier::Qualified(_) => IdentifierKind::Qualified,
             cst::Identifier::FullyQualified(_) => IdentifierKind::FullyQualified,
+            cst::Identifier::Dotted(_) => IdentifierKind::Dotted,
         };
 
         let (value, imported) = match resolve {

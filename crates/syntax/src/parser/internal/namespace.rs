@@ -15,6 +15,7 @@ where
         let namespace = self.expect_keyword(T!["namespace"])?;
         let name = match self.stream.peek_kind(0)? {
             Some(T![";" | "?>" | "{"]) => None,
+            _ if self.dialect.is_sharp() => Some(self.parse_dotted_identifier()?),
             _ => Some(self.parse_identifier()?),
         };
         let body = self.parse_namespace_body()?;

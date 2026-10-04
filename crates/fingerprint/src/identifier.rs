@@ -1,6 +1,7 @@
 use std::hash::Hash;
 
 use mago_names::ResolvedNames;
+use mago_syntax::cst::DottedIdentifier;
 use mago_syntax::cst::FullyQualifiedIdentifier;
 use mago_syntax::cst::Identifier;
 use mago_syntax::cst::LocalIdentifier;
@@ -23,6 +24,7 @@ impl Fingerprintable for Identifier<'_> {
             Identifier::Local(ident) => ident.fingerprint_with_hasher(hasher, resolved_names, options),
             Identifier::Qualified(ident) => ident.fingerprint_with_hasher(hasher, resolved_names, options),
             Identifier::FullyQualified(ident) => ident.fingerprint_with_hasher(hasher, resolved_names, options),
+            Identifier::Dotted(ident) => ident.fingerprint_with_hasher(hasher, resolved_names, options),
         }
     }
 }
@@ -46,6 +48,24 @@ impl Fingerprintable for LocalIdentifier<'_> {
 }
 
 impl Fingerprintable for QualifiedIdentifier<'_> {
+    #[inline]
+    fn fingerprint_with_hasher<H>(
+        &self,
+        hasher: &mut H,
+        resolved_names: &ResolvedNames,
+        _options: &FingerprintOptions<'_>,
+    ) where
+        H: std::hash::Hasher,
+    {
+        if let Some(name) = resolved_names.resolve(self) {
+            crate::hash_ascii_lowercase(name, hasher);
+        } else {
+            self.value.hash(hasher);
+        }
+    }
+}
+
+impl Fingerprintable for DottedIdentifier<'_> {
     #[inline]
     fn fingerprint_with_hasher<H>(
         &self,

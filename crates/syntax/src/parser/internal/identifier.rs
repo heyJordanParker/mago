@@ -2,6 +2,7 @@ use mago_allocator::prelude::*;
 use mago_database::file::HasFileId;
 
 use crate::T;
+use crate::cst::cst::DottedIdentifier;
 use crate::cst::cst::FullyQualifiedIdentifier;
 use crate::cst::cst::Identifier;
 use crate::cst::cst::LocalIdentifier;
@@ -21,6 +22,34 @@ where
             T![FullyQualifiedIdentifier] => Identifier::FullyQualified(self.parse_fully_qualified_identifier()?),
             _ => Identifier::Local(self.parse_local_identifier()?),
         })
+    }
+
+    /// Parses a PHP# name for a `namespace` or `import` line, such as `App.Tenant.Store`.
+    ///
+    /// A `.` joins two parts only when it touches both of them, so the name's value is its source text.
+    pub(crate) fn parse_dotted_identifier(&mut self) -> Result<Identifier<'arena>, ParseError> {
+        let first = self.parse_local_identifier()?;
+        let mut value = std::vec::Vec::from(first.value);
+        let mut span = first.span;
+
+        while let (Some(dot), Some(next)) = (self.stream.lookahead(0)?, self.stream.lookahead(1)?)
+            && dot.kind == T!["."]
+            && next.kind.is_identifier_maybe_reserved()
+            && dot.start == span.end
+            && next.start.offset == dot.start.offset + 1
+        {
+            self.stream.consume()?;
+            let part = self.parse_local_identifier()?;
+            value.push(b'.');
+            value.extend_from_slice(part.value);
+            span = span.join(part.span);
+        }
+
+        if span == first.span {
+            return Ok(Identifier::Local(first));
+        }
+
+        Ok(Identifier::Dotted(DottedIdentifier { span, value: self.bytes(&value) }))
     }
 
     pub(crate) fn parse_local_identifier(&mut self) -> Result<LocalIdentifier<'arena>, ParseError> {

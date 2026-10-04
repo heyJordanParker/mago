@@ -134,6 +134,7 @@ pub use crate::cst::cst::global::Global;
 pub use crate::cst::cst::goto::Goto;
 pub use crate::cst::cst::goto::Label;
 pub use crate::cst::cst::halt_compiler::HaltCompiler;
+pub use crate::cst::cst::identifier::DottedIdentifier;
 pub use crate::cst::cst::identifier::FullyQualifiedIdentifier;
 pub use crate::cst::cst::identifier::Identifier;
 pub use crate::cst::cst::identifier::LocalIdentifier;

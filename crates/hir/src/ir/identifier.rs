@@ -23,6 +23,7 @@ pub enum IdentifierKind {
     Local,
     Qualified,
     FullyQualified,
+    Dotted,
 }
 
 impl CopyInto for Identifier<'_> {

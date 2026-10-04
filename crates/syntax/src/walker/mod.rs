@@ -48,6 +48,7 @@ use crate::cst::cst::DieConstruct;
 use crate::cst::cst::DirectVariable;
 use crate::cst::cst::DoWhile;
 use crate::cst::cst::DocumentString;
+use crate::cst::cst::DottedIdentifier;
 use crate::cst::cst::Echo;
 use crate::cst::cst::EchoTag;
 use crate::cst::cst::EmptyConstruct;
@@ -1949,6 +1950,7 @@ generate_ast_walker! {
             Identifier::Local(local_identifier) => walker.walk_local_identifier(local_identifier, context),
             Identifier::Qualified(qualified_identifier) => walker.walk_qualified_identifier(qualified_identifier, context),
             Identifier::FullyQualified(fully_qualified_identifier) => walker.walk_fully_qualified_identifier(fully_qualified_identifier, context),
+            Identifier::Dotted(dotted_identifier) => walker.walk_dotted_identifier(dotted_identifier, context),
         }
     }
 
@@ -1961,6 +1963,10 @@ generate_ast_walker! {
     }
 
     'arena FullyQualifiedIdentifier as fully_qualified_identifier => {
+        // Do nothing by default
+    }
+
+    'arena DottedIdentifier as dotted_identifier => {
         // Do nothing by default
     }
 

@@ -28,6 +28,23 @@ where
         })
     }
 
+    /// Parses a PHP# `import`, which brings one class into scope by its dotted name.
+    pub(crate) fn parse_import(&mut self) -> Result<Use<'arena>, ParseError> {
+        let import = self.expect_any_keyword()?;
+        let start = self.stream.lookahead(0)?.ok_or_else(|| self.stream.unexpected(None, &[]))?.start;
+        let item = UseItem { name: self.parse_dotted_identifier()?, alias: None };
+
+        Ok(Use {
+            r#use: import,
+            items: UseItems::Sequence(UseItemSequence {
+                file_id: self.stream.file_id(),
+                start,
+                items: TokenSeparatedSequence::new(self.new_vec_of(item), self.new_vec()),
+            }),
+            terminator: self.parse_terminator()?,
+        })
+    }
+
     pub(crate) fn parse_use_items(&mut self) -> Result<UseItems<'arena>, ParseError> {
         let next = self.stream.peek_kind(0)?;
 

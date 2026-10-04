@@ -5,7 +5,7 @@ use mago_span::Span;
 
 /// Represents an identifier.
 ///
-/// An identifier can be a local, qualified, or fully qualified identifier.
+/// An identifier can be a local, qualified, fully qualified, or dotted identifier.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord, Display)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type", content = "value"))]
@@ -13,6 +13,7 @@ pub enum Identifier<'arena> {
     Local(LocalIdentifier<'arena>),
     Qualified(QualifiedIdentifier<'arena>),
     FullyQualified(FullyQualifiedIdentifier<'arena>),
+    Dotted(DottedIdentifier<'arena>),
 }
 
 /// Represents a local, unqualified identifier.
@@ -45,6 +46,16 @@ pub struct FullyQualifiedIdentifier<'arena> {
     pub value: &'arena [u8],
 }
 
+/// Represents a PHP# dotted identifier, written only in `namespace` and `import` lines.
+///
+/// Example: `App.Tenant.Store`
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct DottedIdentifier<'arena> {
+    pub span: Span,
+    pub value: &'arena [u8],
+}
+
 impl<'arena> Identifier<'arena> {
     #[inline]
     #[must_use]
@@ -66,11 +77,18 @@ impl<'arena> Identifier<'arena> {
 
     #[inline]
     #[must_use]
+    pub const fn is_dotted(&self) -> bool {
+        matches!(self, Identifier::Dotted(_))
+    }
+
+    #[inline]
+    #[must_use]
     pub const fn value(&self) -> &'arena [u8] {
         match &self {
             Identifier::Local(local_identifier) => local_identifier.value,
             Identifier::Qualified(qualified_identifier) => qualified_identifier.value,
             Identifier::FullyQualified(fully_qualified_identifier) => fully_qualified_identifier.value,
+            Identifier::Dotted(dotted_identifier) => dotted_identifier.value,
         }
     }
 
@@ -78,8 +96,9 @@ impl<'arena> Identifier<'arena> {
     #[must_use]
     pub fn last_segment(&self) -> &'arena [u8] {
         let value = self.value();
+        let separator = if self.is_dotted() { b'.' } else { b'\\' };
 
-        match memchr::memrchr(b'\\', value) {
+        match memchr::memrchr(separator, value) {
             Some(pos) => &value[pos + 1..],
             None => value,
         }
@@ -92,6 +111,7 @@ impl HasSpan for Identifier<'_> {
             Identifier::Local(local) => local.span(),
             Identifier::Qualified(qualified) => qualified.span(),
             Identifier::FullyQualified(fully_qualified) => fully_qualified.span(),
+            Identifier::Dotted(dotted) => dotted.span(),
         }
     }
 }
@@ -109,6 +129,12 @@ impl HasSpan for QualifiedIdentifier<'_> {
 }
 
 impl HasSpan for FullyQualifiedIdentifier<'_> {
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+
+impl HasSpan for DottedIdentifier<'_> {
     fn span(&self) -> Span {
         self.span
     }

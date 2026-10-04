@@ -15,6 +15,7 @@ pub use crate::cst::sequence::TokenSeparatedSequenceExt;
 pub use crate::cst::trivia::Trivia;
 pub use crate::cst::trivia::TriviaKind;
 pub use crate::cst::trivia::TriviaSequenceExt;
+use crate::dialect::Dialect;
 use crate::error::ParseError;
 
 pub mod cst;
@@ -26,6 +27,7 @@ pub mod trivia;
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Program<'arena> {
     pub file_id: FileId,
+    pub dialect: Dialect,
     pub source_text: &'arena [u8],
     pub trivia: Sequence<'arena, Trivia<'arena>>,
     pub statements: Sequence<'arena, Statement<'arena>>,

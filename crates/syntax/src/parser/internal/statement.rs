@@ -44,6 +44,9 @@ where
             T!["declare"] => Statement::Declare(self.parse_declare()?),
             T!["namespace"] => Statement::Namespace(self.parse_namespace()?),
             T!["use"] => Statement::Use(self.parse_use()?),
+            T![Identifier] if self.dialect.is_sharp() && token.value == b"import" => {
+                Statement::Use(self.parse_import()?)
+            }
             T!["return"] => Statement::Return(self.parse_return()?),
             T!["#["] => {
                 let attributes = self.parse_attribute_list_sequence()?;
