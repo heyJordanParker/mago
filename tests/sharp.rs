@@ -1,8 +1,17 @@
 //! Runs `mago` on a project that mixes PHP# and PHP files.
 
+use std::borrow::Cow;
 use std::path::Path;
 use std::process::Command;
 use std::process::Output;
+
+use mago_database::ReadDatabase;
+use mago_database::file::File;
+use mago_linter::settings::Settings;
+use mago_orchestrator::OrchestratorError;
+use mago_orchestrator::service::lint::LintMode;
+use mago_orchestrator::service::lint::LintService;
+use mago_syntax::settings::ParserSettings;
 
 const REPORT: &str = include_str!("fixtures/sharp/Report.sharp");
 
@@ -57,12 +66,28 @@ fn analyze_finds_no_issues_once_the_argument_is_an_int() {
 }
 
 #[test]
-fn lint_format_guard_and_fix_refuse_a_sharp_file_and_leave_it_unchanged() {
+fn linting_one_sharp_file_is_refused() {
+    let service = LintService::new(ReadDatabase::empty(), Settings::default(), ParserSettings::default(), false);
+    let file = File::ephemeral(Cow::Borrowed(b"src/Demo/Report.sharp"), Cow::Borrowed(REPORT.as_bytes()));
+
+    let result = service.lint_file(&file, LintMode::Full, None, true);
+
+    assert!(matches!(result, Err(OrchestratorError::SharpNotSupported { tool: "lint", .. })), "{result:?}");
+}
+
+#[test]
+fn lint_format_guard_and_fixes_refuse_a_sharp_file_and_leave_it_unchanged() {
     let directory = workspace(REPORT);
 
-    for (command, arguments) in
-        [("lint", &[][..]), ("format", &["--dry-run"][..]), ("format", &[][..]), ("guard", &[][..]), ("fix", &[][..])]
-    {
+    for (command, arguments) in [
+        ("lint", &[][..]),
+        ("format", &["--dry-run"][..]),
+        ("format", &[][..]),
+        ("guard", &[][..]),
+        ("fix", &[][..]),
+        ("fix", &["--no-guard"][..]),
+        ("analyze", &["--fix"][..]),
+    ] {
         let output = run(directory.path(), command, arguments);
         let stderr = String::from_utf8_lossy(&output.stderr);
 

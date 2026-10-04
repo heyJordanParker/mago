@@ -126,14 +126,19 @@ impl LintService {
     /// # Returns
     ///
     /// An `IssueCollection` containing all issues found in the file.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OrchestratorError::SharpNotSupported`] for a PHP# file.
     pub fn lint_file(
         &self,
         file: &File,
         mode: LintMode,
         only: Option<&[String]>,
         include_disabled: bool,
-    ) -> IssueCollection {
+    ) -> Result<IssueCollection, OrchestratorError> {
+        refuse_sharp_file("lint", file)?;
+
         let arena = LocalArena::new();
         let program = parse_file_with_settings(&arena, file, self.parser_settings);
         let resolved_names = NameResolver::new(&arena).resolve(program);
@@ -153,7 +158,7 @@ impl LintService {
             issues.extend(linter.lint(file, program, &resolved_names));
         }
 
-        issues
+        Ok(issues)
     }
 
     /// Runs the linting pipeline in the specified mode.

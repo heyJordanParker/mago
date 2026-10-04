@@ -42,8 +42,12 @@ use mago_syntax::dialect::Dialect;
 
 use crate::error::OrchestratorError;
 
-/// Refuses a PHP# file, which only the analyzer supports yet.
-fn refuse_sharp_file(tool: &'static str, file: &File) -> Result<(), OrchestratorError> {
+/// Refuses a PHP# file, which only the analyzer reads yet, and which no tool may change.
+///
+/// # Errors
+///
+/// Returns [`OrchestratorError::SharpNotSupported`] for a PHP# file.
+pub fn refuse_sharp_file(tool: &'static str, file: &File) -> Result<(), OrchestratorError> {
     if Dialect::of(file).is_sharp() {
         return Err(OrchestratorError::SharpNotSupported {
             tool,

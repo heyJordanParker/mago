@@ -156,7 +156,8 @@ pub fn run(code: String, settings_js: JsValue) -> Result<JsValue, JsValue> {
     let linter_settings = LinterSettings { php_version: version, integrations, ..Default::default() };
     let database = ReadDatabase::empty();
     let service = LintService::new(database, linter_settings.clone(), ParserSettings::default(), false);
-    let linter_issues = service.lint_file(&file, LintMode::Full, None, true);
+    let linter_issues =
+        service.lint_file(&file, LintMode::Full, None, true).map_err(|error| JsValue::from_str(&error.to_string()))?;
 
     let requirements_by_code: HashMap<String, _> = RuleRegistry::build(&linter_settings, None, true)
         .rules()
@@ -255,7 +256,8 @@ pub fn lint(code: String, php_version: &str) -> Result<JsValue, JsValue> {
 
     let database = ReadDatabase::empty();
     let service = LintService::new(database, settings, ParserSettings::default(), false);
-    let issues = service.lint_file(&file, LintMode::Full, None, true);
+    let issues =
+        service.lint_file(&file, LintMode::Full, None, true).map_err(|error| JsValue::from_str(&error.to_string()))?;
 
     let wasm_issues: Vec<WasmIssue> =
         issues.iter().map(|i| WasmIssue::from_issue(i, &file, IssueSource::Linter)).collect();
