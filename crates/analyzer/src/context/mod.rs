@@ -21,6 +21,7 @@ use mago_span::Span;
 use mago_syntax::comments::docblock::PrecedingDocblocks;
 use mago_syntax::cst::Identifier;
 use mago_syntax::cst::Trivia;
+use mago_syntax::dialect::Dialect;
 
 use crate::analysis_result::AnalysisResult;
 use crate::artifacts::AnalysisArtifacts;
@@ -47,6 +48,8 @@ where
     pub(super) arena: &'arena A,
     pub(super) codebase: &'ctx CodebaseMetadata,
     pub(super) source_file: &'ctx File,
+    /// The dialect of the analyzed program.
+    pub(super) dialect: Dialect,
     pub(super) resolved_names: &'ctx ResolvedNames<'arena>,
     pub(super) type_resolution_context: TypeResolutionContext,
     pub(super) comments: &'arena [Trivia<'arena>],
@@ -68,6 +71,7 @@ where
         arena: &'arena A,
         codebase: &'ctx CodebaseMetadata,
         source: &'ctx File,
+        dialect: Dialect,
         resolved_names: &'ctx ResolvedNames<'arena>,
         settings: &'ctx Settings,
         statement_span: Span,
@@ -81,6 +85,7 @@ where
             arena,
             codebase,
             source_file: source,
+            dialect,
             resolved_names,
             type_resolution_context: TypeResolutionContext::new(),
             comments,

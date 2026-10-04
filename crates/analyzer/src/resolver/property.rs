@@ -32,7 +32,6 @@ use mago_span::Span;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::Variable;
-use mago_syntax::dialect::Dialect;
 use mago_text_edit::TextEdit;
 use mago_word::Word;
 use mago_word::concat_word;
@@ -1479,8 +1478,7 @@ fn report_non_existent_property<A>(
     A: Arena,
 {
     let method_name = trim_start_byte(prop_name.as_bytes(), b'$');
-    if Dialect::of(context.source_file).is_sharp() && context.codebase.method_exists(classname.as_bytes(), method_name)
-    {
+    if context.dialect.is_sharp() && context.codebase.method_exists(classname.as_bytes(), method_name) {
         let classname = display_class_like_name(context, classname);
         let method_name = BytesDisplay(method_name);
 

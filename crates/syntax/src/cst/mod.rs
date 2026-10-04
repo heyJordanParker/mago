@@ -27,6 +27,7 @@ pub mod trivia;
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Program<'arena> {
     pub file_id: FileId,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Dialect::is_php"))]
     pub dialect: Dialect,
     pub source_text: &'arena [u8],
     pub trivia: Sequence<'arena, Trivia<'arena>>,

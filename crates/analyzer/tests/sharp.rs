@@ -75,6 +75,44 @@ fn issues(analyzed: (&'static str, &'static str), others: &[(&'static str, &'sta
         .collect()
 }
 
+#[test]
+fn adding_a_mixed_operand_reports_mixed_operand_as_in_php() {
+    let any = "<?php\n\nnamespace Lib;\n\nfinal class Any\n{\n    public static function value(): mixed\n    {\n        return 1;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Any;\n\nclass Report\n{\n    public static int total()\n    {\n        return Any.value() + 1;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Any;\n\nclass Report\n{\n    public static function total(): int\n    {\n        return Any::value() + 1;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Any.php", any)]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[("src/Lib/Any.php", any)]);
+
+    assert!(codes(&sharp_issues).contains(&"mixed-operand"), "{sharp_issues:?}");
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn the_analyzer_reads_the_dialect_from_the_program_not_the_file_name() {
+    const CODE: &str = "namespace Demo;\n\nclass Report\n{\n    public static int total(int extra)\n    {\n        let label = \"one\";\n        return extra + label;\n    }\n}\n";
+    let Prelude { mut metadata, mut symbol_references, .. } = PRELUDE.clone();
+    let settings = Settings::default();
+    let arena = LocalArena::new();
+    let sharp_file = File::ephemeral(Cow::Borrowed(b"src/Demo/Report.sharp"), Cow::Borrowed(CODE.as_bytes()));
+    let php_named_file = File::ephemeral(Cow::Borrowed(b"src/Demo/Report.php"), Cow::Borrowed(CODE.as_bytes()));
+    let program = parse_file(&arena, &sharp_file);
+    let names = NameResolver::new(&arena).resolve(program);
+    metadata.extend(scan_program(&arena, &sharp_file, program, &names, settings.version));
+    populate_codebase(&mut metadata, &mut symbol_references, WordSet::default(), HashSet::default());
+
+    let mut result = AnalysisResult::new(symbol_references);
+    Analyzer::new(&arena, &php_named_file, &names, &metadata, &PLUGIN_REGISTRY, settings)
+        .analyze(program, &mut result)
+        .expect("analysis succeeds");
+
+    assert!(
+        result.issues.iter().any(|issue| issue.code.as_deref() == Some("not-supported-yet")),
+        "{:#?}",
+        result.issues
+    );
+}
+
 /// The issue codes alone, in order.
 fn codes(issues: &[String]) -> Vec<&str> {
     issues.iter().map(|issue| issue.split_once(' ').map_or("", |(_, code)| code)).collect()

@@ -157,6 +157,13 @@ fn a_full_name_inside_code_names_the_import_to_add() {
 }
 
 #[test]
+fn a_class_declared_in_the_file_is_never_the_root_of_a_full_name() {
+    let code = leak(method("        return Report.Totals.of(extra);\n"));
+
+    assert_eq!(issues(code), ["7:16 Reading `Report.Totals` without a call is not supported yet."]);
+}
+
+#[test]
 fn reading_a_static_member_without_a_call_is_not_supported_yet() {
     let code = leak(method("        return Calc.rate;\n"));
 

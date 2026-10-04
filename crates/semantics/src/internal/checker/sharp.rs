@@ -140,16 +140,7 @@ pub fn check_class_name(class: &Class, context: &mut Context<'_, '_, '_>) {
 /// Checks the classes and imports of a PHP# file against each other, as the engine does when it compiles the file.
 #[inline]
 pub fn check_declarations(program: &Program, context: &mut Context<'_, '_, '_>) {
-    let mut classes = Vec::new();
-    let mut imports = Vec::new();
-    for statement in &program.statements {
-        collect_declarations(statement, &mut classes, &mut imports);
-        if let Statement::Namespace(namespace) = statement {
-            for statement in namespace.statements() {
-                collect_declarations(statement, &mut classes, &mut imports);
-            }
-        }
-    }
+    let (classes, imports) = declarations(program);
 
     for import in &imports {
         let short_name =
@@ -296,6 +287,7 @@ pub fn check_member_access(
     };
 
     let is_full_name = !context.names.is_imported(&root.name)
+        && !declares_class(context.program, root.name.value())
         && starts_uppercase(root.name.value())
         && properties.iter().all(|property| starts_uppercase(property.value));
 
@@ -326,6 +318,28 @@ pub fn check_member_access(
             "In code, `.` is always member access, so a class is written by the short name its import brings in.",
         ),
     );
+}
+
+/// The classes and imports a PHP# file declares, in source order.
+fn declarations<'ast, 'arena>(
+    program: &'ast Program<'arena>,
+) -> (Vec<&'ast Class<'arena>>, Vec<&'ast UseItem<'arena>>) {
+    let mut classes = Vec::new();
+    let mut imports = Vec::new();
+    for statement in &program.statements {
+        collect_declarations(statement, &mut classes, &mut imports);
+        if let Statement::Namespace(namespace) = statement {
+            for statement in namespace.statements() {
+                collect_declarations(statement, &mut classes, &mut imports);
+            }
+        }
+    }
+
+    (classes, imports)
+}
+
+fn declares_class(program: &Program, name: &[u8]) -> bool {
+    declarations(program).0.iter().any(|class| class.name.value.eq_ignore_ascii_case(name))
 }
 
 fn collect_declarations<'ast, 'arena>(

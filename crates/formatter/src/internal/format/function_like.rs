@@ -53,6 +53,8 @@ struct FunctionLikeSettings {
 #[derive(Debug, Clone, Copy)]
 struct FunctionLikeParts<'arena> {
     pub attribute_lists: &'arena Sequence<'arena, AttributeList<'arena>>,
+    /// The first token of the signature after the attributes, where its leading comments end.
+    pub signature_start: Span,
     pub modifiers: Option<&'arena Sequence<'arena, Modifier<'arena>>>,
     pub static_keyword: Option<&'arena Keyword<'arena>>,
     pub fn_or_function: Option<&'arena Keyword<'arena>>,
@@ -68,6 +70,7 @@ impl<'arena> FunctionLikeParts<'arena> {
     pub fn for_closure(closure: &'arena Closure<'arena>) -> Self {
         Self {
             attribute_lists: &closure.attribute_lists,
+            signature_start: closure.r#static.as_ref().map_or(closure.function.span, |r#static| r#static.span),
             modifiers: None,
             static_keyword: closure.r#static.as_ref(),
             fn_or_function: Some(&closure.function),
@@ -83,6 +86,7 @@ impl<'arena> FunctionLikeParts<'arena> {
     pub fn for_function(function: &'arena Function<'arena>) -> Self {
         Self {
             attribute_lists: &function.attribute_lists,
+            signature_start: function.function.span,
             modifiers: None,
             static_keyword: None,
             fn_or_function: Some(&function.function),
@@ -98,6 +102,13 @@ impl<'arena> FunctionLikeParts<'arena> {
     pub fn for_method(method: &'arena Method<'arena>) -> Self {
         Self {
             attribute_lists: &method.attribute_lists,
+            // A PHP# method has no `function` keyword, so its signature can start with its return type or its name.
+            signature_start: method
+                .modifiers
+                .first_span()
+                .or_else(|| method.function.as_ref().map(|function| function.span))
+                .or_else(|| method.return_type_hint.as_ref().map(HasSpan::span))
+                .unwrap_or(method.name.span),
             modifiers: Some(&method.modifiers),
             static_keyword: None,
             fn_or_function: method.function.as_ref(),
@@ -110,18 +121,6 @@ impl<'arena> FunctionLikeParts<'arena> {
                 MethodBody::Abstract(body) => FunctionLikeBody::Abstract(body.terminator),
                 MethodBody::Concrete(block) => FunctionLikeBody::Block(block),
             },
-        }
-    }
-
-    fn get_leading_comment_span(&self) -> Span {
-        if let Some(modifiers) = self.modifiers
-            && let Some(span) = modifiers.first_span()
-        {
-            span
-        } else if let Some(static_kw) = self.static_keyword {
-            static_kw.span
-        } else {
-            self.fn_or_function.map_or_else(|| self.parameter_list.span(), |keyword| keyword.span)
         }
     }
 
@@ -317,8 +316,7 @@ impl<'arena> FunctionLikeParts<'arena> {
         A: Arena,
     {
         let attributes = self.format_attributes(f);
-        let leading_comment_span = self.get_leading_comment_span();
-        let leading_comments = f.print_leading_comments(leading_comment_span);
+        let leading_comments = f.print_leading_comments(self.signature_start);
 
         let parameter_list_will_break = if self.parameter_list.parameters.is_empty() {
             if f.has_inner_comment(self.parameter_list.span()) { None } else { Some(false) }

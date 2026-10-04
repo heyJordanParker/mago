@@ -185,6 +185,7 @@ where
             self.arena,
             self.codebase,
             self.source_file,
+            program.dialect,
             self.resolved_names,
             &self.settings,
             statements[0].span(),

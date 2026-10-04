@@ -27,6 +27,15 @@ fn valid_input_succeeds() {
 }
 
 #[test]
+fn php_json_output_does_not_name_a_dialect() {
+    let output = run("valid.php", &["--json"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(!stdout.contains("dialect"), "{stdout}");
+}
+
+#[test]
 fn parse_errors_fail_without_hiding_output() {
     for (arguments, expected) in [(&[][..], "Program"), (&["--json"], "\"program\""), (&["--names"], "Resolved Names")]
     {

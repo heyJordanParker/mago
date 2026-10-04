@@ -30,7 +30,6 @@ use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::Binary;
 use mago_syntax::cst::BinaryOperator;
-use mago_syntax::dialect::Dialect;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
@@ -64,11 +63,20 @@ where
         return Ok(());
     }
 
-    // In PHP# `+` joins strings, which the engine cannot run yet.
+    // In PHP# `+` joins strings, which the engine cannot run yet. A `mixed` operand keeps its
+    // `mixed-operand` report, because a value of unknown type must be checked before use.
     if let BinaryOperator::Addition(operator) = binary.operator
-        && Dialect::of(context.source_file).is_sharp()
+        && context.dialect.is_sharp()
         && [&left_type, &right_type].into_iter().any(|operand| {
-            union_comparator::can_expression_types_be_identical(context.codebase, operand, &get_string(), false, false)
+            !operand.has_mixed()
+                && !operand.has_mixed_template()
+                && union_comparator::can_expression_types_be_identical(
+                    context.codebase,
+                    operand,
+                    &get_string(),
+                    false,
+                    false,
+                )
         })
     {
         context.collector.report_with_code(

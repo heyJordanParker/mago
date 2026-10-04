@@ -27,4 +27,11 @@ impl Dialect {
     pub const fn is_sharp(self) -> bool {
         matches!(self, Dialect::Sharp)
     }
+
+    /// Returns `true` for PHP.
+    #[inline]
+    #[must_use]
+    pub const fn is_php(&self) -> bool {
+        matches!(self, Dialect::Php)
+    }
 }
