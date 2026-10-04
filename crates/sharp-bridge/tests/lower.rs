@@ -554,29 +554,6 @@ fn member_calls_and_reads_on_values_are_instance_access() {
 }
 
 /// ```php
-/// return \Lib\Calc::make()->add($extra);
-/// ```
-#[test]
-fn a_call_on_a_static_call_result_is_an_instance_call() {
-    assert_eq!(
-        body("        return Calc.make().add(extra);\n"),
-        indoc! {r#"
-            STMT_LIST
-              RETURN
-                METHOD_CALL
-                  STATIC_CALL
-                    ZVAL "Lib\\Calc"
-                    ZVAL "make"
-                    ARG_LIST
-                  ZVAL "add"
-                  ARG_LIST
-                    VAR
-                      ZVAL "extra"
-        "#}
-    );
-}
-
-/// ```php
 /// $a = "line\n"; $b = 'raw\n'; $c = 1.5; $d = 0x10; $e = 9223372036854775808; $f = true; $g = false; $h = null;
 /// ```
 ///

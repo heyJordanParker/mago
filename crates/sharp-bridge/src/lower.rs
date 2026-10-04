@@ -410,12 +410,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// `Class.m()` is a static call on the class's full name. Any other `object.m()` is an instance call.
     fn method_call(&mut self, call: &MethodCall) -> u32 {
         let line = self.line(call);
-        let class = match call.object {
-            Expression::ConstantAccess(class) if self.names.binding(&class.name) == Some(Binding::Class) => Some(class),
-            _ => None,
-        };
-
-        let (kind, object) = match class {
+        let (kind, object) = match self.names.static_call_class(call) {
             Some(class) => {
                 let class = self.string(ZEND_NAME_FQ, self.line(class), self.names.get(&class.name));
 
