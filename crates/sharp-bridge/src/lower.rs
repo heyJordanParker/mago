@@ -252,6 +252,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             };
         }
 
+        if flags & (ZEND_ACC_PUBLIC | ZEND_ACC_PROTECTED | ZEND_ACC_PRIVATE) == 0 {
+            unreachable!("check_slice refuses a method without an access modifier");
+        }
+
         let mut parameters = Vec::new();
         for parameter in &method.parameter_list.parameters {
             parameters.push(self.parameter(parameter));
@@ -645,37 +649,40 @@ mod tests {
     use super::*;
     use crate::catch_panic;
 
-    /// Lowers a method with `parameters` and `body`, skipping the semantic checks that would refuse them.
-    fn lower_unchecked(parameters: &str, body: &str) -> Box<Unit> {
-        let source = format!("class Report\n{{\n    public void run({parameters})\n    {{\n{body}    }}\n}}\n");
+    /// Lowers a class holding `method`, skipping the semantic checks that would refuse it, and asserts the result is
+    /// one internal error and no nodes.
+    fn assert_internal_error(method: &str) {
+        let source = format!("class Report\n{{\n    {method}\n}}\n");
 
-        catch_panic(|| {
+        let unit = catch_panic(|| {
             let file = File::ephemeral(Cow::Borrowed(b"src/Report.sharp"), Cow::Owned(source.into_bytes()));
             let arena = LocalArena::new();
             let program = parse_file_with_dialect(&arena, &file, Dialect::Sharp, ParserSettings::default());
             let names = NameResolver::new(&arena).resolve(program);
 
             Lowering::new(&file, &names).program(program)
-        })
+        });
+
+        assert_eq!(unit.abi.node_count, 0, "{method}");
+        assert_eq!(unit.diagnostics.len(), 1, "{method}");
+        assert!(unit.texts[0].starts_with(b"internal error in the PHP# front end: "), "{method}");
     }
 
     #[test]
     fn a_write_to_anything_but_a_local_or_a_member_returns_an_internal_error_and_no_nodes() {
-        for body in ["        PHP_INT_MAX = 1;\n", "        PHP_INT_MAX += 1;\n", "        PHP_INT_MAX++;\n"] {
-            let unit = lower_unchecked("", body);
-
-            assert_eq!(unit.abi.node_count, 0, "{body}");
-            assert_eq!(unit.diagnostics.len(), 1, "{body}");
-            assert!(unit.texts[0].starts_with(b"internal error in the PHP# front end: "), "{body}");
-        }
+        assert_internal_error("public void run() { PHP_INT_MAX = 1; }");
+        assert_internal_error("public void run() { PHP_INT_MAX += 1; }");
+        assert_internal_error("public void run() { PHP_INT_MAX++; }");
     }
 
     #[test]
     fn a_parameter_without_a_type_returns_an_internal_error_and_no_nodes() {
-        let unit = lower_unchecked("$extra", "");
+        assert_internal_error("public void run($extra) {}");
+    }
 
-        assert_eq!(unit.abi.node_count, 0);
-        assert_eq!(unit.diagnostics.len(), 1);
-        assert!(unit.texts[0].starts_with(b"internal error in the PHP# front end: "));
+    #[test]
+    fn a_method_without_an_access_modifier_returns_an_internal_error_and_no_nodes() {
+        assert_internal_error("void run() {}");
+        assert_internal_error("static void run() {}");
     }
 }
