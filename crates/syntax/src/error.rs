@@ -55,7 +55,7 @@ pub enum ParseError {
     QualifiedNameInSharp(Box<str>, Span),
     /// A PHP# parameter written without its type, such as `run(extra)`, at its name.
     UntypedParameterInSharp(Span),
-    /// A PHP# statement or expression nested more than [`MAX_RECURSION_DEPTH`] levels deep, at the first one past it.
+    /// A PHP# statement, expression or type nested more than [`MAX_RECURSION_DEPTH`] levels deep, at the innermost one.
     NestingTooDeepInSharp(Span),
     /// TypeScript's `in` written in a PHP# `for … of` loop, at the `in`.
     ForInInSharp(Span),
@@ -188,7 +188,7 @@ impl std::fmt::Display for ParseError {
             }
             ParseError::UntypedParameterInSharp(_) => "A PHP# parameter needs a type, as in `int extra`.".to_string(),
             ParseError::NestingTooDeepInSharp(_) => {
-                format!("PHP# nests statements and expressions at most {MAX_RECURSION_DEPTH} levels deep.")
+                format!("PHP# nests statements, expressions and types at most {MAX_RECURSION_DEPTH} levels deep.")
             }
             ParseError::ForInInSharp(_) => {
                 "PHP# loops over a collection with `of`, as in `for (const line of lines)`.".to_string()

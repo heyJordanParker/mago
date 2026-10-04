@@ -2377,7 +2377,7 @@ generate_ast_walker! {
     }
 
     'arena Hint as hint => {
-        match hint {
+        ensure_sufficient_stack(|| match hint {
             Hint::Identifier(identifier) => {
                 walker.walk_identifier(identifier, context);
             }
@@ -2414,7 +2414,7 @@ generate_ast_walker! {
             Hint::Iterable(local_identifier) => {
                 walker.walk_local_identifier(local_identifier, context);
             }
-        }
+        });
     }
 
     'arena ParenthesizedHint as parenthesized_hint => {
