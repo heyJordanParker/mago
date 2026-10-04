@@ -15,6 +15,9 @@ use mago_syntax::settings::ParserSettings;
 
 const REPORT: &str = include_str!("fixtures/sharp/Report.sharp");
 
+/// A PHP class whose property read on a possibly `null` value gets the analyzer's `?->` fix.
+const BOX: &str = "<?php\n\ndeclare(strict_types=1);\n\nnamespace Lib;\n\nfinal class Box\n{\n    public int $value = 0;\n\n    public static function maybe(): ?self\n    {\n        return null;\n    }\n}\n";
+
 fn workspace(report: &str) -> tempfile::TempDir {
     let directory = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(directory.path().join("src/Demo")).unwrap();
@@ -80,6 +83,37 @@ fn analyze_reports_only_the_scope_error_for_a_local_used_after_its_block_closes(
 }
 
 #[test]
+fn analyze_fix_runs_on_php_files_beside_a_valid_sharp_file() {
+    let directory = workspace(&REPORT.replace("let label = \"one\";", "let label = 1;"));
+    let reader = "<?php\n\ndeclare(strict_types=1);\n\nnamespace Lib;\n\nfunction read(): ?int\n{\n    $box = Box::maybe();\n    return $box->value;\n}\n";
+    std::fs::write(directory.path().join("src/Lib/Box.php"), BOX).unwrap();
+    std::fs::write(directory.path().join("src/Lib/read.php"), reader).unwrap();
+
+    let output = run(directory.path(), "analyze", &["--fix", "--dry-run"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(!stderr.contains("not supported yet"), "{stdout}{stderr}");
+    assert!(stdout.contains("$box?->value"), "{stdout}{stderr}");
+    assert_eq!(std::fs::read_to_string(directory.path().join("src/Lib/read.php")).unwrap(), reader);
+}
+
+#[test]
+fn analyze_fix_refuses_a_fix_that_would_edit_a_sharp_file() {
+    let source = "namespace Demo;\n\nimport Lib.Box;\n\nclass Report\n{\n    public static int total()\n    {\n        const box = Box.maybe();\n        return box.value;\n    }\n}\n";
+    let directory = workspace(source);
+    std::fs::write(directory.path().join("src/Lib/Box.php"), BOX).unwrap();
+
+    let output = run(directory.path(), "analyze", &["--fix"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(!output.status.success(), "{stderr}");
+    assert!(stderr.contains("not supported yet"), "{stderr}");
+    assert!(stderr.contains("src/Demo/Report.sharp"), "{stderr}");
+    assert_eq!(report(directory.path()), source);
+}
+
+#[test]
 fn linting_one_sharp_file_is_refused() {
     let service = LintService::new(ReadDatabase::empty(), Settings::default(), ParserSettings::default(), false);
     let file = File::ephemeral(Cow::Borrowed(b"src/Demo/Report.sharp"), Cow::Borrowed(REPORT.as_bytes()));
@@ -100,7 +134,6 @@ fn lint_format_guard_and_fixes_refuse_a_sharp_file_and_leave_it_unchanged() {
         ("guard", &[][..]),
         ("fix", &[][..]),
         ("fix", &["--no-guard"][..]),
-        ("analyze", &["--fix"][..]),
     ] {
         let output = run(directory.path(), command, arguments);
         let stderr = String::from_utf8_lossy(&output.stderr);

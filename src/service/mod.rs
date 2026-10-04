@@ -71,7 +71,6 @@ use mago_database::DatabaseReader;
 use mago_database::ReadDatabase;
 use mago_database::change::ChangeLog;
 use mago_database::file::File;
-use mago_database::file::FileType;
 use mago_orchestrator::Orchestrator;
 use mago_orchestrator::service::format::FileFormatStatus;
 use mago_orchestrator::service::refuse_sharp_file;
@@ -379,10 +378,6 @@ impl IssueProcessor {
         issues: IssueCollection,
         baseline: Option<Baseline>,
     ) -> Result<(ExitCode, Vec<FileId>), Error> {
-        for file in database.files().filter(|file| file.file_type == FileType::Host) {
-            refuse_sharp_file("--fix", &file)?;
-        }
-
         let issues =
             if let Some(baseline) = baseline { baseline.filter_issues(issues, &database.read_only()) } else { issues };
 
@@ -623,6 +618,9 @@ impl IssueProcessor {
                 if *fixed_content == *file.contents {
                     return Ok((false, skipped_unsafe, skipped_potentially_unsafe, bugs));
                 }
+
+                // A fix writes PHP syntax, so a run that would edit a PHP# file is refused before anything is written.
+                refuse_sharp_file("--fix", file)?;
 
                 let final_content = if format_after_fix {
                     let ephemeral_file = File::ephemeral(file.name.clone(), Cow::Owned(fixed_content));
