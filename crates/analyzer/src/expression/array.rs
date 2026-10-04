@@ -417,7 +417,7 @@ where
 
         for class_name in &class_names {
             for method_name in &method_names {
-                if !context.codebase.method_exists(class_name.as_bytes(), method_name.as_bytes()) {
+                if class_name.is_empty() || method_name.is_empty() {
                     continue;
                 }
 
