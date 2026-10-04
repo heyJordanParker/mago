@@ -60,8 +60,10 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Return<'arena> {
 
             let inferred_return_type = artifacts.get_rc_expression_type(&return_value).cloned();
 
+            // A value that failed to parse is `never`, and its parse error already reports it.
             if let Some(inferred_return_type) = &inferred_return_type
                 && inferred_return_type.is_never()
+                && !matches!(return_value, Expression::Error(_))
             {
                 context.collector.report_with_code(
                     IssueCode::NeverReturn,

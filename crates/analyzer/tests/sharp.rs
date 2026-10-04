@@ -102,7 +102,7 @@ fn analyze(
     for (name, file_id) in &file_ids {
         let file = database.get_ref(file_id).expect("file was just added");
         let program = parse_file(&arena, file);
-        assert!(!program.has_errors(), "{name} did not parse: {:?}", program.errors);
+        assert!(programs.is_empty() || !program.has_errors(), "{name} did not parse: {:?}", program.errors);
 
         let names = NameResolver::new(&arena).resolve(program);
         metadata.extend(scan_program(&arena, file, program, &names, settings.version));
@@ -117,7 +117,8 @@ fn analyze(
         .analyze(program, &mut result)
         .expect("analysis succeeds");
 
-    result.issues.into_iter().collect()
+    // The analyzed file's parse errors come first, as `mago analyze` reports them beside the analysis.
+    program.errors.iter().map(Issue::from).chain(result.issues).collect()
 }
 
 #[test]
@@ -571,6 +572,16 @@ fn a_get_only_property_is_readonly_and_set_once_in_the_constructor() {
             "19:14 invalid-property-write",
         ]
     );
+}
+
+/// A parse error reports its spot once, so returning what failed to parse adds no `never-return`, in PHP# and PHP.
+#[test]
+fn returning_a_value_that_failed_to_parse_adds_no_issue() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public Report make(string json)\n    {\n        return new Report.fromJson(json);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfunction make(): int\n{\n    return );\n}\n";
+
+    assert_eq!(issues(("src/Demo/make.php", php), &[]), ["7:12 parse"]);
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), ["7:20 parse"]);
 }
 
 #[test]
