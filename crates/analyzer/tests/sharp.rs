@@ -26,6 +26,7 @@ use mago_database::DatabaseReader;
 use mago_database::file::File;
 use mago_names::resolver::NameResolver;
 use mago_prelude::Prelude;
+use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::Call;
@@ -66,6 +67,27 @@ fn issues_in(
     analyzed: (&'static str, &'static str),
     others: &[(&'static str, &'static str)],
 ) -> Vec<String> {
+    let code = analyzed.1;
+
+    analyze(registry, settings, analyzed, others)
+        .iter()
+        .map(|issue| {
+            let offset = issue.primary_span().expect("a primary span").start.offset as usize;
+            let line = code[..offset].matches('\n').count() + 1;
+            let column = offset - code[..offset].rfind('\n').map_or(0, |newline| newline + 1) + 1;
+
+            format!("{line}:{column} {}", issue.code.as_deref().unwrap_or("none"))
+        })
+        .collect()
+}
+
+/// Analyzes `analyzed` together with `others` under `settings` and the plugins of `registry`, and returns its issues.
+fn analyze(
+    registry: &PluginRegistry,
+    settings: Settings,
+    analyzed: (&'static str, &'static str),
+    others: &[(&'static str, &'static str)],
+) -> Vec<Issue> {
     let Prelude { mut database, mut metadata, mut symbol_references } = PRELUDE.clone();
 
     let file_ids: Vec<_> = std::iter::once(&analyzed)
@@ -95,18 +117,7 @@ fn issues_in(
         .analyze(program, &mut result)
         .expect("analysis succeeds");
 
-    let code = analyzed.1;
-    result
-        .issues
-        .iter()
-        .map(|issue| {
-            let offset = issue.primary_span().expect("a primary span").start.offset as usize;
-            let line = code[..offset].matches('\n').count() + 1;
-            let column = offset - code[..offset].rfind('\n').map_or(0, |newline| newline + 1) + 1;
-
-            format!("{line}:{column} {}", issue.code.as_deref().unwrap_or("none"))
-        })
-        .collect()
+    result.issues.into_iter().collect()
 }
 
 #[test]
@@ -278,6 +289,14 @@ fn a_method_used_as_a_value_is_not_supported_yet() {
     assert!(sharp_issues.contains(&"10:26 not-supported-yet".to_string()), "{sharp_issues:?}");
     assert!(sharp_issues.contains(&"11:21 not-supported-yet".to_string()), "{sharp_issues:?}");
     assert!(!sharp_issues.iter().any(|issue| issue.ends_with("non-existent-property")), "{sharp_issues:?}");
+
+    let helps: Vec<_> =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Calc.php", CALC)])
+            .into_iter()
+            .filter(|issue| issue.code.as_deref() == Some("not-supported-yet"))
+            .filter_map(|issue| issue.help)
+            .collect();
+    assert_eq!(helps, ["Call the method: `calc.add()`.", "Call the method: `this.total()`."]);
 }
 
 #[test]
