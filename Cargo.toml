@@ -187,6 +187,7 @@ mago-database = { path = "crates/database", version = "1.53.0" }
 mago-guard = { path = "crates/guard", version = "1.53.0" }
 mago-orchestrator = { path = "crates/orchestrator", version = "1.53.0" }
 mago-extension = { path = "crates/extension", version = "1.53.0" }
+mago-sharp-bridge = { path = "crates/sharp-bridge", version = "1.53.0" }
 tracing = { version = "0.1.40" }
 foldhash = "0.2"
 serde_json = { version = "1.0.138" }
@@ -249,6 +250,7 @@ anyhow = "1"
 pulldown-cmark = "0.13"
 tera = "1.20"
 temp-env = "0.3.6"
+cbindgen = { version = "0.29.4", default-features = false }
 
 [dependencies]
 mago-allocator = { workspace = true }
