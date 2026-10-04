@@ -3,6 +3,7 @@ use mago_names::binding::Binding;
 use mago_names::binding::BindingError;
 use mago_names::binding::Local;
 use mago_names::binding::LocalKind;
+use mago_names::scope::php_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -30,11 +31,10 @@ use mago_syntax::cst::UseItem;
 use mago_syntax::cst::UseItems;
 use mago_syntax::cst::Variable;
 
+use crate::internal::consts::RESERVED_CLASS_NAMES;
+use crate::internal::consts::RESERVED_KEYWORDS;
+use crate::internal::consts::SOFT_RESERVED_KEYWORDS_MINUS_SYMBOL_ALLOWED;
 use crate::internal::context::Context;
-
-/// The class names `zend_compile.c` reserves for types that the PHP checks do not already reject as keywords.
-const RESERVED_CLASS_NAMES: [&[u8]; 9] =
-    [b"bool", b"float", b"int", b"string", b"void", b"never", b"iterable", b"object", b"mixed"];
 
 /// The PHP superglobals. A PHP# local or parameter of one of these names would read or replace it.
 const SUPERGLOBALS: [&[u8]; 9] =
@@ -82,7 +82,7 @@ fn check_const_write(target: &Expression, write: &str, context: &mut Context<'_,
 
 #[inline]
 pub fn check_local_declaration(local_declaration: &LocalDeclaration, context: &mut Context<'_, '_, '_>) {
-    check_superglobal_name(local_declaration.name.value, local_declaration.name.span, "local", context);
+    check_local_name(local_declaration.name.value, local_declaration.name.span, "local", context);
 }
 
 #[inline]
@@ -90,7 +90,7 @@ pub fn check_parameter(parameter: &FunctionLikeParameter, context: &mut Context<
     if parameter.variable.name.starts_with(b"$") {
         report_dollar_variable(parameter.variable.name, parameter.variable.span, context);
     } else {
-        check_superglobal_name(parameter.variable.name, parameter.variable.span, "parameter", context);
+        check_local_name(parameter.variable.name, parameter.variable.span, "parameter", context);
     }
 }
 
@@ -123,10 +123,15 @@ pub fn check_binding_errors(context: &mut Context<'_, '_, '_>) {
     }
 }
 
-/// Checks a PHP# class name against the names the engine reserves for types, beyond the keywords the PHP checks reject.
+/// Checks a PHP# class name against the names the engine reserves, beyond the keywords the PHP checks reject.
 #[inline]
 pub fn check_class_name(class: &Class, context: &mut Context<'_, '_, '_>) {
-    if RESERVED_CLASS_NAMES.iter().any(|reserved| reserved.eq_ignore_ascii_case(class.name.value)) {
+    let is_keyword = RESERVED_KEYWORDS
+        .iter()
+        .chain(&SOFT_RESERVED_KEYWORDS_MINUS_SYMBOL_ALLOWED)
+        .any(|keyword| keyword.eq_ignore_ascii_case(class.name.value));
+
+    if is_reserved_class_name(class.name.value) && !is_keyword {
         let name = BytesDisplay(class.name.value);
 
         context.report(
@@ -141,12 +146,48 @@ pub fn check_class_name(class: &Class, context: &mut Context<'_, '_, '_>) {
 #[inline]
 pub fn check_declarations(program: &Program, context: &mut Context<'_, '_, '_>) {
     let (classes, imports) = declarations(program);
+    let namespace = program.statements.iter().find_map(|statement| match statement {
+        Statement::Namespace(namespace) => namespace.name.as_ref().map(php_name),
+        _ => None,
+    });
 
-    for import in &imports {
-        let short_name =
-            import.alias.as_ref().map_or_else(|| import.name.last_segment(), |alias| alias.identifier.value);
-        if let Some(class) = classes.iter().find(|class| class.name.value.eq_ignore_ascii_case(short_name)) {
-            let full_name = BytesDisplay(import.name.value());
+    for (index, import) in imports.iter().enumerate() {
+        let short_name = import.name.last_segment();
+        let full_name = BytesDisplay(import.name.value());
+
+        if is_reserved_class_name(short_name) {
+            let short_name = BytesDisplay(short_name);
+
+            context.report(
+                Issue::error(format!(
+                    "Cannot import `{full_name}` as `{short_name}`: PHP reserves `{short_name}` for a type."
+                ))
+                .with_annotation(Annotation::primary(import.name.span()).with_message("Imported here."))
+                .with_help("Import a class with another name."),
+            );
+        }
+
+        if let Some(earlier) =
+            imports[..index].iter().find(|earlier| earlier.name.last_segment().eq_ignore_ascii_case(short_name))
+        {
+            let earlier_full_name = BytesDisplay(earlier.name.value());
+
+            context.report(
+                Issue::error(format!(
+                    "Cannot import `{full_name}` as `{}`: `{earlier_full_name}` is already imported as `{}`.",
+                    BytesDisplay(short_name),
+                    BytesDisplay(earlier.name.last_segment()),
+                ))
+                .with_annotation(Annotation::primary(import.name.span()).with_message("Imported again here."))
+                .with_annotation(Annotation::secondary(earlier.name.span()).with_message("First imported here."))
+                .with_note("Class names are case-insensitive."),
+            );
+        }
+
+        // Importing the class the file declares names that class, which the engine accepts.
+        if let Some(class) = classes.iter().find(|class| class.name.value.eq_ignore_ascii_case(short_name))
+            && !names_class(&php_name(&import.name), namespace.as_deref(), class.name.value)
+        {
             let short_name = BytesDisplay(short_name);
             let class_name = BytesDisplay(class.name.value);
 
@@ -156,22 +197,6 @@ pub fn check_declarations(program: &Program, context: &mut Context<'_, '_, '_>) 
                 ))
                 .with_annotation(Annotation::primary(import.name.span()).with_message("Imported here."))
                 .with_annotation(Annotation::secondary(class.name.span).with_message("Class declared here.")),
-            );
-        }
-    }
-
-    for (index, class) in classes.iter().enumerate() {
-        if let Some(earlier) =
-            classes[..index].iter().find(|earlier| earlier.name.value.eq_ignore_ascii_case(class.name.value))
-        {
-            let name = BytesDisplay(class.name.value);
-            let earlier_name = BytesDisplay(earlier.name.value);
-
-            context.report(
-                Issue::error(format!("Cannot declare class `{name}`: this file already declares `{earlier_name}`."))
-                    .with_annotation(Annotation::primary(class.name.span).with_message("Declared again here."))
-                    .with_annotation(Annotation::secondary(earlier.name.span).with_message("First declared here."))
-                    .with_note("Class names are case-insensitive."),
             );
         }
     }
@@ -354,8 +379,15 @@ fn collect_declarations<'ast, 'arena>(
     }
 }
 
-fn check_superglobal_name(name: &[u8], span: Span, kind: &str, context: &mut Context<'_, '_, '_>) {
-    if SUPERGLOBALS.contains(&name) {
+/// Checks the name of a PHP# local or parameter, which runs as the PHP variable of the same name.
+fn check_local_name(name: &[u8], span: Span, kind: &str, context: &mut Context<'_, '_, '_>) {
+    if name == b"this" {
+        context.report(
+            Issue::error(format!("Cannot name a {kind} `this`: `this` is the object the method runs on."))
+                .with_annotation(Annotation::primary(span).with_message("Declared here."))
+                .with_note(format!("A PHP# {kind} runs as a PHP variable of the same name, and PHP forbids `$this`.")),
+        );
+    } else if SUPERGLOBALS.contains(&name) {
         let name = BytesDisplay(name);
 
         context.report(
@@ -364,6 +396,21 @@ fn check_superglobal_name(name: &[u8], span: Span, kind: &str, context: &mut Con
                 .with_note(format!("A PHP# {kind} runs as a PHP variable of the same name, which would be `${name}`.")),
         );
     }
+}
+
+fn is_reserved_class_name(name: &[u8]) -> bool {
+    RESERVED_CLASS_NAMES.iter().any(|reserved| reserved.eq_ignore_ascii_case(name))
+}
+
+/// Returns true when the PHP name `full_name` is the class `class_name` declared in `namespace`.
+fn names_class(full_name: &[u8], namespace: Option<&[u8]>, class_name: &[u8]) -> bool {
+    let (import_namespace, import_class) = match full_name.iter().rposition(|&byte| byte == b'\\') {
+        Some(separator) => (&full_name[..separator], &full_name[separator + 1..]),
+        None => (&full_name[..0], full_name),
+    };
+
+    import_class.eq_ignore_ascii_case(class_name)
+        && import_namespace.eq_ignore_ascii_case(namespace.unwrap_or_default())
 }
 
 fn report_dollar_variable(name: &[u8], span: Span, context: &mut Context<'_, '_, '_>) {

@@ -45,6 +45,27 @@ pub const TICKS_DECLARE_DIRECTIVE: &[u8] = b"ticks";
 pub const DECLARE_DIRECTIVES: [&[u8]; 3] =
     [STRICT_TYPES_DECLARE_DIRECTIVE, ENCODING_DECLARE_DIRECTIVE, TICKS_DECLARE_DIRECTIVE];
 
+// the class names `zend_compile.c` reserves (`reserved_class_names`), compared ignoring case
+pub const RESERVED_CLASS_NAMES: [&[u8]; 17] = [
+    b"bool",
+    b"false",
+    b"float",
+    b"int",
+    b"null",
+    b"parent",
+    b"self",
+    b"static",
+    b"string",
+    b"true",
+    b"void",
+    b"never",
+    b"iterable",
+    b"object",
+    b"mixed",
+    b"array",
+    b"callable",
+];
+
 // a list of soft reserved keywords in PHP, minus the ones that symbols are allowed to use as names
 pub const SOFT_RESERVED_KEYWORDS_MINUS_SYMBOL_ALLOWED: [&[u8]; 7] =
     [b"parent", b"self", b"true", b"false", b"list", b"null", b"readonly"];

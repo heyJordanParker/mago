@@ -186,10 +186,43 @@ fn methods_whose_names_differ_only_in_case_are_an_error() {
 }
 
 #[test]
-fn classes_whose_names_differ_only_in_case_are_an_error() {
-    let code = "namespace App.Tenant;\n\nclass Report\n{\n}\n\nclass REPORT\n{\n}\n";
+fn an_import_whose_short_name_is_reserved_is_an_error() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Int;\nimport Lib.Mixed;\n\nclass Report\n{\n}\n";
 
-    assert_eq!(issues(code), ["7:7 Cannot declare class `REPORT`: this file already declares `Report`."]);
+    assert_eq!(
+        issues(code),
+        [
+            "3:8 Cannot import `Lib.Int` as `Int`: PHP reserves `Int` for a type.",
+            "4:8 Cannot import `Lib.Mixed` as `Mixed`: PHP reserves `Mixed` for a type.",
+        ]
+    );
+}
+
+#[test]
+fn two_imports_with_the_same_short_name_are_an_error() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Calc;\nimport Other.CALC;\n\nclass Report\n{\n}\n";
+
+    assert_eq!(issues(code), ["4:8 Cannot import `Other.CALC` as `CALC`: `Lib.Calc` is already imported as `Calc`."]);
+}
+
+#[test]
+fn a_parameter_or_local_named_this_is_an_error() {
+    let code = "class Report\n{\n    public int run(int this) { return 1; }\n\n    public int total() { let this = 1; return 1; }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "3:24 Cannot name a parameter `this`: `this` is the object the method runs on.",
+            "5:30 Cannot name a local `this`: `this` is the object the method runs on.",
+        ]
+    );
+}
+
+#[test]
+fn importing_the_class_the_file_declares_is_valid() {
+    let code = "namespace App.Tenant;\n\nimport App.Tenant.Report;\n\nclass Report\n{\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
 }
 
 #[test]
