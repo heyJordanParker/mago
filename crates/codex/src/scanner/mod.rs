@@ -84,6 +84,7 @@ mod property;
 mod ttype;
 mod version_claim;
 
+pub use ttype::get_union_from_hint;
 pub use ttype::merge_type_preserving_nullability;
 
 /// Scans a parsed PHP program into a [`CodebaseMetadata`] snapshot, gating

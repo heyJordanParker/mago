@@ -525,6 +525,24 @@ fn types_outside_the_slice_are_not_supported_yet() {
 }
 
 #[test]
+fn a_typed_local_takes_the_types_of_the_slice_but_not_void() {
+    let code = leak(method(
+        "        void nothing = null;\n        iterable items = null;\n        mixed? anything = null;\n        const int? kept = null;\n        kept = 1;\n        return 1;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:9 A local cannot be `void`: `void` is only a return type.",
+            "8:9 This type is not supported yet in PHP#.",
+            "9:9 This type is not supported yet in PHP#.",
+            "9:9 Type `mixed` cannot be nullable.",
+            "11:9 Cannot assign to `kept`: it is declared with `const`.",
+        ]
+    );
+}
+
+#[test]
 fn a_nullable_void_reports_only_the_php_error() {
     let code = "class Report\n{\n    public void? run()\n    {\n    }\n}\n";
 

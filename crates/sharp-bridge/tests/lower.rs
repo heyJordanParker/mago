@@ -518,6 +518,33 @@ fn let_and_const_locals_assign_their_variables() {
     );
 }
 
+/// A written type only tells the checker the local's type, so a typed local lowers as `let` and `const` do.
+///
+/// ```php
+/// $found = null;
+/// $base = 2;
+/// ```
+#[test]
+fn typed_locals_assign_their_variables_and_drop_the_type() {
+    assert_eq!(
+        body("        Calc? found = null;\n        const int base = 2;\n        return base;\n"),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "found"
+                ZVAL null
+              ASSIGN
+                VAR
+                  ZVAL "base"
+                ZVAL 2
+              RETURN
+                VAR
+                  ZVAL "base"
+        "#}
+    );
+}
+
 /// ```php
 /// $this->count += 1;
 /// ```

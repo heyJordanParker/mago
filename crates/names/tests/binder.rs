@@ -77,6 +77,17 @@ fn bare_names_bind_to_locals_this_classes_and_constants() {
     assert_eq!(binding(&names, CODE, "PHP_EOL", 0), Some(Binding::Constant));
 }
 
+#[test]
+fn a_typed_local_binds_like_let_or_const_and_its_type_resolves() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nimport App.Shared.Money;\n\nclass Report\n{\n    public int total()\n    {\n        Money? found = null;\n        const int base = 2;\n        found = null;\n        return base;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "found", 1), Some(local(CODE, "found", 0, LocalKind::Let)));
+    assert_eq!(binding(&names, CODE, "base", 1), Some(local(CODE, "base", 0, LocalKind::Const)));
+    assert_eq!(resolved(&names, CODE, "Money?", 0), b"App\\Shared\\Money");
+}
+
 fn span(code: &str, needle: &str, nth: usize) -> Span {
     let start = Position::new(offset(code, needle, nth));
     let end = Position::new(start.offset + u32::try_from(needle.len()).expect("length fits in u32"));

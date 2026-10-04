@@ -38,7 +38,7 @@ pub fn scan_class_like_constants<'arena, A>(
     constant: &'arena ClassLikeConstant<'arena>,
     classname: Option<Word>,
     type_context: &TypeResolutionContext,
-    context: &mut Context<'_, 'arena, A>,
+    context: &Context<'_, 'arena, A>,
     scope: &NamespaceScope,
 ) -> Vec<ClassLikeConstantMetadata>
 where

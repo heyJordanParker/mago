@@ -68,6 +68,11 @@ class Report
         second ??= first;
         id ??= 1;
         fallback.rate ??= rate;
+        Calc? kept = fallback;
+        int count = 2;
+        const float? share = rate;
+        const Calc made = Calc.make();
+        kept = null;
         const sum = fallback?.add(1, 2) ?? fallback?.rate;
         const again = this?.find(id)?.rate.cents;
         return fallback ?? null;

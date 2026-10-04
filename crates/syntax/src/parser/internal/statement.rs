@@ -55,6 +55,9 @@ where
             {
                 Statement::LocalDeclaration(self.parse_local_declaration()?)
             }
+            T![Identifier] if self.dialect.is_sharp() && self.is_at_typed_local()? => {
+                Statement::LocalDeclaration(self.parse_local_declaration()?)
+            }
             T!["return"] => Statement::Return(self.parse_return()?),
             T!["#["] => {
                 let attributes = self.parse_attribute_list_sequence()?;

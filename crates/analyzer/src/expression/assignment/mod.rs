@@ -607,6 +607,39 @@ pub fn analyze_assignment_to_variable<'ctx, 'arena, A>(
         }
     }
 
+    if let Some((local_type, local_type_span)) = block_context.local_types.get(&variable_id).cloned()
+        && !union_comparator::is_contained_by(
+            context.codebase,
+            &assigned_type,
+            &local_type,
+            false,
+            false,
+            false,
+            &mut ComparisonResult::default(),
+        )
+    {
+        let variable_name = variable_id.to_string();
+        let name = variable_name.trim_start_matches('$');
+        let local_type_str = local_type.get_id();
+
+        context.collector.report_with_code(
+            IssueCode::InvalidLocalAssignment,
+            Issue::error(format!("Invalid assignment to `{name}`: it is declared as `{local_type_str}`."))
+                .with_annotation(
+                    Annotation::primary(source_expression.map_or(variable_span, HasSpan::span))
+                        .with_message(format!("This value has type `{}`.", assigned_type.get_id())),
+                )
+                .with_annotation(
+                    Annotation::secondary(local_type_span)
+                        .with_message(format!("`{name}` is declared as `{local_type_str}` here.")),
+                )
+                .with_help(format!("Assign a `{local_type_str}` value, or change the type `{name}` is declared with.")),
+        );
+
+        // The local keeps its written type, as the engine never checks it.
+        assigned_type = local_type;
+    }
+
     if block_context.references_possibly_from_confusing_scope.contains(&variable_id) {
         context.collector.report_with_code(
             IssueCode::ReferenceReusedFromConfusingScope,

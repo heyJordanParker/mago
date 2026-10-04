@@ -71,7 +71,7 @@ pub fn scan_method<'arena, A>(
     functionlike_id: (Word, Word),
     method: &'arena Method<'arena>,
     class_like_metadata: &ClassLikeMetadata,
-    context: &mut Context<'_, 'arena, A>,
+    context: &Context<'_, 'arena, A>,
     scope: &mut NamespaceScope,
     type_resolution_context: Option<TypeResolutionContext>,
 ) -> Option<FunctionLikeMetadata>
@@ -176,7 +176,7 @@ pub fn scan_function<'arena, A>(
     functionlike_id: (Word, Word),
     function: &'arena Function<'arena>,
     classname: Option<Word>,
-    context: &mut Context<'_, 'arena, A>,
+    context: &Context<'_, 'arena, A>,
     scope: &mut NamespaceScope,
     type_resolution_context: TypeResolutionContext,
     constants: Option<&WordMap<ConstantMetadata>>,
@@ -245,7 +245,7 @@ pub fn scan_closure<'arena, A>(
     functionlike_id: (Word, Word),
     closure: &'arena Closure<'arena>,
     classname: Option<Word>,
-    context: &mut Context<'_, 'arena, A>,
+    context: &Context<'_, 'arena, A>,
     scope: &mut NamespaceScope,
     type_resolution_context: TypeResolutionContext,
 ) -> FunctionLikeMetadata
@@ -305,7 +305,7 @@ pub fn scan_arrow_function<'arena, A>(
     functionlike_id: (Word, Word),
     arrow_function: &'arena ArrowFunction<'arena>,
     classname: Option<Word>,
-    context: &mut Context<'_, 'arena, A>,
+    context: &Context<'_, 'arena, A>,
     scope: &mut NamespaceScope,
     type_resolution_context: TypeResolutionContext,
 ) -> FunctionLikeMetadata

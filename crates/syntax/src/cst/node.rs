@@ -2393,7 +2393,12 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 f(Node::Terminator(&node.terminator));
             }
             Node::LocalDeclaration(node) => {
-                f(Node::Keyword(&node.keyword));
+                if let Some(keyword) = &node.keyword {
+                    f(Node::Keyword(keyword));
+                }
+                if let Some(hint) = &node.hint {
+                    f(Node::Hint(hint));
+                }
                 f(Node::LocalIdentifier(&node.name));
                 f(Node::Expression(node.value));
                 f(Node::Terminator(&node.terminator));

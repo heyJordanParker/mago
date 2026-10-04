@@ -68,7 +68,8 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - Types: `int`, `float`, `bool`, `string` and a class written by its short name, and `void` as a return type.
 ///   PHP's own check reports a `void` parameter. Each of them is nullable when written with `?` after it, as in
 ///   `int?`, and PHP's own check reports `void?`.
-/// - In a method body: blocks, expression statements, `return`, and `let` and `const` declarations.
+/// - In a method body: blocks, expression statements, `return`, and `let` and `const` declarations. A local can have
+///   its type written, as in `Money? total = null;` or `const int base = 2;`, from the types above but `void`.
 /// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter or a member written
 ///   `object.name`.
 /// - In expressions: literals, parentheses, bare names, assignment, the operators below, and method calls and
@@ -240,8 +241,16 @@ fn enter(
                 None
             }
         },
-        (Node::Hint(hint), Method | Parameter) if is_slice_type(hint) => Some(place),
-        (Node::NullableHint(_), Method | Parameter) => Some(place),
+        (Node::Hint(Hint::Void(_)), Body) => {
+            context.report(
+                Issue::error("A local cannot be `void`: `void` is only a return type.")
+                    .with_annotation(Annotation::primary(node.span()).with_message("Declared `void` here.")),
+            );
+
+            None
+        }
+        (Node::Hint(hint), Method | Parameter | Body) if is_slice_type(hint) => Some(place),
+        (Node::NullableHint(_), Method | Parameter | Body) => Some(place),
         (Node::DirectVariable(_), Parameter) => Some(Parameter),
         (Node::FunctionLikeParameterDefaultValue(_), Parameter) => Some(Default),
         (Node::Block(_), Method | Body) => Some(Body),
@@ -571,7 +580,7 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, a name, and an optional default."
         }
         Place::Body => {
-            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const`, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, `++` and `--`, and method calls and property reads written with `.` or `?.`."
+            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, `++` and `--`, and method calls and property reads written with `.` or `?.`."
         }
         Place::Default => {
             "A parameter default is a literal, a constant, or arithmetic, comparison, logical and `??` operators on them."

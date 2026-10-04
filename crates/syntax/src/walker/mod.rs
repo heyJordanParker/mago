@@ -1603,7 +1603,14 @@ generate_ast_walker! {
     }
 
     'arena LocalDeclaration as local_declaration => {
-        walker.walk_keyword(&local_declaration.keyword, context);
+        if let Some(keyword) = &local_declaration.keyword {
+            walker.walk_keyword(keyword, context);
+        }
+
+        if let Some(hint) = &local_declaration.hint {
+            walker.walk_hint(hint, context);
+        }
+
         walker.walk_local_identifier(&local_declaration.name, context);
         walker.walk_expression(local_declaration.value, context);
         walker.walk_terminator(&local_declaration.terminator, context);
