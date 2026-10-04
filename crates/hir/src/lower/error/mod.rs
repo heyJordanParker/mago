@@ -13,12 +13,13 @@ pub(crate) fn lower_parse_error(error: &ParseError) -> Error {
         ParseError::SyntaxError(SyntaxError::UnexpectedEndOfFile(..)) => ErrorKind::UnexpectedEndOfFile,
         ParseError::SyntaxError(SyntaxError::RecursionLimitExceeded(..)) => ErrorKind::RecursionLimitExceeded,
         ParseError::UnexpectedEndOfFile(..) => ErrorKind::UnexpectedEndOfFile,
-        // PHP syntax in a PHP# file, or a PHP# parameter without its type, is a token the PHP# grammar does not
-        // expect there.
+        // PHP syntax in a PHP# file, a PHP# parameter without its type, or PHP# syntax not supported yet, is a token
+        // the PHP# grammar does not expect there.
         ParseError::UnexpectedToken(..)
         | ParseError::PhpSyntaxInSharp(..)
         | ParseError::QualifiedNameInSharp(..)
-        | ParseError::UntypedParameterInSharp(..) => ErrorKind::UnexpectedToken,
+        | ParseError::UntypedParameterInSharp(..)
+        | ParseError::NotSupportedYetInSharp(..) => ErrorKind::UnexpectedToken,
         ParseError::UnclosedLiteralString(..) => ErrorKind::UnclosedLiteralString,
         ParseError::RecursionLimitExceeded(..) => ErrorKind::RecursionLimitExceeded,
     };

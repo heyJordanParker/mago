@@ -51,6 +51,7 @@ where
         let next = self.stream.peek_kind(0)?;
         if matches!(next, Some(T!["{"])) {
             let hook_list = self.parse_property_hook_list()?;
+            self.skip_via_clause(false)?;
             let initial_value = if self.dialect.is_sharp() && self.stream.is_at(T!["="])? {
                 Some(PropertyInitialValue {
                     equals: self.stream.eat_span(T!["="])?,
@@ -107,6 +108,16 @@ where
     fn parse_property_item(&mut self) -> Result<PropertyItem<'arena>, ParseError> {
         Ok(match self.stream.peek_kind(1)? {
             Some(T!["="]) => PropertyItem::Concrete(self.parse_property_concrete_item()?),
+            // A computed property, `public string slug => expr;` in spec section 6.1, parses whole and stays a property
+            // without its expression, which reads `this` outside a method.
+            Some(T!["=>"]) if self.dialect.is_sharp() => {
+                let variable = self.parse_property_variable()?;
+                let arrow = self.stream.eat_span(T!["=>"])?;
+                self.errors.push(ParseError::NotSupportedYetInSharp("A computed property", arrow));
+                self.parse_expression()?;
+
+                PropertyItem::Abstract(PropertyAbstractItem { variable })
+            }
             _ => PropertyItem::Abstract(self.parse_property_abstract_item()?),
         })
     }
@@ -138,6 +149,33 @@ where
         self.errors.push(ParseError::PhpSyntaxInSharp(T!["$variable"], variable.span));
 
         Ok(variable)
+    }
+
+    /// Skips a PHP# `via` clause after a property's accessors, spec section 6.4, and reports it once where it starts.
+    /// Its behaviors are names separated by commas. On a parameter a comma also ends the parameter, so a behavior
+    /// there is a name followed by `,` or `)`. In a class body the clause ends with `;`.
+    pub(crate) fn skip_via_clause(&mut self, on_parameter: bool) -> Result<(), ParseError> {
+        if !self.dialect.is_sharp()
+            || !self.stream.lookahead(0)?.is_some_and(|token| token.kind == T![Identifier] && token.value == b"via")
+        {
+            return Ok(());
+        }
+
+        let via = self.stream.consume_span()?;
+        self.errors.push(ParseError::NotSupportedYetInSharp("`via`", via));
+        self.parse_local_identifier()?;
+        while self.stream.is_at(T![","])?
+            && self.stream.peek_kind(1)? == Some(T![Identifier])
+            && (!on_parameter || matches!(self.stream.peek_kind(2)?, Some(T![","] | T![")"])))
+        {
+            self.stream.consume()?;
+            self.parse_local_identifier()?;
+        }
+        if !on_parameter && self.stream.is_at(T![";"])? {
+            self.stream.consume()?;
+        }
+
+        Ok(())
     }
 
     pub(crate) fn parse_optional_property_hook_list(&mut self) -> Result<Option<PropertyHookList<'arena>>, ParseError> {

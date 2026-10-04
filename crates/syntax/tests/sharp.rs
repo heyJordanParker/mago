@@ -200,6 +200,49 @@ fn a_by_reference_parameter_is_a_parse_error() {
     assert!(!program.errors.is_empty());
 }
 
+/// `required`, `via`, a named constructor and a computed property are spec syntax outside the slice. Each one is a
+/// single error where it starts, and the class around it still parses.
+#[test]
+fn spec_syntax_outside_the_slice_is_one_not_supported_error_where_it_starts() {
+    for (member, message, start) in [
+        ("public required int count { get; set; }", "`required` is not supported yet in PHP#.", "required"),
+        ("public string name { get; set; } via Trimmed, Tracked;", "`via` is not supported yet in PHP#.", "via"),
+        (
+            "public Report(public int id { get; } via Tracked, int other) {}",
+            "`via` is not supported yet in PHP#.",
+            "via",
+        ),
+        (
+            "public Report.fromJson(string json) : this(json.length) {}",
+            "A named constructor is not supported yet in PHP#.",
+            "Report.fromJson",
+        ),
+        ("public string slug => this.name;", "A computed property is not supported yet in PHP#.", "=>"),
+    ] {
+        let arena = LocalArena::new();
+        let code: &'static str = Box::leak(
+            format!("class Report\n{{\n    {member}\n\n    public int run() {{ return 1; }}\n}}\n").into_boxed_str(),
+        );
+        let program = parse(&arena, "src/Report.sharp", code);
+
+        let [error] = program.errors else {
+            panic!("expected one error for `{member}`, got {:#?}", program.errors);
+        };
+        assert_eq!(error.to_string(), message, "{member}");
+        assert_eq!(source(code, error), start, "{member}");
+        let Some(Statement::Class(class)) = program.statements.first() else {
+            panic!("expected a class for `{member}`, got {:#?}", program.statements);
+        };
+        assert!(
+            class
+                .members
+                .iter()
+                .any(|member| matches!(member, ClassLikeMember::Method(run) if run.name.value == b"run")),
+            "the class keeps parsing after `{member}`"
+        );
+    }
+}
+
 #[test]
 fn a_parameter_without_a_type_is_a_parse_error_that_names_the_rule() {
     for parameters in ["extra", "extra, int other", "extra = 1"] {

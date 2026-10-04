@@ -54,6 +54,8 @@ pub enum ParseError {
     QualifiedNameInSharp(Box<str>, Span),
     /// A PHP# parameter written without its type, such as `run(extra)`, at its name.
     UntypedParameterInSharp(Span),
+    /// PHP# syntax the engine cannot run yet, such as `required` or a named constructor, where it starts.
+    NotSupportedYetInSharp(&'static str, Span),
 }
 
 impl HasFileId for SyntaxError {
@@ -77,7 +79,8 @@ impl HasFileId for ParseError {
             ParseError::RecursionLimitExceeded(span) => span.file_id,
             ParseError::PhpSyntaxInSharp(_, span)
             | ParseError::QualifiedNameInSharp(_, span)
-            | ParseError::UntypedParameterInSharp(span) => span.file_id,
+            | ParseError::UntypedParameterInSharp(span)
+            | ParseError::NotSupportedYetInSharp(_, span) => span.file_id,
         }
     }
 }
@@ -105,7 +108,8 @@ impl HasSpan for ParseError {
             ParseError::RecursionLimitExceeded(span) => *span,
             ParseError::PhpSyntaxInSharp(_, span)
             | ParseError::QualifiedNameInSharp(_, span)
-            | ParseError::UntypedParameterInSharp(span) => *span,
+            | ParseError::UntypedParameterInSharp(span)
+            | ParseError::NotSupportedYetInSharp(_, span) => *span,
         }
     }
 }
@@ -176,6 +180,7 @@ impl std::fmt::Display for ParseError {
                 format!("A `\\` name is PHP syntax: add `import {name};` and write `{short_name}`")
             }
             ParseError::UntypedParameterInSharp(_) => "A PHP# parameter needs a type, as in `int extra`.".to_string(),
+            ParseError::NotSupportedYetInSharp(construct, _) => format!("{construct} is not supported yet in PHP#."),
         };
 
         write!(f, "{message}")
@@ -214,6 +219,11 @@ impl From<&ParseError> for Issue {
     fn from(error: &ParseError) -> Self {
         if let ParseError::SyntaxError(syntax_error) = error {
             syntax_error.into()
+        } else if let ParseError::NotSupportedYetInSharp(_, span) = error {
+            Issue::error(error.to_string())
+                .with_code(PARSE_ERROR_CODE)
+                .with_annotation(Annotation::primary(*span).with_message("Not supported yet."))
+                .with_note("The PHP# engine cannot run this spec syntax yet.")
         } else {
             Issue::error("Parse error encountered during parsing")
                 .with_code(PARSE_ERROR_CODE)
