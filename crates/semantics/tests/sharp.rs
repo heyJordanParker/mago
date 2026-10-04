@@ -501,6 +501,13 @@ fn types_outside_the_slice_are_not_supported_yet() {
 }
 
 #[test]
+fn a_by_reference_parameter_is_not_supported_yet() {
+    let code = leak(method("        return 1;\n").replace("int extra", "&extra"));
+
+    assert_eq!(issues(code), ["5:20 A by-reference parameter is not supported yet in PHP#."]);
+}
+
+#[test]
 fn a_void_parameter_reports_only_the_php_error() {
     let code = "class Report\n{\n    public void run(void nothing)\n    {\n    }\n}\n";
 

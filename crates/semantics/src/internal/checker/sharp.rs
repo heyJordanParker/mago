@@ -63,8 +63,8 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - A method: `public`, `protected` or `private`, an optional `static`, parameters, a return type and a body. Its name
 ///   does not start with `__`, which PHP reserves for magic methods, and is not its class's name, compared ignoring
 ///   case, which PHP# gives to the constructor.
-/// - A parameter: a type, a name and an optional default. A default is a literal, a constant, or the operators
-///   below on them, without `++` and `--`.
+/// - A parameter: a type, a name and an optional default, and neither variadic nor by reference. A default is a
+///   literal, a constant, or the operators below on them, without `++` and `--`.
 /// - Types: `int`, `float`, `bool`, `string` and a class written by its short name, and `void` as a return type.
 ///   PHP's own check reports a `void` parameter.
 /// - In a method body: blocks, expression statements, `return`, and `let` and `const` declarations.
@@ -226,7 +226,18 @@ fn enter(
             | Node::MethodAbstractBody(_),
             Method,
         ) => Some(Method),
-        (Node::FunctionLikeParameter(parameter), Method) if parameter.ellipsis.is_none() => Some(Parameter),
+        (Node::FunctionLikeParameter(parameter), Method) => match is_slice_parameter(parameter) {
+            Ok(()) => Some(Parameter),
+            Err((span, message, help)) => {
+                context.report(
+                    Issue::error(message)
+                        .with_annotation(Annotation::primary(span).with_message("Not supported yet."))
+                        .with_note(help),
+                );
+
+                None
+            }
+        },
         (Node::Hint(hint), Method | Parameter) if is_slice_type(hint) => Some(place),
         (Node::DirectVariable(_), Parameter) => Some(Parameter),
         (Node::FunctionLikeParameterDefaultValue(_), Parameter) => Some(Default),
@@ -352,6 +363,21 @@ fn is_slice_method(method: &Method, program: &Program) -> Result<(), (&'static s
     };
 
     Err(refusal)
+}
+
+/// Whether the slice has a parameter, with the refusal's span, message and note when it does not.
+fn is_slice_parameter(parameter: &FunctionLikeParameter) -> Result<(), (Span, &'static str, &'static str)> {
+    if let Some(ellipsis) = parameter.ellipsis {
+        Err((ellipsis, "This variadic parameter is not supported yet in PHP#.", supported(Place::Parameter)))
+    } else if let Some(ampersand) = parameter.ampersand {
+        Err((
+            ampersand,
+            "A by-reference parameter is not supported yet in PHP#.",
+            "The engine passes every PHP# argument by value.",
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 /// Whether the slice has a namespace: the file's first, with a name and no braces.
@@ -499,9 +525,6 @@ fn report_unsupported(node: Node<'_, '_>, place: Place, context: &mut Context<'_
         Node::Implements(_) => "`implements` clause",
         Node::ClassLikeMember(_) => "class member",
         Node::ClassLikeMemberSelector(_) => "member name",
-        Node::FunctionLikeParameter(FunctionLikeParameter { ellipsis: Some(ellipsis), .. }) => {
-            return report_not_supported(*ellipsis, "variadic parameter", supported(place), context);
-        }
         Node::PositionalArgument(_) => "spread argument",
         _ => "construct",
     };
