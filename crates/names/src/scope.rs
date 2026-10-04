@@ -2,6 +2,7 @@ use std::borrow::Cow;
 
 use foldhash::HashMap;
 
+use mago_syntax::cst::Identifier;
 use mago_syntax::cst::Use;
 use mago_syntax::cst::UseItems;
 use mago_syntax::cst::UseType;
@@ -21,6 +22,20 @@ pub(crate) fn trim_start_byte(s: &[u8], byte: u8) -> &[u8] {
 #[inline]
 pub(crate) fn rfind_byte(s: &[u8], byte: u8) -> Option<usize> {
     memchr::memrchr(byte, s)
+}
+
+/// Returns the name PHP writes for the given identifier.
+///
+/// A PHP# dotted name, such as `App.Tenant.Store`, becomes `App\Tenant\Store`. Every other identifier is returned
+/// as written.
+#[must_use]
+pub fn php_name<'arena>(identifier: &Identifier<'arena>) -> Cow<'arena, [u8]> {
+    match identifier {
+        Identifier::Dotted(dotted) => {
+            Cow::Owned(dotted.value.iter().map(|&byte| if byte == b'.' { b'\\' } else { byte }).collect())
+        }
+        _ => Cow::Borrowed(identifier.value()),
+    }
 }
 
 pub(crate) fn concat_with_sep(parts: &[&[u8]], sep: u8) -> Vec<u8> {
@@ -149,11 +164,11 @@ impl NamespaceScope {
         match &r#use.items {
             UseItems::Sequence(use_item_sequence) => {
                 for use_item in &use_item_sequence.items {
-                    let name = trim_start_byte(use_item.name.value(), b'\\');
+                    let name = php_name(&use_item.name);
                     let alias = use_item.alias.as_ref().map(|alias_node| alias_node.identifier.value);
 
                     // Add as a default (class/namespace) alias
-                    self.add(NameKind::Default, name, &alias);
+                    self.add(NameKind::Default, trim_start_byte(&name, b'\\'), &alias);
                 }
             }
             UseItems::TypedSequence(typed_use_item_sequence) => {

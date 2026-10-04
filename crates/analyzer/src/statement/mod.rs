@@ -4,6 +4,7 @@ use mago_codex::ttype::atomic::callable::TCallable;
 use mago_codex::ttype::cast::cast_atomic_to_callable;
 use mago_names::kind::NameKind;
 use mago_names::scope::NamespaceScope;
+use mago_names::scope::php_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -123,7 +124,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Statement<'arena> {
             Statement::Namespace(namespace) => {
                 match &namespace.name {
                     Some(name) => {
-                        context.scope = NamespaceScope::for_namespace(name.value());
+                        context.scope = NamespaceScope::for_namespace(php_name(name));
                     }
                     None => {
                         context.scope = NamespaceScope::global();

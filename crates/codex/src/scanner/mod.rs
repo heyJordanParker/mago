@@ -3,6 +3,7 @@ use mago_allocator::Arena;
 use mago_database::file::File;
 use mago_names::ResolvedNames;
 use mago_names::scope::NamespaceScope;
+use mago_names::scope::php_name;
 use mago_php_version::PHPVersion;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -263,7 +264,7 @@ where
     #[inline]
     fn walk_in_namespace(&mut self, namespace: &'arena Namespace<'arena>, _context: &mut Context<'ctx, 'arena, A>) {
         self.scope = match &namespace.name {
-            Some(name) => NamespaceScope::for_namespace(name.value()),
+            Some(name) => NamespaceScope::for_namespace(php_name(name)),
             None => NamespaceScope::global(),
         };
     }

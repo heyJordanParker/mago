@@ -6,6 +6,9 @@ use mago_span::Span;
 use mago_span::HasPosition;
 use mago_span::Position;
 
+use crate::binding::Binding;
+
+pub mod binding;
 pub mod kind;
 pub mod resolver;
 pub mod scope;
@@ -27,6 +30,9 @@ pub struct ResolvedNames<'arena> {
     /// can return `&(&'arena [u8], bool)` references — preserving the original signature
     /// for backward compatibility.
     names: HashMap<u32, (u32, (&'arena [u8], bool))>,
+
+    /// Start offset of every bare PHP# name -> what it refers to. Empty for PHP.
+    bindings: HashMap<u32, Binding>,
 }
 
 impl<'arena> ResolvedNames<'arena> {
@@ -116,6 +122,20 @@ impl<'arena> ResolvedNames<'arena> {
                 |(start, end, name, _)| if eq_ignore_ascii_case(name, fqcn) { Some((start, end)) } else { None },
             )
             .collect()
+    }
+
+    /// Returns what the bare PHP# name starting at the given position refers to.
+    ///
+    /// Returns `None` for every name in a PHP file.
+    pub fn binding<T>(&self, position: &T) -> Option<Binding>
+    where
+        T: HasPosition,
+    {
+        self.bindings.get(&position.offset()).copied()
+    }
+
+    pub(crate) fn bind(&mut self, span: Span, binding: Binding) {
+        self.bindings.insert(span.start.offset, binding);
     }
 
     /// Inserts a resolution result into the map (intended for internal use).

@@ -22,8 +22,12 @@ foldhash = { workspace = true }
 mago-allocator = { workspace = true }
 memchr = { workspace = true }
 
+[dev-dependencies]
+mago-database = { workspace = true }
+
 [features]
 default = []
 serde = [
     "dep:serde",
+    "mago-span/serde",
 ]

@@ -1722,6 +1722,7 @@ version = "1.53.0"
 dependencies = [
  "foldhash",
  "mago-allocator",
+ "mago-database",
  "mago-span",
  "mago-syntax",
  "mago-word",
