@@ -838,6 +838,51 @@ fn if_else_if_and_else_are_if_lists_of_if_elems() {
     );
 }
 
+/// ```php
+/// while ($extra > 0) {
+///     $extra -= 1;
+/// }
+/// do {
+///     $extra += 1;
+/// } while ($extra < 3);
+/// ```
+///
+/// `WHILE` takes its condition first, and `DO_WHILE` its body first.
+#[test]
+fn while_and_do_while_are_their_php_kinds() {
+    assert_eq!(
+        body(
+            "        while (extra > 0) {\n            extra -= 1;\n        }\n        do {\n            extra += 1;\n        } while (extra < 3);\n        return extra;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              WHILE
+                GREATER
+                  VAR
+                    ZVAL "extra"
+                  ZVAL 0
+                STMT_LIST
+                  ASSIGN_OP [2]
+                    VAR
+                      ZVAL "extra"
+                    ZVAL 1
+              DO_WHILE
+                STMT_LIST
+                  ASSIGN_OP [1]
+                    VAR
+                      ZVAL "extra"
+                    ZVAL 1
+                BINARY_OP [20]
+                  VAR
+                    ZVAL "extra"
+                  ZVAL 3
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
 /// The child count `zend_ast_get_num_children` gives a fixed-size kind, or 5 for a declaration. `None` for a list.
 fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
     match kind {
@@ -868,7 +913,9 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_DECLARE
         | sharp_kind::SHARP_AST_NAMESPACE
         | sharp_kind::SHARP_AST_NAMED_ARG
-        | sharp_kind::SHARP_AST_IF_ELEM => Some(2),
+        | sharp_kind::SHARP_AST_IF_ELEM
+        | sharp_kind::SHARP_AST_WHILE
+        | sharp_kind::SHARP_AST_DO_WHILE => Some(2),
         sharp_kind::SHARP_AST_METHOD_CALL | sharp_kind::SHARP_AST_STATIC_CALL | sharp_kind::SHARP_AST_CONST_ELEM => {
             Some(3)
         }

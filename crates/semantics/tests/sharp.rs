@@ -114,6 +114,40 @@ fn a_local_declared_in_an_if_branch_is_out_of_scope_after_it() {
 }
 
 #[test]
+fn while_and_do_while_with_braces_are_in_the_slice() {
+    let code = leak(method(
+        "        while (extra > 0) {\n            extra -= 1;\n        }\n        do {\n            extra += 1;\n        } while (extra < 3);\n        return extra;\n",
+    ));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_loop_without_braces_or_with_a_colon_body_is_not_supported_yet() {
+    let code = leak(method(
+        "        while (extra > 0) extra -= 1;\n        do extra += 1; while (extra < 3);\n        while (extra > 1):\n            extra -= 1;\n        endwhile;\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:9 This statement without braces is not supported yet in PHP#.",
+            "8:9 This statement without braces is not supported yet in PHP#.",
+            "9:26 This construct is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn a_local_declared_in_a_loop_body_is_out_of_scope_after_it() {
+    let code = leak(method(
+        "        while (extra > 0) {\n            let step = 1;\n            extra -= step;\n        }\n        do {\n            let step = 2;\n        } while (extra < 0);\n        return step;\n",
+    ));
+
+    assert_eq!(issues(code), ["14:16 `step` is used after the block that declares it closes."]);
+}
+
+#[test]
 fn reassigning_a_const_local_is_an_error() {
     let code = leak(method("        const base = 2;\n        base = 3;\n        return base;\n"));
 

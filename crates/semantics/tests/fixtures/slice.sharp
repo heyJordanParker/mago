@@ -72,4 +72,17 @@ class Report
         }
         return value;
     }
+
+    public int repeat(int times)
+    {
+        let total = 0;
+        while (times > 0) {
+            total += times;
+            times--;
+        }
+        do {
+            total -= 1;
+        } while (total > 100);
+        return total;
+    }
 }

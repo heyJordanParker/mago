@@ -38,6 +38,7 @@ use mago_syntax::cst::Program;
 use mago_syntax::cst::Statement;
 use mago_syntax::cst::UnaryPostfixOperator;
 use mago_syntax::cst::UnaryPrefixOperator;
+use mago_syntax::cst::WhileBody;
 use mago_syntax::dialect::Dialect;
 use mago_syntax::parser::parse_file_with_dialect;
 use mago_syntax::settings::ParserSettings;
@@ -56,6 +57,7 @@ use crate::sharp_kind::SHARP_AST_CONST;
 use crate::sharp_kind::SHARP_AST_CONST_DECL;
 use crate::sharp_kind::SHARP_AST_CONST_ELEM;
 use crate::sharp_kind::SHARP_AST_DECLARE;
+use crate::sharp_kind::SHARP_AST_DO_WHILE;
 use crate::sharp_kind::SHARP_AST_GREATER;
 use crate::sharp_kind::SHARP_AST_GREATER_EQUAL;
 use crate::sharp_kind::SHARP_AST_IF;
@@ -79,6 +81,7 @@ use crate::sharp_kind::SHARP_AST_UNARY_MINUS;
 use crate::sharp_kind::SHARP_AST_UNARY_OP;
 use crate::sharp_kind::SHARP_AST_UNARY_PLUS;
 use crate::sharp_kind::SHARP_AST_VAR;
+use crate::sharp_kind::SHARP_AST_WHILE;
 use crate::sharp_kind::SHARP_AST_ZVAL;
 use crate::sharp_node;
 use crate::sharp_severity;
@@ -328,6 +331,21 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.node(SHARP_AST_ASSIGN, 0, self.line(local), &[variable, value])
             }
             Statement::If(r#if) => self.r#if(r#if),
+            Statement::While(r#while) => {
+                let WhileBody::Statement(body) = &r#while.body else {
+                    unreachable!("check_slice refuses a colon-delimited `while`");
+                };
+                let condition = self.expression(r#while.condition);
+                let body = self.statement(body);
+
+                self.node(SHARP_AST_WHILE, 0, self.line(r#while), &[condition, body])
+            }
+            Statement::DoWhile(do_while) => {
+                let body = self.statement(do_while.statement);
+                let condition = self.expression(do_while.condition);
+
+                self.node(SHARP_AST_DO_WHILE, 0, self.line(do_while), &[body, condition])
+            }
             _ => unreachable!("check_slice refuses the statement `{statement}`"),
         }
     }

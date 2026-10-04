@@ -46,6 +46,8 @@ use mago_syntax::cst::Use;
 use mago_syntax::cst::UseItem;
 use mago_syntax::cst::UseItems;
 use mago_syntax::cst::Variable;
+use mago_syntax::cst::While;
+use mago_syntax::cst::WhileBody;
 
 use crate::internal::consts::RESERVED_CLASS_NAMES;
 use crate::internal::consts::RESERVED_KEYWORDS;
@@ -69,8 +71,8 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   a literal, a constant, or the operators below on them, without `++` and `--`.
 /// - Types: `int`, `float`, `bool`, `string` and a class written by its short name, and `void` as a return type.
 ///   PHP's own check reports a `void` parameter.
-/// - In a method body: blocks, expression statements, `return`, `let` and `const` declarations, and `if` with
-///   `else if` and `else`. The body of `if`, `else` and each loop is a block in braces.
+/// - In a method body: blocks, expression statements, `return`, `let` and `const` declarations, `if` with `else if`
+///   and `else`, `while`, and `do … while`. The body of `if`, `else` and each loop is a block in braces.
 /// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter or a member written
 ///   `object.name`.
 /// - In expressions: literals, parentheses, bare names, assignment, the operators below, and method calls and
@@ -263,7 +265,9 @@ fn enter(
                 | Statement::Expression(_)
                 | Statement::Return(_)
                 | Statement::LocalDeclaration(_)
-                | Statement::If(_),
+                | Statement::If(_)
+                | Statement::While(_)
+                | Statement::DoWhile(_),
             )
             | Node::ExpressionStatement(_)
             | Node::Return(_)
@@ -271,7 +275,10 @@ fn enter(
             | Node::If(_)
             | Node::IfBody(IfBody::Statement(_))
             | Node::IfStatementBody(_)
-            | Node::IfStatementBodyElseClause(_),
+            | Node::IfStatementBodyElseClause(_)
+            | Node::While(_)
+            | Node::WhileBody(WhileBody::Statement(_))
+            | Node::DoWhile(_),
             Body,
         ) => Some(Body),
 
@@ -457,6 +464,8 @@ fn has_braces(statement: &Statement) -> bool {
                     .as_ref()
                     .is_none_or(|clause| is_block(clause.statement) || matches!(clause.statement, Statement::If(_)))
         }
+        Statement::While(While { body: WhileBody::Statement(body), .. }) => is_block(body),
+        Statement::DoWhile(do_while) => is_block(do_while.statement),
         _ => true,
     }
 }
@@ -603,7 +612,7 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, a name, and an optional default."
         }
         Place::Body => {
-            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const`, and `if` with `else if` and `else`, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `++` and `--`, and method calls and property reads written with `.`."
+            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const`, `if` with `else if` and `else`, `while`, and `do … while`, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `++` and `--`, and method calls and property reads written with `.`."
         }
         Place::Default => {
             "A parameter default is a literal, a constant, or arithmetic, comparison and logical operators on them."
