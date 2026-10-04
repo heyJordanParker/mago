@@ -573,6 +573,17 @@ fn a_braced_or_global_namespace_is_not_supported_yet() {
 }
 
 #[test]
+fn an_invalid_codepoint_escape_is_an_error_as_in_php() {
+    let code =
+        leak(method("        const big = \"\\u{110000}\";\n        const empty = \"\\u{}\";\n        return 1;\n"));
+
+    assert_eq!(
+        issues(code),
+        ["7:21 Invalid UTF-8 codepoint escape sequence.", "8:23 Invalid UTF-8 codepoint escape sequence.",]
+    );
+}
+
+#[test]
 fn a_spread_argument_is_not_supported_yet() {
     let code = leak(method("        const parts = this.parts();\n        return this.total(...parts);\n"));
 

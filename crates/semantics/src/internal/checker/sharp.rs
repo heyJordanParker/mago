@@ -71,7 +71,8 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter or a member written
 ///   `object.name`.
 /// - In expressions: literals, parentheses, bare names, assignment, the operators below, and method calls and
-///   property reads written with `.` and a member name, with positional and named arguments.
+///   property reads written with `.` and a member name, with positional and named arguments. A string literal's
+///   `\u{...}` escapes are valid codepoints, as PHP requires.
 /// - Operators: `+ - * / %`, `== != === !== < > <= >=`, `&& || !`, unary `-` and `+`, `++` and `--`, and
 ///   `= += -= *= /=`.
 ///
@@ -253,6 +254,16 @@ fn enter(
             Body,
         ) => Some(Body),
 
+        // PHP refuses the file at compile time, so the engine would too.
+        (Node::LiteralString(string), Body | Default) if string.value.is_none() => {
+            context.report(
+                Issue::error("Invalid UTF-8 codepoint escape sequence.")
+                    .with_annotation(Annotation::primary(string.span).with_message("Escape written here."))
+                    .with_note("A `\\u{...}` escape holds hex digits for a codepoint up to `10FFFF`."),
+            );
+
+            None
+        }
         (
             Node::Expression(
                 Expression::Literal(_)
