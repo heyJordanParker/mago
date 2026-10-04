@@ -114,7 +114,9 @@ pub(crate) fn lower(path: Vec<u8>, source: Vec<u8>) -> Box<Unit> {
             program
                 .errors
                 .iter()
-                .map(|error| diagnostic(&file, error.span(), sharp_severity::SHARP_PARSE_ERROR, error.to_string()))
+                .map(|error| {
+                    diagnostic(&file, Some(error.span()), sharp_severity::SHARP_PARSE_ERROR, error.to_string())
+                })
                 .collect(),
         );
     }
@@ -125,9 +127,7 @@ pub(crate) fn lower(path: Vec<u8>, source: Vec<u8>) -> Box<Unit> {
         .iter()
         .filter(|issue| issue.level == Level::Error)
         .map(|issue| {
-            let span = issue.primary_span().unwrap_or_else(|| program.span());
-
-            diagnostic(&file, span, sharp_severity::SHARP_COMPILE_ERROR, issue.message.clone())
+            diagnostic(&file, issue.primary_span(), sharp_severity::SHARP_COMPILE_ERROR, issue.message.clone())
         })
         .collect();
     if !errors.is_empty() {
@@ -138,13 +138,24 @@ pub(crate) fn lower(path: Vec<u8>, source: Vec<u8>) -> Box<Unit> {
         .program(program)
 }
 
-fn diagnostic(file: &File, span: Span, severity: sharp_severity, message: String) -> Diagnostic {
-    Diagnostic {
-        line: file.line_number(span.start.offset) + 1,
-        column: file.column_number(span.start.offset) + 1,
-        severity,
-        message,
-    }
+/// A diagnostic at the start of `span`. Without a span it is at line 0, column 0, which the ABI defines as no
+/// position.
+fn diagnostic(file: &File, span: Option<Span>, severity: sharp_severity, message: String) -> Diagnostic {
+    let (line, column) = span
+        .map_or((0, 0), |span| (file.line_number(span.start.offset) + 1, file.column_number(span.start.offset) + 1));
+
+    Diagnostic { line, column, severity, message }
+}
+
+/// The line the Zend scanner ends on, which counts `\n`, `\r\n` and a lone `\r` each as one line ending.
+fn last_line(source: &[u8]) -> u32 {
+    let line_endings = source
+        .iter()
+        .enumerate()
+        .filter(|&(index, &byte)| byte == b'\n' || (byte == b'\r' && source.get(index + 1) != Some(&b'\n')))
+        .count();
+
+    line_endings as u32 + 1
 }
 
 /// Lowers one checked file. Every node is pushed after its children, and each node's children are contiguous.
@@ -168,11 +179,12 @@ impl Lowering<'_, '_> {
         }
 
         let root = self.node(SHARP_AST_STMT_LIST, 0, 1, &statements);
+        self.nodes[root as usize].end_line = last_line(&self.file.contents);
         if !self.errors.is_empty() {
             return Unit::failed(self.errors);
         }
 
-        Unit::new(self.nodes, self.children, root, self.texts)
+        Unit::boxed(self.nodes, self.children, root, Vec::new(), self.texts)
     }
 
     fn strict_types(&mut self) -> u32 {
@@ -459,7 +471,7 @@ impl Lowering<'_, '_> {
                 None => {
                     self.errors.push(diagnostic(
                         self.file,
-                        string.span,
+                        Some(string.span),
                         sharp_severity::SHARP_COMPILE_ERROR,
                         "Invalid UTF-8 codepoint escape sequence".to_owned(),
                     ));
@@ -470,7 +482,9 @@ impl Lowering<'_, '_> {
             Literal::Integer(integer) => match integer.value.and_then(|value| i64::try_from(value).ok()) {
                 Some(value) => self.zval(line, sharp_value::SHARP_LONG, |node| node.long_value = value),
                 None => {
-                    let value = parse_literal_integer_as_float(integer.raw).unwrap_or_default();
+                    #[allow(clippy::expect_used)]
+                    let value =
+                        parse_literal_integer_as_float(integer.raw).expect("the lexer reads only valid integers");
 
                     self.zval(line, sharp_value::SHARP_DOUBLE, |node| node.double_value = value)
                 }

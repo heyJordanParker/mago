@@ -214,6 +214,28 @@ fn an_invalid_unicode_escape_returns_the_engine_compile_error() {
     assert_eq!(lowered.unit().node_count, 0);
 }
 
+/// The Zend scanner ends a line at `\n`, `\r\n` and a lone `\r`, and stops on the line after the last line ending.
+#[test]
+fn the_root_end_line_is_the_last_line_the_zend_scanner_counts() {
+    let end_lines: Vec<u32> = [
+        "class Report {}",
+        "class Report {}\n",
+        "class Report {}\r\n",
+        "class Report {}\r",
+        "class Report\r\n{\r}\n\n",
+    ]
+    .iter()
+    .map(|code| {
+        let lowered = Lowered::new(code);
+        assert_eq!(lowered.diagnostics(), Vec::<String>::new());
+
+        lowered.nodes()[lowered.unit().root as usize].end_line
+    })
+    .collect();
+
+    assert_eq!(end_lines, [1, 2, 2, 2, 5]);
+}
+
 /// ```php
 /// <?php
 /// declare(strict_types=1);

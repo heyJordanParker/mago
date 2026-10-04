@@ -189,10 +189,6 @@ struct Diagnostic {
 }
 
 impl Unit {
-    fn new(nodes: Vec<sharp_node>, children: Vec<u32>, root: u32, texts: Vec<Box<[u8]>>) -> Box<Self> {
-        Self::boxed(nodes, children, root, Vec::new(), texts)
-    }
-
     fn failed(diagnostics: Vec<Diagnostic>) -> Box<Self> {
         let mut texts = Vec::with_capacity(diagnostics.len());
         let diagnostics = diagnostics
