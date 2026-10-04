@@ -66,6 +66,20 @@ fn analyze_finds_no_issues_once_the_argument_is_an_int() {
 }
 
 #[test]
+fn analyze_reports_only_the_scope_error_for_a_local_used_after_its_block_closes() {
+    let directory = workspace(
+        "namespace Demo;\n\nclass Report\n{\n    public static int total()\n    {\n        {\n            let inner = 1;\n        }\n        return inner;\n    }\n}\n",
+    );
+
+    let output = run(directory.path(), "analyze", &["--reporting-format", "emacs"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let errors: Vec<&str> = stdout.lines().filter(|line| line.starts_with("src/Demo/Report.sharp:")).collect();
+    assert_eq!(errors.len(), 1, "{stdout}");
+    assert!(errors[0].starts_with("src/Demo/Report.sharp:10:16:error"), "{stdout}");
+}
+
+#[test]
 fn linting_one_sharp_file_is_refused() {
     let service = LintService::new(ReadDatabase::empty(), Settings::default(), ParserSettings::default(), false);
     let file = File::ephemeral(Cow::Borrowed(b"src/Demo/Report.sharp"), Cow::Borrowed(REPORT.as_bytes()));

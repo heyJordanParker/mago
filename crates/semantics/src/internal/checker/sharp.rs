@@ -271,10 +271,22 @@ pub fn check_unary_postfix(unary_postfix: &UnaryPostfix, context: &mut Context<'
 }
 
 /// Reports a write, such as `assign to` or `increment`, to a local declared with `const`.
+///
+/// A write after the local's block closed reports only its scope error.
 fn check_const_write(target: &Expression, write: &str, context: &mut Context<'_, '_, '_>) {
     let Expression::ConstantAccess(target) = target else {
         return;
     };
+
+    let span = target.name.span();
+    let out_of_scope = context
+        .names
+        .binding_errors()
+        .iter()
+        .any(|error| matches!(error, BindingError::OutOfScope { name, .. } if *name == span));
+    if out_of_scope {
+        return;
+    }
 
     if let Some(Binding::Local(local @ Local { kind: LocalKind::Const, .. })) = context.names.binding(&target.name) {
         let name = BytesDisplay(target.name.value());

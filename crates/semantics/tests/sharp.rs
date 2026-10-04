@@ -126,6 +126,14 @@ fn using_a_local_after_its_block_closes_is_an_error() {
 }
 
 #[test]
+fn writing_a_const_local_after_its_block_closes_reports_only_the_scope_error() {
+    let code =
+        leak(method("        {\n            const inner = 1;\n        }\n        inner = 2;\n        return 1;\n"));
+
+    assert_eq!(issues(code), ["10:9 `inner` is used after the block that declares it closes."]);
+}
+
+#[test]
 fn a_top_level_function_is_an_error() {
     let code = "namespace App.Tenant;\n\nfunction total(int extra) { return extra; }\n";
 

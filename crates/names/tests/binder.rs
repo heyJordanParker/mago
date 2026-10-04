@@ -87,13 +87,13 @@ fn declared(code: &str, needle: &str, nth: usize, kind: LocalKind) -> Local {
 }
 
 #[test]
-fn a_local_used_after_its_block_closes_is_a_constant_and_a_binding_error() {
+fn a_local_used_after_its_block_closes_binds_as_that_local_and_is_a_binding_error() {
     const CODE: &str = "class Report\n{\n    public int run()\n    {\n        {\n            let inner = 1;\n            inner;\n        }\n        return inner;\n    }\n}\n";
     let arena = LocalArena::new();
     let names = bind(&arena, CODE);
 
     assert_eq!(binding(&names, CODE, "inner", 1), Some(local(CODE, "inner", 0, LocalKind::Let)));
-    assert_eq!(binding(&names, CODE, "inner", 2), Some(Binding::Constant));
+    assert_eq!(binding(&names, CODE, "inner", 2), Some(local(CODE, "inner", 0, LocalKind::Let)));
     assert_eq!(
         names.binding_errors(),
         [BindingError::OutOfScope { name: span(CODE, "inner", 2), local: declared(CODE, "inner", 0, LocalKind::Let) }]

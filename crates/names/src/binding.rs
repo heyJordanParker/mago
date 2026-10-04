@@ -33,7 +33,8 @@ pub enum Binding {
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum BindingError {
-    /// A local used after the block that declares it closed. The name binds as if the local did not exist.
+    /// A local used after the block that declares it closed. The name still binds as that local, so the scope
+    /// error is the only one it causes.
     OutOfScope {
         /// The name where it is used.
         name: Span,

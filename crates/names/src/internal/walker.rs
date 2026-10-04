@@ -515,6 +515,9 @@ where
 
             if let Some(local) = self.locals.lookup_closed(name) {
                 self.resolved_names.report_binding_error(BindingError::OutOfScope { name: span, local });
+                self.resolved_names.bind(span, Binding::Local(local));
+
+                return;
             }
 
             let is_member_object = self.member_objects.contains(&span.start.offset);
