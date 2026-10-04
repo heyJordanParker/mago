@@ -417,6 +417,10 @@ where
 
         for class_name in &class_names {
             for method_name in &method_names {
+                if !context.codebase.method_exists(class_name.as_bytes(), method_name.as_bytes()) {
+                    continue;
+                }
+
                 artifacts.symbol_references.add_reference_to_class_member(
                     &block_context.scope,
                     (ascii_lowercase_word(class_name.as_bytes()), *method_name),

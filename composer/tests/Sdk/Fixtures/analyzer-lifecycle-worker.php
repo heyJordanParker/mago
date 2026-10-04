@@ -516,6 +516,11 @@ final class LifecycleProofPlugin implements
             throw new RuntimeException('Top-level property references did not retain their semantic kinds.');
         }
 
+        $lowercasePair = new MemberIdentifier('LifecycleClass0', 'lowercasePair');
+        if ($project->references->getReferencesFrom($lowercasePair) !== []) {
+            throw new RuntimeException('A list of two lowercase strings referenced a class member.');
+        }
+
         [$knownReferences, $missingReferences] = $project->references->getMultipleReferencesTo([
             $frameworkAction,
             'DefinitelyMissing',

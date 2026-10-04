@@ -100,7 +100,7 @@ $lifecycleArrow = fn(): int => $lifecycleInstance->fileArrowTarget();
         };
         let inheritance = if index == 0 { " extends ExtensionProvided" } else { "" };
         let private_methods = if index == 0 {
-            "\n    public int $topLevelProperty = 0;\n\n    public function closureSource(): void { (function (): void { $this->closureTarget(); })(); }\n\n    public function fileClosureTarget(): int { return 1; }\n\n    public function fileArrowTarget(): int { return 1; }\n\n    private function closureTarget(): void {}\n\n    private function frameworkAction(): void {}\n\n    private function lateFrameworkAction(): void {}\n\n    private function actuallyUnused(): void {}\n"
+            "\n    public int $topLevelProperty = 0;\n\n    public function closureSource(): void { (function (): void { $this->closureTarget(); })(); }\n\n    public function fileClosureTarget(): int { return 1; }\n\n    public function fileArrowTarget(): int { return 1; }\n\n    private function closureTarget(): void {}\n\n    private function frameworkAction(): void {}\n\n    private function lateFrameworkAction(): void {}\n\n    private function actuallyUnused(): void {}\n\n    /**\n     * @param non-empty-lowercase-string|'' $first\n     * @param non-empty-lowercase-string|'' $second\n     * @return list<string>\n     */\n    public function lowercasePair(string $first, string $second): array { return [$first, $second]; }\n"
         } else {
             ""
         };
