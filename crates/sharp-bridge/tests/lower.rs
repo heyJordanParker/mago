@@ -828,6 +828,60 @@ fn a_block_is_a_statement_list_and_a_constant_is_looked_up_by_its_short_name() {
     );
 }
 
+/// The child count `zend_ast_get_num_children` gives a fixed-size kind, or 5 for a declaration. `None` for a list.
+fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
+    match kind {
+        sharp_kind::SHARP_AST_ARG_LIST
+        | sharp_kind::SHARP_AST_STMT_LIST
+        | sharp_kind::SHARP_AST_PARAM_LIST
+        | sharp_kind::SHARP_AST_CONST_DECL => None,
+        sharp_kind::SHARP_AST_ZVAL => Some(0),
+        sharp_kind::SHARP_AST_VAR
+        | sharp_kind::SHARP_AST_CONST
+        | sharp_kind::SHARP_AST_UNARY_PLUS
+        | sharp_kind::SHARP_AST_UNARY_MINUS
+        | sharp_kind::SHARP_AST_UNARY_OP
+        | sharp_kind::SHARP_AST_PRE_INC
+        | sharp_kind::SHARP_AST_PRE_DEC
+        | sharp_kind::SHARP_AST_POST_INC
+        | sharp_kind::SHARP_AST_POST_DEC
+        | sharp_kind::SHARP_AST_RETURN => Some(1),
+        sharp_kind::SHARP_AST_PROP
+        | sharp_kind::SHARP_AST_ASSIGN
+        | sharp_kind::SHARP_AST_ASSIGN_OP
+        | sharp_kind::SHARP_AST_BINARY_OP
+        | sharp_kind::SHARP_AST_GREATER
+        | sharp_kind::SHARP_AST_GREATER_EQUAL
+        | sharp_kind::SHARP_AST_AND
+        | sharp_kind::SHARP_AST_OR
+        | sharp_kind::SHARP_AST_DECLARE
+        | sharp_kind::SHARP_AST_NAMESPACE
+        | sharp_kind::SHARP_AST_NAMED_ARG => Some(2),
+        sharp_kind::SHARP_AST_METHOD_CALL | sharp_kind::SHARP_AST_STATIC_CALL | sharp_kind::SHARP_AST_CONST_ELEM => {
+            Some(3)
+        }
+        sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_CLASS => Some(5),
+        sharp_kind::SHARP_AST_PARAM => Some(6),
+    }
+}
+
+#[test]
+fn every_fixed_size_node_has_the_child_count_of_its_kind() {
+    let lowered = Lowered::new(&method(
+        "        let a = -extra + +1;\n        a = !true && false || a > 1 && a >= 2;\n        ++a;\n        --a;\n        a++;\n        a--;\n        this.count *= PHP_INT_MAX;\n        {\n            const b = this.total(a, rate: 2).value;\n        }\n        return Calc.make();\n",
+    ));
+    assert_eq!(lowered.diagnostics(), Vec::<String>::new());
+
+    let wrong: Vec<String> = lowered
+        .nodes()
+        .iter()
+        .filter(|node| fixed_child_count(node.kind).is_some_and(|count| count != node.child_count))
+        .map(|node| format!("{:?} has {} children", node.kind, node.child_count))
+        .collect();
+
+    assert_eq!(wrong, Vec::<String>::new());
+}
+
 #[test]
 fn each_node_carries_the_line_of_its_first_token() {
     let lowered = Lowered::new(&method("        let total =\n            extra;\n        return total;\n"));
