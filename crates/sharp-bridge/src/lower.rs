@@ -101,6 +101,7 @@ const ZEND_ACC_PUBLIC: u32 = 1 << 0;
 const ZEND_ACC_PROTECTED: u32 = 1 << 1;
 const ZEND_ACC_PRIVATE: u32 = 1 << 2;
 const ZEND_ACC_STATIC: u32 = 1 << 4;
+const ZEND_ACC_READONLY: u32 = 1 << 7;
 const ZEND_ACC_PROTECTED_SET: u32 = 1 << 11;
 const ZEND_ACC_PRIVATE_SET: u32 = 1 << 12;
 const ZEND_ADD: u32 = 1;
@@ -230,14 +231,15 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         }
     }
 
-    /// A class whose members have initial values that are not constant sets them at the start of its constructor, in
-    /// declaration order, and a class without a constructor gets a public one that spans the class.
+    /// A class sets the initial values PHP takes as no default, those that are not constant or belong to a `readonly`
+    /// property, at the start of its constructor, in declaration order. A class without a constructor gets a public
+    /// one that spans the class.
     fn class(&mut self, class: &Class) -> u32 {
         let mut initial_values = Vec::new();
         for member in &class.members {
             if let ClassLikeMember::Property(property) = member
                 && let Some(value) = initial_value(property)
-                && !is_default(value)
+                && !is_default(property, value)
             {
                 initial_values.push(self.initial_value(property.first_variable(), value));
             }
@@ -326,19 +328,20 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let hint = self.hint(hint);
         let name = self.string(0, self.line(parameter.variable.span), parameter.variable.name);
         let default = parameter.default_value.as_ref().map_or(NULL, |default| self.expression(default.value));
-        let set_flags =
-            parameter.hooks.as_ref().map_or(0, |accessors| set_visibility_flags(&parameter.modifiers, accessors));
-        let flags = modifier_flags(&parameter.modifiers) | set_flags;
+        let accessor_flags =
+            parameter.hooks.as_ref().map_or(0, |accessors| accessor_flags(&parameter.modifiers, accessors));
+        let flags = modifier_flags(&parameter.modifiers) | accessor_flags;
 
         self.node(SHARP_AST_PARAM, flags, self.line(parameter), &[hint, name, default, NULL, NULL, NULL])
     }
 
     /// A field or an auto-property is a property group of one property, as php-src's grammar builds
-    /// `private int $count = 0;` and `public private(set) int $views = 0;`. A constant initial value is its default.
+    /// `private int $count = 0;`, `public private(set) int $views = 0;` and `public readonly int $id;`. A constant
+    /// initial value is its default, unless the property is `readonly`.
     fn property(&mut self, property: &Property) -> u32 {
-        let set_flags = match property {
+        let accessor_flags = match property {
             Property::Plain(_) => 0,
-            Property::Hooked(auto_property) => set_visibility_flags(&auto_property.modifiers, &auto_property.hook_list),
+            Property::Hooked(auto_property) => accessor_flags(&auto_property.modifiers, &auto_property.hook_list),
         };
         let Some(hint) = property.hint() else {
             unreachable!("the PHP# parser gives every field and property its type");
@@ -348,12 +351,12 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let line = self.line(variable);
         let name = self.string(0, line, variable.name);
         let default = match initial_value(property) {
-            Some(value) if is_default(value) => self.expression(value),
+            Some(value) if is_default(property, value) => self.expression(value),
             _ => NULL,
         };
         let element = self.node(SHARP_AST_PROP_ELEM, 0, line, &[name, default, NULL, NULL]);
         let declaration = self.node(SHARP_AST_PROP_DECL, 0, line, &[element]);
-        let flags = modifier_flags(property.modifiers()) | set_flags;
+        let flags = modifier_flags(property.modifiers()) | accessor_flags;
 
         self.node(SHARP_AST_PROP_GROUP, flags, self.line(property), &[hint, declaration, NULL])
     }
@@ -667,9 +670,6 @@ fn modifier_flags(modifiers: &Sequence<Modifier>) -> u32 {
     flags
 }
 
-/// The set visibility of an auto-property, which php-src writes `private(set)` or `protected(set)`: its `set`
-/// accessor's access modifier, or `private` for a get-only property, which only the constructor sets. A private
-/// property needs none.
 /// The initial value of a field or an auto-property.
 fn initial_value<'arena>(property: &Property<'arena>) -> Option<&'arena Expression<'arena>> {
     match property {
@@ -683,19 +683,33 @@ fn initial_value<'arena>(property: &Property<'arena>) -> Option<&'arena Expressi
     }
 }
 
-/// Whether PHP takes an initial value as a property's default: a constant expression without `new`.
-fn is_default(value: &Expression) -> bool {
-    value.is_constant(&PHPVersion::PHP85, false)
+/// Whether PHP takes an initial value as the property's default: a constant expression without `new`, on a property
+/// that is not `readonly`, which takes no default.
+fn is_default(property: &Property, value: &Expression) -> bool {
+    !matches!(property, Property::Hooked(auto_property) if is_get_only(&auto_property.hook_list))
+        && value.is_constant(&PHPVersion::PHP85, false)
 }
 
-fn set_visibility_flags(modifiers: &Sequence<Modifier>, accessors: &PropertyHookList) -> u32 {
+/// Whether an accessor list has no `set`. Spec section 6.1 sets a get-only property in the constructor, which PHP's
+/// `readonly` enforces.
+fn is_get_only(accessors: &PropertyHookList) -> bool {
+    !accessors.hooks.iter().any(|accessor| accessor.name.value == b"set")
+}
+
+/// The flags an auto-property's accessors add: `readonly` for a get-only property, or the set visibility php-src
+/// writes `private(set)` or `protected(set)` from the `set` accessor's access modifier. A private property needs no
+/// set visibility.
+fn accessor_flags(modifiers: &Sequence<Modifier>, accessors: &PropertyHookList) -> u32 {
+    if is_get_only(accessors) {
+        return ZEND_ACC_READONLY;
+    }
+
     let set = accessors.hooks.iter().find(|accessor| accessor.name.value == b"set");
-    let flags = match set.map(|set| set.modifiers.first()) {
-        None => ZEND_ACC_PRIVATE_SET,
-        Some(None) => 0,
-        Some(Some(Modifier::Protected(_))) => ZEND_ACC_PROTECTED_SET,
-        Some(Some(Modifier::Private(_))) => ZEND_ACC_PRIVATE_SET,
-        Some(Some(modifier)) => unreachable!("check_slice refuses the accessor modifier `{modifier}`"),
+    let flags = match set.and_then(|set| set.modifiers.first()) {
+        None => 0,
+        Some(Modifier::Protected(_)) => ZEND_ACC_PROTECTED_SET,
+        Some(Modifier::Private(_)) => ZEND_ACC_PRIVATE_SET,
+        Some(modifier) => unreachable!("check_slice refuses the accessor modifier `{modifier}`"),
     };
 
     if modifiers.contains_private() { 0 } else { flags }

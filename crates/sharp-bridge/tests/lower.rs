@@ -392,14 +392,14 @@ fn a_field_is_a_property_group_of_one_property() {
 /// ```php
 /// public private(set) int $views = 0;
 /// public string $name;
-/// public private(set) int $id;
+/// public readonly int $id;
 /// protected protected(set) int $total;   // written `public int total { get; protected set; }`
-/// private int $hidden;
+/// private readonly int $hidden;
 /// ```
 ///
 /// An auto-property is a property with asymmetric visibility. `[4097]` is `ZEND_ACC_PUBLIC | ZEND_ACC_PRIVATE_SET`,
-/// and `[2049]` is `ZEND_ACC_PUBLIC | ZEND_ACC_PROTECTED_SET`. A get-only property is `private(set)`, and a private
-/// one needs no set visibility.
+/// and `[2049]` is `ZEND_ACC_PUBLIC | ZEND_ACC_PROTECTED_SET`. A get-only property is `readonly`, so `[129]` is
+/// `ZEND_ACC_PUBLIC | ZEND_ACC_READONLY` and `[132]` is `ZEND_ACC_PRIVATE | ZEND_ACC_READONLY`.
 #[test]
 fn an_auto_property_is_a_property_with_its_set_visibility() {
     let lowered = Lowered::new(
@@ -418,9 +418,9 @@ fn an_auto_property_is_a_property_with_its_set_visibility() {
         [
             (4097, "PROP_DECL\n  PROP_ELEM\n    ZVAL \"views\"\n    ZVAL 0\n    null\n    null\n".to_owned()),
             (1, "PROP_DECL\n  PROP_ELEM\n    ZVAL \"name\"\n    null\n    null\n    null\n".to_owned()),
-            (4097, "PROP_DECL\n  PROP_ELEM\n    ZVAL \"id\"\n    null\n    null\n    null\n".to_owned()),
+            (129, "PROP_DECL\n  PROP_ELEM\n    ZVAL \"id\"\n    null\n    null\n    null\n".to_owned()),
             (2049, "PROP_DECL\n  PROP_ELEM\n    ZVAL \"total\"\n    null\n    null\n    null\n".to_owned()),
-            (4, "PROP_DECL\n  PROP_ELEM\n    ZVAL \"hidden\"\n    null\n    null\n    null\n".to_owned()),
+            (132, "PROP_DECL\n  PROP_ELEM\n    ZVAL \"hidden\"\n    null\n    null\n    null\n".to_owned()),
         ]
     );
 }
@@ -469,11 +469,11 @@ fn the_constructor_is_a_public_function_named_construct() {
 }
 
 /// ```php
-/// public function __construct(private int $count, public private(set) int $id, protected string $name, int $extra) {}
+/// public function __construct(private int $count, public readonly int $id, protected string $name, int $extra) {}
 /// ```
 ///
-/// A parameter that declares a member carries the member's flags: `[4]` is `ZEND_ACC_PRIVATE`, `[4097]` is
-/// `ZEND_ACC_PUBLIC | ZEND_ACC_PRIVATE_SET`, and `[2]` is `ZEND_ACC_PROTECTED`.
+/// A parameter that declares a member carries the member's flags: `[4]` is `ZEND_ACC_PRIVATE`, `[129]` is
+/// `ZEND_ACC_PUBLIC | ZEND_ACC_READONLY`, and `[2]` is `ZEND_ACC_PROTECTED`.
 #[test]
 fn a_constructor_parameter_with_an_access_modifier_is_a_promoted_parameter() {
     let lowered = Lowered::new(
@@ -493,7 +493,7 @@ fn a_constructor_parameter_with_an_access_modifier_is_a_promoted_parameter() {
 
     assert_eq!(
         parameters,
-        [("count".to_owned(), 4), ("id".to_owned(), 4097), ("name".to_owned(), 2), ("extra".to_owned(), 0)]
+        [("count".to_owned(), 4), ("id".to_owned(), 129), ("name".to_owned(), 2), ("extra".to_owned(), 0)]
     );
 }
 
@@ -614,6 +614,50 @@ fn a_class_with_a_non_constant_initial_value_and_no_constructor_gets_one() {
                       ZVAL "Lib\\Calc"
                       ARG_LIST
                         ZVAL 1
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// public readonly string $code;
+/// public function __construct()
+/// {
+///     $this->code = 'none';
+/// }
+/// ```
+///
+/// PHP takes no default on a `readonly` property, so a get-only property's initial value runs in the constructor even
+/// when it is constant.
+#[test]
+fn a_get_only_property_gets_its_initial_value_in_the_constructor() {
+    let lowered = Lowered::new("class Report\n{\n    public string code { get; } = \"none\";\n}\n");
+    let class = lowered.child(lowered.unit().root, 1);
+
+    assert_eq!(
+        lowered.render(lowered.child(class, 2)),
+        indoc! {r#"
+            STMT_LIST
+              PROP_GROUP [129]
+                ZVAL [1] "string"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "code"
+                    null
+                    null
+                    null
+                null
+              METHOD [1] "__construct" @1-4
+                PARAM_LIST
+                null
+                STMT_LIST
+                  ASSIGN
+                    PROP
+                      VAR
+                        ZVAL "this"
+                      ZVAL "code"
+                    ZVAL "none"
                 null
                 null
         "#}

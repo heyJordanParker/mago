@@ -61,7 +61,9 @@ where
         flags |= MetadataFlags::HAS_DEFAULT;
     }
 
-    if parameter.modifiers.contains_readonly() {
+    let is_sharp = context.program.dialect.is_sharp();
+    if parameter.modifiers.contains_readonly() || (is_sharp && parameter.hooks.as_ref().is_some_and(is_sharp_get_only))
+    {
         flags |= MetadataFlags::READONLY;
     }
 
@@ -80,7 +82,6 @@ where
         None => Visibility::Public,
     };
 
-    let is_sharp = context.program.dialect.is_sharp();
     let write_visibility = match (parameter.modifiers.get_first_write_visibility(), &parameter.hooks) {
         (Some(visibility), _) => Visibility::try_from(visibility).unwrap_or(Visibility::Public),
         (None, Some(accessors)) if is_sharp => sharp_write_visibility(accessors, read_visibility),
@@ -316,6 +317,10 @@ where
                 flags |= MetadataFlags::HAS_DEFAULT;
             }
 
+            if is_sharp && is_sharp_get_only(&hooked_property.hook_list) {
+                flags |= MetadataFlags::READONLY;
+            }
+
             if hooked_property.modifiers.contains_abstract() {
                 flags |= MetadataFlags::ABSTRACT;
             }
@@ -376,15 +381,21 @@ where
     }
 }
 
-/// The write visibility of a PHP# auto-property: its `set` accessor's access modifier, the property's own for a bare
-/// `set;`, and `private` for a get-only property, which only its class's constructor sets.
+/// The write visibility of a PHP# auto-property: its `set` accessor's access modifier, or the property's own for a
+/// bare `set;`. A get-only property runs as `readonly`, which PHP writes as `protected(set)` at most.
 fn sharp_write_visibility(accessors: &PropertyHookList, read_visibility: Visibility) -> Visibility {
     match accessors.hooks.iter().find(|accessor| accessor.name.value == b"set") {
         Some(set) => {
             set.modifiers.first().and_then(|modifier| Visibility::try_from(modifier).ok()).unwrap_or(read_visibility)
         }
-        None => Visibility::Private,
+        None if read_visibility == Visibility::Public => Visibility::Protected,
+        None => read_visibility,
     }
+}
+
+/// Whether a PHP# accessor list declares a get-only property, which runs as `readonly`.
+fn is_sharp_get_only(accessors: &PropertyHookList) -> bool {
+    !accessors.hooks.iter().any(|accessor| accessor.name.value == b"set")
 }
 
 fn scan_property_hook<'arena, A>(

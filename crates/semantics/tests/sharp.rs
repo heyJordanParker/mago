@@ -460,13 +460,6 @@ fn a_promoted_member_follows_the_rules_of_the_same_declaration_in_the_class_body
 }
 
 #[test]
-fn a_get_only_promoted_property_is_written_only_in_the_constructor() {
-    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public Report(public int id { get; }) {}\n\n    public void reset()\n    {\n        this.id = 2;\n    }\n}\n";
-
-    assert_eq!(issues(code), ["9:9 Cannot write `id` here: a get-only property is set only in the constructor."]);
-}
-
-#[test]
 fn a_promoted_member_outside_the_slice_is_not_supported_yet() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    public Report(private readonly int a, private static int b) {}\n\n    public void run(private int c) {}\n}\n";
 
@@ -557,19 +550,6 @@ fn an_auto_property_has_get_an_optional_narrower_set_and_an_optional_constant_in
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int views { get; private set; } = 0;\n    public string name { get; set; } = \"none\";\n    public float rate { get; protected set; }\n    protected int total { get; private set; }\n    public int id { get; }\n    private int hidden { get; set; }\n}\n";
 
     assert_eq!(issues(code), Vec::<String>::new());
-}
-
-#[test]
-fn a_get_only_property_is_written_only_in_the_constructor() {
-    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int id { get; }\n\n    public Report()\n    {\n        this.id = 1;\n        this.id += 1;\n    }\n\n    public void reset()\n    {\n        this.id = 2;\n        this.id++;\n    }\n}\n";
-
-    assert_eq!(
-        issues(code),
-        [
-            "15:9 Cannot write `id` here: a get-only property is set only in the constructor.",
-            "16:9 Cannot write `id` here: a get-only property is set only in the constructor.",
-        ]
-    );
 }
 
 #[test]

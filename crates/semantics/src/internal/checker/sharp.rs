@@ -5,7 +5,6 @@ use mago_names::binding::Binding;
 use mago_names::binding::BindingError;
 use mago_names::binding::Local;
 use mago_names::binding::LocalKind;
-use mago_names::binding::php_method_name;
 use mago_names::scope::php_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -37,7 +36,6 @@ use mago_syntax::cst::NamespaceBody;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::Program;
 use mago_syntax::cst::Property;
-use mago_syntax::cst::PropertyAccess;
 use mago_syntax::cst::PropertyHookBody;
 use mago_syntax::cst::PropertyHookList;
 use mago_syntax::cst::PropertyItem;
@@ -75,8 +73,8 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - An auto-property: `public`, `protected` or `private`, a type, one name, the accessors `get;` and an optional
 ///   `set;` that may take an access modifier narrower than the property's, and an optional initial value after the
 ///   accessors, which is a field's. A property without `get`, an accessor declared twice, or a `set` access modifier
-///   as wide as the property's is an error, as in C#. A write to a get-only property of `this` outside the
-///   constructor is an error.
+///   as wide as the property's is an error, as in C#. A get-only property runs as `readonly`, and the analyzer
+///   reports every write to it that `readonly` refuses.
 /// - A method: `public`, `protected` or `private`, an optional `static`, parameters, a return type and a body. Its name
 ///   does not start with `__`, which PHP reserves for magic methods, and is not its class's name, compared ignoring
 ///   case, which PHP# gives to the constructor.
@@ -178,7 +176,6 @@ fn enter(
         }
 
         if let Expression::Access(Access::Property(property)) = target {
-            check_get_only_write(property, context);
             check_member_access(
                 property.span(),
                 property.object,
@@ -613,55 +610,6 @@ fn check_accessors(
             Issue::error("A PHP# property needs a `get` accessor.")
                 .with_annotation(Annotation::primary(name).with_message("Declared here."))
                 .with_help("Add `get;`, as in `public int views { get; set; }`."),
-        );
-    }
-}
-
-/// Reports a write to a get-only property of `this` outside the constructor. Spec section 6.1 sets a get-only
-/// property only in the constructor, and the engine's `private(set)` alone would allow any method of the class.
-fn check_get_only_write(access: &PropertyAccess, context: &mut Context<'_, '_, '_>) {
-    let (Expression::ConstantAccess(object), ClassLikeMemberSelector::Identifier(name)) =
-        (access.object, &access.property)
-    else {
-        return;
-    };
-
-    let Some(class) = enclosing_class(context.program, access.span()) else {
-        return;
-    };
-
-    if context.names.binding(&object.name) != Some(Binding::This) {
-        return;
-    }
-
-    let is_get_only =
-        |accessors: &PropertyHookList| !accessors.hooks.iter().any(|accessor| accessor.name.value == b"set");
-    let is_get_only = class.members.iter().any(|member| match member {
-        ClassLikeMember::Property(Property::Hooked(property)) => {
-            property.item.variable().name == name.value && is_get_only(&property.hook_list)
-        }
-        ClassLikeMember::Method(method) if php_method_name(method) == b"__construct" => {
-            method.parameter_list.parameters.iter().any(|parameter| {
-                parameter.variable.name == name.value
-                    && parameter.modifiers.contains_visibility()
-                    && parameter.hooks.as_ref().is_some_and(is_get_only)
-            })
-        }
-        _ => false,
-    });
-    let in_constructor = class.members.iter().any(|member| {
-        matches!(member, ClassLikeMember::Method(method)
-            if php_method_name(method) == b"__construct" && method.span().contains(&access.span().start))
-    });
-
-    if is_get_only && !in_constructor {
-        context.report(
-            Issue::error(format!(
-                "Cannot write `{}` here: a get-only property is set only in the constructor.",
-                BytesDisplay(name.value)
-            ))
-            .with_annotation(Annotation::primary(access.span()).with_message("Written here."))
-            .with_help("Write it in the constructor, or add `private set;` to change it later."),
         );
     }
 }
