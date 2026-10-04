@@ -11,6 +11,7 @@ use mago_span::Span;
 use mago_syntax::cst::Access;
 use mago_syntax::cst::Argument;
 use mago_syntax::cst::Assignment;
+use mago_syntax::cst::AttributeList;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeMember;
@@ -25,8 +26,10 @@ use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::LocalIdentifier;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::MethodBody;
+use mago_syntax::cst::Modifier;
 use mago_syntax::cst::PositionalArgument;
 use mago_syntax::cst::Program;
+use mago_syntax::cst::Sequence;
 use mago_syntax::cst::Statement;
 use mago_syntax::cst::UnaryPostfix;
 use mago_syntax::cst::UnaryPostfixOperator;
@@ -49,11 +52,12 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// Checks a PHP# file against the slice allow-list: the only constructs a `.sharp` file may use, and the contract
 /// the engine's lowering implements.
 ///
-/// - At file level: `namespace`, `import` and `class`.
-/// - In a class: methods.
+/// - At file level: `namespace`, `import` and `class`, with no attributes, modifiers, `extends` or `implements`.
+/// - In a class: methods, with `public`, `protected`, `private` and `static` as their only modifiers.
+/// - Method parameters: a type, a name and an optional default.
 /// - In a method body: blocks, expression statements, `return`, and `let` and `const` declarations.
-/// - In expressions: literals, parentheses, bare names, assignment, binary and prefix operators, and method calls
-///   and property access written with `.`.
+/// - In expressions: literals, parentheses, bare names, assignment, binary operators, prefix operators, postfix `++`
+///   and `--`, and method calls and property access written with `.`, with positional and named arguments.
 ///
 /// Every other construct is not supported yet, reported once at its outermost node. The constructs PHP# never has,
 /// such as `$` variables, keep their own errors.
@@ -72,19 +76,7 @@ fn check_file_statement(statement: &Statement, context: &mut Context<'_, '_, '_>
             }
         }
         Statement::Use(_) => {}
-        Statement::Class(class) => {
-            for member in &class.members {
-                match member {
-                    ClassLikeMember::Method(method) => check_method(method, context),
-                    _ => report_not_supported(
-                        member.span(),
-                        "class member",
-                        "In a class, PHP# supports methods.",
-                        context,
-                    ),
-                }
-            }
-        }
+        Statement::Class(class) => check_class(class, context),
         // PHP# never has top-level functions: `check_function` reports them.
         Statement::Function(_) => {}
         _ => report_not_supported(
@@ -96,17 +88,84 @@ fn check_file_statement(statement: &Statement, context: &mut Context<'_, '_, '_>
     }
 }
 
-fn check_method(method: &Method, context: &mut Context<'_, '_, '_>) {
-    for parameter in &method.parameter_list.parameters {
-        if let Some(default_value) = &parameter.default_value {
-            check_expression(default_value.value, context);
+fn check_class(class: &Class, context: &mut Context<'_, '_, '_>) {
+    report_attributes(&class.attribute_lists, context);
+    for modifier in &class.modifiers {
+        report_not_supported(modifier.span(), "modifier", "A PHP# class takes no modifiers.", context);
+    }
+
+    if let Some(extends) = &class.extends {
+        report_not_supported(extends.span(), "`extends` clause", "A PHP# class has no parent class.", context);
+    }
+
+    if let Some(implements) = &class.implements {
+        report_not_supported(
+            implements.span(),
+            "`implements` clause",
+            "A PHP# class implements no interfaces.",
+            context,
+        );
+    }
+
+    for member in &class.members {
+        match member {
+            ClassLikeMember::Method(method) => check_method(method, context),
+            _ => report_not_supported(member.span(), "class member", "In a class, PHP# supports methods.", context),
         }
+    }
+}
+
+fn check_method(method: &Method, context: &mut Context<'_, '_, '_>) {
+    report_attributes(&method.attribute_lists, context);
+    for modifier in &method.modifiers {
+        if !matches!(
+            modifier,
+            Modifier::Public(_) | Modifier::Protected(_) | Modifier::Private(_) | Modifier::Static(_)
+        ) {
+            report_not_supported(
+                modifier.span(),
+                "modifier",
+                "On a method, PHP# supports `public`, `protected`, `private` and `static`.",
+                context,
+            );
+        }
+    }
+
+    for parameter in &method.parameter_list.parameters {
+        check_method_parameter(parameter, context);
     }
 
     if let MethodBody::Concrete(block) = &method.body {
         for statement in &block.statements {
             check_body_statement(statement, context);
         }
+    }
+}
+
+fn check_method_parameter(parameter: &FunctionLikeParameter, context: &mut Context<'_, '_, '_>) {
+    const SUPPORTED: &str = "PHP# supports parameters with a type, a name and an optional default.";
+
+    report_attributes(&parameter.attribute_lists, context);
+    if !parameter.modifiers.is_empty() {
+        report_not_supported(parameter.span(), "promoted constructor parameter", SUPPORTED, context);
+    }
+
+    if let Some(ampersand) = parameter.ampersand {
+        report_not_supported(ampersand, "by-reference parameter", SUPPORTED, context);
+    }
+
+    if let Some(ellipsis) = parameter.ellipsis {
+        report_not_supported(ellipsis, "variadic parameter", SUPPORTED, context);
+    }
+
+    if let Some(default_value) = &parameter.default_value {
+        check_expression(default_value.value, context);
+    }
+}
+
+fn report_attributes(attribute_lists: &Sequence<'_, AttributeList<'_>>, context: &mut Context<'_, '_, '_>) {
+    for attribute_list in attribute_lists {
+        report_not_supported(attribute_list.span(), "attribute", "PHP# writes attributes as `[...]`.", context);
     }
 }
 
@@ -148,6 +207,7 @@ fn check_expression(expression: &Expression, context: &mut Context<'_, '_, '_>) 
             check_expression(binary.rhs, context);
         }
         Expression::UnaryPrefix(unary_prefix) => check_expression(unary_prefix.operand, context),
+        Expression::UnaryPostfix(unary_postfix) => check_expression(unary_postfix.operand, context),
         Expression::Call(Call::Method(method_call)) => {
             check_expression(method_call.object, context);
             for argument in &method_call.argument_list.arguments {
@@ -156,7 +216,12 @@ fn check_expression(expression: &Expression, context: &mut Context<'_, '_, '_>) 
                         check_expression(value, context)
                     }
                     Argument::Named(named) => check_expression(named.value, context),
-                    Argument::Positional(_) => report_unsupported_expression(argument.span(), context),
+                    Argument::Positional(_) => report_not_supported(
+                        argument.span(),
+                        "spread argument",
+                        "PHP# supports positional and named arguments.",
+                        context,
+                    ),
                 }
             }
         }
@@ -173,7 +238,7 @@ fn report_unsupported_expression(span: Span, context: &mut Context<'_, '_, '_>) 
     report_not_supported(
         span,
         "expression",
-        "PHP# supports literals, parentheses, bare names, assignment, binary and prefix operators, and method calls and property access with `.`.",
+        "PHP# supports literals, parentheses, bare names, assignment, binary operators, prefix operators, postfix `++` and `--`, and method calls and property access with `.`.",
         context,
     );
 }

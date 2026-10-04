@@ -43,7 +43,7 @@ fn leak(code: String) -> &'static str {
 #[test]
 fn the_slice_has_no_semantic_issues() {
     let code = leak(method(
-        "        let label = \"one\";\n        const base = 2;\n        label = \"two\";\n        {\n            let inner = base * extra - 1;\n            inner = inner / 2;\n        }\n        return this.total(base, extra) + Calc.make().add(label);\n",
+        "        let label = \"one\";\n        const base = 2;\n        label = \"two\";\n        {\n            let inner = base * extra - 1;\n            inner = inner / 2;\n            inner++;\n            --inner;\n            inner--;\n        }\n        return this.total(base, extra) + Calc.make().add(label);\n",
     ));
 
     assert_eq!(issues(code), Vec::<String>::new());
@@ -51,7 +51,7 @@ fn the_slice_has_no_semantic_issues() {
 
 #[test]
 fn every_construct_outside_the_slice_is_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\nenum Suit\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        if (extra) {\n            return 1;\n        }\n        echo extra;\n        const made = new Report();\n        const arrow = fn() => 1;\n        const closure = function () { return 1; };\n        const partial = this.run(...);\n        const text = \"total {$extra}\";\n        extra++;\n        return extra;\n    }\n}\n";
+    let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\nenum Suit\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        if (extra) {\n            return 1;\n        }\n        echo extra;\n        const made = new Report();\n        const arrow = fn() => 1;\n        const closure = function () { return 1; };\n        const partial = this.run(...);\n        const text = \"total {$extra}\";\n        return extra;\n    }\n}\n";
 
     assert_eq!(
         issues(code),
@@ -67,7 +67,6 @@ fn every_construct_outside_the_slice_is_not_supported_yet() {
             "24:25 This expression is not supported yet in PHP#.",
             "25:25 This expression is not supported yet in PHP#.",
             "26:22 This expression is not supported yet in PHP#.",
-            "27:9 This expression is not supported yet in PHP#.",
             "26:30 PHP# variables have no `$`: write `extra`.",
         ]
     );
@@ -93,12 +92,9 @@ fn incrementing_or_decrementing_a_const_local_is_an_error() {
         "        const base = 2;\n        base++;\n        ++base;\n        base--;\n        --base;\n        return base;\n",
     ));
 
-    // Postfix `++` and `--` are outside the slice, and still break the `const` rule.
     assert_eq!(
         issues(code),
         [
-            "8:9 This expression is not supported yet in PHP#.",
-            "10:9 This expression is not supported yet in PHP#.",
             "8:9 Cannot increment `base`: it is declared with `const`.",
             "9:11 Cannot increment `base`: it is declared with `const`.",
             "10:9 Cannot decrement `base`: it is declared with `const`.",
@@ -287,4 +283,91 @@ fn a_bare_member_name_is_not_supported_yet() {
             "5:39 Using the member `run` without `this.` is not supported yet.",
         ]
     );
+}
+
+#[test]
+fn access_modifiers_static_named_arguments_and_defaults_are_in_the_slice() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public static int total(int extra = 1)\n    {\n        return Report.part(first: extra, second: 2);\n    }\n\n    protected static int part(int first, int second = 0)\n    {\n        return first * second;\n    }\n\n    private int none()\n    {\n        return 0;\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn extends_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Base\n{\n}\n\nclass Report extends Base\n{\n}\n";
+
+    assert_eq!(issues(code), ["7:14 This `extends` clause is not supported yet in PHP#."]);
+}
+
+#[test]
+fn implements_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Shape;\n\nclass Report implements Shape\n{\n}\n";
+
+    assert_eq!(issues(code), ["5:14 This `implements` clause is not supported yet in PHP#."]);
+}
+
+#[test]
+fn attributes_are_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\n#[Marker]\nclass Report\n{\n    #[Marker]\n    public int run(#[Marker] int extra)\n    {\n        return extra;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "3:1 This attribute is not supported yet in PHP#.",
+            "6:5 This attribute is not supported yet in PHP#.",
+            "7:20 This attribute is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn final_abstract_and_readonly_are_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nfinal class Report\n{\n    final public int run()\n    {\n        return 1;\n    }\n}\n\nabstract class Shape\n{\n    abstract public int area();\n}\n\nreadonly class Point\n{\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "3:1 This modifier is not supported yet in PHP#.",
+            "5:5 This modifier is not supported yet in PHP#.",
+            "11:1 This modifier is not supported yet in PHP#.",
+            "13:5 This modifier is not supported yet in PHP#.",
+            "16:1 This modifier is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn a_by_reference_parameter_is_not_supported_yet() {
+    let code = leak(method("        return extra;\n").replace("int extra", "int &extra"));
+
+    assert_eq!(issues(code), ["5:24 This by-reference parameter is not supported yet in PHP#."]);
+}
+
+#[test]
+fn a_variadic_parameter_is_not_supported_yet() {
+    let code = leak(method("        return 1;\n").replace("int extra", "int ...extra"));
+
+    assert_eq!(issues(code), ["5:24 This variadic parameter is not supported yet in PHP#."]);
+}
+
+#[test]
+fn a_promoted_constructor_parameter_is_not_supported_yet() {
+    let code =
+        "namespace App.Tenant;\n\nclass Report\n{\n    public void __construct(private int extra)\n    {\n    }\n}\n";
+
+    // A PHP# method writes its return type first, so `__construct` also breaks PHP's rule against one.
+    assert_eq!(
+        issues(code),
+        [
+            "5:29 This promoted constructor parameter is not supported yet in PHP#.",
+            "5:12 Magic method `Report::__construct` cannot have a return type hint.",
+        ]
+    );
+}
+
+#[test]
+fn a_spread_argument_is_not_supported_yet() {
+    let code = leak(method("        const parts = this.parts();\n        return this.total(...parts);\n"));
+
+    assert_eq!(issues(code), ["8:27 This spread argument is not supported yet in PHP#."]);
 }
