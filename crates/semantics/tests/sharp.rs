@@ -287,8 +287,8 @@ fn a_bare_member_name_is_an_error_that_names_this() {
     assert_eq!(
         issues(code),
         [
-            "5:31 Write `this.count`: members of the same object are always written with `this.`.",
-            "5:39 Write `this.run`: members of the same object are always written with `this.`.",
+            "5:31 Write `this.count()`: members of the same object are always written with `this.`.",
+            "5:39 Write `this.run()`: members of the same object are always written with `this.`.",
         ]
     );
 }

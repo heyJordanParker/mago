@@ -1,12 +1,15 @@
 use mago_span::Span;
 use mago_word::Word;
 use mago_word::concat_word;
+use mago_word::word;
 
 /// Returns the PHP variable a PHP# local, parameter or `this` runs as: `total` runs as `$total`.
+///
+/// A name already written with `$`, which is a PHP# error of its own, is kept as written.
 #[inline]
 #[must_use]
 pub fn php_variable_name(name: &[u8]) -> Word {
-    concat_word!(b"$", name)
+    if name.starts_with(b"$") { word(name) } else { concat_word!(b"$", name) }
 }
 
 /// What a bare PHP# name refers to.

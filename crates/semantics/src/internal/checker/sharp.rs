@@ -425,7 +425,7 @@ pub fn check_declarations(program: &Program, context: &mut Context<'_, '_, '_>) 
 #[inline]
 pub fn check_constant_access(constant_access: &ConstantAccess, context: &mut Context<'_, '_, '_>) {
     if context.names.binding(&constant_access.name) == Some(Binding::Member) {
-        report_bare_member(constant_access.span(), BytesDisplay(constant_access.name.value()), context);
+        report_bare_member(constant_access.span(), constant_access.name.value(), context);
     }
 }
 
@@ -436,7 +436,7 @@ pub fn check_function_call(function_call: &FunctionCall, context: &mut Context<'
     };
 
     if context.names.binding(identifier) == Some(Binding::Member) {
-        report_bare_member(identifier.span(), BytesDisplay(identifier.value()), context);
+        report_bare_member(identifier.span(), identifier.value(), context);
 
         return;
     }
@@ -666,11 +666,23 @@ fn report_static_read(root: &ConstantAccess, member: &LocalIdentifier, span: Spa
     );
 }
 
-fn report_bare_member(span: Span, name: BytesDisplay<'_>, context: &mut Context<'_, '_, '_>) {
+fn report_bare_member(span: Span, name: &[u8], context: &mut Context<'_, '_, '_>) {
+    let call = if is_method_of_enclosing_class(context.program, span, name) { "()" } else { "" };
+    let name = BytesDisplay(name);
+
     context.report(
-        Issue::error(format!("Write `this.{name}`: members of the same object are always written with `this.`."))
+        Issue::error(format!("Write `this.{name}{call}`: members of the same object are always written with `this.`."))
             .with_annotation(Annotation::primary(span).with_message("Used here.")),
     );
+}
+
+/// Returns `true` when `name` is a method of the class whose body holds `span`. Method names are case-insensitive.
+fn is_method_of_enclosing_class(program: &Program, span: Span, name: &[u8]) -> bool {
+    declarations(program).0.iter().filter(|class| class.span().contains(&span.start)).any(|class| {
+        class.members.iter().any(
+            |member| matches!(member, ClassLikeMember::Method(method) if method.name.value.eq_ignore_ascii_case(name)),
+        )
+    })
 }
 
 fn starts_uppercase(name: &[u8]) -> bool {

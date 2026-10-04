@@ -10,6 +10,7 @@ use mago_names::binding::Binding;
 use mago_names::binding::BindingError;
 use mago_names::binding::Local;
 use mago_names::binding::LocalKind;
+use mago_names::binding::php_variable_name;
 use mago_names::resolver::NameResolver;
 use mago_span::Position;
 use mago_span::Span;
@@ -172,6 +173,12 @@ fn a_member_of_the_enclosing_class_without_this_is_recorded() {
 
     assert_eq!(binding(&names, CODE, "count()", 1), Some(Binding::Member));
     assert_eq!(binding(&names, CODE, "total()", 1), Some(Binding::Member));
+}
+
+#[test]
+fn php_variable_name_adds_a_dollar_only_to_a_bare_name() {
+    assert_eq!(php_variable_name(b"total").as_bytes(), b"$total");
+    assert_eq!(php_variable_name(b"$total").as_bytes(), b"$total");
 }
 
 #[test]
