@@ -355,10 +355,48 @@ fn dot_reads_as_member_access_whatever_the_name_before_it() {
 }
 
 #[test]
+fn question_mark_dot_reads_as_null_safe_member_access() {
+    const CODE: &str =
+        "class Report\n{\n    void run()\n    {\n        calc?.add(1);\n        this?.total.next;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [add, next] = method_body(program) else {
+        panic!("expected two statements, got {:#?}", method_body(program));
+    };
+
+    let Expression::Call(Call::NullSafeMethod(add)) = expression(add) else {
+        panic!("expected `calc?.add(1)` to be a null-safe method call, got {add:#?}");
+    };
+    assert_eq!(bare_name(add.object), b"calc");
+    assert_eq!(source(CODE, &add.question_mark_arrow), "?.");
+    assert_eq!(source(CODE, add), "calc?.add(1)");
+
+    let Expression::Access(Access::Property(next)) = expression(next) else {
+        panic!("expected `this?.total.next` to read `next`, got {next:#?}");
+    };
+    let Expression::Access(Access::NullSafeProperty(total)) = next.object else {
+        panic!("expected `this?.total` to be a null-safe property access, got {:#?}", next.object);
+    };
+    assert_eq!(bare_name(total.object), b"this");
+    assert_eq!(source(CODE, total), "this?.total");
+}
+
+#[test]
+fn a_question_mark_apart_from_the_dot_is_not_null_safe_access() {
+    let arena = LocalArena::new();
+    let program =
+        parse(&arena, "src/Report.sharp", "class Report\n{\n    void run()\n    {\n        calc? .add(1);\n    }\n}\n");
+
+    assert!(!program.errors.is_empty());
+}
+
+#[test]
 fn php_member_access_and_concatenating_assignment_are_parse_errors_that_name_the_dot() {
     for (code, message) in [
         ("calc->add()", "`->` is PHP syntax: PHP# writes member access with `.`"),
-        ("calc?->add()", "`?->` is PHP syntax: PHP# writes member access with `.`"),
+        ("calc?->add()", "`?->` is PHP syntax: PHP# writes null-safe member access with `?.`"),
         ("Calc::make()", "`::` is PHP syntax: PHP# writes static access with `.`"),
         ("label .= \"x\"", "`.=` is PHP syntax: in PHP# `.` is member access"),
     ] {

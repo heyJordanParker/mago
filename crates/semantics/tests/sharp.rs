@@ -223,6 +223,35 @@ fn writing_a_static_member_is_not_supported_yet() {
 }
 
 #[test]
+fn null_safe_access_on_a_class_is_an_error_that_names_the_dot() {
+    let code = leak(method("        Calc?.make();\n        return Calc?.rate;\n"));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:9 `Calc` is a class, which is never null: write `Calc.make`.",
+            "8:16 `Calc` is a class, which is never null: write `Calc.rate`.",
+        ]
+    );
+}
+
+#[test]
+fn a_write_through_null_safe_access_is_not_supported() {
+    let code = leak(method(
+        "        this?.count = 1;\n        this?.count ??= 2;\n        this?.count++;\n        return 1;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:9 This write target is not supported yet in PHP#.",
+            "8:9 This write target is not supported yet in PHP#.",
+            "9:9 This write target is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
 fn a_reserved_class_name_is_an_error() {
     let code = "namespace App.Tenant;\n\nclass Mixed\n{\n}\n";
 

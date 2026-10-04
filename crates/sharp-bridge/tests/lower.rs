@@ -839,6 +839,31 @@ fn null_coalescing_assignment_is_assign_coalesce() {
 }
 
 /// ```php
+/// return $this?->total($extra)?->value->cents;
+/// ```
+#[test]
+fn null_safe_calls_and_reads_are_nullsafe_kinds() {
+    assert_eq!(
+        body("        return this?.total(extra)?.value.cents;\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                PROP
+                  NULLSAFE_PROP
+                    NULLSAFE_METHOD_CALL
+                      VAR
+                        ZVAL "this"
+                      ZVAL "total"
+                      ARG_LIST
+                        VAR
+                          ZVAL "extra"
+                    ZVAL "value"
+                  ZVAL "cents"
+        "#}
+    );
+}
+
+/// ```php
 /// return ($extra + 1) * 2;
 /// ```
 #[test]
@@ -914,10 +939,12 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_NAMESPACE
         | sharp_kind::SHARP_AST_NAMED_ARG
         | sharp_kind::SHARP_AST_COALESCE
-        | sharp_kind::SHARP_AST_ASSIGN_COALESCE => Some(2),
-        sharp_kind::SHARP_AST_METHOD_CALL | sharp_kind::SHARP_AST_STATIC_CALL | sharp_kind::SHARP_AST_CONST_ELEM => {
-            Some(3)
-        }
+        | sharp_kind::SHARP_AST_ASSIGN_COALESCE
+        | sharp_kind::SHARP_AST_NULLSAFE_PROP => Some(2),
+        sharp_kind::SHARP_AST_METHOD_CALL
+        | sharp_kind::SHARP_AST_STATIC_CALL
+        | sharp_kind::SHARP_AST_CONST_ELEM
+        | sharp_kind::SHARP_AST_NULLSAFE_METHOD_CALL => Some(3),
         sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_CLASS => Some(5),
         sharp_kind::SHARP_AST_PARAM => Some(6),
     }

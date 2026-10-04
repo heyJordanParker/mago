@@ -72,8 +72,8 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter or a member written
 ///   `object.name`.
 /// - In expressions: literals, parentheses, bare names, assignment, the operators below, and method calls and
-///   property reads written with `.` and a member name, with positional and named arguments. A string literal's
-///   `\u{...}` escapes are valid codepoints, as PHP requires.
+///   property reads written with `.` or `?.` and a member name, with positional and named arguments. `?.` never
+///   follows a class. A string literal's `\u{...}` escapes are valid codepoints, as PHP requires.
 /// - Operators: `+ - * / %`, `== != === !== < > <= >=`, `&& || !`, `??`, unary `-` and `+`, `++` and `--`, and
 ///   `= += -= *= /= ??=`.
 ///
@@ -296,14 +296,14 @@ fn enter(
             Node::Expression(
                 Expression::Assignment(_)
                 | Expression::UnaryPostfix(_)
-                | Expression::Call(Call::Method(_))
-                | Expression::Access(Access::Property(_)),
+                | Expression::Call(Call::Method(_) | Call::NullSafeMethod(_))
+                | Expression::Access(Access::Property(_) | Access::NullSafeProperty(_)),
             )
             | Node::Assignment(_)
             | Node::UnaryPostfix(_)
             | Node::UnaryPostfixOperator(UnaryPostfixOperator::PostIncrement(_) | UnaryPostfixOperator::PostDecrement(_))
-            | Node::Call(Call::Method(_))
-            | Node::Access(Access::Property(_))
+            | Node::Call(Call::Method(_) | Call::NullSafeMethod(_))
+            | Node::Access(Access::Property(_) | Access::NullSafeProperty(_))
             | Node::ClassLikeMemberSelector(ClassLikeMemberSelector::Identifier(_))
             | Node::ArgumentList(_)
             | Node::Argument(_)
@@ -321,6 +321,10 @@ fn enter(
             check_member_access(access.span(), access.object, &access.property, MemberUse::Read, checked, context);
 
             Some(Body)
+        }
+        (Node::NullSafeMethodCall(call), Body) => check_null_safe_object(call.span(), call.object, &call.method, context),
+        (Node::NullSafePropertyAccess(access), Body) => {
+            check_null_safe_object(access.span(), access.object, &access.property, context)
         }
 
         // PHP# never has `$` variables. A `$` variable inside a construct the walk refuses adds no second error.
@@ -567,7 +571,7 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, a name, and an optional default."
         }
         Place::Body => {
-            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const`, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, `++` and `--`, and method calls and property reads written with `.`."
+            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const`, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, `++` and `--`, and method calls and property reads written with `.` or `?.`."
         }
         Place::Default => {
             "A parameter default is a literal, a constant, or arithmetic, comparison, logical and `??` operators on them."
@@ -1005,6 +1009,33 @@ fn report_static_access(
     };
 
     context.report(issue);
+}
+
+/// Checks the object of `object?.member`. A class is never null, so `?.` after a class is an error that names `.`.
+fn check_null_safe_object(
+    access: Span,
+    object: &Expression,
+    member: &ClassLikeMemberSelector,
+    context: &mut Context<'_, '_, '_>,
+) -> Option<Place> {
+    if let Expression::ConstantAccess(class) = object
+        && context.names.binding(&class.name) == Some(Binding::Class)
+        && let ClassLikeMemberSelector::Identifier(member) = member
+    {
+        let class = BytesDisplay(class.name.value());
+
+        context.report(
+            Issue::error(format!(
+                "`{class}` is a class, which is never null: write `{class}.{}`.",
+                BytesDisplay(member.value)
+            ))
+            .with_annotation(Annotation::primary(access).with_message("Null-safe access written here.")),
+        );
+
+        return None;
+    }
+
+    Some(Place::Body)
 }
 
 fn report_bare_member(span: Span, name: &[u8], context: &mut Context<'_, '_, '_>) {

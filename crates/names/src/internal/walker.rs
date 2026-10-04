@@ -32,6 +32,8 @@ use mago_syntax::cst::Method;
 use mago_syntax::cst::MethodCall;
 use mago_syntax::cst::MethodPartialApplication;
 use mago_syntax::cst::Namespace;
+use mago_syntax::cst::NullSafeMethodCall;
+use mago_syntax::cst::NullSafePropertyAccess;
 use mago_syntax::cst::PropertyAccess;
 use mago_syntax::cst::Sequence;
 use mago_syntax::cst::StaticMethodCall;
@@ -96,7 +98,7 @@ impl<'arena> NameWalker<'arena> {
         self.resolved_names.bind(declaration, Binding::Local(local));
     }
 
-    /// Marks a bare name written before `.`, which binds as a class unless it names a local or `this`.
+    /// Marks a bare name written before `.` or `?.`, which binds as a class unless it names a local or `this`.
     fn mark_member_object(&mut self, object: &Expression<'arena>) {
         if self.sharp
             && let Expression::ConstantAccess(object) = object
@@ -337,6 +339,22 @@ where
         _context: &mut NameResolutionContext<'arena, A>,
     ) {
         self.mark_member_object(property_access.object);
+    }
+
+    fn walk_in_null_safe_method_call(
+        &mut self,
+        null_safe_method_call: &'ast NullSafeMethodCall<'arena>,
+        _context: &mut NameResolutionContext<'arena, A>,
+    ) {
+        self.mark_member_object(null_safe_method_call.object);
+    }
+
+    fn walk_in_null_safe_property_access(
+        &mut self,
+        null_safe_property_access: &'ast NullSafePropertyAccess<'arena>,
+        _context: &mut NameResolutionContext<'arena, A>,
+    ) {
+        self.mark_member_object(null_safe_property_access.object);
     }
 
     fn walk_in_interface(

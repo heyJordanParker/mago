@@ -62,6 +62,8 @@ use crate::sharp_kind::SHARP_AST_METHOD;
 use crate::sharp_kind::SHARP_AST_METHOD_CALL;
 use crate::sharp_kind::SHARP_AST_NAMED_ARG;
 use crate::sharp_kind::SHARP_AST_NAMESPACE;
+use crate::sharp_kind::SHARP_AST_NULLSAFE_METHOD_CALL;
+use crate::sharp_kind::SHARP_AST_NULLSAFE_PROP;
 use crate::sharp_kind::SHARP_AST_OR;
 use crate::sharp_kind::SHARP_AST_PARAM;
 use crate::sharp_kind::SHARP_AST_PARAM_LIST;
@@ -383,6 +385,19 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 let property = self.member(&access.property);
 
                 self.node(SHARP_AST_PROP, 0, line, &[object, property])
+            }
+            Expression::Call(Call::NullSafeMethod(call)) => {
+                let object = self.expression(call.object);
+                let method = self.member(&call.method);
+                let arguments = self.arguments(&call.argument_list);
+
+                self.node(SHARP_AST_NULLSAFE_METHOD_CALL, 0, line, &[object, method, arguments])
+            }
+            Expression::Access(Access::NullSafeProperty(access)) => {
+                let object = self.expression(access.object);
+                let property = self.member(&access.property);
+
+                self.node(SHARP_AST_NULLSAFE_PROP, 0, line, &[object, property])
             }
             _ => unreachable!("check_slice refuses the expression `{expression}`"),
         }
