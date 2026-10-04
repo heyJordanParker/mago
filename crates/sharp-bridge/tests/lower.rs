@@ -815,11 +815,11 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
     }
 }
 
+/// The fixture holds every construct the checker accepts, so the bridge lowers all of them, and each fixed-size node
+/// has the child count of its kind.
 #[test]
-fn every_fixed_size_node_has_the_child_count_of_its_kind() {
-    let lowered = Lowered::new(&method(
-        "        let a = -extra + +1;\n        a = !true && false || a > 1 && a >= 2;\n        ++a;\n        --a;\n        a++;\n        a--;\n        this.count *= PHP_INT_MAX;\n        {\n            const b = this.total(a, rate: 2).value;\n        }\n        return Calc.make();\n",
-    ));
+fn every_construct_of_the_slice_lowers_into_nodes_of_their_kinds_child_count() {
+    let lowered = Lowered::new(include_str!("../../semantics/tests/fixtures/slice.sharp"));
     assert_eq!(lowered.diagnostics(), Vec::<String>::new());
 
     let wrong: Vec<String> = lowered
