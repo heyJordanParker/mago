@@ -30,7 +30,7 @@ where
                         break;
                     }
 
-                    traits.push(self.parse_identifier()?);
+                    traits.push(self.parse_php_identifier()?);
 
                     match self.stream.peek_kind(0)? {
                         Some(T![","]) => {
@@ -96,7 +96,7 @@ where
                                     break;
                                 }
 
-                                items.push(self.parse_identifier()?);
+                                items.push(self.parse_php_identifier()?);
 
                                 match self.stream.peek_kind(0)? {
                                     Some(T![","]) => {
@@ -141,7 +141,7 @@ where
         &mut self,
     ) -> Result<TraitUseAbsoluteMethodReference<'arena>, ParseError> {
         Ok(TraitUseAbsoluteMethodReference {
-            trait_name: self.parse_identifier()?,
+            trait_name: self.parse_php_identifier()?,
             double_colon: self.stream.eat_span(T!["::"])?,
             method_name: self.parse_local_identifier()?,
         })

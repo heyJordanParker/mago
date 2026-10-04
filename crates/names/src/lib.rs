@@ -5,6 +5,9 @@ use mago_span::Span;
 
 use mago_span::HasPosition;
 use mago_span::Position;
+use mago_syntax::cst::ConstantAccess;
+use mago_syntax::cst::Expression;
+use mago_syntax::cst::MethodCall;
 
 use crate::binding::Binding;
 use crate::binding::BindingError;
@@ -138,6 +141,18 @@ impl<'arena> ResolvedNames<'arena> {
         T: HasPosition,
     {
         self.bindings.get(&position.offset()).copied()
+    }
+
+    /// Returns the class of a PHP# static call, `Class.method()`: the object of `call` when the binder bound it to a
+    /// class. Returns `None` for an instance call and for every call in a PHP file.
+    ///
+    /// The checker and the engine both read this, so they never disagree on a static call.
+    #[must_use]
+    pub fn static_call_class<'ast>(&self, call: &MethodCall<'ast>) -> Option<&'ast ConstantAccess<'ast>> {
+        match call.object {
+            Expression::ConstantAccess(access) if self.binding(&access.name) == Some(Binding::Class) => Some(access),
+            _ => None,
+        }
     }
 
     /// Returns the PHP# scope rules the bare names break, in source order.

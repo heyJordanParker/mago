@@ -40,7 +40,6 @@ use crate::invocation::post_process::post_invocation_process;
 use crate::invocation::return_type_fetcher::fetch_invocation_return_type;
 use crate::plugin::hook::StaticCall;
 use crate::reconciler::assertion_reconciler;
-use crate::utils::expression::is_bound_class;
 use crate::utils::names::display_function_like_identifier;
 
 pub mod function_call;
@@ -114,17 +113,12 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Call<'arena> {
         match self {
             Call::Function(call) => call.analyze(context, block_context, artifacts),
             // PHP# writes the static call `Class::m()` as `Class.m()`, with a bare name the binder bound to a class.
-            Call::Method(call) if is_bound_class(call.object, context.resolved_names) => {
-                let static_call = StaticCall {
-                    class: call.object,
-                    method: &call.method,
-                    argument_list: &call.argument_list,
-                    span: call.span(),
-                };
-
-                static_method_call::analyze_static_method_call(context, block_context, artifacts, static_call)
-            }
-            Call::Method(call) => call.analyze(context, block_context, artifacts),
+            Call::Method(call) => match StaticCall::from_method_call(call, context.resolved_names) {
+                Some(static_call) => {
+                    static_method_call::analyze_static_method_call(context, block_context, artifacts, static_call)
+                }
+                None => call.analyze(context, block_context, artifacts),
+            },
             Call::NullSafeMethod(call) => call.analyze(context, block_context, artifacts),
             Call::StaticMethod(call) => call.analyze(context, block_context, artifacts),
         }

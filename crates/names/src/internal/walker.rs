@@ -71,7 +71,15 @@ pub struct NameWalker<'arena> {
     /// The start offsets of bare names written before `.`.
     member_objects: HashSet<u32>,
     /// The member names of each class being walked, innermost last.
-    class_members: std::vec::Vec<std::vec::Vec<&'arena [u8]>>,
+    class_members: std::vec::Vec<ClassMembers<'arena>>,
+}
+
+/// The member names of one class, compared as PHP compares them: method names ignoring case, and property and
+/// constant names exactly.
+#[derive(Debug, Default)]
+struct ClassMembers<'arena> {
+    methods: std::vec::Vec<&'arena [u8]>,
+    others: std::vec::Vec<&'arena [u8]>,
 }
 
 impl<'arena> NameWalker<'arena> {
@@ -98,7 +106,9 @@ impl<'arena> NameWalker<'arena> {
     }
 
     fn is_member(&self, name: &[u8]) -> bool {
-        self.class_members.last().is_some_and(|members| members.contains(&name))
+        self.class_members.last().is_some_and(|members| {
+            members.methods.iter().any(|method| method.eq_ignore_ascii_case(name)) || members.others.contains(&name)
+        })
     }
 }
 
@@ -113,15 +123,17 @@ where
     }
 }
 
-fn class_member_names<'arena>(members: &Sequence<'arena, ClassLikeMember<'arena>>) -> std::vec::Vec<&'arena [u8]> {
-    let mut names = std::vec::Vec::new();
+fn class_member_names<'arena>(members: &Sequence<'arena, ClassLikeMember<'arena>>) -> ClassMembers<'arena> {
+    let mut names = ClassMembers::default();
     for member in members {
         match member {
-            ClassLikeMember::Method(method) => names.push(method.name.value),
-            ClassLikeMember::Property(property) => {
-                names.extend(property.variables().into_iter().map(|variable| trim_start_byte(variable.name, b'$')));
+            ClassLikeMember::Method(method) => names.methods.push(method.name.value),
+            ClassLikeMember::Property(property) => names
+                .others
+                .extend(property.variables().into_iter().map(|variable| trim_start_byte(variable.name, b'$'))),
+            ClassLikeMember::Constant(constant) => {
+                names.others.extend(constant.items.iter().map(|item| item.name.value));
             }
-            ClassLikeMember::Constant(constant) => names.extend(constant.items.iter().map(|item| item.name.value)),
             _ => {}
         }
     }

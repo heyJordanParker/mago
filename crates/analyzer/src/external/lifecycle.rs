@@ -25,6 +25,7 @@ use mago_span::HasSpan;
 use mago_span::Position;
 use mago_span::Span;
 use mago_syntax::cst::Node;
+use mago_syntax::cst::NodeKind;
 use mago_syntax::cst::Program;
 use mago_text_edit::Safety;
 use mago_text_edit::TextEdit;
@@ -37,6 +38,7 @@ use mago_word::word;
 use crate::analysis_result::AnalysisResult;
 use crate::artifacts::AnalysisArtifacts;
 use crate::artifacts::ResolvedMethodCall;
+use crate::plugin::hook::StaticCall;
 
 use super::ExternalAnalysisSession;
 use super::ExternalPlugin;
@@ -206,6 +208,14 @@ fn build_node_analysis_plan<'ast, 'arena>(
         let span = node.span();
         let mut requested = requirements.requirements(kind);
         let mut targeted_hook_routes = Vec::new();
+        // A PHP# static call, `Calc.make()`, is a method call whose object the binder bound to a class. A hook that
+        // targets static calls receives it, as it receives `Calc::make()` in PHP.
+        let is_sharp_static_call =
+            matches!(node, Node::MethodCall(call) if StaticCall::from_method_call(call, resolved_names).is_some());
+        if is_sharp_static_call {
+            requested |= requirements.requirements(NodeKind::StaticMethodCall);
+        }
+
         if is_method_call_kind(kind)
             && let Some(call_range) =
                 method_calls.as_ref().and_then(|calls| calls.get(&(span.start.offset, span.end.offset)))
@@ -230,7 +240,10 @@ fn build_node_analysis_plan<'ast, 'arena>(
             }
         }
 
-        if requirements.targets()[kind as usize] || !targeted_hook_routes.is_empty() {
+        if requirements.targets()[kind as usize]
+            || is_sharp_static_call && requirements.targets()[NodeKind::StaticMethodCall as usize]
+            || !targeted_hook_routes.is_empty()
+        {
             let index = targets.len();
             by_node.insert((kind as u8, span.start.offset, span.end.offset), index);
             targets.push(NodeAnalysisTarget { node, requirements: requested, targeted_hook_routes });

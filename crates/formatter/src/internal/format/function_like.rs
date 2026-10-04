@@ -114,18 +114,16 @@ impl<'arena> FunctionLikeParts<'arena> {
     }
 
     fn get_leading_comment_span(&self) -> Span {
-        if let Some(modifiers) = self.modifiers
-            && let Some(span) = modifiers.first_span()
-        {
-            span
+        // A PHP# method has no `function` keyword: its return type comes first, and always ends its signature.
+        let fn_or_function_span =
+            self.fn_or_function.map_or_else(|| self.get_signature_end_span(), |keyword| keyword.span);
+
+        if let Some(modifiers) = self.modifiers {
+            modifiers.first_span().unwrap_or(fn_or_function_span)
         } else if let Some(static_kw) = self.static_keyword {
             static_kw.span
         } else {
-            // A PHP# method has no `function` keyword: its return type comes first.
-            self.fn_or_function.map_or_else(
-                || self.return_type_hint.map_or_else(|| self.parameter_list.span(), HasSpan::span),
-                |keyword| keyword.span,
-            )
+            fn_or_function_span
         }
     }
 

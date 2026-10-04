@@ -40,13 +40,10 @@ fn leak(code: String) -> &'static str {
     Box::leak(code.into_boxed_str())
 }
 
+/// One file that uses every construct `check_slice` accepts. The engine's bridge lowers the same file.
 #[test]
-fn the_slice_has_no_semantic_issues() {
-    let code = leak(method(
-        "        let label = \"one\";\n        const base = 2;\n        label = \"two\";\n        {\n            let inner = base * extra - 1;\n            inner = inner / 2;\n            inner++;\n            --inner;\n            inner--;\n        }\n        return this.total(base, extra) + Calc.make().add(label);\n",
-    ));
-
-    assert_eq!(issues(code), Vec::<String>::new());
+fn the_slice_fixture_has_no_semantic_issues() {
+    assert_eq!(issues(include_str!("fixtures/slice.sharp")), Vec::<String>::new());
 }
 
 #[test]
@@ -67,7 +64,6 @@ fn every_construct_outside_the_slice_is_not_supported_yet() {
             "24:25 This expression is not supported yet in PHP#.",
             "25:25 This expression is not supported yet in PHP#.",
             "26:22 This expression is not supported yet in PHP#.",
-            "26:30 PHP# variables have no `$`: write `extra`.",
         ]
     );
 }
@@ -146,11 +142,7 @@ fn dollar_variables_are_errors() {
 
     assert_eq!(
         issues(code),
-        [
-            "7:9 PHP# variables have no `$`: write `total`.",
-            "8:9 Variable variables are not part of PHP#.",
-            "8:10 PHP# variables have no `$`: write `total`.",
-        ]
+        ["7:9 PHP# variables have no `$`: write `total`.", "8:9 Variable variables are not part of PHP#.",]
     );
 }
 
@@ -172,9 +164,15 @@ fn compact_extract_and_global_are_errors() {
             "7:9 `compact()` is not part of PHP#.",
             "8:9 `extract()` is not part of PHP#.",
             "9:9 `global` is not part of PHP#.",
-            "9:16 PHP# variables have no `$`: write `config`.",
         ]
     );
+}
+
+#[test]
+fn a_dollar_variable_in_a_string_reports_one_error() {
+    let code = leak(method("        return \"{$extra}\";\n"));
+
+    assert_eq!(issues(code), ["7:16 This expression is not supported yet in PHP#."]);
 }
 
 #[test]
@@ -199,6 +197,22 @@ fn reading_a_static_member_without_a_call_is_not_supported_yet() {
     let code = leak(method("        return Calc.rate;\n"));
 
     assert_eq!(issues(code), ["7:16 Reading `Calc.rate` without a call is not supported yet."]);
+}
+
+#[test]
+fn writing_a_static_member_is_not_supported_yet() {
+    let code = leak(method(
+        "        Calc.rate = 2;\n        Calc.count++;\n        Calc.rate.cents = 3;\n        return 1;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:9 Writing `Calc.rate` is not supported yet.",
+            "8:9 Writing `Calc.count` is not supported yet.",
+            "9:9 Reading `Calc.rate` without a call is not supported yet.",
+        ]
+    );
 }
 
 #[test]
@@ -294,10 +308,23 @@ fn a_bare_member_name_is_an_error_that_names_this() {
 }
 
 #[test]
-fn access_modifiers_static_named_arguments_and_defaults_are_in_the_slice() {
-    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public static int total(int extra = 1)\n    {\n        return Report.part(first: extra, second: 2);\n    }\n\n    protected static int part(int first, int second = 0)\n    {\n        return first * second;\n    }\n\n    private int none()\n    {\n        return 0;\n    }\n}\n";
+fn a_bare_method_name_matches_ignoring_case_as_in_php() {
+    let code = "class Report\n{\n    public int total() { return 0; }\n\n    public int run() { return Total(); }\n}\n";
 
-    assert_eq!(issues(code), Vec::<String>::new());
+    assert_eq!(
+        issues(code),
+        ["5:31 Write `this.total()`: members of the same object are always written with `this.`."]
+    );
+}
+
+#[test]
+fn a_bare_member_in_a_static_method_names_the_class() {
+    let code = "class Report\n{\n    public static int helper() { return 0; }\n\n    public static int run() { return helper(); }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["5:38 Write `Report.helper()`: a static method reaches the members of its class through the class name."]
+    );
 }
 
 #[test]
@@ -340,6 +367,47 @@ fn final_abstract_and_readonly_are_not_supported_yet() {
             "11:1 This modifier is not supported yet in PHP#.",
             "13:5 This modifier is not supported yet in PHP#.",
             "16:1 This modifier is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn a_method_name_starting_with_two_underscores_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public void __clone() { }\n    public int __get(string name) { return 1; }\n    public int __invoke() { return 1; }\n    public string __toString() { return \"report\"; }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:17 This method name is not supported yet in PHP#.",
+            "6:16 This method name is not supported yet in PHP#.",
+            "7:16 This method name is not supported yet in PHP#.",
+            "8:19 This method name is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn a_method_without_an_access_modifier_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    int run() { return 1; }\n    static int make() { return 1; }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:9 A method without `public`, `protected` or `private` is not supported yet in PHP#.",
+            "6:16 A method without `public`, `protected` or `private` is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn a_method_named_after_its_class_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int report() { return 1; }\n}\n\nclass Calc\n{\n    public int CALC() { return 1; }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:16 A method named after its class is not supported yet in PHP#.",
+            "10:16 A method named after its class is not supported yet in PHP#.",
         ]
     );
 }
@@ -423,12 +491,85 @@ fn types_outside_the_slice_are_not_supported_yet() {
 }
 
 #[test]
+fn a_by_reference_parameter_is_not_supported_yet() {
+    let code = leak(method("        return 1;\n").replace("int extra", "&extra"));
+
+    assert_eq!(issues(code), ["5:20 A by-reference parameter is not supported yet in PHP#."]);
+}
+
+#[test]
+fn a_parameter_without_a_type_is_an_error() {
+    let code = leak(method("        return 1;\n").replace("int extra", "$extra"));
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:20 A parameter without a type is not supported in PHP#.",
+            "5:20 PHP# variables have no `$`: write `extra`."
+        ]
+    );
+}
+
+#[test]
+fn a_void_parameter_reports_only_the_php_error() {
+    let code = "class Report\n{\n    public void run(void nothing)\n    {\n    }\n}\n";
+
+    assert_eq!(issues(code), ["3:21 Invalid parameter type: bottom type `void` cannot be used as a parameter type."]);
+}
+
+#[test]
 fn a_parameter_default_is_a_constant_expression() {
     let code = "class Report\n{\n    public int run(int a = -1 + 2 * PHP_INT_MAX, int b = a, int c = this.run(), bool d = !true)\n    {\n        return a;\n    }\n}\n";
 
     assert_eq!(
         issues(code),
         ["3:58 This expression is not supported yet in PHP#.", "3:69 This expression is not supported yet in PHP#.",]
+    );
+}
+
+#[test]
+fn a_write_goes_only_to_a_local_a_parameter_or_a_member() {
+    let code = leak(method(
+        "        1 = 2;\n        FOO = 1;\n        Calc = 1;\n        this = extra;\n        this++;\n        extra.total() = 3;\n        --FOO;\n        FOO *= 2;\n        this.count = 1;\n        extra = 2;\n        extra++;\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:9 This write target is not supported yet in PHP#.",
+            "8:9 This write target is not supported yet in PHP#.",
+            "9:9 This write target is not supported yet in PHP#.",
+            "10:9 This write target is not supported yet in PHP#.",
+            "11:9 This write target is not supported yet in PHP#.",
+            "12:9 This write target is not supported yet in PHP#.",
+            "13:11 This write target is not supported yet in PHP#.",
+            "14:9 This write target is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn a_second_namespace_is_not_supported_yet() {
+    let code = "namespace A;\n\nclass Y\n{\n}\n\nnamespace B;\n\nimport B.X;\n\nclass X\n{\n}\n";
+
+    assert_eq!(issues(code), ["7:1 This namespace is not supported yet in PHP#."]);
+}
+
+#[test]
+fn a_braced_or_global_namespace_is_not_supported_yet() {
+    for code in ["namespace A\n{\n    class Y\n    {\n    }\n}\n", "namespace\n{\n    class Y\n    {\n    }\n}\n"] {
+        assert_eq!(issues(code), ["1:1 This namespace is not supported yet in PHP#."], "{code}");
+    }
+}
+
+#[test]
+fn an_invalid_codepoint_escape_is_an_error_as_in_php() {
+    let code =
+        leak(method("        const big = \"\\u{110000}\";\n        const empty = \"\\u{}\";\n        return 1;\n"));
+
+    assert_eq!(
+        issues(code),
+        ["7:21 Invalid UTF-8 codepoint escape sequence.", "8:23 Invalid UTF-8 codepoint escape sequence.",]
     );
 }
 

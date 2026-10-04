@@ -1,0 +1,63 @@
+namespace App.Tenant;
+
+import Lib.Calc;
+
+class Report
+{
+    public int run(int extra, float rate = 1.5, string label = "\u{41}\n", bool strict = !false)
+    {
+        let total = extra * 2 + 1;
+        const base = (total - 3) % 4;
+        total += base;
+        total -= 1;
+        total *= 2;
+        total /= 2;
+        total++;
+        total--;
+        ++total;
+        --total;
+        extra = total;
+        {
+            let inner = -total + +base;
+            inner = inner / 2;
+        }
+        let same = total == base || total != base && total === base;
+        same = total !== base && !strict;
+        const order = total < base || total > base || total <= base || total >= base;
+        const nothing = null;
+        return Report.part(first: extra, second: 2) + this.scale(rate);
+    }
+
+    public static int part(int first, int second = 2 * 3 - -1, int limit = PHP_INT_MAX)
+    {
+        return first * second;
+    }
+
+    protected int scale(float rate = 0.5)
+    {
+        return 1;
+    }
+
+    private string text(string text = 'none')
+    {
+        return text;
+    }
+
+    private bool flag(bool on = true)
+    {
+        return on;
+    }
+
+    public void touch(Calc calc)
+    {
+        calc.rate = 2;
+        calc.add(1, 2);
+        const made = Calc.make();
+        const read = calc.rate;
+    }
+
+    public Report same()
+    {
+        return this;
+    }
+}

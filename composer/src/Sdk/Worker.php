@@ -33,6 +33,7 @@ use Mago\Sdk\Analyzer\MethodAssertionProvider;
 use Mago\Sdk\Analyzer\MethodReturnTypeProvider;
 use Mago\Sdk\Analyzer\MethodTarget;
 use Mago\Sdk\Analyzer\NodeAnalysisContext;
+use Mago\Sdk\Analyzer\NodeAnalysisHook;
 use Mago\Sdk\Analyzer\PluginRegistry as AnalyzerPluginRegistry;
 use Mago\Sdk\Analyzer\ProjectAnalysis;
 use Mago\Sdk\Analyzer\PropertyInitializationProvider;
@@ -66,6 +67,7 @@ use Mago\Sdk\Internal\Protocol\PayloadReader;
 use Mago\Sdk\Internal\SignalCancellationToken;
 use Mago\Sdk\Internal\Worker\Protocol as WorkerProtocol;
 use Mago\Sdk\Linter\LintContext;
+use Mago\Sdk\Syntax\CallExpression;
 use Mago\Sdk\Syntax\NodeKind;
 use Revolt\EventLoop;
 use Throwable;
@@ -1327,6 +1329,20 @@ final class Worker
             }
 
             $hooks = $registered->nodeAnalysisHooksByNodeKind[$node->kind->value] ?? [];
+            // A PHP# static call, `Calc.make()`, is a method call whose receiver Mago bound to a class. A hook that
+            // targets static calls receives it, as it receives `Calc::make()` in PHP.
+            if (
+                $node->kind === NodeKind::MethodCall
+                && array_key_exists(NodeKind::StaticMethodCall->value, $registered->nodeAnalysisHooksByNodeKind)
+                && CallExpression::fromNode($source, $node)->isStaticMethod()
+            ) {
+                $hooks = self::nodeAnalysisHooksTargeting(
+                    $registered,
+                    NodeKind::MethodCall,
+                    NodeKind::StaticMethodCall,
+                );
+            }
+
             $data = $context->analysis->getNodeAnalysisData($targetIndex - 1);
             if ($hooks === [] && $data->targetedHookIndices === []) {
                 continue;
@@ -1368,6 +1384,28 @@ final class Worker
                 }
             }
         }
+    }
+
+    /**
+     * The node analysis hooks that target any of `$kinds`, each once, in registration order.
+     *
+     * @return list<RegisteredTargetedCallback<NodeAnalysisHook, NodeKind>>
+     */
+    private static function nodeAnalysisHooksTargeting(RegisteredPlugin $registered, NodeKind ...$kinds): array
+    {
+        $hooks = [];
+        foreach ($registered->nodeAnalysisHooks as $hook) {
+            foreach ($kinds as $kind) {
+                if (!in_array($kind, $hook->targets, true)) {
+                    continue;
+                }
+
+                $hooks[] = $hook;
+                break;
+            }
+        }
+
+        return $hooks;
     }
 
     /**

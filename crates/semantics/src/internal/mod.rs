@@ -39,7 +39,6 @@ use mago_syntax::cst::Try;
 use mago_syntax::cst::UnaryPostfix;
 use mago_syntax::cst::UnaryPrefix;
 use mago_syntax::cst::UnaryPrefixOperator;
-use mago_syntax::cst::Variable;
 use mago_syntax::walker::Walker;
 
 use crate::internal::context::Context;
@@ -88,7 +87,11 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingW
         checker::statement::check_top_level_statements(program, context);
 
         if program.dialect.is_sharp() {
-            checker::sharp::check_slice(program, context);
+            // A parse error already stops the file, so it is the one error to fix first.
+            if program.errors.is_empty() {
+                checker::sharp::check_slice(program, context);
+            }
+
             checker::sharp::check_declarations(program, context);
             checker::sharp::check_binding_errors(context);
         }
@@ -217,13 +220,6 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingW
     fn walk_in_global(&self, global: &'ast Global<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
         if context.program.dialect.is_sharp() {
             checker::sharp::check_global(global, context);
-        }
-    }
-
-    #[inline]
-    fn walk_in_variable(&self, variable: &'ast Variable<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
-        if context.program.dialect.is_sharp() {
-            checker::sharp::check_variable(variable, context);
         }
     }
 

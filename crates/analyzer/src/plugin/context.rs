@@ -260,7 +260,6 @@ impl<'ctx, 'block> HookContext<'ctx, 'block> {
     pub fn resolved_names(&self) -> &'ctx ResolvedNames<'ctx> {
         self.resolved_names
     }
-
     /// Get the type of an expression.
     #[inline]
     pub fn get_expression_type<T>(&self, expr: &T) -> Option<&TUnion>

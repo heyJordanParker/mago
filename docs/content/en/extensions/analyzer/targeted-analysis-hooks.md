@@ -104,7 +104,7 @@ Without `TargetSubtree`, each selected target is retained as a standalone node w
 | `getVariableDefinedness()` | Returns `Defined`, `PossiblyDefined`, or `Undefined`; `null` when unavailable |
 | lifecycle members | PHP version, codebase, type comparator, cancellation, and `report()` |
 
-A PHP# static call, `Calc.make()`, is a `MethodCall` node. `CallExpression::fromNode($context->source, $context->node)` reports it through `isStaticMethod()`, because the snapshot binds `Calc` to a class.
+A PHP# static call, `Calc.make()`, is a `MethodCall` node. A hook that targets `NodeKind::StaticMethodCall` receives it, as it receives `Calc::make()` in PHP. `CallExpression::fromNode($context->source, $context->node)` reports it through `isStaticMethod()`, because the snapshot binds `Calc` to a class.
 
 Variable names passed to `getVariableDefinedness()` may include or omit the leading `$`. Request `VariableDefinedness` before relying on the result; skipped, unanalyzed targets return `null`.
 

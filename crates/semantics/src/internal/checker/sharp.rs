@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use mago_bytes::BytesDisplay;
 use mago_names::binding::Binding;
 use mago_names::binding::BindingError;
@@ -26,7 +28,10 @@ use mago_syntax::cst::Hint;
 use mago_syntax::cst::Identifier;
 use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::LocalIdentifier;
+use mago_syntax::cst::Method;
 use mago_syntax::cst::Modifier;
+use mago_syntax::cst::Namespace;
+use mago_syntax::cst::NamespaceBody;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::Program;
 use mago_syntax::cst::Statement;
@@ -52,24 +57,36 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// Checks a PHP# file against the slice: the only constructs a `.sharp` file may use, and the contract the
 /// engine's lowering implements.
 ///
-/// - At file level: `namespace`, `import` and `class`.
+/// - At file level: `namespace`, `import` and `class`. A file has at most one namespace, named and written without
+///   braces.
 /// - A class: a name and methods, with no attributes, modifiers, `extends` or `implements`.
-/// - A method: `public`, `protected`, `private` and `static`, parameters, a return type and a body.
-/// - A parameter: a type, a name and an optional default. A default is a literal, a constant, or the operators
-///   below on them, without `++` and `--`.
-/// - Types: `int`, `float`, `bool`, `string`, `void` and a class written by its short name.
+/// - A method: `public`, `protected` or `private`, an optional `static`, parameters, a return type and a body. Its name
+///   does not start with `__`, which PHP reserves for magic methods, and is not its class's name, compared ignoring
+///   case, which PHP# gives to the constructor.
+/// - A parameter: always a type, a name and an optional default, and neither variadic nor by reference. A default is
+///   a literal, a constant, or the operators below on them, without `++` and `--`.
+/// - Types: `int`, `float`, `bool`, `string` and a class written by its short name, and `void` as a return type.
+///   PHP's own check reports a `void` parameter.
 /// - In a method body: blocks, expression statements, `return`, and `let` and `const` declarations.
+/// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter or a member written
+///   `object.name`.
 /// - In expressions: literals, parentheses, bare names, assignment, the operators below, and method calls and
-///   property reads written with `.` and a member name, with positional and named arguments.
+///   property reads written with `.` and a member name, with positional and named arguments. A string literal's
+///   `\u{...}` escapes are valid codepoints, as PHP requires.
 /// - Operators: `+ - * / %`, `== != === !== < > <= >=`, `&& || !`, unary `-` and `+`, `++` and `--`, and
 ///   `= += -= *= /=`.
 ///
 /// The check visits every node and refuses any node, or any position of a node, that this list does not name. It
-/// reports each refusal once, at its outermost node. The constructs PHP# never has, such as `$` variables, `global`
-/// and top-level functions, keep their own errors.
+/// reports each refusal once, at its outermost node. It does not run on a file with a parse error, which is the one
+/// error to fix first. The constructs PHP# never has, such as `$` variables, `global` and top-level functions, keep
+/// their own errors.
+///
+/// Two more refusals need inferred types, so the analyzer makes them as its part of this contract:
+/// - `+` with an operand that may be a string, in `analyze_arithmetic_operation`.
+/// - an instance method used as a value, such as `order.total` without a call, in `report_non_existent_property`.
 #[inline]
 pub fn check_slice(program: &Program, context: &mut Context<'_, '_, '_>) {
-    check_node(Node::Program(program), Place::File, context);
+    check_node(Node::Program(program), Place::File, &mut HashSet::new(), context);
 }
 
 /// Where a node of a PHP# file sits, for the parts of the slice that depend on it.
@@ -89,17 +106,32 @@ enum Place {
     Default,
 }
 
-fn check_node(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) {
-    if let Some(place) = enter(node, place, context) {
+/// How code uses a member access, which decides how the slice reports it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MemberUse {
+    Call,
+    Read,
+    Write,
+}
+
+/// Walks `node` at `place`. `checked` holds the spans of the member accesses already checked, so the walk checks
+/// each access once.
+fn check_node(node: Node<'_, '_>, place: Place, checked: &mut HashSet<Span>, context: &mut Context<'_, '_, '_>) {
+    if let Some(place) = enter(node, place, checked, context) {
         for child in node.children() {
-            check_node(child, place, context);
+            check_node(child, place, checked, context);
         }
     }
 }
 
 /// Decides one node at its place. Returns the place of its children when the slice has the node, and `None` when
 /// the node is reported.
-fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) -> Option<Place> {
+fn enter(
+    node: Node<'_, '_>,
+    place: Place,
+    checked: &mut HashSet<Span>,
+    context: &mut Context<'_, '_, '_>,
+) -> Option<Place> {
     use Place::Body;
     use Place::Class;
     use Place::Default;
@@ -107,7 +139,42 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
     use Place::Method;
     use Place::Parameter;
 
+    if let Some(target) = write_target(node) {
+        // PHP# never has `$` variables, and `check_variable` reports a write to one.
+        if !matches!(target, Expression::Variable(_)) && !is_slice_target(target, context) {
+            report_not_supported(
+                target.span(),
+                "write target",
+                "PHP# writes to a local, a parameter or a member written `object.name`.",
+                context,
+            );
+
+            return None;
+        }
+
+        if let Expression::Access(Access::Property(property)) = target {
+            check_member_access(
+                property.span(),
+                property.object,
+                &property.property,
+                MemberUse::Write,
+                checked,
+                context,
+            );
+        }
+    }
+
     match (node, place) {
+        (Node::Statement(Statement::Namespace(namespace)), File) if !is_slice_namespace(namespace, context.program) => {
+            report_not_supported(
+                namespace.r#namespace.span,
+                "namespace",
+                "A PHP# file has at most one namespace, written `namespace App.Tenant;` before its imports.",
+                context,
+            );
+
+            None
+        }
         (Node::Keyword(_) | Node::LocalIdentifier(_) | Node::Identifier(Identifier::Local(_)), _) => Some(place),
         (Node::Terminator(Terminator::Semicolon(_)), _) => Some(place),
 
@@ -138,7 +205,18 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
             None
         }
-        (Node::Method(_), Class) => Some(Method),
+        (Node::Method(method), Class) => match is_slice_method(method, context.program) {
+            Ok(()) => Some(Method),
+            Err((message, help)) => {
+                context.report(
+                    Issue::error(message)
+                        .with_annotation(Annotation::primary(method.name.span).with_message("Not supported yet."))
+                        .with_note(help),
+                );
+
+                None
+            }
+        },
 
         (
             Node::Modifier(Modifier::Public(_) | Modifier::Protected(_) | Modifier::Private(_) | Modifier::Static(_))
@@ -149,7 +227,18 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             | Node::MethodAbstractBody(_),
             Method,
         ) => Some(Method),
-        (Node::FunctionLikeParameter(parameter), Method) if parameter.ellipsis.is_none() => Some(Parameter),
+        (Node::FunctionLikeParameter(parameter), Method) => match is_slice_parameter(parameter) {
+            Ok(()) => Some(Parameter),
+            Err((span, message, help)) => {
+                context.report(
+                    Issue::error(message)
+                        .with_annotation(Annotation::primary(span).with_message("Not supported yet."))
+                        .with_note(help),
+                );
+
+                None
+            }
+        },
         (Node::Hint(hint), Method | Parameter) if is_slice_type(hint) => Some(place),
         (Node::DirectVariable(_), Parameter) => Some(Parameter),
         (Node::FunctionLikeParameterDefaultValue(_), Parameter) => Some(Default),
@@ -165,6 +254,16 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             Body,
         ) => Some(Body),
 
+        // PHP refuses the file at compile time, so the engine would too.
+        (Node::LiteralString(string), Body | Default) if string.value.is_none() => {
+            context.report(
+                Issue::error("Invalid UTF-8 codepoint escape sequence.")
+                    .with_annotation(Annotation::primary(string.span).with_message("Escape written here."))
+                    .with_note("A `\\u{...}` escape holds hex digits for a codepoint up to `10FFFF`."),
+            );
+
+            None
+        }
         (
             Node::Expression(
                 Expression::Literal(_)
@@ -211,22 +310,26 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         ) => Some(Body),
         (Node::AssignmentOperator(operator), Body) if is_slice_assignment_operator(operator) => Some(Body),
         (Node::PositionalArgument(argument), Body) if argument.ellipsis.is_none() => Some(Body),
-        (Node::MethodCall(method_call), Body) => {
-            check_member_access(method_call.span(), method_call.object, &method_call.method, true, context);
+        (Node::MethodCall(call), Body) => {
+            check_member_access(call.span(), call.object, &call.method, MemberUse::Call, checked, context);
 
             Some(Body)
         }
-        (Node::PropertyAccess(property_access), Body) => {
-            check_member_access(property_access.span(), property_access.object, &property_access.property, false, context);
+        (Node::PropertyAccess(access), Body) => {
+            check_member_access(access.span(), access.object, &access.property, MemberUse::Read, checked, context);
 
             Some(Body)
         }
 
-        // PHP# never has top-level functions, `global`, `$` variables, `compact()`, `extract()` or a member called
-        // without `this.`: `check_function`, `check_global`, `check_variable` and `check_function_call` report them.
-        (Node::Statement(Statement::Function(_)), File)
-        | (Node::Statement(Statement::Global(_)), Body)
-        | (Node::Expression(Expression::Variable(_)), Body | Default) => None,
+        // PHP# never has `$` variables. A `$` variable inside a construct the walk refuses adds no second error.
+        (Node::Expression(Expression::Variable(variable)), Body | Default) => {
+            check_variable(variable, context);
+
+            None
+        }
+        // PHP# never has top-level functions, `global`, `compact()`, `extract()` or a member called without `this.`:
+        // `check_function`, `check_global` and `check_function_call` report them.
+        (Node::Statement(Statement::Function(_)), File) | (Node::Statement(Statement::Global(_)), Body) => None,
         (Node::Expression(Expression::Call(Call::Function(function_call))), Body)
             if is_checked_function_call(function_call, context) =>
         {
@@ -238,6 +341,95 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
             None
         }
+    }
+}
+
+/// Whether the slice has a method, with the refusal's message and note when it does not. Each rule keeps out a method
+/// whose meaning a later slice gives it: PHP's magic methods, PHP#'s `private` default of spec section 5, and PHP#'s
+/// constructor of spec section 9.
+fn is_slice_method(method: &Method, program: &Program) -> Result<(), (&'static str, &'static str)> {
+    let refusal = if method.name.value.starts_with(b"__") {
+        (
+            "This method name is not supported yet in PHP#.",
+            "PHP reserves method names that start with `__` for its magic methods.",
+        )
+    } else if !method
+        .modifiers
+        .iter()
+        .any(|modifier| matches!(modifier, Modifier::Public(_) | Modifier::Protected(_) | Modifier::Private(_)))
+    {
+        (
+            "A method without `public`, `protected` or `private` is not supported yet in PHP#.",
+            "A PHP# member without an access modifier is `private`, while PHP makes it `public`.",
+        )
+    } else if enclosing_class(program, method.span())
+        .is_some_and(|class| class.name.value.eq_ignore_ascii_case(method.name.value))
+    {
+        (
+            "A method named after its class is not supported yet in PHP#.",
+            "In PHP#, a method named after its class is the class's constructor.",
+        )
+    } else {
+        return Ok(());
+    };
+
+    Err(refusal)
+}
+
+/// Whether the slice has a parameter, with the refusal's span, message and note when it does not.
+fn is_slice_parameter(parameter: &FunctionLikeParameter) -> Result<(), (Span, &'static str, &'static str)> {
+    if let Some(ellipsis) = parameter.ellipsis {
+        Err((ellipsis, "This variadic parameter is not supported yet in PHP#.", supported(Place::Parameter)))
+    } else if let Some(ampersand) = parameter.ampersand {
+        Err((
+            ampersand,
+            "A by-reference parameter is not supported yet in PHP#.",
+            "The engine passes every PHP# argument by value.",
+        ))
+    } else if parameter.hint.is_none() {
+        Err((
+            parameter.variable.span,
+            "A parameter without a type is not supported in PHP#.",
+            "A PHP# parameter is written with its type, as in `int extra`.",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Whether the slice has a namespace: the file's first, with a name and no braces.
+fn is_slice_namespace(namespace: &Namespace, program: &Program) -> bool {
+    namespace.name.is_some()
+        && matches!(namespace.body, NamespaceBody::Implicit(_))
+        && first_namespace(program).is_some_and(|first| first.span() == namespace.span())
+}
+
+/// The first namespace of a PHP# file, the only one the slice has.
+fn first_namespace<'ast, 'arena>(program: &'ast Program<'arena>) -> Option<&'ast Namespace<'arena>> {
+    program.statements.iter().find_map(|statement| match statement {
+        Statement::Namespace(namespace) => Some(namespace),
+        _ => None,
+    })
+}
+
+/// The expression a node writes: the left side of an assignment, or the operand of `++` or `--`.
+fn write_target<'ast, 'arena>(node: Node<'ast, 'arena>) -> Option<&'ast Expression<'arena>> {
+    match node {
+        Node::Assignment(assignment) => Some(assignment.lhs),
+        Node::UnaryPrefix(unary_prefix) if unary_prefix.operator.is_increment_or_decrement() => {
+            Some(unary_prefix.operand)
+        }
+        Node::UnaryPostfix(unary_postfix) => Some(unary_postfix.operand),
+        _ => None,
+    }
+}
+
+/// Whether the slice can write an expression: a local, a parameter, or a member written `object.name`.
+fn is_slice_target(target: &Expression, context: &Context<'_, '_, '_>) -> bool {
+    match target {
+        Expression::ConstantAccess(access) => matches!(context.names.binding(&access.name), Some(Binding::Local(_))),
+        Expression::Access(Access::Property(_)) => true,
+        _ => false,
     }
 }
 
@@ -350,9 +542,6 @@ fn report_unsupported(node: Node<'_, '_>, place: Place, context: &mut Context<'_
         Node::Implements(_) => "`implements` clause",
         Node::ClassLikeMember(_) => "class member",
         Node::ClassLikeMemberSelector(_) => "member name",
-        Node::FunctionLikeParameter(FunctionLikeParameter { ellipsis: Some(ellipsis), .. }) => {
-            return report_not_supported(*ellipsis, "variadic parameter", supported(place), context);
-        }
         Node::PositionalArgument(_) => "spread argument",
         _ => "construct",
     };
@@ -508,10 +697,7 @@ pub fn check_class_name(class: &Class, context: &mut Context<'_, '_, '_>) {
 #[inline]
 pub fn check_declarations(program: &Program, context: &mut Context<'_, '_, '_>) {
     let (classes, imports) = declarations(program);
-    let namespace = program.statements.iter().find_map(|statement| match statement {
-        Statement::Namespace(namespace) => namespace.name.as_ref().map(php_name),
-        _ => None,
-    });
+    let namespace = first_namespace(program).and_then(|namespace| namespace.name.as_ref()).map(php_name);
 
     for (index, import) in imports.iter().enumerate() {
         let short_name = import.name.last_segment();
@@ -627,8 +813,7 @@ pub fn check_global(global: &Global, context: &mut Context<'_, '_, '_>) {
     );
 }
 
-#[inline]
-pub fn check_variable(variable: &Variable, context: &mut Context<'_, '_, '_>) {
+fn check_variable(variable: &Variable, context: &mut Context<'_, '_, '_>) {
     match variable {
         Variable::Direct(direct) => report_dollar_variable(direct.name, direct.span, context),
         Variable::Indirect(_) | Variable::Nested(_) => context.report(
@@ -639,23 +824,20 @@ pub fn check_variable(variable: &Variable, context: &mut Context<'_, '_, '_>) {
     }
 }
 
-/// Checks `object.member` and `object.member()` once per chain of property reads, from its outermost access.
+/// Checks `object.member` and `object.member()` once per chain of property reads, from its outermost access. The
+/// spans of the accesses it checks go into `checked`.
 ///
-/// A chain rooted at a class reads static members. Reading one without a call is not supported yet, and a chain of
-/// capitalized names is a full name, which belongs in an `import` line.
+/// A chain rooted at a class reaches static members. Reading one without a call or writing one is not supported yet,
+/// and a chain of capitalized names is a full name, which belongs in an `import` line.
 fn check_member_access(
     access: Span,
     object: &Expression,
     member: &ClassLikeMemberSelector,
-    is_call: bool,
+    member_use: MemberUse,
+    checked: &mut HashSet<Span>,
     context: &mut Context<'_, '_, '_>,
 ) {
-    let is_outermost = !context.property_chain_objects.contains(&access);
-    if let Expression::Access(Access::Property(_)) = object {
-        context.property_chain_objects.insert(object.span());
-    }
-
-    if !is_outermost {
+    if !checked.insert(access) {
         return;
     }
 
@@ -664,6 +846,7 @@ fn check_member_access(
     while let Expression::Access(Access::Property(property)) = root
         && let ClassLikeMemberSelector::Identifier(name) = &property.property
     {
+        checked.insert(property.span());
         properties.push(name);
         root = property.object;
     }
@@ -678,8 +861,10 @@ fn check_member_access(
 
     properties.reverse();
     let Some(first_property) = properties.first() else {
-        if !is_call && let ClassLikeMemberSelector::Identifier(member) = member {
-            report_static_read(root, member, access, context);
+        if member_use != MemberUse::Call
+            && let ClassLikeMemberSelector::Identifier(member) = member
+        {
+            report_static_access(root, member, access, member_use, context);
         }
 
         return;
@@ -692,7 +877,7 @@ fn check_member_access(
 
     if !is_full_name {
         let read = Span::between(root.span(), first_property.span);
-        report_static_read(root, first_property, read, context);
+        report_static_access(root, first_property, read, MemberUse::Read, context);
 
         return;
     }
@@ -719,7 +904,7 @@ fn check_member_access(
     );
 }
 
-/// The classes and imports a PHP# file declares, in source order.
+/// The classes and imports a PHP# file declares at its top level and in its first namespace, in source order.
 fn declarations<'ast, 'arena>(
     program: &'ast Program<'arena>,
 ) -> (Vec<&'ast Class<'arena>>, Vec<&'ast UseItem<'arena>>) {
@@ -727,11 +912,11 @@ fn declarations<'ast, 'arena>(
     let mut imports = Vec::new();
     for statement in &program.statements {
         collect_declarations(statement, &mut classes, &mut imports);
-        if let Statement::Namespace(namespace) = statement {
-            for statement in namespace.statements() {
-                collect_declarations(statement, &mut classes, &mut imports);
-            }
-        }
+    }
+
+    // The slice refuses a second namespace, so its declarations are not the file's.
+    for statement in first_namespace(program).into_iter().flat_map(|namespace| namespace.statements().iter()) {
+        collect_declarations(statement, &mut classes, &mut imports);
     }
 
     (classes, imports)
@@ -796,34 +981,77 @@ fn report_dollar_variable(name: &[u8], span: Span, context: &mut Context<'_, '_,
     );
 }
 
-fn report_static_read(root: &ConstantAccess, member: &LocalIdentifier, span: Span, context: &mut Context<'_, '_, '_>) {
+fn report_static_access(
+    root: &ConstantAccess,
+    member: &LocalIdentifier,
+    span: Span,
+    member_use: MemberUse,
+    context: &mut Context<'_, '_, '_>,
+) {
     let class = BytesDisplay(root.name.value());
     let member = BytesDisplay(member.value);
-
-    context.report(
+    let issue = if member_use == MemberUse::Write {
+        Issue::error(format!("Writing `{class}.{member}` is not supported yet."))
+            .with_annotation(Annotation::primary(span).with_message("Written here."))
+            .with_note("The engine does not run a static member write yet.")
+    } else {
         Issue::error(format!("Reading `{class}.{member}` without a call is not supported yet."))
             .with_annotation(Annotation::primary(span).with_message("Read here."))
-            .with_note("The engine does not run a static member read without a call yet."),
-    );
+            .with_note("The engine does not run a static member read without a call yet.")
+    };
+
+    context.report(issue);
 }
 
 fn report_bare_member(span: Span, name: &[u8], context: &mut Context<'_, '_, '_>) {
-    let call = if is_method_of_enclosing_class(context.program, span, name) { "()" } else { "" };
-    let name = BytesDisplay(name);
+    let (name, call) = match enclosing_class_method(context.program, span, name) {
+        Some(method) => (BytesDisplay(method.name.value), "()"),
+        None => (BytesDisplay(name), ""),
+    };
+    let message = match enclosing_static_method_class(context.program, span) {
+        Some(class) => format!(
+            "Write `{}.{name}{call}`: a static method reaches the members of its class through the class name.",
+            BytesDisplay(class.name.value)
+        ),
+        None => format!("Write `this.{name}{call}`: members of the same object are always written with `this.`."),
+    };
 
-    context.report(
-        Issue::error(format!("Write `this.{name}{call}`: members of the same object are always written with `this.`."))
-            .with_annotation(Annotation::primary(span).with_message("Used here.")),
-    );
+    context.report(Issue::error(message).with_annotation(Annotation::primary(span).with_message("Used here.")));
 }
 
-/// Returns `true` when `name` is a method of the class whose body holds `span`. Method names are case-insensitive.
-fn is_method_of_enclosing_class(program: &Program, span: Span, name: &[u8]) -> bool {
-    declarations(program).0.iter().filter(|class| class.span().contains(&span.start)).any(|class| {
-        class.members.iter().any(
-            |member| matches!(member, ClassLikeMember::Method(method) if method.name.value.eq_ignore_ascii_case(name)),
-        )
+/// The class of the static method whose body holds `span`, which has no `this`.
+fn enclosing_static_method_class<'ast, 'arena>(
+    program: &'ast Program<'arena>,
+    span: Span,
+) -> Option<&'ast Class<'arena>> {
+    let class = enclosing_class(program, span)?;
+
+    class
+        .members
+        .iter()
+        .any(|member| {
+            matches!(member, ClassLikeMember::Method(method)
+                if method.span().contains(&span.start)
+                    && method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Static(_))))
+        })
+        .then_some(class)
+}
+
+/// The method named `name` of the class whose body holds `span`. Method names are case-insensitive.
+fn enclosing_class_method<'ast, 'arena>(
+    program: &'ast Program<'arena>,
+    span: Span,
+    name: &[u8],
+) -> Option<&'ast Method<'arena>> {
+    enclosing_class(program, span)?.members.iter().find_map(|member| match member {
+        ClassLikeMember::Method(method) if method.name.value.eq_ignore_ascii_case(name) => Some(method),
+        _ => None,
     })
+}
+
+/// The class of a PHP# file whose body holds `span`.
+fn enclosing_class<'ast, 'arena>(program: &'ast Program<'arena>, span: Span) -> Option<&'ast Class<'arena>> {
+    declarations(program).0.into_iter().find(|class| class.span().contains(&span.start))
 }
 
 fn starts_uppercase(name: &[u8]) -> bool {

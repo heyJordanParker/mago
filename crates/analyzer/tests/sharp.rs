@@ -24,9 +24,9 @@ use mago_codex::populator::populate_codebase;
 use mago_codex::scanner::scan_program;
 use mago_database::DatabaseReader;
 use mago_database::file::File;
-use mago_names::binding::Binding;
 use mago_names::resolver::NameResolver;
 use mago_prelude::Prelude;
+use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::Call;
@@ -67,6 +67,27 @@ fn issues_in(
     analyzed: (&'static str, &'static str),
     others: &[(&'static str, &'static str)],
 ) -> Vec<String> {
+    let code = analyzed.1;
+
+    analyze(registry, settings, analyzed, others)
+        .iter()
+        .map(|issue| {
+            let offset = issue.primary_span().expect("a primary span").start.offset as usize;
+            let line = code[..offset].matches('\n').count() + 1;
+            let column = offset - code[..offset].rfind('\n').map_or(0, |newline| newline + 1) + 1;
+
+            format!("{line}:{column} {}", issue.code.as_deref().unwrap_or("none"))
+        })
+        .collect()
+}
+
+/// Analyzes `analyzed` together with `others` under `settings` and the plugins of `registry`, and returns its issues.
+fn analyze(
+    registry: &PluginRegistry,
+    settings: Settings,
+    analyzed: (&'static str, &'static str),
+    others: &[(&'static str, &'static str)],
+) -> Vec<Issue> {
     let Prelude { mut database, mut metadata, mut symbol_references } = PRELUDE.clone();
 
     let file_ids: Vec<_> = std::iter::once(&analyzed)
@@ -96,18 +117,7 @@ fn issues_in(
         .analyze(program, &mut result)
         .expect("analysis succeeds");
 
-    let code = analyzed.1;
-    result
-        .issues
-        .iter()
-        .map(|issue| {
-            let offset = issue.primary_span().expect("a primary span").start.offset as usize;
-            let line = code[..offset].matches('\n').count() + 1;
-            let column = offset - code[..offset].rfind('\n').map_or(0, |newline| newline + 1) + 1;
-
-            format!("{line}:{column} {}", issue.code.as_deref().unwrap_or("none"))
-        })
-        .collect()
+    result.issues.into_iter().collect()
 }
 
 #[test]
@@ -279,6 +289,14 @@ fn a_method_used_as_a_value_is_not_supported_yet() {
     assert!(sharp_issues.contains(&"10:26 not-supported-yet".to_string()), "{sharp_issues:?}");
     assert!(sharp_issues.contains(&"11:21 not-supported-yet".to_string()), "{sharp_issues:?}");
     assert!(!sharp_issues.iter().any(|issue| issue.ends_with("non-existent-property")), "{sharp_issues:?}");
+
+    let helps: Vec<_> =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Calc.php", CALC)])
+            .into_iter()
+            .filter(|issue| issue.code.as_deref() == Some("not-supported-yet"))
+            .filter_map(|issue| issue.help)
+            .collect();
+    assert_eq!(helps, ["Call the method: `calc.add()`.", "Call the method: `this.total()`."]);
 }
 
 #[test]
@@ -304,6 +322,31 @@ fn unused_parameters_are_found_as_in_php() {
     let php_issues = issues_with(settings(), ("src/Demo/Report.php", php), &[]);
 
     assert_eq!(sharp_issues, ["5:39 unused-parameter"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn null_coalescing_a_local_narrows_it_as_in_php() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(?int first, ?int second)\n    {\n        if (first !== null || second !== null) {\n            return first ?? second;\n        }\n        return 0;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function total(?int $first, ?int $second): int\n    {\n        if ($first !== null || $second !== null) {\n            return $first ?? $second;\n        }\n        return 0;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[]);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn assigning_a_property_of_one_local_keeps_the_memoized_calls_of_another_as_in_php() {
+    let box_class = "<?php\n\nnamespace Lib;\n\nfinal class Box\n{\n    public int $value = 0;\n\n    /** @mutation-free */\n    public function count(): ?int\n    {\n        return null;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Box;\n\nclass Report\n{\n    public static int total(Box box, Box other)\n    {\n        if (other.count() !== null) {\n            box.value = 1;\n            return other.count();\n        }\n        return 0;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Box;\n\nclass Report\n{\n    public static function total(Box $box, Box $other): int\n    {\n        if ($other->count() !== null) {\n            $box->value = 1;\n            return $other->count();\n        }\n        return 0;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Box.php", box_class)]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[("src/Lib/Box.php", box_class)]);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
 }
 
@@ -404,11 +447,8 @@ impl ExpressionHook for CallKindRecorder {
         if let Expression::Call(Call::Method(call)) = expression
             && let ClassLikeMemberSelector::Identifier(method) = &call.method
         {
-            let is_class = matches!(
-                call.object,
-                Expression::ConstantAccess(access) if context.resolved_names().binding(&access.name) == Some(Binding::Class)
-            );
-            let kind = if is_class { "static" } else { "instance" };
+            let is_static = StaticCall::from_method_call(call, context.resolved_names()).is_some();
+            let kind = if is_static { "static" } else { "instance" };
             self.record(format!("{} {kind}", String::from_utf8_lossy(method.value)));
         }
 

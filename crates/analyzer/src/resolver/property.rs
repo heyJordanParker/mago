@@ -1486,6 +1486,9 @@ fn report_non_existent_property<A>(
     if context.dialect.is_sharp() && context.codebase.method_exists(classname.as_bytes(), method_name) {
         let classname = display_class_like_name(context, classname);
         let method_name = BytesDisplay(method_name);
+        let object = BytesDisplay(
+            &context.source_file.contents[object_span.start.offset as usize..object_span.end.offset as usize],
+        );
 
         context.collector.report_with_code(
             IssueCode::NotSupportedYet,
@@ -1494,7 +1497,7 @@ fn report_non_existent_property<A>(
                 .with_annotation(
                     Annotation::secondary(object_span).with_message(format!("On instance of `{classname}`")),
                 )
-                .with_help(format!("Call the method: `{method_name}(...)`."))
+                .with_help(format!("Call the method: `{object}.{method_name}()`."))
                 .with_note("The engine does not run a method used as a value yet."),
         );
 

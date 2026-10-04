@@ -183,9 +183,36 @@ pub fn parse_file_with_settings<'arena, A>(
 where
     A: Arena,
 {
+    parse_file_with_dialect(arena, file, Dialect::of(file), settings)
+}
+
+/// Parses the given file in `dialect`, whatever its name, with custom settings, and returns the program CST.
+///
+/// A caller that already knows the dialect, such as the PHP engine compiling a PHP# file, passes it here. Every other
+/// caller lets [`parse_file_with_settings`] choose it from the file name.
+///
+/// # Parameters
+///
+/// - `arena`: The memory arena for allocations.
+/// - `file`: The file to parse.
+/// - `dialect`: The dialect to parse the file in.
+/// - `settings`: The parser settings.
+///
+/// # Returns
+///
+/// The parsed `Program` CST.
+pub fn parse_file_with_dialect<'arena, A>(
+    arena: &'arena A,
+    file: &File,
+    dialect: Dialect,
+    settings: ParserSettings,
+) -> &'arena Program<'arena>
+where
+    A: Arena,
+{
     let file_id = file.file_id();
     let source_text = arena.alloc_slice_copy(file.contents.as_ref());
-    Parser::for_dialect(arena, file_id, source_text, Dialect::of(file), settings).parse(source_text, file_id)
+    Parser::for_dialect(arena, file_id, source_text, dialect, settings).parse(source_text, file_id)
 }
 
 /// Parses the given PHP file content and returns the program CST.

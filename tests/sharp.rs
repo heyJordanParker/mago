@@ -83,6 +83,20 @@ fn analyze_reports_only_the_scope_error_for_a_local_used_after_its_block_closes(
 }
 
 #[test]
+fn analyze_reports_only_the_parse_error_for_php_syntax() {
+    let directory = workspace(
+        "namespace Demo;\n\nclass Report\n{\n    public int run(int extra)\n    {\n        return this?->total(extra);\n    }\n\n    public int total(int extra)\n    {\n        return extra;\n    }\n}\n",
+    );
+
+    let output = run(directory.path(), "analyze", &["--reporting-format", "emacs"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let errors: Vec<&str> = stdout.lines().filter(|line| line.starts_with("src/Demo/Report.sharp:")).collect();
+    assert_eq!(errors.len(), 1, "{stdout}");
+    assert!(errors[0].starts_with("src/Demo/Report.sharp:7:20:error - parse:"), "{stdout}");
+}
+
+#[test]
 fn analyze_fix_runs_on_php_files_beside_a_valid_sharp_file() {
     let directory = workspace(&REPORT.replace("let label = \"one\";", "let label = 1;"));
     let reader = "<?php\n\ndeclare(strict_types=1);\n\nnamespace Lib;\n\nfunction read(): ?int\n{\n    $box = Box::maybe();\n    return $box->value;\n}\n";
