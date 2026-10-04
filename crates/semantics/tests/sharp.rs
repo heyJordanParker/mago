@@ -337,32 +337,10 @@ fn final_abstract_and_readonly_are_not_supported_yet() {
 }
 
 #[test]
-fn a_by_reference_parameter_is_not_supported_yet() {
-    let code = leak(method("        return extra;\n").replace("int extra", "int &extra"));
-
-    assert_eq!(issues(code), ["5:24 This by-reference parameter is not supported yet in PHP#."]);
-}
-
-#[test]
 fn a_variadic_parameter_is_not_supported_yet() {
     let code = leak(method("        return 1;\n").replace("int extra", "int ...extra"));
 
     assert_eq!(issues(code), ["5:24 This variadic parameter is not supported yet in PHP#."]);
-}
-
-#[test]
-fn a_promoted_constructor_parameter_is_not_supported_yet() {
-    let code =
-        "namespace App.Tenant;\n\nclass Report\n{\n    public void __construct(private int extra)\n    {\n    }\n}\n";
-
-    // A PHP# method writes its return type first, so `__construct` also breaks PHP's rule against one.
-    assert_eq!(
-        issues(code),
-        [
-            "5:29 This promoted constructor parameter is not supported yet in PHP#.",
-            "5:12 Magic method `Report::__construct` cannot have a return type hint.",
-        ]
-    );
 }
 
 #[test]

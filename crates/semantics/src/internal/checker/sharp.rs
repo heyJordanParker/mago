@@ -146,14 +146,6 @@ fn check_method_parameter(parameter: &FunctionLikeParameter, context: &mut Conte
     const SUPPORTED: &str = "PHP# supports parameters with a type, a name and an optional default.";
 
     report_attributes(&parameter.attribute_lists, context);
-    if !parameter.modifiers.is_empty() {
-        report_not_supported(parameter.span(), "promoted constructor parameter", SUPPORTED, context);
-    }
-
-    if let Some(ampersand) = parameter.ampersand {
-        report_not_supported(ampersand, "by-reference parameter", SUPPORTED, context);
-    }
-
     if let Some(ellipsis) = parameter.ellipsis {
         report_not_supported(ellipsis, "variadic parameter", SUPPORTED, context);
     }

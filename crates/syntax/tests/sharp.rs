@@ -154,8 +154,16 @@ fn a_method_with_a_long_return_type_parses() {
 }
 
 #[test]
-fn a_by_reference_parameter_keeps_its_ampersand_and_bare_name() {
-    const CODE: &str = "class Report\n{\n    public void fill(int &count, A&B both) {}\n}\n";
+fn a_by_reference_parameter_is_a_parse_error() {
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", "class Report\n{\n    public void fill(int &count) {}\n}\n");
+
+    assert!(!program.errors.is_empty());
+}
+
+#[test]
+fn a_parameter_with_a_dnf_type_parses() {
+    const CODE: &str = "class Report\n{\n    public void fill((A&B)|null both) {}\n}\n";
     let arena = LocalArena::new();
     let program = parse(&arena, "src/Report.sharp", CODE);
 
@@ -163,14 +171,10 @@ fn a_by_reference_parameter_keeps_its_ampersand_and_bare_name() {
     let Some(ClassLikeMember::Method(method)) = class_members(program).first() else {
         panic!("expected a method, got {:#?}", class_members(program));
     };
-    let [count, both] = method.parameter_list.parameters.as_slice() else {
-        panic!("expected two parameters, got {:#?}", method.parameter_list);
+    let [both] = method.parameter_list.parameters.as_slice() else {
+        panic!("expected one parameter, got {:#?}", method.parameter_list);
     };
-    assert_eq!(source(CODE, count.hint.as_ref().expect("a type")), "int");
-    assert_eq!(count.ampersand.map(|ampersand| source(CODE, &ampersand)), Some("&"));
-    assert_eq!(source(CODE, &count.variable), "count");
-    assert_eq!(source(CODE, both.hint.as_ref().expect("a type")), "A&B");
-    assert_eq!(both.ampersand, None);
+    assert_eq!(source(CODE, both.hint.as_ref().expect("a type")), "(A&B)|null");
 }
 
 #[test]
