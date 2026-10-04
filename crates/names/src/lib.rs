@@ -7,6 +7,7 @@ use mago_span::HasPosition;
 use mago_span::Position;
 
 use crate::binding::Binding;
+use crate::binding::BindingError;
 
 pub mod binding;
 pub mod kind;
@@ -32,7 +33,12 @@ pub struct ResolvedNames<'arena> {
     names: HashMap<u32, (u32, (&'arena [u8], bool))>,
 
     /// Start offset of every bare PHP# name -> what it refers to. Empty for PHP.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "HashMap::is_empty"))]
     bindings: HashMap<u32, Binding>,
+
+    /// The PHP# scope rules the bare names break, in source order. Empty for PHP.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
+    binding_errors: Vec<BindingError>,
 }
 
 impl<'arena> ResolvedNames<'arena> {
@@ -134,8 +140,18 @@ impl<'arena> ResolvedNames<'arena> {
         self.bindings.get(&position.offset()).copied()
     }
 
+    /// Returns the PHP# scope rules the bare names break, in source order.
+    #[must_use]
+    pub fn binding_errors(&self) -> &[BindingError] {
+        &self.binding_errors
+    }
+
     pub(crate) fn bind(&mut self, span: Span, binding: Binding) {
         self.bindings.insert(span.start.offset, binding);
+    }
+
+    pub(crate) fn report_binding_error(&mut self, error: BindingError) {
+        self.binding_errors.push(error);
     }
 
     /// Inserts a resolution result into the map (intended for internal use).

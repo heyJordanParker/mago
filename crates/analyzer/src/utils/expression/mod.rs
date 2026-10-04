@@ -196,7 +196,7 @@ pub fn get_variable_id<'arena>(variable: &Variable<'arena>) -> Option<&'arena [u
 /// A PHP# local `total` runs as the PHP variable `$total`, so its id is `$total`.
 pub fn get_bare_name_variable_id(name: &Identifier<'_>, resolved_names: &ResolvedNames<'_>) -> Option<Word> {
     match resolved_names.binding(name)? {
-        Binding::Local(_) | Binding::Redeclared(_) => Some(concat_word!(b"$", name.value())),
+        Binding::Local(_) => Some(concat_word!(b"$", name.value())),
         Binding::This => Some(word(b"$this")),
         _ => None,
     }

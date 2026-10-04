@@ -18,10 +18,26 @@ pub enum Binding {
     Constant,
     /// A member of the enclosing class, written without `this.`.
     Member,
-    /// A local whose block has already closed.
-    OutOfScope(Local),
-    /// The declaration of a local whose name an enclosing block of the same method already declares.
-    Redeclared(Local),
+}
+
+/// A PHP# scope rule a bare name breaks. The name still has its [`Binding`].
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub enum BindingError {
+    /// A local used after the block that declares it closed. The name binds as if the local did not exist.
+    OutOfScope {
+        /// The name where it is used.
+        name: Span,
+        /// The local, whose block has closed.
+        local: Local,
+    },
+    /// A local declared with a name that an enclosing block of the same method already declares (C# CS0136).
+    Redeclared {
+        /// The name in the second declaration.
+        name: Span,
+        /// The declaration still open in an enclosing block.
+        earlier: Local,
+    },
 }
 
 /// A local of a PHP# method: where it is declared, and how.

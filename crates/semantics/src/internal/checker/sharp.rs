@@ -1,5 +1,6 @@
 use mago_bytes::BytesDisplay;
 use mago_names::binding::Binding;
+use mago_names::binding::BindingError;
 use mago_names::binding::Local;
 use mago_names::binding::LocalKind;
 use mago_reporting::Annotation;
@@ -82,7 +83,6 @@ fn check_const_write(target: &Expression, write: &str, context: &mut Context<'_,
 #[inline]
 pub fn check_local_declaration(local_declaration: &LocalDeclaration, context: &mut Context<'_, '_, '_>) {
     check_superglobal_name(local_declaration.name.value, local_declaration.name.span, "local", context);
-    check_redeclaration(local_declaration.name.value, local_declaration.name.span, context);
 }
 
 #[inline]
@@ -92,8 +92,35 @@ pub fn check_parameter(parameter: &FunctionLikeParameter, context: &mut Context<
     } else {
         check_superglobal_name(parameter.variable.name, parameter.variable.span, "parameter", context);
     }
+}
 
-    check_redeclaration(parameter.variable.name, parameter.variable.span, context);
+/// Reports the PHP# scope rules the binder found broken.
+#[inline]
+pub fn check_binding_errors(context: &mut Context<'_, '_, '_>) {
+    for error in context.names.binding_errors() {
+        let issue = match *error {
+            BindingError::OutOfScope { name, local } => {
+                let name_text = BytesDisplay(context.get_code_snippet(name));
+
+                Issue::error(format!("`{name_text}` is used after the block that declares it closes."))
+                    .with_annotation(Annotation::primary(name).with_message("Used here."))
+                    .with_annotation(Annotation::secondary(local.declaration).with_message("Declared here."))
+                    .with_help(format!(
+                        "A local lives until the `}}` that closes its block. Declare `{name_text}` before the block to use it after."
+                    ))
+            }
+            BindingError::Redeclared { name, earlier } => {
+                let name_text = BytesDisplay(context.get_code_snippet(name));
+
+                Issue::error(format!("`{name_text}` is already declared in an enclosing block of this method."))
+                    .with_annotation(Annotation::primary(name).with_message("Declared again here."))
+                    .with_annotation(Annotation::secondary(earlier.declaration).with_message("First declared here."))
+                    .with_help("Rename one of the two locals. A block cannot redeclare a name its enclosing blocks declare, as in C#'s rule CS0136.")
+            }
+        };
+
+        context.report(issue);
+    }
 }
 
 /// Checks a PHP# class name against the names the engine reserves for types, beyond the keywords the PHP checks reject.
@@ -161,17 +188,8 @@ pub fn check_declarations(program: &Program, context: &mut Context<'_, '_, '_>) 
 
 #[inline]
 pub fn check_constant_access(constant_access: &ConstantAccess, context: &mut Context<'_, '_, '_>) {
-    let name = BytesDisplay(constant_access.name.value());
-
-    match context.names.binding(&constant_access.name) {
-        Some(Binding::OutOfScope(local)) => context.report(
-            Issue::error(format!("`{name}` is used after the block that declares it closes."))
-                .with_annotation(Annotation::primary(constant_access.span()).with_message("Used here."))
-                .with_annotation(Annotation::secondary(local.declaration).with_message("Declared here."))
-                .with_help(format!("A local lives until the `}}` that closes its block. Declare `{name}` before the block to use it after.")),
-        ),
-        Some(Binding::Member) => report_bare_member(constant_access.span(), name, context),
-        _ => {}
+    if context.names.binding(&constant_access.name) == Some(Binding::Member) {
+        report_bare_member(constant_access.span(), BytesDisplay(constant_access.name.value()), context);
     }
 }
 
@@ -308,19 +326,6 @@ pub fn check_member_access(
             "In code, `.` is always member access, so a class is written by the short name its import brings in.",
         ),
     );
-}
-
-fn check_redeclaration(name: &[u8], span: Span, context: &mut Context<'_, '_, '_>) {
-    if let Some(Binding::Redeclared(earlier)) = context.names.binding(&span) {
-        let name = BytesDisplay(name);
-
-        context.report(
-            Issue::error(format!("`{name}` is already declared in an enclosing block of this method."))
-                .with_annotation(Annotation::primary(span).with_message("Declared again here."))
-                .with_annotation(Annotation::secondary(earlier.declaration).with_message("First declared here."))
-                .with_help("Rename one of the two locals. A block cannot redeclare a name its enclosing blocks declare, as in C#'s rule CS0136."),
-        );
-    }
 }
 
 fn collect_declarations<'ast, 'arena>(

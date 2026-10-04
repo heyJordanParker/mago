@@ -30,6 +30,7 @@ use mago_syntax::cst::Interface;
 use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::MethodCall;
+use mago_syntax::cst::MethodPartialApplication;
 use mago_syntax::cst::Namespace;
 use mago_syntax::cst::PropertyAccess;
 use mago_syntax::cst::Sequence;
@@ -44,6 +45,7 @@ use mago_syntax::walker::MutWalker;
 
 use crate::ResolvedNames;
 use crate::binding::Binding;
+use crate::binding::BindingError;
 use crate::binding::Local;
 use crate::binding::LocalKind;
 use crate::internal::context::NameResolutionContext;
@@ -79,12 +81,20 @@ impl<'arena> NameWalker<'arena> {
 
     fn declare(&mut self, name: &'arena [u8], declaration: Span, kind: LocalKind) {
         let local = Local { declaration, kind };
-        let binding = match self.locals.declare(name, local) {
-            Some(earlier) => Binding::Redeclared(earlier),
-            None => Binding::Local(local),
-        };
+        if let Some(earlier) = self.locals.declare(name, local) {
+            self.resolved_names.report_binding_error(BindingError::Redeclared { name: declaration, earlier });
+        }
 
-        self.resolved_names.bind(declaration, binding);
+        self.resolved_names.bind(declaration, Binding::Local(local));
+    }
+
+    /// Marks a bare name written before `.`, which binds as a class unless it names a local or `this`.
+    fn mark_member_object(&mut self, object: &Expression<'arena>) {
+        if self.sharp
+            && let Expression::ConstantAccess(object) = object
+        {
+            self.member_objects.insert(object.name.span().start.offset);
+        }
     }
 
     fn is_member(&self, name: &[u8]) -> bool {
@@ -298,11 +308,15 @@ where
         method_call: &'ast MethodCall<'arena>,
         _context: &mut NameResolutionContext<'arena, A>,
     ) {
-        if self.sharp
-            && let Expression::ConstantAccess(object) = method_call.object
-        {
-            self.member_objects.insert(object.name.span().start.offset);
-        }
+        self.mark_member_object(method_call.object);
+    }
+
+    fn walk_in_method_partial_application(
+        &mut self,
+        method_partial_application: &'ast MethodPartialApplication<'arena>,
+        _context: &mut NameResolutionContext<'arena, A>,
+    ) {
+        self.mark_member_object(method_partial_application.object);
     }
 
     fn walk_in_property_access(
@@ -310,11 +324,7 @@ where
         property_access: &'ast PropertyAccess<'arena>,
         _context: &mut NameResolutionContext<'arena, A>,
     ) {
-        if self.sharp
-            && let Expression::ConstantAccess(object) = property_access.object
-        {
-            self.member_objects.insert(object.name.span().start.offset);
-        }
+        self.mark_member_object(property_access.object);
     }
 
     fn walk_in_interface(
@@ -490,26 +500,35 @@ where
 
         if self.sharp {
             let name = identifier.value();
-            let is_member_object = self.member_objects.contains(&identifier.span().start.offset);
-            let binding = if name == b"this" {
-                Binding::This
-            } else if let Some(local) = self.locals.lookup(name) {
-                Binding::Local(local)
-            } else if let Some(local) = self.locals.lookup_closed(name) {
-                Binding::OutOfScope(local)
-            } else if is_member_object {
-                Binding::Class
+            let span = identifier.span();
+            if name == b"this" {
+                self.resolved_names.bind(span, Binding::This);
+
+                return;
+            }
+
+            if let Some(local) = self.locals.lookup(name) {
+                self.resolved_names.bind(span, Binding::Local(local));
+
+                return;
+            }
+
+            if let Some(local) = self.locals.lookup_closed(name) {
+                self.resolved_names.report_binding_error(BindingError::OutOfScope { name: span, local });
+            }
+
+            let is_member_object = self.member_objects.contains(&span.start.offset);
+            let (binding, kind) = if is_member_object {
+                (Binding::Class, NameKind::Default)
             } else if self.is_member(name) {
-                Binding::Member
+                (Binding::Member, NameKind::Constant)
             } else {
-                Binding::Constant
+                (Binding::Constant, NameKind::Constant)
             };
 
-            let kind = if is_member_object { NameKind::Default } else { NameKind::Constant };
             let (fqn, imported) = context.resolve(kind, name);
-
-            self.resolved_names.insert_at(identifier.span(), fqn, imported);
-            self.resolved_names.bind(identifier.span(), binding);
+            self.resolved_names.insert_at(span, fqn, imported);
+            self.resolved_names.bind(span, binding);
 
             return;
         }

@@ -38,10 +38,8 @@ impl<'arena> Analyzable<'_, 'arena> for ConstantAccess<'arena> {
             return Ok(());
         }
 
-        // The semantic checks report these PHP# names, and a class is only ever the object of a member access.
-        if let Some(Binding::Class | Binding::Member | Binding::OutOfScope(_)) =
-            context.resolved_names.binding(&self.name)
-        {
+        // The semantic checks report a bare member, and a class is only ever the object of a member access.
+        if let Some(Binding::Class | Binding::Member) = context.resolved_names.binding(&self.name) {
             artifacts.set_expression_type(self, get_mixed());
 
             return Ok(());

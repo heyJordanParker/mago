@@ -7,6 +7,7 @@ use mago_database::file::File;
 use mago_database::file::FileId;
 use mago_names::ResolvedNames;
 use mago_names::binding::Binding;
+use mago_names::binding::BindingError;
 use mago_names::binding::Local;
 use mago_names::binding::LocalKind;
 use mago_names::resolver::NameResolver;
@@ -36,10 +37,7 @@ fn binding(names: &ResolvedNames<'_>, code: &str, needle: &str, nth: usize) -> O
 }
 
 fn local(code: &str, needle: &str, nth: usize, kind: LocalKind) -> Binding {
-    let start = Position::new(offset(code, needle, nth));
-    let end = Position::new(start.offset + u32::try_from(needle.len()).expect("length fits in u32"));
-
-    Binding::Local(Local { declaration: Span::new(FileId::new(FILE_NAME), start, end), kind })
+    Binding::Local(declared(code, needle, nth, kind))
 }
 
 fn resolved<'arena>(names: &ResolvedNames<'arena>, code: &str, needle: &str, nth: usize) -> &'arena [u8] {
@@ -77,29 +75,73 @@ fn bare_names_bind_to_locals_this_classes_and_constants() {
     assert_eq!(binding(&names, CODE, "PHP_EOL", 0), Some(Binding::Constant));
 }
 
+fn span(code: &str, needle: &str, nth: usize) -> Span {
+    let start = Position::new(offset(code, needle, nth));
+    let end = Position::new(start.offset + u32::try_from(needle.len()).expect("length fits in u32"));
+
+    Span::new(FileId::new(FILE_NAME), start, end)
+}
+
+fn declared(code: &str, needle: &str, nth: usize, kind: LocalKind) -> Local {
+    Local { declaration: span(code, needle, nth), kind }
+}
+
 #[test]
-fn a_local_lives_until_its_block_closes() {
+fn a_local_used_after_its_block_closes_is_a_constant_and_a_binding_error() {
     const CODE: &str = "class Report\n{\n    public int run()\n    {\n        {\n            let inner = 1;\n            inner;\n        }\n        return inner;\n    }\n}\n";
     let arena = LocalArena::new();
     let names = bind(&arena, CODE);
 
-    let declaration = local(CODE, "inner", 0, LocalKind::Let);
-    assert_eq!(binding(&names, CODE, "inner", 1), Some(declaration));
-    let Binding::Local(local) = declaration else { unreachable!() };
-    assert_eq!(binding(&names, CODE, "inner", 2), Some(Binding::OutOfScope(local)));
+    assert_eq!(binding(&names, CODE, "inner", 1), Some(local(CODE, "inner", 0, LocalKind::Let)));
+    assert_eq!(binding(&names, CODE, "inner", 2), Some(Binding::Constant));
+    assert_eq!(
+        names.binding_errors(),
+        [BindingError::OutOfScope { name: span(CODE, "inner", 2), local: declared(CODE, "inner", 0, LocalKind::Let) }]
+    );
 }
 
 #[test]
-fn redeclaring_a_name_an_enclosing_block_declares_is_recorded() {
+fn redeclaring_a_name_an_enclosing_block_declares_is_a_binding_error() {
     const CODE: &str = "class Report\n{\n    public int run(int count)\n    {\n        let total = 1;\n        {\n            let total = 2;\n            let count = 3;\n        }\n        return total;\n    }\n}\n";
     let arena = LocalArena::new();
     let names = bind(&arena, CODE);
 
-    let Binding::Local(outer_total) = local(CODE, "total", 0, LocalKind::Let) else { unreachable!() };
-    let Binding::Local(parameter) = local(CODE, "count", 0, LocalKind::Parameter) else { unreachable!() };
-    assert_eq!(binding(&names, CODE, "total", 1), Some(Binding::Redeclared(outer_total)));
-    assert_eq!(binding(&names, CODE, "count", 1), Some(Binding::Redeclared(parameter)));
-    assert_eq!(binding(&names, CODE, "total", 2), Some(Binding::Local(outer_total)));
+    assert_eq!(binding(&names, CODE, "total", 1), Some(local(CODE, "total", 1, LocalKind::Let)));
+    assert_eq!(binding(&names, CODE, "total", 2), Some(local(CODE, "total", 0, LocalKind::Let)));
+    assert_eq!(
+        names.binding_errors(),
+        [
+            BindingError::Redeclared {
+                name: span(CODE, "total", 1),
+                earlier: declared(CODE, "total", 0, LocalKind::Let)
+            },
+            BindingError::Redeclared {
+                name: span(CODE, "count", 1),
+                earlier: declared(CODE, "count", 0, LocalKind::Parameter)
+            },
+        ]
+    );
+}
+
+#[test]
+fn locals_and_this_have_no_resolved_name() {
+    const CODE: &str = "class Report\n{\n    public int run(int extra)\n    {\n        let label = extra;\n        return this.total(label);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    for (needle, nth) in [("extra", 1), ("label", 1), ("this", 0)] {
+        assert!(!names.contains(&Position::new(offset(CODE, needle, nth))), "`{needle}` #{nth} has a resolved name");
+    }
+}
+
+#[test]
+fn a_name_before_a_partial_method_application_is_a_class() {
+    const CODE: &str = "class Report\n{\n    public void run()\n    {\n        Calc.make(...);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "Calc", 0), Some(Binding::Class));
+    assert_eq!(resolved(&names, CODE, "Calc", 0), b"Calc");
 }
 
 #[test]

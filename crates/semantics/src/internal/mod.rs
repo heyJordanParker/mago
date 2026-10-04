@@ -91,6 +91,7 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingW
 
         if program.dialect.is_sharp() {
             checker::sharp::check_declarations(program, context);
+            checker::sharp::check_binding_errors(context);
         }
     }
 
