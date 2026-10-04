@@ -63,8 +63,8 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - A method: `public`, `protected` or `private`, an optional `static`, parameters, a return type and a body. Its name
 ///   does not start with `__`, which PHP reserves for magic methods, and is not its class's name, compared ignoring
 ///   case, which PHP# gives to the constructor.
-/// - A parameter: a type, a name and an optional default, and neither variadic nor by reference. A default is a
-///   literal, a constant, or the operators below on them, without `++` and `--`.
+/// - A parameter: always a type, a name and an optional default, and neither variadic nor by reference. A default is
+///   a literal, a constant, or the operators below on them, without `++` and `--`.
 /// - Types: `int`, `float`, `bool`, `string` and a class written by its short name, and `void` as a return type.
 ///   PHP's own check reports a `void` parameter.
 /// - In a method body: blocks, expression statements, `return`, and `let` and `const` declarations.
@@ -374,6 +374,12 @@ fn is_slice_parameter(parameter: &FunctionLikeParameter) -> Result<(), (Span, &'
             ampersand,
             "A by-reference parameter is not supported yet in PHP#.",
             "The engine passes every PHP# argument by value.",
+        ))
+    } else if parameter.hint.is_none() {
+        Err((
+            parameter.variable.span,
+            "A parameter without a type is not supported in PHP#.",
+            "A PHP# parameter is written with its type, as in `int extra`.",
         ))
     } else {
         Ok(())

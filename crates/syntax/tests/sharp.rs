@@ -163,6 +163,14 @@ fn a_by_reference_parameter_is_a_parse_error() {
 }
 
 #[test]
+fn a_parameter_without_a_type_is_a_parse_error() {
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", "class Report\n{\n    public int run(extra) { return 1; }\n}\n");
+
+    assert!(!program.errors.is_empty());
+}
+
+#[test]
 fn a_parameter_with_a_dnf_type_parses() {
     const CODE: &str = "class Report\n{\n    public void fill((A&B)|null both) {}\n}\n";
     let arena = LocalArena::new();
