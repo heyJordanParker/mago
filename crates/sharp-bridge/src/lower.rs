@@ -47,6 +47,7 @@ use crate::sharp_kind;
 use crate::sharp_kind::SHARP_AST_AND;
 use crate::sharp_kind::SHARP_AST_ARG_LIST;
 use crate::sharp_kind::SHARP_AST_ASSIGN;
+use crate::sharp_kind::SHARP_AST_ASSIGN_COALESCE;
 use crate::sharp_kind::SHARP_AST_ASSIGN_OP;
 use crate::sharp_kind::SHARP_AST_BINARY_OP;
 use crate::sharp_kind::SHARP_AST_CLASS;
@@ -637,6 +638,7 @@ fn assignment_kind(operator: &AssignmentOperator) -> (sharp_kind, u32) {
         AssignmentOperator::Subtraction(_) => (SHARP_AST_ASSIGN_OP, ZEND_SUB),
         AssignmentOperator::Multiplication(_) => (SHARP_AST_ASSIGN_OP, ZEND_MUL),
         AssignmentOperator::Division(_) => (SHARP_AST_ASSIGN_OP, ZEND_DIV),
+        AssignmentOperator::Coalesce(_) => (SHARP_AST_ASSIGN_COALESCE, 0),
         AssignmentOperator::Modulo(_)
         | AssignmentOperator::Exponentiation(_)
         | AssignmentOperator::Concat(_)
@@ -644,8 +646,7 @@ fn assignment_kind(operator: &AssignmentOperator) -> (sharp_kind, u32) {
         | AssignmentOperator::BitwiseOr(_)
         | AssignmentOperator::BitwiseXor(_)
         | AssignmentOperator::LeftShift(_)
-        | AssignmentOperator::RightShift(_)
-        | AssignmentOperator::Coalesce(_) => unreachable!("check_slice refuses the operator `{operator}`"),
+        | AssignmentOperator::RightShift(_) => unreachable!("check_slice refuses the operator `{operator}`"),
     }
 }
 

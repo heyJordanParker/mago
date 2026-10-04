@@ -76,6 +76,13 @@ fn reassigning_a_const_local_is_an_error() {
 }
 
 #[test]
+fn null_coalescing_assignment_to_a_const_local_is_an_error() {
+    let code = leak(method("        const base = null;\n        base ??= 3;\n        return base;\n"));
+
+    assert_eq!(issues(code), ["8:9 Cannot assign to `base`: it is declared with `const`."]);
+}
+
+#[test]
 fn reassigning_a_const_local_spelled_in_capitals_is_an_error() {
     let code = leak(method("        CONST base = 2;\n        base = 3;\n        return base;\n"));
 
@@ -436,7 +443,7 @@ fn a_variadic_parameter_is_not_supported_yet() {
 #[test]
 fn operators_outside_the_slice_are_not_supported_yet() {
     let code = leak(method(
-        "        let a = extra;\n        a = @extra;\n        a = (int) extra;\n        a = extra ** 2;\n        a = extra & 1;\n        a = extra | 1;\n        a = extra ^ 1;\n        a = extra << 1;\n        a = extra >> 1;\n        a = ~extra;\n        a = extra xor true;\n        a = extra and true;\n        a = extra or true;\n        a = extra <=> 1;\n        a = extra <> 1;\n        a %= 2;\n        a **= 2;\n        a &= 2;\n        a ??= 2;\n        return a;\n",
+        "        let a = extra;\n        a = @extra;\n        a = (int) extra;\n        a = extra ** 2;\n        a = extra & 1;\n        a = extra | 1;\n        a = extra ^ 1;\n        a = extra << 1;\n        a = extra >> 1;\n        a = ~extra;\n        a = extra xor true;\n        a = extra and true;\n        a = extra or true;\n        a = extra <=> 1;\n        a = extra <> 1;\n        a %= 2;\n        a **= 2;\n        a &= 2;\n        return a;\n",
     ));
 
     assert_eq!(
@@ -459,7 +466,6 @@ fn operators_outside_the_slice_are_not_supported_yet() {
             "22:11 This operator is not supported yet in PHP#.",
             "23:11 This operator is not supported yet in PHP#.",
             "24:11 This operator is not supported yet in PHP#.",
-            "25:11 This operator is not supported yet in PHP#.",
         ]
     );
 }

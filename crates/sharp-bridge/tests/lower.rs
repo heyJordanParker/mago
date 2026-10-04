@@ -812,6 +812,33 @@ fn null_coalescing_is_coalesce() {
 }
 
 /// ```php
+/// $extra ??= 1; $this->count ??= $extra;
+/// ```
+#[test]
+fn null_coalescing_assignment_is_assign_coalesce() {
+    assert_eq!(
+        body("        extra ??= 1;\n        this.count ??= extra;\n        return extra;\n"),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN_COALESCE
+                VAR
+                  ZVAL "extra"
+                ZVAL 1
+              ASSIGN_COALESCE
+                PROP
+                  VAR
+                    ZVAL "this"
+                  ZVAL "count"
+                VAR
+                  ZVAL "extra"
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
 /// return ($extra + 1) * 2;
 /// ```
 #[test]
@@ -886,7 +913,8 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_DECLARE
         | sharp_kind::SHARP_AST_NAMESPACE
         | sharp_kind::SHARP_AST_NAMED_ARG
-        | sharp_kind::SHARP_AST_COALESCE => Some(2),
+        | sharp_kind::SHARP_AST_COALESCE
+        | sharp_kind::SHARP_AST_ASSIGN_COALESCE => Some(2),
         sharp_kind::SHARP_AST_METHOD_CALL | sharp_kind::SHARP_AST_STATIC_CALL | sharp_kind::SHARP_AST_CONST_ELEM => {
             Some(3)
         }

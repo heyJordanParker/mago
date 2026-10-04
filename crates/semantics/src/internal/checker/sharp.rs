@@ -75,7 +75,7 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   property reads written with `.` and a member name, with positional and named arguments. A string literal's
 ///   `\u{...}` escapes are valid codepoints, as PHP requires.
 /// - Operators: `+ - * / %`, `== != === !== < > <= >=`, `&& || !`, `??`, unary `-` and `+`, `++` and `--`, and
-///   `= += -= *= /=`.
+///   `= += -= *= /= ??=`.
 ///
 /// The check visits every node and refuses any node, or any position of a node, that this list does not name. It
 /// reports each refusal once, at its outermost node. It does not run on a file with a parse error, which is the one
@@ -519,7 +519,8 @@ const fn is_slice_assignment_operator(operator: &AssignmentOperator) -> bool {
         | AssignmentOperator::Addition(_)
         | AssignmentOperator::Subtraction(_)
         | AssignmentOperator::Multiplication(_)
-        | AssignmentOperator::Division(_) => true,
+        | AssignmentOperator::Division(_)
+        | AssignmentOperator::Coalesce(_) => true,
         AssignmentOperator::Modulo(_)
         | AssignmentOperator::Exponentiation(_)
         | AssignmentOperator::Concat(_)
@@ -527,8 +528,7 @@ const fn is_slice_assignment_operator(operator: &AssignmentOperator) -> bool {
         | AssignmentOperator::BitwiseOr(_)
         | AssignmentOperator::BitwiseXor(_)
         | AssignmentOperator::LeftShift(_)
-        | AssignmentOperator::RightShift(_)
-        | AssignmentOperator::Coalesce(_) => false,
+        | AssignmentOperator::RightShift(_) => false,
     }
 }
 

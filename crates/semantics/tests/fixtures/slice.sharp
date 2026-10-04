@@ -64,6 +64,10 @@ class Report
     public Calc? find(int? id, Calc? fallback = null, string? label = "none", float? rate = null, bool? on = null ?? true)
     {
         const first = id ?? 0;
+        let second = id;
+        second ??= first;
+        id ??= 1;
+        fallback.rate ??= rate;
         return fallback ?? null;
     }
 }
