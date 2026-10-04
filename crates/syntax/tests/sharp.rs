@@ -438,14 +438,62 @@ fn let_and_const_declare_locals_with_an_initializer() {
     let [Statement::LocalDeclaration(label), Statement::LocalDeclaration(base)] = method_body(program) else {
         panic!("expected two local declarations, got {:#?}", method_body(program));
     };
-    assert_eq!(label.keyword.value, b"let");
+    assert_eq!(label.keyword.expect("a keyword").value, b"let");
+    assert!(label.hint.is_none());
     assert!(!label.is_const());
     assert_eq!(label.name.value, b"label");
     assert!(matches!(label.value, Expression::Literal(Literal::String(_))));
     assert_eq!(source(CODE, label), "let label = \"one\";");
-    assert_eq!(base.keyword.value, b"const");
+    assert_eq!(base.keyword.expect("a keyword").value, b"const");
     assert!(base.is_const());
     assert_eq!(base.name.value, b"base");
+}
+
+#[test]
+fn a_local_can_be_declared_with_its_type_written() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        Calc? found = null;\n        int total = 1;\n        const int base = 2;\n        const Calc? none = null;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let locals: Vec<(&str, &str, bool, &str)> = method_body(program)
+        .iter()
+        .map(|statement| {
+            let Statement::LocalDeclaration(local) = statement else {
+                panic!("expected a local declaration, got {statement:#?}");
+            };
+
+            (
+                source(CODE, local),
+                source(CODE, local.hint.as_ref().expect("a type")),
+                local.is_const(),
+                source(CODE, &local.name),
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        locals,
+        [
+            ("Calc? found = null;", "Calc?", false, "found"),
+            ("int total = 1;", "int", false, "total"),
+            ("const int base = 2;", "int", true, "base"),
+            ("const Calc? none = null;", "Calc?", true, "none"),
+        ]
+    );
+}
+
+#[test]
+fn a_spaced_question_mark_after_a_name_is_not_a_typed_local() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        found ? total = 1 : 2;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [statement] = method_body(program) else {
+        panic!("expected one statement, got {:#?}", method_body(program));
+    };
+    assert!(matches!(expression(statement), Expression::Conditional(_)), "{statement:#?}");
 }
 
 #[test]
@@ -471,6 +519,28 @@ fn a_for_loop_declares_its_counter_with_let_or_const() {
 
     assert!(endless.declaration.as_ref().is_some_and(LocalDeclaration::is_const));
     assert!(endless.conditions.is_empty());
+}
+
+#[test]
+fn a_for_loop_declares_its_counter_with_its_type_written() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        for (int i = 0; i < 3; i++) {\n        }\n        for (const int? j = null; ; ) {\n        }\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::For(counted), Statement::For(endless)] = method_body(program) else {
+        panic!("expected two for loops, got {:#?}", method_body(program));
+    };
+
+    let declaration = counted.declaration.as_ref().expect("a declaration");
+    assert_eq!(source(CODE, declaration.hint.expect("a type")), "int");
+    assert!(!declaration.is_const());
+    assert_eq!(source(CODE, declaration), "int i = 0;");
+    assert_eq!(counted.conditions.len(), 1);
+
+    let declaration = endless.declaration.as_ref().expect("a declaration");
+    assert_eq!(source(CODE, declaration.hint.expect("a type")), "int?");
+    assert!(declaration.is_const());
 }
 
 #[test]

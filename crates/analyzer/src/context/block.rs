@@ -86,6 +86,10 @@ pub struct BlockContext<'ctx> {
     /// where the key is the variable name and the value is the reference constraint.
     pub by_reference_constraints: WordMap<ReferenceConstraint>,
 
+    /// The written type of each PHP# local declared with one, as in `Money? total = null;`, and the span of that
+    /// type. Every value assigned to the local must have this type.
+    pub local_types: WordMap<(Rc<TUnion>, Span)>,
+
     /// Bitflags for various context states (inside_conditional, inside_isset, etc.)
     pub flags: BlockContextFlags,
 
@@ -213,6 +217,7 @@ impl<'ctx> BlockContext<'ctx> {
             references_to_external_scope: WordSet::default(),
             references_possibly_from_confusing_scope: WordSet::default(),
             by_reference_constraints: WordMap::default(),
+            local_types: WordMap::default(),
             flags: BlockContextFlags::new(),
             clauses: Vec::new(),
             reconciled_expression_clauses: Vec::new(),

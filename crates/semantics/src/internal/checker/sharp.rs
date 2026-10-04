@@ -99,7 +99,8 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - In a method body: blocks, expression statements, `return`, `let` and `const` declarations, `if` with `else if`
 ///   and `else`, `while`, `do … while`, `for` with a `let` or `const` counter or with expressions, `for … of` over a
 ///   value or a key and value, and `break` and `continue` without a level. The body of `if`, `else` and each loop is a
-///   block in braces.
+///   block in braces. A local statement can have its type written, as in `Money? total = null;` or
+///   `const int base = 2;`, from the types above but `void`.
 /// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter or a member written
 ///   `object.name`.
 /// - In expressions: literals, parentheses, bare names, assignment, the operators below, and method calls and
@@ -320,8 +321,16 @@ fn enter(
                 None
             }
         },
-        (Node::Hint(hint), Method | Parameter) if is_slice_type(hint) => Some(place),
-        (Node::NullableHint(_), Method | Parameter) => Some(place),
+        (Node::Hint(Hint::Void(_)), Body) => {
+            context.report(
+                Issue::error("A local cannot be `void`: `void` is only a return type.")
+                    .with_annotation(Annotation::primary(node.span()).with_message("Declared `void` here.")),
+            );
+
+            None
+        }
+        (Node::Hint(hint), Method | Parameter | Body) if is_slice_type(hint) => Some(place),
+        (Node::NullableHint(_), Method | Parameter | Body) => Some(place),
         (Node::DirectVariable(_), Parameter) => Some(Parameter),
         // An access modifier declares a member, and `check_accessors` checked its accessors. PHP reports `static`,
         // `final` and `abstract` on a parameter, a member declared outside the constructor, and accessors without one.
@@ -884,7 +893,7 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, a name, and an optional default."
         }
         Place::Body => {
-            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const`, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, and `break` and `continue` without a level, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, `++` and `--`, method calls and property reads written with `.` or `?.`, and `new Class(...)`."
+            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, and `break` and `continue` without a level, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, `++` and `--`, method calls and property reads written with `.` or `?.`, and `new Class(...)`."
         }
         Place::Default => {
             "A parameter default is a literal, a constant, or arithmetic, comparison, logical and `??` operators on them."

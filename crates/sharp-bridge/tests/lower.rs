@@ -853,6 +853,33 @@ fn let_and_const_locals_assign_their_variables() {
     );
 }
 
+/// A written type only tells the checker the local's type, so a typed local lowers as `let` and `const` do.
+///
+/// ```php
+/// $found = null;
+/// $base = 2;
+/// ```
+#[test]
+fn typed_locals_assign_their_variables_and_drop_the_type() {
+    assert_eq!(
+        body("        Calc? found = null;\n        const int base = 2;\n        return base;\n"),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "found"
+                ZVAL null
+              ASSIGN
+                VAR
+                  ZVAL "base"
+                ZVAL 2
+              RETURN
+                VAR
+                  ZVAL "base"
+        "#}
+    );
+}
+
 /// ```php
 /// $this->count += 1;
 /// ```
@@ -1456,6 +1483,39 @@ fn for_loops_are_for_nodes_with_an_expression_list_per_part() {
                 STMT_LIST
                   BREAK
                     null
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
+/// A typed counter lowers as a `let` counter does: its type only tells the checker the counter's type.
+///
+/// ```php
+/// for ($step = 0; $step < $extra; ) {
+/// }
+/// ```
+#[test]
+fn a_typed_for_counter_is_the_assignment_of_its_value() {
+    assert_eq!(
+        body("        for (int step = 0; step < extra; ) {\n        }\n        return extra;\n"),
+        indoc! {r#"
+            STMT_LIST
+              FOR
+                EXPR_LIST
+                  ASSIGN
+                    VAR
+                      ZVAL "step"
+                    ZVAL 0
+                EXPR_LIST
+                  BINARY_OP [20]
+                    VAR
+                      ZVAL "step"
+                    VAR
+                      ZVAL "extra"
+                null
+                STMT_LIST
               RETURN
                 VAR
                   ZVAL "extra"

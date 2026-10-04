@@ -1,11 +1,6 @@
 use mago_allocator::Arena;
 use mago_span::HasSpan;
-use mago_syntax::cst::Assignment;
-use mago_syntax::cst::AssignmentOperator;
-use mago_syntax::cst::ConstantAccess;
-use mago_syntax::cst::Expression;
 use mago_syntax::cst::For;
-use mago_syntax::cst::Identifier;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
@@ -24,28 +19,21 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for For<'arena> {
     where
         A: Arena,
     {
-        // A PHP# counter runs as the PHP assignment of its value to the variable it declares.
-        let mut initializations = Vec::with_capacity(self.initializations.len() + 1);
+        // A PHP# counter is a local declared before the loop runs, so it takes its written type as any local does.
         if let Some(declaration) = &self.declaration {
-            let name = context
-                .arena
-                .alloc(Expression::ConstantAccess(ConstantAccess { name: Identifier::Local(declaration.name) }));
-
-            initializations.push(&*context.arena.alloc(Expression::Assignment(Assignment {
-                lhs: name,
-                operator: AssignmentOperator::Assign(declaration.equals),
-                rhs: declaration.value,
-            })));
+            declaration.analyze(context, block_context, artifacts)?;
         }
-        initializations.extend(self.initializations.iter().copied());
 
-        let infinite_loop = initializations.is_empty() && self.conditions.is_empty() && self.increments.is_empty();
+        let infinite_loop = self.declaration.is_none()
+            && self.initializations.is_empty()
+            && self.conditions.is_empty()
+            && self.increments.is_empty();
 
         r#loop::analyze_for_or_while_loop(
             context,
             block_context,
             artifacts,
-            &initializations,
+            self.initializations.as_slice(),
             self.conditions.as_slice(),
             self.increments.as_slice(),
             self.body.statements(),

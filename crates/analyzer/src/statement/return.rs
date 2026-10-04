@@ -386,6 +386,13 @@ pub fn handle_return_value<'ctx, A>(
             && !expected_return_type.is_nullable()
             && !expected_return_type.has_template()
         {
+            // PHP# writes a nullable type with `?` after it.
+            let nullable_return_type_str = if context.dialect.is_sharp() {
+                format!("{expected_return_type_str}?")
+            } else {
+                format!("?{expected_return_type_str}")
+            };
+
             context.collector.report_with_code(
                 IssueCode::NullableReturnStatement,
                 Issue::error(format!(
@@ -403,7 +410,7 @@ pub fn handle_return_value<'ctx, A>(
                 )
                 .with_help(
                     format!(
-                        "You can either change the return type declaration of `{function_name}` to be nullable (e.g., '?{expected_return_type_str}'), or ensure that this function path always returns a non-null value."
+                        "You can either change the return type declaration of `{function_name}` to be nullable (e.g., '{nullable_return_type_str}'), or ensure that this function path always returns a non-null value."
                     )
                 ),
             );

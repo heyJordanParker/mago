@@ -1,4 +1,5 @@
 use mago_allocator::Arena;
+use mago_names::ResolvedNames;
 use mago_names::scope::NamespaceScope;
 use mago_phpdoc_syntax::cst::r#type::Type;
 use mago_span::HasSpan;
@@ -45,12 +46,12 @@ use crate::ttype::wrap_atomic;
 pub fn get_type_metadata_from_hint<'arena, A>(
     hint: &'arena Hint<'arena>,
     classname: Option<Word>,
-    context: &mut Context<'_, 'arena, A>,
+    context: &Context<'_, 'arena, A>,
 ) -> TypeMetadata
 where
     A: Arena,
 {
-    let type_union = get_union_from_hint(hint, classname, context);
+    let type_union = get_union_from_hint(hint, classname, context.resolved_names);
 
     let mut type_metadata = TypeMetadata::new(type_union, hint.span());
     type_metadata.from_docblock = false;
@@ -71,25 +72,23 @@ pub fn get_type_metadata_from_type(
     })
 }
 
+/// Converts a type written in code into its `TUnion`, resolving class names through `resolved_names`. `classname`
+/// is the class that `self` and `static` name, if any.
 #[inline]
-fn get_union_from_hint<'arena, A>(
-    hint: &'arena Hint<'arena>,
-    classname: Option<Word>,
-    context: &mut Context<'_, 'arena, A>,
-) -> TUnion
-where
-    A: Arena,
-{
+#[must_use]
+pub fn get_union_from_hint(hint: &Hint<'_>, classname: Option<Word>, resolved_names: &ResolvedNames<'_>) -> TUnion {
     match hint {
-        Hint::Parenthesized(parenthesized_hint) => get_union_from_hint(parenthesized_hint.hint, classname, context),
-        Hint::Identifier(identifier) => get_union_from_identifier_hint(identifier, context),
+        Hint::Parenthesized(parenthesized_hint) => {
+            get_union_from_hint(parenthesized_hint.hint, classname, resolved_names)
+        }
+        Hint::Identifier(identifier) => get_union_from_identifier_hint(identifier, resolved_names),
         Hint::Nullable(nullable_hint) => match nullable_hint.hint {
             Hint::Null(_) => get_null(),
             Hint::String(_) => get_nullable_string(),
             Hint::Integer(_) => get_nullable_int(),
             Hint::Float(_) => get_nullable_float(),
             Hint::Object(_) => get_nullable_object(),
-            _ => get_union_from_hint(nullable_hint.hint, classname, context).as_nullable(),
+            _ => get_union_from_hint(nullable_hint.hint, classname, resolved_names).as_nullable(),
         },
         Hint::Union(UnionHint { left: Hint::Null(_), right, .. }) => match right {
             Hint::Null(_) => get_null(),
@@ -97,7 +96,7 @@ where
             Hint::Integer(_) => get_nullable_int(),
             Hint::Float(_) => get_nullable_float(),
             Hint::Object(_) => get_nullable_object(),
-            _ => get_union_from_hint(right, classname, context).as_nullable(),
+            _ => get_union_from_hint(right, classname, resolved_names).as_nullable(),
         },
         Hint::Union(UnionHint { left, right: Hint::Null(_), .. }) => match left {
             Hint::Null(_) => get_null(),
@@ -105,11 +104,11 @@ where
             Hint::Integer(_) => get_nullable_int(),
             Hint::Float(_) => get_nullable_float(),
             Hint::Object(_) => get_nullable_object(),
-            _ => get_union_from_hint(left, classname, context).as_nullable(),
+            _ => get_union_from_hint(left, classname, resolved_names).as_nullable(),
         },
         Hint::Union(union_hint) => {
-            let left = get_union_from_hint(union_hint.left, classname, context);
-            let right = get_union_from_hint(union_hint.right, classname, context);
+            let left = get_union_from_hint(union_hint.left, classname, resolved_names);
+            let right = get_union_from_hint(union_hint.right, classname, resolved_names);
 
             let combined_types: Vec<TAtomic> = left.types.iter().chain(right.types.iter()).cloned().collect();
 
@@ -140,8 +139,8 @@ where
         Hint::Mixed(_) => get_mixed(),
         Hint::Parent(_) => wrap_atomic(TAtomic::Object(TObject::Named(TNamedObject::new(word("parent"))))),
         Hint::Intersection(intersection) => {
-            let left = get_union_from_hint(intersection.left, classname, context);
-            let right = get_union_from_hint(intersection.right, classname, context);
+            let left = get_union_from_hint(intersection.left, classname, resolved_names);
+            let right = get_union_from_hint(intersection.right, classname, resolved_names);
 
             let left_types = left.types;
             let right_types = right.types;
@@ -184,14 +183,8 @@ where
 }
 
 #[inline]
-fn get_union_from_identifier_hint<'arena, A>(
-    identifier: &'arena Identifier<'arena>,
-    context: &Context<'_, 'arena, A>,
-) -> TUnion
-where
-    A: Arena,
-{
-    let name = context.resolved_names.get(identifier);
+fn get_union_from_identifier_hint(identifier: &Identifier<'_>, resolved_names: &ResolvedNames<'_>) -> TUnion {
+    let name = resolved_names.get(identifier);
 
     if name.eq_ignore_ascii_case(b"Generator") {
         let mixed_default = || {

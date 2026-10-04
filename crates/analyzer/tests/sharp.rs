@@ -446,6 +446,65 @@ fn a_nullable_value_where_a_value_is_required_is_reported_as_in_php() {
 }
 
 #[test]
+fn a_typed_local_takes_values_of_its_written_type_with_no_issues() {
+    let sharp = "namespace Demo;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public static int total(int? value, bool make)\n    {\n        Calc? found = null;\n        if (make) {\n            found = Calc.make();\n        }\n        int? first = null;\n        first ??= value;\n        const int base = 10;\n        int total = base;\n        total += first ?? 1;\n        return found?.add(total, 1) ?? total;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Calc.php", CALC)]), Vec::<String>::new());
+}
+
+#[test]
+fn locals_of_sibling_blocks_keep_their_own_written_types() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static void total(bool flag)\n    {\n        if (flag) {\n            int value = 1;\n            value = 2;\n        } else {\n            string value = \"one\";\n            value = \"two\";\n        }\n        {\n            float value = 1.5;\n            value = 2.5;\n        }\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn a_value_that_is_not_the_written_type_of_a_local_is_reported() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(int? value)\n    {\n        int count = \"one\";\n        count = 2;\n        count = 2.5;\n        count = value;\n        const string label = 1;\n        return count;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[]),
+        [
+            "7:21 invalid-local-assignment-value",
+            "9:17 invalid-local-assignment-value",
+            "10:17 invalid-local-assignment-value",
+            "11:30 invalid-local-assignment-value",
+        ]
+    );
+
+    let first = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[]).remove(0);
+    assert_eq!(first.message, "Invalid assignment to `count`: it is declared as `int`.");
+}
+
+#[test]
+fn a_typed_for_counter_takes_only_values_of_its_written_type() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(int? extra)\n    {\n        for (int step = \"one\"; step < 3; step++) {\n        }\n        for (int? found = null; found === null; ) {\n            found = extra;\n        }\n        for (int count = 0; count < 3; count++) {\n            count = 1.5;\n        }\n        return 0;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[]),
+        ["7:25 invalid-local-assignment-value", "13:21 invalid-local-assignment-value"]
+    );
+}
+
+#[test]
+fn the_nullable_return_help_writes_the_nullable_type_as_the_file_does() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(int? extra)\n    {\n        return extra;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function total(?int $extra): int\n    {\n        return $extra;\n    }\n}\n";
+
+    let help = |analyzed| {
+        analyze(&PLUGIN_REGISTRY, settings(), analyzed, &[])
+            .into_iter()
+            .find(|issue| issue.code.as_deref() == Some("nullable-return-statement"))
+            .and_then(|issue| issue.help)
+            .expect("a nullable-return-statement help")
+    };
+
+    assert!(help(("src/Demo/Report.sharp", sharp)).contains("(e.g., 'int?')"));
+    assert!(help(("src/Demo/Report.php", php)).contains("(e.g., '?int')"));
+}
+
+#[test]
 fn assigning_a_property_of_one_local_keeps_the_memoized_calls_of_another_as_in_php() {
     let box_class = "<?php\n\nnamespace Lib;\n\nfinal class Box\n{\n    public int $value = 0;\n\n    /** @mutation-free */\n    public function count(): ?int\n    {\n        return null;\n    }\n}\n";
     let sharp = "namespace Demo;\n\nimport Lib.Box;\n\nclass Report\n{\n    public static int total(Box box, Box other)\n    {\n        if (other.count() !== null) {\n            box.value = 1;\n            return other.count();\n        }\n        return 0;\n    }\n}\n";
