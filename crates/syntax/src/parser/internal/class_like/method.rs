@@ -20,16 +20,10 @@ where
         attributes: Sequence<'arena, AttributeList<'arena>>,
         modifiers: Sequence<'arena, Modifier<'arena>>,
     ) -> Result<Method<'arena>, ParseError> {
-        let function = self.expect_keyword(T!["function"])?;
-        // The error stands, and the PHP method still parses so the rest of the class does.
-        if self.dialect.is_sharp() {
-            self.errors.push(ParseError::PhpSyntaxInSharp(T!["function"], function.span));
-        }
-
         Ok(Method {
             attribute_lists: attributes,
             modifiers,
-            function: Some(function),
+            function: Some(self.expect_php_keyword(T!["function"])?),
             ampersand: if self.stream.is_at(T!["&"])? { Some(self.stream.eat_span(T!["&"])?) } else { None },
             name: self.parse_local_identifier()?,
             parameter_list: self.parse_function_like_parameter_list()?,

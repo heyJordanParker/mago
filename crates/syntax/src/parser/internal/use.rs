@@ -22,7 +22,7 @@ where
 {
     pub(crate) fn parse_use(&mut self) -> Result<Use<'arena>, ParseError> {
         Ok(Use {
-            r#use: self.expect_keyword(T!["use"])?,
+            r#use: self.expect_php_keyword(T!["use"])?,
             items: self.parse_use_items()?,
             terminator: self.parse_terminator()?,
         })

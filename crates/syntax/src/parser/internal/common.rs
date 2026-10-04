@@ -17,6 +17,18 @@ where
         Ok(Keyword { span: token.span_for(self.stream.file_id()), value: token.value })
     }
 
+    /// Expects and consumes a PHP keyword that PHP# does not have, such as `use`, and reports it in a PHP# file.
+    ///
+    /// The error stands, and the PHP construct still parses so the rest of the file does.
+    pub(crate) fn expect_php_keyword(&mut self, kind: TokenKind) -> Result<Keyword<'arena>, ParseError> {
+        let keyword = self.expect_keyword(kind)?;
+        if self.dialect.is_sharp() {
+            self.errors.push(ParseError::PhpSyntaxInSharp(kind, keyword.span));
+        }
+
+        Ok(keyword)
+    }
+
     /// Optionally consumes a keyword token if present.
     #[inline]
     pub(crate) fn maybe_expect_keyword(&mut self, kind: TokenKind) -> Result<Option<Keyword<'arena>>, ParseError> {

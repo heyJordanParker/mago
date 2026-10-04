@@ -31,13 +31,7 @@ where
         attributes: Sequence<'arena, AttributeList<'arena>>,
         modifiers: Sequence<'arena, Modifier<'arena>>,
     ) -> Result<Property<'arena>, ParseError> {
-        let var = self.maybe_expect_keyword(T!["var"])?;
-        if let Some(var) = &var
-            && self.dialect.is_sharp()
-        {
-            self.errors.push(ParseError::PhpSyntaxInSharp(T!["var"], var.span));
-        }
-
+        let var = if self.stream.is_at(T!["var"])? { Some(self.expect_php_keyword(T!["var"])?) } else { None };
         let hint = self.parse_optional_type_hint()?;
 
         self.parse_property_with_hint(attributes, modifiers, var, hint)

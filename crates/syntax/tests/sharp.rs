@@ -295,6 +295,49 @@ fn php_member_access_and_concatenating_assignment_are_parse_errors_that_name_the
 }
 
 #[test]
+fn a_php_operator_is_reported_once_where_it_is_consumed() {
+    let arena = LocalArena::new();
+    let program = parse(
+        &arena,
+        "src/Report.sharp",
+        "class Report\n{\n    void run()\n    {\n        a = b + a .= \"x\";\n    }\n}\n",
+    );
+
+    let messages: Vec<String> = program.errors.iter().map(ToString::to_string).collect();
+    assert_eq!(messages, ["`.=` is PHP syntax: in PHP# `.` is member access"]);
+}
+
+#[test]
+fn the_use_keyword_is_a_parse_error_in_every_form() {
+    for code in [
+        "use Calc;\n",
+        "class Report\n{\n    use Shared;\n}\n",
+        "class Report\n{\n    void run()\n    {\n        const total = function () use ($count) { return 1; };\n    }\n}\n",
+    ] {
+        let arena = LocalArena::new();
+        let program = parse(&arena, "src/Report.sharp", code);
+
+        let messages: Vec<String> = program.errors.iter().map(ToString::to_string).collect();
+        assert_eq!(messages, ["`use` is PHP syntax: PHP# imports a class with `import`"], "{code}");
+    }
+}
+
+#[test]
+fn a_qualified_name_is_a_parse_error_that_names_the_import() {
+    for code in [
+        "class Report\n{\n    int run()\n    {\n        return \\Lib\\Calc.make();\n    }\n}\n",
+        "class Report\n{\n    int run()\n    {\n        return Lib\\Calc.make();\n    }\n}\n",
+        "class Report\n{\n    void run(\\Lib\\Calc calc)\n    {\n    }\n}\n",
+    ] {
+        let arena = LocalArena::new();
+        let program = parse(&arena, "src/Report.sharp", code);
+
+        let messages: Vec<String> = program.errors.iter().map(ToString::to_string).collect();
+        assert_eq!(messages, ["A `\\` name is PHP syntax: add `import Lib.Calc;` and write `Calc`"], "{code}");
+    }
+}
+
+#[test]
 fn a_method_written_with_function_is_a_parse_error() {
     let arena = LocalArena::new();
     let program =

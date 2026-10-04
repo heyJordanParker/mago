@@ -1,5 +1,6 @@
 use mago_allocator::prelude::*;
 use mago_database::file::HasFileId;
+use mago_span::HasSpan;
 
 use crate::T;
 use crate::cst::cst::DottedIdentifier;
@@ -17,11 +18,20 @@ where
     pub(crate) fn parse_identifier(&mut self) -> Result<Identifier<'arena>, ParseError> {
         let token = self.stream.lookahead(0)?.ok_or_else(|| self.stream.unexpected(None, &[]))?;
 
-        Ok(match &token.kind {
+        let identifier = match &token.kind {
             T![QualifiedIdentifier] => Identifier::Qualified(self.parse_qualified_identifier()?),
             T![FullyQualifiedIdentifier] => Identifier::FullyQualified(self.parse_fully_qualified_identifier()?),
-            _ => Identifier::Local(self.parse_local_identifier()?),
-        })
+            _ => return Ok(Identifier::Local(self.parse_local_identifier()?)),
+        };
+
+        // PHP# writes a full name only in an `import` line. The error stands, and the name still parses so the rest
+        // of the file does.
+        if self.dialect.is_sharp() {
+            let name = String::from_utf8_lossy(identifier.value()).trim_start_matches('\\').replace('\\', ".");
+            self.errors.push(ParseError::QualifiedNameInSharp(name.into_boxed_str(), identifier.span()));
+        }
+
+        Ok(identifier)
     }
 
     /// Parses a PHP# name for a `namespace` or `import` line, such as `App.Tenant.Store`.

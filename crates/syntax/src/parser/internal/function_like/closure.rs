@@ -36,7 +36,7 @@ where
     }
 
     fn parse_closure_use_clause(&mut self) -> Result<ClosureUseClause<'arena>, ParseError> {
-        let r#use = self.expect_keyword(T!["use"])?;
+        let r#use = self.expect_php_keyword(T!["use"])?;
         let result =
             self.parse_comma_separated_sequence(T!["("], T![")"], |p| p.parse_closure_use_clause_variable())?;
 

@@ -20,7 +20,7 @@ where
 {
     pub(crate) fn parse_trait_use(&mut self) -> Result<TraitUse<'arena>, ParseError> {
         Ok(TraitUse {
-            r#use: self.expect_keyword(T!["use"])?,
+            r#use: self.expect_php_keyword(T!["use"])?,
             trait_names: {
                 let mut traits = self.new_vec();
                 let mut commas = self.new_vec();

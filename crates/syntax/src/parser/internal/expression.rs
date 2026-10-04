@@ -148,11 +148,6 @@ where
         precedence: Precedence,
     ) -> Result<&'arena Expression<'arena>, ParseError> {
         while let Some(next) = self.stream.lookahead(0)? {
-            // The error stands, and the PHP operator still parses so the rest of the file does.
-            if self.dialect.is_sharp() && matches!(next.kind, T!["->" | "?->" | "::" | ".="]) {
-                self.errors.push(ParseError::PhpSyntaxInSharp(next.kind, next.span_for(self.stream.file_id())));
-            }
-
             let kind = self.operator_kind(next.kind);
 
             if !matches!(precedence, Precedence::Instanceof | Precedence::New)
@@ -362,6 +357,19 @@ where
         }
     }
 
+    /// Consumes an operator, and reports it when PHP# does not have it, such as `->` where PHP# writes `.`.
+    ///
+    /// The error stands, and the PHP operator still parses so the rest of the file does.
+    fn consume_operator_span(&mut self) -> Result<Span, ParseError> {
+        let token = self.stream.consume()?;
+        let span = token.span_for(self.stream.file_id());
+        if self.dialect.is_sharp() && matches!(token.kind, T!["->" | "?->" | "::" | ".="]) {
+            self.errors.push(ParseError::PhpSyntaxInSharp(token.kind, span));
+        }
+
+        Ok(span)
+    }
+
     fn parse_postfix_expression(
         &mut self,
         lhs: &'arena Expression<'arena>,
@@ -415,7 +423,7 @@ where
                 }
             }
             T!["::"] => {
-                let double_colon = self.stream.consume_span()?;
+                let double_colon = self.consume_operator_span()?;
                 let selector = self.parse_classlike_member_selector()?;
                 let current = self.stream.lookahead(0)?.ok_or_else(|| self.stream.unexpected(None, &[]))?;
 
@@ -473,7 +481,7 @@ where
                 }
             }
             T!["->"] => {
-                let arrow = self.stream.consume_span()?;
+                let arrow = self.consume_operator_span()?;
                 let selector = self.parse_classlike_member_selector()?;
 
                 if Precedence::CallDim > precedence && matches!(self.stream.peek_kind(0)?, Some(T!["("])) {
@@ -499,7 +507,7 @@ where
                 }
             }
             T!["?->"] => {
-                let question_mark_arrow = self.stream.consume_span()?;
+                let question_mark_arrow = self.consume_operator_span()?;
                 let selector = self.parse_classlike_member_selector()?;
 
                 if Precedence::CallDim > precedence && matches!(self.stream.peek_kind(0)?, Some(T!["("])) {
@@ -686,7 +694,7 @@ where
                 return Ok(self.create_assignment_expression(lhs, operator, rhs));
             }
             T![".="] => {
-                let operator = AssignmentOperator::Concat(self.stream.consume_span()?);
+                let operator = AssignmentOperator::Concat(self.consume_operator_span()?);
                 let rhs = self.parse_expression_with_precedence(Precedence::Assignment)?;
 
                 return Ok(self.create_assignment_expression(lhs, operator, rhs));

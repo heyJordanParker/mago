@@ -50,6 +50,8 @@ pub enum ParseError {
     RecursionLimitExceeded(Span),
     /// PHP syntax written in a PHP# file, such as `->` where PHP# writes `.`.
     PhpSyntaxInSharp(TokenKind, Span),
+    /// A `\` name written in a PHP# file, such as `\Lib\Calc`, with the dotted name its `import` line takes.
+    QualifiedNameInSharp(Box<str>, Span),
 }
 
 impl HasFileId for SyntaxError {
@@ -71,7 +73,7 @@ impl HasFileId for ParseError {
             ParseError::UnexpectedToken(_, _, span) => span.file_id,
             ParseError::UnclosedLiteralString(_, span) => span.file_id,
             ParseError::RecursionLimitExceeded(span) => span.file_id,
-            ParseError::PhpSyntaxInSharp(_, span) => span.file_id,
+            ParseError::PhpSyntaxInSharp(_, span) | ParseError::QualifiedNameInSharp(_, span) => span.file_id,
         }
     }
 }
@@ -97,7 +99,7 @@ impl HasSpan for ParseError {
             ParseError::UnexpectedToken(_, _, span) => *span,
             ParseError::UnclosedLiteralString(_, span) => *span,
             ParseError::RecursionLimitExceeded(span) => *span,
-            ParseError::PhpSyntaxInSharp(_, span) => *span,
+            ParseError::PhpSyntaxInSharp(_, span) | ParseError::QualifiedNameInSharp(_, span) => *span,
         }
     }
 }
@@ -159,8 +161,14 @@ impl std::fmt::Display for ParseError {
                 T![".="] => "`.=` is PHP syntax: in PHP# `.` is member access".to_string(),
                 T!["function"] => "`function` is PHP syntax: a PHP# method starts with its return type".to_string(),
                 T!["$variable"] => "A `$` variable is PHP syntax: PHP# names have no `$`".to_string(),
+                T!["use"] => "`use` is PHP syntax: PHP# imports a class with `import`".to_string(),
                 kind => format!("`{kind}` is PHP syntax that PHP# does not have"),
             },
+            ParseError::QualifiedNameInSharp(name, _) => {
+                let short_name = name.rsplit('.').next().unwrap_or(name);
+
+                format!("A `\\` name is PHP syntax: add `import {name};` and write `{short_name}`")
+            }
         };
 
         write!(f, "{message}")
