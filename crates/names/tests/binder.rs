@@ -77,6 +77,17 @@ fn bare_names_bind_to_locals_this_classes_and_constants() {
     assert_eq!(binding(&names, CODE, "PHP_EOL", 0), Some(Binding::Constant));
 }
 
+#[test]
+fn a_typed_local_binds_like_let_or_const_and_its_type_resolves() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nimport App.Shared.Money;\n\nclass Report\n{\n    public int total()\n    {\n        Money? found = null;\n        const int base = 2;\n        found = null;\n        return base;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "found", 1), Some(local(CODE, "found", 0, LocalKind::Let)));
+    assert_eq!(binding(&names, CODE, "base", 1), Some(local(CODE, "base", 0, LocalKind::Const)));
+    assert_eq!(resolved(&names, CODE, "Money?", 0), b"App\\Shared\\Money");
+}
+
 fn span(code: &str, needle: &str, nth: usize) -> Span {
     let start = Position::new(offset(code, needle, nth));
     let end = Position::new(start.offset + u32::try_from(needle.len()).expect("length fits in u32"));
@@ -99,6 +110,41 @@ fn a_local_used_after_its_block_closes_binds_as_that_local_and_is_a_binding_erro
     assert_eq!(
         names.binding_errors(),
         [BindingError::OutOfScope { name: span(CODE, "inner", 2), local: declared(CODE, "inner", 0, LocalKind::Let) }]
+    );
+}
+
+#[test]
+fn a_for_counter_lives_until_its_loop_ends() {
+    const CODE: &str = "class Report\n{\n    public int run()\n    {\n        for (let step = 0; step < 3; step++) {\n            step;\n        }\n        return step;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    for nth in 1..=3 {
+        assert_eq!(binding(&names, CODE, "step", nth), Some(local(CODE, "step", 0, LocalKind::Let)), "`step` #{nth}");
+    }
+    assert_eq!(
+        names.binding_errors(),
+        [BindingError::OutOfScope { name: span(CODE, "step", 4), local: declared(CODE, "step", 0, LocalKind::Let) }]
+    );
+}
+
+#[test]
+fn for_of_loop_variables_live_until_their_loop_ends() {
+    const CODE: &str = "class Report\n{\n    public int run(array values)\n    {\n        for (const [key, entry] of values) {\n            key;\n            entry;\n        }\n        for (let item of values) {\n            item;\n        }\n        return entry;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "key", 1), Some(local(CODE, "key", 0, LocalKind::Const)));
+    assert_eq!(binding(&names, CODE, "entry", 1), Some(local(CODE, "entry", 0, LocalKind::Const)));
+    assert_eq!(binding(&names, CODE, "item", 1), Some(local(CODE, "item", 0, LocalKind::Let)));
+    assert!(binding(&names, CODE, "values", 1).is_some());
+    assert_eq!(binding(&names, CODE, "values", 1), binding(&names, CODE, "values", 2));
+    assert_eq!(
+        names.binding_errors(),
+        [BindingError::OutOfScope {
+            name: span(CODE, "entry", 2),
+            local: declared(CODE, "entry", 0, LocalKind::Const)
+        }]
     );
 }
 
@@ -144,6 +190,17 @@ fn a_name_before_a_partial_method_application_is_a_class() {
 
     assert_eq!(binding(&names, CODE, "Calc", 0), Some(Binding::Class));
     assert_eq!(resolved(&names, CODE, "Calc", 0), b"Calc");
+}
+
+#[test]
+fn a_name_before_null_safe_access_is_a_class_unless_it_is_a_local() {
+    const CODE: &str = "class Report\n{\n    public void run(Calc calc)\n    {\n        Calc?.make();\n        Money?.rate;\n        calc?.add(1);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "Calc?", 0), Some(Binding::Class));
+    assert_eq!(binding(&names, CODE, "Money?", 0), Some(Binding::Class));
+    assert_eq!(binding(&names, CODE, "calc?", 0), Some(local(CODE, "calc", 0, LocalKind::Parameter)));
 }
 
 #[test]

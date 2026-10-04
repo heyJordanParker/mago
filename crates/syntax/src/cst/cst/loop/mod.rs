@@ -7,6 +7,7 @@ use crate::cst::cst::terminator::Terminator;
 
 pub mod do_while;
 pub mod r#for;
+pub mod for_of;
 pub mod foreach;
 pub mod r#while;
 

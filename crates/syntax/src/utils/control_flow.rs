@@ -117,6 +117,10 @@ fn statement_control_flows<'arena>(statement: &'arena Statement<'arena>) -> Vec<
             }
         }
         Statement::For(r#for) => {
+            if let Some(declaration) = &r#for.declaration {
+                controls.extend(find_control_flows_in_expression(declaration.value));
+            }
+
             for initialization in &r#for.initializations {
                 controls.extend(find_control_flows_in_expression(initialization));
             }
@@ -139,6 +143,10 @@ fn statement_control_flows<'arena>(statement: &'arena Statement<'arena>) -> Vec<
                     }
                 }
             }
+        }
+        Statement::ForOf(for_of) => {
+            controls.extend(find_control_flows_in_expression(for_of.expression));
+            controls.extend(find_control_flows_in_statement(for_of.body));
         }
         Statement::While(r#while) => {
             controls.extend(find_control_flows_in_expression(r#while.condition));

@@ -213,6 +213,49 @@ fn a_parameter_with_a_dnf_type_parses() {
 }
 
 #[test]
+fn a_question_mark_after_a_type_makes_it_nullable() {
+    const CODE: &str = "class Report\n{\n    public Calc? find(int? id, string? label = null) { return null; }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(ClassLikeMember::Method(method)) = class_members(program).first() else {
+        panic!("expected a method, got {:#?}", class_members(program));
+    };
+    let hints = std::iter::once(&method.return_type_hint.as_ref().expect("a return type").hint)
+        .chain(method.parameter_list.parameters.iter().map(|parameter| parameter.hint.as_ref().expect("a type")));
+    let nullable: Vec<(&str, &str, &str)> = hints
+        .map(|hint| {
+            let Hint::Nullable(nullable) = hint else {
+                panic!("expected a nullable type, got {hint:#?}");
+            };
+
+            (source(CODE, hint), source(CODE, nullable.hint), source(CODE, &nullable.question_mark))
+        })
+        .collect();
+
+    assert_eq!(nullable, [("Calc?", "Calc", "?"), ("int?", "int", "?"), ("string?", "string", "?")]);
+}
+
+#[test]
+fn a_question_mark_before_a_type_is_a_php_syntax_error_that_names_the_suffix() {
+    const CODE: &str = "class Report\n{\n    public ?int find(?Calc calc) { return null; }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    let messages: Vec<String> = program.errors.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        messages,
+        [
+            "`?` before a type is PHP syntax: PHP# writes it after the type, as in `int?`",
+            "`?` before a type is PHP syntax: PHP# writes it after the type, as in `int?`",
+        ]
+    );
+    let spans: Vec<&str> = program.errors.iter().map(|error| source(CODE, error)).collect();
+    assert_eq!(spans, ["?", "?"]);
+}
+
+#[test]
 fn a_dollar_property_is_a_php_syntax_error() {
     const CODE: &str = "class Report\n{\n    private int $count = 0;\n}\n";
     let arena = LocalArena::new();
@@ -265,14 +308,154 @@ fn let_and_const_declare_locals_with_an_initializer() {
     let [Statement::LocalDeclaration(label), Statement::LocalDeclaration(base)] = method_body(program) else {
         panic!("expected two local declarations, got {:#?}", method_body(program));
     };
-    assert_eq!(label.keyword.value, b"let");
+    assert_eq!(label.keyword.expect("a keyword").value, b"let");
+    assert!(label.hint.is_none());
     assert!(!label.is_const());
     assert_eq!(label.name.value, b"label");
     assert!(matches!(label.value, Expression::Literal(Literal::String(_))));
     assert_eq!(source(CODE, label), "let label = \"one\";");
-    assert_eq!(base.keyword.value, b"const");
+    assert_eq!(base.keyword.expect("a keyword").value, b"const");
     assert!(base.is_const());
     assert_eq!(base.name.value, b"base");
+}
+
+#[test]
+fn a_local_can_be_declared_with_its_type_written() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        Calc? found = null;\n        int total = 1;\n        const int base = 2;\n        const Calc? none = null;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let locals: Vec<(&str, &str, bool, &str)> = method_body(program)
+        .iter()
+        .map(|statement| {
+            let Statement::LocalDeclaration(local) = statement else {
+                panic!("expected a local declaration, got {statement:#?}");
+            };
+
+            (
+                source(CODE, local),
+                source(CODE, local.hint.as_ref().expect("a type")),
+                local.is_const(),
+                source(CODE, &local.name),
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        locals,
+        [
+            ("Calc? found = null;", "Calc?", false, "found"),
+            ("int total = 1;", "int", false, "total"),
+            ("const int base = 2;", "int", true, "base"),
+            ("const Calc? none = null;", "Calc?", true, "none"),
+        ]
+    );
+}
+
+#[test]
+fn a_spaced_question_mark_after_a_name_is_not_a_typed_local() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        found ? total = 1 : 2;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [statement] = method_body(program) else {
+        panic!("expected one statement, got {:#?}", method_body(program));
+    };
+    assert!(matches!(expression(statement), Expression::Conditional(_)), "{statement:#?}");
+}
+
+#[test]
+fn a_for_loop_declares_its_counter_with_let_or_const() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        for (let i = 0; i < 3; i++) {\n        }\n        for (const j = 0; ; ) {\n        }\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::For(counted), Statement::For(endless)] = method_body(program) else {
+        panic!("expected two for loops, got {:#?}", method_body(program));
+    };
+
+    let declaration = counted.declaration.as_ref().expect("a declaration");
+    assert_eq!(declaration.name.value, b"i");
+    assert!(!declaration.is_const());
+    assert_eq!(source(CODE, declaration), "let i = 0;");
+    assert_eq!(source(CODE, &counted.initializations_semicolon), ";");
+    assert!(counted.initializations.is_empty());
+    assert_eq!(counted.conditions.len(), 1);
+    assert_eq!(counted.increments.len(), 1);
+    assert_eq!(source(CODE, counted), "for (let i = 0; i < 3; i++) {\n        }");
+
+    assert!(endless.declaration.as_ref().is_some_and(LocalDeclaration::is_const));
+    assert!(endless.conditions.is_empty());
+}
+
+#[test]
+fn for_of_declares_its_loop_variable_or_key_and_value() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        for (const line of lines) {\n        }\n        for (let [key, plan] of this.plans()) {\n        }\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::ForOf(values), Statement::ForOf(entries)] = method_body(program) else {
+        panic!("expected two for … of loops, got {:#?}", method_body(program));
+    };
+
+    assert!(values.is_const());
+    let ForOfTarget::Value(line) = &values.target else {
+        panic!("expected one loop variable, got {:#?}", values.target);
+    };
+    assert_eq!(line.value, b"line");
+    assert_eq!(bare_name(values.expression), b"lines");
+    assert_eq!(source(CODE, &values.of), "of");
+    assert_eq!(source(CODE, values), "for (const line of lines) {\n        }");
+
+    assert!(!entries.is_const());
+    let ForOfTarget::KeyValue(pair) = &entries.target else {
+        panic!("expected a key and a value, got {:#?}", entries.target);
+    };
+    assert_eq!((pair.key.value, pair.value.value), (&b"key"[..], &b"plan"[..]));
+    assert_eq!(source(CODE, &entries.target), "[key, plan]");
+    assert!(matches!(entries.expression, Expression::Call(Call::Method(_))));
+}
+
+#[test]
+fn for_in_is_a_parse_error_that_names_of() {
+    let arena = LocalArena::new();
+    let program = parse(
+        &arena,
+        "src/Report.sharp",
+        "class Report\n{\n    void run()\n    {\n        for (const line in lines) {\n        }\n    }\n}\n",
+    );
+
+    let messages: Vec<String> = program.errors.iter().map(ToString::to_string).collect();
+    assert_eq!(messages, ["PHP# loops over a collection with `of`, as in `for (const line of lines)`."]);
+}
+
+#[test]
+fn foreach_is_a_php_syntax_error() {
+    let arena = LocalArena::new();
+    let program = parse(
+        &arena,
+        "src/Report.sharp",
+        "class Report\n{\n    void run()\n    {\n        foreach (lines as line) {\n        }\n    }\n}\n",
+    );
+
+    let messages: Vec<String> = program.errors.iter().map(ToString::to_string).collect();
+    assert_eq!(messages, ["`foreach` is PHP syntax: PHP# loops over a collection with `for … of`"]);
+}
+
+#[test]
+fn a_php_for_loop_has_no_declaration() {
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.php", "<?php for ($i = 0; $i < 3; $i++) {}");
+
+    let Some(Statement::For(r#for)) = program.statements.get(1) else {
+        panic!("expected a for loop, got {:#?}", program.statements);
+    };
+    assert!(r#for.declaration.is_none());
+    assert_eq!(r#for.initializations.len(), 1);
 }
 
 #[test]
@@ -312,10 +495,48 @@ fn dot_reads_as_member_access_whatever_the_name_before_it() {
 }
 
 #[test]
+fn question_mark_dot_reads_as_null_safe_member_access() {
+    const CODE: &str =
+        "class Report\n{\n    void run()\n    {\n        calc?.add(1);\n        this?.total.next;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [add, next] = method_body(program) else {
+        panic!("expected two statements, got {:#?}", method_body(program));
+    };
+
+    let Expression::Call(Call::NullSafeMethod(add)) = expression(add) else {
+        panic!("expected `calc?.add(1)` to be a null-safe method call, got {add:#?}");
+    };
+    assert_eq!(bare_name(add.object), b"calc");
+    assert_eq!(source(CODE, &add.question_mark_arrow), "?.");
+    assert_eq!(source(CODE, add), "calc?.add(1)");
+
+    let Expression::Access(Access::Property(next)) = expression(next) else {
+        panic!("expected `this?.total.next` to read `next`, got {next:#?}");
+    };
+    let Expression::Access(Access::NullSafeProperty(total)) = next.object else {
+        panic!("expected `this?.total` to be a null-safe property access, got {:#?}", next.object);
+    };
+    assert_eq!(bare_name(total.object), b"this");
+    assert_eq!(source(CODE, total), "this?.total");
+}
+
+#[test]
+fn a_question_mark_apart_from_the_dot_is_not_null_safe_access() {
+    let arena = LocalArena::new();
+    let program =
+        parse(&arena, "src/Report.sharp", "class Report\n{\n    void run()\n    {\n        calc? .add(1);\n    }\n}\n");
+
+    assert!(!program.errors.is_empty());
+}
+
+#[test]
 fn php_member_access_and_concatenating_assignment_are_parse_errors_that_name_the_dot() {
     for (code, message) in [
         ("calc->add()", "`->` is PHP syntax: PHP# writes member access with `.`"),
-        ("calc?->add()", "`?->` is PHP syntax: PHP# writes member access with `.`"),
+        ("calc?->add()", "`?->` is PHP syntax: PHP# writes null-safe member access with `?.`"),
         ("Calc::make()", "`::` is PHP syntax: PHP# writes static access with `.`"),
         ("label .= \"x\"", "`.=` is PHP syntax: in PHP# `.` is member access"),
     ] {

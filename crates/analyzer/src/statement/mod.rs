@@ -1,7 +1,14 @@
+use std::rc::Rc;
+
 use mago_allocator::Arena;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
+use mago_codex::scanner::get_union_from_hint;
 use mago_codex::ttype::atomic::callable::TCallable;
 use mago_codex::ttype::cast::cast_atomic_to_callable;
+use mago_codex::ttype::expander;
+use mago_codex::ttype::expander::TypeExpansionOptions;
+use mago_codex::ttype::union::populate_union_type;
+use mago_names::binding::php_variable_name;
 use mago_names::kind::NameKind;
 use mago_names::scope::NamespaceScope;
 use mago_names::scope::php_name;
@@ -12,8 +19,15 @@ use mago_syntax::cst::Call;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::ExpressionStatement;
+use mago_syntax::cst::ForOfTarget;
+use mago_syntax::cst::Foreach;
+use mago_syntax::cst::ForeachBody;
+use mago_syntax::cst::ForeachKeyValueTarget;
+use mago_syntax::cst::ForeachTarget;
+use mago_syntax::cst::ForeachValueTarget;
 use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::Identifier;
+use mago_syntax::cst::LocalIdentifier;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::Statement;
 use mago_syntax_core::stack::ensure_sufficient_stack;
@@ -188,6 +202,39 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Statement<'arena> {
                 }
                 Statement::Expression(expression) => expression.expression.analyze(context, block_context, artifacts),
                 Statement::LocalDeclaration(local_declaration) => {
+                    // A written type binds every value the local takes, and is its type after the declaration, as a
+                    // `@var` tag on the PHP assignment would make it.
+                    let variable_id = php_variable_name(local_declaration.name.value);
+                    let local_type = local_declaration.hint.as_ref().map(|hint| {
+                        let mut local_type = get_union_from_hint(
+                            hint,
+                            block_context.scope.get_class_like_name(),
+                            context.resolved_names,
+                        );
+                        populate_union_type(
+                            &mut local_type,
+                            &context.codebase.symbols,
+                            block_context.scope.get_reference_source().as_ref(),
+                            &mut artifacts.symbol_references,
+                            true,
+                        );
+                        expander::expand_union(
+                            context.codebase,
+                            &mut local_type,
+                            &TypeExpansionOptions {
+                                self_class: block_context.scope.get_class_like_name(),
+                                ..Default::default()
+                            },
+                        );
+
+                        (Rc::new(local_type), hint.span())
+                    });
+
+                    match &local_type {
+                        Some(local_type) => block_context.local_types.insert(variable_id, local_type.clone()),
+                        None => block_context.local_types.remove(&variable_id),
+                    };
+
                     // A PHP# local declaration runs as the PHP assignment of its value to the variable it declares.
                     let name = context.arena.alloc(Expression::ConstantAccess(ConstantAccess {
                         name: Identifier::Local(local_declaration.name),
@@ -202,11 +249,46 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Statement<'arena> {
                         None,
                         Some(local_declaration.value),
                         None,
-                    )
+                    )?;
+
+                    if let Some((local_type, _)) = local_type {
+                        block_context.locals.insert(variable_id, local_type);
+                    }
+
+                    Ok(())
                 }
                 Statement::Try(r#try) => r#try.analyze(context, block_context, artifacts),
                 Statement::Foreach(foreach) => foreach.analyze(context, block_context, artifacts),
                 Statement::For(r#for) => r#for.analyze(context, block_context, artifacts),
+                Statement::ForOf(for_of) => {
+                    // A PHP# `for … of` runs as the PHP `foreach` over its collection, into the variables it declares.
+                    let variable = |name: LocalIdentifier<'arena>| -> &'arena Expression<'arena> {
+                        context
+                            .arena
+                            .alloc(Expression::ConstantAccess(ConstantAccess { name: Identifier::Local(name) }))
+                    };
+                    let target = match &for_of.target {
+                        ForOfTarget::Value(value) => {
+                            ForeachTarget::Value(ForeachValueTarget { value: variable(*value) })
+                        }
+                        ForOfTarget::KeyValue(pair) => ForeachTarget::KeyValue(ForeachKeyValueTarget {
+                            key: variable(pair.key),
+                            double_arrow: pair.comma,
+                            value: variable(pair.value),
+                        }),
+                    };
+                    let foreach = context.arena.alloc(Foreach {
+                        foreach: for_of.r#for,
+                        left_parenthesis: for_of.left_parenthesis,
+                        expression: for_of.expression,
+                        r#as: for_of.of,
+                        target,
+                        right_parenthesis: for_of.right_parenthesis,
+                        body: ForeachBody::Statement(for_of.body),
+                    });
+
+                    foreach.analyze(context, block_context, artifacts)
+                }
                 Statement::While(r#while) => r#while.analyze(context, block_context, artifacts),
                 Statement::DoWhile(do_while) => do_while.analyze(context, block_context, artifacts),
                 Statement::Continue(r#continue) => r#continue.analyze(context, block_context, artifacts),

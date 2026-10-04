@@ -57,6 +57,8 @@ pub enum ParseError {
     UntypedParameterInSharp(Span),
     /// A PHP# statement or expression nested more than [`MAX_RECURSION_DEPTH`] levels deep, at the first one past it.
     NestingTooDeepInSharp(Span),
+    /// TypeScript's `in` written in a PHP# `for … of` loop, at the `in`.
+    ForInInSharp(Span),
 }
 
 impl HasFileId for SyntaxError {
@@ -81,7 +83,8 @@ impl HasFileId for ParseError {
             ParseError::PhpSyntaxInSharp(_, span)
             | ParseError::QualifiedNameInSharp(_, span)
             | ParseError::UntypedParameterInSharp(span)
-            | ParseError::NestingTooDeepInSharp(span) => span.file_id,
+            | ParseError::NestingTooDeepInSharp(span)
+            | ParseError::ForInInSharp(span) => span.file_id,
         }
     }
 }
@@ -110,7 +113,8 @@ impl HasSpan for ParseError {
             ParseError::PhpSyntaxInSharp(_, span)
             | ParseError::QualifiedNameInSharp(_, span)
             | ParseError::UntypedParameterInSharp(span)
-            | ParseError::NestingTooDeepInSharp(span) => *span,
+            | ParseError::NestingTooDeepInSharp(span)
+            | ParseError::ForInInSharp(span) => *span,
         }
     }
 }
@@ -167,12 +171,14 @@ impl std::fmt::Display for ParseError {
             ParseError::RecursionLimitExceeded(_) => "Maximum recursion depth exceeded".to_string(),
             ParseError::PhpSyntaxInSharp(kind, _) => match kind {
                 T!["->"] => "`->` is PHP syntax: PHP# writes member access with `.`".to_string(),
-                T!["?->"] => "`?->` is PHP syntax: PHP# writes member access with `.`".to_string(),
+                T!["?->"] => "`?->` is PHP syntax: PHP# writes null-safe member access with `?.`".to_string(),
+                T!["?"] => "`?` before a type is PHP syntax: PHP# writes it after the type, as in `int?`".to_string(),
                 T!["::"] => "`::` is PHP syntax: PHP# writes static access with `.`".to_string(),
                 T![".="] => "`.=` is PHP syntax: in PHP# `.` is member access".to_string(),
                 T!["function"] => "`function` is PHP syntax: a PHP# method starts with its return type".to_string(),
                 T!["$variable"] => "A `$` variable is PHP syntax: PHP# names have no `$`".to_string(),
                 T!["use"] => "`use` is PHP syntax: PHP# imports a class with `import`".to_string(),
+                T!["foreach"] => "`foreach` is PHP syntax: PHP# loops over a collection with `for … of`".to_string(),
                 kind => format!("`{kind}` is PHP syntax that PHP# does not have"),
             },
             ParseError::QualifiedNameInSharp(name, _) => {
@@ -183,6 +189,9 @@ impl std::fmt::Display for ParseError {
             ParseError::UntypedParameterInSharp(_) => "A PHP# parameter needs a type, as in `int extra`.".to_string(),
             ParseError::NestingTooDeepInSharp(_) => {
                 format!("PHP# nests statements and expressions at most {MAX_RECURSION_DEPTH} levels deep.")
+            }
+            ParseError::ForInInSharp(_) => {
+                "PHP# loops over a collection with `of`, as in `for (const line of lines)`.".to_string()
             }
         };
 

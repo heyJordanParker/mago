@@ -7,6 +7,7 @@ use mago_allocator::prelude::*;
 
 pub mod do_while;
 pub mod r#for;
+pub mod for_of;
 pub mod foreach;
 pub mod r#while;
 

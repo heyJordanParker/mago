@@ -44,6 +44,7 @@ use crate::parser::Parser;
 use crate::token::Associativity;
 use crate::token::GetPrecedence;
 use crate::token::Precedence;
+use crate::token::Token;
 use crate::token::TokenKind;
 
 impl<'arena, A> Parser<'_, 'arena, A>
@@ -149,7 +150,7 @@ where
         precedence: Precedence,
     ) -> Result<&'arena Expression<'arena>, ParseError> {
         while let Some(next) = self.stream.lookahead(0)? {
-            let kind = self.operator_kind(next.kind);
+            let kind = self.operator_kind(next)?;
 
             if !matches!(precedence, Precedence::Instanceof | Precedence::New)
                 && !matches!(kind, T!["(" | "::"])
@@ -348,22 +349,36 @@ where
         })
     }
 
-    /// Returns the operator a token stands for in the current dialect.
+    /// Returns the operator the next token stands for in the current dialect.
     ///
-    /// In PHP#, `.` is member access, which PHP writes `->`.
-    const fn operator_kind(&self, kind: TokenKind) -> TokenKind {
-        match (self.dialect, kind) {
+    /// In PHP#, `.` is member access, which PHP writes `->`, and `?` written right before `.` is null-safe member
+    /// access, which PHP writes `?->`.
+    fn operator_kind(&mut self, token: Token<'_>) -> Result<TokenKind, ParseError> {
+        Ok(match (self.dialect, token.kind) {
             (Dialect::Sharp, T!["."]) => T!["->"],
-            _ => kind,
-        }
+            (Dialect::Sharp, T!["?"])
+                if self
+                    .stream
+                    .lookahead(1)?
+                    .is_some_and(|next| next.kind == T!["."] && next.start.offset == token.start.offset + 1) =>
+            {
+                T!["?->"]
+            }
+            _ => token.kind,
+        })
     }
 
     /// Consumes an operator, and reports it when PHP# does not have it, such as `->` where PHP# writes `.`.
     ///
-    /// The error stands, and the PHP operator still parses so the rest of the file does.
+    /// PHP#'s `?.` is two tokens, consumed together. The error stands, and the PHP operator still parses so the
+    /// rest of the file does.
     fn consume_operator_span(&mut self) -> Result<Span, ParseError> {
         let token = self.stream.consume()?;
         let span = token.span_for(self.stream.file_id());
+        if self.dialect.is_sharp() && token.kind == T!["?"] {
+            return Ok(span.join(self.stream.eat_span(T!["."])?));
+        }
+
         if self.dialect.is_sharp() && matches!(token.kind, T!["->" | "?->" | "::" | ".="]) {
             self.errors.push(ParseError::PhpSyntaxInSharp(token.kind, span));
         }

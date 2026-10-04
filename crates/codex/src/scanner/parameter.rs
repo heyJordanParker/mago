@@ -23,7 +23,7 @@ use crate::scanner::version_claim::evaluate_version_attributes;
 pub fn scan_function_like_parameter<'arena, A>(
     parameter: &'arena FunctionLikeParameter<'arena>,
     classname: Option<Word>,
-    context: &mut Context<'_, 'arena, A>,
+    context: &Context<'_, 'arena, A>,
     scope: &NamespaceScope,
 ) -> Option<FunctionLikeParameterMetadata>
 where
@@ -36,7 +36,7 @@ where
 pub fn scan_function_like_parameter_with_constants<'arena, A>(
     parameter: &'arena FunctionLikeParameter<'arena>,
     classname: Option<Word>,
-    context: &mut Context<'_, 'arena, A>,
+    context: &Context<'_, 'arena, A>,
     scope: &NamespaceScope,
     constants: Option<&WordMap<ConstantMetadata>>,
 ) -> Option<FunctionLikeParameterMetadata>

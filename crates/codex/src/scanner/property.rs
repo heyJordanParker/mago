@@ -42,7 +42,7 @@ pub fn scan_promoted_property<'arena, A>(
     class_like_metadata: &mut ClassLikeMetadata,
     classname: Word,
     type_context: &TypeResolutionContext,
-    context: &mut Context<'_, 'arena, A>,
+    context: &Context<'_, 'arena, A>,
     scope: &NamespaceScope,
 ) -> PropertyMetadata
 where
@@ -161,7 +161,7 @@ pub fn scan_properties<'arena, A>(
     class_like_metadata: &mut ClassLikeMetadata,
     classname: Word,
     type_context: &TypeResolutionContext,
-    context: &mut Context<'_, 'arena, A>,
+    context: &Context<'_, 'arena, A>,
     scope: &NamespaceScope,
 ) -> Vec<PropertyMetadata>
 where
@@ -360,7 +360,7 @@ where
 fn scan_property_hook<'arena, A>(
     hook: &'arena PropertyHook<'arena>,
     property_metadata: &PropertyMetadata,
-    context: &mut Context<'_, 'arena, A>,
+    context: &Context<'_, 'arena, A>,
     scope: &NamespaceScope,
     classname: Option<Word>,
 ) -> PropertyHookMetadata
@@ -487,7 +487,7 @@ where
 fn scan_hook_parameter<'arena, A>(
     param: &'arena FunctionLikeParameter<'arena>,
     property_metadata: &PropertyMetadata,
-    context: &mut Context<'_, 'arena, A>,
+    context: &Context<'_, 'arena, A>,
 ) -> FunctionLikeParameterMetadata
 where
     A: Arena,

@@ -186,6 +186,9 @@ enum NodeKind: string
     case For = 'For';
     case ForBody = 'ForBody';
     case ForColonDelimitedBody = 'ForColonDelimitedBody';
+    case ForOf = 'ForOf';
+    case ForOfKeyValueTarget = 'ForOfKeyValueTarget';
+    case ForOfTarget = 'ForOfTarget';
     case While = 'While';
     case WhileBody = 'WhileBody';
     case WhileColonDelimitedBody = 'WhileColonDelimitedBody';
