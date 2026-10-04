@@ -249,19 +249,19 @@ fn a_union_of_100_000_types_returns_the_depth_error_and_no_nodes() {
     assert_eq!(lowered.unit().node_count, 0);
 }
 
-/// A 509-term sum or `??` chain nests its innermost term 512 levels deep, the most the checker allows, and so does a
-/// null-safe call chain of 509 calls. The bridge lowers each on a thread whose stack is far smaller than the recursion
-/// needs, as a PHP thread or fiber may be.
+/// A 509-term sum or `??` chain in a method nests its innermost term 512 levels deep, the most the checker allows, and
+/// so do a null-safe call chain of 509 calls and a 510-term sum as a field's initial value. The bridge lowers each on a
+/// thread whose stack is far smaller than the recursion needs, as a PHP thread or fiber may be.
 #[test]
 fn the_deepest_file_the_checker_accepts_lowers_on_a_small_stack() {
-    let bodies = [
-        format!("        return {};\n", vec!["extra"; 509].join(" + ")),
-        format!("        return {};\n", vec!["extra"; 509].join(" ?? ")),
-        format!("        this{};\n        return extra;\n", "?.total(extra)".repeat(508)),
+    let codes = [
+        method(&format!("        return {};\n", vec!["extra"; 509].join(" + "))),
+        method(&format!("        return {};\n", vec!["extra"; 509].join(" ?? "))),
+        method(&format!("        this{};\n        return extra;\n", "?.total(extra)".repeat(508))),
+        format!("namespace App.Tenant;\n\nclass Report\n{{\n    private int total = {};\n}}\n", vec!["1"; 510].join(" + ")),
     ];
 
-    for body in bodies {
-        let code = method(&body);
+    for code in codes {
         let node_count = std::thread::Builder::new()
             .stack_size(128 * 1024)
             .spawn(move || {

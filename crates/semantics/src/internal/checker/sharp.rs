@@ -677,9 +677,7 @@ fn report_this_in_initial_value(node: Node<'_, '_>, context: &mut Context<'_, '_
         );
     }
 
-    for child in node.children() {
-        report_this_in_initial_value(child, context);
-    }
+    ensure_sufficient_stack(|| node.visit_children(|child| report_this_in_initial_value(child, context)));
 }
 
 /// How far a visibility modifier reaches: `private` least, then `protected`, then `public`.
