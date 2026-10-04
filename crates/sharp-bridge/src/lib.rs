@@ -277,7 +277,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_panic_inside_lowering_returns_one_compile_error_without_unwinding() {
+    fn catch_panic_returns_one_compile_error() {
         let unit = catch_panic(|| panic!("forced"));
 
         assert_eq!(unit.abi.node_count, 0);
