@@ -156,6 +156,7 @@ enum NodeKind: string
     case Label = 'Label';
     case HaltCompiler = 'HaltCompiler';
     case FullyQualifiedIdentifier = 'FullyQualifiedIdentifier';
+    case DottedIdentifier = 'DottedIdentifier';
     case Identifier = 'Identifier';
     case LocalIdentifier = 'LocalIdentifier';
     case QualifiedIdentifier = 'QualifiedIdentifier';
@@ -233,6 +234,7 @@ enum NodeKind: string
     case ParenthesizedHint = 'ParenthesizedHint';
     case UnionHint = 'UnionHint';
     case Unset = 'Unset';
+    case LocalDeclaration = 'LocalDeclaration';
     case DirectVariable = 'DirectVariable';
     case IndirectVariable = 'IndirectVariable';
     case NestedVariable = 'NestedVariable';
