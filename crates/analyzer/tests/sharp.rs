@@ -24,7 +24,6 @@ use mago_codex::populator::populate_codebase;
 use mago_codex::scanner::scan_program;
 use mago_database::DatabaseReader;
 use mago_database::file::File;
-use mago_names::binding::Binding;
 use mago_names::resolver::NameResolver;
 use mago_prelude::Prelude;
 use mago_span::HasSpan;
@@ -404,11 +403,7 @@ impl ExpressionHook for CallKindRecorder {
         if let Expression::Call(Call::Method(call)) = expression
             && let ClassLikeMemberSelector::Identifier(method) = &call.method
         {
-            let is_class = matches!(
-                call.object,
-                Expression::ConstantAccess(access) if context.resolved_names().binding(&access.name) == Some(Binding::Class)
-            );
-            let kind = if is_class { "static" } else { "instance" };
+            let kind = if context.is_static_method_call(call) { "static" } else { "instance" };
             self.record(format!("{} {kind}", String::from_utf8_lossy(method.value)));
         }
 

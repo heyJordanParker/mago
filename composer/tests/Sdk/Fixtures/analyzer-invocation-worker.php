@@ -833,9 +833,16 @@ final class InvocationClassInitializerProvider implements ClassInitializerProvid
  */
 final class InvocationCallKindHook implements NodeAnalysisHook
 {
+    /**
+     * @param non-empty-list<NodeKind> $targets
+     */
+    public function __construct(
+        private readonly array $targets,
+    ) {}
+
     public function getTargets(): array
     {
-        return [NodeKind::MethodCall, NodeKind::StaticMethodCall];
+        return $this->targets;
     }
 
     public function getRequirements(): array
@@ -875,10 +882,13 @@ final class InvocationCallKindHook implements NodeAnalysisHook
  */
 final class InvocationPlugin implements IssueFilterHook, Plugin
 {
+    /**
+     * @param list<NodeKind> $callKindTargets the node kinds of the call-kind hook, or none to leave it out
+     */
     public function __construct(
         private readonly bool $registerMethodProvider,
         private readonly bool $registerIssueFilter,
-        private readonly bool $registerCallKindHook,
+        private readonly array $callKindTargets,
     ) {}
 
     public function getDefinition(): PluginDefinition
@@ -904,8 +914,8 @@ final class InvocationPlugin implements IssueFilterHook, Plugin
         if ($this->registerIssueFilter) {
             $registry->registerIssueFilterHook($this);
         }
-        if ($this->registerCallKindHook) {
-            $registry->registerNodeAnalysisHook(new InvocationCallKindHook());
+        if ($this->callKindTargets !== []) {
+            $registry->registerNodeAnalysisHook(new InvocationCallKindHook($this->callKindTargets));
         }
     }
 
@@ -941,11 +951,15 @@ final class InvocationPlugin implements IssueFilterHook, Plugin
 
 $registerMethodProvider = getenv('MAGO_INVOCATION_FUNCTION_ONLY') !== '1';
 $registerIssueFilter = getenv('MAGO_INVOCATION_ISSUE_FILTER') === '1';
-$registerCallKindHook = getenv('MAGO_INVOCATION_CALL_KINDS') === '1';
+$callKindTargets = match (true) {
+    getenv('MAGO_INVOCATION_CALL_KINDS') === '1' => [NodeKind::MethodCall, NodeKind::StaticMethodCall],
+    getenv('MAGO_INVOCATION_STATIC_CALL_KINDS') === '1' => [NodeKind::StaticMethodCall],
+    default => [],
+};
 
 (new Worker(new Extension(
     identifier: 'mago/invocation-proof',
     name: 'Mago invocation proof',
     version: '1.0.0',
-    analyzerPlugins: [new InvocationPlugin($registerMethodProvider, $registerIssueFilter, $registerCallKindHook)],
+    analyzerPlugins: [new InvocationPlugin($registerMethodProvider, $registerIssueFilter, $callKindTargets)],
 )))->run();

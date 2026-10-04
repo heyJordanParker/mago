@@ -21,6 +21,7 @@ use mago_span::Span;
 use mago_syntax::cst::Argument;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
+use mago_syntax::cst::MethodCall;
 use mago_syntax::cst::PartialApplication;
 use mago_syntax::cst::PartialArgument;
 use mago_word::Word;
@@ -33,6 +34,7 @@ use crate::context::block::BlockContext;
 use crate::invocation::Invocation;
 use crate::invocation::InvocationArgument;
 use crate::invocation::InvocationArgumentsSource;
+use crate::utils::expression::is_bound_class;
 
 pub struct ReportedIssue {
     pub code: IssueCode,
@@ -259,6 +261,14 @@ impl<'ctx, 'block> HookContext<'ctx, 'block> {
     #[inline]
     pub fn resolved_names(&self) -> &'ctx ResolvedNames<'ctx> {
         self.resolved_names
+    }
+
+    /// Returns true when a method call is a PHP# static call, such as `Calc.make()`, whose object is a bare name
+    /// bound to a class. A PHP static call, `Calc::make()`, is a `StaticMethodCall` instead.
+    #[inline]
+    #[must_use]
+    pub fn is_static_method_call(&self, call: &MethodCall<'_>) -> bool {
+        is_bound_class(call.object, self.resolved_names)
     }
 
     /// Get the type of an expression.
