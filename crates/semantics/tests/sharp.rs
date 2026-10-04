@@ -57,6 +57,30 @@ fn reassigning_a_const_local_is_an_error() {
 }
 
 #[test]
+fn reassigning_a_const_local_spelled_in_capitals_is_an_error() {
+    let code = leak(method("        CONST base = 2;\n        base = 3;\n        return base;\n"));
+
+    assert_eq!(issues(code), ["8:9 Cannot assign to `base`: it is declared with `const`."]);
+}
+
+#[test]
+fn incrementing_or_decrementing_a_const_local_is_an_error() {
+    let code = leak(method(
+        "        const base = 2;\n        base++;\n        ++base;\n        base--;\n        --base;\n        return base;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "8:9 Cannot increment `base`: it is declared with `const`.",
+            "9:11 Cannot increment `base`: it is declared with `const`.",
+            "10:9 Cannot decrement `base`: it is declared with `const`.",
+            "11:11 Cannot decrement `base`: it is declared with `const`.",
+        ]
+    );
+}
+
+#[test]
 fn redeclaring_a_name_an_enclosing_block_declares_is_an_error() {
     let code = leak(method(
         "        let total = 1;\n        {\n            let total = 2;\n            let extra = 3;\n        }\n        return total;\n",

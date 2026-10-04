@@ -24,7 +24,7 @@ impl LocalDeclaration<'_> {
     #[inline]
     #[must_use]
     pub fn is_const(&self) -> bool {
-        self.keyword.value == b"const"
+        self.keyword.value.eq_ignore_ascii_case(b"const")
     }
 }
 

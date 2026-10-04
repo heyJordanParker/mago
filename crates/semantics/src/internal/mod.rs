@@ -38,6 +38,8 @@ use mago_syntax::cst::Switch;
 use mago_syntax::cst::Trait;
 use mago_syntax::cst::TraitUseAliasAdaptation;
 use mago_syntax::cst::Try;
+use mago_syntax::cst::UnaryPostfix;
+use mago_syntax::cst::UnaryPrefix;
 use mago_syntax::cst::UnaryPrefixOperator;
 use mago_syntax::cst::Variable;
 use mago_syntax::walker::Walker;
@@ -359,6 +361,24 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingW
         context: &mut Context<'_, 'ast, 'arena>,
     ) {
         checker::expression::check_unary_prefix_operator(unary_prefix_operator, context);
+    }
+
+    #[inline]
+    fn walk_in_unary_prefix(&self, unary_prefix: &'ast UnaryPrefix<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
+        if context.program.dialect.is_sharp() {
+            checker::sharp::check_unary_prefix(unary_prefix, context);
+        }
+    }
+
+    #[inline]
+    fn walk_in_unary_postfix(
+        &self,
+        unary_postfix: &'ast UnaryPostfix<'arena>,
+        context: &mut Context<'_, 'ast, 'arena>,
+    ) {
+        if context.program.dialect.is_sharp() {
+            checker::sharp::check_unary_postfix(unary_postfix, context);
+        }
     }
 
     #[inline]

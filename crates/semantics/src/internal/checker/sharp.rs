@@ -20,6 +20,10 @@ use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::LocalIdentifier;
 use mago_syntax::cst::Program;
 use mago_syntax::cst::Statement;
+use mago_syntax::cst::UnaryPostfix;
+use mago_syntax::cst::UnaryPostfixOperator;
+use mago_syntax::cst::UnaryPrefix;
+use mago_syntax::cst::UnaryPrefixOperator;
 use mago_syntax::cst::Use;
 use mago_syntax::cst::UseItem;
 use mago_syntax::cst::UseItems;
@@ -37,7 +41,29 @@ const SUPERGLOBALS: [&[u8]; 9] =
 
 #[inline]
 pub fn check_assignment(assignment: &Assignment, context: &mut Context<'_, '_, '_>) {
-    let Expression::ConstantAccess(target) = assignment.lhs else {
+    check_const_write(assignment.lhs, "assign to", context);
+}
+
+#[inline]
+pub fn check_unary_prefix(unary_prefix: &UnaryPrefix, context: &mut Context<'_, '_, '_>) {
+    match unary_prefix.operator {
+        UnaryPrefixOperator::PreIncrement(_) => check_const_write(unary_prefix.operand, "increment", context),
+        UnaryPrefixOperator::PreDecrement(_) => check_const_write(unary_prefix.operand, "decrement", context),
+        _ => {}
+    }
+}
+
+#[inline]
+pub fn check_unary_postfix(unary_postfix: &UnaryPostfix, context: &mut Context<'_, '_, '_>) {
+    match unary_postfix.operator {
+        UnaryPostfixOperator::PostIncrement(_) => check_const_write(unary_postfix.operand, "increment", context),
+        UnaryPostfixOperator::PostDecrement(_) => check_const_write(unary_postfix.operand, "decrement", context),
+    }
+}
+
+/// Reports a write, such as `assign to` or `increment`, to a local declared with `const`.
+fn check_const_write(target: &Expression, write: &str, context: &mut Context<'_, '_, '_>) {
+    let Expression::ConstantAccess(target) = target else {
         return;
     };
 
@@ -45,10 +71,10 @@ pub fn check_assignment(assignment: &Assignment, context: &mut Context<'_, '_, '
         let name = BytesDisplay(target.name.value());
 
         context.report(
-            Issue::error(format!("Cannot assign to `{name}`: it is declared with `const`."))
-                .with_annotation(Annotation::primary(target.span()).with_message("Assigned here."))
+            Issue::error(format!("Cannot {write} `{name}`: it is declared with `const`."))
+                .with_annotation(Annotation::primary(target.span()).with_message("Changed here."))
                 .with_annotation(Annotation::secondary(local.declaration).with_message("Declared with `const` here."))
-                .with_help(format!("Declare `{name}` with `let` to reassign it.")),
+                .with_help(format!("Declare `{name}` with `let` to change it.")),
         );
     }
 }
