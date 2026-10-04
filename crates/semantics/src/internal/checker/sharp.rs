@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use mago_bytes::BytesDisplay;
 use mago_names::binding::Binding;
 use mago_names::binding::BindingError;
@@ -83,7 +85,7 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - an instance method used as a value, such as `order.total` without a call, in `report_non_existent_property`.
 #[inline]
 pub fn check_slice(program: &Program, context: &mut Context<'_, '_, '_>) {
-    check_node(Node::Program(program), Place::File, context);
+    check_node(Node::Program(program), Place::File, &mut HashSet::new(), context);
 }
 
 /// Where a node of a PHP# file sits, for the parts of the slice that depend on it.
@@ -103,17 +105,32 @@ enum Place {
     Default,
 }
 
-fn check_node(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) {
-    if let Some(place) = enter(node, place, context) {
+/// How code uses a member access, which decides how the slice reports it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MemberUse {
+    Call,
+    Read,
+    Write,
+}
+
+/// Walks `node` at `place`. `checked` holds the spans of the member accesses already checked, so the walk checks
+/// each access once.
+fn check_node(node: Node<'_, '_>, place: Place, checked: &mut HashSet<Span>, context: &mut Context<'_, '_, '_>) {
+    if let Some(place) = enter(node, place, checked, context) {
         for child in node.children() {
-            check_node(child, place, context);
+            check_node(child, place, checked, context);
         }
     }
 }
 
 /// Decides one node at its place. Returns the place of its children when the slice has the node, and `None` when
 /// the node is reported.
-fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) -> Option<Place> {
+fn enter(
+    node: Node<'_, '_>,
+    place: Place,
+    checked: &mut HashSet<Span>,
+    context: &mut Context<'_, '_, '_>,
+) -> Option<Place> {
     use Place::Body;
     use Place::Class;
     use Place::Default;
@@ -121,19 +138,29 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
     use Place::Method;
     use Place::Parameter;
 
-    // PHP# never has `$` variables, and `check_variable` reports a write to one.
-    if let Some(target) = write_target(node)
-        && !matches!(target, Expression::Variable(_))
-        && !is_slice_target(target, context)
-    {
-        report_not_supported(
-            target.span(),
-            "write target",
-            "PHP# writes to a local, a parameter or a member written `object.name`.",
-            context,
-        );
+    if let Some(target) = write_target(node) {
+        // PHP# never has `$` variables, and `check_variable` reports a write to one.
+        if !matches!(target, Expression::Variable(_)) && !is_slice_target(target, context) {
+            report_not_supported(
+                target.span(),
+                "write target",
+                "PHP# writes to a local, a parameter or a member written `object.name`.",
+                context,
+            );
 
-        return None;
+            return None;
+        }
+
+        if let Expression::Access(Access::Property(property)) = target {
+            check_member_access(
+                property.span(),
+                property.object,
+                &property.property,
+                MemberUse::Write,
+                checked,
+                context,
+            );
+        }
     }
 
     match (node, place) {
@@ -261,13 +288,13 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         ) => Some(Body),
         (Node::AssignmentOperator(operator), Body) if is_slice_assignment_operator(operator) => Some(Body),
         (Node::PositionalArgument(argument), Body) if argument.ellipsis.is_none() => Some(Body),
-        (Node::MethodCall(method_call), Body) => {
-            check_member_access(method_call.span(), method_call.object, &method_call.method, true, context);
+        (Node::MethodCall(call), Body) => {
+            check_member_access(call.span(), call.object, &call.method, MemberUse::Call, checked, context);
 
             Some(Body)
         }
-        (Node::PropertyAccess(property_access), Body) => {
-            check_member_access(property_access.span(), property_access.object, &property_access.property, false, context);
+        (Node::PropertyAccess(access), Body) => {
+            check_member_access(access.span(), access.object, &access.property, MemberUse::Read, checked, context);
 
             Some(Body)
         }
@@ -754,23 +781,20 @@ pub fn check_variable(variable: &Variable, context: &mut Context<'_, '_, '_>) {
     }
 }
 
-/// Checks `object.member` and `object.member()` once per chain of property reads, from its outermost access.
+/// Checks `object.member` and `object.member()` once per chain of property reads, from its outermost access. The
+/// spans of the accesses it checks go into `checked`.
 ///
-/// A chain rooted at a class reads static members. Reading one without a call is not supported yet, and a chain of
-/// capitalized names is a full name, which belongs in an `import` line.
+/// A chain rooted at a class reaches static members. Reading one without a call or writing one is not supported yet,
+/// and a chain of capitalized names is a full name, which belongs in an `import` line.
 fn check_member_access(
     access: Span,
     object: &Expression,
     member: &ClassLikeMemberSelector,
-    is_call: bool,
+    member_use: MemberUse,
+    checked: &mut HashSet<Span>,
     context: &mut Context<'_, '_, '_>,
 ) {
-    let is_outermost = !context.property_chain_objects.contains(&access);
-    if let Expression::Access(Access::Property(_)) = object {
-        context.property_chain_objects.insert(object.span());
-    }
-
-    if !is_outermost {
+    if !checked.insert(access) {
         return;
     }
 
@@ -779,6 +803,7 @@ fn check_member_access(
     while let Expression::Access(Access::Property(property)) = root
         && let ClassLikeMemberSelector::Identifier(name) = &property.property
     {
+        checked.insert(property.span());
         properties.push(name);
         root = property.object;
     }
@@ -793,8 +818,10 @@ fn check_member_access(
 
     properties.reverse();
     let Some(first_property) = properties.first() else {
-        if !is_call && let ClassLikeMemberSelector::Identifier(member) = member {
-            report_static_read(root, member, access, context);
+        if member_use != MemberUse::Call
+            && let ClassLikeMemberSelector::Identifier(member) = member
+        {
+            report_static_access(root, member, access, member_use, context);
         }
 
         return;
@@ -807,7 +834,7 @@ fn check_member_access(
 
     if !is_full_name {
         let read = Span::between(root.span(), first_property.span);
-        report_static_read(root, first_property, read, context);
+        report_static_access(root, first_property, read, MemberUse::Read, context);
 
         return;
     }
@@ -911,15 +938,26 @@ fn report_dollar_variable(name: &[u8], span: Span, context: &mut Context<'_, '_,
     );
 }
 
-fn report_static_read(root: &ConstantAccess, member: &LocalIdentifier, span: Span, context: &mut Context<'_, '_, '_>) {
+fn report_static_access(
+    root: &ConstantAccess,
+    member: &LocalIdentifier,
+    span: Span,
+    member_use: MemberUse,
+    context: &mut Context<'_, '_, '_>,
+) {
     let class = BytesDisplay(root.name.value());
     let member = BytesDisplay(member.value);
-
-    context.report(
+    let issue = if member_use == MemberUse::Write {
+        Issue::error(format!("Writing `{class}.{member}` is not supported yet."))
+            .with_annotation(Annotation::primary(span).with_message("Written here."))
+            .with_note("The engine does not run a static member write yet.")
+    } else {
         Issue::error(format!("Reading `{class}.{member}` without a call is not supported yet."))
             .with_annotation(Annotation::primary(span).with_message("Read here."))
-            .with_note("The engine does not run a static member read without a call yet."),
-    );
+            .with_note("The engine does not run a static member read without a call yet.")
+    };
+
+    context.report(issue);
 }
 
 fn report_bare_member(span: Span, name: &[u8], context: &mut Context<'_, '_, '_>) {

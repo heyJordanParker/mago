@@ -202,6 +202,22 @@ fn reading_a_static_member_without_a_call_is_not_supported_yet() {
 }
 
 #[test]
+fn writing_a_static_member_is_not_supported_yet() {
+    let code = leak(method(
+        "        Calc.rate = 2;\n        Calc.count++;\n        Calc.rate.cents = 3;\n        return 1;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:9 Writing `Calc.rate` is not supported yet.",
+            "8:9 Writing `Calc.count` is not supported yet.",
+            "9:9 Reading `Calc.rate` without a call is not supported yet.",
+        ]
+    );
+}
+
+#[test]
 fn a_reserved_class_name_is_an_error() {
     let code = "namespace App.Tenant;\n\nclass Mixed\n{\n}\n";
 
