@@ -112,6 +112,10 @@ pub fn find_control_flows_in_statement<'arena>(statement: &'arena Statement<'are
             }
         }
         Statement::For(r#for) => {
+            if let Some(declaration) = &r#for.declaration {
+                controls.extend(find_control_flows_in_expression(declaration.value));
+            }
+
             for initialization in &r#for.initializations {
                 controls.extend(find_control_flows_in_expression(initialization));
             }

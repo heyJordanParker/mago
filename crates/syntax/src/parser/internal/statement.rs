@@ -47,12 +47,7 @@ where
             T![Identifier] if self.dialect.is_sharp() && token.value == b"import" => {
                 Statement::Use(self.parse_import()?)
             }
-            T!["const"] if self.dialect.is_sharp() => Statement::LocalDeclaration(self.parse_local_declaration()?),
-            T![Identifier]
-                if self.dialect.is_sharp()
-                    && token.value == b"let"
-                    && self.stream.peek_kind(1)?.is_some_and(|kind| kind.is_identifier_maybe_reserved()) =>
-            {
+            T!["const" | Identifier] if self.is_at_local_declaration()? => {
                 Statement::LocalDeclaration(self.parse_local_declaration()?)
             }
             T!["return"] => Statement::Return(self.parse_return()?),

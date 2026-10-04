@@ -2075,6 +2075,9 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Node::For(node) => {
                 f(Node::Keyword(&node.r#for));
 
+                if let Some(declaration) = &node.declaration {
+                    f(Node::LocalDeclaration(declaration));
+                }
                 for e in node.initializations.iter() {
                     f(Node::Expression(e));
                 }

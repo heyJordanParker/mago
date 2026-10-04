@@ -1289,6 +1289,10 @@ generate_ast_walker! {
     'arena For as r#for => {
         walker.walk_keyword(&r#for.r#for, context);
 
+        if let Some(declaration) = &r#for.declaration {
+            walker.walk_local_declaration(declaration, context);
+        }
+
         for initialization in &r#for.initializations {
             walker.walk_expression(initialization, context);
         }

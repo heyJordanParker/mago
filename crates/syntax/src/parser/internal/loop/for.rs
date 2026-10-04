@@ -1,3 +1,5 @@
+use mago_span::HasSpan;
+
 use crate::T;
 use crate::cst::cst::For;
 use crate::cst::cst::ForBody;
@@ -13,14 +15,18 @@ where
     A: Arena,
 {
     pub(crate) fn parse_for(&mut self) -> Result<For<'arena>, ParseError> {
+        let r#for = self.expect_keyword(T!["for"])?;
+        let left_parenthesis = self.stream.eat_span(T!["("])?;
+        let declaration = if self.is_at_local_declaration()? { Some(self.parse_local_declaration()?) } else { None };
+
         Ok(For {
-            r#for: self.expect_keyword(T!["for"])?,
-            left_parenthesis: self.stream.eat_span(T!["("])?,
+            r#for,
+            left_parenthesis,
             initializations: {
                 let mut initializations = self.new_vec();
                 let mut commas = self.new_vec();
                 loop {
-                    if matches!(self.stream.peek_kind(0)?, Some(T![";"])) {
+                    if declaration.is_some() || matches!(self.stream.peek_kind(0)?, Some(T![";"])) {
                         break;
                     }
 
@@ -38,7 +44,11 @@ where
 
                 TokenSeparatedSequence::new(initializations, commas)
             },
-            initializations_semicolon: self.stream.eat_span(T![";"])?,
+            initializations_semicolon: match &declaration {
+                Some(declaration) => declaration.terminator.span(),
+                None => self.stream.eat_span(T![";"])?,
+            },
+            declaration,
             conditions: {
                 let mut conditions = self.new_vec();
                 let mut commas = self.new_vec();

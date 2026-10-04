@@ -276,6 +276,43 @@ fn let_and_const_declare_locals_with_an_initializer() {
 }
 
 #[test]
+fn a_for_loop_declares_its_counter_with_let_or_const() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        for (let i = 0; i < 3; i++) {\n        }\n        for (const j = 0; ; ) {\n        }\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::For(counted), Statement::For(endless)] = method_body(program) else {
+        panic!("expected two for loops, got {:#?}", method_body(program));
+    };
+
+    let declaration = counted.declaration.as_ref().expect("a declaration");
+    assert_eq!(declaration.name.value, b"i");
+    assert!(!declaration.is_const());
+    assert_eq!(source(CODE, declaration), "let i = 0;");
+    assert_eq!(source(CODE, &counted.initializations_semicolon), ";");
+    assert!(counted.initializations.is_empty());
+    assert_eq!(counted.conditions.len(), 1);
+    assert_eq!(counted.increments.len(), 1);
+    assert_eq!(source(CODE, counted), "for (let i = 0; i < 3; i++) {\n        }");
+
+    assert!(endless.declaration.as_ref().is_some_and(LocalDeclaration::is_const));
+    assert!(endless.conditions.is_empty());
+}
+
+#[test]
+fn a_php_for_loop_has_no_declaration() {
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.php", "<?php for ($i = 0; $i < 3; $i++) {}");
+
+    let Some(Statement::For(r#for)) = program.statements.get(1) else {
+        panic!("expected a for loop, got {:#?}", program.statements);
+    };
+    assert!(r#for.declaration.is_none());
+    assert_eq!(r#for.initializations.len(), 1);
+}
+
+#[test]
 fn dot_reads_as_member_access_whatever_the_name_before_it() {
     const CODE: &str = "class Report\n{\n    void run()\n    {\n        calc.add(label, base);\n        Calc.make();\n        this.total;\n        total = total - 1;\n    }\n}\n";
     let arena = LocalArena::new();

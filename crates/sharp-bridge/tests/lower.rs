@@ -895,7 +895,7 @@ fn while_and_do_while_are_their_php_kinds() {
 fn break_and_continue_have_a_null_depth() {
     assert_eq!(
         body("        while (true) {\n            continue;\n            break;\n        }\n        return 1;\n"),
-        indoc! {r#"
+        indoc! {"
             STMT_LIST
               WHILE
                 ZVAL true
@@ -906,6 +906,58 @@ fn break_and_continue_have_a_null_depth() {
                     null
               RETURN
                 ZVAL 1
+        "}
+    );
+}
+
+/// ```php
+/// for ($step = 0; $step < $extra; $step++, $extra--) {
+/// }
+/// for (;;) {
+///     break;
+/// }
+/// ```
+///
+/// Each part of the header is an `EXPR_LIST`, or null when it is empty. A `let` counter is the assignment of its
+/// value.
+#[test]
+fn for_loops_are_for_nodes_with_an_expression_list_per_part() {
+    assert_eq!(
+        body(
+            "        for (let step = 0; step < extra; step++, extra--) {\n        }\n        for (;;) {\n            break;\n        }\n        return extra;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              FOR
+                EXPR_LIST
+                  ASSIGN
+                    VAR
+                      ZVAL "step"
+                    ZVAL 0
+                EXPR_LIST
+                  BINARY_OP [20]
+                    VAR
+                      ZVAL "step"
+                    VAR
+                      ZVAL "extra"
+                EXPR_LIST
+                  POST_INC
+                    VAR
+                      ZVAL "step"
+                  POST_DEC
+                    VAR
+                      ZVAL "extra"
+                STMT_LIST
+              FOR
+                null
+                null
+                null
+                STMT_LIST
+                  BREAK
+                    null
+              RETURN
+                VAR
+                  ZVAL "extra"
         "#}
     );
 }
@@ -917,7 +969,8 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_STMT_LIST
         | sharp_kind::SHARP_AST_PARAM_LIST
         | sharp_kind::SHARP_AST_CONST_DECL
-        | sharp_kind::SHARP_AST_IF => None,
+        | sharp_kind::SHARP_AST_IF
+        | sharp_kind::SHARP_AST_EXPR_LIST => None,
         sharp_kind::SHARP_AST_ZVAL => Some(0),
         sharp_kind::SHARP_AST_VAR
         | sharp_kind::SHARP_AST_CONST
@@ -948,6 +1001,7 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         sharp_kind::SHARP_AST_METHOD_CALL | sharp_kind::SHARP_AST_STATIC_CALL | sharp_kind::SHARP_AST_CONST_ELEM => {
             Some(3)
         }
+        sharp_kind::SHARP_AST_FOR => Some(4),
         sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_CLASS => Some(5),
         sharp_kind::SHARP_AST_PARAM => Some(6),
     }

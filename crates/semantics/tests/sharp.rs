@@ -169,6 +169,43 @@ fn break_and_continue_with_a_level_are_not_supported_yet() {
 }
 
 #[test]
+fn a_for_loop_with_a_let_counter_or_expressions_is_in_the_slice() {
+    let code = leak(method(
+        "        let total = 0;\n        for (let step = 0; step < extra; step++) {\n            total += step;\n        }\n        for (total = 0; total < 3; total++, extra--) {\n        }\n        for (;;) {\n            break;\n        }\n        return total;\n",
+    ));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_for_counter_is_out_of_scope_after_its_loop_and_const_when_declared_so() {
+    let code = leak(method("        for (const step = 0; step < extra; step++) {\n        }\n        return step;\n"));
+
+    assert_eq!(
+        issues(code),
+        [
+            "9:16 `step` is used after the block that declares it closes.",
+            "7:44 Cannot increment `step`: it is declared with `const`.",
+        ]
+    );
+}
+
+#[test]
+fn a_for_loop_without_braces_or_with_a_colon_body_is_not_supported_yet() {
+    let code = leak(method(
+        "        for (let step = 0; step < 3; step++) extra++;\n        for (;;):\n            break;\n        endfor;\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:9 This statement without braces is not supported yet in PHP#.",
+            "8:17 This construct is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
 fn reassigning_a_const_local_is_an_error() {
     let code = leak(method("        const base = 2;\n        base = 3;\n        return base;\n"));
 

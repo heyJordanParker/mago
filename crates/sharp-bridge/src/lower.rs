@@ -23,11 +23,14 @@ use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Expression;
+use mago_syntax::cst::For;
+use mago_syntax::cst::ForBody;
 use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::Hint;
 use mago_syntax::cst::If;
 use mago_syntax::cst::IfBody;
 use mago_syntax::cst::Literal;
+use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::MethodBody;
 use mago_syntax::cst::MethodCall;
@@ -60,6 +63,8 @@ use crate::sharp_kind::SHARP_AST_CONST_ELEM;
 use crate::sharp_kind::SHARP_AST_CONTINUE;
 use crate::sharp_kind::SHARP_AST_DECLARE;
 use crate::sharp_kind::SHARP_AST_DO_WHILE;
+use crate::sharp_kind::SHARP_AST_EXPR_LIST;
+use crate::sharp_kind::SHARP_AST_FOR;
 use crate::sharp_kind::SHARP_AST_GREATER;
 use crate::sharp_kind::SHARP_AST_GREATER_EQUAL;
 use crate::sharp_kind::SHARP_AST_IF;
@@ -326,13 +331,9 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 self.node(SHARP_AST_RETURN, 0, self.line(r#return), &[value])
             }
-            Statement::LocalDeclaration(local) => {
-                let variable = self.variable(local.name.span, local.name.value);
-                let value = self.expression(local.value);
-
-                self.node(SHARP_AST_ASSIGN, 0, self.line(local), &[variable, value])
-            }
+            Statement::LocalDeclaration(local) => self.local(local),
             Statement::If(r#if) => self.r#if(r#if),
+            Statement::For(r#for) => self.r#for(r#for),
             Statement::While(r#while) => {
                 let WhileBody::Statement(body) = &r#while.body else {
                     unreachable!("check_slice refuses a colon-delimited `while`");
@@ -352,6 +353,50 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             Statement::Continue(r#continue) => self.node(SHARP_AST_CONTINUE, 0, self.line(r#continue), &[NULL]),
             _ => unreachable!("check_slice refuses the statement `{statement}`"),
         }
+    }
+
+    /// A `let` or `const` local is the assignment of its value to its variable.
+    fn local(&mut self, local: &LocalDeclaration) -> u32 {
+        let variable = self.variable(local.name.span, local.name.value);
+        let value = self.expression(local.value);
+
+        self.node(SHARP_AST_ASSIGN, 0, self.line(local), &[variable, value])
+    }
+
+    /// Each part of the header is an `EXPR_LIST`, or null when it is empty. A `let` or `const` counter is the
+    /// first part.
+    fn r#for(&mut self, r#for: &For) -> u32 {
+        let ForBody::Statement(body) = &r#for.body else {
+            unreachable!("check_slice refuses a colon-delimited `for`");
+        };
+
+        let mut initializations = Vec::new();
+        if let Some(declaration) = &r#for.declaration {
+            initializations.push(self.local(declaration));
+        }
+        for initialization in &r#for.initializations {
+            initializations.push(self.expression(initialization));
+        }
+
+        let initializations = self.expression_list(&initializations);
+        let conditions: Vec<u32> = r#for.conditions.iter().map(|condition| self.expression(condition)).collect();
+        let conditions = self.expression_list(&conditions);
+        let increments: Vec<u32> = r#for.increments.iter().map(|increment| self.expression(increment)).collect();
+        let increments = self.expression_list(&increments);
+        let body = self.statement(body);
+
+        self.node(SHARP_AST_FOR, 0, self.line(r#for), &[initializations, conditions, increments, body])
+    }
+
+    /// An `EXPR_LIST` at the line of its first expression, or null when there are no expressions.
+    fn expression_list(&mut self, expressions: &[u32]) -> u32 {
+        let Some(&first) = expressions.first() else {
+            return NULL;
+        };
+
+        let line = self.nodes[first as usize].line;
+
+        self.node(SHARP_AST_EXPR_LIST, 0, line, expressions)
     }
 
     /// An `IF` list with one `IF_ELEM` per branch, and a null condition for `else`. php-src's grammar reads

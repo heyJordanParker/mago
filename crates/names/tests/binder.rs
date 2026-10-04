@@ -103,6 +103,21 @@ fn a_local_used_after_its_block_closes_binds_as_that_local_and_is_a_binding_erro
 }
 
 #[test]
+fn a_for_counter_lives_until_its_loop_ends() {
+    const CODE: &str = "class Report\n{\n    public int run()\n    {\n        for (let step = 0; step < 3; step++) {\n            step;\n        }\n        return step;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    for nth in 1..=3 {
+        assert_eq!(binding(&names, CODE, "step", nth), Some(local(CODE, "step", 0, LocalKind::Let)), "`step` #{nth}");
+    }
+    assert_eq!(
+        names.binding_errors(),
+        [BindingError::OutOfScope { name: span(CODE, "step", 4), local: declared(CODE, "step", 0, LocalKind::Let) }]
+    );
+}
+
+#[test]
 fn redeclaring_a_name_an_enclosing_block_declares_is_a_binding_error() {
     const CODE: &str = "class Report\n{\n    public int run(int count)\n    {\n        let total = 1;\n        {\n            let total = 2;\n            let count = 3;\n        }\n        return total;\n    }\n}\n";
     let arena = LocalArena::new();

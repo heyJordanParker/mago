@@ -18,6 +18,7 @@ use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Enum;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::Extends;
+use mago_syntax::cst::For;
 use mago_syntax::cst::Function;
 use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::FunctionLikeParameter;
@@ -290,6 +291,19 @@ where
     }
 
     fn walk_out_block(&mut self, _block: &'ast Block<'arena>, _context: &mut NameResolutionContext<'arena, A>) {
+        if self.sharp {
+            self.locals.exit_block();
+        }
+    }
+
+    /// A PHP# `for` is a block of its own, so the local it declares lives until the loop ends.
+    fn walk_in_for(&mut self, _for: &'ast For<'arena>, _context: &mut NameResolutionContext<'arena, A>) {
+        if self.sharp {
+            self.locals.enter_block();
+        }
+    }
+
+    fn walk_out_for(&mut self, _for: &'ast For<'arena>, _context: &mut NameResolutionContext<'arena, A>) {
         if self.sharp {
             self.locals.exit_block();
         }
