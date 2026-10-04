@@ -474,6 +474,27 @@ fn a_parameter_default_is_a_constant_expression() {
 }
 
 #[test]
+fn a_write_goes_only_to_a_local_a_parameter_or_a_member() {
+    let code = leak(method(
+        "        1 = 2;\n        FOO = 1;\n        Calc = 1;\n        this = extra;\n        this++;\n        extra.total() = 3;\n        --FOO;\n        FOO *= 2;\n        this.count = 1;\n        extra = 2;\n        extra++;\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:9 This write target is not supported yet in PHP#.",
+            "8:9 This write target is not supported yet in PHP#.",
+            "9:9 This write target is not supported yet in PHP#.",
+            "10:9 This write target is not supported yet in PHP#.",
+            "11:9 This write target is not supported yet in PHP#.",
+            "12:9 This write target is not supported yet in PHP#.",
+            "13:11 This write target is not supported yet in PHP#.",
+            "14:9 This write target is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
 fn a_spread_argument_is_not_supported_yet() {
     let code = leak(method("        const parts = this.parts();\n        return this.total(...parts);\n"));
 

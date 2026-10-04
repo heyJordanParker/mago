@@ -62,6 +62,8 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   below on them, without `++` and `--`.
 /// - Types: `int`, `float`, `bool`, `string`, `void` and a class written by its short name.
 /// - In a method body: blocks, expression statements, `return`, and `let` and `const` declarations.
+/// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter or a member written
+///   `object.name`.
 /// - In expressions: literals, parentheses, bare names, assignment, the operators below, and method calls and
 ///   property reads written with `.` and a member name, with positional and named arguments.
 /// - Operators: `+ - * / %`, `== != === !== < > <= >=`, `&& || !`, unary `-` and `+`, `++` and `--`, and
@@ -114,6 +116,21 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
     use Place::File;
     use Place::Method;
     use Place::Parameter;
+
+    // PHP# never has `$` variables, and `check_variable` reports a write to one.
+    if let Some(target) = write_target(node)
+        && !matches!(target, Expression::Variable(_))
+        && !is_slice_target(target, context)
+    {
+        report_not_supported(
+            target.span(),
+            "write target",
+            "PHP# writes to a local, a parameter or a member written `object.name`.",
+            context,
+        );
+
+        return None;
+    }
 
     match (node, place) {
         (Node::Keyword(_) | Node::LocalIdentifier(_) | Node::Identifier(Identifier::Local(_)), _) => Some(place),
@@ -290,6 +307,27 @@ fn is_slice_method(method: &Method, program: &Program) -> Result<(), (&'static s
     };
 
     Err(refusal)
+}
+
+/// The expression a node writes: the left side of an assignment, or the operand of `++` or `--`.
+fn write_target<'ast, 'arena>(node: Node<'ast, 'arena>) -> Option<&'ast Expression<'arena>> {
+    match node {
+        Node::Assignment(assignment) => Some(assignment.lhs),
+        Node::UnaryPrefix(unary_prefix) if unary_prefix.operator.is_increment_or_decrement() => {
+            Some(unary_prefix.operand)
+        }
+        Node::UnaryPostfix(unary_postfix) => Some(unary_postfix.operand),
+        _ => None,
+    }
+}
+
+/// Whether the slice can write an expression: a local, a parameter, or a member written `object.name`.
+fn is_slice_target(target: &Expression, context: &Context<'_, '_, '_>) -> bool {
+    match target {
+        Expression::ConstantAccess(access) => matches!(context.names.binding(&access.name), Some(Binding::Local(_))),
+        Expression::Access(Access::Property(_)) => true,
+        _ => false,
+    }
 }
 
 /// Whether the slice has a type: the built-in types of spec section 24, or a class written by its short name.
