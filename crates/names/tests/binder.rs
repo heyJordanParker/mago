@@ -14,6 +14,7 @@ use mago_names::binding::php_variable_name;
 use mago_names::resolver::NameResolver;
 use mago_span::Position;
 use mago_span::Span;
+use mago_syntax::cst::Node;
 use mago_syntax::parser::parse_file;
 
 const FILE_NAME: &[u8] = b"src/Store.sharp";
@@ -143,6 +144,22 @@ fn a_name_before_a_partial_method_application_is_a_class() {
 
     assert_eq!(binding(&names, CODE, "Calc", 0), Some(Binding::Class));
     assert_eq!(resolved(&names, CODE, "Calc", 0), b"Calc");
+}
+
+#[test]
+fn a_static_call_is_a_method_call_whose_object_binds_as_a_class() {
+    const CODE: &str = "class Report\n{\n    public int run(Calc calc)\n    {\n        return Calc.make().add(1) + calc.add(2) + this.run(calc);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let file = File::ephemeral(Cow::Borrowed(FILE_NAME), Cow::Borrowed(CODE.as_bytes()));
+    let program = parse_file(&arena, &file);
+    let names = NameResolver::new(&arena).resolve(program);
+
+    let classes = Node::Program(program).filter_map(|node| match node {
+        Node::MethodCall(call) => Some(names.static_call_class(call).map(|class| class.name.value())),
+        _ => None,
+    });
+
+    assert_eq!(classes, [Some(&b"Calc"[..]), None, None, None]);
 }
 
 #[test]

@@ -1,7 +1,6 @@
 //! Call hooks for function and method call events.
 
 use mago_names::ResolvedNames;
-use mago_names::binding::Binding;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::ArgumentList;
@@ -97,15 +96,11 @@ pub struct StaticCall<'ast, 'arena> {
 }
 
 impl<'ast, 'arena> StaticCall<'ast, 'arena> {
-    /// Returns the static call a PHP# method call writes, `Class.method()`, when the binder bound its object to a
-    /// class, and `None` for an instance call.
+    /// Returns the static call a PHP# method call writes, `Class.method()`, when
+    /// [`ResolvedNames::static_call_class`] finds its class, and `None` for an instance call.
     #[must_use]
     pub fn from_method_call(call: &'ast MethodCall<'arena>, resolved_names: &ResolvedNames<'_>) -> Option<Self> {
-        let Expression::ConstantAccess(access) = call.object else {
-            return None;
-        };
-
-        (resolved_names.binding(&access.name) == Some(Binding::Class)).then(|| Self {
+        resolved_names.static_call_class(call).map(|_| Self {
             class: call.object,
             method: &call.method,
             argument_list: &call.argument_list,
