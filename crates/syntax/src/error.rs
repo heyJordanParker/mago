@@ -226,19 +226,23 @@ impl From<SyntaxError> for ParseError {
 
 impl From<&ParseError> for Issue {
     fn from(error: &ParseError) -> Self {
-        if let ParseError::SyntaxError(syntax_error) = error {
-            syntax_error.into()
-        } else if let ParseError::NotSupportedYetInSharp(_, span) = error {
-            Issue::error(error.to_string())
+        match error {
+            ParseError::SyntaxError(syntax_error) => syntax_error.into(),
+            // A PHP# parse error names the rule it breaks, so its message is the title.
+            ParseError::PhpSyntaxInSharp(..)
+            | ParseError::QualifiedNameInSharp(..)
+            | ParseError::UntypedParameterInSharp(..) => Issue::error(error.to_string())
+                .with_code(PARSE_ERROR_CODE)
+                .with_annotation(Annotation::primary(error.span()).with_message("Written here.")),
+            ParseError::NotSupportedYetInSharp(_, span) => Issue::error(error.to_string())
                 .with_code(PARSE_ERROR_CODE)
                 .with_annotation(Annotation::primary(*span).with_message("Not supported yet."))
-                .with_note("The PHP# engine cannot run this spec syntax yet.")
-        } else {
-            Issue::error("Parse error encountered during parsing")
+                .with_note("The PHP# engine cannot run this spec syntax yet."),
+            _ => Issue::error("Parse error encountered during parsing")
                 .with_code(PARSE_ERROR_CODE)
                 .with_annotation(Annotation::primary(error.span()).with_message(error.to_string()))
                 .with_note("This error indicates that the parser encountered a parse issue.")
-                .with_help("Check the syntax of your code.")
+                .with_help("Check the syntax of your code."),
         }
     }
 }

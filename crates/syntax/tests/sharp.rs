@@ -4,6 +4,7 @@ use std::borrow::Cow;
 
 use mago_allocator::LocalArena;
 use mago_database::file::File;
+use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_syntax::cst::*;
 use mago_syntax::dialect::Dialect;
@@ -245,6 +246,37 @@ fn spec_syntax_outside_the_slice_is_one_not_supported_error_where_it_starts() {
                 .any(|member| matches!(member, ClassLikeMember::Method(run) if run.name.value == b"run")),
             "the class keeps parsing after `{member}`"
         );
+    }
+}
+
+/// A PHP#-only parse error is its own message, so `mago analyze` shows the rule as the issue's title.
+#[test]
+fn a_sharp_parse_error_shows_its_message_as_the_issue_title() {
+    for (code, message) in [
+        (
+            "class Report\n{\n    public int run() { return this->total; }\n}\n",
+            "`->` is PHP syntax: PHP# writes member access with `.`",
+        ),
+        (
+            "class Report\n{\n    public int run() { return \\Lib\\Calc.make(); }\n}\n",
+            "A `\\` name is PHP syntax: add `import Lib.Calc;` and write `Calc`",
+        ),
+        (
+            "class Report\n{\n    public int run(extra) { return 1; }\n}\n",
+            "A PHP# parameter needs a type, as in `int extra`.",
+        ),
+        (
+            "class Report\n{\n    public required int count { get; set; }\n}\n",
+            "`required` is not supported yet in PHP#.",
+        ),
+    ] {
+        let arena = LocalArena::new();
+        let program = parse(&arena, "src/Report.sharp", code);
+
+        let [error] = program.errors else {
+            panic!("expected one error for `{code}`, got {:#?}", program.errors);
+        };
+        assert_eq!(Issue::from(error).message, message, "{code}");
     }
 }
 
