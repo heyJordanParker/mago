@@ -217,6 +217,11 @@ fn spec_syntax_outside_the_slice_is_one_not_supported_error_where_it_starts() {
             "A named constructor is not supported yet in PHP#.",
             "Report.fromJson",
         ),
+        (
+            "public Report make() { return new Report.fromJson(\"{}\"); }",
+            "A named constructor is not supported yet in PHP#.",
+            "Report.fromJson",
+        ),
         ("public string slug => this.name;", "A computed property is not supported yet in PHP#.", "=>"),
     ] {
         let arena = LocalArena::new();
