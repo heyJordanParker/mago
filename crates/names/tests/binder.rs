@@ -129,6 +129,17 @@ fn a_for_counter_lives_until_its_loop_ends() {
 }
 
 #[test]
+fn a_typed_for_counter_binds_like_let_or_const() {
+    const CODE: &str = "class Report\n{\n    public int run()\n    {\n        for (int step = 0; step < 3; step++) {\n        }\n        for (const int? once = null; once === null; ) {\n        }\n        return 0;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "step", 1), Some(local(CODE, "step", 0, LocalKind::Let)));
+    assert_eq!(binding(&names, CODE, "once", 1), Some(local(CODE, "once", 0, LocalKind::Const)));
+    assert_eq!(names.binding_errors(), []);
+}
+
+#[test]
 fn for_of_loop_variables_live_until_their_loop_ends() {
     const CODE: &str = "class Report\n{\n    public int run(array values)\n    {\n        for (const [key, entry] of values) {\n            key;\n            entry;\n        }\n        for (let item of values) {\n            item;\n        }\n        return entry;\n    }\n}\n";
     let arena = LocalArena::new();

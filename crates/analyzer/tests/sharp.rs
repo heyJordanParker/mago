@@ -477,6 +477,16 @@ fn a_value_that_is_not_the_written_type_of_a_local_is_reported() {
 }
 
 #[test]
+fn a_typed_for_counter_takes_only_values_of_its_written_type() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(int? extra)\n    {\n        for (int step = \"one\"; step < 3; step++) {\n        }\n        for (int? found = null; found === null; ) {\n            found = extra;\n        }\n        for (int count = 0; count < 3; count++) {\n            count = 1.5;\n        }\n        return 0;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[]),
+        ["7:25 invalid-local-assignment-value", "13:21 invalid-local-assignment-value"]
+    );
+}
+
+#[test]
 fn the_nullable_return_help_writes_the_nullable_type_as_the_file_does() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(int? extra)\n    {\n        return extra;\n    }\n}\n";
     let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function total(?int $extra): int\n    {\n        return $extra;\n    }\n}\n";

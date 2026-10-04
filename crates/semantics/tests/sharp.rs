@@ -726,6 +726,22 @@ fn a_typed_local_takes_the_types_of_the_slice_but_not_void() {
 }
 
 #[test]
+fn a_typed_for_counter_takes_the_types_of_the_slice_but_not_void() {
+    let code = leak(method(
+        "        for (void step = null; ; ) {\n        }\n        for (iterable items = null; ; ) {\n        }\n        for (const int? kept = null; ; kept = 1) {\n        }\n        return 1;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:14 A local cannot be `void`: `void` is only a return type.",
+            "9:14 This type is not supported yet in PHP#.",
+            "11:40 Cannot assign to `kept`: it is declared with `const`.",
+        ]
+    );
+}
+
+#[test]
 fn a_nullable_void_reports_only_the_php_error() {
     let code = "class Report\n{\n    public void? run()\n    {\n    }\n}\n";
 
