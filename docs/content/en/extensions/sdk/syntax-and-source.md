@@ -92,6 +92,8 @@ foreach ($call->arguments as $argument) {
 }
 ```
 
+A targeted analysis hook passes `$context->invocationKind` as the third argument of `fromNode()`. A PHP# static call, `Calc.make()`, is a `MethodCall` node, and only that kind makes `isStaticMethod()` true and `isMethod()` false for it.
+
 `fromNode()` throws when its input is not a supported call node or the retained node is missing the expected call structure. `fromExpression()` unwraps expression and call wrappers and returns `null` when the selection is not a supported call.
 
 For analyzer providers, prefer the semantic `Invocation` supplied by the provider context. `CallExpression` is primarily useful to syntax-driven linter and analysis hooks.

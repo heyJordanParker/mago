@@ -37,6 +37,7 @@ use mago_word::word;
 use crate::analysis_result::AnalysisResult;
 use crate::artifacts::AnalysisArtifacts;
 use crate::artifacts::ResolvedMethodCall;
+use crate::utils::expression::is_bound_class;
 
 use super::ExternalAnalysisSession;
 use super::ExternalPlugin;
@@ -48,6 +49,8 @@ use super::NodeAnalysisRequirements;
 use super::error::ExternalAnalyzerError;
 use super::error::protocol;
 use super::protocol;
+use super::protocol::INVOCATION_INSTANCE_METHOD;
+use super::protocol::INVOCATION_STATIC_METHOD;
 
 pub(super) const BEFORE_ANALYSIS_REQUEST: u16 = 5;
 pub(super) const AFTER_FILE_ANALYSIS_REQUEST: u16 = 6;
@@ -163,6 +166,8 @@ struct NodeAnalysisTarget<'ast, 'arena> {
     node: Node<'ast, 'arena>,
     requirements: u8,
     targeted_hook_routes: Vec<u32>,
+    /// How the analyzer invokes a method-call target: as an instance or a static method.
+    invocation_kind: Option<u8>,
 }
 
 struct NodeAnalysisPlan<'ast, 'arena> {
@@ -233,7 +238,8 @@ fn build_node_analysis_plan<'ast, 'arena>(
         if requirements.targets()[kind as usize] || !targeted_hook_routes.is_empty() {
             let index = targets.len();
             by_node.insert((kind as u8, span.start.offset, span.end.offset), index);
-            targets.push(NodeAnalysisTarget { node, requirements: requested, targeted_hook_routes });
+            let invocation_kind = invocation_kind(node, resolved_names);
+            targets.push(NodeAnalysisTarget { node, requirements: requested, targeted_hook_routes, invocation_kind });
         }
 
         let start = stack.len();
@@ -251,6 +257,17 @@ fn is_method_call_kind(kind: mago_syntax::cst::NodeKind) -> bool {
             | mago_syntax::cst::NodeKind::NullSafeMethodCall
             | mago_syntax::cst::NodeKind::StaticMethodCall
     )
+}
+
+/// Returns how the analyzer invokes a method-call node. PHP# writes the static call `Class::m()` as `Class.m()`, a
+/// method call whose object the binder bound to a class.
+fn invocation_kind(node: Node<'_, '_>, resolved_names: &ResolvedNames<'_>) -> Option<u8> {
+    match node {
+        Node::StaticMethodCall(_) => Some(INVOCATION_STATIC_METHOD),
+        Node::MethodCall(call) if is_bound_class(call.object, resolved_names) => Some(INVOCATION_STATIC_METHOD),
+        Node::MethodCall(_) | Node::NullSafeMethodCall(_) => Some(INVOCATION_INSTANCE_METHOD),
+        _ => None,
+    }
 }
 
 fn method_call_matches_hook(
@@ -494,6 +511,9 @@ fn write_target_analysis(
     for target in &plan.targets {
         let requested = target.requirements;
         writer.write_u8(requested);
+        if let Some(invocation_kind) = target.invocation_kind {
+            writer.write_u8(invocation_kind);
+        }
         if requested & NODE_REQUIREMENT_TARGET_EXPRESSION_TYPES != 0 {
             write_optional_expression_type(writer, artifacts, Some(target.node.span()))?;
         }

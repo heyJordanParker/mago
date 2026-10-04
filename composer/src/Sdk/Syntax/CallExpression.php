@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mago\Sdk\Syntax;
 
+use Mago\Sdk\Analyzer\InvocationKind;
 use Mago\Sdk\Exception\InvalidArgumentException;
 
 use function count;
@@ -14,6 +15,7 @@ use function str_starts_with;
  *
  * @api
  * @mago-expect lint:cyclomatic-complexity
+ * @mago-expect lint:excessive-parameter-list
  * @mago-expect lint:kan-defect
  */
 final class CallExpression
@@ -30,11 +32,18 @@ final class CallExpression
         public readonly ?Node $receiver,
         public readonly ?Node $member,
         array $arguments,
+        private readonly ?InvocationKind $invocationKind,
     ) {
         $this->arguments = $arguments;
     }
 
-    public static function fromNode(SourceFile $source, Node $node): self
+    /**
+     * Builds the view over a call node.
+     *
+     * Pass the analyzer's invocation kind when a hook has it, as `NodeAnalysisContext::$invocationKind`. A PHP# static
+     * call, `Calc.make()`, is a method-call node, and only the invocation kind tells it from an instance call.
+     */
+    public static function fromNode(SourceFile $source, Node $node, ?InvocationKind $invocationKind = null): self
     {
         if (
             $node->kind !== NodeKind::FunctionCall
@@ -79,7 +88,7 @@ final class CallExpression
             );
         }
 
-        return new self($node, $callee, $function ? null : $callee, $member, $arguments);
+        return new self($node, $callee, $function ? null : $callee, $member, $arguments, $invocationKind);
     }
 
     public static function fromExpression(SourceFile $source, Node $node): ?self
@@ -110,12 +119,18 @@ final class CallExpression
 
     public function isStaticMethod(): bool
     {
-        return $this->node->kind === NodeKind::StaticMethodCall;
+        return (
+            $this->node->kind === NodeKind::StaticMethodCall
+            || $this->invocationKind === InvocationKind::StaticMethod
+        );
     }
 
     public function isMethod(): bool
     {
-        return $this->node->kind === NodeKind::MethodCall || $this->node->kind === NodeKind::NullSafeMethodCall;
+        return (
+            ($this->node->kind === NodeKind::MethodCall || $this->node->kind === NodeKind::NullSafeMethodCall)
+            && $this->invocationKind !== InvocationKind::StaticMethod
+        );
     }
 
     public function getName(SourceFile $source): ?string

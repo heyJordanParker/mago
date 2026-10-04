@@ -444,7 +444,7 @@ fn external_providers_receive_complete_invocation_context() -> Result<(), Box<dy
         return Ok(());
     }
 
-    let observation = analyze_with_fixture(SOURCE, false, false, false)?;
+    let observation = analyze_with_fixture("src/invocation.php", SOURCE, &[])?;
     assert!(
         observation.issues.is_empty(),
         "complete external invocation context should preserve precise types: {:#?}",
@@ -508,7 +508,8 @@ fn analyzer_without_method_providers_sends_no_method_request() -> Result<(), Box
         return Ok(());
     }
 
-    let observation = analyze_with_fixture(NO_METHOD_PROVIDER_SOURCE, true, false, false)?;
+    let observation =
+        analyze_with_fixture("src/invocation.php", NO_METHOD_PROVIDER_SOURCE, &["MAGO_INVOCATION_FUNCTION_ONLY"])?;
     assert!(observation.issues.is_empty(), "native method analysis should remain unchanged: {:#?}", observation.issues);
     assert!(observation.invocations.is_empty(), "a host without method providers must not receive method requests");
 
@@ -521,7 +522,8 @@ fn declined_dynamic_methods_preserve_non_documented_method_diagnostics() -> Resu
         return Ok(());
     }
 
-    let observation = analyze_with_fixture(UNDOCUMENTED_METHOD_SOURCE, true, false, false)?;
+    let observation =
+        analyze_with_fixture("src/invocation.php", UNDOCUMENTED_METHOD_SOURCE, &["MAGO_INVOCATION_FUNCTION_ONLY"])?;
     assert_eq!(
         observation.issues,
         [
@@ -546,7 +548,7 @@ fn declined_missing_methods_preserve_non_existent_method_diagnostics() -> Result
         return Ok(());
     }
 
-    let observation = analyze_with_fixture(MISSING_METHOD_SOURCE, false, false, false)?;
+    let observation = analyze_with_fixture("src/invocation.php", MISSING_METHOD_SOURCE, &[])?;
     assert_eq!(
         observation.issues,
         [(
@@ -565,7 +567,11 @@ fn declined_property_initialization_preserves_uninitialized_diagnostic() -> Resu
         return Ok(());
     }
 
-    let observation = analyze_with_fixture(DECLINED_PROPERTY_INITIALIZATION_SOURCE, false, true, false)?;
+    let observation = analyze_with_fixture(
+        "src/invocation.php",
+        DECLINED_PROPERTY_INITIALIZATION_SOURCE,
+        &["MAGO_INVOCATION_DECLINE_PROPERTY_INITIALIZATION"],
+    )?;
     assert_eq!(observation.issues.len(), 1, "a declining provider must preserve the native diagnostic");
     assert_eq!(observation.issues[0].0.as_deref(), Some("uninitialized-property"));
     assert!(observation.invocations.is_empty(), "a declining provider must not claim initialization");
@@ -579,7 +585,11 @@ fn external_issue_filters_batch_and_remove_selected_native_diagnostics() -> Resu
         return Ok(());
     }
 
-    let observation = analyze_with_fixture(ISSUE_FILTER_SOURCE, true, false, true)?;
+    let observation = analyze_with_fixture(
+        "src/invocation.php",
+        ISSUE_FILTER_SOURCE,
+        &["MAGO_INVOCATION_FUNCTION_ONLY", "MAGO_INVOCATION_ISSUE_FILTER"],
+    )?;
     assert_eq!(observation.issues.len(), 1, "only the explicitly filtered native issue should be suppressed");
     assert_eq!(observation.issues[0].0.as_deref(), Some("non-existent-function"));
     assert!(observation.issues[0].1.contains("`retained_missing`"));
@@ -596,7 +606,7 @@ fn effective_signatures_name_the_logical_callable_and_parameter_in_diagnostics()
         return Ok(());
     }
 
-    let observation = analyze_with_fixture(EFFECTIVE_SIGNATURE_DIAGNOSTIC_SOURCE, false, false, false)?;
+    let observation = analyze_with_fixture("src/invocation.php", EFFECTIVE_SIGNATURE_DIAGNOSTIC_SOURCE, &[])?;
     assert_eq!(
         observation.issues,
         [(
@@ -617,11 +627,31 @@ fn effective_signatures_name_the_logical_callable_and_parameter_in_diagnostics()
     Ok(())
 }
 
+#[test]
+fn node_hooks_see_a_sharp_static_call_as_static_as_in_php() -> Result<(), Box<dyn std::error::Error>> {
+    if !php_sdk_is_available() {
+        return Ok(());
+    }
+
+    const SHARP: &str = "namespace Demo;\n\nclass Calc\n{\n    public static int make()\n    {\n        return 1;\n    }\n\n    public int add(int value)\n    {\n        return value;\n    }\n}\n\nclass Report\n{\n    public static int total(Calc calc)\n    {\n        return Calc.make() + calc.add(1);\n    }\n}\n";
+    const PHP: &str = "<?php\n\nnamespace Demo;\n\nclass Calc\n{\n    public static function make(): int\n    {\n        return 1;\n    }\n\n    public function add(int $value): int\n    {\n        return $value;\n    }\n}\n\nclass Report\n{\n    public static function total(Calc $calc): int\n    {\n        return Calc::make() + $calc->add(1);\n    }\n}\n";
+
+    for (file, source) in [("src/Report.sharp", SHARP), ("src/Report.php", PHP)] {
+        let observation = analyze_with_fixture(file, source, &["MAGO_INVOCATION_CALL_KINDS"])?;
+
+        assert_eq!(observation.issues, [], "{file}");
+        assert_eq!(observation.invocations, ["call-kind-make-static", "call-kind-add-instance"], "{file}");
+    }
+
+    Ok(())
+}
+
+/// Analyzes `source`, saved as `file`, with the invocation fixture worker. Each name in `switches` is a fixture
+/// environment variable set to `1`.
 fn analyze_with_fixture(
+    file: &'static str,
     source: &str,
-    function_only: bool,
-    decline_property_initialization: bool,
-    register_issue_filter: bool,
+    switches: &[&str],
 ) -> Result<AnalysisObservation, Box<dyn std::error::Error>> {
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
     let temporary = tempfile::tempdir()?;
@@ -631,14 +661,8 @@ fn analyze_with_fixture(
         .with_argument(repository.join("composer/tests/Sdk/Fixtures/analyzer-invocation-worker.php"))
         .with_current_directory(repository)
         .with_environment("MAGO_INVOCATION_AUDIT_LOG", &audit);
-    if function_only {
-        command = command.with_environment("MAGO_INVOCATION_FUNCTION_ONLY", "1");
-    }
-    if decline_property_initialization {
-        command = command.with_environment("MAGO_INVOCATION_DECLINE_PROPERTY_INITIALIZATION", "1");
-    }
-    if register_issue_filter {
-        command = command.with_environment("MAGO_INVOCATION_ISSUE_FILTER", "1");
+    for switch in switches {
+        command = command.with_environment(switch, "1");
     }
     let pool = WorkerPool::spawn(command, NonZeroUsize::MIN, WorkerPoolOptions::default())?;
     let external = ExternalAnalyzer::initialize([Arc::new(pool)], PHPVersion::PHP85, &[], false)?;
@@ -648,7 +672,7 @@ fn analyze_with_fixture(
     let configuration = common::database_configuration("/invocation-proof", vec![Cow::Borrowed(b"src")]);
     let mut database = Database::new(configuration);
     database.add(File::new(
-        Cow::Borrowed(b"src/invocation.php"),
+        Cow::Borrowed(file.as_bytes()),
         FileType::Host,
         None,
         Cow::Owned(source.as_bytes().to_vec()),

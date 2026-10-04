@@ -12,13 +12,11 @@ use mago_codex::ttype::get_null;
 use mago_codex::ttype::get_void;
 use mago_codex::ttype::template::TemplateResult;
 use mago_codex::ttype::union::TUnion;
-use mago_names::binding::Binding;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::Call;
-use mago_syntax::cst::Expression;
 use mago_word::Word;
 use mago_word::WordMap;
 use mago_word::ascii_lowercase_word;
@@ -42,6 +40,7 @@ use crate::invocation::post_process::post_invocation_process;
 use crate::invocation::return_type_fetcher::fetch_invocation_return_type;
 use crate::plugin::hook::StaticCall;
 use crate::reconciler::assertion_reconciler;
+use crate::utils::expression::is_bound_class;
 use crate::utils::names::display_function_like_identifier;
 
 pub mod function_call;
@@ -115,10 +114,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Call<'arena> {
         match self {
             Call::Function(call) => call.analyze(context, block_context, artifacts),
             // PHP# writes the static call `Class::m()` as `Class.m()`, with a bare name the binder bound to a class.
-            Call::Method(call)
-                if let Expression::ConstantAccess(object) = call.object
-                    && context.resolved_names.binding(&object.name) == Some(Binding::Class) =>
-            {
+            Call::Method(call) if is_bound_class(call.object, context.resolved_names) => {
                 let static_call = StaticCall {
                     class: call.object,
                     method: &call.method,

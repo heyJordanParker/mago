@@ -153,7 +153,7 @@ final class Protocol
     private const TYPE_COMPARISON_BATCH_REQUEST = 16;
     private const MAGIC_U32 = 0x4D41_4E41;
     private const MAJOR = 1;
-    private const MINOR = 5;
+    private const MINOR = 6;
     private const VERSION_U32 = (self::MAJOR << 16) | self::MINOR;
     private const DESCRIBE_RESPONSE = 0x8001;
     private const RETURN_TYPE_RESPONSE = 0x8002;
@@ -1067,11 +1067,23 @@ final class Protocol
             $contents = $reader->readBoolean() ? $reader->readBytes() : '';
             $sourceFile = SourceFileCodec::read($reader, $phpVersion, $nodeKinds, $file, $contents);
             $targetCount = $reader->readCount(1_000_000);
-            if ($targetCount !== count($sourceFile->getTargetNodes())) {
+            $targetNodes = $sourceFile->getTargetNodes();
+            if ($targetCount !== count($targetNodes)) {
                 throw new ProtocolException('Node-analysis data does not match the targeted syntax snapshot.');
             }
             for ($index = 0; $index < $targetCount; ++$index) {
                 $requirements = $reader->readU8();
+                $invocationKind = match ($targetNodes[$index]->kind) {
+                    NodeKind::MethodCall,
+                    NodeKind::NullSafeMethodCall,
+                    NodeKind::StaticMethodCall,
+                        => match ($reader->readU8()) {
+                        self::INVOCATION_INSTANCE_METHOD => InvocationKind::InstanceMethod,
+                        self::INVOCATION_STATIC_METHOD => InvocationKind::StaticMethod,
+                        default => throw new ProtocolException('A method-call target has an unknown invocation kind.'),
+                    },
+                    default => null,
+                };
                 $targetType = ($requirements & (1 << 1)) !== 0 ? self::readOptionalType($reader) : null;
                 $receiverType = ($requirements & (1 << 2)) !== 0 ? self::readOptionalType($reader) : null;
                 $argumentTypes = [];
@@ -1119,6 +1131,7 @@ final class Protocol
                     $argumentTypes,
                     $variableDefinedness,
                     $targetedHookIndices,
+                    $invocationKind,
                 );
             }
         }

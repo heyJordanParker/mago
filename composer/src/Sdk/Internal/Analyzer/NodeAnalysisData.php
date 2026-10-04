@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace Mago\Sdk\Internal\Analyzer;
 
+use Mago\Sdk\Analyzer\InvocationKind;
 use Mago\Sdk\Analyzer\Type;
 use Mago\Sdk\Analyzer\VariableDefinedness;
 
 /**
  * @internal
+ * @mago-expect lint:excessive-parameter-list
  */
 final class NodeAnalysisData
 {
@@ -23,5 +25,6 @@ final class NodeAnalysisData
         public readonly array $argumentTypes,
         public readonly ?array $variableDefinedness,
         public readonly array $targetedHookIndices,
+        public readonly ?InvocationKind $invocationKind,
     ) {}
 }

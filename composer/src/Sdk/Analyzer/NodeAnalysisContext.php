@@ -34,6 +34,14 @@ final class NodeAnalysisContext extends LifecycleContext
      */
     public readonly array $argumentTypes;
 
+    /**
+     * How the analyzer invokes a method-call target, or null for any other target.
+     *
+     * A PHP# static call, `Calc.make()`, is a method-call node that the analyzer invokes as a static method. Pass this
+     * to `CallExpression::fromNode()` so the call expression reports it as one.
+     */
+    public readonly ?InvocationKind $invocationKind;
+
     /** @var array<string, VariableDefinedness>|null */
     private readonly ?array $variableDefinedness;
 
@@ -48,6 +56,7 @@ final class NodeAnalysisContext extends LifecycleContext
         $this->targetType = $data->targetType;
         $this->receiverType = $data->receiverType;
         $this->argumentTypes = $data->argumentTypes;
+        $this->invocationKind = $data->invocationKind;
         $this->variableDefinedness = $data->variableDefinedness;
         parent::__construct($context->phpVersion, $context->codebase, $context->types, $context->cancellation);
     }

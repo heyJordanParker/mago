@@ -220,6 +220,11 @@ pub fn is_this(expression: &Expression<'_>, resolved_names: &ResolvedNames<'_>) 
     get_direct_variable_id(expression, resolved_names).is_some_and(|variable| variable.as_bytes() == b"$this")
 }
 
+/// Returns true when an expression is a bare PHP# name the binder bound to a class, such as `Calc` in `Calc.make()`.
+pub fn is_bound_class(expression: &Expression<'_>, resolved_names: &ResolvedNames<'_>) -> bool {
+    matches!(expression, Expression::ConstantAccess(access) if resolved_names.binding(&access.name) == Some(Binding::Class))
+}
+
 /// Returns true when an expression can be passed or returned by reference, as [`Expression::is_referenceable`]
 /// says, counting a bare PHP# name bound to a local or to `this` as the variable it runs as.
 pub fn is_referenceable(expression: &Expression<'_>, include_calls: bool, resolved_names: &ResolvedNames<'_>) -> bool {

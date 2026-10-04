@@ -101,8 +101,11 @@ Without `TargetSubtree`, each selected target is retained as a standalone node w
 | `targetType` | Requested target expression type, or `null` |
 | `receiverType` | Requested direct receiver type, or `null` |
 | `argumentTypes` | Requested direct argument types, otherwise an empty list |
+| `invocationKind` | `InstanceMethod` or `StaticMethod` for a method-call target, otherwise `null` |
 | `getVariableDefinedness()` | Returns `Defined`, `PossiblyDefined`, or `Undefined`; `null` when unavailable |
 | lifecycle members | PHP version, codebase, type comparator, cancellation, and `report()` |
+
+A PHP# static call, `Calc.make()`, is a `MethodCall` node with `invocationKind` set to `StaticMethod`. Pass the kind to `CallExpression::fromNode($context->source, $context->node, $context->invocationKind)` so `isStaticMethod()` reports it.
 
 Variable names passed to `getVariableDefinedness()` may include or omit the leading `$`. Request `VariableDefinedness` before relying on the result; skipped, unanalyzed targets return `null`.
 
