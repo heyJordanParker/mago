@@ -307,6 +307,31 @@ fn unused_parameters_are_found_as_in_php() {
 }
 
 #[test]
+fn null_coalescing_a_local_narrows_it_as_in_php() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(?int first, ?int second)\n    {\n        if (first !== null || second !== null) {\n            return first ?? second;\n        }\n        return 0;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function total(?int $first, ?int $second): int\n    {\n        if ($first !== null || $second !== null) {\n            return $first ?? $second;\n        }\n        return 0;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[]);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn assigning_a_property_of_one_local_keeps_the_memoized_calls_of_another_as_in_php() {
+    let box_class = "<?php\n\nnamespace Lib;\n\nfinal class Box\n{\n    public int $value = 0;\n\n    /** @mutation-free */\n    public function count(): ?int\n    {\n        return null;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Box;\n\nclass Report\n{\n    public static int total(Box box, Box other)\n    {\n        if (other.count() !== null) {\n            box.value = 1;\n            return other.count();\n        }\n        return 0;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Box;\n\nclass Report\n{\n    public static function total(Box $box, Box $other): int\n    {\n        if ($other->count() !== null) {\n            $box->value = 1;\n            return $other->count();\n        }\n        return 0;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Box.php", box_class)]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[("src/Lib/Box.php", box_class)]);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
 fn a_sharp_import_passes_the_use_statement_and_casing_checks_as_in_php() {
     let sharp = "namespace Demo;\n\nimport Lib.Calc;\nimport Lib.Money;\nimport Lib.missing;\n\nclass Report\n{\n}\n";
     let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Calc;\nuse Lib\\Money;\nuse Lib\\missing;\n\nclass Report\n{\n}\n";
