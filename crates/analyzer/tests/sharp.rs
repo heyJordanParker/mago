@@ -24,15 +24,23 @@ static PLUGIN_REGISTRY: LazyLock<PluginRegistry> = LazyLock::new(PluginRegistry:
 
 const CALC: &str = "<?php\n\nnamespace Lib;\n\nfinal class Calc\n{\n    public static function make(): self\n    {\n        return new self();\n    }\n\n    public function add(int $a, int $b): int\n    {\n        return $a + $b;\n    }\n}\n";
 
+/// The settings every test analyzes with, unless it names its own.
+fn settings() -> Settings {
+    Settings { find_unused_expressions: true, find_unused_definitions: true, check_throws: true, ..Default::default() }
+}
+
 /// Analyzes `analyzed` together with `others`, and returns its issues as `line:column code`.
 fn issues(analyzed: (&'static str, &'static str), others: &[(&'static str, &'static str)]) -> Vec<String> {
+    issues_with(settings(), analyzed, others)
+}
+
+/// Analyzes `analyzed` together with `others` under `settings`, and returns its issues as `line:column code`.
+fn issues_with(
+    settings: Settings,
+    analyzed: (&'static str, &'static str),
+    others: &[(&'static str, &'static str)],
+) -> Vec<String> {
     let Prelude { mut database, mut metadata, mut symbol_references } = PRELUDE.clone();
-    let settings = Settings {
-        find_unused_expressions: true,
-        find_unused_definitions: true,
-        check_throws: true,
-        ..Default::default()
-    };
 
     let file_ids: Vec<_> = std::iter::once(&analyzed)
         .chain(others)
@@ -232,6 +240,57 @@ fn a_method_used_as_a_value_is_not_supported_yet() {
     assert!(sharp_issues.contains(&"10:26 not-supported-yet".to_string()), "{sharp_issues:?}");
     assert!(sharp_issues.contains(&"11:21 not-supported-yet".to_string()), "{sharp_issues:?}");
     assert!(!sharp_issues.iter().any(|issue| issue.ends_with("non-existent-property")), "{sharp_issues:?}");
+}
+
+#[test]
+fn a_local_passed_by_reference_to_a_php_method_changes_as_in_php() {
+    let counter = "<?php\n\nnamespace Lib;\n\nfinal class Counter\n{\n    public static function make(): self\n    {\n        return new self();\n    }\n\n    public function fill(?string &$value): void\n    {\n        $value = 'filled';\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Counter;\n\nclass Report\n{\n    public static int total()\n    {\n        let value = null;\n        const counter = Counter.make();\n        counter.fill(value);\n        return value;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Counter;\n\nclass Report\n{\n    public static function total(): int\n    {\n        $value = null;\n        $counter = Counter::make();\n        $counter->fill($value);\n        return $value;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Counter.php", counter)]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[("src/Lib/Counter.php", counter)]);
+
+    assert_eq!(sharp_issues, ["12:16 nullable-return-statement", "12:16 invalid-return-statement"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn unused_parameters_are_found_as_in_php() {
+    let sharp = "namespace Demo;\n\nfinal class Report\n{\n    public static int total(int used, int unused, int _skipped)\n    {\n        return used;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Report\n{\n    public static function total(int $used, int $unused, int $_skipped): int\n    {\n        return $used;\n    }\n}\n";
+    let settings = || Settings { find_unused_parameters: true, ..settings() };
+
+    let sharp_issues = issues_with(settings(), ("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues_with(settings(), ("src/Demo/Report.php", php), &[]);
+
+    assert_eq!(sharp_issues, ["5:39 unused-parameter"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn null_coalescing_a_local_narrows_it_as_in_php() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(?int first, ?int second)\n    {\n        if (first !== null || second !== null) {\n            return first ?? second;\n        }\n        return 0;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function total(?int $first, ?int $second): int\n    {\n        if ($first !== null || $second !== null) {\n            return $first ?? $second;\n        }\n        return 0;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[]);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn assigning_a_property_of_this_keeps_the_memoized_calls_of_other_locals_as_in_php() {
+    let box_class = "<?php\n\nnamespace Lib;\n\nfinal class Box\n{\n    /** @mutation-free */\n    public function value(): ?int\n    {\n        return null;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Box;\n\nfinal class Report\n{\n    public int $count = 0;\n\n    public int total(Box box)\n    {\n        if (box.value() !== null) {\n            this.count = 1;\n            return box.value();\n        }\n        return this.count;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Box;\n\nfinal class Report\n{\n    public int $count = 0;\n\n    public function total(Box $box): int\n    {\n        if ($box->value() !== null) {\n            $this->count = 1;\n            return $box->value();\n        }\n        return $this->count;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Box.php", box_class)]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[("src/Lib/Box.php", box_class)]);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
 }
 
 #[test]

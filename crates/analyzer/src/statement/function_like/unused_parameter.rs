@@ -86,8 +86,10 @@ fn report_parameter<'arena, A>(
         return;
     }
 
+    // A PHP parameter is written with `$`, and a PHP# parameter without it.
     let parameter_name = parameter.variable.name;
-    if parameter_name.starts_with(b"$_") {
+    let sigil_length = u32::from(parameter_name.starts_with(b"$"));
+    if parameter_name[sigil_length as usize..].starts_with(b"_") {
         return;
     }
 
@@ -103,11 +105,8 @@ fn report_parameter<'arena, A>(
 
     context.collector.propose(issue, |edits| {
         edits.push(
-            TextEdit::insert(
-                parameter.variable.start_offset() + 1, // skip the leading `$`
-                "_",
-            )
-            .with_safety(Safety::PotentiallyUnsafe),
+            TextEdit::insert(parameter.variable.start_offset() + sigil_length, "_")
+                .with_safety(Safety::PotentiallyUnsafe),
         );
     });
 }
@@ -280,6 +279,8 @@ pub mod utils {
     pub(super) mod internal {
         use super::is_predefined_variable;
         use mago_allocator::Arena;
+        use mago_names::ResolvedNames;
+        use mago_names::binding::Binding;
 
         use mago_syntax::cst::AnonymousClass;
         use mago_syntax::cst::ArrayElement;
@@ -290,6 +291,7 @@ pub mod utils {
         use mago_syntax::cst::Class;
         use mago_syntax::cst::Closure;
         use mago_syntax::cst::Conditional;
+        use mago_syntax::cst::ConstantAccess;
         use mago_syntax::cst::DirectVariable;
         use mago_syntax::cst::DoWhile;
         use mago_syntax::cst::Enum;
@@ -455,7 +457,12 @@ pub mod utils {
                 foreach_value_target: &'ast ForeachValueTarget<'arena>,
                 context: &mut VariableWalkerState<'_, '_, 'arena, A>,
             ) {
-                scan_expression_for_assignment(foreach_value_target.value, &mut context.0, true);
+                scan_expression_for_assignment(
+                    foreach_value_target.value,
+                    &mut context.0,
+                    true,
+                    context.1.resolved_names,
+                );
             }
 
             fn walk_in_foreach_key_value_target(
@@ -463,8 +470,9 @@ pub mod utils {
                 foreach_key_value_target: &'ast ForeachKeyValueTarget<'arena>,
                 context: &mut VariableWalkerState<'_, '_, 'arena, A>,
             ) {
-                scan_expression_for_assignment(foreach_key_value_target.key, &mut context.0, true);
-                scan_expression_for_assignment(foreach_key_value_target.value, &mut context.0, true);
+                let resolved_names = context.1.resolved_names;
+                scan_expression_for_assignment(foreach_key_value_target.key, &mut context.0, true, resolved_names);
+                scan_expression_for_assignment(foreach_key_value_target.value, &mut context.0, true, resolved_names);
             }
 
             fn walk_in_static_concrete_item(
@@ -533,7 +541,12 @@ pub mod utils {
 
                 let is_conditional = context.2 > 0;
                 let mut variables = Vec::default();
-                scan_expression_for_assignment(assignment.lhs, &mut variables, is_conditional);
+                scan_expression_for_assignment(
+                    assignment.lhs,
+                    &mut variables,
+                    is_conditional,
+                    context.1.resolved_names,
+                );
 
                 match assignment.operator {
                     AssignmentOperator::Assign(_) => {
@@ -561,6 +574,16 @@ pub mod utils {
             ) {
                 if !is_predefined_variable(direct_variable.name) {
                     context.0.push(VariableReference::Use(direct_variable.name));
+                }
+            }
+
+            fn walk_in_constant_access(
+                &self,
+                constant_access: &'ast ConstantAccess<'arena>,
+                context: &mut VariableWalkerState<'_, '_, 'arena, A>,
+            ) {
+                if let Some(Binding::Local(_)) = context.1.resolved_names.binding(&constant_access.name) {
+                    context.0.push(VariableReference::Use(constant_access.name.value()));
                 }
             }
 
@@ -702,6 +725,7 @@ pub mod utils {
             expression: &Expression<'arena>,
             variables: &mut Vec<VariableReference<'arena>>,
             is_conditional: bool,
+            resolved_names: &ResolvedNames<'arena>,
         ) {
             match &expression {
                 Expression::Variable(variable) => {
@@ -713,19 +737,35 @@ pub mod utils {
                         variables.push(VariableReference::Assign(variable.name, is_conditional));
                     }
                 }
+                Expression::ConstantAccess(constant_access) => {
+                    if let Some(Binding::Local(_)) = resolved_names.binding(&constant_access.name) {
+                        variables.push(VariableReference::Assign(constant_access.name.value(), is_conditional));
+                    }
+                }
                 Expression::Array(array) => {
                     for element in &array.elements {
                         match &element {
                             ArrayElement::KeyValue(key_value_array_element) => {
-                                scan_expression_for_assignment(key_value_array_element.key, variables, is_conditional);
+                                scan_expression_for_assignment(
+                                    key_value_array_element.key,
+                                    variables,
+                                    is_conditional,
+                                    resolved_names,
+                                );
                                 scan_expression_for_assignment(
                                     key_value_array_element.value,
                                     variables,
                                     is_conditional,
+                                    resolved_names,
                                 );
                             }
                             ArrayElement::Value(value_array_element) => {
-                                scan_expression_for_assignment(value_array_element.value, variables, is_conditional);
+                                scan_expression_for_assignment(
+                                    value_array_element.value,
+                                    variables,
+                                    is_conditional,
+                                    resolved_names,
+                                );
                             }
                             _ => {}
                         }
@@ -735,15 +775,26 @@ pub mod utils {
                     for element in &array.elements {
                         match &element {
                             ArrayElement::KeyValue(key_value_array_element) => {
-                                scan_expression_for_assignment(key_value_array_element.key, variables, is_conditional);
+                                scan_expression_for_assignment(
+                                    key_value_array_element.key,
+                                    variables,
+                                    is_conditional,
+                                    resolved_names,
+                                );
                                 scan_expression_for_assignment(
                                     key_value_array_element.value,
                                     variables,
                                     is_conditional,
+                                    resolved_names,
                                 );
                             }
                             ArrayElement::Value(value_array_element) => {
-                                scan_expression_for_assignment(value_array_element.value, variables, is_conditional);
+                                scan_expression_for_assignment(
+                                    value_array_element.value,
+                                    variables,
+                                    is_conditional,
+                                    resolved_names,
+                                );
                             }
                             _ => {}
                         }
@@ -753,15 +804,26 @@ pub mod utils {
                     for element in &list.elements {
                         match &element {
                             ArrayElement::KeyValue(key_value_array_element) => {
-                                scan_expression_for_assignment(key_value_array_element.key, variables, is_conditional);
+                                scan_expression_for_assignment(
+                                    key_value_array_element.key,
+                                    variables,
+                                    is_conditional,
+                                    resolved_names,
+                                );
                                 scan_expression_for_assignment(
                                     key_value_array_element.value,
                                     variables,
                                     is_conditional,
+                                    resolved_names,
                                 );
                             }
                             ArrayElement::Value(value_array_element) => {
-                                scan_expression_for_assignment(value_array_element.value, variables, is_conditional);
+                                scan_expression_for_assignment(
+                                    value_array_element.value,
+                                    variables,
+                                    is_conditional,
+                                    resolved_names,
+                                );
                             }
                             _ => {}
                         }
@@ -775,7 +837,7 @@ pub mod utils {
                         }
                     }
 
-                    scan_expression_for_assignment(append.array, variables, is_conditional);
+                    scan_expression_for_assignment(append.array, variables, is_conditional, resolved_names);
                 }
                 Expression::ArrayAccess(access) => {
                     if let Expression::Variable(Variable::Direct(variable)) = access.array {
@@ -792,8 +854,8 @@ pub mod utils {
                         }
                     }
 
-                    scan_expression_for_assignment(access.array, variables, is_conditional);
-                    scan_expression_for_assignment(access.index, variables, is_conditional);
+                    scan_expression_for_assignment(access.array, variables, is_conditional, resolved_names);
+                    scan_expression_for_assignment(access.index, variables, is_conditional, resolved_names);
                 }
                 _ => {}
             }

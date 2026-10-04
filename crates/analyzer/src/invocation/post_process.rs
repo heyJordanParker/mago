@@ -349,7 +349,9 @@ where
                 continue;
             }
 
-            if is_array_multisort(&invocation.target) && !is_argument_referenceable(argument, &argument_type) {
+            if is_array_multisort(&invocation.target)
+                && !is_argument_referenceable(argument, &argument_type, context.resolved_names)
+            {
                 continue;
             }
 

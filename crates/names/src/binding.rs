@@ -1,4 +1,13 @@
 use mago_span::Span;
+use mago_word::Word;
+use mago_word::concat_word;
+
+/// Returns the PHP variable a PHP# local, parameter or `this` runs as: `total` runs as `$total`.
+#[inline]
+#[must_use]
+pub fn php_variable_name(name: &[u8]) -> Word {
+    concat_word!(b"$", name)
+}
 
 /// What a bare PHP# name refers to.
 ///

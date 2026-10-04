@@ -32,6 +32,7 @@ use crate::utils::docblock::populate_docblock_variables_excluding;
 use crate::utils::expression::expression_has_observable_side_effect;
 use crate::utils::expression::get_block_expression_id;
 use crate::utils::expression::get_function_like_id_from_call;
+use crate::utils::expression::is_variable;
 use crate::utils::misc::unwrap_expression;
 
 pub mod attributes;
@@ -327,7 +328,7 @@ fn detect_unused_statement_expressions<'ast, 'arena, A>(
         Expression::Array(_) | Expression::LegacyArray(_) | Expression::List(_) => {
             "Creating an array or list as a statement has no effect."
         }
-        Expression::Variable(_) => "Accessing a variable as a statement has no effect.",
+        _ if is_variable(expression, context.resolved_names) => "Accessing a variable as a statement has no effect.",
         Expression::ConstantAccess(_) => "Accessing a constant as a statement has no effect.",
         Expression::Identifier(_) => {
             "Using an identifier directly as a statement likely has no effect (perhaps a typo?)."

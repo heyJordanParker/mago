@@ -16,7 +16,6 @@ use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::NullSafePropertyAccess;
 use mago_syntax::cst::PropertyAccess;
-use mago_syntax::cst::Variable;
 use mago_word::Word;
 use mago_word::concat_word;
 
@@ -28,6 +27,7 @@ use crate::error::AnalysisError;
 use crate::resolver::property::resolve_instance_properties;
 use crate::utils::expression::get_block_expression_id;
 use crate::utils::expression::get_property_access_expression_id;
+use crate::utils::expression::is_this;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for PropertyAccess<'arena> {
     fn analyze<'ctx, A>(
@@ -231,10 +231,9 @@ where
         _ => return Ok(()),
     };
 
-    let is_this = matches!(object, Expression::Variable(Variable::Direct(var)) if var.name == b"$this");
     let mut declaring_classes: Vec<Word> = Vec::new();
 
-    if is_this {
+    if is_this(object, context.resolved_names) {
         if let Some(class_name) = block_context.scope.get_class_like_name()
             && let Some(declaring_class) =
                 context.codebase.get_declaring_property_class(class_name.as_bytes(), property_name.as_bytes())

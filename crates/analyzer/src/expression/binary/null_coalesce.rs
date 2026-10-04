@@ -17,7 +17,6 @@ use mago_syntax::cst::Expression;
 use mago_syntax::cst::Variable;
 use mago_text_edit::Safety;
 use mago_text_edit::TextEdit;
-use mago_word::Word;
 use mago_word::WordSet;
 use mago_word::word;
 
@@ -32,6 +31,8 @@ use crate::error::AnalysisError;
 use crate::formula::get_formula;
 use crate::reconciler::reconcile_keyed_types;
 use crate::utils::conditional;
+use crate::utils::expression::get_direct_variable_id;
+use crate::utils::expression::is_variable;
 use crate::utils::misc::unwrap_expression;
 
 /// Analyzes the null coalescing operator (`??`).
@@ -55,10 +56,10 @@ where
     A: Arena,
 {
     let was_inside_isset = block_context.flags.inside_isset();
-    block_context.flags.set_inside_isset(matches!(
-        binary.lhs,
-        Expression::Variable(_) | Expression::Access(_) | Expression::ArrayAccess(_)
-    ));
+    block_context.flags.set_inside_isset(
+        is_variable(binary.lhs, context.resolved_names)
+            || matches!(binary.lhs, Expression::Access(_) | Expression::ArrayAccess(_)),
+    );
     binary.lhs.analyze(context, block_context, artifacts)?;
     block_context.flags.set_inside_isset(was_inside_isset);
 
@@ -152,7 +153,10 @@ where
     // Check if clauses guarantee non-null result from OR assertion
     // If we have assert($x !== null || $y !== null), then $x ?? $y cannot be null
     if result_type.is_nullable()
-        && let (Some(lhs_var), Some(rhs_var)) = (get_variable_name(binary.lhs), get_variable_name(binary.rhs))
+        && let (Some(lhs_var), Some(rhs_var)) = (
+            get_direct_variable_id(unwrap_expression(binary.lhs), context.resolved_names),
+            get_direct_variable_id(unwrap_expression(binary.rhs), context.resolved_names),
+        )
     {
         for clause in &block_context.clauses {
             if clause.possibilities.len() == 2
@@ -223,13 +227,6 @@ where
     }
 
     Ok(())
-}
-
-fn get_variable_name(expr: &Expression<'_>) -> Option<Word> {
-    match unwrap_expression(expr) {
-        Expression::Variable(Variable::Direct(var)) => Some(word(var.name)),
-        _ => None,
-    }
 }
 
 fn is_rooted_in_static_local(expr: &Expression<'_>, static_locals: &WordSet) -> bool {

@@ -12,6 +12,7 @@ use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::union::TUnion;
 use mago_names::ResolvedNames;
 use mago_names::binding::Binding;
+use mago_names::binding::php_variable_name;
 use mago_span::HasSpan;
 use mago_syntax::cst::Access;
 use mago_syntax::cst::ArrayAccess;
@@ -191,14 +192,41 @@ pub fn get_variable_id<'arena>(variable: &Variable<'arena>) -> Option<&'arena [u
     }
 }
 
-/// Returns the variable a bare PHP# name reads when the binder bound it to a local or to `this`.
-///
-/// A PHP# local `total` runs as the PHP variable `$total`, so its id is `$total`.
+/// Returns the variable a bare PHP# name runs as when the binder bound it to a local or to `this`.
 pub fn get_bare_name_variable_id(name: &Identifier<'_>, resolved_names: &ResolvedNames<'_>) -> Option<Word> {
     match resolved_names.binding(name)? {
-        Binding::Local(_) => Some(concat_word!(b"$", name.value())),
-        Binding::This => Some(word(b"$this")),
+        Binding::Local(_) | Binding::This => Some(php_variable_name(name.value())),
         _ => None,
+    }
+}
+
+/// Returns the name of the variable an expression is: a PHP variable such as `$total`, or a bare PHP# name bound
+/// to a local or to `this`, which runs as that PHP variable.
+pub fn get_direct_variable_id(expression: &Expression<'_>, resolved_names: &ResolvedNames<'_>) -> Option<Word> {
+    match expression {
+        Expression::Variable(Variable::Direct(variable)) => Some(word(variable.name)),
+        Expression::ConstantAccess(access) => get_bare_name_variable_id(&access.name, resolved_names),
+        _ => None,
+    }
+}
+
+/// Returns true when an expression is a variable: a PHP variable, or a bare PHP# name bound to a local or to `this`.
+pub fn is_variable(expression: &Expression<'_>, resolved_names: &ResolvedNames<'_>) -> bool {
+    matches!(expression, Expression::Variable(_)) || get_direct_variable_id(expression, resolved_names).is_some()
+}
+
+/// Returns true when an expression is `$this`, written `this` in PHP#.
+pub fn is_this(expression: &Expression<'_>, resolved_names: &ResolvedNames<'_>) -> bool {
+    get_direct_variable_id(expression, resolved_names).is_some_and(|variable| variable.as_bytes() == b"$this")
+}
+
+/// Returns true when an expression can be passed or returned by reference, as [`Expression::is_referenceable`]
+/// says, counting a bare PHP# name bound to a local or to `this` as the variable it runs as.
+pub fn is_referenceable(expression: &Expression<'_>, include_calls: bool, resolved_names: &ResolvedNames<'_>) -> bool {
+    match expression {
+        Expression::ConstantAccess(_) => is_variable(expression, resolved_names),
+        Expression::ArrayAccess(array_access) => is_referenceable(array_access.array, include_calls, resolved_names),
+        _ => expression.is_referenceable(include_calls),
     }
 }
 
@@ -427,19 +455,18 @@ pub fn get_array_access_id<'ast, 'arena>(
     Some(concat_word!(array.as_bytes(), b"[", index.as_bytes(), b"]"))
 }
 
-pub fn get_root_expression_id(expression: &Expression<'_>) -> Option<Word> {
+pub fn get_root_expression_id(expression: &Expression<'_>, resolved_names: &ResolvedNames<'_>) -> Option<Word> {
     let expression = unwrap_expression(expression);
 
     match expression {
-        Expression::Variable(Variable::Direct(variable)) => Some(word(variable.name)),
-        Expression::ArrayAccess(array_access) => get_root_expression_id(array_access.array),
+        Expression::ArrayAccess(array_access) => get_root_expression_id(array_access.array, resolved_names),
         Expression::Access(access) => match access {
-            Access::Property(access) => get_root_expression_id(access.object),
-            Access::NullSafeProperty(access) => get_root_expression_id(access.object),
-            Access::ClassConstant(access) => get_root_expression_id(access.class),
-            Access::StaticProperty(access) => get_root_expression_id(access.class),
+            Access::Property(access) => get_root_expression_id(access.object, resolved_names),
+            Access::NullSafeProperty(access) => get_root_expression_id(access.object, resolved_names),
+            Access::ClassConstant(access) => get_root_expression_id(access.class, resolved_names),
+            Access::StaticProperty(access) => get_root_expression_id(access.class, resolved_names),
         },
-        _ => None,
+        _ => get_direct_variable_id(expression, resolved_names),
     }
 }
 

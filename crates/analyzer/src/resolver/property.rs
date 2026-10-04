@@ -25,13 +25,13 @@ use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::template::TemplateResult;
 use mago_codex::ttype::template::inferred_type_replacer;
 use mago_codex::ttype::union::TUnion;
+use mago_names::ResolvedNames;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
-use mago_syntax::cst::Variable;
 use mago_text_edit::TextEdit;
 use mago_word::Word;
 use mago_word::concat_word;
@@ -47,6 +47,7 @@ use crate::external::PropertyAccessKind;
 use crate::resolver::class_name::report_non_existent_class_like;
 use crate::resolver::method::run_forwarded_methods;
 use crate::resolver::selector::resolve_member_selector;
+use crate::utils::expression::is_this;
 use crate::utils::names::display_class_like_name;
 use crate::utils::template::get_template_types_for_class_member;
 use crate::visibility::check_resolved_property_read_visibility;
@@ -577,10 +578,14 @@ where
 }
 
 /// Checks if this is a backing store access: `$this->prop` inside a hook for that property.
-fn is_backing_store_access(object_expr: &Expression, prop_name: Word, block_context: &BlockContext) -> bool {
-    let is_this = matches!(object_expr, Expression::Variable(Variable::Direct(var)) if var.name == b"$this");
-
-    is_this && block_context.scope.get_property_hook().is_some_and(|(hook_prop_name, _)| hook_prop_name == prop_name)
+fn is_backing_store_access(
+    object_expr: &Expression,
+    prop_name: Word,
+    block_context: &BlockContext,
+    resolved_names: &ResolvedNames<'_>,
+) -> bool {
+    is_this(object_expr, resolved_names)
+        && block_context.scope.get_property_hook().is_some_and(|(hook_prop_name, _)| hook_prop_name == prop_name)
 }
 
 /// How a declared property resolved at a given call site: through its real declaration, or
@@ -994,7 +999,7 @@ where
         if let Some(set_hook) = property_metadata.hooks.get(&word(b"set"))
             && let Some(param) = &set_hook.parameter
             && let Some(param_type) = param.get_type_metadata()
-            && !is_backing_store_access(object_expr, prop_name, block_context)
+            && !is_backing_store_access(object_expr, prop_name, block_context, context.resolved_names)
         {
             used_set_hook_param = true;
             param_type.type_union.clone()

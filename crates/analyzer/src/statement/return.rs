@@ -18,16 +18,15 @@ use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_null;
 use mago_codex::ttype::get_void;
 use mago_codex::ttype::union::TUnion;
+use mago_names::ResolvedNames;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::Return;
-use mago_syntax::cst::Variable;
 use mago_word::Word;
 use mago_word::concat_word;
-use mago_word::word;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
@@ -38,6 +37,8 @@ use crate::context::scope::control_action::ControlAction;
 use crate::error::AnalysisError;
 use crate::utils::docblock::check_docblock_type_incompatibility;
 use crate::utils::docblock::get_type_from_var_docblock;
+use crate::utils::expression::get_direct_variable_id;
+use crate::utils::expression::is_referenceable;
 use crate::utils::get_type_diff;
 use crate::utils::misc::unwrap_expression;
 use crate::utils::names::display_function_like_identifier;
@@ -199,10 +200,10 @@ pub fn handle_return_value<'ctx, A>(
     if let Some(return_value) = return_value
         && function_like_metadata.flags.is_by_reference()
     {
-        let is_referenceable = return_value.is_referenceable(false)
-            || (return_value.is_referenceable(true) && inferred_return_type.by_reference());
+        let return_value_is_referenceable = is_referenceable(return_value, false, context.resolved_names)
+            || (is_referenceable(return_value, true, context.resolved_names) && inferred_return_type.by_reference());
 
-        if !is_referenceable {
+        if !return_value_is_referenceable {
             context.collector.report_with_code(
                 IssueCode::InvalidReturnStatement,
                 Issue::error(format!(
@@ -334,7 +335,8 @@ pub fn handle_return_value<'ctx, A>(
             return;
         }
 
-        if inferred_return_type.is_mixed() && !returns_declared_parameter_variable(return_value, &expected_return_type)
+        if inferred_return_type.is_mixed()
+            && !returns_declared_parameter_variable(return_value, &expected_return_type, context.resolved_names)
         {
             context.collector.report_with_code(
                 IssueCode::MixedReturnStatement,
@@ -545,12 +547,15 @@ pub fn handle_return_value<'ctx, A>(
 /// A parameter-dependent return such as `@return $value` describes the exact
 /// parameter value, even when the parameter's ordinary static type is `mixed`.
 /// Returning that parameter directly therefore satisfies the declaration.
-fn returns_declared_parameter_variable(return_value: &Expression<'_>, expected_return_type: &TUnion) -> bool {
-    let Expression::Variable(Variable::Direct(variable)) = unwrap_expression(return_value) else {
+fn returns_declared_parameter_variable(
+    return_value: &Expression<'_>,
+    expected_return_type: &TUnion,
+    resolved_names: &ResolvedNames<'_>,
+) -> bool {
+    let Some(variable_name) = get_direct_variable_id(unwrap_expression(return_value), resolved_names) else {
         return false;
     };
 
-    let variable_name = word(variable.name);
     expected_return_type
         .types
         .iter()

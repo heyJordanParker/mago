@@ -903,7 +903,12 @@ where
             self.context.resolved_names,
             Some(self.context.codebase),
         ) {
-            (false, id, get_root_expression_id(switch.expression), switch.expression.clone())
+            (
+                false,
+                id,
+                get_root_expression_id(switch.expression, self.context.resolved_names),
+                switch.expression.clone(),
+            )
         } else {
             let subject_id_str =
                 format!("{}{}", Self::SYNTHETIC_SWITCH_VAR_PREFIX, switch.expression.span().start.offset);

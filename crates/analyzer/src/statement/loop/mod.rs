@@ -309,7 +309,8 @@ where
 {
     let always_enters_loop = Cell::new(always_enters_loop);
 
-    let (mut assignment_map, first_variable_id) = get_assignment_map(pre_conditions, &post_expressions, statements);
+    let (mut assignment_map, first_variable_id) =
+        get_assignment_map(pre_conditions, &post_expressions, statements, context.resolved_names);
     let assignment_depth_limit = context.settings.loop_assignment_depth_threshold as usize;
     let assignment_depth = if let Some(first_variable_id) = first_variable_id {
         get_assignment_map_depth(first_variable_id, &mut assignment_map, assignment_depth_limit)

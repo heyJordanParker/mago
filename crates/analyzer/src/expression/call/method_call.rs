@@ -22,7 +22,6 @@ use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::MethodCall;
 use mago_syntax::cst::NullSafeMethodCall;
-use mago_syntax::cst::Variable;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
@@ -52,6 +51,7 @@ use crate::resolver::method::report_non_documented_method;
 use crate::resolver::method::report_non_existent_method;
 use crate::resolver::method::resolve_method_targets;
 use crate::utils::expression::get_block_expression_id;
+use crate::utils::expression::is_this;
 use crate::visibility::check_method_visibility;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for MethodCall<'arena> {
@@ -603,7 +603,7 @@ where
     A: Arena,
 {
     match expr {
-        Expression::Variable(Variable::Direct(var)) if var.name == b"$this" => true,
+        _ if is_this(expr, context.resolved_names) => true,
         Expression::Call(Call::Method(method_call)) => {
             if !is_this_or_self_returning_chain(method_call.object, context, block_context) {
                 return false;

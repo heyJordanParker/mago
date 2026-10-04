@@ -16,9 +16,7 @@ use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::ClassLikeMemberSelector;
-use mago_syntax::cst::Expression;
 use mago_syntax::cst::PropertyAccess;
-use mago_syntax::cst::Variable;
 
 use crate::artifacts::AnalysisArtifacts;
 use crate::code::IssueCode;
@@ -28,6 +26,7 @@ use crate::error::AnalysisError;
 use crate::expression::assignment::PropertyWriteKind;
 use crate::resolver::property::resolve_instance_properties;
 use crate::utils::expression::get_property_access_expression_id;
+use crate::utils::expression::is_this;
 use crate::utils::get_type_diff;
 
 #[inline]
@@ -269,8 +268,7 @@ where
 
     if matches!(write_kind, PropertyWriteKind::Direct | PropertyWriteKind::Coalesce)
         && block_context.flags.collect_initializations()
-        && let Expression::Variable(Variable::Direct(var)) = property_access.object
-        && var.name == b"$this"
+        && is_this(property_access.object, context.resolved_names)
         && let ClassLikeMemberSelector::Identifier(ident) = &property_access.property
     {
         let property_name = mago_word::concat_word!(b"$", ident.value);

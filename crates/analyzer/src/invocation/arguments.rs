@@ -19,6 +19,7 @@ use mago_codex::ttype::get_iterable_value_parameter;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_never;
 use mago_codex::ttype::union::TUnion;
+use mago_names::ResolvedNames;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -32,12 +33,17 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::invocation::InvocationTarget;
+use crate::utils::expression::is_referenceable;
 use crate::utils::get_type_diff;
 
 /// Checks if an argument can be passed by reference.
-pub(super) fn is_argument_referenceable(argument_expression: &Expression, argument_type: &TUnion) -> bool {
-    argument_expression.is_referenceable(false)
-        || (argument_expression.is_referenceable(true) && argument_type.by_reference())
+pub(super) fn is_argument_referenceable(
+    argument_expression: &Expression,
+    argument_type: &TUnion,
+    resolved_names: &ResolvedNames<'_>,
+) -> bool {
+    is_referenceable(argument_expression, false, resolved_names)
+        || (is_referenceable(argument_expression, true, resolved_names) && argument_type.by_reference())
 }
 
 pub(super) fn is_argument_mutated_by_reference(
@@ -152,7 +158,7 @@ where
     let argument_type = artifacts.get_expression_type(argument_expression).cloned().unwrap_or_else(get_mixed);
 
     if requires_referenceable_argument(invocation_target, referenced_parameter)
-        && !is_argument_referenceable(argument_expression, &argument_type)
+        && !is_argument_referenceable(argument_expression, &argument_type, context.resolved_names)
     {
         let target_kind_str = invocation_target.guess_kind();
         let target_name_str = invocation_target.guess_name(context);
