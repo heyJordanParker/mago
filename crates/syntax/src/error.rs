@@ -52,6 +52,8 @@ pub enum ParseError {
     PhpSyntaxInSharp(TokenKind, Span),
     /// A `\` name written in a PHP# file, such as `\Lib\Calc`, with the dotted name its `import` line takes.
     QualifiedNameInSharp(Box<str>, Span),
+    /// A PHP# parameter written without its type, such as `run(extra)`, at its name.
+    UntypedParameterInSharp(Span),
 }
 
 impl HasFileId for SyntaxError {
@@ -73,7 +75,9 @@ impl HasFileId for ParseError {
             ParseError::UnexpectedToken(_, _, span) => span.file_id,
             ParseError::UnclosedLiteralString(_, span) => span.file_id,
             ParseError::RecursionLimitExceeded(span) => span.file_id,
-            ParseError::PhpSyntaxInSharp(_, span) | ParseError::QualifiedNameInSharp(_, span) => span.file_id,
+            ParseError::PhpSyntaxInSharp(_, span)
+            | ParseError::QualifiedNameInSharp(_, span)
+            | ParseError::UntypedParameterInSharp(span) => span.file_id,
         }
     }
 }
@@ -99,7 +103,9 @@ impl HasSpan for ParseError {
             ParseError::UnexpectedToken(_, _, span) => *span,
             ParseError::UnclosedLiteralString(_, span) => *span,
             ParseError::RecursionLimitExceeded(span) => *span,
-            ParseError::PhpSyntaxInSharp(_, span) | ParseError::QualifiedNameInSharp(_, span) => *span,
+            ParseError::PhpSyntaxInSharp(_, span)
+            | ParseError::QualifiedNameInSharp(_, span)
+            | ParseError::UntypedParameterInSharp(span) => *span,
         }
     }
 }
@@ -169,6 +175,7 @@ impl std::fmt::Display for ParseError {
 
                 format!("A `\\` name is PHP syntax: add `import {name};` and write `{short_name}`")
             }
+            ParseError::UntypedParameterInSharp(_) => "A PHP# parameter needs a type, as in `int extra`.".to_string(),
         };
 
         write!(f, "{message}")
