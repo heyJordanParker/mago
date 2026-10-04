@@ -1,5 +1,6 @@
 use mago_allocator::Arena;
 use mago_codex::metadata::function_like::FunctionLikeMetadata;
+use mago_names::scope::php_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -107,25 +108,27 @@ where
     match &r#use.items {
         UseItems::Sequence(sequence) => {
             for item in sequence.items.iter() {
-                let fqn = word(mago_bytes::trim_start_byte(item.name.value(), b'\\'));
+                let fqn = word(mago_bytes::trim_start_byte(&php_name(&item.name), b'\\'));
                 check_class_like_casing(context, fqn, item.name.span());
             }
         }
         UseItems::TypedSequence(typed_sequence) => {
             for item in typed_sequence.items.iter() {
-                let fqn = word(mago_bytes::trim_start_byte(item.name.value(), b'\\'));
+                let fqn = word(mago_bytes::trim_start_byte(&php_name(&item.name), b'\\'));
                 check_typed_use_casing(context, fqn, item.name.span(), &typed_sequence.r#type);
             }
         }
         UseItems::TypedList(typed_list) => {
-            let prefix = mago_bytes::trim_start_byte(typed_list.namespace.value(), b'\\');
+            let namespace = php_name(&typed_list.namespace);
+            let prefix = mago_bytes::trim_start_byte(&namespace, b'\\');
             for item in typed_list.items.iter() {
                 let fqn = concat_word!(prefix, b"\\", item.name.value());
                 check_typed_use_casing(context, fqn, item.name.span(), &typed_list.r#type);
             }
         }
         UseItems::MixedList(mixed_list) => {
-            let prefix = mago_bytes::trim_start_byte(mixed_list.namespace.value(), b'\\');
+            let namespace = php_name(&mixed_list.namespace);
+            let prefix = mago_bytes::trim_start_byte(&namespace, b'\\');
             for maybe_typed_item in mixed_list.items.iter() {
                 let fqn = concat_word!(prefix, b"\\", maybe_typed_item.item.name.value());
                 match &maybe_typed_item.r#type {

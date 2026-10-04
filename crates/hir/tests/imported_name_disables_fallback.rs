@@ -94,6 +94,31 @@ fn fully_qualified_function_call_is_not_imported() {
 }
 
 #[test]
+fn sharp_dotted_names_lower_to_the_php_names_they_run_as() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Calc;\n\nx();\n";
+    let arena = LocalArena::new();
+    let scratch = LocalArena::new();
+    let file = File::ephemeral(Cow::Borrowed(b"Report.sharp"), Cow::Borrowed(code.as_bytes()));
+    let program = parse_file(&scratch, &file);
+    let ir: IR<'_, (), (), ()> = Lowering::new(&arena, &scratch, &file, program, LowerSettings::default()).lower();
+
+    let StatementKind::Namespace(namespace) = &ir.statements[0].kind else {
+        panic!("the file starts with its namespace");
+    };
+    let NamespaceBody::Implicit { statements, .. } = &namespace.body else {
+        panic!("the namespace has no braces");
+    };
+    let StatementKind::Use(items) = &statements[0].kind else {
+        panic!("the namespace starts with the import");
+    };
+
+    assert_eq!(namespace.name.map(|name| name.value), Some(&b"App\\Tenant"[..]));
+    assert_eq!(items[0].item.value, b"Lib\\Calc");
+    assert_eq!(items[0].r#as, b"Calc");
+    assert_eq!(find_function_callee(ir.statements).map(|callee| callee.value), Some(&b"App\\Tenant\\x"[..]));
+}
+
+#[test]
 fn aliased_function_call_is_imported() {
     with_first_function_callee("<?php namespace A { use function B\\y as x; x(); }", |callee| {
         assert_eq!(callee.value, b"B\\y");

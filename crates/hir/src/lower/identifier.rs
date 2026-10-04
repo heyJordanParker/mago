@@ -1,4 +1,7 @@
+use std::borrow::Cow;
+
 use mago_allocator::Arena;
+use mago_names::scope::php_name;
 use mago_span::HasSpan;
 use mago_syntax::cst;
 
@@ -24,12 +27,21 @@ where
             cst::Identifier::Dotted(_) => IdentifierKind::Dotted,
         };
 
+        let name = self.php_name(identifier);
         let (value, imported) = match resolve {
-            Some(name_kind) => self.namespace_resolution.resolve_name(name_kind, identifier.value()),
-            None => (identifier.value(), false),
+            Some(name_kind) => self.namespace_resolution.resolve_name(name_kind, name),
+            None => (name, false),
         };
 
         Identifier { span: identifier.span(), imported, value: self.interner.intern(value), kind }
+    }
+
+    /// The name PHP writes for the identifier, such as `App\Tenant` for the PHP# name `App.Tenant`.
+    pub(crate) fn php_name(&self, identifier: &'scratch cst::Identifier<'scratch>) -> &'scratch [u8] {
+        match php_name(identifier) {
+            Cow::Borrowed(name) => name,
+            Cow::Owned(name) => self.scratch.alloc_slice_copy(&name),
+        }
     }
 
     pub(crate) fn lower_declaration_name(

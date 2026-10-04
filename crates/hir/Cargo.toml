@@ -22,6 +22,7 @@ mago-php-version = { workspace = true }
 mago-span = { workspace = true }
 mago-syntax-core = { workspace = true }
 mago-flags = { workspace = true }
+mago-names = { workspace = true }
 mago-syntax = { workspace = true }
 mago-phpdoc-syntax = { workspace = true }
 mago-allocator = { workspace = true }

@@ -581,7 +581,7 @@ where
             None => None,
         };
 
-        self.namespace_resolution.enter_namespace(namespace.name.as_ref().map(|identifier| identifier.value()));
+        self.namespace_resolution.enter_namespace(namespace.name.as_ref().map(|identifier| self.php_name(identifier)));
         let body = match &namespace.body {
             cst::NamespaceBody::BraceDelimited(block) => {
                 NamespaceBody::BraceDelimited(self.arena.alloc(self.lower_block(block)))
@@ -639,7 +639,7 @@ where
         let (mut value, identifier_kind) = match prefix {
             Some(prefix) => {
                 let mut joined = Vec::new_in(self.scratch);
-                joined.extend_from_slice(prefix.value());
+                joined.extend_from_slice(self.php_name(prefix));
                 joined.push(b'\\');
                 joined.extend_from_slice(item.name.value());
 
@@ -651,7 +651,7 @@ where
 
                 (&*joined.leak(), identifier_kind)
             }
-            None => (item.name.value(), use_identifier_kind(&item.name)),
+            None => (self.php_name(&item.name), use_identifier_kind(&item.name)),
         };
 
         if let [b'\\', rest @ ..] = value {

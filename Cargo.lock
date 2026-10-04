@@ -1674,6 +1674,7 @@ dependencies = [
  "mago-allocator",
  "mago-database",
  "mago-flags",
+ "mago-names",
  "mago-php-version",
  "mago-phpdoc-syntax",
  "mago-span",

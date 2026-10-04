@@ -294,6 +294,22 @@ fn assigning_a_property_of_this_keeps_the_memoized_calls_of_other_locals_as_in_p
 }
 
 #[test]
+fn a_sharp_import_passes_the_use_statement_and_casing_checks_as_in_php() {
+    let sharp = "namespace Demo;\n\nimport Lib.Calc;\nimport Lib.Money;\nimport Lib.missing;\n\nclass Report\n{\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Calc;\nuse Lib\\Money;\nuse Lib\\missing;\n\nclass Report\n{\n}\n";
+    let money = "<?php\n\nnamespace Lib;\n\nfinal class money\n{\n}\n";
+    let settings = || Settings { check_use_statements: true, check_name_casing: true, ..settings() };
+
+    let others = [("src/Lib/Calc.php", CALC), ("src/Lib/money.php", money)];
+
+    let sharp_issues = issues_with(settings(), ("src/Demo/Report.sharp", sharp), &others);
+    let php_issues = issues_with(settings(), ("src/Demo/Report.php", php), &others);
+
+    assert_eq!(sharp_issues, ["4:8 incorrect-class-like-casing", "5:8 non-existent-use-import"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
 fn adding_a_string_is_not_supported_yet() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(int extra)\n    {\n        let label = \"one\";\n        return extra + label;\n    }\n}\n";
 

@@ -1,4 +1,5 @@
 use mago_allocator::Arena;
+use mago_names::scope::php_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -31,25 +32,27 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Use<'arena> {
         match &self.items {
             UseItems::Sequence(sequence) => {
                 for item in sequence.items.iter() {
-                    let fqn = trim_start_byte(item.name.value(), b'\\');
-                    check_class_like_import(context, &item.name, fqn);
+                    let name = php_name(&item.name);
+                    check_class_like_import(context, &item.name, trim_start_byte(&name, b'\\'));
                 }
             }
             UseItems::TypedSequence(typed_sequence) => {
                 for item in typed_sequence.items.iter() {
-                    let fqn = trim_start_byte(item.name.value(), b'\\');
-                    check_typed_import(context, &item.name, fqn, &typed_sequence.r#type);
+                    let name = php_name(&item.name);
+                    check_typed_import(context, &item.name, trim_start_byte(&name, b'\\'), &typed_sequence.r#type);
                 }
             }
             UseItems::TypedList(typed_list) => {
-                let prefix = trim_start_byte(typed_list.namespace.value(), b'\\');
+                let namespace = php_name(&typed_list.namespace);
+                let prefix = trim_start_byte(&namespace, b'\\');
                 for item in typed_list.items.iter() {
                     let fqn = concat_word!(prefix, b"\\", item.name.value());
                     check_typed_import(context, &item.name, fqn.as_bytes(), &typed_list.r#type);
                 }
             }
             UseItems::MixedList(mixed_list) => {
-                let prefix = trim_start_byte(mixed_list.namespace.value(), b'\\');
+                let namespace = php_name(&mixed_list.namespace);
+                let prefix = trim_start_byte(&namespace, b'\\');
                 for maybe_typed_item in mixed_list.items.iter() {
                     let fqn = concat_word!(prefix, b"\\", maybe_typed_item.item.name.value());
                     check_maybe_typed_import(
