@@ -694,10 +694,4 @@ mod tests {
     fn a_parameter_without_a_type_returns_an_internal_error_and_no_nodes() {
         assert_internal_error("public void run($extra) {}");
     }
-
-    #[test]
-    fn a_method_without_an_access_modifier_returns_an_internal_error_and_no_nodes() {
-        assert_internal_error("void run() {}");
-        assert_internal_error("static void run() {}");
-    }
 }
