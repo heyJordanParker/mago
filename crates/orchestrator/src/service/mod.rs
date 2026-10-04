@@ -36,3 +36,20 @@ pub mod format;
 pub mod guard;
 pub mod incremental_analysis;
 pub mod lint;
+
+use mago_database::file::File;
+use mago_syntax::dialect::Dialect;
+
+use crate::error::OrchestratorError;
+
+/// Refuses a PHP# file, which only the analyzer supports yet.
+fn refuse_sharp_file(tool: &'static str, file: &File) -> Result<(), OrchestratorError> {
+    if Dialect::of(file).is_sharp() {
+        return Err(OrchestratorError::SharpNotSupported {
+            tool,
+            file: String::from_utf8_lossy(&file.name).into_owned(),
+        });
+    }
+
+    Ok(())
+}

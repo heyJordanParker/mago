@@ -13,6 +13,7 @@ use mago_syntax::settings::ParserSettings;
 use crate::error::OrchestratorError;
 use crate::service::pipeline::StatelessParallelPipeline;
 use crate::service::pipeline::StatelessReducer;
+use crate::service::refuse_sharp_file;
 
 /// Result of running the guard service.
 #[derive(Debug)]
@@ -95,6 +96,8 @@ impl GuardService {
         );
 
         let issues = pipeline.run(|(codebase, guard_settings, parser_settings), arena, source_file| {
+            refuse_sharp_file("guard", &source_file)?;
+
             let mut issues = IssueCollection::new();
 
             let program = parse_file_with_settings(arena, &source_file, parser_settings);

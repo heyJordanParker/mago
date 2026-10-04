@@ -15,6 +15,13 @@ pub enum OrchestratorError {
     Analysis(AnalysisError),
     /// An error occurred while accessing the cache (lock poisoning).
     CacheLockPoisoned,
+    /// A tool was asked to process a PHP# file, which it does not support yet.
+    SharpNotSupported {
+        /// The tool, such as `lint`.
+        tool: &'static str,
+        /// The name of the PHP# file.
+        file: String,
+    },
     /// A general error with a message.
     General(String),
 }
@@ -25,6 +32,9 @@ impl std::fmt::Display for OrchestratorError {
             Self::Database(error) => write!(f, "Database error: {error}"),
             Self::Analysis(error) => write!(f, "Analysis error: {error}"),
             Self::CacheLockPoisoned => write!(f, "Cache lock poisoned"),
+            Self::SharpNotSupported { tool, file } => {
+                write!(f, "`{tool}` on PHP# files is not supported yet: {file}. Exclude PHP# files from `{tool}`.")
+            }
             Self::General(message) => write!(f, "{message}"),
         }
     }
@@ -36,6 +46,7 @@ impl std::error::Error for OrchestratorError {
             Self::Database(error) => Some(error),
             Self::Analysis(error) => Some(error),
             Self::CacheLockPoisoned => None,
+            Self::SharpNotSupported { .. } => None,
             Self::General(_) => None,
         }
     }

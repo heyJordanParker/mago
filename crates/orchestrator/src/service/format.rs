@@ -14,6 +14,7 @@ use mago_syntax::settings::ParserSettings;
 use crate::error::OrchestratorError;
 use crate::service::pipeline::StatelessParallelPipeline;
 use crate::service::pipeline::StatelessReducer;
+use crate::service::refuse_sharp_file;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileFormatStatus {
@@ -65,6 +66,8 @@ impl FormatService {
     ///
     /// Returns [`OrchestratorError`] if the formatter fails outside of recoverable parse errors.
     pub fn format_file_in(self, file: &File, arena: &LocalArena) -> Result<FileFormatStatus, OrchestratorError> {
+        refuse_sharp_file("format", file)?;
+
         let formatter =
             Formatter::new(arena, self.php_version, self.settings).with_parser_settings(self.parser_settings);
 
@@ -101,6 +104,8 @@ impl FormatService {
         );
 
         pipeline.run(|context, arena, file| {
+            refuse_sharp_file("format", &file)?;
+
             let formatter = Formatter::new(arena, context.php_version, context.settings)
                 .with_parser_settings(context.parser_settings);
             let status = match formatter.format_file(&file) {
@@ -154,6 +159,8 @@ impl FormatService {
         );
 
         pipeline.run_on_files(file_ids, |context, arena, file| {
+            refuse_sharp_file("format", &file)?;
+
             let formatter = Formatter::new(arena, context.php_version, context.settings)
                 .with_parser_settings(context.parser_settings);
             let status = match formatter.format_file(&file) {

@@ -23,6 +23,7 @@ use mago_syntax::settings::ParserSettings;
 use crate::OrchestratorError;
 use crate::service::pipeline::StatelessParallelPipeline;
 use crate::service::pipeline::StatelessReducer;
+use crate::service::refuse_sharp_file;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::service::telemetry::LintPhaseTelemetry;
 
@@ -195,6 +196,8 @@ impl LintService {
         let telemetry_for_closure = Arc::clone(&telemetry);
 
         let result = pipeline.run(move |context, arena, file| {
+            refuse_sharp_file("lint", &file)?;
+
             #[cfg(not(target_arch = "wasm32"))]
             let per_file_start = trace_enabled.then(Instant::now);
             #[cfg(not(target_arch = "wasm32"))]
