@@ -180,11 +180,20 @@ fn a_by_reference_parameter_is_a_parse_error() {
 }
 
 #[test]
-fn a_parameter_without_a_type_is_a_parse_error() {
-    let arena = LocalArena::new();
-    let program = parse(&arena, "src/Report.sharp", "class Report\n{\n    public int run(extra) { return 1; }\n}\n");
+fn a_parameter_without_a_type_is_a_parse_error_that_names_the_rule() {
+    for parameters in ["extra", "extra, int other", "extra = 1"] {
+        let arena = LocalArena::new();
+        let code: &'static str = Box::leak(
+            format!("class Report\n{{\n    public int run({parameters}) {{ return 1; }}\n}}\n").into_boxed_str(),
+        );
+        let program = parse(&arena, "src/Report.sharp", code);
 
-    assert!(!program.errors.is_empty());
+        let [error] = program.errors else {
+            panic!("expected one error for `{parameters}`, got {:#?}", program.errors);
+        };
+        assert_eq!(error.to_string(), "A PHP# parameter needs a type, as in `int extra`.", "{parameters}");
+        assert_eq!(source(code, error), "extra", "{parameters}");
+    }
 }
 
 #[test]
