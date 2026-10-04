@@ -16,7 +16,7 @@ where
 {
     pub(crate) fn parse_foreach(&mut self) -> Result<Foreach<'arena>, ParseError> {
         Ok(Foreach {
-            foreach: self.expect_keyword(T!["foreach"])?,
+            foreach: self.expect_php_keyword(T!["foreach"])?,
             left_parenthesis: self.stream.eat_span(T!["("])?,
             expression: self.arena.alloc(self.parse_expression()?),
             r#as: self.expect_keyword(T!["as"])?,

@@ -54,6 +54,10 @@ pub enum ParseError {
     QualifiedNameInSharp(Box<str>, Span),
     /// A PHP# parameter written without its type, such as `run(extra)`, at its name.
     UntypedParameterInSharp(Span),
+    /// TypeScript's `in` written in a PHP# `for … of` loop, at the `in`.
+    ForInInSharp(Span),
+    /// PHP# syntax the engine cannot run yet, such as `required` or a named constructor, where it starts.
+    NotSupportedYetInSharp(&'static str, Span),
 }
 
 impl HasFileId for SyntaxError {
@@ -77,7 +81,9 @@ impl HasFileId for ParseError {
             ParseError::RecursionLimitExceeded(span) => span.file_id,
             ParseError::PhpSyntaxInSharp(_, span)
             | ParseError::QualifiedNameInSharp(_, span)
-            | ParseError::UntypedParameterInSharp(span) => span.file_id,
+            | ParseError::UntypedParameterInSharp(span)
+            | ParseError::ForInInSharp(span)
+            | ParseError::NotSupportedYetInSharp(_, span) => span.file_id,
         }
     }
 }
@@ -105,7 +111,9 @@ impl HasSpan for ParseError {
             ParseError::RecursionLimitExceeded(span) => *span,
             ParseError::PhpSyntaxInSharp(_, span)
             | ParseError::QualifiedNameInSharp(_, span)
-            | ParseError::UntypedParameterInSharp(span) => *span,
+            | ParseError::UntypedParameterInSharp(span)
+            | ParseError::ForInInSharp(span)
+            | ParseError::NotSupportedYetInSharp(_, span) => *span,
         }
     }
 }
@@ -162,12 +170,14 @@ impl std::fmt::Display for ParseError {
             ParseError::RecursionLimitExceeded(_) => "Maximum recursion depth exceeded".to_string(),
             ParseError::PhpSyntaxInSharp(kind, _) => match kind {
                 T!["->"] => "`->` is PHP syntax: PHP# writes member access with `.`".to_string(),
-                T!["?->"] => "`?->` is PHP syntax: PHP# writes member access with `.`".to_string(),
+                T!["?->"] => "`?->` is PHP syntax: PHP# writes null-safe member access with `?.`".to_string(),
+                T!["?"] => "`?` before a type is PHP syntax: PHP# writes it after the type, as in `int?`".to_string(),
                 T!["::"] => "`::` is PHP syntax: PHP# writes static access with `.`".to_string(),
                 T![".="] => "`.=` is PHP syntax: in PHP# `.` is member access".to_string(),
                 T!["function"] => "`function` is PHP syntax: a PHP# method starts with its return type".to_string(),
                 T!["$variable"] => "A `$` variable is PHP syntax: PHP# names have no `$`".to_string(),
                 T!["use"] => "`use` is PHP syntax: PHP# imports a class with `import`".to_string(),
+                T!["foreach"] => "`foreach` is PHP syntax: PHP# loops over a collection with `for … of`".to_string(),
                 kind => format!("`{kind}` is PHP syntax that PHP# does not have"),
             },
             ParseError::QualifiedNameInSharp(name, _) => {
@@ -176,6 +186,10 @@ impl std::fmt::Display for ParseError {
                 format!("A `\\` name is PHP syntax: add `import {name};` and write `{short_name}`")
             }
             ParseError::UntypedParameterInSharp(_) => "A PHP# parameter needs a type, as in `int extra`.".to_string(),
+            ParseError::ForInInSharp(_) => {
+                "PHP# loops over a collection with `of`, as in `for (const line of lines)`.".to_string()
+            }
+            ParseError::NotSupportedYetInSharp(construct, _) => format!("{construct} is not supported yet in PHP#."),
         };
 
         write!(f, "{message}")
@@ -212,14 +226,24 @@ impl From<SyntaxError> for ParseError {
 
 impl From<&ParseError> for Issue {
     fn from(error: &ParseError) -> Self {
-        if let ParseError::SyntaxError(syntax_error) = error {
-            syntax_error.into()
-        } else {
-            Issue::error("Parse error encountered during parsing")
+        match error {
+            ParseError::SyntaxError(syntax_error) => syntax_error.into(),
+            // A PHP# parse error names the rule it breaks, so its message is the title.
+            ParseError::PhpSyntaxInSharp(..)
+            | ParseError::QualifiedNameInSharp(..)
+            | ParseError::UntypedParameterInSharp(..)
+            | ParseError::ForInInSharp(..) => Issue::error(error.to_string())
+                .with_code(PARSE_ERROR_CODE)
+                .with_annotation(Annotation::primary(error.span()).with_message("Written here.")),
+            ParseError::NotSupportedYetInSharp(_, span) => Issue::error(error.to_string())
+                .with_code(PARSE_ERROR_CODE)
+                .with_annotation(Annotation::primary(*span).with_message("Not supported yet."))
+                .with_note("The PHP# engine cannot run this spec syntax yet."),
+            _ => Issue::error("Parse error encountered during parsing")
                 .with_code(PARSE_ERROR_CODE)
                 .with_annotation(Annotation::primary(error.span()).with_message(error.to_string()))
                 .with_note("This error indicates that the parser encountered a parse issue.")
-                .with_help("Check the syntax of your code.")
+                .with_help("Check the syntax of your code."),
         }
     }
 }

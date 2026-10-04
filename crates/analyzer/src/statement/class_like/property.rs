@@ -11,9 +11,11 @@ use mago_codex::ttype::expander::TypeExpansionOptions;
 use mago_codex::ttype::expander::expand_union;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::wrap_atomic;
+use mago_names::binding::php_variable_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
+use mago_syntax::cst::Expression;
 use mago_syntax::cst::HookedProperty;
 use mago_syntax::cst::PlainProperty;
 use mago_syntax::cst::Property;
@@ -110,48 +112,64 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for PropertyConcreteItem<'arena> {
     where
         A: Arena,
     {
-        self.value.analyze(context, block_context, artifacts)?;
+        analyze_default_value(self.variable.name, self.value, context, block_context, artifacts)
+    }
+}
 
-        if let Some(class_metadata) = block_context.scope.get_class_like()
-            && let Some(property_metadata) = class_metadata.properties.get(&word(self.variable.name))
-            && let Some(declared_type_metadata) = property_metadata.type_metadata.as_ref()
-            && !declared_type_metadata.type_union.is_mixed()
-            && !declared_type_metadata.type_union.has_template_types()
-            && !declared_type_metadata.type_union.is_generic_parameter()
-            && let Some(value_type) = artifacts.get_expression_type(&self.value)
-            && !value_type.is_never()
-        {
-            let mut declared_type = declared_type_metadata.type_union.clone();
-            expand_union(
-                context.codebase,
-                &mut declared_type,
-                &TypeExpansionOptions {
-                    self_class: Some(class_metadata.original_name),
-                    static_class_type: StaticClassType::Name(class_metadata.original_name),
-                    ..Default::default()
-                },
-            );
+/// Analyzes a property's default value and reports it when its type is not assignable to the property's. A PHP#
+/// initial value that is not constant runs in the constructor, and the same check covers it.
+fn analyze_default_value<'ctx, 'arena, A>(
+    variable_name: &[u8],
+    value: &Expression<'arena>,
+    context: &mut Context<'ctx, 'arena, A>,
+    block_context: &mut BlockContext<'ctx>,
+    artifacts: &mut AnalysisArtifacts,
+) -> Result<(), AnalysisError>
+where
+    A: Arena,
+{
+    value.analyze(context, block_context, artifacts)?;
 
-            let mut comparison_result = ComparisonResult::new();
-            if !union_comparator::is_contained_by(
-                context.codebase,
-                value_type,
-                &declared_type,
-                true,
-                true,
-                false,
-                &mut comparison_result,
-            ) {
-                let value_type_str = value_type.get_id();
-                let declared_type_str = declared_type.get_id();
-                let class_name = class_metadata.original_name;
-                let property_name = mago_bytes::BytesDisplay(self.variable.name);
+    if let Some(class_metadata) = block_context.scope.get_class_like()
+        && let Some(property_metadata) = class_metadata.properties.get(&php_variable_name(variable_name))
+        && let Some(declared_type_metadata) = property_metadata.type_metadata.as_ref()
+        && !declared_type_metadata.type_union.is_mixed()
+        && !declared_type_metadata.type_union.has_template_types()
+        && !declared_type_metadata.type_union.is_generic_parameter()
+        && let Some(value_type) = artifacts.get_expression_type(value)
+        && !value_type.is_never()
+    {
+        let mut declared_type = declared_type_metadata.type_union.clone();
+        expand_union(
+            context.codebase,
+            &mut declared_type,
+            &TypeExpansionOptions {
+                self_class: Some(class_metadata.original_name),
+                static_class_type: StaticClassType::Name(class_metadata.original_name),
+                ..Default::default()
+            },
+        );
 
-                let issue = Issue::error(format!(
+        let mut comparison_result = ComparisonResult::new();
+        if !union_comparator::is_contained_by(
+            context.codebase,
+            value_type,
+            &declared_type,
+            true,
+            true,
+            false,
+            &mut comparison_result,
+        ) {
+            let value_type_str = value_type.get_id();
+            let declared_type_str = declared_type.get_id();
+            let class_name = class_metadata.original_name;
+            let property_name = mago_bytes::BytesDisplay(variable_name);
+
+            let issue = Issue::error(format!(
                     "Default value for property `{class_name}::{property_name}` is not assignable to its declared type."
                 ))
                 .with_annotation(
-                    Annotation::primary(self.value.span())
+                    Annotation::primary(value.span())
                         .with_message(format!("This default value has type `{value_type_str}`")),
                 )
                 .with_annotation(
@@ -161,12 +179,11 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for PropertyConcreteItem<'arena> {
                 .with_note("A property's default value must be assignable to the property's declared type.")
                 .with_help("Change the default value to match the declared type, or update the property type to accept the default.");
 
-                context.collector.report_with_code(IssueCode::InvalidPropertyDefaultValue, issue);
-            }
+            context.collector.report_with_code(IssueCode::InvalidPropertyDefaultValue, issue);
         }
-
-        Ok(())
     }
+
+    Ok(())
 }
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for HookedProperty<'arena> {
@@ -187,6 +204,9 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for HookedProperty<'arena> {
             AttributeTarget::Property,
         )?;
         self.item.analyze(context, block_context, artifacts)?;
+        if let Some(initial_value) = &self.initial_value {
+            analyze_default_value(self.item.variable().name, initial_value.value, context, block_context, artifacts)?;
+        }
 
         let property_name = word(self.item.variable().name);
         for hook in &self.hook_list.hooks {

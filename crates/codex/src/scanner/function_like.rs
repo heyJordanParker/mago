@@ -1,4 +1,5 @@
 use mago_allocator::Arena;
+use mago_names::binding::php_method_name;
 use mago_names::kind::NameKind;
 use mago_names::scope::NamespaceScope;
 use mago_phpdoc_syntax::cst::AssertPattern;
@@ -71,7 +72,7 @@ pub fn scan_method<'arena, A>(
     functionlike_id: (Word, Word),
     method: &'arena Method<'arena>,
     class_like_metadata: &ClassLikeMetadata,
-    context: &mut Context<'_, 'arena, A>,
+    context: &Context<'_, 'arena, A>,
     scope: &mut NamespaceScope,
     type_resolution_context: Option<TypeResolutionContext>,
 ) -> Option<FunctionLikeMetadata>
@@ -88,8 +89,9 @@ where
 
     let verdict = evaluate_version_attributes(&method.attribute_lists, context, context.php_version);
 
-    let lookup_name = ascii_lowercase_word(method.name.value);
-    let display_name = word(method.name.value);
+    let method_name_str = php_method_name(method);
+    let lookup_name = ascii_lowercase_word(method_name_str);
+    let display_name = word(method_name_str);
 
     let mut metadata = FunctionLikeMetadata::new(FunctionLikeKind::Method, lookup_name, display_name, span, flags);
     metadata.version_constraint = verdict.constraint;
@@ -112,8 +114,6 @@ where
             context,
         )));
     }
-
-    let method_name_str = method.name.value;
 
     let mut method_metadata = MethodMetadata {
         is_final: method.modifiers.contains_final(),
@@ -176,7 +176,7 @@ pub fn scan_function<'arena, A>(
     functionlike_id: (Word, Word),
     function: &'arena Function<'arena>,
     classname: Option<Word>,
-    context: &mut Context<'_, 'arena, A>,
+    context: &Context<'_, 'arena, A>,
     scope: &mut NamespaceScope,
     type_resolution_context: TypeResolutionContext,
     constants: Option<&WordMap<ConstantMetadata>>,
@@ -245,7 +245,7 @@ pub fn scan_closure<'arena, A>(
     functionlike_id: (Word, Word),
     closure: &'arena Closure<'arena>,
     classname: Option<Word>,
-    context: &mut Context<'_, 'arena, A>,
+    context: &Context<'_, 'arena, A>,
     scope: &mut NamespaceScope,
     type_resolution_context: TypeResolutionContext,
 ) -> FunctionLikeMetadata
@@ -305,7 +305,7 @@ pub fn scan_arrow_function<'arena, A>(
     functionlike_id: (Word, Word),
     arrow_function: &'arena ArrowFunction<'arena>,
     classname: Option<Word>,
-    context: &mut Context<'_, 'arena, A>,
+    context: &Context<'_, 'arena, A>,
     scope: &mut NamespaceScope,
     type_resolution_context: TypeResolutionContext,
 ) -> FunctionLikeMetadata

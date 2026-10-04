@@ -60,8 +60,10 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Return<'arena> {
 
             let inferred_return_type = artifacts.get_rc_expression_type(&return_value).cloned();
 
+            // A value that failed to parse is `never`, and its parse error already reports it.
             if let Some(inferred_return_type) = &inferred_return_type
                 && inferred_return_type.is_never()
+                && !matches!(return_value, Expression::Error(_))
             {
                 context.collector.report_with_code(
                     IssueCode::NeverReturn,
@@ -384,6 +386,13 @@ pub fn handle_return_value<'ctx, A>(
             && !expected_return_type.is_nullable()
             && !expected_return_type.has_template()
         {
+            // PHP# writes a nullable type with `?` after it.
+            let nullable_return_type_str = if context.dialect.is_sharp() {
+                format!("{expected_return_type_str}?")
+            } else {
+                format!("?{expected_return_type_str}")
+            };
+
             context.collector.report_with_code(
                 IssueCode::NullableReturnStatement,
                 Issue::error(format!(
@@ -401,7 +410,7 @@ pub fn handle_return_value<'ctx, A>(
                 )
                 .with_help(
                     format!(
-                        "You can either change the return type declaration of `{function_name}` to be nullable (e.g., '?{expected_return_type_str}'), or ensure that this function path always returns a non-null value."
+                        "You can either change the return type declaration of `{function_name}` to be nullable (e.g., '{nullable_return_type_str}'), or ensure that this function path always returns a non-null value."
                     )
                 ),
             );

@@ -13,6 +13,7 @@ use mago_orchestrator::Orchestrator;
 use mago_orchestrator::OrchestratorConfiguration;
 
 use crate::config::Configuration;
+use crate::consts::SHARP_EXTENSION;
 use crate::error::Error;
 
 pub mod git;
@@ -110,6 +111,17 @@ pub(crate) fn create_orchestrator<'a>(
     };
 
     Orchestrator::new(orchestrator_config)
+}
+
+/// Leaves PHP# files out of a tool that reads only PHP, with one note when the source extensions list them.
+///
+/// A PHP# file named on the command line bypasses the extension filter, so the tool refuses it with an error.
+pub(crate) fn skip_sharp_files(orchestrator: &mut Orchestrator<'_>, tool: &str) {
+    let extension_count = orchestrator.config.extensions.len();
+    orchestrator.config.extensions.retain(|extension| *extension != SHARP_EXTENSION);
+    if orchestrator.config.extensions.len() < extension_count {
+        tracing::info!("`mago {tool}` skips PHP# files: it does not support them yet.");
+    }
 }
 
 /// Processes the result of a modifying a single file.

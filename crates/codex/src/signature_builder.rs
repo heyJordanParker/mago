@@ -1,6 +1,7 @@
 use mago_fingerprint::FingerprintOptions;
 use mago_fingerprint::Fingerprintable;
 use mago_names::ResolvedNames;
+use mago_names::binding::php_method_name;
 use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeConstant;
 use mago_syntax::cst::Constant;
@@ -163,7 +164,7 @@ impl<'ast, 'arena> MutWalker<'ast, 'arena, ()> for SignatureBuilder<'arena> {
     }
 
     fn walk_in_method(&mut self, method: &'ast Method<'arena>, _context: &mut ()) {
-        let name = method.name.value;
+        let name = php_method_name(method);
         let hash = method.fingerprint(self.resolved_names, &self.fingerprint_options);
         let signature_hash = method.fingerprint(self.resolved_names, &self.sig_only_options);
 

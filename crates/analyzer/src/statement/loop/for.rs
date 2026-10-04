@@ -19,7 +19,15 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for For<'arena> {
     where
         A: Arena,
     {
-        let infinite_loop = self.initializations.is_empty() && self.conditions.is_empty() && self.increments.is_empty();
+        // A PHP# counter is a local declared before the loop runs, so it takes its written type as any local does.
+        if let Some(declaration) = &self.declaration {
+            declaration.analyze(context, block_context, artifacts)?;
+        }
+
+        let infinite_loop = self.declaration.is_none()
+            && self.initializations.is_empty()
+            && self.conditions.is_empty()
+            && self.increments.is_empty();
 
         r#loop::analyze_for_or_while_loop(
             context,

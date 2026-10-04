@@ -89,7 +89,7 @@ pub fn register_anonymous_class<'arena, A>(
     codebase: &mut CodebaseMetadata,
     class: &'arena AnonymousClass<'arena>,
     docblock_start: u32,
-    context: &mut Context<'_, 'arena, A>,
+    context: &Context<'_, 'arena, A>,
     scope: &mut NamespaceScope,
 ) -> ClassLikeRegistration
 where
@@ -123,7 +123,7 @@ where
 pub fn register_class<'arena, A>(
     codebase: &mut CodebaseMetadata,
     class: &'arena Class<'arena>,
-    context: &mut Context<'_, 'arena, A>,
+    context: &Context<'_, 'arena, A>,
     scope: &mut NamespaceScope,
 ) -> ClassLikeRegistration
 where
@@ -155,7 +155,7 @@ where
 pub fn register_interface<'arena, A>(
     codebase: &mut CodebaseMetadata,
     interface: &'arena Interface<'arena>,
-    context: &mut Context<'_, 'arena, A>,
+    context: &Context<'_, 'arena, A>,
     scope: &mut NamespaceScope,
 ) -> ClassLikeRegistration
 where
@@ -187,7 +187,7 @@ where
 pub fn register_trait<'arena, A>(
     codebase: &mut CodebaseMetadata,
     r#trait: &'arena Trait<'arena>,
-    context: &mut Context<'_, 'arena, A>,
+    context: &Context<'_, 'arena, A>,
     scope: &mut NamespaceScope,
 ) -> ClassLikeRegistration
 where
@@ -219,7 +219,7 @@ where
 pub fn register_enum<'arena, A>(
     codebase: &mut CodebaseMetadata,
     r#enum: &'arena Enum<'arena>,
-    context: &mut Context<'_, 'arena, A>,
+    context: &Context<'_, 'arena, A>,
     scope: &mut NamespaceScope,
 ) -> ClassLikeRegistration
 where
@@ -286,7 +286,7 @@ fn scan_class_like<'arena, A>(
     extends: Option<&'arena Extends<'arena>>,
     implements: Option<&'arena Implements<'arena>>,
     enum_type: Option<&'arena EnumBackingTypeHint<'arena>>,
-    context: &mut Context<'_, 'arena, A>,
+    context: &Context<'_, 'arena, A>,
     scope: &mut NamespaceScope,
 ) -> Option<ClassLikeMetadata>
 where

@@ -52,7 +52,7 @@ where
             _ => None,
         };
 
-        Ok(FunctionLikeParameter {
+        let parameter = FunctionLikeParameter {
             attribute_lists,
             modifiers,
             hint: if untyped.is_some() { None } else { hint },
@@ -65,7 +65,12 @@ where
             },
             default_value: self.parse_optional_function_like_parameter_default_value()?,
             hooks: self.parse_optional_property_hook_list()?,
-        })
+        };
+        if parameter.hooks.is_some() {
+            self.skip_via_clause(true)?;
+        }
+
+        Ok(parameter)
     }
 
     fn parse_optional_function_like_parameter_default_value(

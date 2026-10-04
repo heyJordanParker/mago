@@ -13,6 +13,7 @@ use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Declare;
 use mago_syntax::cst::Enum;
 use mago_syntax::cst::Expression;
+use mago_syntax::cst::ForOf;
 use mago_syntax::cst::Function;
 use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::FunctionLikeParameter;
@@ -181,6 +182,11 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingW
         context: &mut Context<'_, 'ast, 'arena>,
     ) {
         checker::sharp::check_local_declaration(local_declaration, context);
+    }
+
+    #[inline]
+    fn walk_in_for_of(&self, for_of: &'ast ForOf<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
+        checker::sharp::check_for_of(for_of, context);
     }
 
     #[inline]

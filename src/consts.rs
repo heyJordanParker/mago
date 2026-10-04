@@ -44,6 +44,9 @@ pub const ARCHIVE_EXTENSION: &str = "tar.gz";
 /// The extension for PHP files.
 pub const PHP_EXTENSION: &str = "php";
 
+/// The extension for PHP# files.
+pub const SHARP_EXTENSION: &str = "sharp";
+
 /// The name of the repository owner.
 pub const REPO_OWNER: &str = "carthage-software";
 

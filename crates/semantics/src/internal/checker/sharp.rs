@@ -14,26 +14,39 @@ use mago_syntax::cst::Access;
 use mago_syntax::cst::Assignment;
 use mago_syntax::cst::AssignmentOperator;
 use mago_syntax::cst::BinaryOperator;
+use mago_syntax::cst::Break;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::ConstantAccess;
+use mago_syntax::cst::Continue;
 use mago_syntax::cst::Expression;
+use mago_syntax::cst::For;
+use mago_syntax::cst::ForBody;
+use mago_syntax::cst::ForOf;
 use mago_syntax::cst::Function;
 use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::Global;
 use mago_syntax::cst::Hint;
 use mago_syntax::cst::Identifier;
+use mago_syntax::cst::If;
+use mago_syntax::cst::IfBody;
 use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::LocalIdentifier;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::Modifier;
+use mago_syntax::cst::ModifierSequenceExt;
 use mago_syntax::cst::Namespace;
 use mago_syntax::cst::NamespaceBody;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::Program;
+use mago_syntax::cst::Property;
+use mago_syntax::cst::PropertyHookBody;
+use mago_syntax::cst::PropertyHookList;
+use mago_syntax::cst::PropertyItem;
+use mago_syntax::cst::Sequence;
 use mago_syntax::cst::Statement;
 use mago_syntax::cst::Terminator;
 use mago_syntax::cst::UnaryPostfix;
@@ -44,6 +57,8 @@ use mago_syntax::cst::Use;
 use mago_syntax::cst::UseItem;
 use mago_syntax::cst::UseItems;
 use mago_syntax::cst::Variable;
+use mago_syntax::cst::While;
+use mago_syntax::cst::WhileBody;
 
 use crate::internal::consts::RESERVED_CLASS_NAMES;
 use crate::internal::consts::RESERVED_KEYWORDS;
@@ -59,22 +74,41 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///
 /// - At file level: `namespace`, `import` and `class`. A file has at most one namespace, named and written without
 ///   braces.
-/// - A class: a name and methods, with no attributes, modifiers, `extends` or `implements`.
+/// - A class: a name, fields and methods, with no attributes, modifiers, `extends` or `implements`.
+/// - A field: `private` or `protected`, a type, one name and an optional initial value. A `public` field is an error,
+///   because spec section 6 has no public fields.
+/// - An initial value: any expression a method body has, without `this`, which is an error. A constant initial value,
+///   as a parameter default is, becomes the member's default, and any other runs at the start of the constructor.
+/// - An auto-property: `public`, `protected` or `private`, a type, one name, the accessors `get;` and an optional
+///   `set;` that may take an access modifier narrower than the property's, and an optional initial value after the
+///   accessors, which is a field's. A property without `get`, an accessor declared twice, or a `set` access modifier
+///   as wide as the property's is an error, as in C#. A get-only property runs as `readonly`, and the analyzer
+///   reports every write to it that `readonly` refuses.
 /// - A method: `public`, `protected` or `private`, an optional `static`, parameters, a return type and a body. Its name
 ///   does not start with `__`, which PHP reserves for magic methods, and is not its class's name, compared ignoring
 ///   case, which PHP# gives to the constructor.
+/// - The constructor: a method named exactly after its class, without a return type and not `static`. A method
+///   without a return type named otherwise is an error. A constructor parameter with an access modifier declares a
+///   member: a field when `private` or `protected` without accessors, and a property with accessors, which follow the
+///   auto-property rules. A `public` parameter without accessors is an error, as spec section 9 says.
 /// - A parameter: always a type, a name and an optional default, and neither variadic nor by reference. A default is
 ///   a literal, a constant, or the operators below on them, without `++` and `--`.
 /// - Types: `int`, `float`, `bool`, `string` and a class written by its short name, and `void` as a return type.
-///   PHP's own check reports a `void` parameter.
-/// - In a method body: blocks, expression statements, `return`, and `let` and `const` declarations.
+///   PHP's own check reports a `void` parameter. Each of them is nullable when written with `?` after it, as in
+///   `int?`, and PHP's own check reports `void?`.
+/// - In a method body: blocks, expression statements, `return`, `let` and `const` declarations, `if` with `else if`
+///   and `else`, `while`, `do … while`, `for` with a `let` or `const` counter or with expressions, `for … of` over a
+///   value or a key and value, and `break` and `continue` without a level. The body of `if`, `else` and each loop is a
+///   block in braces. A local statement can have its type written, as in `Money? total = null;` or
+///   `const int base = 2;`, from the types above but `void`.
 /// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter or a member written
 ///   `object.name`.
 /// - In expressions: literals, parentheses, bare names, assignment, the operators below, and method calls and
-///   property reads written with `.` and a member name, with positional and named arguments. A string literal's
-///   `\u{...}` escapes are valid codepoints, as PHP requires.
-/// - Operators: `+ - * / %`, `== != === !== < > <= >=`, `&& || !`, unary `-` and `+`, `++` and `--`, and
-///   `= += -= *= /=`.
+///   property reads written with `.` or `?.` and a member name, and `new Class(...)` on a class written by its short
+///   name, with positional and named arguments. `?.` never follows a class. A string literal's `\u{...}` escapes are
+///   valid codepoints, as PHP requires.
+/// - Operators: `+ - * / %`, `== != === !== < > <= >=`, `&& || !`, `??`, unary `-` and `+`, `++` and `--`, and
+///   `= += -= *= /= ??=`.
 ///
 /// The check visits every node and refuses any node, or any position of a node, that this list does not name. It
 /// reports each refusal once, at its outermost node. It does not run on a file with a parse error, which is the one
@@ -96,6 +130,8 @@ enum Place {
     File,
     /// A class and its members.
     Class,
+    /// A field or a property, both of which the CST calls a property: its modifiers, type and name.
+    FieldOrProperty,
     /// A method's modifiers, parameters and return type.
     Method,
     /// One parameter.
@@ -135,6 +171,7 @@ fn enter(
     use Place::Body;
     use Place::Class;
     use Place::Default;
+    use Place::FieldOrProperty;
     use Place::File;
     use Place::Method;
     use Place::Parameter;
@@ -196,15 +233,38 @@ fn enter(
         (Node::Class(_), File) => Some(Class),
 
         (Node::ClassLikeMember(ClassLikeMember::Method(_)), Class) => Some(Class),
-        (Node::ClassLikeMember(ClassLikeMember::Property(field)), Class) => {
-            context.report(
-                Issue::error("PHP# fields are not supported yet.")
-                    .with_annotation(Annotation::primary(field.span()).with_message("Not supported yet."))
-                    .with_note(supported(Class)),
-            );
+        (Node::ClassLikeMember(ClassLikeMember::Property(property)), Class) => match is_slice_property(property) {
+            Ok(()) => Some(FieldOrProperty),
+            Err(issue) => {
+                context.report(*issue);
+
+                None
+            }
+        },
+        (Node::HookedProperty(property), FieldOrProperty) => {
+            check_accessors(&property.modifiers, &property.hook_list, property.item.variable().span, context);
+
+            Some(FieldOrProperty)
+        }
+        // `check_accessors` checked the accessors. An initial value is a method body's expression without `this`.
+        (Node::PropertyHookList(_), FieldOrProperty) => None,
+        (Node::Expression(_), FieldOrProperty) => {
+            report_this_in_initial_value(node, context);
+            check_node(node, Body, checked, context);
 
             None
         }
+        (
+            Node::Property(_)
+            | Node::PlainProperty(_)
+            | Node::PropertyItem(_)
+            | Node::PropertyAbstractItem(_)
+            | Node::PropertyConcreteItem(_)
+            | Node::DirectVariable(_)
+            | Node::Modifier(Modifier::Public(_) | Modifier::Protected(_) | Modifier::Private(_)),
+            FieldOrProperty,
+        ) => Some(FieldOrProperty),
+        (Node::Hint(hint), FieldOrProperty) if is_slice_type(hint) && !matches!(hint, Hint::Void(_)) => Some(FieldOrProperty),
         (Node::Method(method), Class) => match is_slice_method(method, context.program) {
             Ok(()) => Some(Method),
             Err((message, help)) => {
@@ -227,8 +287,30 @@ fn enter(
             | Node::MethodAbstractBody(_),
             Method,
         ) => Some(Method),
+        (Node::FunctionLikeParameter(parameter), Method)
+            if parameter.hooks.is_none()
+                && let Some(public) = parameter.modifiers.get_public() =>
+        {
+            context.report(
+                Issue::error(
+                    "A `public` constructor parameter needs accessors: a public member is a property, as in `public int id { get; }`.",
+                )
+                .with_annotation(Annotation::primary(public.span()).with_message("Declared `public` here."))
+                .with_note("Spec section 9 makes a `public` parameter without accessors an error, as a public field is."),
+            );
+
+            None
+        }
         (Node::FunctionLikeParameter(parameter), Method) => match is_slice_parameter(parameter) {
-            Ok(()) => Some(Parameter),
+            Ok(()) => {
+                if let Some(accessors) = &parameter.hooks
+                    && parameter.modifiers.contains_visibility()
+                {
+                    check_accessors(&parameter.modifiers, accessors, parameter.variable.span, context);
+                }
+
+                Some(Parameter)
+            }
             Err((span, message, help)) => {
                 context.report(
                     Issue::error(message)
@@ -239,18 +321,75 @@ fn enter(
                 None
             }
         },
-        (Node::Hint(hint), Method | Parameter) if is_slice_type(hint) => Some(place),
+        (Node::Hint(Hint::Void(_)), Body) => {
+            context.report(
+                Issue::error("A local cannot be `void`: `void` is only a return type.")
+                    .with_annotation(Annotation::primary(node.span()).with_message("Declared `void` here.")),
+            );
+
+            None
+        }
+        (Node::Hint(hint), Method | Parameter | Body) if is_slice_type(hint) => Some(place),
+        (Node::NullableHint(_), Method | Parameter | Body) => Some(place),
         (Node::DirectVariable(_), Parameter) => Some(Parameter),
+        // An access modifier declares a member, and `check_accessors` checked its accessors. PHP reports `static`,
+        // `final` and `abstract` on a parameter, a member declared outside the constructor, and accessors without one.
+        (
+            Node::Modifier(
+                Modifier::Public(_)
+                | Modifier::Protected(_)
+                | Modifier::Private(_)
+                | Modifier::Static(_)
+                | Modifier::Final(_)
+                | Modifier::Abstract(_),
+            ),
+            Parameter,
+        ) => Some(Parameter),
+        (Node::PropertyHookList(_), Parameter) => None,
         (Node::FunctionLikeParameterDefaultValue(_), Parameter) => Some(Default),
         (Node::Block(_), Method | Body) => Some(Body),
 
+        (Node::Statement(statement), Body) if !has_braces(statement) => {
+            report_not_supported(
+                statement.span(),
+                "statement without braces",
+                "PHP# writes the body of `if`, `else` and each loop as a block in braces.",
+                context,
+            );
+
+            None
+        }
         (
             Node::Statement(
-                Statement::Block(_) | Statement::Expression(_) | Statement::Return(_) | Statement::LocalDeclaration(_),
+                Statement::Block(_)
+                | Statement::Expression(_)
+                | Statement::Return(_)
+                | Statement::LocalDeclaration(_)
+                | Statement::If(_)
+                | Statement::While(_)
+                | Statement::DoWhile(_)
+                | Statement::For(_)
+                | Statement::ForOf(_)
+                | Statement::Break(Break { level: None, .. })
+                | Statement::Continue(Continue { level: None, .. }),
             )
+            | Node::Break(_)
+            | Node::Continue(_)
             | Node::ExpressionStatement(_)
             | Node::Return(_)
-            | Node::LocalDeclaration(_),
+            | Node::LocalDeclaration(_)
+            | Node::If(_)
+            | Node::IfBody(IfBody::Statement(_))
+            | Node::IfStatementBody(_)
+            | Node::IfStatementBodyElseClause(_)
+            | Node::While(_)
+            | Node::WhileBody(WhileBody::Statement(_))
+            | Node::DoWhile(_)
+            | Node::For(_)
+            | Node::ForBody(ForBody::Statement(_))
+            | Node::ForOf(_)
+            | Node::ForOfTarget(_)
+            | Node::ForOfKeyValueTarget(_),
             Body,
         ) => Some(Body),
 
@@ -294,20 +433,38 @@ fn enter(
             Node::Expression(
                 Expression::Assignment(_)
                 | Expression::UnaryPostfix(_)
-                | Expression::Call(Call::Method(_))
-                | Expression::Access(Access::Property(_)),
+                | Expression::Call(Call::Method(_) | Call::NullSafeMethod(_))
+                | Expression::Access(Access::Property(_) | Access::NullSafeProperty(_)),
             )
             | Node::Assignment(_)
             | Node::UnaryPostfix(_)
             | Node::UnaryPostfixOperator(UnaryPostfixOperator::PostIncrement(_) | UnaryPostfixOperator::PostDecrement(_))
-            | Node::Call(Call::Method(_))
-            | Node::Access(Access::Property(_))
+            | Node::Call(Call::Method(_) | Call::NullSafeMethod(_))
+            | Node::Access(Access::Property(_) | Access::NullSafeProperty(_))
             | Node::ClassLikeMemberSelector(ClassLikeMemberSelector::Identifier(_))
             | Node::ArgumentList(_)
             | Node::Argument(_)
             | Node::NamedArgument(_),
             Body,
         ) => Some(Body),
+        (Node::Expression(Expression::Instantiation(instantiation)), Body)
+            if matches!(instantiation.class, Expression::Identifier(Identifier::Local(_))) =>
+        {
+            if let Some(arguments) = &instantiation.argument_list {
+                check_node(Node::ArgumentList(arguments), Body, checked, context);
+
+                return None;
+            }
+
+            report_not_supported(
+                instantiation.span(),
+                "`new` without arguments",
+                "PHP# creates an object with `new Class(arguments)`, parentheses included.",
+                context,
+            );
+
+            None
+        }
         (Node::AssignmentOperator(operator), Body) if is_slice_assignment_operator(operator) => Some(Body),
         (Node::PositionalArgument(argument), Body) if argument.ellipsis.is_none() => Some(Body),
         (Node::MethodCall(call), Body) => {
@@ -319,6 +476,10 @@ fn enter(
             check_member_access(access.span(), access.object, &access.property, MemberUse::Read, checked, context);
 
             Some(Body)
+        }
+        (Node::NullSafeMethodCall(call), Body) => check_null_safe_object(call.span(), call.object, &call.method, context),
+        (Node::NullSafePropertyAccess(access), Body) => {
+            check_null_safe_object(access.span(), access.object, &access.property, context)
         }
 
         // PHP# never has `$` variables. A `$` variable inside a construct the walk refuses adds no second error.
@@ -345,10 +506,18 @@ fn enter(
 }
 
 /// Whether the slice has a method, with the refusal's message and note when it does not. Each rule keeps out a method
-/// whose meaning a later slice gives it: PHP's magic methods, PHP#'s `private` default of spec section 5, and PHP#'s
-/// constructor of spec section 9.
+/// whose meaning a later slice gives it: PHP's magic methods, PHP#'s `private` default of spec section 5, and a static
+/// constructor. The constructor of spec section 9 is the one method without a return type, named after its class.
 fn is_slice_method(method: &Method, program: &Program) -> Result<(), (&'static str, &'static str)> {
-    let refusal = if method.name.value.starts_with(b"__") {
+    let class_name = enclosing_class(program, method.span()).map(|class| class.name.value);
+    let refusal = if method.return_type_hint.is_none() && class_name != Some(method.name.value) {
+        (
+            "A PHP# method needs a return type: only the constructor, named after its class, has none.",
+            "A method is written `public int total()`, and the constructor `public Report()`.",
+        )
+    } else if method.return_type_hint.is_none() && method.is_static() {
+        ("A static constructor is not supported yet in PHP#.", "The main constructor of a PHP# class is not `static`.")
+    } else if method.name.value.starts_with(b"__") {
         (
             "This method name is not supported yet in PHP#.",
             "PHP reserves method names that start with `__` for its magic methods.",
@@ -362,8 +531,8 @@ fn is_slice_method(method: &Method, program: &Program) -> Result<(), (&'static s
             "A method without `public`, `protected` or `private` is not supported yet in PHP#.",
             "A PHP# member without an access modifier is `private`, while PHP makes it `public`.",
         )
-    } else if enclosing_class(program, method.span())
-        .is_some_and(|class| class.name.value.eq_ignore_ascii_case(method.name.value))
+    } else if method.return_type_hint.is_some()
+        && class_name.is_some_and(|class_name| class_name.eq_ignore_ascii_case(method.name.value))
     {
         (
             "A method named after its class is not supported yet in PHP#.",
@@ -388,6 +557,145 @@ fn is_slice_parameter(parameter: &FunctionLikeParameter) -> Result<(), (Span, &'
         ))
     } else {
         Ok(())
+    }
+}
+
+/// Whether the slice has a field or a property, with the refusal when it does not. Spec section 6 makes a field
+/// storage, which is `private` or `protected`, and a property the API, whose accessors `check_accessors` decides.
+fn is_slice_property(property: &Property) -> Result<(), Box<Issue>> {
+    let not_supported = |span: Span, message: &str, note: &str| {
+        Issue::error(message)
+            .with_annotation(Annotation::primary(span).with_message("Not supported yet."))
+            .with_note(note)
+    };
+    let no_access_modifier = "A PHP# member without an access modifier is `private`, while PHP makes it `public`.";
+
+    match property {
+        Property::Plain(field) => {
+            if let Some(public) = field.modifiers.get_public() {
+                Err(Box::new(
+                    Issue::error("A PHP# field cannot be `public`: a field is `private` or `protected`.")
+                        .with_annotation(Annotation::primary(public.span()).with_message("Declared `public` here."))
+                        .with_help("Declare a property, as in `public int views { get; set; }`, to make it public."),
+                ))
+            } else if !field.modifiers.contains_protected() && !field.modifiers.contains_private() {
+                Err(Box::new(not_supported(
+                    property.first_variable().span,
+                    "A field without `private` or `protected` is not supported yet in PHP#.",
+                    no_access_modifier,
+                )))
+            } else if field.items.len() > 1 {
+                Err(Box::new(not_supported(
+                    field.span(),
+                    "A field declaring several names is not supported yet in PHP#.",
+                    supported(Place::FieldOrProperty),
+                )))
+            } else {
+                Ok(())
+            }
+        }
+        Property::Hooked(auto_property) => {
+            if !auto_property.modifiers.contains_visibility() {
+                Err(Box::new(not_supported(
+                    property.first_variable().span,
+                    "A property without `public`, `protected` or `private` is not supported yet in PHP#.",
+                    no_access_modifier,
+                )))
+            } else if let PropertyItem::Concrete(item) = &auto_property.item {
+                Err(Box::new(not_supported(
+                    item.span(),
+                    "An initial value before the accessors is not supported yet in PHP#.",
+                    "A PHP# property writes its initial value after its accessors: `public int views { get; set; } = 0;`.",
+                )))
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Checks the accessors of an auto-property, declared in the class body or on a constructor parameter: `get;` once,
+/// and an optional `set;` once, which may take an access modifier narrower than the property's, as in C#. Accessor
+/// bodies, `init` and an access modifier on `get` are not supported yet.
+fn check_accessors(
+    modifiers: &Sequence<Modifier>,
+    accessors: &PropertyHookList,
+    name: Span,
+    context: &mut Context<'_, '_, '_>,
+) {
+    let reach = modifiers.get_first_read_visibility().map_or(0, visibility_reach);
+    let mut declared: Vec<&[u8]> = Vec::new();
+
+    for accessor in &accessors.hooks {
+        let name = accessor.name.value;
+        let is_auto = accessor.attribute_lists.is_empty()
+            && accessor.ampersand.is_none()
+            && accessor.parameter_list.is_none()
+            && matches!(accessor.body, PropertyHookBody::Abstract(_))
+            && accessor.modifiers.len() <= 1
+            && accessor.modifiers.iter().all(|modifier| {
+                matches!(modifier, Modifier::Protected(_) | Modifier::Private(_) | Modifier::Public(_))
+            });
+
+        if !is_auto || !(name == b"get" || name == b"set") || (name == b"get" && !accessor.modifiers.is_empty()) {
+            report_not_supported(
+                accessor.span(),
+                "accessor",
+                "A PHP# property's accessors are `get;` and `set;`, and `set` may take `private` or `protected`.",
+                context,
+            );
+        } else if declared.contains(&name) {
+            context.report(
+                Issue::error("A PHP# property declares each accessor once.")
+                    .with_annotation(Annotation::primary(accessor.name.span).with_message("Declared again here.")),
+            );
+        } else if accessor.modifiers.first().is_some_and(|modifier| visibility_reach(modifier) >= reach) {
+            context.report(
+                Issue::error("The `set` accessor of a PHP# property must be narrower than the property.")
+                    .with_annotation(Annotation::primary(accessor.span()).with_message("Declared here."))
+                    .with_help("Write `private set;` or `protected set;` narrower than the property, or `set;`."),
+            );
+        }
+
+        declared.push(name);
+    }
+
+    if !declared.contains(&b"get".as_slice()) {
+        context.report(
+            Issue::error("A PHP# property needs a `get` accessor.")
+                .with_annotation(Annotation::primary(name).with_message("Declared here."))
+                .with_help("Add `get;`, as in `public int views { get; set; }`."),
+        );
+    }
+}
+
+/// Reports each `this` in an initial value. A constant initial value is the member's default, and any other runs at
+/// the start of the constructor in declaration order, before the members declared after it are set, so it cannot read
+/// the object, as in C#.
+fn report_this_in_initial_value(node: Node<'_, '_>, context: &mut Context<'_, '_, '_>) {
+    if let Node::ConstantAccess(access) = node
+        && context.names.binding(&access.name) == Some(Binding::This)
+    {
+        context.report(
+            Issue::error(
+                "An initial value cannot use `this`: it runs before the constructor body, while the object is built.",
+            )
+            .with_annotation(Annotation::primary(access.span()).with_message("Used here."))
+            .with_help("Set the member in the constructor body instead."),
+        );
+    }
+
+    for child in node.children() {
+        report_this_in_initial_value(child, context);
+    }
+}
+
+/// How far a visibility modifier reaches: `private` least, then `protected`, then `public`.
+const fn visibility_reach(modifier: &Modifier) -> u8 {
+    match modifier {
+        Modifier::Public(_) | Modifier::PublicSet(_) => 2,
+        Modifier::Protected(_) | Modifier::ProtectedSet(_) => 1,
+        _ => 0,
     }
 }
 
@@ -418,6 +726,26 @@ fn write_target<'ast, 'arena>(node: Node<'ast, 'arena>) -> Option<&'ast Expressi
     }
 }
 
+/// Whether every body of an `if`, `else` or loop is a block in braces. An `else` may also hold the next `if`.
+fn has_braces(statement: &Statement) -> bool {
+    let is_block = |statement: &Statement| matches!(statement, Statement::Block(_));
+
+    match statement {
+        Statement::If(If { body: IfBody::Statement(body), .. }) => {
+            is_block(body.statement)
+                && body
+                    .else_clause
+                    .as_ref()
+                    .is_none_or(|clause| is_block(clause.statement) || matches!(clause.statement, Statement::If(_)))
+        }
+        Statement::While(While { body: WhileBody::Statement(body), .. })
+        | Statement::For(For { body: ForBody::Statement(body), .. }) => is_block(body),
+        Statement::ForOf(for_of) => is_block(for_of.body),
+        Statement::DoWhile(do_while) => is_block(do_while.statement),
+        _ => true,
+    }
+}
+
 /// Whether the slice can write an expression: a local, a parameter, or a member written `object.name`.
 fn is_slice_target(target: &Expression, context: &Context<'_, '_, '_>) -> bool {
     match target {
@@ -427,7 +755,8 @@ fn is_slice_target(target: &Expression, context: &Context<'_, '_, '_>) -> bool {
     }
 }
 
-/// Whether the slice has a type: the built-in types of spec section 24, or a class written by its short name.
+/// Whether the slice has a type: the built-in types of spec section 24, or a class written by its short name, or a
+/// nullable type, whose inner type the walk checks next.
 fn is_slice_type(hint: &Hint) -> bool {
     matches!(
         hint,
@@ -437,6 +766,7 @@ fn is_slice_type(hint: &Hint) -> bool {
             | Hint::String(_)
             | Hint::Void(_)
             | Hint::Identifier(Identifier::Local(_))
+            | Hint::Nullable(_)
     )
 }
 
@@ -458,14 +788,14 @@ const fn is_slice_binary_operator(operator: &BinaryOperator) -> bool {
         | BinaryOperator::GreaterThan(_)
         | BinaryOperator::GreaterThanOrEqual(_)
         | BinaryOperator::And(_)
-        | BinaryOperator::Or(_) => true,
+        | BinaryOperator::Or(_)
+        | BinaryOperator::NullCoalesce(_) => true,
         BinaryOperator::Exponentiation(_)
         | BinaryOperator::BitwiseAnd(_)
         | BinaryOperator::BitwiseOr(_)
         | BinaryOperator::BitwiseXor(_)
         | BinaryOperator::LeftShift(_)
         | BinaryOperator::RightShift(_)
-        | BinaryOperator::NullCoalesce(_)
         | BinaryOperator::AngledNotEqual(_)
         | BinaryOperator::Spaceship(_)
         | BinaryOperator::StringConcat(_)
@@ -509,7 +839,8 @@ const fn is_slice_assignment_operator(operator: &AssignmentOperator) -> bool {
         | AssignmentOperator::Addition(_)
         | AssignmentOperator::Subtraction(_)
         | AssignmentOperator::Multiplication(_)
-        | AssignmentOperator::Division(_) => true,
+        | AssignmentOperator::Division(_)
+        | AssignmentOperator::Coalesce(_) => true,
         AssignmentOperator::Modulo(_)
         | AssignmentOperator::Exponentiation(_)
         | AssignmentOperator::Concat(_)
@@ -517,8 +848,7 @@ const fn is_slice_assignment_operator(operator: &AssignmentOperator) -> bool {
         | AssignmentOperator::BitwiseOr(_)
         | AssignmentOperator::BitwiseXor(_)
         | AssignmentOperator::LeftShift(_)
-        | AssignmentOperator::RightShift(_)
-        | AssignmentOperator::Coalesce(_) => false,
+        | AssignmentOperator::RightShift(_) => false,
     }
 }
 
@@ -527,10 +857,13 @@ fn report_unsupported(node: Node<'_, '_>, place: Place, context: &mut Context<'_
         Node::Statement(_) => "statement",
         Node::Expression(_) | Node::ConstantAccess(_) => "expression",
         Node::BinaryOperator(_) | Node::UnaryPrefixOperator(_) | Node::AssignmentOperator(_) => "operator",
-        Node::Hint(_) => "type",
+        Node::Hint(_) | Node::NullableHint(_) => "type",
         Node::Modifier(_) => "modifier",
         Node::AttributeList(_) => {
             return report_not_supported(node.span(), "attribute", "PHP# writes attributes as `[...]`.", context);
+        }
+        Node::IfStatementBodyElseIfClause(_) => {
+            return report_not_supported(node.span(), "`elseif`", "PHP# writes `else if`.", context);
         }
         Node::Extends(_) => "`extends` clause",
         Node::Implements(_) => "`implements` clause",
@@ -548,19 +881,22 @@ const fn supported(place: Place) -> &'static str {
     match place {
         Place::File => "At file level, PHP# supports `namespace`, `import` and `class`.",
         Place::Class => {
-            "A PHP# class has a name and methods, with no attributes, modifiers, `extends` or `implements`."
+            "A PHP# class has a name, fields and methods, with no attributes, modifiers, `extends` or `implements`."
+        }
+        Place::FieldOrProperty => {
+            "A PHP# field is `private` or `protected`, and a property has the accessors `get;` and an optional `set;`. Both have a type of `int`, `float`, `bool`, `string` or a class, a name, and an optional initial value."
         }
         Place::Method => {
-            "A PHP# method takes `public`, `protected`, `private` and `static`, parameters, and a return type of `int`, `float`, `bool`, `string`, `void` or a class."
+            "A PHP# method takes `public`, `protected`, `private` and `static`, parameters, and a return type of `int`, `float`, `bool`, `string`, `void` or a class, each but `void` nullable as in `int?`."
         }
         Place::Parameter => {
-            "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, a name, and an optional default."
+            "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, a name, and an optional default."
         }
         Place::Body => {
-            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const`, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `++` and `--`, and method calls and property reads written with `.`."
+            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, and `break` and `continue` without a level, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, `++` and `--`, method calls and property reads written with `.` or `?.`, and `new Class(...)`."
         }
         Place::Default => {
-            "A parameter default is a literal, a constant, or arithmetic, comparison and logical operators on them."
+            "A parameter default is a literal, a constant, or arithmetic, comparison, logical and `??` operators on them."
         }
     }
 }
@@ -628,6 +964,13 @@ fn check_const_write(target: &Expression, write: &str, context: &mut Context<'_,
 #[inline]
 pub fn check_local_declaration(local_declaration: &LocalDeclaration, context: &mut Context<'_, '_, '_>) {
     check_local_name(local_declaration.name.value, local_declaration.name.span, "local", context);
+}
+
+#[inline]
+pub fn check_for_of(for_of: &ForOf, context: &mut Context<'_, '_, '_>) {
+    for name in for_of.target.names() {
+        check_local_name(name.value, name.span, "loop variable", context);
+    }
 }
 
 #[inline]
@@ -995,6 +1338,33 @@ fn report_static_access(
     };
 
     context.report(issue);
+}
+
+/// Checks the object of `object?.member`. A class is never null, so `?.` after a class is an error that names `.`.
+fn check_null_safe_object(
+    access: Span,
+    object: &Expression,
+    member: &ClassLikeMemberSelector,
+    context: &mut Context<'_, '_, '_>,
+) -> Option<Place> {
+    if let Expression::ConstantAccess(class) = object
+        && context.names.binding(&class.name) == Some(Binding::Class)
+        && let ClassLikeMemberSelector::Identifier(member) = member
+    {
+        let class = BytesDisplay(class.name.value());
+
+        context.report(
+            Issue::error(format!(
+                "`{class}` is a class, which is never null: write `{class}.{}`.",
+                BytesDisplay(member.value)
+            ))
+            .with_annotation(Annotation::primary(access).with_message("Null-safe access written here.")),
+        );
+
+        return None;
+    }
+
+    Some(Place::Body)
 }
 
 fn report_bare_member(span: Span, name: &[u8], context: &mut Context<'_, '_, '_>) {

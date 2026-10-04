@@ -43,6 +43,7 @@ use crate::parser::Parser;
 use crate::token::Associativity;
 use crate::token::GetPrecedence;
 use crate::token::Precedence;
+use crate::token::Token;
 use crate::token::TokenKind;
 
 impl<'arena, A> Parser<'_, 'arena, A>
@@ -148,7 +149,7 @@ where
         precedence: Precedence,
     ) -> Result<&'arena Expression<'arena>, ParseError> {
         while let Some(next) = self.stream.lookahead(0)? {
-            let kind = self.operator_kind(next.kind);
+            let kind = self.operator_kind(next)?;
 
             if !matches!(precedence, Precedence::Instanceof | Precedence::New)
                 && !matches!(kind, T!["(" | "::"])
@@ -238,6 +239,27 @@ where
                 || matches!((token.kind, next), (T!["static"], Some(T!["function" | "fn"]))))
         {
             return self.parse_arrow_function_or_closure();
+        }
+
+        // `new Report.fromJson(…)` calls a named constructor, spec section 9.1: in PHP# a name after `new` is a class,
+        // so a `.` after it names the constructor. It parses whole as one error, and its value is the error expression.
+        if self.dialect.is_sharp()
+            && token.kind == T!["new"]
+            && next == Some(T![Identifier])
+            && self.stream.peek_kind(2)? == Some(T!["."])
+            && self.stream.peek_kind(3)?.is_some_and(|kind| kind.is_identifier_maybe_reserved())
+        {
+            let new = self.stream.consume_span()?;
+            let class = self.parse_local_identifier()?;
+            self.stream.consume()?;
+            let name = self.parse_local_identifier()?;
+            let end = match self.parse_optional_argument_list()? {
+                Some(arguments) => arguments.span(),
+                None => name.span,
+            };
+            self.errors.push(ParseError::NotSupportedYetInSharp("A named constructor", class.span.join(name.span)));
+
+            return Ok(self.arena.alloc(Expression::Error(new.join(end))));
         }
 
         Ok(self.arena.alloc(match (token.kind, next) {
@@ -347,22 +369,36 @@ where
         })
     }
 
-    /// Returns the operator a token stands for in the current dialect.
+    /// Returns the operator the next token stands for in the current dialect.
     ///
-    /// In PHP#, `.` is member access, which PHP writes `->`.
-    const fn operator_kind(&self, kind: TokenKind) -> TokenKind {
-        match (self.dialect, kind) {
+    /// In PHP#, `.` is member access, which PHP writes `->`, and `?` written right before `.` is null-safe member
+    /// access, which PHP writes `?->`.
+    fn operator_kind(&mut self, token: Token<'_>) -> Result<TokenKind, ParseError> {
+        Ok(match (self.dialect, token.kind) {
             (Dialect::Sharp, T!["."]) => T!["->"],
-            _ => kind,
-        }
+            (Dialect::Sharp, T!["?"])
+                if self
+                    .stream
+                    .lookahead(1)?
+                    .is_some_and(|next| next.kind == T!["."] && next.start.offset == token.start.offset + 1) =>
+            {
+                T!["?->"]
+            }
+            _ => token.kind,
+        })
     }
 
     /// Consumes an operator, and reports it when PHP# does not have it, such as `->` where PHP# writes `.`.
     ///
-    /// The error stands, and the PHP operator still parses so the rest of the file does.
+    /// PHP#'s `?.` is two tokens, consumed together. The error stands, and the PHP operator still parses so the
+    /// rest of the file does.
     fn consume_operator_span(&mut self) -> Result<Span, ParseError> {
         let token = self.stream.consume()?;
         let span = token.span_for(self.stream.file_id());
+        if self.dialect.is_sharp() && token.kind == T!["?"] {
+            return Ok(span.join(self.stream.eat_span(T!["."])?));
+        }
+
         if self.dialect.is_sharp() && matches!(token.kind, T!["->" | "?->" | "::" | ".="]) {
             self.errors.push(ParseError::PhpSyntaxInSharp(token.kind, span));
         }

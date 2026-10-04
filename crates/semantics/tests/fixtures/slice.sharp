@@ -4,6 +4,21 @@ import Lib.Calc;
 
 class Report
 {
+    private int count = 0;
+    protected float rate = 2.5 * -PHP_INT_MAX;
+    private string label;
+    public int views { get; private set; } = 0;
+    public string name { get; set; }
+    public int id { get; }
+    private Calc calc = new Calc(Calc.make(), rate: 2);
+
+    public Report(int start, private Calc helper, public int total { get; private set; })
+    {
+        this.count = start;
+        this.id = start;
+        this.name = "report";
+    }
+
     public int run(int extra, float rate = 1.5, string label = "\u{41}\n", bool strict = !false)
     {
         let total = extra * 2 + 1;
@@ -25,7 +40,8 @@ class Report
         same = total !== base && !strict;
         const order = total < base || total > base || total <= base || total >= base;
         const nothing = null;
-        return Report.part(first: extra, second: 2) + this.scale(rate);
+        this.count += extra;
+        return Report.part(first: extra, second: 2) + this.scale(rate) + this.count;
     }
 
     public static int part(int first, int second = 2 * 3 - -1, int limit = PHP_INT_MAX)
@@ -57,6 +73,7 @@ class Report
         calc.add(1, 2);
         const made = Calc.make();
         const read = calc.rate;
+        const fresh = new Calc(1, rate: 2);
         const chained = Calc.make().add(1).rate;
         const sum = Calc.make().add(1, 2);
         const big = 0xFFFFFFFFFFFFFFFF;
@@ -71,5 +88,70 @@ class Report
     private float ratio()
     {
         return 0.5;
+    }
+
+    public Calc? find(int? id, Calc? fallback = null, string? label = "none", float? rate = null, bool? on = null ?? true)
+    {
+        const first = id ?? 0;
+        let second = id;
+        second ??= first;
+        id ??= 1;
+        fallback.rate ??= rate;
+        Calc? kept = fallback;
+        int count = 2;
+        const float? share = rate;
+        const Calc made = Calc.make();
+        kept = null;
+        const sum = fallback?.add(1, 2) ?? fallback?.rate;
+        const again = this?.find(id)?.rate.cents;
+        return fallback ?? null;
+    }
+
+    public int branch(int value)
+    {
+        if (value > 10) {
+            return 1;
+        } else if (value < 0) {
+            return 2;
+        } else {
+            value += 1;
+        }
+        return value;
+    }
+
+    public int repeat(int times)
+    {
+        let total = 0;
+        while (times > 0) {
+            total += times;
+            times--;
+            if (total > 50) {
+                break;
+            }
+            if (times % 2 == 0) {
+                continue;
+            }
+        }
+        do {
+            total -= 1;
+        } while (total > 100);
+        for (let step = 0; step < times; step++) {
+            total += step;
+        }
+        for (total = 0; total < 3; total++, times--) {
+        }
+        for (int count = 0; count < times; count++) {
+            total += count;
+        }
+        for (const Calc? none = null; none === null; ) {
+            break;
+        }
+        for (const value of Calc.values()) {
+            total += value;
+        }
+        for (let [key, value] of Calc.values()) {
+            total += key * value;
+        }
+        return total;
     }
 }
