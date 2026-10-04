@@ -197,29 +197,14 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     fn file_statement(&mut self, statement: &Statement, statements: &mut Vec<u32>) {
         match statement {
             Statement::Namespace(namespace) => {
-                let line = self.line(namespace);
-                let name = namespace.name.as_ref().map_or(NULL, |name| {
-                    let line = self.line(name);
+                let (Some(name), NamespaceBody::Implicit(body)) = (&namespace.name, &namespace.body) else {
+                    unreachable!("check_slice refuses a namespace without a name or with braces");
+                };
 
-                    self.string(0, line, &php_name(name))
-                });
-
-                match &namespace.body {
-                    NamespaceBody::Implicit(body) => {
-                        statements.push(self.node(SHARP_AST_NAMESPACE, 0, line, &[name, NULL]));
-                        for statement in &body.statements {
-                            self.file_statement(statement, statements);
-                        }
-                    }
-                    NamespaceBody::BraceDelimited(block) => {
-                        let mut inner = Vec::new();
-                        for statement in &block.statements {
-                            self.file_statement(statement, &mut inner);
-                        }
-
-                        let body = self.node(SHARP_AST_STMT_LIST, 0, self.line(block), &inner);
-                        statements.push(self.node(SHARP_AST_NAMESPACE, 0, line, &[name, body]));
-                    }
+                let name = self.string(0, self.line(name), &php_name(name));
+                statements.push(self.node(SHARP_AST_NAMESPACE, 0, self.line(namespace), &[name, NULL]));
+                for statement in &body.statements {
+                    self.file_statement(statement, statements);
                 }
             }
             Statement::Use(_) => {}
@@ -262,10 +247,6 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 Modifier::Static(_) => ZEND_ACC_STATIC,
                 _ => unreachable!("check_slice refuses the method modifier `{modifier}`"),
             };
-        }
-
-        if flags & (ZEND_ACC_PUBLIC | ZEND_ACC_PROTECTED | ZEND_ACC_PRIVATE) == 0 {
-            flags |= ZEND_ACC_PUBLIC;
         }
 
         let mut parameters = Vec::new();

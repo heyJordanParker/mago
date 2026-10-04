@@ -269,41 +269,6 @@ fn a_file_declares_strict_types_then_its_namespace_and_classes() {
 /// ```php
 /// <?php
 /// declare(strict_types=1);
-/// namespace App\Tenant {
-///     class Report {}
-/// }
-/// ```
-#[test]
-fn a_braced_namespace_holds_its_classes() {
-    let lowered = Lowered::new("namespace App.Tenant {\n    class Report {}\n}\n");
-
-    assert_eq!(
-        lowered.tree(),
-        indoc! {r#"
-            STMT_LIST
-              DECLARE
-                CONST_DECL
-                  CONST_ELEM
-                    ZVAL "strict_types"
-                    ZVAL 1
-                    null
-                null
-              NAMESPACE
-                ZVAL "App\\Tenant"
-                STMT_LIST
-                  CLASS "Report" @2-2
-                    null
-                    null
-                    STMT_LIST
-                    null
-                    null
-        "#}
-    );
-}
-
-/// ```php
-/// <?php
-/// declare(strict_types=1);
 /// class Report {}
 /// ```
 #[test]
@@ -377,15 +342,13 @@ fn a_method_is_a_public_function_with_its_return_type_after_its_parameters() {
 /// public static function make(): void {}
 /// private function hide() {}
 /// protected function share() {}
-/// function open() {}
 /// ```
 ///
-/// The flags are `ZEND_ACC_PUBLIC | ZEND_ACC_STATIC`, `ZEND_ACC_PRIVATE`, `ZEND_ACC_PROTECTED`, and
-/// `ZEND_ACC_PUBLIC` when no access modifier is written.
+/// The flags are `ZEND_ACC_PUBLIC | ZEND_ACC_STATIC`, `ZEND_ACC_PRIVATE` and `ZEND_ACC_PROTECTED`.
 #[test]
 fn method_modifiers_become_the_method_flags() {
     let lowered = Lowered::new(
-        "class Report\n{\n    public static void make() {}\n    private void hide() {}\n    protected void share() {}\n    void open() {}\n}\n",
+        "class Report\n{\n    public static void make() {}\n    private void hide() {}\n    protected void share() {}\n}\n",
     );
     let methods: Vec<(String, u32)> = lowered
         .nodes()
@@ -394,10 +357,7 @@ fn method_modifiers_become_the_method_flags() {
         .map(|node| (text(node.text), node.attr))
         .collect();
 
-    assert_eq!(
-        methods,
-        [("make".to_owned(), 17), ("hide".to_owned(), 4), ("share".to_owned(), 2), ("open".to_owned(), 1)]
-    );
+    assert_eq!(methods, [("make".to_owned(), 17), ("hide".to_owned(), 4), ("share".to_owned(), 2)]);
 }
 
 /// ```php
