@@ -24,5 +24,8 @@ mago-span = { workspace = true }
 mago-syntax = { workspace = true }
 mago-syntax-core = { workspace = true }
 
+[dev-dependencies]
+indoc = { workspace = true }
+
 [build-dependencies]
 cbindgen = { workspace = true }

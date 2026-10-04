@@ -56,7 +56,12 @@ fn git(crate_dir: &Path, arguments: &[&str]) -> String {
         .current_dir(crate_dir)
         .output()
         .expect("git runs: the bridge records the Mago commit it is built from");
-    assert!(output.status.success(), "`git {}` failed: {}", arguments.join(" "), String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "`git {}` failed: {}",
+        arguments.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     String::from_utf8(output.stdout).expect("git prints UTF-8").trim().to_owned()
 }

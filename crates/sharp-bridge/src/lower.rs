@@ -1,23 +1,596 @@
+use std::borrow::Cow;
+
+use mago_allocator::LocalArena;
+use mago_database::file::File;
+use mago_names::ResolvedNames;
+use mago_names::binding::Binding;
+use mago_names::resolver::NameResolver;
+use mago_names::scope::php_name;
+use mago_php_version::PHPVersion;
+use mago_reporting::Level;
+use mago_semantics::SemanticsChecker;
+use mago_span::HasSpan;
+use mago_span::Span;
+use mago_syntax::cst::Access;
+use mago_syntax::cst::Argument;
+use mago_syntax::cst::ArgumentList;
+use mago_syntax::cst::AssignmentOperator;
+use mago_syntax::cst::BinaryOperator;
+use mago_syntax::cst::Block;
+use mago_syntax::cst::Call;
+use mago_syntax::cst::Class;
+use mago_syntax::cst::ClassLikeMember;
+use mago_syntax::cst::ClassLikeMemberSelector;
+use mago_syntax::cst::ConstantAccess;
+use mago_syntax::cst::Expression;
+use mago_syntax::cst::FunctionLikeParameter;
+use mago_syntax::cst::Hint;
+use mago_syntax::cst::Literal;
+use mago_syntax::cst::Method;
+use mago_syntax::cst::MethodBody;
+use mago_syntax::cst::MethodCall;
+use mago_syntax::cst::Modifier;
+use mago_syntax::cst::NamespaceBody;
+use mago_syntax::cst::PositionalArgument;
+use mago_syntax::cst::Program;
+use mago_syntax::cst::Statement;
+use mago_syntax::cst::UnaryPostfixOperator;
+use mago_syntax::cst::UnaryPrefixOperator;
+use mago_syntax::parser::parse_file;
+use mago_syntax_core::utils::parse_literal_integer_as_float;
+
+use crate::Diagnostic;
 use crate::Unit;
 use crate::sharp_kind;
+use crate::sharp_kind::SHARP_AST_AND;
+use crate::sharp_kind::SHARP_AST_ARG_LIST;
+use crate::sharp_kind::SHARP_AST_ASSIGN;
+use crate::sharp_kind::SHARP_AST_ASSIGN_OP;
+use crate::sharp_kind::SHARP_AST_BINARY_OP;
+use crate::sharp_kind::SHARP_AST_CLASS;
+use crate::sharp_kind::SHARP_AST_CONST;
+use crate::sharp_kind::SHARP_AST_CONST_DECL;
+use crate::sharp_kind::SHARP_AST_CONST_ELEM;
+use crate::sharp_kind::SHARP_AST_DECLARE;
+use crate::sharp_kind::SHARP_AST_GREATER;
+use crate::sharp_kind::SHARP_AST_GREATER_EQUAL;
+use crate::sharp_kind::SHARP_AST_METHOD;
+use crate::sharp_kind::SHARP_AST_METHOD_CALL;
+use crate::sharp_kind::SHARP_AST_NAMED_ARG;
+use crate::sharp_kind::SHARP_AST_NAMESPACE;
+use crate::sharp_kind::SHARP_AST_OR;
+use crate::sharp_kind::SHARP_AST_PARAM;
+use crate::sharp_kind::SHARP_AST_PARAM_LIST;
+use crate::sharp_kind::SHARP_AST_POST_DEC;
+use crate::sharp_kind::SHARP_AST_POST_INC;
+use crate::sharp_kind::SHARP_AST_PRE_DEC;
+use crate::sharp_kind::SHARP_AST_PRE_INC;
+use crate::sharp_kind::SHARP_AST_PROP;
+use crate::sharp_kind::SHARP_AST_RETURN;
+use crate::sharp_kind::SHARP_AST_STATIC_CALL;
+use crate::sharp_kind::SHARP_AST_STMT_LIST;
+use crate::sharp_kind::SHARP_AST_UNARY_MINUS;
+use crate::sharp_kind::SHARP_AST_UNARY_OP;
+use crate::sharp_kind::SHARP_AST_UNARY_PLUS;
+use crate::sharp_kind::SHARP_AST_VAR;
+use crate::sharp_kind::SHARP_AST_ZVAL;
 use crate::sharp_node;
+use crate::sharp_severity;
 use crate::sharp_str;
 use crate::sharp_value;
+use crate::store_text;
 
-/// Lowers the PHP# file at `path` into the tree php-src builds for the equivalent PHP.
-pub(crate) fn lower(_path: Vec<u8>, _source: Vec<u8>) -> Box<Unit> {
-    let root = sharp_node {
-        kind: sharp_kind::SHARP_AST_STMT_LIST,
-        attr: 0,
-        line: 1,
-        end_line: 0,
-        first_child: 0,
-        child_count: 0,
-        value: sharp_value::SHARP_NULL,
-        long_value: 0,
-        double_value: 0.0,
-        text: sharp_str::EMPTY,
-    };
+/// The values php-src gives the attrs the lowering emits, from `zend_compile.h` and `zend_vm_opcodes.h`.
+const ZEND_NAME_FQ: u32 = 0;
+const ZEND_NAME_NOT_FQ: u32 = 1;
+const ZEND_ACC_PUBLIC: u32 = 1 << 0;
+const ZEND_ACC_PROTECTED: u32 = 1 << 1;
+const ZEND_ACC_PRIVATE: u32 = 1 << 2;
+const ZEND_ACC_STATIC: u32 = 1 << 4;
+const ZEND_ADD: u32 = 1;
+const ZEND_SUB: u32 = 2;
+const ZEND_MUL: u32 = 3;
+const ZEND_DIV: u32 = 4;
+const ZEND_MOD: u32 = 5;
+const ZEND_BOOL_NOT: u32 = 14;
+const ZEND_IS_IDENTICAL: u32 = 16;
+const ZEND_IS_NOT_IDENTICAL: u32 = 17;
+const ZEND_IS_EQUAL: u32 = 18;
+const ZEND_IS_NOT_EQUAL: u32 = 19;
+const ZEND_IS_SMALLER: u32 = 20;
+const ZEND_IS_SMALLER_OR_EQUAL: u32 = 21;
 
-    Unit::new(vec![root], Vec::new(), 0, Vec::new())
+/// A null child.
+const NULL: u32 = u32::MAX;
+
+/// Runs the PHP# file at `path` through the parser, the binder and the semantic checks, and lowers it into the tree
+/// php-src builds for the equivalent PHP. Any error returns diagnostics and no nodes.
+pub(crate) fn lower(path: Vec<u8>, source: Vec<u8>) -> Box<Unit> {
+    let file = File::ephemeral(Cow::Owned(path), Cow::Owned(source));
+    let arena = LocalArena::new();
+    let program = parse_file(&arena, &file);
+    if !program.errors.is_empty() {
+        return Unit::failed(
+            program
+                .errors
+                .iter()
+                .map(|error| diagnostic(&file, error.span(), sharp_severity::SHARP_PARSE_ERROR, error.to_string()))
+                .collect(),
+        );
+    }
+
+    let names = NameResolver::new(&arena).resolve(program);
+    let errors: Vec<Diagnostic> = SemanticsChecker::new(PHPVersion::PHP85)
+        .check(&file, program, &names)
+        .iter()
+        .filter(|issue| issue.level == Level::Error)
+        .map(|issue| {
+            let span = issue.primary_span().unwrap_or_else(|| program.span());
+
+            diagnostic(&file, span, sharp_severity::SHARP_COMPILE_ERROR, issue.message.clone())
+        })
+        .collect();
+    if !errors.is_empty() {
+        return Unit::failed(errors);
+    }
+
+    Lowering { file: &file, names: &names, nodes: Vec::new(), children: Vec::new(), texts: Vec::new(), errors }
+        .program(program)
+}
+
+fn diagnostic(file: &File, span: Span, severity: sharp_severity, message: String) -> Diagnostic {
+    Diagnostic {
+        line: file.line_number(span.start.offset) + 1,
+        column: file.column_number(span.start.offset) + 1,
+        severity,
+        message,
+    }
+}
+
+/// Lowers one checked file. Every node is pushed after its children, and each node's children are contiguous.
+struct Lowering<'lowering, 'arena> {
+    file: &'lowering File,
+    names: &'lowering ResolvedNames<'arena>,
+    nodes: Vec<sharp_node>,
+    children: Vec<u32>,
+    texts: Vec<Box<[u8]>>,
+    /// Engine compile errors the checks above do not report.
+    errors: Vec<Diagnostic>,
+}
+
+impl Lowering<'_, '_> {
+    /// `declare(strict_types=1);` first, then the namespaces and classes. Imports are not lowered: every class name
+    /// in the tree is fully qualified.
+    fn program(mut self, program: &Program) -> Box<Unit> {
+        let mut statements = vec![self.strict_types()];
+        for statement in &program.statements {
+            self.file_statement(statement, &mut statements);
+        }
+
+        let root = self.node(SHARP_AST_STMT_LIST, 0, 1, &statements);
+        if !self.errors.is_empty() {
+            return Unit::failed(self.errors);
+        }
+
+        Unit::new(self.nodes, self.children, root, self.texts)
+    }
+
+    fn strict_types(&mut self) -> u32 {
+        let name = self.string(0, 1, b"strict_types");
+        let value = self.zval(1, sharp_value::SHARP_LONG, |node| node.long_value = 1);
+        let element = self.node(SHARP_AST_CONST_ELEM, 0, 1, &[name, value, NULL]);
+        let list = self.node(SHARP_AST_CONST_DECL, 0, 1, &[element]);
+
+        self.node(SHARP_AST_DECLARE, 0, 1, &[list, NULL])
+    }
+
+    fn file_statement(&mut self, statement: &Statement, statements: &mut Vec<u32>) {
+        match statement {
+            Statement::Namespace(namespace) => {
+                let line = self.line(namespace);
+                let name = namespace.name.as_ref().map_or(NULL, |name| {
+                    let line = self.line(name);
+
+                    self.string(0, line, &php_name(name))
+                });
+
+                match &namespace.body {
+                    NamespaceBody::Implicit(body) => {
+                        statements.push(self.node(SHARP_AST_NAMESPACE, 0, line, &[name, NULL]));
+                        for statement in &body.statements {
+                            self.file_statement(statement, statements);
+                        }
+                    }
+                    NamespaceBody::BraceDelimited(block) => {
+                        let mut inner = Vec::new();
+                        for statement in &block.statements {
+                            self.file_statement(statement, &mut inner);
+                        }
+
+                        let body = self.node(SHARP_AST_STMT_LIST, 0, self.line(block), &inner);
+                        statements.push(self.node(SHARP_AST_NAMESPACE, 0, line, &[name, body]));
+                    }
+                }
+            }
+            Statement::Use(_) => {}
+            Statement::Class(class) => statements.push(self.class(class)),
+            _ => unreachable!("check_slice refuses the file statement `{statement}`"),
+        }
+    }
+
+    fn class(&mut self, class: &Class) -> u32 {
+        let mut methods = Vec::new();
+        for member in &class.members {
+            let ClassLikeMember::Method(method) = member else {
+                unreachable!("check_slice refuses the class member `{member}`");
+            };
+
+            methods.push(self.method(method));
+        }
+
+        let members = self.node(SHARP_AST_STMT_LIST, 0, self.line(class.left_brace), &methods);
+
+        self.declaration(
+            SHARP_AST_CLASS,
+            0,
+            class.class.span,
+            class.right_brace,
+            class.name.value,
+            &[NULL, NULL, members, NULL, NULL],
+        )
+    }
+
+    /// A method is a `function` with its return type after its parameters. Its first line is where PHP writes
+    /// `function`: the return type, or the name when there is none.
+    fn method(&mut self, method: &Method) -> u32 {
+        let mut flags = 0;
+        for modifier in &method.modifiers {
+            flags |= match modifier {
+                Modifier::Public(_) => ZEND_ACC_PUBLIC,
+                Modifier::Protected(_) => ZEND_ACC_PROTECTED,
+                Modifier::Private(_) => ZEND_ACC_PRIVATE,
+                Modifier::Static(_) => ZEND_ACC_STATIC,
+                _ => unreachable!("check_slice refuses the method modifier `{modifier}`"),
+            };
+        }
+
+        if flags & (ZEND_ACC_PUBLIC | ZEND_ACC_PROTECTED | ZEND_ACC_PRIVATE) == 0 {
+            flags |= ZEND_ACC_PUBLIC;
+        }
+
+        let mut parameters = Vec::new();
+        for parameter in &method.parameter_list.parameters {
+            parameters.push(self.parameter(parameter));
+        }
+
+        let parameters = self.node(SHARP_AST_PARAM_LIST, 0, self.line(&method.parameter_list), &parameters);
+        let MethodBody::Concrete(body) = &method.body else {
+            unreachable!("semantics refuses a method without a body");
+        };
+        let body = self.block(body);
+        let return_type = method.return_type_hint.as_ref().map_or(NULL, |return_type| self.hint(&return_type.hint));
+        let start = method.return_type_hint.as_ref().map_or(method.name.span, HasSpan::span);
+
+        self.declaration(
+            SHARP_AST_METHOD,
+            flags,
+            start,
+            method.body.span(),
+            method.name.value,
+            &[parameters, NULL, body, return_type, NULL],
+        )
+    }
+
+    fn parameter(&mut self, parameter: &FunctionLikeParameter) -> u32 {
+        let hint = parameter.hint.as_ref().map_or(NULL, |hint| self.hint(hint));
+        let name = self.string(0, self.line(parameter.variable.span), parameter.variable.name);
+        let default = parameter.default_value.as_ref().map_or(NULL, |default| self.expression(default.value));
+
+        self.node(SHARP_AST_PARAM, 0, self.line(parameter), &[hint, name, default, NULL, NULL, NULL])
+    }
+
+    /// A built-in type is written unqualified, and a class by its full name.
+    fn hint(&mut self, hint: &Hint) -> u32 {
+        match hint {
+            Hint::Integer(name) | Hint::Float(name) | Hint::Bool(name) | Hint::String(name) | Hint::Void(name) => {
+                self.string(ZEND_NAME_NOT_FQ, self.line(name.span), name.value)
+            }
+            Hint::Identifier(class) => self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class)),
+            _ => unreachable!("check_slice refuses the type `{hint}`"),
+        }
+    }
+
+    fn block(&mut self, block: &Block) -> u32 {
+        let mut statements = Vec::new();
+        for statement in &block.statements {
+            statements.push(self.statement(statement));
+        }
+
+        self.node(SHARP_AST_STMT_LIST, 0, self.line(block), &statements)
+    }
+
+    fn statement(&mut self, statement: &Statement) -> u32 {
+        match statement {
+            Statement::Block(block) => self.block(block),
+            Statement::Expression(statement) => self.expression(statement.expression),
+            Statement::Return(r#return) => {
+                let value = r#return.value.map_or(NULL, |value| self.expression(value));
+
+                self.node(SHARP_AST_RETURN, 0, self.line(r#return), &[value])
+            }
+            Statement::LocalDeclaration(local) => {
+                let variable = self.variable(local.name.span, local.name.value);
+                let value = self.expression(local.value);
+
+                self.node(SHARP_AST_ASSIGN, 0, self.line(local), &[variable, value])
+            }
+            _ => unreachable!("check_slice refuses the statement `{statement}`"),
+        }
+    }
+
+    fn expression(&mut self, expression: &Expression) -> u32 {
+        let line = self.line(expression);
+
+        match expression {
+            Expression::Literal(literal) => self.literal(literal),
+            Expression::Parenthesized(parenthesized) => self.expression(parenthesized.expression),
+            Expression::ConstantAccess(name) => self.name(name),
+            Expression::Binary(binary) => {
+                let (kind, attr) = binary_kind(binary.operator);
+                let lhs = self.expression(binary.lhs);
+                let rhs = self.expression(binary.rhs);
+
+                self.node(kind, attr, line, &[lhs, rhs])
+            }
+            Expression::UnaryPrefix(unary) => {
+                let (kind, attr) = prefix_kind(&unary.operator);
+                let operand = self.expression(unary.operand);
+
+                self.node(kind, attr, line, &[operand])
+            }
+            Expression::UnaryPostfix(unary) => {
+                let kind = match unary.operator {
+                    UnaryPostfixOperator::PostIncrement(_) => SHARP_AST_POST_INC,
+                    UnaryPostfixOperator::PostDecrement(_) => SHARP_AST_POST_DEC,
+                };
+                let operand = self.expression(unary.operand);
+
+                self.node(kind, 0, line, &[operand])
+            }
+            Expression::Assignment(assignment) => {
+                let (kind, attr) = assignment_kind(&assignment.operator);
+                let lhs = self.expression(assignment.lhs);
+                let rhs = self.expression(assignment.rhs);
+
+                self.node(kind, attr, line, &[lhs, rhs])
+            }
+            Expression::Call(Call::Method(call)) => self.method_call(call),
+            Expression::Access(Access::Property(access)) => {
+                let object = self.expression(access.object);
+                let property = self.member(&access.property);
+
+                self.node(SHARP_AST_PROP, 0, line, &[object, property])
+            }
+            _ => unreachable!("check_slice refuses the expression `{expression}`"),
+        }
+    }
+
+    /// A local, a parameter or `this` is a PHP variable of the same name. Any other bare name outside a call is a
+    /// constant, which the engine looks up in the namespace, then globally, as PHP does for an unqualified name.
+    fn name(&mut self, name: &ConstantAccess) -> u32 {
+        let line = self.line(name);
+
+        match self.names.binding(&name.name) {
+            Some(Binding::Local(_) | Binding::This) => self.variable(name.span(), name.name.value()),
+            Some(Binding::Constant) => {
+                let constant = self.string(ZEND_NAME_NOT_FQ, line, name.name.value());
+
+                self.node(SHARP_AST_CONST, 0, line, &[constant])
+            }
+            binding => unreachable!("check_slice refuses the name `{}` bound as {binding:?}", name.name),
+        }
+    }
+
+    fn variable(&mut self, span: Span, name: &[u8]) -> u32 {
+        let line = self.line(span);
+        let name = self.string(0, line, name);
+
+        self.node(SHARP_AST_VAR, 0, line, &[name])
+    }
+
+    /// `Class.m()` is a static call on the class's full name. Any other `object.m()` is an instance call.
+    fn method_call(&mut self, call: &MethodCall) -> u32 {
+        let line = self.line(call);
+        let class = match call.object {
+            Expression::ConstantAccess(class) if self.names.binding(&class.name) == Some(Binding::Class) => Some(class),
+            _ => None,
+        };
+
+        let (kind, object) = match class {
+            Some(class) => {
+                let class = self.string(ZEND_NAME_FQ, self.line(class), self.names.get(&class.name));
+
+                (SHARP_AST_STATIC_CALL, class)
+            }
+            None => (SHARP_AST_METHOD_CALL, self.expression(call.object)),
+        };
+        let method = self.member(&call.method);
+        let arguments = self.arguments(&call.argument_list);
+
+        self.node(kind, 0, line, &[object, method, arguments])
+    }
+
+    fn member(&mut self, member: &ClassLikeMemberSelector) -> u32 {
+        let ClassLikeMemberSelector::Identifier(name) = member else {
+            unreachable!("check_slice refuses the member name `{member}`");
+        };
+
+        self.string(0, self.line(name.span), name.value)
+    }
+
+    fn arguments(&mut self, list: &ArgumentList) -> u32 {
+        let mut arguments = Vec::new();
+        for argument in &list.arguments {
+            let argument = match argument {
+                Argument::Positional(PositionalArgument { ellipsis: None, value }) => self.expression(value),
+                Argument::Named(named) => {
+                    let line = self.line(named.name.span);
+                    let name = self.string(0, line, named.name.value);
+                    let value = self.expression(named.value);
+
+                    self.node(SHARP_AST_NAMED_ARG, 0, line, &[name, value])
+                }
+                Argument::Positional(_) => unreachable!("check_slice refuses a spread argument"),
+            };
+
+            arguments.push(argument);
+        }
+
+        self.node(SHARP_AST_ARG_LIST, 0, self.line(list), &arguments)
+    }
+
+    /// An integer literal too large for `int` is a float, as PHP reads it.
+    fn literal(&mut self, literal: &Literal) -> u32 {
+        let line = self.line(literal);
+
+        match literal {
+            Literal::String(string) => match string.value {
+                Some(value) => self.string(0, line, value),
+                None => {
+                    self.errors.push(diagnostic(
+                        self.file,
+                        string.span,
+                        sharp_severity::SHARP_COMPILE_ERROR,
+                        "Invalid UTF-8 codepoint escape sequence".to_owned(),
+                    ));
+
+                    NULL
+                }
+            },
+            Literal::Integer(integer) => match integer.value.and_then(|value| i64::try_from(value).ok()) {
+                Some(value) => self.zval(line, sharp_value::SHARP_LONG, |node| node.long_value = value),
+                None => {
+                    let value = parse_literal_integer_as_float(integer.raw).unwrap_or_default();
+
+                    self.zval(line, sharp_value::SHARP_DOUBLE, |node| node.double_value = value)
+                }
+            },
+            Literal::Float(float) => {
+                let value = float.value.into_inner();
+
+                self.zval(line, sharp_value::SHARP_DOUBLE, |node| node.double_value = value)
+            }
+            Literal::True(_) => self.zval(line, sharp_value::SHARP_TRUE, |_| {}),
+            Literal::False(_) => self.zval(line, sharp_value::SHARP_FALSE, |_| {}),
+            Literal::Null(_) => self.zval(line, sharp_value::SHARP_NULL, |_| {}),
+        }
+    }
+
+    fn declaration(
+        &mut self,
+        kind: sharp_kind,
+        flags: u32,
+        start: impl HasSpan,
+        end: impl HasSpan,
+        name: &[u8],
+        children: &[u32],
+    ) -> u32 {
+        let index = self.node(kind, flags, self.line(start), children);
+        let end_line = self.file.line_number(end.span().end.offset) + 1;
+        let name = store_text(&mut self.texts, name.to_vec());
+
+        let node = &mut self.nodes[index as usize];
+        node.end_line = end_line;
+        node.text = name;
+
+        index
+    }
+
+    fn string(&mut self, attr: u32, line: u32, text: &[u8]) -> u32 {
+        let text = store_text(&mut self.texts, text.to_vec());
+
+        self.zval(line, sharp_value::SHARP_STRING, |node| {
+            node.attr = attr;
+            node.text = text;
+        })
+    }
+
+    fn zval(&mut self, line: u32, value: sharp_value, set: impl FnOnce(&mut sharp_node)) -> u32 {
+        let index = self.node(SHARP_AST_ZVAL, 0, line, &[]);
+
+        let node = &mut self.nodes[index as usize];
+        node.value = value;
+        set(node);
+
+        index
+    }
+
+    fn node(&mut self, kind: sharp_kind, attr: u32, line: u32, children: &[u32]) -> u32 {
+        let first_child = self.children.len() as u32;
+        self.children.extend_from_slice(children);
+        self.nodes.push(sharp_node {
+            kind,
+            attr,
+            line,
+            end_line: 0,
+            first_child,
+            child_count: children.len() as u32,
+            value: sharp_value::SHARP_NULL,
+            long_value: 0,
+            double_value: 0.0,
+            text: sharp_str::EMPTY,
+        });
+
+        (self.nodes.len() - 1) as u32
+    }
+
+    fn line(&self, node: impl HasSpan) -> u32 {
+        self.file.line_number(node.span().start.offset) + 1
+    }
+}
+
+/// The binary operators of the slice, as php-src's grammar builds them.
+fn binary_kind(operator: BinaryOperator) -> (sharp_kind, u32) {
+    match operator {
+        BinaryOperator::Addition(_) => (SHARP_AST_BINARY_OP, ZEND_ADD),
+        BinaryOperator::Subtraction(_) => (SHARP_AST_BINARY_OP, ZEND_SUB),
+        BinaryOperator::Multiplication(_) => (SHARP_AST_BINARY_OP, ZEND_MUL),
+        BinaryOperator::Division(_) => (SHARP_AST_BINARY_OP, ZEND_DIV),
+        BinaryOperator::Modulo(_) => (SHARP_AST_BINARY_OP, ZEND_MOD),
+        BinaryOperator::Equal(_) => (SHARP_AST_BINARY_OP, ZEND_IS_EQUAL),
+        BinaryOperator::NotEqual(_) => (SHARP_AST_BINARY_OP, ZEND_IS_NOT_EQUAL),
+        BinaryOperator::Identical(_) => (SHARP_AST_BINARY_OP, ZEND_IS_IDENTICAL),
+        BinaryOperator::NotIdentical(_) => (SHARP_AST_BINARY_OP, ZEND_IS_NOT_IDENTICAL),
+        BinaryOperator::LessThan(_) => (SHARP_AST_BINARY_OP, ZEND_IS_SMALLER),
+        BinaryOperator::LessThanOrEqual(_) => (SHARP_AST_BINARY_OP, ZEND_IS_SMALLER_OR_EQUAL),
+        BinaryOperator::GreaterThan(_) => (SHARP_AST_GREATER, 0),
+        BinaryOperator::GreaterThanOrEqual(_) => (SHARP_AST_GREATER_EQUAL, 0),
+        BinaryOperator::And(_) => (SHARP_AST_AND, 0),
+        BinaryOperator::Or(_) => (SHARP_AST_OR, 0),
+        _ => unreachable!("check_slice refuses the operator `{operator}`"),
+    }
+}
+
+/// The prefix operators of the slice, as php-src's grammar builds them.
+fn prefix_kind(operator: &UnaryPrefixOperator) -> (sharp_kind, u32) {
+    match operator {
+        UnaryPrefixOperator::Negation(_) => (SHARP_AST_UNARY_MINUS, 0),
+        UnaryPrefixOperator::Plus(_) => (SHARP_AST_UNARY_PLUS, 0),
+        UnaryPrefixOperator::Not(_) => (SHARP_AST_UNARY_OP, ZEND_BOOL_NOT),
+        UnaryPrefixOperator::PreIncrement(_) => (SHARP_AST_PRE_INC, 0),
+        UnaryPrefixOperator::PreDecrement(_) => (SHARP_AST_PRE_DEC, 0),
+        _ => unreachable!("check_slice refuses the operator `{operator}`"),
+    }
+}
+
+/// The assignment operators of the slice, as php-src's grammar builds them.
+fn assignment_kind(operator: &AssignmentOperator) -> (sharp_kind, u32) {
+    match operator {
+        AssignmentOperator::Assign(_) => (SHARP_AST_ASSIGN, 0),
+        AssignmentOperator::Addition(_) => (SHARP_AST_ASSIGN_OP, ZEND_ADD),
+        AssignmentOperator::Subtraction(_) => (SHARP_AST_ASSIGN_OP, ZEND_SUB),
+        AssignmentOperator::Multiplication(_) => (SHARP_AST_ASSIGN_OP, ZEND_MUL),
+        AssignmentOperator::Division(_) => (SHARP_AST_ASSIGN_OP, ZEND_DIV),
+        _ => unreachable!("check_slice refuses the operator `{operator}`"),
+    }
 }

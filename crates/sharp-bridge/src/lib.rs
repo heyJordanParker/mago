@@ -273,3 +273,20 @@ unsafe fn bytes(pointer: *const c_char, len: usize) -> Vec<u8> {
 impl sharp_str {
     const EMPTY: Self = Self { ptr: ptr::null(), len: 0 };
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::panic)]
+
+    use super::*;
+
+    #[test]
+    fn a_panic_inside_lowering_returns_one_compile_error_without_unwinding() {
+        let unit = catch_panic(|| panic!("forced"));
+
+        assert_eq!(unit.abi.node_count, 0);
+        assert_eq!(unit.diagnostics.len(), 1);
+        assert_eq!(unit.diagnostics[0].severity, sharp_severity::SHARP_COMPILE_ERROR);
+        assert_eq!(&*unit.texts[0], b"internal error in the PHP# front end: forced");
+    }
+}
