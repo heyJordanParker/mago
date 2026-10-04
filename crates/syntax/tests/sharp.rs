@@ -269,6 +269,10 @@ fn a_sharp_parse_error_shows_its_message_as_the_issue_title() {
             "class Report\n{\n    public required int count { get; set; }\n}\n",
             "`required` is not supported yet in PHP#.",
         ),
+        (
+            "class Report\n{\n    public void run() { for (const line in lines) {} }\n}\n",
+            "PHP# loops over a collection with `of`, as in `for (const line of lines)`.",
+        ),
     ] {
         let arena = LocalArena::new();
         let program = parse(&arena, "src/Report.sharp", code);

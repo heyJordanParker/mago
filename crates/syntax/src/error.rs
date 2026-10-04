@@ -231,7 +231,8 @@ impl From<&ParseError> for Issue {
             // A PHP# parse error names the rule it breaks, so its message is the title.
             ParseError::PhpSyntaxInSharp(..)
             | ParseError::QualifiedNameInSharp(..)
-            | ParseError::UntypedParameterInSharp(..) => Issue::error(error.to_string())
+            | ParseError::UntypedParameterInSharp(..)
+            | ParseError::ForInInSharp(..) => Issue::error(error.to_string())
                 .with_code(PARSE_ERROR_CODE)
                 .with_annotation(Annotation::primary(error.span()).with_message("Written here.")),
             ParseError::NotSupportedYetInSharp(_, span) => Issue::error(error.to_string())
