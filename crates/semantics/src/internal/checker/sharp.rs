@@ -8,6 +8,7 @@ use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::Access;
 use mago_syntax::cst::Assignment;
+use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Expression;
@@ -17,9 +18,22 @@ use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::Global;
 use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::LocalIdentifier;
+use mago_syntax::cst::Program;
+use mago_syntax::cst::Statement;
+use mago_syntax::cst::Use;
+use mago_syntax::cst::UseItem;
+use mago_syntax::cst::UseItems;
 use mago_syntax::cst::Variable;
 
 use crate::internal::context::Context;
+
+/// The class names `zend_compile.c` reserves for types that the PHP checks do not already reject as keywords.
+const RESERVED_CLASS_NAMES: [&[u8]; 9] =
+    [b"bool", b"float", b"int", b"string", b"void", b"never", b"iterable", b"object", b"mixed"];
+
+/// The PHP superglobals. A PHP# local or parameter of one of these names would read or replace it.
+const SUPERGLOBALS: [&[u8]; 9] =
+    [b"GLOBALS", b"_SERVER", b"_GET", b"_POST", b"_FILES", b"_COOKIE", b"_SESSION", b"_REQUEST", b"_ENV"];
 
 #[inline]
 pub fn check_assignment(assignment: &Assignment, context: &mut Context<'_, '_, '_>) {
@@ -41,6 +55,7 @@ pub fn check_assignment(assignment: &Assignment, context: &mut Context<'_, '_, '
 
 #[inline]
 pub fn check_local_declaration(local_declaration: &LocalDeclaration, context: &mut Context<'_, '_, '_>) {
+    check_superglobal_name(local_declaration.name.value, local_declaration.name.span, "local", context);
     check_redeclaration(local_declaration.name.value, local_declaration.name.span, context);
 }
 
@@ -48,9 +63,74 @@ pub fn check_local_declaration(local_declaration: &LocalDeclaration, context: &m
 pub fn check_parameter(parameter: &FunctionLikeParameter, context: &mut Context<'_, '_, '_>) {
     if parameter.variable.name.starts_with(b"$") {
         report_dollar_variable(parameter.variable.name, parameter.variable.span, context);
+    } else {
+        check_superglobal_name(parameter.variable.name, parameter.variable.span, "parameter", context);
     }
 
     check_redeclaration(parameter.variable.name, parameter.variable.span, context);
+}
+
+/// Checks a PHP# class name against the names the engine reserves for types, beyond the keywords the PHP checks reject.
+#[inline]
+pub fn check_class_name(class: &Class, context: &mut Context<'_, '_, '_>) {
+    if RESERVED_CLASS_NAMES.iter().any(|reserved| reserved.eq_ignore_ascii_case(class.name.value)) {
+        let name = BytesDisplay(class.name.value);
+
+        context.report(
+            Issue::error(format!("Cannot use `{name}` as a class name: it is reserved."))
+                .with_annotation(Annotation::primary(class.name.span).with_message("Class declared here."))
+                .with_note("PHP reserves this name for a type."),
+        );
+    }
+}
+
+/// Checks the classes and imports of a PHP# file against each other, as the engine does when it compiles the file.
+#[inline]
+pub fn check_declarations(program: &Program, context: &mut Context<'_, '_, '_>) {
+    let mut classes = Vec::new();
+    let mut imports = Vec::new();
+    for statement in &program.statements {
+        collect_declarations(statement, &mut classes, &mut imports);
+        if let Statement::Namespace(namespace) = statement {
+            for statement in namespace.statements() {
+                collect_declarations(statement, &mut classes, &mut imports);
+            }
+        }
+    }
+
+    for import in &imports {
+        let short_name =
+            import.alias.as_ref().map_or_else(|| import.name.last_segment(), |alias| alias.identifier.value);
+        if let Some(class) = classes.iter().find(|class| class.name.value.eq_ignore_ascii_case(short_name)) {
+            let full_name = BytesDisplay(import.name.value());
+            let short_name = BytesDisplay(short_name);
+            let class_name = BytesDisplay(class.name.value);
+
+            context.report(
+                Issue::error(format!(
+                    "Cannot import `{full_name}` as `{short_name}`: this file declares a class named `{class_name}`."
+                ))
+                .with_annotation(Annotation::primary(import.name.span()).with_message("Imported here."))
+                .with_annotation(Annotation::secondary(class.name.span).with_message("Class declared here.")),
+            );
+        }
+    }
+
+    for (index, class) in classes.iter().enumerate() {
+        if let Some(earlier) =
+            classes[..index].iter().find(|earlier| earlier.name.value.eq_ignore_ascii_case(class.name.value))
+        {
+            let name = BytesDisplay(class.name.value);
+            let earlier_name = BytesDisplay(earlier.name.value);
+
+            context.report(
+                Issue::error(format!("Cannot declare class `{name}`: this file already declares `{earlier_name}`."))
+                    .with_annotation(Annotation::primary(class.name.span).with_message("Declared again here."))
+                    .with_annotation(Annotation::secondary(earlier.name.span).with_message("First declared here."))
+                    .with_note("Class names are case-insensitive."),
+            );
+        }
+    }
 }
 
 #[inline]
@@ -213,6 +293,30 @@ fn check_redeclaration(name: &[u8], span: Span, context: &mut Context<'_, '_, '_
                 .with_annotation(Annotation::primary(span).with_message("Declared again here."))
                 .with_annotation(Annotation::secondary(earlier.declaration).with_message("First declared here."))
                 .with_help("Rename one of the two locals. A block cannot redeclare a name its enclosing blocks declare, as in C#'s rule CS0136."),
+        );
+    }
+}
+
+fn collect_declarations<'ast, 'arena>(
+    statement: &'ast Statement<'arena>,
+    classes: &mut Vec<&'ast Class<'arena>>,
+    imports: &mut Vec<&'ast UseItem<'arena>>,
+) {
+    match statement {
+        Statement::Class(class) => classes.push(class),
+        Statement::Use(Use { items: UseItems::Sequence(sequence), .. }) => imports.extend(sequence.items.iter()),
+        _ => {}
+    }
+}
+
+fn check_superglobal_name(name: &[u8], span: Span, kind: &str, context: &mut Context<'_, '_, '_>) {
+    if SUPERGLOBALS.contains(&name) {
+        let name = BytesDisplay(name);
+
+        context.report(
+            Issue::error(format!("`{name}` is the name of a PHP superglobal: rename this {kind}."))
+                .with_annotation(Annotation::primary(span).with_message("Declared here."))
+                .with_note(format!("A PHP# {kind} runs as a PHP variable of the same name, which would be `${name}`.")),
         );
     }
 }

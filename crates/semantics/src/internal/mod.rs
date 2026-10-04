@@ -86,6 +86,10 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingW
     #[inline]
     fn walk_in_program(&self, program: &'ast Program<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
         checker::statement::check_top_level_statements(program, context);
+
+        if program.dialect.is_sharp() {
+            checker::sharp::check_declarations(program, context);
+        }
     }
 
     #[inline]
@@ -117,6 +121,10 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingW
     #[inline]
     fn walk_in_class(&self, class: &'ast Class<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
         checker::class_like::check_class(class, context);
+
+        if context.program.dialect.is_sharp() {
+            checker::sharp::check_class_name(class, context);
+        }
     }
 
     #[inline]

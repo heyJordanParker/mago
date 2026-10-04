@@ -140,6 +140,51 @@ fn reading_a_static_member_without_a_call_is_not_supported_yet() {
 }
 
 #[test]
+fn a_reserved_class_name_is_an_error() {
+    let code = "namespace App.Tenant;\n\nclass Mixed\n{\n}\n";
+
+    assert_eq!(issues(code), ["3:7 Cannot use `Mixed` as a class name: it is reserved."]);
+}
+
+#[test]
+fn methods_whose_names_differ_only_in_case_are_an_error() {
+    let code = "class Report\n{\n    public int run() { return 1; }\n\n    public int Run() { return 2; }\n}\n";
+
+    // The PHP checks already reject this, so PHP# adds no second error.
+    assert_eq!(issues(code), ["5:16 class method `Report::Run` has already been defined"]);
+}
+
+#[test]
+fn classes_whose_names_differ_only_in_case_are_an_error() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n}\n\nclass REPORT\n{\n}\n";
+
+    assert_eq!(issues(code), ["7:7 Cannot declare class `REPORT`: this file already declares `Report`."]);
+}
+
+#[test]
+fn an_import_named_like_a_class_of_the_same_file_is_an_error() {
+    let code = "namespace App.Tenant;\n\nimport App.Shared.Report;\n\nclass Report\n{\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["3:8 Cannot import `App.Shared.Report` as `Report`: this file declares a class named `Report`."]
+    );
+}
+
+#[test]
+fn a_local_or_parameter_named_after_a_superglobal_is_an_error() {
+    let code = leak(method("        let _GET = 1;\n        return _GET;\n").replace("int extra", "int GLOBALS"));
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:24 `GLOBALS` is the name of a PHP superglobal: rename this parameter.",
+            "7:13 `_GET` is the name of a PHP superglobal: rename this local.",
+        ]
+    );
+}
+
+#[test]
 fn a_bare_member_name_is_not_supported_yet() {
     let code = "class Report\n{\n    private int $count = 0;\n\n    public int run() { return count + run(); }\n}\n";
 
