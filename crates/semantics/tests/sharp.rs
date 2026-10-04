@@ -360,6 +360,32 @@ fn a_method_name_starting_with_two_underscores_is_not_supported_yet() {
 }
 
 #[test]
+fn a_method_without_an_access_modifier_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    int run() { return 1; }\n    static int make() { return 1; }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:9 A method without `public`, `protected` or `private` is not supported yet in PHP#.",
+            "6:16 A method without `public`, `protected` or `private` is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn a_method_named_after_its_class_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int report() { return 1; }\n}\n\nclass Calc\n{\n    public int CALC() { return 1; }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:16 A method named after its class is not supported yet in PHP#.",
+            "10:16 A method named after its class is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
 fn a_method_without_a_body_reports_only_the_php_error() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int run();\n}\n";
 

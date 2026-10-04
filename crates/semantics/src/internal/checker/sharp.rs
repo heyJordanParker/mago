@@ -26,6 +26,7 @@ use mago_syntax::cst::Hint;
 use mago_syntax::cst::Identifier;
 use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::LocalIdentifier;
+use mago_syntax::cst::Method;
 use mago_syntax::cst::Modifier;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::Program;
@@ -54,8 +55,9 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///
 /// - At file level: `namespace`, `import` and `class`.
 /// - A class: a name and methods, with no attributes, modifiers, `extends` or `implements`.
-/// - A method: `public`, `protected`, `private` and `static`, parameters, a return type and a body. Its name does not
-///   start with `__`, which PHP reserves for magic methods.
+/// - A method: `public`, `protected` or `private`, an optional `static`, parameters, a return type and a body. Its name
+///   does not start with `__`, which PHP reserves for magic methods, and is not its class's name, compared ignoring
+///   case, which PHP# gives to the constructor.
 /// - A parameter: a type, a name and an optional default. A default is a literal, a constant, or the operators
 ///   below on them, without `++` and `--`.
 /// - Types: `int`, `float`, `bool`, `string`, `void` and a class written by its short name.
@@ -144,7 +146,18 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
             None
         }
-        (Node::Method(method), Class) if !method.name.value.starts_with(b"__") => Some(Method),
+        (Node::Method(method), Class) => match is_slice_method(method, context.program) {
+            Ok(()) => Some(Method),
+            Err((message, help)) => {
+                context.report(
+                    Issue::error(message)
+                        .with_annotation(Annotation::primary(method.name.span).with_message("Not supported yet."))
+                        .with_note(help),
+                );
+
+                None
+            }
+        },
 
         (
             Node::Modifier(Modifier::Public(_) | Modifier::Protected(_) | Modifier::Private(_) | Modifier::Static(_))
@@ -245,6 +258,38 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             None
         }
     }
+}
+
+/// Whether the slice has a method, with the refusal's message and note when it does not. Each rule keeps out a method
+/// whose meaning a later slice gives it: PHP's magic methods, PHP#'s `private` default of spec section 5, and PHP#'s
+/// constructor of spec section 9.
+fn is_slice_method(method: &Method, program: &Program) -> Result<(), (&'static str, &'static str)> {
+    let refusal = if method.name.value.starts_with(b"__") {
+        (
+            "This method name is not supported yet in PHP#.",
+            "PHP reserves method names that start with `__` for its magic methods.",
+        )
+    } else if !method
+        .modifiers
+        .iter()
+        .any(|modifier| matches!(modifier, Modifier::Public(_) | Modifier::Protected(_) | Modifier::Private(_)))
+    {
+        (
+            "A method without `public`, `protected` or `private` is not supported yet in PHP#.",
+            "A PHP# member without an access modifier is `private`, while PHP makes it `public`.",
+        )
+    } else if enclosing_class(program, method.span())
+        .is_some_and(|class| class.name.value.eq_ignore_ascii_case(method.name.value))
+    {
+        (
+            "A method named after its class is not supported yet in PHP#.",
+            "In PHP#, a method named after its class is the class's constructor.",
+        )
+    } else {
+        return Ok(());
+    };
+
+    Err(refusal)
 }
 
 /// Whether the slice has a type: the built-in types of spec section 24, or a class written by its short name.
@@ -355,14 +400,6 @@ fn report_unsupported(node: Node<'_, '_>, place: Place, context: &mut Context<'_
         Node::Extends(_) => "`extends` clause",
         Node::Implements(_) => "`implements` clause",
         Node::ClassLikeMember(_) => "class member",
-        Node::Method(method) => {
-            return report_not_supported(
-                method.name.span,
-                "method name",
-                "PHP reserves method names that start with `__` for its magic methods.",
-                context,
-            );
-        }
         Node::ClassLikeMemberSelector(_) => "member name",
         Node::FunctionLikeParameter(FunctionLikeParameter { ellipsis: Some(ellipsis), .. }) => {
             return report_not_supported(*ellipsis, "variadic parameter", supported(place), context);
@@ -833,11 +870,16 @@ fn report_bare_member(span: Span, name: &[u8], context: &mut Context<'_, '_, '_>
 
 /// Returns `true` when `name` is a method of the class whose body holds `span`. Method names are case-insensitive.
 fn is_method_of_enclosing_class(program: &Program, span: Span, name: &[u8]) -> bool {
-    declarations(program).0.iter().filter(|class| class.span().contains(&span.start)).any(|class| {
+    enclosing_class(program, span).is_some_and(|class| {
         class.members.iter().any(
             |member| matches!(member, ClassLikeMember::Method(method) if method.name.value.eq_ignore_ascii_case(name)),
         )
     })
+}
+
+/// The class of a PHP# file whose body holds `span`.
+fn enclosing_class<'ast, 'arena>(program: &'ast Program<'arena>, span: Span) -> Option<&'ast Class<'arena>> {
+    declarations(program).0.into_iter().find(|class| class.span().contains(&span.start))
 }
 
 fn starts_uppercase(name: &[u8]) -> bool {
