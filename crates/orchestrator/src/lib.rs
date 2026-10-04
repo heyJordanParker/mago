@@ -19,7 +19,7 @@
 //! The orchestrator provides four main services:
 //!
 //! - [`LintService`]: Runs linting rules on PHP code
-//! - [`AnalysisService`]: Performs static analysis
+//! - [`IncrementalAnalysisService`](service::incremental_analysis::IncrementalAnalysisService): Performs static analysis
 //! - [`GuardService`]: Enforces architectural rules
 //! - [`FormatService`]: Formats PHP code
 //!
@@ -45,7 +45,6 @@ use mago_analyzer::external::ExternalAnalyzerHandle;
 use mago_analyzer::plugin::PluginRegistry;
 use mago_analyzer::plugin::create_registry_with_plugins;
 use mago_codex::metadata::CodebaseMetadata;
-use mago_codex::reference::SymbolReferences;
 use mago_database::Database;
 use mago_database::DatabaseConfiguration;
 use mago_database::ReadDatabase;
@@ -53,11 +52,9 @@ use mago_database::exclusion::Exclusion;
 use mago_database::file::File;
 use mago_database::loader::DatabaseLoader;
 
-use crate::service::analysis::AnalysisService;
 use crate::service::format::FileFormatStatus;
 use crate::service::format::FormatService;
 use crate::service::guard::GuardService;
-use crate::service::incremental_analysis::IncrementalAnalysisService;
 use crate::service::lint::LintService;
 
 pub use config::OrchestratorConfiguration;
@@ -328,70 +325,6 @@ impl<'cfg> Orchestrator<'cfg> {
             self.config.guard_settings.clone(),
             self.config.parser_settings,
             self.config.use_progress_bars,
-        )
-    }
-
-    /// Creates a static analysis service with the current configuration.
-    ///
-    /// The analysis service performs deep static analysis on PHP code, including type checking,
-    /// control flow analysis, and detection of logical errors and type mismatches.
-    ///
-    /// For incremental/watch mode analysis, use [`get_incremental_analysis_service`](Self::get_incremental_analysis_service) instead.
-    ///
-    /// # Arguments
-    ///
-    /// * `database` - A read-only database handle containing the PHP files to analyze
-    /// * `codebase` - Metadata about the codebase structure and symbols
-    /// * `symbol_references` - Information about symbol usage and references across the codebase
-    ///
-    /// # Returns
-    ///
-    /// An [`AnalysisService`] configured with the orchestrator's analyzer settings and progress bar preferences.
-    pub fn get_analysis_service(
-        &self,
-        database: ReadDatabase,
-        codebase: CodebaseMetadata,
-        symbol_references: SymbolReferences,
-    ) -> AnalysisService {
-        AnalysisService::new(
-            database,
-            codebase,
-            symbol_references,
-            self.config.analyzer_settings.clone(),
-            self.config.parser_settings,
-            self.config.use_progress_bars,
-            self.get_analyzer_plugin_registry(),
-        )
-    }
-
-    /// Creates an incremental analysis service for watch mode or LSP integration.
-    ///
-    /// The service manages its own incremental state internally and provides a clean API
-    /// for running full and incremental analysis without being coupled to CLI output
-    /// or file watchers.
-    ///
-    /// # Arguments
-    ///
-    /// * `database` - A read-only database handle containing the PHP files to analyze
-    /// * `codebase` - Base codebase metadata (prelude only, no user symbols)
-    /// * `symbol_references` - Base symbol references (prelude only)
-    ///
-    /// # Returns
-    ///
-    /// An [`IncrementalAnalysisService`] ready for analysis.
-    pub fn get_incremental_analysis_service(
-        &self,
-        database: ReadDatabase,
-        codebase: CodebaseMetadata,
-        symbol_references: SymbolReferences,
-    ) -> IncrementalAnalysisService {
-        IncrementalAnalysisService::new(
-            database,
-            codebase,
-            symbol_references,
-            self.config.analyzer_settings.clone(),
-            self.config.parser_settings,
-            self.get_analyzer_plugin_registry(),
         )
     }
 

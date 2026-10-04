@@ -72,6 +72,7 @@ final class DeclarationRefinementProofPlugin implements CodebaseScanHook, Plugin
                     $context->refine(match ($classLike->originalName) {
                         'Proof\Box' => self::box($file, $attribute->location->span),
                         'Proof\Holder' => self::holder($file, $attribute->location->span),
+                        'Proof\Factory' => self::factory($file, $attribute->location->span),
                         default => throw new LogicException("Unexpected refined class `{$classLike->originalName}`."),
                     });
                 }
@@ -125,6 +126,19 @@ final class DeclarationRefinementProofPlugin implements CodebaseScanHook, Plugin
                 'subtype' => new SignatureRefinement(return: new RefinedType(self::symbol('Proof\Spec'), $span)),
             ],
             issues: [new RefinementIssue(Level::Warning, 'marker', 'This declaration is refined.', $span)],
+        );
+    }
+
+    private static function factory(CodebaseScanFile $file, Span $span): ClassLikeRefinement
+    {
+        return new ClassLikeRefinement(
+            $file->path,
+            'Proof\Factory',
+            properties: [
+                'special' => new RefinedType(self::symbol('Proof\Box', self::symbol('Proof\Special')), $span),
+                'plain' => new RefinedType(self::symbol('Proof\Box', self::symbol('Proof\Spec')), $span),
+            ],
+            methods: ['make' => new SignatureRefinement(returnFromBody: true)],
         );
     }
 

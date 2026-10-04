@@ -249,6 +249,13 @@ impl<'config> Database<'config> {
         db
     }
 
+    /// Converts the database into one that owns its configuration.
+    #[inline]
+    #[must_use]
+    pub fn into_static(self) -> Database<'static> {
+        Database { files: self.files, id_to_name: self.id_to_name, configuration: self.configuration.into_static() }
+    }
+
     /// Reserves capacity for at least `additional` more files.
     #[inline]
     pub fn reserve(&mut self, additional: usize) {

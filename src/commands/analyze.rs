@@ -33,6 +33,7 @@
 //! checking even for external symbols. Stubs can be disabled with `--no-stubs`
 //! for debugging or testing purposes.
 
+use std::borrow::Cow;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -52,13 +53,18 @@ use mago_analyzer::code::IssueCode;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::reference::SymbolReferences;
 use mago_database::Database;
+use mago_database::DatabaseConfiguration;
 use mago_database::DatabaseReader;
+use mago_database::file::File;
 use mago_database::file::FileType;
+use mago_database::membership::WorkspaceMatcher;
 use mago_database::watcher::DatabaseWatcher;
 use mago_database::watcher::WatchOptions;
 use mago_orchestrator::Orchestrator;
 use mago_prelude::Prelude;
 use mago_reporting::CompiledIgnoreSet;
+use mago_server::Server;
+use mago_server::Settings as ServerSettings;
 
 use crate::commands::args::baseline_reporting::BaselineReportingArgs;
 use crate::commands::args::substitution::SubstitutionArgs;
@@ -107,10 +113,12 @@ enum WatchOutcome {
     alias = "analyse",
 )]
 pub struct AnalyzeCommand {
-    /// Specific files or directories to analyze instead of using configuration.
+    /// Specific files or directories to report issues for.
     ///
-    /// When provided, these paths override the source configuration in mago.toml.
-    /// The analyzer will focus only on the specified files or directories.
+    /// When provided, the analyzer still analyzes every source file in mago.toml,
+    /// plus these paths, so checks that compare files see the whole project. It
+    /// reports only the issues in the specified files or directories, plus issues
+    /// that name no file.
     ///
     /// This is useful for targeted analysis, testing changes, or integrating
     /// with development workflows and CI systems.
@@ -276,6 +284,7 @@ impl AnalyzeCommand {
             &mut orchestrator,
         )?;
 
+        let mut scope = None;
         if !self.stdin_input && self.staged {
             let staged_paths = git::get_staged_file_paths(&configuration.source.workspace)?;
             if staged_paths.is_empty() {
@@ -289,7 +298,22 @@ impl AnalyzeCommand {
 
             orchestrator.set_source_paths(staged_paths.iter().map(|p| p.to_string_lossy().to_string()));
         } else if !self.stdin_input && !self.path.is_empty() {
-            stdin_input::set_source_paths_from_paths(&mut orchestrator, &self.path);
+            let paths = self.path.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>();
+            scope = Some(WorkspaceMatcher::from_configuration(&DatabaseConfiguration {
+                workspace: Cow::Borrowed(configuration.source.workspace.as_path()),
+                paths: paths.iter().map(|path| Cow::Borrowed(path.as_bytes())).collect(),
+                includes: Vec::new(),
+                patches: Vec::new(),
+                excludes: Vec::new(),
+                extensions: orchestrator
+                    .config
+                    .extensions
+                    .iter()
+                    .map(|extension| Cow::Borrowed(extension.as_bytes()))
+                    .collect(),
+                glob: orchestrator.config.glob,
+            })?);
+            orchestrator.config.paths.extend(paths);
         }
 
         let orchestrator_init_duration = orchestrator_init_start.map(|s| s.elapsed());
@@ -338,15 +362,20 @@ impl AnalyzeCommand {
         }
 
         let service_run_start = trace_enabled.then(Instant::now);
-        let mut service = orchestrator.get_analysis_service(database.read_only(), metadata, symbol_references);
+        let mut server =
+            Server::new(database.into_static(), metadata, symbol_references, server_settings(&orchestrator));
         if self.scan_only {
-            service = service.scan_only();
+            server = server.scan_only();
         }
-        let analysis_result = service.run()?;
+        let analysis_result = server.analyze()?;
         let service_run_duration = service_run_start.map(|s| s.elapsed());
         let report_start = trace_enabled.then(Instant::now);
-        let mut issues = analysis_result.issues;
+        let mut issues = match &scope {
+            Some(scope) => server.issues_in(scope),
+            None => analysis_result.issues,
+        };
         let ignore_set = self.compile_ignore_set(&configuration);
+        let database = server.database_mut();
 
         issues.filter_out_ignored(&ignore_set, |file_id| {
             database.get_ref(&file_id).ok().map(|f| String::from_utf8_lossy(&f.name).into_owned())
@@ -363,17 +392,17 @@ impl AnalyzeCommand {
             self.staged || !self.path.is_empty() || self.stdin_input,
         );
 
-        let (exit_code, changed_file_ids) = processor.process_issues(&orchestrator, &mut database, issues)?;
-        let outcome = CommandOutcome::with_changes(exit_code, &database, changed_file_ids.iter().copied())?;
+        let (exit_code, changed_file_ids) = processor.process_issues(&orchestrator, database, issues)?;
+        let outcome = CommandOutcome::with_changes(exit_code, database, changed_file_ids.iter().copied())?;
         let report_duration = report_start.map(|s| s.elapsed());
 
         if self.staged && !changed_file_ids.is_empty() {
-            git::stage_files(&configuration.source.workspace, &database, changed_file_ids)?;
+            git::stage_files(&configuration.source.workspace, database, changed_file_ids)?;
         }
 
-        let drop_database_start = trace_enabled.then(Instant::now);
-        drop(database);
-        let drop_database_duration = drop_database_start.map(|s| s.elapsed());
+        let drop_server_start = trace_enabled.then(Instant::now);
+        drop(server);
+        let drop_server_duration = drop_server_start.map(|s| s.elapsed());
 
         let drop_orchestrator_start = trace_enabled.then(Instant::now);
         drop(orchestrator);
@@ -384,9 +413,9 @@ impl AnalyzeCommand {
             tracing::trace!("Prelude decoded in {:?} (concurrent task).", prelude_duration.unwrap_or_default());
             tracing::trace!("Database loaded in {:?} (concurrent task).", load_database_duration.unwrap_or_default());
             tracing::trace!("Prelude and database loaded in {:?}.", load_inputs_duration.unwrap_or_default());
-            tracing::trace!("Analysis service ran in {:?}.", service_run_duration.unwrap_or_default());
+            tracing::trace!("Analysis server ran in {:?}.", service_run_duration.unwrap_or_default());
             tracing::trace!("Issues filtered and reported in {:?}.", report_duration.unwrap_or_default());
-            tracing::trace!("Database dropped in {:?}.", drop_database_duration.unwrap_or_default());
+            tracing::trace!("Server dropped in {:?}.", drop_server_duration.unwrap_or_default());
             tracing::trace!("Orchestrator dropped in {:?}.", drop_orchestrator_duration.unwrap_or_default());
             tracing::trace!("Analyze command finished in {:?}.", start.elapsed());
         }
@@ -490,6 +519,8 @@ impl AnalyzeCommand {
 
         let database =
             orchestrator.load_database(&configuration.source.workspace, true, Some(prelude_database), None)?;
+        let mut server =
+            Server::new(database.clone().into_static(), metadata, symbol_references, server_settings(&orchestrator));
 
         let mut watcher = DatabaseWatcher::new(database);
 
@@ -501,17 +532,14 @@ impl AnalyzeCommand {
         tracing::info!("Watching {} for changes...", configuration.source.workspace.display());
         tracing::info!("Running initial analysis...");
 
-        let mut service =
-            orchestrator.get_incremental_analysis_service(watcher.read_only_database(), metadata, symbol_references);
-        let analysis_result = service.analyze()?;
+        let analysis_result = server.analyze()?;
 
         let ignore_set = self.compile_ignore_set(configuration);
 
         let mut issues = analysis_result.issues;
-        let read_db = watcher.read_only_database();
 
         issues.filter_out_ignored(&ignore_set, |file_id| {
-            read_db.get_ref(&file_id).ok().map(|f| String::from_utf8_lossy(&f.name).into_owned())
+            server.database().get_ref(&file_id).ok().map(|f| String::from_utf8_lossy(&f.name).into_owned())
         });
 
         let baseline = configuration.analyzer.baseline.as_deref();
@@ -543,14 +571,24 @@ impl AnalyzeCommand {
 
             tracing::info!("Detected {} file change(s), re-analyzing...", changed_file_ids.len());
 
-            service.update_database(watcher.read_only_database());
+            for file_id in &changed_file_ids {
+                if let Ok(file) = watcher.database().get(file_id) {
+                    server.database_mut().add(File::new(
+                        file.name.clone(),
+                        file.file_type,
+                        file.path.clone(),
+                        file.contents.clone(),
+                    ));
+                } else {
+                    server.database_mut().delete(*file_id);
+                }
+            }
 
-            let analysis_result = service.analyze_incremental(Some(&changed_file_ids))?;
+            let analysis_result = server.analyze_incremental(&changed_file_ids)?;
 
             let mut issues = analysis_result.issues;
-            let read_db = watcher.read_only_database();
             issues.filter_out_ignored(&ignore_set, |file_id| {
-                read_db.get_ref(&file_id).ok().map(|f| String::from_utf8_lossy(&f.name).into_owned())
+                server.database().get_ref(&file_id).ok().map(|f| String::from_utf8_lossy(&f.name).into_owned())
             });
 
             watcher
@@ -558,6 +596,17 @@ impl AnalyzeCommand {
 
             tracing::info!("Analysis complete. Watching for changes...");
         }
+    }
+}
+
+/// Projects the orchestrator's resolved configuration down to what an analysis server needs.
+fn server_settings(orchestrator: &Orchestrator<'_>) -> ServerSettings {
+    ServerSettings {
+        parser: orchestrator.config.parser_settings,
+        analyzer: orchestrator.config.analyzer_settings.clone(),
+        linter: orchestrator.config.linter_settings.clone(),
+        plugin_registry: orchestrator.get_analyzer_plugin_registry(),
+        use_progress_bars: orchestrator.config.use_progress_bars,
     }
 }
 

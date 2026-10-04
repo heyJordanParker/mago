@@ -100,6 +100,56 @@ fn database(refined: bool) -> (Database<'static>, FileId) {
     (database, holder_id)
 }
 
+fn factory(returned: &str) -> String {
+    format!(
+        r"<?php
+
+namespace Proof;
+
+#[Refined]
+final class Factory
+{{
+    public function __construct(public Box $special, public Box $plain) {{}}
+
+    public function make(): Box
+    {{
+        return $this->{returned};
+    }}
+}}
+"
+    )
+}
+
+const CONSUMER: &str = r"<?php
+
+namespace Proof;
+
+final class Consumer
+{
+    public function unwrap(Factory $factory): Other
+    {
+        return $factory->make()->get();
+    }
+}
+";
+
+fn factory_database(returned: &str) -> (Database<'static>, FileId) {
+    let mut database = Database::new(common::database_configuration("/refinement-proof", vec![Cow::Borrowed(b".")]));
+    database.add(File::new(Cow::Borrowed(b"src/Box.php"), FileType::Host, None, Cow::Borrowed(BOX.as_bytes())));
+    let factory =
+        File::new(Cow::Borrowed(b"src/Factory.php"), FileType::Host, None, Cow::Owned(factory(returned).into_bytes()));
+    let factory_id = factory.id;
+    database.add(factory);
+    database.add(File::new(
+        Cow::Borrowed(b"src/Consumer.php"),
+        FileType::Host,
+        None,
+        Cow::Borrowed(CONSUMER.as_bytes()),
+    ));
+
+    (database, factory_id)
+}
+
 fn registry(repository: &Path) -> Arc<PluginRegistry> {
     let command = WorkerCommand::new("php")
         .with_argument(repository.join("composer/tests/Sdk/Fixtures/analyzer-refinement-worker.php"))
@@ -184,4 +234,32 @@ fn declaration_refinements_reach_declarations_bodies_and_incremental_removal() {
 
     let fresh = codes(&service(&plain, registry(repository)).analyze().expect("fresh analysis").issues);
     assert_eq!(removed, fresh, "incremental analysis after removal matches a fresh analysis");
+}
+
+#[test]
+fn a_return_taken_from_the_body_reaches_callers_and_follows_body_edits() {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !common::php_sdk_is_available(repository, "the body return test") {
+        return;
+    }
+
+    let (special, factory_id) = factory_database("special");
+    let mut incremental = service(&special, registry(repository));
+    let first = codes(&incremental.analyze().expect("body return analysis should succeed").issues);
+    assert!(
+        first
+            .get("invalid-return-statement")
+            .is_some_and(|messages| messages.iter().any(|m| m.contains("Proof\\Special"))),
+        "the caller reads the return the body applied: {first:#?}"
+    );
+
+    let (plain, _) = factory_database("plain");
+    incremental.update_database(plain.read_only());
+    let edited = codes(&incremental.analyze_incremental(Some(&[factory_id])).expect("incremental analysis").issues);
+    let fresh = codes(&service(&plain, registry(repository)).analyze().expect("fresh analysis").issues);
+    assert!(
+        !fresh.values().flatten().any(|message| message.contains("Proof\\Special")),
+        "the edited body no longer applies the narrower class: {fresh:#?}"
+    );
+    assert_eq!(edited, fresh, "incremental analysis after a body edit matches a fresh analysis");
 }
