@@ -786,6 +786,32 @@ fn compound_assignments_are_assign_ops() {
 }
 
 /// ```php
+/// return $extra ?? $this->total() ?? 0;
+/// ```
+///
+/// `??` is right-associative, as php-src's grammar declares it.
+#[test]
+fn null_coalescing_is_coalesce() {
+    assert_eq!(
+        body("        return extra ?? this.total() ?? 0;\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                COALESCE
+                  VAR
+                    ZVAL "extra"
+                  COALESCE
+                    METHOD_CALL
+                      VAR
+                        ZVAL "this"
+                      ZVAL "total"
+                      ARG_LIST
+                    ZVAL 0
+        "#}
+    );
+}
+
+/// ```php
 /// return ($extra + 1) * 2;
 /// ```
 #[test]
@@ -859,7 +885,8 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_OR
         | sharp_kind::SHARP_AST_DECLARE
         | sharp_kind::SHARP_AST_NAMESPACE
-        | sharp_kind::SHARP_AST_NAMED_ARG => Some(2),
+        | sharp_kind::SHARP_AST_NAMED_ARG
+        | sharp_kind::SHARP_AST_COALESCE => Some(2),
         sharp_kind::SHARP_AST_METHOD_CALL | sharp_kind::SHARP_AST_STATIC_CALL | sharp_kind::SHARP_AST_CONST_ELEM => {
             Some(3)
         }

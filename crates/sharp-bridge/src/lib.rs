@@ -59,6 +59,7 @@ pub enum sharp_kind {
     SHARP_AST_STATIC_CALL,
     SHARP_AST_CONST_ELEM,
     SHARP_AST_PARAM,
+    SHARP_AST_COALESCE,
 }
 
 #[repr(u8)]

@@ -436,13 +436,12 @@ fn a_variadic_parameter_is_not_supported_yet() {
 #[test]
 fn operators_outside_the_slice_are_not_supported_yet() {
     let code = leak(method(
-        "        let a = extra ?? 1;\n        a = @extra;\n        a = (int) extra;\n        a = extra ** 2;\n        a = extra & 1;\n        a = extra | 1;\n        a = extra ^ 1;\n        a = extra << 1;\n        a = extra >> 1;\n        a = ~extra;\n        a = extra xor true;\n        a = extra and true;\n        a = extra or true;\n        a = extra <=> 1;\n        a = extra <> 1;\n        a %= 2;\n        a **= 2;\n        a &= 2;\n        a ??= 2;\n        return a;\n",
+        "        let a = extra;\n        a = @extra;\n        a = (int) extra;\n        a = extra ** 2;\n        a = extra & 1;\n        a = extra | 1;\n        a = extra ^ 1;\n        a = extra << 1;\n        a = extra >> 1;\n        a = ~extra;\n        a = extra xor true;\n        a = extra and true;\n        a = extra or true;\n        a = extra <=> 1;\n        a = extra <> 1;\n        a %= 2;\n        a **= 2;\n        a &= 2;\n        a ??= 2;\n        return a;\n",
     ));
 
     assert_eq!(
         issues(code),
         [
-            "7:23 This operator is not supported yet in PHP#.",
             "8:13 This operator is not supported yet in PHP#.",
             "9:13 This operator is not supported yet in PHP#.",
             "10:19 This operator is not supported yet in PHP#.",

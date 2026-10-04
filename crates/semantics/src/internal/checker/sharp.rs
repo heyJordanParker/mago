@@ -74,7 +74,7 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - In expressions: literals, parentheses, bare names, assignment, the operators below, and method calls and
 ///   property reads written with `.` and a member name, with positional and named arguments. A string literal's
 ///   `\u{...}` escapes are valid codepoints, as PHP requires.
-/// - Operators: `+ - * / %`, `== != === !== < > <= >=`, `&& || !`, unary `-` and `+`, `++` and `--`, and
+/// - Operators: `+ - * / %`, `== != === !== < > <= >=`, `&& || !`, `??`, unary `-` and `+`, `++` and `--`, and
 ///   `= += -= *= /=`.
 ///
 /// The check visits every node and refuses any node, or any position of a node, that this list does not name. It
@@ -468,14 +468,14 @@ const fn is_slice_binary_operator(operator: &BinaryOperator) -> bool {
         | BinaryOperator::GreaterThan(_)
         | BinaryOperator::GreaterThanOrEqual(_)
         | BinaryOperator::And(_)
-        | BinaryOperator::Or(_) => true,
+        | BinaryOperator::Or(_)
+        | BinaryOperator::NullCoalesce(_) => true,
         BinaryOperator::Exponentiation(_)
         | BinaryOperator::BitwiseAnd(_)
         | BinaryOperator::BitwiseOr(_)
         | BinaryOperator::BitwiseXor(_)
         | BinaryOperator::LeftShift(_)
         | BinaryOperator::RightShift(_)
-        | BinaryOperator::NullCoalesce(_)
         | BinaryOperator::AngledNotEqual(_)
         | BinaryOperator::Spaceship(_)
         | BinaryOperator::StringConcat(_)
@@ -567,10 +567,10 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, a name, and an optional default."
         }
         Place::Body => {
-            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const`, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `++` and `--`, and method calls and property reads written with `.`."
+            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const`, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, `++` and `--`, and method calls and property reads written with `.`."
         }
         Place::Default => {
-            "A parameter default is a literal, a constant, or arithmetic, comparison and logical operators on them."
+            "A parameter default is a literal, a constant, or arithmetic, comparison, logical and `??` operators on them."
         }
     }
 }

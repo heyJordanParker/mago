@@ -50,6 +50,7 @@ use crate::sharp_kind::SHARP_AST_ASSIGN;
 use crate::sharp_kind::SHARP_AST_ASSIGN_OP;
 use crate::sharp_kind::SHARP_AST_BINARY_OP;
 use crate::sharp_kind::SHARP_AST_CLASS;
+use crate::sharp_kind::SHARP_AST_COALESCE;
 use crate::sharp_kind::SHARP_AST_CONST;
 use crate::sharp_kind::SHARP_AST_CONST_DECL;
 use crate::sharp_kind::SHARP_AST_CONST_ELEM;
@@ -582,13 +583,13 @@ fn binary_kind(operator: BinaryOperator) -> (sharp_kind, u32) {
         BinaryOperator::GreaterThanOrEqual(_) => (SHARP_AST_GREATER_EQUAL, 0),
         BinaryOperator::And(_) => (SHARP_AST_AND, 0),
         BinaryOperator::Or(_) => (SHARP_AST_OR, 0),
+        BinaryOperator::NullCoalesce(_) => (SHARP_AST_COALESCE, 0),
         BinaryOperator::Exponentiation(_)
         | BinaryOperator::BitwiseAnd(_)
         | BinaryOperator::BitwiseOr(_)
         | BinaryOperator::BitwiseXor(_)
         | BinaryOperator::LeftShift(_)
         | BinaryOperator::RightShift(_)
-        | BinaryOperator::NullCoalesce(_)
         | BinaryOperator::AngledNotEqual(_)
         | BinaryOperator::Spaceship(_)
         | BinaryOperator::StringConcat(_)
