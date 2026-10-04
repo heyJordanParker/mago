@@ -311,7 +311,11 @@ fn a_php_operator_is_reported_once_where_it_is_consumed() {
 fn the_use_keyword_is_a_parse_error_in_every_form() {
     for code in [
         "use Calc;\n",
+        "use Lib\\Calc as Adder;\n",
+        "use Lib\\{Calc, Money};\n",
+        "use function Lib\\{make, total};\n",
         "class Report\n{\n    use Shared;\n}\n",
+        "class Report\n{\n    use Lib\\Shared { Lib\\Shared::run as start; }\n}\n",
         "class Report\n{\n    void run()\n    {\n        const total = function () use ($count) { return 1; };\n    }\n}\n",
     ] {
         let arena = LocalArena::new();

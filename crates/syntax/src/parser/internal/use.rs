@@ -97,7 +97,7 @@ where
 
     pub(crate) fn parse_typed_use_item_list(&mut self) -> Result<TypedUseItemList<'arena>, ParseError> {
         let r#type = self.parse_use_type()?;
-        let namespace = self.parse_identifier()?;
+        let namespace = self.parse_php_identifier()?;
         let namespace_separator = self.stream.eat_span(T!["\\"])?;
         let left_brace = self.stream.eat_span(T!["{"])?;
         let mut items = self.new_vec();
@@ -128,7 +128,7 @@ where
     }
 
     pub(crate) fn parse_mixed_use_item_list(&mut self) -> Result<MixedUseItemList<'arena>, ParseError> {
-        let namespace = self.parse_identifier()?;
+        let namespace = self.parse_php_identifier()?;
         let namespace_separator = self.stream.eat_span(T!["\\"])?;
         let left_brace = self.stream.eat_span(T!["{"])?;
         let mut items = self.new_vec();
@@ -180,7 +180,7 @@ where
     }
 
     pub(crate) fn parse_use_item(&mut self) -> Result<UseItem<'arena>, ParseError> {
-        Ok(UseItem { name: self.parse_identifier()?, alias: self.parse_optional_use_item_alias()? })
+        Ok(UseItem { name: self.parse_php_identifier()?, alias: self.parse_optional_use_item_alias()? })
     }
 
     pub(crate) fn parse_optional_use_item_alias(&mut self) -> Result<Option<UseItemAlias<'arena>>, ParseError> {

@@ -16,22 +16,28 @@ where
     A: Arena,
 {
     pub(crate) fn parse_identifier(&mut self) -> Result<Identifier<'arena>, ParseError> {
-        let token = self.stream.lookahead(0)?.ok_or_else(|| self.stream.unexpected(None, &[]))?;
-
-        let identifier = match &token.kind {
-            T![QualifiedIdentifier] => Identifier::Qualified(self.parse_qualified_identifier()?),
-            T![FullyQualifiedIdentifier] => Identifier::FullyQualified(self.parse_fully_qualified_identifier()?),
-            _ => return Ok(Identifier::Local(self.parse_local_identifier()?)),
-        };
+        let identifier = self.parse_php_identifier()?;
 
         // PHP# writes a full name only in an `import` line. The error stands, and the name still parses so the rest
         // of the file does.
-        if self.dialect.is_sharp() {
+        if self.dialect.is_sharp() && !identifier.is_local() {
             let name = String::from_utf8_lossy(identifier.value()).trim_start_matches('\\').replace('\\', ".");
             self.errors.push(ParseError::QualifiedNameInSharp(name.into_boxed_str(), identifier.span()));
         }
 
         Ok(identifier)
+    }
+
+    /// Parses a local, qualified or fully qualified name as PHP writes it. A `use` line, an import or a trait use,
+    /// reads its names with this, because PHP# reports the whole line once, at its `use` keyword.
+    pub(crate) fn parse_php_identifier(&mut self) -> Result<Identifier<'arena>, ParseError> {
+        let token = self.stream.lookahead(0)?.ok_or_else(|| self.stream.unexpected(None, &[]))?;
+
+        Ok(match &token.kind {
+            T![QualifiedIdentifier] => Identifier::Qualified(self.parse_qualified_identifier()?),
+            T![FullyQualifiedIdentifier] => Identifier::FullyQualified(self.parse_fully_qualified_identifier()?),
+            _ => Identifier::Local(self.parse_local_identifier()?),
+        })
     }
 
     /// Parses a PHP# name for a `namespace` or `import` line, such as `App.Tenant.Store`.
