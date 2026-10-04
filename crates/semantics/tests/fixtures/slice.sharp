@@ -51,13 +51,25 @@ class Report
     public void touch(Calc calc)
     {
         calc.rate = 2;
+        calc.rate += 1;
+        calc.rate++;
+        this.count += 1;
         calc.add(1, 2);
         const made = Calc.make();
         const read = calc.rate;
+        const chained = Calc.make().add(1).rate;
+        const sum = Calc.make().add(1, 2);
+        const big = 0xFFFFFFFFFFFFFFFF;
+        return;
     }
 
     public Report same()
     {
         return this;
+    }
+
+    private float ratio()
+    {
+        return 0.5;
     }
 }
