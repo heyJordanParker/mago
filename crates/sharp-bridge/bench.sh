@@ -2,6 +2,7 @@
 # Counts the instructions the front end spends on a generated class of 10,000 and of 20,000 methods, as `.sharp`
 # through `sharp_lower` and as `.php` through the checker, and the instructions PHP's own compile spends on the `.php`
 # class through `php -l`. Each count is the "instructions retired" of `/usr/bin/time -l` on macOS, three runs each.
+# The first lines count each process on an empty file, the startup every later count includes.
 #
 # Usage: crates/sharp-bridge/bench.sh [methods...]
 
@@ -19,6 +20,13 @@ instructions() {
         /usr/bin/time -l "$@" 2>&1 >/dev/null | awk '/instructions retired/ { printf " %.2fe9", $1 / 1e9 }'
     done
 }
+
+: > "$classes/Empty.sharp"
+echo "<?php" > "$classes/Empty.php"
+echo "empty file, the startup of each process:"
+echo "  sharp_lower .sharp:$(instructions "$front_end" "$classes/Empty.sharp")"
+echo "  checker .php:      $(instructions "$front_end" "$classes/Empty.php")"
+echo "  php -l .php:       $(instructions php -l "$classes/Empty.php")"
 
 [ $# -gt 0 ] || set -- 10000 20000
 for methods in "$@"; do
