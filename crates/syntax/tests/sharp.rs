@@ -388,6 +388,47 @@ fn a_method_written_with_function_is_a_parse_error() {
     );
 }
 
+/// A PHP# method returning a sum of `terms` terms.
+fn sum(terms: usize) -> &'static str {
+    let code = format!(
+        "namespace App;\n\nclass Report\n{{\n    public int run(int extra)\n    {{\n        return {};\n    }}\n}}\n",
+        vec!["extra"; terms].join(" + ")
+    );
+
+    Box::leak(code.into_boxed_str())
+}
+
+/// The namespace, the class and the `return` are three levels, so a sum of 509 terms nests its innermost term 512
+/// levels deep, and a sum of 510 terms nests it 513 levels deep. The parser leaves out the statement it refuses.
+#[test]
+fn nesting_deeper_than_512_levels_is_a_parse_error_that_leaves_out_its_statement() {
+    let arena = LocalArena::new();
+    let accepted = parse(&arena, "src/Report.sharp", sum(509));
+    assert!(accepted.errors.is_empty(), "{:#?}", accepted.errors);
+
+    let code = sum(510);
+    let refused = parse(&arena, "src/Report.sharp", code);
+    let [error @ ParseError::NestingTooDeepInSharp(span)] = refused.errors else {
+        panic!("expected one nesting error, got {:#?}", refused.errors);
+    };
+    assert_eq!(error.to_string(), "PHP# nests statements and expressions at most 512 levels deep.");
+    assert_eq!(&code[span.start.offset as usize..][..13], "extra + extra");
+    assert!(refused.statements.is_empty(), "{:#?}", refused.statements);
+}
+
+/// PHP itself compiles a sum of tens of thousands of terms, so a PHP file keeps every nesting the parser builds.
+#[test]
+fn a_php_file_keeps_nesting_deeper_than_512_levels() {
+    let code = format!(
+        "<?php\nnamespace App;\n\nclass Report\n{{\n    public function run(int $extra): int\n    {{\n        return {};\n    }}\n}}\n",
+        vec!["$extra"; 1_000].join(" + ")
+    );
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.php", Box::leak(code.into_boxed_str()));
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+}
+
 #[test]
 fn dot_keeps_concatenating_in_php() {
     let arena = LocalArena::new();

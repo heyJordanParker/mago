@@ -226,6 +226,7 @@ tempfile = "3.15.0"
 colored = "3.0.0"
 blake3 = "1.8.1"
 memchr = "2.7.4"
+stacker = "0.1.25"
 dialoguer = "0.12.0"
 unicode-width = { version = "0.2.0", default-features = false }
 itertools = "0.14.0"

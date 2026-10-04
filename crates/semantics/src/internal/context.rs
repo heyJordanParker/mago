@@ -5,7 +5,7 @@ use mago_reporting::Issue;
 use mago_reporting::IssueCollection;
 use mago_span::HasSpan;
 use mago_span::Position;
-use mago_span::Span;
+use mago_syntax::cst::Node;
 use mago_syntax::cst::Program;
 
 const ISSUE_CODE: &str = "semantics";
@@ -16,7 +16,8 @@ pub struct Context<'ctx, 'ast, 'arena> {
     pub program: &'ast Program<'arena>,
     pub names: &'ast ResolvedNames<'arena>,
     pub source_file: &'ctx File,
-    pub ancestors: Vec<Span>,
+    /// The statements and expressions the walk is inside, innermost last.
+    pub ancestors: Vec<Node<'ast, 'arena>>,
     pub hint_depth: usize,
 
     issues: IssueCollection,

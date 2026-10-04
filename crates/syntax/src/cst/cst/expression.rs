@@ -4,6 +4,7 @@ use mago_php_version::PHPVersion;
 use mago_php_version::feature::Feature;
 use mago_span::HasSpan;
 use mago_span::Span;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 
 use crate::cst::UnaryPrefixOperator;
 use crate::cst::cst::access::Access;
@@ -462,7 +463,7 @@ impl HasSpan for Parenthesized<'_> {
 
 impl HasSpan for Expression<'_> {
     fn span(&self) -> Span {
-        match &self {
+        ensure_sufficient_stack(|| match &self {
             Expression::Binary(expression) => expression.span(),
             Expression::ConstantAccess(expression) => expression.span(),
             Expression::UnaryPrefix(expression) => expression.span(),
@@ -497,6 +498,6 @@ impl HasSpan for Expression<'_> {
             Expression::MagicConstant(expression) => expression.span(),
             Expression::Pipe(expression) => expression.span(),
             Expression::Error(span) => *span,
-        }
+        })
     }
 }

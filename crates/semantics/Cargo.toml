@@ -16,6 +16,7 @@ workspace = true
 mago-bytes = { workspace = true }
 mago-reporting = { workspace = true }
 mago-syntax = { workspace = true }
+mago-syntax-core = { workspace = true }
 mago-php-version = { workspace = true }
 mago-span = { workspace = true }
 mago-names = { workspace = true }

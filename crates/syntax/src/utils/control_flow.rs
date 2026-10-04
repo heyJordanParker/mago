@@ -1,5 +1,6 @@
 use mago_span::HasSpan;
 use mago_span::Span;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 
 use crate::cst::Access;
 use crate::cst::Array;
@@ -66,6 +67,10 @@ pub fn find_control_flows_in_block<'arena>(block: &'arena Block<'arena>) -> Vec<
 #[inline]
 #[must_use]
 pub fn find_control_flows_in_statement<'arena>(statement: &'arena Statement<'arena>) -> Vec<ControlFlow<'arena>> {
+    ensure_sufficient_stack(|| statement_control_flows(statement))
+}
+
+fn statement_control_flows<'arena>(statement: &'arena Statement<'arena>) -> Vec<ControlFlow<'arena>> {
     let mut controls = vec![];
 
     match statement {
@@ -269,6 +274,10 @@ pub fn find_control_flows_in_statement<'arena>(statement: &'arena Statement<'are
 #[inline]
 #[must_use]
 pub fn find_control_flows_in_expression<'arena>(expression: &'arena Expression<'arena>) -> Vec<ControlFlow<'arena>> {
+    ensure_sufficient_stack(|| expression_control_flows(expression))
+}
+
+fn expression_control_flows<'arena>(expression: &'arena Expression<'arena>) -> Vec<ControlFlow<'arena>> {
     let mut controls = vec![];
 
     match expression {

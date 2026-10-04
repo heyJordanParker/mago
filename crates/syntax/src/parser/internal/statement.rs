@@ -1,6 +1,7 @@
 use mago_allocator::prelude::*;
 use mago_database::file::HasFileId;
 use mago_span::Span;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 
 use crate::T;
 use crate::cst::cst::AttributeList;
@@ -22,14 +23,15 @@ where
             self.state.recursion_depth -= 1;
             let file_id = self.stream.file_id();
 
-            return Err(ParseError::RecursionLimitExceeded(
+            let span =
                 self.stream.lookahead(0)?.map(|t| t.span_for(file_id)).unwrap_or_else(|| {
                     Span::new(file_id, self.stream.current_position(), self.stream.current_position())
-                }),
-            ));
+                });
+
+            return Err(self.recursion_limit_exceeded(span));
         }
 
-        let result = self.parse_statement_inner();
+        let result = ensure_sufficient_stack(|| self.parse_statement_inner());
         self.state.recursion_depth -= 1;
         result
     }

@@ -44,6 +44,7 @@ use mago_syntax::cst::Use;
 use mago_syntax::cst::UseItem;
 use mago_syntax::cst::UseItems;
 use mago_syntax::cst::Variable;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 
 use crate::internal::consts::RESERVED_CLASS_NAMES;
 use crate::internal::consts::RESERVED_KEYWORDS;
@@ -114,13 +115,11 @@ enum MemberUse {
     Write,
 }
 
-/// Walks `node` at `place`. `checked` holds the spans of the member accesses already checked, so the walk checks
-/// each access once.
+/// Walks `node` at `place`. `checked` holds the member name spans of the member accesses already checked, so the walk
+/// checks each access once.
 fn check_node(node: Node<'_, '_>, place: Place, checked: &mut HashSet<Span>, context: &mut Context<'_, '_, '_>) {
     if let Some(place) = enter(node, place, checked, context) {
-        for child in node.children() {
-            check_node(child, place, checked, context);
-        }
+        ensure_sufficient_stack(|| node.visit_children(|child| check_node(child, place, checked, context)));
     }
 }
 
@@ -153,14 +152,7 @@ fn enter(
         }
 
         if let Expression::Access(Access::Property(property)) = target {
-            check_member_access(
-                property.span(),
-                property.object,
-                &property.property,
-                MemberUse::Write,
-                checked,
-                context,
-            );
+            check_member_access(property.object, &property.property, MemberUse::Write, checked, context);
         }
     }
 
@@ -311,12 +303,12 @@ fn enter(
         (Node::AssignmentOperator(operator), Body) if is_slice_assignment_operator(operator) => Some(Body),
         (Node::PositionalArgument(argument), Body) if argument.ellipsis.is_none() => Some(Body),
         (Node::MethodCall(call), Body) => {
-            check_member_access(call.span(), call.object, &call.method, MemberUse::Call, checked, context);
+            check_member_access(call.object, &call.method, MemberUse::Call, checked, context);
 
             Some(Body)
         }
         (Node::PropertyAccess(access), Body) => {
-            check_member_access(access.span(), access.object, &access.property, MemberUse::Read, checked, context);
+            check_member_access(access.object, &access.property, MemberUse::Read, checked, context);
 
             Some(Body)
         }
@@ -825,19 +817,19 @@ fn check_variable(variable: &Variable, context: &mut Context<'_, '_, '_>) {
 }
 
 /// Checks `object.member` and `object.member()` once per chain of property reads, from its outermost access. The
-/// spans of the accesses it checks go into `checked`.
+/// member name spans of the accesses it checks go into `checked`, because each access has its own member name and an
+/// access's own span grows with the chain before it.
 ///
 /// A chain rooted at a class reaches static members. Reading one without a call or writing one is not supported yet,
 /// and a chain of capitalized names is a full name, which belongs in an `import` line.
 fn check_member_access(
-    access: Span,
     object: &Expression,
     member: &ClassLikeMemberSelector,
     member_use: MemberUse,
     checked: &mut HashSet<Span>,
     context: &mut Context<'_, '_, '_>,
 ) {
-    if !checked.insert(access) {
+    if !checked.insert(member.span()) {
         return;
     }
 
@@ -846,7 +838,7 @@ fn check_member_access(
     while let Expression::Access(Access::Property(property)) = root
         && let ClassLikeMemberSelector::Identifier(name) = &property.property
     {
-        checked.insert(property.span());
+        checked.insert(name.span);
         properties.push(name);
         root = property.object;
     }
@@ -864,7 +856,7 @@ fn check_member_access(
         if member_use != MemberUse::Call
             && let ClassLikeMemberSelector::Identifier(member) = member
         {
-            report_static_access(root, member, access, member_use, context);
+            report_static_access(root, member, Span::between(root.span(), member.span), member_use, context);
         }
 
         return;

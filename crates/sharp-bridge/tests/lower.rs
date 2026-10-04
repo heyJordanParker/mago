@@ -207,6 +207,45 @@ fn a_method_without_a_body_returns_the_checker_error() {
     );
 }
 
+/// The namespace, the class and the `return` are three levels, so a 100,000-term sum or call chain nests 100,003
+/// levels deep, far past the 512 levels the parser allows.
+#[test]
+fn a_file_nested_100_000_levels_deep_returns_the_depth_error_and_no_nodes() {
+    let sum = format!("        return {};\n", vec!["extra"; 100_000].join(" + "));
+    let chain = format!("        return this{};\n", ".total()".repeat(100_000));
+
+    for body in [sum, chain] {
+        let lowered = Lowered::new(&method(&body));
+
+        assert_eq!(
+            lowered.diagnostics(),
+            ["9:16 parse error: PHP# nests statements and expressions at most 512 levels deep."]
+        );
+        assert_eq!(lowered.unit().node_count, 0);
+    }
+}
+
+/// A 509-term sum nests its innermost term 512 levels deep, the most the checker allows. The bridge lowers it on a
+/// thread whose stack is far smaller than the recursion needs, as a PHP thread or fiber may be.
+#[test]
+fn the_deepest_file_the_checker_accepts_lowers_on_a_small_stack() {
+    let code = method(&format!("        return {};\n", vec!["extra"; 509].join(" + ")));
+
+    let node_count = std::thread::Builder::new()
+        .stack_size(128 * 1024)
+        .spawn(move || {
+            let lowered = Lowered::new(&code);
+            assert_eq!(lowered.diagnostics(), Vec::<String>::new());
+
+            lowered.unit().node_count
+        })
+        .expect("the thread starts")
+        .join()
+        .expect("the lowering returns");
+
+    assert!(node_count > 509 * 2, "{node_count} nodes");
+}
+
 /// `ext/sharp` decides the dialect from the file name, so the bridge parses and checks PHP# whatever name it gets.
 #[test]
 fn a_file_of_any_name_is_parsed_and_checked_as_php_sharp() {

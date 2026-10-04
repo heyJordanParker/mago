@@ -8,6 +8,7 @@ use mago_span::Span;
 
 use crate::T;
 use crate::cst::LiteralStringKind;
+use crate::parser::MAX_RECURSION_DEPTH;
 use crate::token::TokenKind;
 
 const SYNTAX_ERROR_CODE: &str = "syntax";
@@ -54,6 +55,8 @@ pub enum ParseError {
     QualifiedNameInSharp(Box<str>, Span),
     /// A PHP# parameter written without its type, such as `run(extra)`, at its name.
     UntypedParameterInSharp(Span),
+    /// A PHP# statement or expression nested more than [`MAX_RECURSION_DEPTH`] levels deep, at the first one past it.
+    NestingTooDeepInSharp(Span),
 }
 
 impl HasFileId for SyntaxError {
@@ -77,7 +80,8 @@ impl HasFileId for ParseError {
             ParseError::RecursionLimitExceeded(span) => span.file_id,
             ParseError::PhpSyntaxInSharp(_, span)
             | ParseError::QualifiedNameInSharp(_, span)
-            | ParseError::UntypedParameterInSharp(span) => span.file_id,
+            | ParseError::UntypedParameterInSharp(span)
+            | ParseError::NestingTooDeepInSharp(span) => span.file_id,
         }
     }
 }
@@ -105,7 +109,8 @@ impl HasSpan for ParseError {
             ParseError::RecursionLimitExceeded(span) => *span,
             ParseError::PhpSyntaxInSharp(_, span)
             | ParseError::QualifiedNameInSharp(_, span)
-            | ParseError::UntypedParameterInSharp(span) => *span,
+            | ParseError::UntypedParameterInSharp(span)
+            | ParseError::NestingTooDeepInSharp(span) => *span,
         }
     }
 }
@@ -176,6 +181,9 @@ impl std::fmt::Display for ParseError {
                 format!("A `\\` name is PHP syntax: add `import {name};` and write `{short_name}`")
             }
             ParseError::UntypedParameterInSharp(_) => "A PHP# parameter needs a type, as in `int extra`.".to_string(),
+            ParseError::NestingTooDeepInSharp(_) => {
+                format!("PHP# nests statements and expressions at most {MAX_RECURSION_DEPTH} levels deep.")
+            }
         };
 
         write!(f, "{message}")

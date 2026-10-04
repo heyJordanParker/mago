@@ -39,6 +39,7 @@ use mago_syntax::cst::UnaryPrefixOperator;
 use mago_syntax::dialect::Dialect;
 use mago_syntax::parser::parse_file_with_dialect;
 use mago_syntax::settings::ParserSettings;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_syntax_core::utils::parse_literal_integer_as_float;
 
 use crate::Diagnostic;
@@ -328,7 +329,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     fn statement(&mut self, statement: &Statement) -> u32 {
-        match statement {
+        ensure_sufficient_stack(|| match statement {
             Statement::Block(block) => self.block(block),
             Statement::Expression(statement) => self.expression(statement.expression),
             Statement::Return(r#return) => {
@@ -343,13 +344,13 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.node(SHARP_AST_ASSIGN, 0, self.line(local), &[variable, value])
             }
             _ => unreachable!("check_slice refuses the statement `{statement}`"),
-        }
+        })
     }
 
     fn expression(&mut self, expression: &Expression) -> u32 {
         let line = self.line(expression);
 
-        match expression {
+        ensure_sufficient_stack(|| match expression {
             Expression::Literal(literal) => self.literal(literal),
             Expression::Parenthesized(parenthesized) => self.expression(parenthesized.expression),
             Expression::ConstantAccess(name) => self.name(name),
@@ -394,7 +395,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.node(SHARP_AST_PROP, 0, line, &[object, property])
             }
             _ => unreachable!("check_slice refuses the expression `{expression}`"),
-        }
+        })
     }
 
     /// What an assignment, a compound assignment, `++` or `--` writes: a local or parameter, or `object.name`, as

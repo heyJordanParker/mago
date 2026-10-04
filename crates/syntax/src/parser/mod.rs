@@ -3,23 +3,30 @@ use mago_allocator::prelude::*;
 use mago_database::file::File;
 use mago_database::file::FileId;
 use mago_database::file::HasFileId;
+use mago_span::HasSpan;
+use mago_span::Span;
 use mago_syntax_core::input::Input;
 
+use crate::cst::Expression;
 use crate::cst::Program;
+use crate::cst::Statement;
 use crate::cst::sequence::Sequence;
 use crate::dialect::Dialect;
 use crate::error::ParseError;
 use crate::lexer::Lexer;
 use crate::parser::stream::TokenStream;
 use crate::settings::ParserSettings;
+use crate::walker::MutWalker;
 
 mod internal;
 
 pub mod stream;
 
-/// Maximum recursion depth for expression parsing.
-/// This prevents stack overflow on deeply nested expressions and statements.
-const MAX_RECURSION_DEPTH: u16 = 512;
+/// Maximum recursion depth of statement and expression parsing, which bounds the parser's work on deeply nested input.
+///
+/// A PHP# file nests no statement or expression deeper, however the parser built it, so the engine compiles every
+/// PHP# file the parser accepts.
+pub(crate) const MAX_RECURSION_DEPTH: u16 = 512;
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -118,7 +125,10 @@ where
             let position_before = self.stream.current_position();
 
             match self.parse_statement() {
-                Ok(statement) => statements.push(statement),
+                Ok(statement) => match self.nesting_too_deep(&statement) {
+                    Some(error) => self.errors.push(error),
+                    None => statements.push(statement),
+                },
                 Err(err) => self.errors.push(err),
             }
 
@@ -142,6 +152,64 @@ where
             trivia: self.stream.get_trivia(),
             errors: self.errors.leak(),
         })
+    }
+
+    /// The error for a statement or expression that recursed past [`MAX_RECURSION_DEPTH`] while parsing.
+    pub(crate) fn recursion_limit_exceeded(&self, span: Span) -> ParseError {
+        match self.dialect {
+            Dialect::Php => ParseError::RecursionLimitExceeded(span),
+            Dialect::Sharp => ParseError::NestingTooDeepInSharp(span),
+        }
+    }
+
+    /// The error for a top-level PHP# statement that nests a statement or expression deeper than
+    /// [`MAX_RECURSION_DEPTH`]. The parser builds a chain such as `a + b + c` or `a.f().g()` in a loop, so only the
+    /// finished statement shows how deep the chain nests. The parser leaves out the statement it refuses, so no later
+    /// pass walks a tree deeper than the engine compiles.
+    fn nesting_too_deep(&self, statement: &Statement<'arena>) -> Option<ParseError> {
+        if self.dialect == Dialect::Php {
+            return None;
+        }
+
+        let mut nesting = Nesting::default();
+        nesting.walk_statement(statement, &mut ());
+
+        nesting.too_deep.map(ParseError::NestingTooDeepInSharp)
+    }
+}
+
+/// Finds the first statement or expression nested deeper than [`MAX_RECURSION_DEPTH`], counting the statements and
+/// expressions around it.
+#[derive(Default)]
+struct Nesting {
+    depth: usize,
+    too_deep: Option<Span>,
+}
+
+impl Nesting {
+    fn enter(&mut self, node: &impl HasSpan) {
+        self.depth += 1;
+        if self.depth > usize::from(MAX_RECURSION_DEPTH) && self.too_deep.is_none() {
+            self.too_deep = Some(node.span());
+        }
+    }
+}
+
+impl<'ast, 'arena> MutWalker<'ast, 'arena, ()> for Nesting {
+    fn walk_in_statement(&mut self, statement: &'ast Statement<'arena>, _: &mut ()) {
+        self.enter(statement);
+    }
+
+    fn walk_out_statement(&mut self, _: &'ast Statement<'arena>, _: &mut ()) {
+        self.depth -= 1;
+    }
+
+    fn walk_in_expression(&mut self, expression: &'ast Expression<'arena>, _: &mut ()) {
+        self.enter(expression);
+    }
+
+    fn walk_out_expression(&mut self, _: &'ast Expression<'arena>, _: &mut ()) {
+        self.depth -= 1;
     }
 }
 

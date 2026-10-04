@@ -7,13 +7,14 @@ use mago_syntax::cst::Expression;
 use mago_syntax::cst::Goto;
 use mago_syntax::cst::Inline;
 use mago_syntax::cst::InlineKind;
+use mago_syntax::cst::Label;
 use mago_syntax::cst::Literal;
 use mago_syntax::cst::LiteralInteger;
 use mago_syntax::cst::Namespace;
 use mago_syntax::cst::NamespaceBody;
-use mago_syntax::cst::Node;
 use mago_syntax::cst::Program;
 use mago_syntax::cst::Statement;
+use mago_syntax::walker::Walker;
 
 use crate::internal::consts::DECLARE_DIRECTIVES;
 use crate::internal::consts::ENCODING_DECLARE_DIRECTIVE;
@@ -103,8 +104,8 @@ pub fn check_top_level_statements<'ast, 'arena>(
         }
     }
 
-    let namespaces =
-        Node::Program(program).filter_map(|node| if let Node::Namespace(ns) = node { Some(*ns) } else { None });
+    let mut namespaces = vec![];
+    NamespaceCollector.walk_program(program, &mut namespaces);
 
     let mut last_unbraced = None;
     let mut last_braced = None;
@@ -177,6 +178,24 @@ pub fn check_top_level_statements<'ast, 'arena>(
     }
 }
 
+/// Collects every namespace of a file, each after the namespaces nested in it.
+struct NamespaceCollector;
+
+impl<'ast, 'arena> Walker<'ast, 'arena, Vec<&'ast Namespace<'arena>>> for NamespaceCollector {
+    fn walk_out_namespace(&self, namespace: &'ast Namespace<'arena>, namespaces: &mut Vec<&'ast Namespace<'arena>>) {
+        namespaces.push(namespace);
+    }
+}
+
+/// Collects every `goto` label of a file, in source order.
+struct LabelCollector;
+
+impl<'ast, 'arena> Walker<'ast, 'arena, Vec<&'ast Label<'arena>>> for LabelCollector {
+    fn walk_in_label(&self, label: &'ast Label<'arena>, labels: &mut Vec<&'ast Label<'arena>>) {
+        labels.push(label);
+    }
+}
+
 #[inline]
 pub fn check_declare(declare: &Declare, context: &mut Context<'_, '_, '_>) {
     for item in &declare.items {
@@ -204,7 +223,7 @@ pub fn check_declare(declare: &Declare, context: &mut Context<'_, '_, '_>) {
 
                 if context.ancestors.len() > 2 {
                     // get the span of the parent, and label it.
-                    let parent = context.ancestors[context.ancestors.len() - 2];
+                    let parent = context.ancestors[context.ancestors.len() - 2].span();
 
                     context.report(
                         Issue::error("The `strict_types` directive must be declared at the top level.")
@@ -277,7 +296,7 @@ pub fn check_declare(declare: &Declare, context: &mut Context<'_, '_, '_>) {
 pub fn check_namespace(namespace: &Namespace, context: &mut Context<'_, '_, '_>) {
     if context.ancestors.len() > 2 {
         // get the span of the parent, and label it.
-        let parent = context.ancestors[context.ancestors.len() - 2];
+        let parent = context.ancestors[context.ancestors.len() - 2].span();
 
         context.report(
             Issue::error("Namespace declaration must be at the top level.")
@@ -296,8 +315,8 @@ pub fn check_namespace(namespace: &Namespace, context: &mut Context<'_, '_, '_>)
 
 #[inline]
 pub fn check_goto<'ast, 'arena>(goto: &'ast Goto<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
-    let all_labels = Node::Program(context.program)
-        .filter_map(|node| if let Node::Label(label) = node { Some(*label) } else { None });
+    let mut all_labels = vec![];
+    LabelCollector.walk_program(context.program, &mut all_labels);
 
     if all_labels.iter().any(|l| l.name.value == goto.label.value) {
         return;

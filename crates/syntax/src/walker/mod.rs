@@ -1,5 +1,7 @@
 #![allow(unused_variables)]
 
+use mago_syntax_core::stack::ensure_sufficient_stack;
+
 use crate::cst::Program;
 use crate::cst::cst::Access;
 use crate::cst::cst::AnonymousClass;
@@ -379,7 +381,7 @@ generate_ast_walker! {
     }
 
     'arena Statement as statement => {
-        match &statement {
+        ensure_sufficient_stack(|| match &statement {
             Statement::OpeningTag(opening_tag) => walker.walk_opening_tag(opening_tag, context),
             Statement::ClosingTag(closing_tag) => walker.walk_closing_tag(closing_tag, context),
             Statement::Inline(inline) => walker.walk_inline(inline, context),
@@ -416,7 +418,7 @@ generate_ast_walker! {
             Statement::Noop(_) => {
                 // Do nothing by default
             },
-        }
+        });
     }
 
     'arena OpeningTag as opening_tag => {
@@ -1610,7 +1612,7 @@ generate_ast_walker! {
     }
 
     'arena Expression as expression => {
-        match &expression {
+        ensure_sufficient_stack(|| match &expression {
             Expression::Parenthesized(parenthesized) => walker.walk_parenthesized(parenthesized, context),
             Expression::Binary(expr) => walker.walk_binary(expr, context),
             Expression::UnaryPrefix(operation) => walker.walk_unary_prefix(operation, context),
@@ -1653,7 +1655,7 @@ generate_ast_walker! {
             Expression::Error(_) => {
                 // Nothing to walk for error expressions
             }
-        }
+        });
     }
 
     'arena Binary as binary => {

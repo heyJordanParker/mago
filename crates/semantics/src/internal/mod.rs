@@ -1,4 +1,3 @@
-use mago_span::HasSpan;
 use mago_syntax::cst::Access;
 use mago_syntax::cst::AnonymousClass;
 use mago_syntax::cst::ArgumentList;
@@ -28,6 +27,7 @@ use mago_syntax::cst::Literal;
 use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::Match;
 use mago_syntax::cst::Namespace;
+use mago_syntax::cst::Node;
 use mago_syntax::cst::PartialApplication;
 use mago_syntax::cst::Pipe;
 use mago_syntax::cst::Program;
@@ -53,12 +53,12 @@ pub struct CheckingWalker;
 impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingWalker {
     #[inline]
     fn walk_in_statement(&self, statement: &'ast Statement<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
-        context.ancestors.push(statement.span());
+        context.ancestors.push(Node::Statement(statement));
     }
 
     #[inline]
     fn walk_in_expression(&self, expression: &'ast Expression<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
-        context.ancestors.push(expression.span());
+        context.ancestors.push(Node::Expression(expression));
 
         checker::expression::check_for_clone_with(expression, context);
     }

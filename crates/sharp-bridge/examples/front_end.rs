@@ -10,6 +10,7 @@ use std::borrow::Cow;
 use std::env;
 use std::ffi::c_char;
 use std::fs;
+use std::path::Path;
 
 use mago_allocator::LocalArena;
 use mago_database::file::File;
@@ -24,13 +25,14 @@ fn main() {
     for path in env::args().skip(1) {
         let source = fs::read(&path).expect("the file is readable");
 
-        if path.ends_with(".sharp") {
+        if Path::new(&path).extension().is_some_and(|extension| extension == "sharp") {
             // SAFETY: both pointers point to as many bytes as their lengths say.
             let unit = unsafe {
                 sharp_lower(path.as_ptr().cast::<c_char>(), path.len(), source.as_ptr().cast::<c_char>(), source.len())
             };
             // SAFETY: `sharp_lower` returns a valid unit, freed below.
-            let (nodes, diagnostics) = unsafe { ((*unit).node_count, (*unit).diagnostic_count) };
+            let lowered = unsafe { &*unit };
+            let (nodes, diagnostics) = (lowered.node_count, lowered.diagnostic_count);
             // SAFETY: `sharp_lower` returned the unit, and nothing reads it after this.
             unsafe { sharp_unit_free(unit) };
 
