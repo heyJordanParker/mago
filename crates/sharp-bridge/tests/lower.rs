@@ -239,6 +239,27 @@ fn the_root_end_line_is_the_last_line_the_zend_scanner_counts() {
     assert_eq!(end_lines, [1, 2, 2, 2, 5]);
 }
 
+/// Node lines, declaration lines and diagnostic lines count a lone `\r` as a line ending too.
+#[test]
+fn every_line_is_the_line_the_zend_scanner_counts() {
+    let class = Lowered::new("class Report\r\n{\r}\n\n");
+    let root = &class.nodes()[class.unit().root as usize];
+    let declaration = &class.nodes()[class.child(class.unit().root, 1) as usize];
+    assert_eq!((declaration.line, declaration.end_line, root.end_line), (1, 3, 5));
+
+    let method = Lowered::new("class Report\r{\r    public int run()\r    {\r        return 1;\r    }\r}\r");
+    let lines: Vec<(String, u32, u32)> = method
+        .nodes()
+        .iter()
+        .filter(|node| node.kind == sharp_kind::SHARP_AST_METHOD || node.kind == sharp_kind::SHARP_AST_RETURN)
+        .map(|node| (format!("{:?}", node.kind), node.line, node.end_line))
+        .collect();
+    assert_eq!(lines, [("SHARP_AST_RETURN".to_owned(), 5, 0), ("SHARP_AST_METHOD".to_owned(), 3, 6)]);
+
+    let refused = Lowered::new("class Report\r{\r    public void run() { echo 1; }\r}\r");
+    assert_eq!(refused.diagnostics(), ["3:25 compile error: This statement is not supported yet in PHP#."]);
+}
+
 /// ```php
 /// <?php
 /// declare(strict_types=1);
