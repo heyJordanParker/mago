@@ -420,6 +420,67 @@ fn the_constructor_is_named_after_its_class_without_a_return_type() {
 }
 
 #[test]
+fn a_constructor_parameter_with_an_access_modifier_declares_a_field_or_a_property() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Planner;\n\nclass Report\n{\n    public Report(\n        private Planner planner,\n        protected int count = 0,\n        public int id { get; },\n        public string name { get; private set; },\n        private int hidden { get; set; },\n        int extra,\n    ) {\n        this.id = extra + count;\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_promoted_member_read_without_this_is_an_error_that_names_this() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public Report(private int count)\n    {\n        count = 1;\n    }\n\n    public int total()\n    {\n        return count;\n    }\n}\n";
+
+    assert_eq!(issues(code), ["12:16 Write `this.count`: members of the same object are always written with `this.`."]);
+}
+
+#[test]
+fn a_public_constructor_parameter_without_accessors_is_an_error() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public Report(public int id) {}\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:19 A `public` constructor parameter needs accessors: a public member is a property, as in `public int id { get; }`."
+        ]
+    );
+}
+
+#[test]
+fn a_promoted_member_follows_the_rules_of_the_same_declaration_in_the_class_body() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public Report(public int a { set; }, private int b { get; private set; }, public int c { get => 1; }) {}\n\n    public void reset()\n    {\n        this.a = 1;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:30 A PHP# property needs a `get` accessor.",
+            "5:63 The `set` accessor of a PHP# property must be narrower than the property.",
+            "5:94 This accessor is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn a_get_only_promoted_property_is_written_only_in_the_constructor() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public Report(public int id { get; }) {}\n\n    public void reset()\n    {\n        this.id = 2;\n    }\n}\n";
+
+    assert_eq!(issues(code), ["9:9 Cannot write `id` here: a get-only property is set only in the constructor."]);
+}
+
+#[test]
+fn a_promoted_member_outside_the_slice_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public Report(private readonly int a, private static int b) {}\n\n    public void run(private int c) {}\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:27 This modifier is not supported yet in PHP#.",
+            "7:21 Promoted properties are not allowed outside of constructors.",
+            "5:51 Parameter `b` cannot have the `static` modifier.",
+        ]
+    );
+}
+
+#[test]
 fn a_method_without_a_return_type_named_otherwise_is_an_error() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    public report() {}\n    public Calc() {}\n}\n";
 
@@ -451,6 +512,16 @@ fn a_field_is_private_or_protected_with_a_type_and_an_optional_constant_initial_
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    private int count = 0;\n    protected float rate = 1.5 * -PHP_INT_MAX;\n    private string label;\n}\n";
 
     assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn an_initial_value_may_be_any_expression_a_method_body_has_without_this() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private Calc calc = new Calc(1, rate: 2);\n    private int made = Calc.make() + 1;\n    public int total { get; set; } = new Calc(2).add(1, 2);\n    private int count = this.made;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["10:25 An initial value cannot use `this`: it runs before the constructor body, while the object is built."]
+    );
 }
 
 #[test]
@@ -519,7 +590,7 @@ fn an_auto_property_breaking_the_accessor_rules_is_an_error() {
 
 #[test]
 fn properties_outside_the_slice_are_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nclass Report\n{\n    int a { get; set; }\n    public static int b { get; }\n    public int c { private get; set; }\n    public int d { get => 1; }\n    public int e { get; set { } }\n    public int f { get; init; }\n    public int g = 0 { get; }\n    public int h { get; set(int value); }\n    public int i { get; set; } = new Report();\n}\n";
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    int a { get; set; }\n    public static int b { get; }\n    public int c { private get; set; }\n    public int d { get => 1; }\n    public int e { get; set { } }\n    public int f { get; init; }\n    public int g = 0 { get; }\n    public int h { get; set(int value); }\n}\n";
 
     assert_eq!(
         issues(code),
@@ -532,7 +603,6 @@ fn properties_outside_the_slice_are_not_supported_yet() {
             "10:25 This accessor is not supported yet in PHP#.",
             "11:16 An initial value before the accessors is not supported yet in PHP#.",
             "12:25 This accessor is not supported yet in PHP#.",
-            "13:34 This expression is not supported yet in PHP#.",
         ]
     );
 }

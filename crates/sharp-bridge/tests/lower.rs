@@ -469,6 +469,158 @@ fn the_constructor_is_a_public_function_named_construct() {
 }
 
 /// ```php
+/// public function __construct(private int $count, public private(set) int $id, protected string $name, int $extra) {}
+/// ```
+///
+/// A parameter that declares a member carries the member's flags: `[4]` is `ZEND_ACC_PRIVATE`, `[4097]` is
+/// `ZEND_ACC_PUBLIC | ZEND_ACC_PRIVATE_SET`, and `[2]` is `ZEND_ACC_PROTECTED`.
+#[test]
+fn a_constructor_parameter_with_an_access_modifier_is_a_promoted_parameter() {
+    let lowered = Lowered::new(
+        "class Report\n{\n    public Report(private int count, public int id { get; }, protected string name { get; set; }, int extra) {}\n}\n",
+    );
+    let parameters: Vec<(String, u32)> = lowered
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.kind == sharp_kind::SHARP_AST_PARAM)
+        .map(|(index, node)| {
+            assert_eq!(lowered.child(index as u32, 5), u32::MAX, "a promoted parameter has no hooks");
+
+            (text(lowered.nodes()[lowered.child(index as u32, 1) as usize].text), node.attr)
+        })
+        .collect();
+
+    assert_eq!(
+        parameters,
+        [("count".to_owned(), 4), ("id".to_owned(), 4097), ("name".to_owned(), 2), ("extra".to_owned(), 0)]
+    );
+}
+
+/// ```php
+/// private \Lib\Calc $calc;
+/// public int $total = 2;
+/// public function __construct(int $start)
+/// {
+///     $this->calc = new \Lib\Calc(1);
+///     $this->count = $start;
+/// }
+/// ```
+///
+/// A constant initial value is the property's default. Any other runs at the start of the constructor.
+#[test]
+fn a_non_constant_initial_value_runs_at_the_start_of_the_constructor() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private Calc calc = new Calc(1);\n    public int total { get; set; } = 1 + 1;\n\n    public Report(int start)\n    {\n        this.count = start;\n    }\n}\n",
+    );
+    let class = lowered.child(lowered.unit().root, 2);
+
+    assert_eq!(
+        lowered.render(lowered.child(class, 2)),
+        indoc! {r#"
+            STMT_LIST
+              PROP_GROUP [4]
+                ZVAL "Lib\\Calc"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "calc"
+                    null
+                    null
+                    null
+                null
+              PROP_GROUP [1]
+                ZVAL [1] "int"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "total"
+                    BINARY_OP [1]
+                      ZVAL 1
+                      ZVAL 1
+                    null
+                    null
+                null
+              METHOD [1] "__construct" @10-13
+                PARAM_LIST
+                  PARAM
+                    ZVAL [1] "int"
+                    ZVAL "start"
+                    null
+                    null
+                    null
+                    null
+                null
+                STMT_LIST
+                  ASSIGN
+                    PROP
+                      VAR
+                        ZVAL "this"
+                      ZVAL "calc"
+                    NEW
+                      ZVAL "Lib\\Calc"
+                      ARG_LIST
+                        ZVAL 1
+                  ASSIGN
+                    PROP
+                      VAR
+                        ZVAL "this"
+                      ZVAL "count"
+                    VAR
+                      ZVAL "start"
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// private \Lib\Calc $calc;
+/// public function __construct()
+/// {
+///     $this->calc = new \Lib\Calc(1);
+/// }
+/// ```
+///
+/// A class with a non-constant initial value and no constructor gets a public one, which spans the class.
+#[test]
+fn a_class_with_a_non_constant_initial_value_and_no_constructor_gets_one() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private Calc calc = new Calc(1);\n}\n",
+    );
+    let class = lowered.child(lowered.unit().root, 2);
+
+    assert_eq!(
+        lowered.render(lowered.child(class, 2)),
+        indoc! {r#"
+            STMT_LIST
+              PROP_GROUP [4]
+                ZVAL "Lib\\Calc"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "calc"
+                    null
+                    null
+                    null
+                null
+              METHOD [1] "__construct" @5-8
+                PARAM_LIST
+                null
+                STMT_LIST
+                  ASSIGN
+                    PROP
+                      VAR
+                        ZVAL "this"
+                      ZVAL "calc"
+                    NEW
+                      ZVAL "Lib\\Calc"
+                      ARG_LIST
+                        ZVAL 1
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
 /// public static function make(): void {}
 /// private function hide() {}
 /// protected function share() {}

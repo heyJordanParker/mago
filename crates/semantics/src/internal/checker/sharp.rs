@@ -26,7 +26,6 @@ use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::Global;
 use mago_syntax::cst::Hint;
-use mago_syntax::cst::HookedProperty;
 use mago_syntax::cst::Identifier;
 use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::LocalIdentifier;
@@ -40,7 +39,9 @@ use mago_syntax::cst::Program;
 use mago_syntax::cst::Property;
 use mago_syntax::cst::PropertyAccess;
 use mago_syntax::cst::PropertyHookBody;
+use mago_syntax::cst::PropertyHookList;
 use mago_syntax::cst::PropertyItem;
+use mago_syntax::cst::Sequence;
 use mago_syntax::cst::Statement;
 use mago_syntax::cst::Terminator;
 use mago_syntax::cst::UnaryPostfix;
@@ -67,9 +68,10 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - At file level: `namespace`, `import` and `class`. A file has at most one namespace, named and written without
 ///   braces.
 /// - A class: a name, fields and methods, with no attributes, modifiers, `extends` or `implements`.
-/// - A field: `private` or `protected`, a type, one name and an optional initial value. The initial value is a
-///   literal, a constant, or the operators below on them, as a parameter default is. A `public` field is an error,
+/// - A field: `private` or `protected`, a type, one name and an optional initial value. A `public` field is an error,
 ///   because spec section 6 has no public fields.
+/// - An initial value: any expression a method body has, without `this`, which is an error. A constant initial value,
+///   as a parameter default is, becomes the member's default, and any other runs at the start of the constructor.
 /// - An auto-property: `public`, `protected` or `private`, a type, one name, the accessors `get;` and an optional
 ///   `set;` that may take an access modifier narrower than the property's, and an optional initial value after the
 ///   accessors, which is a field's. A property without `get`, an accessor declared twice, or a `set` access modifier
@@ -79,7 +81,9 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   does not start with `__`, which PHP reserves for magic methods, and is not its class's name, compared ignoring
 ///   case, which PHP# gives to the constructor.
 /// - The constructor: a method named exactly after its class, without a return type and not `static`. A method
-///   without a return type named otherwise is an error.
+///   without a return type named otherwise is an error. A constructor parameter with an access modifier declares a
+///   member: a field when `private` or `protected` without accessors, and a property with accessors, which follow the
+///   auto-property rules. A `public` parameter without accessors is an error, as spec section 9 says.
 /// - A parameter: always a type, a name and an optional default, and neither variadic nor by reference. A default is
 ///   a literal, a constant, or the operators below on them, without `++` and `--`.
 /// - Types: `int`, `float`, `bool`, `string` and a class written by its short name, and `void` as a return type.
@@ -227,14 +231,15 @@ fn enter(
             }
         },
         (Node::HookedProperty(property), FieldOrProperty) => {
-            check_accessors(property, context);
+            check_accessors(&property.modifiers, &property.hook_list, property.item.variable().span, context);
 
             Some(FieldOrProperty)
         }
-        // `check_accessors` checked the accessors, and the initial value is a parameter default's expression.
+        // `check_accessors` checked the accessors. An initial value is a method body's expression without `this`.
         (Node::PropertyHookList(_), FieldOrProperty) => None,
         (Node::Expression(_), FieldOrProperty) => {
-            check_node(node, Default, checked, context);
+            report_this_in_initial_value(node, context);
+            check_node(node, Body, checked, context);
 
             None
         }
@@ -271,8 +276,30 @@ fn enter(
             | Node::MethodAbstractBody(_),
             Method,
         ) => Some(Method),
+        (Node::FunctionLikeParameter(parameter), Method)
+            if parameter.hooks.is_none()
+                && let Some(public) = parameter.modifiers.get_public() =>
+        {
+            context.report(
+                Issue::error(
+                    "A `public` constructor parameter needs accessors: a public member is a property, as in `public int id { get; }`.",
+                )
+                .with_annotation(Annotation::primary(public.span()).with_message("Declared `public` here."))
+                .with_note("Spec section 9 makes a `public` parameter without accessors an error, as a public field is."),
+            );
+
+            None
+        }
         (Node::FunctionLikeParameter(parameter), Method) => match is_slice_parameter(parameter) {
-            Ok(()) => Some(Parameter),
+            Ok(()) => {
+                if let Some(accessors) = &parameter.hooks
+                    && parameter.modifiers.contains_visibility()
+                {
+                    check_accessors(&parameter.modifiers, accessors, parameter.variable.span, context);
+                }
+
+                Some(Parameter)
+            }
             Err((span, message, help)) => {
                 context.report(
                     Issue::error(message)
@@ -285,6 +312,20 @@ fn enter(
         },
         (Node::Hint(hint), Method | Parameter) if is_slice_type(hint) => Some(place),
         (Node::DirectVariable(_), Parameter) => Some(Parameter),
+        // An access modifier declares a member, and `check_accessors` checked its accessors. PHP reports `static`,
+        // `final` and `abstract` on a parameter, a member declared outside the constructor, and accessors without one.
+        (
+            Node::Modifier(
+                Modifier::Public(_)
+                | Modifier::Protected(_)
+                | Modifier::Private(_)
+                | Modifier::Static(_)
+                | Modifier::Final(_)
+                | Modifier::Abstract(_),
+            ),
+            Parameter,
+        ) => Some(Parameter),
+        (Node::PropertyHookList(_), Parameter) => None,
         (Node::FunctionLikeParameterDefaultValue(_), Parameter) => Some(Default),
         (Node::Block(_), Method | Body) => Some(Body),
 
@@ -521,14 +562,19 @@ fn is_slice_property(property: &Property) -> Result<(), Box<Issue>> {
     }
 }
 
-/// Checks the accessors of an auto-property: `get;` once, and an optional `set;` once, which may take an access
-/// modifier narrower than the property's, as in C#. Accessor bodies, `init` and an access modifier on `get` are not
-/// supported yet.
-fn check_accessors(property: &HookedProperty, context: &mut Context<'_, '_, '_>) {
-    let reach = property.modifiers.get_first_read_visibility().map_or(0, visibility_reach);
+/// Checks the accessors of an auto-property, declared in the class body or on a constructor parameter: `get;` once,
+/// and an optional `set;` once, which may take an access modifier narrower than the property's, as in C#. Accessor
+/// bodies, `init` and an access modifier on `get` are not supported yet.
+fn check_accessors(
+    modifiers: &Sequence<Modifier>,
+    accessors: &PropertyHookList,
+    name: Span,
+    context: &mut Context<'_, '_, '_>,
+) {
+    let reach = modifiers.get_first_read_visibility().map_or(0, visibility_reach);
     let mut declared: Vec<&[u8]> = Vec::new();
 
-    for accessor in &property.hook_list.hooks {
+    for accessor in &accessors.hooks {
         let name = accessor.name.value;
         let is_auto = accessor.attribute_lists.is_empty()
             && accessor.ampersand.is_none()
@@ -565,7 +611,7 @@ fn check_accessors(property: &HookedProperty, context: &mut Context<'_, '_, '_>)
     if !declared.contains(&b"get".as_slice()) {
         context.report(
             Issue::error("A PHP# property needs a `get` accessor.")
-                .with_annotation(Annotation::primary(property.item.variable().span).with_message("Declared here."))
+                .with_annotation(Annotation::primary(name).with_message("Declared here."))
                 .with_help("Add `get;`, as in `public int views { get; set; }`."),
         );
     }
@@ -588,10 +634,20 @@ fn check_get_only_write(access: &PropertyAccess, context: &mut Context<'_, '_, '
         return;
     }
 
-    let is_get_only = class.members.iter().any(|member| {
-        matches!(member, ClassLikeMember::Property(Property::Hooked(property))
-            if property.item.variable().name == name.value
-                && !property.hook_list.hooks.iter().any(|accessor| accessor.name.value == b"set"))
+    let is_get_only =
+        |accessors: &PropertyHookList| !accessors.hooks.iter().any(|accessor| accessor.name.value == b"set");
+    let is_get_only = class.members.iter().any(|member| match member {
+        ClassLikeMember::Property(Property::Hooked(property)) => {
+            property.item.variable().name == name.value && is_get_only(&property.hook_list)
+        }
+        ClassLikeMember::Method(method) if php_method_name(method) == b"__construct" => {
+            method.parameter_list.parameters.iter().any(|parameter| {
+                parameter.variable.name == name.value
+                    && parameter.modifiers.contains_visibility()
+                    && parameter.hooks.as_ref().is_some_and(is_get_only)
+            })
+        }
+        _ => false,
     });
     let in_constructor = class.members.iter().any(|member| {
         matches!(member, ClassLikeMember::Method(method)
@@ -607,6 +663,27 @@ fn check_get_only_write(access: &PropertyAccess, context: &mut Context<'_, '_, '
             .with_annotation(Annotation::primary(access.span()).with_message("Written here."))
             .with_help("Write it in the constructor, or add `private set;` to change it later."),
         );
+    }
+}
+
+/// Reports each `this` in an initial value. A constant initial value is the member's default, and any other runs at
+/// the start of the constructor in declaration order, before the members declared after it are set, so it cannot read
+/// the object, as in C#.
+fn report_this_in_initial_value(node: Node<'_, '_>, context: &mut Context<'_, '_, '_>) {
+    if let Node::ConstantAccess(access) = node
+        && context.names.binding(&access.name) == Some(Binding::This)
+    {
+        context.report(
+            Issue::error(
+                "An initial value cannot use `this`: it runs before the constructor body, while the object is built.",
+            )
+            .with_annotation(Annotation::primary(access.span()).with_message("Used here."))
+            .with_help("Set the member in the constructor body instead."),
+        );
+    }
+
+    for child in node.children() {
+        report_this_in_initial_value(child, context);
     }
 }
 

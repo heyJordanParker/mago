@@ -23,6 +23,7 @@ use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::ConstantAccess;
+use mago_syntax::cst::DirectVariable;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::Hint;
@@ -229,14 +230,47 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         }
     }
 
+    /// A class whose members have initial values that are not constant sets them at the start of its constructor, in
+    /// declaration order, and a class without a constructor gets a public one that spans the class.
     fn class(&mut self, class: &Class) -> u32 {
+        let mut initial_values = Vec::new();
+        for member in &class.members {
+            if let ClassLikeMember::Property(property) = member
+                && let Some(value) = initial_value(property)
+                && !is_default(value)
+            {
+                initial_values.push(self.initial_value(property.first_variable(), value));
+            }
+        }
+
         let mut members = Vec::new();
+        let mut has_constructor = false;
         for member in &class.members {
             members.push(match member {
-                ClassLikeMember::Method(method) => self.method(method),
+                ClassLikeMember::Method(method) if php_method_name(method) == b"__construct" => {
+                    has_constructor = true;
+
+                    self.method(method, &initial_values)
+                }
+                ClassLikeMember::Method(method) => self.method(method, &[]),
                 ClassLikeMember::Property(property) => self.property(property),
                 _ => unreachable!("check_slice refuses the class member `{member}`"),
             });
+        }
+
+        if !has_constructor && !initial_values.is_empty() {
+            let line = self.line(class.left_brace);
+            let parameters = self.node(SHARP_AST_PARAM_LIST, 0, line, &[]);
+            let body = self.node(SHARP_AST_STMT_LIST, 0, line, &initial_values);
+
+            members.push(self.declaration(
+                SHARP_AST_METHOD,
+                ZEND_ACC_PUBLIC,
+                class.class.span,
+                class.right_brace,
+                b"__construct",
+                &[parameters, NULL, body, NULL, NULL],
+            ));
         }
 
         let members = self.node(SHARP_AST_STMT_LIST, 0, self.line(class.left_brace), &members);
@@ -253,8 +287,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
     /// A method is a `function` with its return type after its parameters. Its first line is where PHP writes
     /// `function`: the return type, or the name of the constructor, which runs as `__construct` and has no return
-    /// type.
-    fn method(&mut self, method: &Method) -> u32 {
+    /// type. The constructor's body starts with the class's initial values that are not constant.
+    fn method(&mut self, method: &Method, initial_values: &[u32]) -> u32 {
         let flags = modifier_flags(&method.modifiers);
         let mut parameters = Vec::new();
         for parameter in &method.parameter_list.parameters {
@@ -265,7 +299,11 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let MethodBody::Concrete(body) = &method.body else {
             unreachable!("semantics refuses a method without a body");
         };
-        let body = self.block(body);
+        let mut statements = initial_values.to_vec();
+        for statement in &body.statements {
+            statements.push(self.statement(statement));
+        }
+        let body = self.node(SHARP_AST_STMT_LIST, 0, self.line(body), &statements);
         let (start, return_type) = match &method.return_type_hint {
             Some(return_type_hint) => (return_type_hint.span(), self.hint(&return_type_hint.hint)),
             None => (method.name.span, NULL),
@@ -288,22 +326,19 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let hint = self.hint(hint);
         let name = self.string(0, self.line(parameter.variable.span), parameter.variable.name);
         let default = parameter.default_value.as_ref().map_or(NULL, |default| self.expression(default.value));
+        let set_flags =
+            parameter.hooks.as_ref().map_or(0, |accessors| set_visibility_flags(&parameter.modifiers, accessors));
+        let flags = modifier_flags(&parameter.modifiers) | set_flags;
 
-        self.node(SHARP_AST_PARAM, 0, self.line(parameter), &[hint, name, default, NULL, NULL, NULL])
+        self.node(SHARP_AST_PARAM, flags, self.line(parameter), &[hint, name, default, NULL, NULL, NULL])
     }
 
     /// A field or an auto-property is a property group of one property, as php-src's grammar builds
-    /// `private int $count = 0;` and `public private(set) int $views = 0;`.
+    /// `private int $count = 0;` and `public private(set) int $views = 0;`. A constant initial value is its default.
     fn property(&mut self, property: &Property) -> u32 {
-        let (initial_value, set_flags) = match property {
-            Property::Plain(field) => match field.items.first() {
-                Some(PropertyItem::Concrete(item)) => (Some(item.value), 0),
-                _ => (None, 0),
-            },
-            Property::Hooked(auto_property) => (
-                auto_property.initial_value.as_ref().map(|initial_value| initial_value.value),
-                set_visibility_flags(&auto_property.modifiers, &auto_property.hook_list),
-            ),
+        let set_flags = match property {
+            Property::Plain(_) => 0,
+            Property::Hooked(auto_property) => set_visibility_flags(&auto_property.modifiers, &auto_property.hook_list),
         };
         let Some(hint) = property.hint() else {
             unreachable!("the PHP# parser gives every field and property its type");
@@ -312,12 +347,26 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let variable = property.first_variable();
         let line = self.line(variable);
         let name = self.string(0, line, variable.name);
-        let initial_value = initial_value.map_or(NULL, |initial_value| self.expression(initial_value));
-        let element = self.node(SHARP_AST_PROP_ELEM, 0, line, &[name, initial_value, NULL, NULL]);
+        let default = match initial_value(property) {
+            Some(value) if is_default(value) => self.expression(value),
+            _ => NULL,
+        };
+        let element = self.node(SHARP_AST_PROP_ELEM, 0, line, &[name, default, NULL, NULL]);
         let declaration = self.node(SHARP_AST_PROP_DECL, 0, line, &[element]);
         let flags = modifier_flags(property.modifiers()) | set_flags;
 
         self.node(SHARP_AST_PROP_GROUP, flags, self.line(property), &[hint, declaration, NULL])
+    }
+
+    /// `$this->name = value;` on the line of the member's name.
+    fn initial_value(&mut self, variable: &DirectVariable, value: &Expression) -> u32 {
+        let line = self.line(variable);
+        let this = self.variable(variable.span, b"this");
+        let name = self.string(0, line, variable.name);
+        let property = self.node(SHARP_AST_PROP, 0, line, &[this, name]);
+        let value = self.expression(value);
+
+        self.node(SHARP_AST_ASSIGN, 0, line, &[property, value])
     }
 
     /// A built-in type is written unqualified, and a class by its full name.
@@ -621,6 +670,24 @@ fn modifier_flags(modifiers: &Sequence<Modifier>) -> u32 {
 /// The set visibility of an auto-property, which php-src writes `private(set)` or `protected(set)`: its `set`
 /// accessor's access modifier, or `private` for a get-only property, which only the constructor sets. A private
 /// property needs none.
+/// The initial value of a field or an auto-property.
+fn initial_value<'arena>(property: &Property<'arena>) -> Option<&'arena Expression<'arena>> {
+    match property {
+        Property::Plain(field) => match field.items.first() {
+            Some(PropertyItem::Concrete(item)) => Some(item.value),
+            _ => None,
+        },
+        Property::Hooked(auto_property) => {
+            auto_property.initial_value.as_ref().map(|initial_value| initial_value.value)
+        }
+    }
+}
+
+/// Whether PHP takes an initial value as a property's default: a constant expression without `new`.
+fn is_default(value: &Expression) -> bool {
+    value.is_constant(&PHPVersion::PHP85, false)
+}
+
 fn set_visibility_flags(modifiers: &Sequence<Modifier>, accessors: &PropertyHookList) -> u32 {
     let set = accessors.hooks.iter().find(|accessor| accessor.name.value == b"set");
     let flags = match set.map(|set| set.modifiers.first()) {

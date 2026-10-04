@@ -80,9 +80,11 @@ where
         None => Visibility::Public,
     };
 
-    let write_visibility = match parameter.modifiers.get_first_write_visibility() {
-        Some(visibility) => Visibility::try_from(visibility).unwrap_or(Visibility::Public),
-        None => {
+    let is_sharp = context.program.dialect.is_sharp();
+    let write_visibility = match (parameter.modifiers.get_first_write_visibility(), &parameter.hooks) {
+        (Some(visibility), _) => Visibility::try_from(visibility).unwrap_or(Visibility::Public),
+        (None, Some(accessors)) if is_sharp => sharp_write_visibility(accessors, read_visibility),
+        (None, _) => {
             if parameter.modifiers.contains_readonly() {
                 Visibility::Protected
             } else {
@@ -102,7 +104,10 @@ where
         parameter.hint.as_ref().map(|hint| get_type_metadata_from_hint(hint, Some(class_like_metadata.name), context)),
     );
 
-    if let Some(hook_list) = &parameter.hooks {
+    // A PHP# accessor list declares an auto-property, which is plain storage with a set visibility.
+    if let Some(hook_list) = &parameter.hooks
+        && !is_sharp
+    {
         for hook in &hook_list.hooks {
             let mut hook_metadata =
                 scan_property_hook(hook, &property_metadata, context, scope, Some(class_like_metadata.original_name));

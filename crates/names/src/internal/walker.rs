@@ -127,7 +127,17 @@ fn class_member_names<'arena>(members: &Sequence<'arena, ClassLikeMember<'arena>
     let mut names = ClassMembers::default();
     for member in members {
         match member {
-            ClassLikeMember::Method(method) => names.methods.push(method.name.value),
+            ClassLikeMember::Method(method) => {
+                names.methods.push(method.name.value);
+                names.others.extend(
+                    method
+                        .parameter_list
+                        .parameters
+                        .iter()
+                        .filter(|parameter| parameter.is_promoted_property())
+                        .map(|parameter| trim_start_byte(parameter.variable.name, b'$')),
+                );
+            }
             ClassLikeMember::Property(property) => names
                 .others
                 .extend(property.variables().into_iter().map(|variable| trim_start_byte(variable.name, b'$'))),

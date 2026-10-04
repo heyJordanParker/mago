@@ -10,8 +10,9 @@ class Report
     public int views { get; private set; } = 0;
     public string name { get; set; }
     public int id { get; }
+    private Calc calc = new Calc(Calc.make(), rate: 2);
 
-    public Report(int start)
+    public Report(int start, private Calc helper, public int total { get; private set; })
     {
         this.count = start;
         this.id = start;
