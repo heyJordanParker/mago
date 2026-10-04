@@ -15,6 +15,7 @@ use crate::cst::cst::PropertyHookBody;
 use crate::cst::cst::PropertyHookConcreteBody;
 use crate::cst::cst::PropertyHookConcreteExpressionBody;
 use crate::cst::cst::PropertyHookList;
+use crate::cst::cst::PropertyInitialValue;
 use crate::cst::cst::PropertyItem;
 use crate::cst::sequence::Sequence;
 use crate::cst::sequence::TokenSeparatedSequence;
@@ -49,13 +50,25 @@ where
 
         let next = self.stream.peek_kind(0)?;
         if matches!(next, Some(T!["{"])) {
+            let hook_list = self.parse_property_hook_list()?;
+            let initial_value = if self.dialect.is_sharp() && self.stream.is_at(T!["="])? {
+                Some(PropertyInitialValue {
+                    equals: self.stream.eat_span(T!["="])?,
+                    value: self.parse_expression()?,
+                    semicolon: self.stream.eat_span(T![";"])?,
+                })
+            } else {
+                None
+            };
+
             return Ok(Property::Hooked(HookedProperty {
                 attribute_lists: attributes,
                 modifiers,
                 var,
                 hint,
                 item,
-                hook_list: self.parse_property_hook_list()?,
+                hook_list,
+                initial_value,
             }));
         }
 

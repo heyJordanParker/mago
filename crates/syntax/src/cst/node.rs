@@ -1302,6 +1302,9 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 }
                 f(Node::PropertyItem(&node.item));
                 f(Node::PropertyHookList(&node.hook_list));
+                for item in node.initial_value.iter() {
+                    f(Node::Expression(item.value));
+                }
             }
             Node::PlainProperty(node) => {
                 for item in node.attribute_lists.iter() {

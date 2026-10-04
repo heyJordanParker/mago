@@ -1,4 +1,5 @@
 use mago_span::Span;
+use mago_syntax::cst::Method;
 use mago_word::Word;
 use mago_word::concat_word;
 use mago_word::word;
@@ -10,6 +11,14 @@ use mago_word::word;
 #[must_use]
 pub fn php_variable_name(name: &[u8]) -> Word {
     if name.starts_with(b"$") { word(name) } else { concat_word!(b"$", name) }
+}
+
+/// Returns the PHP method a method runs as. The PHP# constructor, the one method without `function` or a return type,
+/// runs as `__construct`, and every other method keeps its name.
+#[inline]
+#[must_use]
+pub fn php_method_name<'arena>(method: &Method<'arena>) -> &'arena [u8] {
+    if method.function.is_none() && method.return_type_hint.is_none() { b"__construct" } else { method.name.value }
 }
 
 /// What a bare PHP# name refers to.

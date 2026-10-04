@@ -1,5 +1,6 @@
 use mago_allocator::Arena;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
+use mago_names::binding::php_method_name;
 use mago_php_version::PHPVersion;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -43,7 +44,7 @@ pub fn check_override_attribute<'ctx, 'arena, A>(
             (None, 0)
         };
 
-        let name_bytes = method.name.value.to_ascii_lowercase();
+        let name_bytes = php_method_name(method).to_ascii_lowercase();
         let name = mago_bytes::BytesDisplay(&name_bytes);
         if name_bytes.eq_ignore_ascii_case(b"__construct") {
             if let Some(attribute) = override_attribute {
@@ -69,7 +70,7 @@ pub fn check_override_attribute<'ctx, 'arena, A>(
             continue;
         }
 
-        let lowercase_name = ascii_lowercase_word(method.name.value);
+        let lowercase_name = ascii_lowercase_word(php_method_name(method));
         let Some(parent_class_names) = metadata.overridden_method_ids.get(&lowercase_name) else {
             if metadata.has_incomplete_hierarchy() {
                 continue;

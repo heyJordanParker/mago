@@ -68,6 +68,12 @@ pub struct PlainProperty<'arena> {
 ///   }
 /// }
 /// ```
+///
+/// A PHP# auto-property writes its initial value after its accessors, as C# does:
+///
+/// ```csharp
+/// public int views { get; private set; } = 0;
+/// ```
 #[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct HookedProperty<'arena> {
@@ -77,6 +83,16 @@ pub struct HookedProperty<'arena> {
     pub hint: Option<Hint<'arena>>,
     pub item: PropertyItem<'arena>,
     pub hook_list: PropertyHookList<'arena>,
+    pub initial_value: Option<PropertyInitialValue<'arena>>,
+}
+
+/// The initial value a PHP# auto-property writes after its accessors: `= 0;`.
+#[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct PropertyInitialValue<'arena> {
+    pub equals: Span,
+    pub value: &'arena Expression<'arena>,
+    pub semicolon: Span,
 }
 
 /// Represents a property item in a class-like property declaration in PHP.
@@ -309,28 +325,36 @@ impl HasSpan for PlainProperty<'_> {
 
 impl HasSpan for HookedProperty<'_> {
     fn span(&self) -> Span {
+        let end = self.initial_value.as_ref().map_or_else(|| self.hook_list.span(), HasSpan::span);
+
         if let Some(attribute_list) = self.attribute_lists.first() {
-            return Span::between(attribute_list.span(), self.hook_list.span());
+            return Span::between(attribute_list.span(), end);
         }
 
         match (self.modifiers.first(), &self.var) {
             (Some(modifiers), Some(var)) => {
                 if var.span().start < modifiers.span().start {
-                    return Span::between(var.span(), self.hook_list.span());
+                    return Span::between(var.span(), end);
                 }
 
-                return Span::between(modifiers.span(), self.hook_list.span());
+                return Span::between(modifiers.span(), end);
             }
-            (Some(modifiers), _) => return Span::between(modifiers.span(), self.hook_list.span()),
-            (_, Some(var)) => return Span::between(var.span(), self.hook_list.span()),
+            (Some(modifiers), _) => return Span::between(modifiers.span(), end),
+            (_, Some(var)) => return Span::between(var.span(), end),
             _ => {}
         }
 
         if let Some(type_hint) = &self.hint {
-            return Span::between(type_hint.span(), self.hook_list.span());
+            return Span::between(type_hint.span(), end);
         }
 
-        Span::between(self.item.span(), self.hook_list.span())
+        Span::between(self.item.span(), end)
+    }
+}
+
+impl HasSpan for PropertyInitialValue<'_> {
+    fn span(&self) -> Span {
+        Span::between(self.equals, self.semicolon)
     }
 }
 

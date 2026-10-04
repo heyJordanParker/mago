@@ -159,6 +159,27 @@ fn void_method_without_modifiers_starts_at_its_return_type() {
 }
 
 #[test]
+fn a_constructor_is_a_method_named_after_its_class_without_a_return_type() {
+    const CODE: &str = "class Report\n{\n    public Report(private int count, int extra) {}\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(ClassLikeMember::Method(constructor)) = class_members(program).first() else {
+        panic!("expected a method, got {:#?}", class_members(program));
+    };
+    assert_eq!(constructor.function, None);
+    assert_eq!(constructor.return_type_hint, None);
+    assert_eq!(source(CODE, &constructor.name), "Report");
+    assert_eq!(source(CODE, constructor), "public Report(private int count, int extra) {}");
+    let [count, extra] = constructor.parameter_list.parameters.as_slice() else {
+        panic!("expected two parameters, got {:#?}", constructor.parameter_list);
+    };
+    assert_eq!(source(CODE, count), "private int count");
+    assert_eq!(source(CODE, extra), "int extra");
+}
+
+#[test]
 fn a_method_with_a_long_return_type_parses() {
     const CODE: &str = "class Report\n{\n    public static int|string|null total() { return 1; }\n}\n";
     let arena = LocalArena::new();
@@ -252,6 +273,35 @@ fn a_field_keeps_its_type_and_bare_name() {
     let item = field.items.first().expect("one field");
     assert_eq!(source(CODE, item.variable()), "count");
     assert_eq!(source(CODE, field), "private int count = 0;");
+}
+
+#[test]
+fn an_auto_property_takes_its_initial_value_after_its_accessors() {
+    const CODE: &str =
+        "class Report\n{\n    public int views { get; private set; } = 0;\n    public string name { get; }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [ClassLikeMember::Property(Property::Hooked(views)), ClassLikeMember::Property(Property::Hooked(name))] =
+        class_members(program).as_slice()
+    else {
+        panic!("expected two properties, got {:#?}", class_members(program));
+    };
+    assert_eq!(source(CODE, views), "public int views { get; private set; } = 0;");
+    assert_eq!(source(CODE, &views.hook_list), "{ get; private set; }");
+    let initial_value = views.initial_value.as_ref().expect("an initial value");
+    assert_eq!(source(CODE, initial_value.value), "0");
+    assert_eq!(source(CODE, name), "public string name { get; }");
+    assert_eq!(name.initial_value, None);
+}
+
+#[test]
+fn a_php_hooked_property_has_no_trailing_initial_value() {
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.php", "<?php class Report { public int $views { get; } = 0; }");
+
+    assert!(!program.errors.is_empty());
 }
 
 #[test]

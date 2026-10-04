@@ -59,6 +59,10 @@ pub enum sharp_kind {
     SHARP_AST_STATIC_CALL,
     SHARP_AST_CONST_ELEM,
     SHARP_AST_PARAM,
+    SHARP_AST_PROP_GROUP,
+    SHARP_AST_PROP_DECL,
+    SHARP_AST_PROP_ELEM,
+    SHARP_AST_NEW,
 }
 
 #[repr(u8)]

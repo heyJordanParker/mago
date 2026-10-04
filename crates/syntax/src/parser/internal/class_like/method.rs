@@ -2,6 +2,8 @@ use crate::T;
 use crate::cst::cst::AttributeList;
 use crate::cst::cst::ClassLikeMember;
 use crate::cst::cst::FunctionLikeReturnTypeHint;
+use crate::cst::cst::Hint;
+use crate::cst::cst::Identifier;
 use crate::cst::cst::Method;
 use crate::cst::cst::MethodAbstractBody;
 use crate::cst::cst::MethodBody;
@@ -33,7 +35,8 @@ where
     }
 
     /// Parses a PHP# class member that starts with its type: a method, whose return type comes first with no colon
-    /// and no `function` keyword, or a field, `int count = 0;`.
+    /// and no `function` keyword, or a field, `int count = 0;`. A name followed by `(` with no type before it is the
+    /// constructor, `public Report(int count) {}`, a method without a return type.
     ///
     /// The type is parsed once, and the name after it decides: a name followed by `(` makes a method, anything else
     /// a field. A type has no length limit, so no fixed lookahead can decide before it. A PHP property, which starts
@@ -50,6 +53,20 @@ where
         }
 
         let hint = self.parse_type_hint()?;
+        if let Hint::Identifier(Identifier::Local(name)) = hint
+            && self.stream.is_at(T!["("])?
+        {
+            return Ok(ClassLikeMember::Method(Method {
+                attribute_lists: attributes,
+                modifiers,
+                function: None,
+                ampersand: None,
+                name,
+                parameter_list: self.parse_function_like_parameter_list()?,
+                return_type_hint: None,
+                body: self.parse_method_body()?,
+            }));
+        }
         if !matches!(self.stream.peek_kind(1)?, Some(T!["("])) {
             return Ok(ClassLikeMember::Property(self.parse_property_with_hint(
                 attributes,

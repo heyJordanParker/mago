@@ -1,4 +1,5 @@
 use mago_allocator::Arena;
+use mago_names::binding::php_variable_name;
 use mago_names::scope::NamespaceScope;
 use mago_phpdoc_syntax::cst::Document;
 use mago_phpdoc_syntax::cst::TagValue;
@@ -283,8 +284,17 @@ where
                 Some(class_like_metadata.original_name),
             );
 
-            let (name, name_span, has_default, default_type) =
+            let is_sharp = context.program.dialect.is_sharp();
+            let (name, name_span, mut has_default, mut default_type) =
                 scan_property_item(&hooked_property.item, classname, context, scope);
+            if let Some(initial_value) = &hooked_property.initial_value {
+                has_default = true;
+                default_type = infer(context, scope, initial_value.value, Some(classname)).map(|u| {
+                    let mut type_metadata = TypeMetadata::new(u, initial_value.value.span());
+                    type_metadata.inferred = true;
+                    type_metadata
+                });
+            }
 
             let read_visibility = match hooked_property.modifiers.get_first_read_visibility() {
                 Some(visibility) => Visibility::try_from(visibility).unwrap_or(Visibility::Public),
@@ -293,6 +303,7 @@ where
 
             let write_visibility = match hooked_property.modifiers.get_first_write_visibility() {
                 Some(visibility) => Visibility::try_from(visibility).unwrap_or(Visibility::Public),
+                None if is_sharp => sharp_write_visibility(&hooked_property.hook_list, read_visibility),
                 None => read_visibility,
             };
 
@@ -334,16 +345,19 @@ where
                 );
             }
 
-            for hook in &hooked_property.hook_list.hooks {
-                let mut hook_metadata =
-                    scan_property_hook(hook, &metadata, context, scope, Some(class_like_metadata.original_name));
-                class_like_metadata.issues.extend(hook_metadata.take_issues());
-                metadata.hooks.insert(hook_metadata.name, hook_metadata);
-            }
+            // A PHP# accessor list declares an auto-property, which is plain storage with a set visibility.
+            if !is_sharp {
+                for hook in &hooked_property.hook_list.hooks {
+                    let mut hook_metadata =
+                        scan_property_hook(hook, &metadata, context, scope, Some(class_like_metadata.original_name));
+                    class_like_metadata.issues.extend(hook_metadata.take_issues());
+                    metadata.hooks.insert(hook_metadata.name, hook_metadata);
+                }
 
-            let name_bytes = name.0.as_bytes();
-            let prop_name = name_bytes.strip_prefix(b"$").unwrap_or(name_bytes);
-            metadata.set_is_virtual(!hooks_reference_backing_store(&hooked_property.hook_list.hooks, prop_name));
+                let name_bytes = name.0.as_bytes();
+                let prop_name = name_bytes.strip_prefix(b"$").unwrap_or(name_bytes);
+                metadata.set_is_virtual(!hooks_reference_backing_store(&hooked_property.hook_list.hooks, prop_name));
+            }
 
             if matches!(verdict.type_override, Some(TypeOverride::Untyped)) {
                 metadata.type_declaration_metadata = None;
@@ -354,6 +368,17 @@ where
 
             vec![metadata]
         }
+    }
+}
+
+/// The write visibility of a PHP# auto-property: its `set` accessor's access modifier, the property's own for a bare
+/// `set;`, and `private` for a get-only property, which only its class's constructor sets.
+fn sharp_write_visibility(accessors: &PropertyHookList, read_visibility: Visibility) -> Visibility {
+    match accessors.hooks.iter().find(|accessor| accessor.name.value == b"set") {
+        Some(set) => {
+            set.modifiers.first().and_then(|modifier| Visibility::try_from(modifier).ok()).unwrap_or(read_visibility)
+        }
+        None => Visibility::Private,
     }
 }
 
@@ -533,9 +558,10 @@ pub fn scan_property_item<'arena, A>(
 where
     A: Arena,
 {
+    // A PHP# property is named without `$` and runs as the PHP property of the same name.
     match property_item {
         PropertyItem::Abstract(property_abstract_item) => {
-            let name = VariableIdentifier(word(property_abstract_item.variable.name));
+            let name = VariableIdentifier(php_variable_name(property_abstract_item.variable.name));
             let name_span = property_abstract_item.variable.span;
             let has_default = false;
             let default_type = None;
@@ -543,7 +569,7 @@ where
             (name, name_span, has_default, default_type)
         }
         PropertyItem::Concrete(property_concrete_item) => {
-            let name = VariableIdentifier(word(property_concrete_item.variable.name));
+            let name = VariableIdentifier(php_variable_name(property_concrete_item.variable.name));
             let name_span = property_concrete_item.variable.span;
             let has_default = true;
             let default_type = infer(context, scope, property_concrete_item.value, Some(classname)).map(|u| {

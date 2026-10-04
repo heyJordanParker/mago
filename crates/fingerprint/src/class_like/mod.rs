@@ -337,6 +337,9 @@ impl Fingerprintable for HookedProperty<'_> {
         self.hint.fingerprint_with_hasher(hasher, resolved_names, options);
         self.item.fingerprint_with_hasher(hasher, resolved_names, options);
         self.hook_list.fingerprint_with_hasher(hasher, resolved_names, options);
+        if let Some(initial_value) = &self.initial_value {
+            initial_value.value.fingerprint_with_hasher(hasher, resolved_names, options);
+        }
     }
 }
 

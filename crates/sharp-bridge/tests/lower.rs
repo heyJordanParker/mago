@@ -351,6 +351,124 @@ fn a_method_is_a_public_function_with_its_return_type_after_its_parameters() {
 }
 
 /// ```php
+/// private int $count = 0;
+/// protected \Lib\Calc $calc;
+/// ```
+///
+/// `[4]` and `[2]` are `ZEND_ACC_PRIVATE` and `ZEND_ACC_PROTECTED`.
+#[test]
+fn a_field_is_a_property_group_of_one_property() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private int count = 0;\n    protected Calc calc;\n}\n",
+    );
+    let class = lowered.child(lowered.unit().root, 2);
+
+    assert_eq!(
+        lowered.render(lowered.child(class, 2)),
+        indoc! {r#"
+            STMT_LIST
+              PROP_GROUP [4]
+                ZVAL [1] "int"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "count"
+                    ZVAL 0
+                    null
+                    null
+                null
+              PROP_GROUP [2]
+                ZVAL "Lib\\Calc"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "calc"
+                    null
+                    null
+                    null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// public private(set) int $views = 0;
+/// public string $name;
+/// public private(set) int $id;
+/// protected protected(set) int $total;   // written `public int total { get; protected set; }`
+/// private int $hidden;
+/// ```
+///
+/// An auto-property is a property with asymmetric visibility. `[4097]` is `ZEND_ACC_PUBLIC | ZEND_ACC_PRIVATE_SET`,
+/// and `[2049]` is `ZEND_ACC_PUBLIC | ZEND_ACC_PROTECTED_SET`. A get-only property is `private(set)`, and a private
+/// one needs no set visibility.
+#[test]
+fn an_auto_property_is_a_property_with_its_set_visibility() {
+    let lowered = Lowered::new(
+        "class Report\n{\n    public int views { get; private set; } = 0;\n    public string name { get; set; }\n    public int id { get; }\n    public int total { get; protected set; }\n    private int hidden { get; }\n}\n",
+    );
+    let groups: Vec<(u32, String)> = lowered
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.kind == sharp_kind::SHARP_AST_PROP_GROUP)
+        .map(|(index, node)| (node.attr, lowered.render(lowered.child(index as u32, 1))))
+        .collect();
+
+    assert_eq!(
+        groups,
+        [
+            (4097, "PROP_DECL\n  PROP_ELEM\n    ZVAL \"views\"\n    ZVAL 0\n    null\n    null\n".to_owned()),
+            (1, "PROP_DECL\n  PROP_ELEM\n    ZVAL \"name\"\n    null\n    null\n    null\n".to_owned()),
+            (4097, "PROP_DECL\n  PROP_ELEM\n    ZVAL \"id\"\n    null\n    null\n    null\n".to_owned()),
+            (2049, "PROP_DECL\n  PROP_ELEM\n    ZVAL \"total\"\n    null\n    null\n    null\n".to_owned()),
+            (4, "PROP_DECL\n  PROP_ELEM\n    ZVAL \"hidden\"\n    null\n    null\n    null\n".to_owned()),
+        ]
+    );
+}
+
+/// ```php
+/// public function __construct(int $start)
+/// {
+///     $this->count = $start;
+/// }
+/// ```
+///
+/// The constructor has no return type, and its first line is its name's, where PHP writes `function`.
+#[test]
+fn the_constructor_is_a_public_function_named_construct() {
+    let lowered = Lowered::new(
+        "class Report\n{\n    private int count;\n\n    public\n    Report(int start)\n    {\n        this.count = start;\n    }\n}\n",
+    );
+    let constructor =
+        lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a constructor");
+
+    assert_eq!(
+        lowered.render(constructor as u32),
+        indoc! {r#"
+            METHOD [1] "__construct" @6-9
+              PARAM_LIST
+                PARAM
+                  ZVAL [1] "int"
+                  ZVAL "start"
+                  null
+                  null
+                  null
+                  null
+              null
+              STMT_LIST
+                ASSIGN
+                  PROP
+                    VAR
+                      ZVAL "this"
+                    ZVAL "count"
+                  VAR
+                    ZVAL "start"
+              null
+              null
+        "#}
+    );
+}
+
+/// ```php
 /// public static function make(): void {}
 /// private function hide() {}
 /// protected function share() {}
@@ -517,6 +635,30 @@ fn calc_make_is_a_static_call_on_the_imported_class() {
                   ZVAL "make"
                   ARG_LIST
                     ZVAL 2
+        "#}
+    );
+}
+
+/// ```php
+/// return new \Lib\Calc($extra, rate: 2);
+/// ```
+///
+/// The class is its full name with `ZEND_NAME_FQ`, which is 0.
+#[test]
+fn new_creates_the_imported_class_by_its_full_name() {
+    assert_eq!(
+        body("        return new Calc(extra, rate: 2);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                NEW
+                  ZVAL "Lib\\Calc"
+                  ARG_LIST
+                    VAR
+                      ZVAL "extra"
+                    NAMED_ARG
+                      ZVAL "rate"
+                      ZVAL 2
         "#}
     );
 }
@@ -796,7 +938,8 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         sharp_kind::SHARP_AST_ARG_LIST
         | sharp_kind::SHARP_AST_STMT_LIST
         | sharp_kind::SHARP_AST_PARAM_LIST
-        | sharp_kind::SHARP_AST_CONST_DECL => None,
+        | sharp_kind::SHARP_AST_CONST_DECL
+        | sharp_kind::SHARP_AST_PROP_DECL => None,
         sharp_kind::SHARP_AST_ZVAL => Some(0),
         sharp_kind::SHARP_AST_VAR
         | sharp_kind::SHARP_AST_CONST
@@ -818,10 +961,13 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_OR
         | sharp_kind::SHARP_AST_DECLARE
         | sharp_kind::SHARP_AST_NAMESPACE
-        | sharp_kind::SHARP_AST_NAMED_ARG => Some(2),
-        sharp_kind::SHARP_AST_METHOD_CALL | sharp_kind::SHARP_AST_STATIC_CALL | sharp_kind::SHARP_AST_CONST_ELEM => {
-            Some(3)
-        }
+        | sharp_kind::SHARP_AST_NAMED_ARG
+        | sharp_kind::SHARP_AST_NEW => Some(2),
+        sharp_kind::SHARP_AST_METHOD_CALL
+        | sharp_kind::SHARP_AST_STATIC_CALL
+        | sharp_kind::SHARP_AST_CONST_ELEM
+        | sharp_kind::SHARP_AST_PROP_GROUP => Some(3),
+        sharp_kind::SHARP_AST_PROP_ELEM => Some(4),
         sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_CLASS => Some(5),
         sharp_kind::SHARP_AST_PARAM => Some(6),
     }

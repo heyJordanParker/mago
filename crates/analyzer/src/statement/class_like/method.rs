@@ -9,6 +9,7 @@ use mago_codex::reference::ReferenceOrigin;
 use mago_codex::ttype::add_optional_union_type;
 use mago_codex::ttype::union::TUnion;
 
+use mago_names::binding::php_method_name;
 use mago_span::HasSpan;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::MethodBody;
@@ -36,6 +37,8 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
     where
         A: Arena,
     {
+        let name = php_method_name(self);
+
         analyze_attributes(
             context,
             block_context,
@@ -47,14 +50,14 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
         let Some(class_like_metadata) = block_context.scope.get_class_like() else {
             tracing::error!(
                 "Attempted to analyze method `{}` without class-like context.",
-                mago_bytes::BytesDisplay(self.name.value)
+                mago_bytes::BytesDisplay(name)
             );
 
             return Ok(());
         };
 
-        let method_name = word(self.name.value);
-        let lowercase_method_name = ascii_lowercase_word(self.name.value);
+        let method_name = word(name);
+        let lowercase_method_name = ascii_lowercase_word(name);
         if context.settings.diff
             && context.codebase.safe_symbol_members.contains(&(class_like_metadata.name, lowercase_method_name))
         {
@@ -66,7 +69,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
         else {
             tracing::error!(
                 "Failed to find method metadata for `{}` in class `{}`.",
-                mago_bytes::BytesDisplay(self.name.value),
+                mago_bytes::BytesDisplay(name),
                 class_like_metadata.original_name
             );
 
@@ -164,7 +167,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
             context,
             Some(class_like_metadata),
             method_metadata,
-            self.name.value,
+            name,
             self.return_type_hint.as_ref(),
             self.span(),
         );
@@ -172,7 +175,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
         missing_type_hints::check_imprecise_return_type_hint(
             context,
             method_metadata,
-            self.name.value,
+            name,
             self.return_type_hint.as_ref(),
         );
 

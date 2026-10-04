@@ -4,6 +4,20 @@ import Lib.Calc;
 
 class Report
 {
+    private int count = 0;
+    protected float rate = 2.5 * -PHP_INT_MAX;
+    private string label;
+    public int views { get; private set; } = 0;
+    public string name { get; set; }
+    public int id { get; }
+
+    public Report(int start)
+    {
+        this.count = start;
+        this.id = start;
+        this.name = "report";
+    }
+
     public int run(int extra, float rate = 1.5, string label = "\u{41}\n", bool strict = !false)
     {
         let total = extra * 2 + 1;
@@ -25,7 +39,8 @@ class Report
         same = total !== base && !strict;
         const order = total < base || total > base || total <= base || total >= base;
         const nothing = null;
-        return Report.part(first: extra, second: 2) + this.scale(rate);
+        this.count += extra;
+        return Report.part(first: extra, second: 2) + this.scale(rate) + this.count;
     }
 
     public static int part(int first, int second = 2 * 3 - -1, int limit = PHP_INT_MAX)
@@ -54,6 +69,7 @@ class Report
         calc.add(1, 2);
         const made = Calc.make();
         const read = calc.rate;
+        const fresh = new Calc(1, rate: 2);
     }
 
     public Report same()
