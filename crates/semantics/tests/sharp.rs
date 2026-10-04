@@ -474,20 +474,27 @@ fn a_member_name_written_as_an_expression_is_not_supported_yet() {
 
 #[test]
 fn types_outside_the_slice_are_not_supported_yet() {
-    let code = "class Report\n{\n    public mixed run(?int a, int|string b, iterable c, callable d, (Lib&Other)|null e)\n    {\n        return 1;\n    }\n\n    public self make(Lib f, float g, bool h, string i)\n    {\n        return this;\n    }\n}\n";
+    let code = "class Report\n{\n    public mixed run(iterable? a, int|string b, iterable c, callable d, (Lib&Other)|null e)\n    {\n        return 1;\n    }\n\n    public self make(Lib f, float g, bool h, string i)\n    {\n        return this;\n    }\n}\n";
 
     assert_eq!(
         issues(code),
         [
             "3:12 This type is not supported yet in PHP#.",
             "3:22 This type is not supported yet in PHP#.",
-            "3:30 This type is not supported yet in PHP#.",
-            "3:44 This type is not supported yet in PHP#.",
-            "3:56 This type is not supported yet in PHP#.",
-            "3:68 This type is not supported yet in PHP#.",
+            "3:35 This type is not supported yet in PHP#.",
+            "3:49 This type is not supported yet in PHP#.",
+            "3:61 This type is not supported yet in PHP#.",
+            "3:73 This type is not supported yet in PHP#.",
             "8:12 This type is not supported yet in PHP#.",
         ]
     );
+}
+
+#[test]
+fn a_nullable_void_reports_only_the_php_error() {
+    let code = "class Report\n{\n    public void? run()\n    {\n    }\n}\n";
+
+    assert_eq!(issues(code), ["3:12 Type `void` cannot be nullable."]);
 }
 
 #[test]

@@ -66,7 +66,8 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - A parameter: always a type, a name and an optional default, and neither variadic nor by reference. A default is
 ///   a literal, a constant, or the operators below on them, without `++` and `--`.
 /// - Types: `int`, `float`, `bool`, `string` and a class written by its short name, and `void` as a return type.
-///   PHP's own check reports a `void` parameter.
+///   PHP's own check reports a `void` parameter. Each of them is nullable when written with `?` after it, as in
+///   `int?`, and PHP's own check reports `void?`.
 /// - In a method body: blocks, expression statements, `return`, and `let` and `const` declarations.
 /// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter or a member written
 ///   `object.name`.
@@ -240,6 +241,7 @@ fn enter(
             }
         },
         (Node::Hint(hint), Method | Parameter) if is_slice_type(hint) => Some(place),
+        (Node::NullableHint(_), Method | Parameter) => Some(place),
         (Node::DirectVariable(_), Parameter) => Some(Parameter),
         (Node::FunctionLikeParameterDefaultValue(_), Parameter) => Some(Default),
         (Node::Block(_), Method | Body) => Some(Body),
@@ -433,7 +435,8 @@ fn is_slice_target(target: &Expression, context: &Context<'_, '_, '_>) -> bool {
     }
 }
 
-/// Whether the slice has a type: the built-in types of spec section 24, or a class written by its short name.
+/// Whether the slice has a type: the built-in types of spec section 24, or a class written by its short name, or a
+/// nullable type, whose inner type the walk checks next.
 fn is_slice_type(hint: &Hint) -> bool {
     matches!(
         hint,
@@ -443,6 +446,7 @@ fn is_slice_type(hint: &Hint) -> bool {
             | Hint::String(_)
             | Hint::Void(_)
             | Hint::Identifier(Identifier::Local(_))
+            | Hint::Nullable(_)
     )
 }
 
@@ -557,10 +561,10 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# class has a name and methods, with no attributes, modifiers, `extends` or `implements`."
         }
         Place::Method => {
-            "A PHP# method takes `public`, `protected`, `private` and `static`, parameters, and a return type of `int`, `float`, `bool`, `string`, `void` or a class."
+            "A PHP# method takes `public`, `protected`, `private` and `static`, parameters, and a return type of `int`, `float`, `bool`, `string`, `void` or a class, each but `void` nullable as in `int?`."
         }
         Place::Parameter => {
-            "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, a name, and an optional default."
+            "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, a name, and an optional default."
         }
         Place::Body => {
             "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const`, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `++` and `--`, and method calls and property reads written with `.`."

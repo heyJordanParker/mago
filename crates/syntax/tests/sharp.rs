@@ -213,6 +213,49 @@ fn a_parameter_with_a_dnf_type_parses() {
 }
 
 #[test]
+fn a_question_mark_after_a_type_makes_it_nullable() {
+    const CODE: &str = "class Report\n{\n    public Calc? find(int? id, string? label = null) { return null; }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(ClassLikeMember::Method(method)) = class_members(program).first() else {
+        panic!("expected a method, got {:#?}", class_members(program));
+    };
+    let hints = std::iter::once(&method.return_type_hint.as_ref().expect("a return type").hint)
+        .chain(method.parameter_list.parameters.iter().map(|parameter| parameter.hint.as_ref().expect("a type")));
+    let nullable: Vec<(&str, &str, &str)> = hints
+        .map(|hint| {
+            let Hint::Nullable(nullable) = hint else {
+                panic!("expected a nullable type, got {hint:#?}");
+            };
+
+            (source(CODE, hint), source(CODE, nullable.hint), source(CODE, &nullable.question_mark))
+        })
+        .collect();
+
+    assert_eq!(nullable, [("Calc?", "Calc", "?"), ("int?", "int", "?"), ("string?", "string", "?")]);
+}
+
+#[test]
+fn a_question_mark_before_a_type_is_a_php_syntax_error_that_names_the_suffix() {
+    const CODE: &str = "class Report\n{\n    public ?int find(?Calc calc) { return null; }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    let messages: Vec<String> = program.errors.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        messages,
+        [
+            "`?` before a type is PHP syntax: PHP# writes it after the type, as in `int?`",
+            "`?` before a type is PHP syntax: PHP# writes it after the type, as in `int?`",
+        ]
+    );
+    let spans: Vec<&str> = program.errors.iter().map(|error| source(CODE, error)).collect();
+    assert_eq!(spans, ["?", "?"]);
+}
+
+#[test]
 fn a_dollar_property_is_a_php_syntax_error() {
     const CODE: &str = "class Report\n{\n    private int $count = 0;\n}\n";
     let arena = LocalArena::new();

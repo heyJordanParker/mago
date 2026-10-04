@@ -421,6 +421,47 @@ fn parameters_carry_their_type_name_and_default() {
 }
 
 /// ```php
+/// public function find(?int $id, ?\Lib\Calc $other = null): ?\Lib\Calc { return null; }
+/// ```
+///
+/// `[256]` is `ZEND_TYPE_NULLABLE`, which php-src's grammar adds to the type's attr, and `[257]` adds it to
+/// `ZEND_NAME_NOT_FQ`.
+#[test]
+fn a_nullable_type_is_its_type_with_the_nullable_flag() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public Calc? find(int? id, Calc? other = null) { return null; }\n}\n",
+    );
+    let method = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a method");
+
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 0)),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                ZVAL [257] "int"
+                ZVAL "id"
+                null
+                null
+                null
+                null
+              PARAM
+                ZVAL [256] "Lib\\Calc"
+                ZVAL "other"
+                ZVAL null
+                null
+                null
+                null
+        "#}
+    );
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 3)),
+        indoc! {r#"
+            ZVAL [256] "Lib\\Calc"
+        "#}
+    );
+}
+
+/// ```php
 /// public function run(): void
 /// {
 ///     return;

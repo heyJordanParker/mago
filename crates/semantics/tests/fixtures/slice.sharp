@@ -60,4 +60,9 @@ class Report
     {
         return this;
     }
+
+    public Calc? find(int? id, Calc? fallback = null, string? label = "none", float? rate = null, bool? on = null)
+    {
+        return null;
+    }
 }

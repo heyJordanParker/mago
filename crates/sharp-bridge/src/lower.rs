@@ -89,6 +89,7 @@ const ZEND_ACC_PUBLIC: u32 = 1 << 0;
 const ZEND_ACC_PROTECTED: u32 = 1 << 1;
 const ZEND_ACC_PRIVATE: u32 = 1 << 2;
 const ZEND_ACC_STATIC: u32 = 1 << 4;
+const ZEND_TYPE_NULLABLE: u32 = 1 << 8;
 const ZEND_ADD: u32 = 1;
 const ZEND_SUB: u32 = 2;
 const ZEND_MUL: u32 = 3;
@@ -288,13 +289,20 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_PARAM, 0, self.line(parameter), &[hint, name, default, NULL, NULL, NULL])
     }
 
-    /// A built-in type is written unqualified, and a class by its full name.
+    /// A built-in type is written unqualified, and a class by its full name. A nullable type is its type with
+    /// `ZEND_TYPE_NULLABLE`, as php-src's grammar builds `?int`.
     fn hint(&mut self, hint: &Hint) -> u32 {
         match hint {
             Hint::Integer(name) | Hint::Float(name) | Hint::Bool(name) | Hint::String(name) | Hint::Void(name) => {
                 self.string(ZEND_NAME_NOT_FQ, self.line(name.span), name.value)
             }
             Hint::Identifier(class) => self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class)),
+            Hint::Nullable(nullable) => {
+                let index = self.hint(nullable.hint);
+                self.nodes[index as usize].attr |= ZEND_TYPE_NULLABLE;
+
+                index
+            }
             _ => unreachable!("check_slice refuses the type `{hint}`"),
         }
     }
