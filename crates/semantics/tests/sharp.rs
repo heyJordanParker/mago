@@ -50,6 +50,30 @@ fn the_slice_has_no_semantic_issues() {
 }
 
 #[test]
+fn every_construct_outside_the_slice_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\nenum Suit\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        if (extra) {\n            return 1;\n        }\n        echo extra;\n        const made = new Report();\n        const arrow = fn() => 1;\n        const closure = function () { return 1; };\n        const partial = this.run(...);\n        const text = \"total {$extra}\";\n        extra++;\n        return extra;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "3:1 This statement is not supported yet in PHP#.",
+            "4:1 This statement is not supported yet in PHP#.",
+            "6:1 This statement is not supported yet in PHP#.",
+            "10:1 This statement is not supported yet in PHP#.",
+            "18:9 This statement is not supported yet in PHP#.",
+            "21:9 This statement is not supported yet in PHP#.",
+            "22:22 This expression is not supported yet in PHP#.",
+            "23:23 This expression is not supported yet in PHP#.",
+            "24:25 This expression is not supported yet in PHP#.",
+            "25:25 This expression is not supported yet in PHP#.",
+            "26:22 This expression is not supported yet in PHP#.",
+            "27:9 This expression is not supported yet in PHP#.",
+            "26:30 PHP# variables have no `$`: write `extra`.",
+        ]
+    );
+}
+
+#[test]
 fn reassigning_a_const_local_is_an_error() {
     let code = leak(method("        const base = 2;\n        base = 3;\n        return base;\n"));
 
@@ -69,9 +93,12 @@ fn incrementing_or_decrementing_a_const_local_is_an_error() {
         "        const base = 2;\n        base++;\n        ++base;\n        base--;\n        --base;\n        return base;\n",
     ));
 
+    // Postfix `++` and `--` are outside the slice, and still break the `const` rule.
     assert_eq!(
         issues(code),
         [
+            "8:9 This expression is not supported yet in PHP#.",
+            "10:9 This expression is not supported yet in PHP#.",
             "8:9 Cannot increment `base`: it is declared with `const`.",
             "9:11 Cannot increment `base`: it is declared with `const`.",
             "10:9 Cannot decrement `base`: it is declared with `const`.",
@@ -250,7 +277,8 @@ fn a_local_or_parameter_named_after_a_superglobal_is_an_error() {
 
 #[test]
 fn a_bare_member_name_is_not_supported_yet() {
-    let code = "class Report\n{\n    private int $count = 0;\n\n    public int run() { return count + run(); }\n}\n";
+    let code =
+        "class Report\n{\n    public int count() { return 0; }\n\n    public int run() { return count + run(); }\n}\n";
 
     assert_eq!(
         issues(code),

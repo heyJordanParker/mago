@@ -9,8 +9,11 @@ use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::Access;
+use mago_syntax::cst::Argument;
 use mago_syntax::cst::Assignment;
+use mago_syntax::cst::Call;
 use mago_syntax::cst::Class;
+use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Expression;
@@ -20,6 +23,9 @@ use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::Global;
 use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::LocalIdentifier;
+use mago_syntax::cst::Method;
+use mago_syntax::cst::MethodBody;
+use mago_syntax::cst::PositionalArgument;
 use mago_syntax::cst::Program;
 use mago_syntax::cst::Statement;
 use mago_syntax::cst::UnaryPostfix;
@@ -39,6 +45,146 @@ use crate::internal::context::Context;
 /// The PHP superglobals. A PHP# local or parameter of one of these names would read or replace it.
 const SUPERGLOBALS: [&[u8]; 9] =
     [b"GLOBALS", b"_SERVER", b"_GET", b"_POST", b"_FILES", b"_COOKIE", b"_SESSION", b"_REQUEST", b"_ENV"];
+
+/// Checks a PHP# file against the slice allow-list: the only constructs a `.sharp` file may use, and the contract
+/// the engine's lowering implements.
+///
+/// - At file level: `namespace`, `import` and `class`.
+/// - In a class: methods.
+/// - In a method body: blocks, expression statements, `return`, and `let` and `const` declarations.
+/// - In expressions: literals, parentheses, bare names, assignment, binary and prefix operators, and method calls
+///   and property access written with `.`.
+///
+/// Every other construct is not supported yet, reported once at its outermost node. The constructs PHP# never has,
+/// such as `$` variables, keep their own errors.
+#[inline]
+pub fn check_slice(program: &Program, context: &mut Context<'_, '_, '_>) {
+    for statement in &program.statements {
+        check_file_statement(statement, context);
+    }
+}
+
+fn check_file_statement(statement: &Statement, context: &mut Context<'_, '_, '_>) {
+    match statement {
+        Statement::Namespace(namespace) => {
+            for statement in namespace.statements() {
+                check_file_statement(statement, context);
+            }
+        }
+        Statement::Use(_) => {}
+        Statement::Class(class) => {
+            for member in &class.members {
+                match member {
+                    ClassLikeMember::Method(method) => check_method(method, context),
+                    _ => report_not_supported(
+                        member.span(),
+                        "class member",
+                        "In a class, PHP# supports methods.",
+                        context,
+                    ),
+                }
+            }
+        }
+        // PHP# never has top-level functions: `check_function` reports them.
+        Statement::Function(_) => {}
+        _ => report_not_supported(
+            statement.span(),
+            "statement",
+            "At file level, PHP# supports `namespace`, `import` and `class`.",
+            context,
+        ),
+    }
+}
+
+fn check_method(method: &Method, context: &mut Context<'_, '_, '_>) {
+    for parameter in &method.parameter_list.parameters {
+        if let Some(default_value) = &parameter.default_value {
+            check_expression(default_value.value, context);
+        }
+    }
+
+    if let MethodBody::Concrete(block) = &method.body {
+        for statement in &block.statements {
+            check_body_statement(statement, context);
+        }
+    }
+}
+
+fn check_body_statement(statement: &Statement, context: &mut Context<'_, '_, '_>) {
+    match statement {
+        Statement::Block(block) => {
+            for statement in &block.statements {
+                check_body_statement(statement, context);
+            }
+        }
+        Statement::Expression(statement) => check_expression(statement.expression, context),
+        Statement::Return(r#return) => {
+            if let Some(value) = r#return.value {
+                check_expression(value, context);
+            }
+        }
+        Statement::LocalDeclaration(local_declaration) => check_expression(local_declaration.value, context),
+        // PHP# never has `global`: `check_global` reports it.
+        Statement::Global(_) => {}
+        _ => report_not_supported(
+            statement.span(),
+            "statement",
+            "In a method, PHP# supports blocks, expression statements, `return`, `let` and `const`.",
+            context,
+        ),
+    }
+}
+
+fn check_expression(expression: &Expression, context: &mut Context<'_, '_, '_>) {
+    match expression {
+        Expression::Literal(_) | Expression::ConstantAccess(_) => {}
+        Expression::Parenthesized(parenthesized) => check_expression(parenthesized.expression, context),
+        Expression::Assignment(assignment) => {
+            check_expression(assignment.lhs, context);
+            check_expression(assignment.rhs, context);
+        }
+        Expression::Binary(binary) => {
+            check_expression(binary.lhs, context);
+            check_expression(binary.rhs, context);
+        }
+        Expression::UnaryPrefix(unary_prefix) => check_expression(unary_prefix.operand, context),
+        Expression::Call(Call::Method(method_call)) => {
+            check_expression(method_call.object, context);
+            for argument in &method_call.argument_list.arguments {
+                match argument {
+                    Argument::Positional(PositionalArgument { ellipsis: None, value }) => {
+                        check_expression(value, context)
+                    }
+                    Argument::Named(named) => check_expression(named.value, context),
+                    Argument::Positional(_) => report_unsupported_expression(argument.span(), context),
+                }
+            }
+        }
+        Expression::Access(Access::Property(property_access)) => check_expression(property_access.object, context),
+        // PHP# never has `$` variables, `compact()` or `extract()`, and a bare member call is not supported yet:
+        // `check_variable` and `check_function_call` report them.
+        Expression::Variable(_) => {}
+        Expression::Call(Call::Function(function_call)) if is_checked_function_call(function_call, context) => {}
+        _ => report_unsupported_expression(expression.span(), context),
+    }
+}
+
+fn report_unsupported_expression(span: Span, context: &mut Context<'_, '_, '_>) {
+    report_not_supported(
+        span,
+        "expression",
+        "PHP# supports literals, parentheses, bare names, assignment, binary and prefix operators, and method calls and property access with `.`.",
+        context,
+    );
+}
+
+fn report_not_supported(span: Span, construct: &str, supported: &str, context: &mut Context<'_, '_, '_>) {
+    context.report(
+        Issue::error(format!("This {construct} is not supported yet in PHP#."))
+            .with_annotation(Annotation::primary(span).with_message("Not supported yet."))
+            .with_note(supported),
+    );
+}
 
 #[inline]
 pub fn check_assignment(assignment: &Assignment, context: &mut Context<'_, '_, '_>) {
@@ -222,7 +368,7 @@ pub fn check_function_call(function_call: &FunctionCall, context: &mut Context<'
     }
 
     let function = identifier.last_segment();
-    if function.eq_ignore_ascii_case(b"compact") || function.eq_ignore_ascii_case(b"extract") {
+    if is_compact_or_extract(function) {
         let function = BytesDisplay(function);
 
         context.report(
@@ -231,6 +377,19 @@ pub fn check_function_call(function_call: &FunctionCall, context: &mut Context<'
                 .with_help("PHP# variables are never created or read by name at runtime."),
         );
     }
+}
+
+/// Returns true when `check_function_call` reports the call: a bare member, `compact()` or `extract()`.
+fn is_checked_function_call(function_call: &FunctionCall, context: &Context<'_, '_, '_>) -> bool {
+    let Expression::Identifier(identifier) = function_call.function else {
+        return false;
+    };
+
+    context.names.binding(identifier) == Some(Binding::Member) || is_compact_or_extract(identifier.last_segment())
+}
+
+fn is_compact_or_extract(function: &[u8]) -> bool {
+    function.eq_ignore_ascii_case(b"compact") || function.eq_ignore_ascii_case(b"extract")
 }
 
 #[inline]
