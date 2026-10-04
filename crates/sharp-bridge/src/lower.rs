@@ -52,10 +52,12 @@ use crate::sharp_kind::SHARP_AST_ARG_LIST;
 use crate::sharp_kind::SHARP_AST_ASSIGN;
 use crate::sharp_kind::SHARP_AST_ASSIGN_OP;
 use crate::sharp_kind::SHARP_AST_BINARY_OP;
+use crate::sharp_kind::SHARP_AST_BREAK;
 use crate::sharp_kind::SHARP_AST_CLASS;
 use crate::sharp_kind::SHARP_AST_CONST;
 use crate::sharp_kind::SHARP_AST_CONST_DECL;
 use crate::sharp_kind::SHARP_AST_CONST_ELEM;
+use crate::sharp_kind::SHARP_AST_CONTINUE;
 use crate::sharp_kind::SHARP_AST_DECLARE;
 use crate::sharp_kind::SHARP_AST_DO_WHILE;
 use crate::sharp_kind::SHARP_AST_GREATER;
@@ -346,6 +348,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 self.node(SHARP_AST_DO_WHILE, 0, self.line(do_while), &[body, condition])
             }
+            Statement::Break(r#break) => self.node(SHARP_AST_BREAK, 0, self.line(r#break), &[NULL]),
+            Statement::Continue(r#continue) => self.node(SHARP_AST_CONTINUE, 0, self.line(r#continue), &[NULL]),
             _ => unreachable!("check_slice refuses the statement `{statement}`"),
         }
     }

@@ -148,6 +148,27 @@ fn a_local_declared_in_a_loop_body_is_out_of_scope_after_it() {
 }
 
 #[test]
+fn break_and_continue_without_a_level_are_in_the_slice() {
+    let code = leak(method(
+        "        while (extra > 0) {\n            extra -= 1;\n            if (extra > 5) {\n                continue;\n            }\n            break;\n        }\n        return extra;\n",
+    ));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn break_and_continue_with_a_level_are_not_supported_yet() {
+    let code = leak(method(
+        "        while (extra > 0) {\n            while (extra > 1) {\n                break 2;\n            }\n            continue 1;\n        }\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        ["9:17 This statement is not supported yet in PHP#.", "11:13 This statement is not supported yet in PHP#."]
+    );
+}
+
+#[test]
 fn reassigning_a_const_local_is_an_error() {
     let code = leak(method("        const base = 2;\n        base = 3;\n        return base;\n"));
 

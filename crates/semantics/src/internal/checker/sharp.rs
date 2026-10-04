@@ -14,11 +14,13 @@ use mago_syntax::cst::Access;
 use mago_syntax::cst::Assignment;
 use mago_syntax::cst::AssignmentOperator;
 use mago_syntax::cst::BinaryOperator;
+use mago_syntax::cst::Break;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::ConstantAccess;
+use mago_syntax::cst::Continue;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::Function;
 use mago_syntax::cst::FunctionCall;
@@ -72,7 +74,8 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - Types: `int`, `float`, `bool`, `string` and a class written by its short name, and `void` as a return type.
 ///   PHP's own check reports a `void` parameter.
 /// - In a method body: blocks, expression statements, `return`, `let` and `const` declarations, `if` with `else if`
-///   and `else`, `while`, and `do … while`. The body of `if`, `else` and each loop is a block in braces.
+///   and `else`, `while`, `do … while`, and `break` and `continue` without a level. The body of `if`, `else` and each
+///   loop is a block in braces.
 /// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter or a member written
 ///   `object.name`.
 /// - In expressions: literals, parentheses, bare names, assignment, the operators below, and method calls and
@@ -267,8 +270,12 @@ fn enter(
                 | Statement::LocalDeclaration(_)
                 | Statement::If(_)
                 | Statement::While(_)
-                | Statement::DoWhile(_),
+                | Statement::DoWhile(_)
+                | Statement::Break(Break { level: None, .. })
+                | Statement::Continue(Continue { level: None, .. }),
             )
+            | Node::Break(_)
+            | Node::Continue(_)
             | Node::ExpressionStatement(_)
             | Node::Return(_)
             | Node::LocalDeclaration(_)
@@ -612,7 +619,7 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, a name, and an optional default."
         }
         Place::Body => {
-            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const`, `if` with `else if` and `else`, `while`, and `do … while`, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `++` and `--`, and method calls and property reads written with `.`."
+            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const`, `if` with `else if` and `else`, `while`, `do … while`, and `break` and `continue` without a level, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `++` and `--`, and method calls and property reads written with `.`."
         }
         Place::Default => {
             "A parameter default is a literal, a constant, or arithmetic, comparison and logical operators on them."

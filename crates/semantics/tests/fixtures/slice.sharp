@@ -79,6 +79,12 @@ class Report
         while (times > 0) {
             total += times;
             times--;
+            if (total > 50) {
+                break;
+            }
+            if (times % 2 == 0) {
+                continue;
+            }
         }
         do {
             total -= 1;

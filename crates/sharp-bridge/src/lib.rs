@@ -63,6 +63,8 @@ pub enum sharp_kind {
     SHARP_AST_IF_ELEM,
     SHARP_AST_WHILE,
     SHARP_AST_DO_WHILE,
+    SHARP_AST_BREAK,
+    SHARP_AST_CONTINUE,
 }
 
 #[repr(u8)]

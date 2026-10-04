@@ -883,6 +883,33 @@ fn while_and_do_while_are_their_php_kinds() {
     );
 }
 
+/// ```php
+/// while (true) {
+///     continue;
+///     break;
+/// }
+/// ```
+///
+/// A `break` or `continue` without a level has a null depth.
+#[test]
+fn break_and_continue_have_a_null_depth() {
+    assert_eq!(
+        body("        while (true) {\n            continue;\n            break;\n        }\n        return 1;\n"),
+        indoc! {r#"
+            STMT_LIST
+              WHILE
+                ZVAL true
+                STMT_LIST
+                  CONTINUE
+                    null
+                  BREAK
+                    null
+              RETURN
+                ZVAL 1
+        "#}
+    );
+}
+
 /// The child count `zend_ast_get_num_children` gives a fixed-size kind, or 5 for a declaration. `None` for a list.
 fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
     match kind {
@@ -901,7 +928,9 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_PRE_DEC
         | sharp_kind::SHARP_AST_POST_INC
         | sharp_kind::SHARP_AST_POST_DEC
-        | sharp_kind::SHARP_AST_RETURN => Some(1),
+        | sharp_kind::SHARP_AST_RETURN
+        | sharp_kind::SHARP_AST_BREAK
+        | sharp_kind::SHARP_AST_CONTINUE => Some(1),
         sharp_kind::SHARP_AST_PROP
         | sharp_kind::SHARP_AST_ASSIGN
         | sharp_kind::SHARP_AST_ASSIGN_OP
