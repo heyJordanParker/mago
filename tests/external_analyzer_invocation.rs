@@ -669,6 +669,25 @@ fn a_hook_that_targets_static_calls_receives_a_sharp_static_call() -> Result<(),
     Ok(())
 }
 
+#[test]
+fn a_method_call_hook_receives_a_sharp_static_call() -> Result<(), Box<dyn std::error::Error>> {
+    if !php_sdk_is_available() {
+        return Ok(());
+    }
+
+    const SHARP: &str = "namespace Demo;\n\nclass Calc\n{\n    public static Calc make(Calc calc)\n    {\n        return calc;\n    }\n}\n\nclass Report\n{\n    public static Calc total(Calc calc)\n    {\n        return Calc.make(calc);\n    }\n}\n";
+    const PHP: &str = "<?php\n\nnamespace Demo;\n\nclass Calc\n{\n    public static function make(Calc $calc): Calc\n    {\n        return $calc;\n    }\n}\n\nclass Report\n{\n    public static function total(Calc $calc): Calc\n    {\n        return Calc::make($calc);\n    }\n}\n";
+
+    for (file, source) in [("src/Report.sharp", SHARP), ("src/Report.php", PHP)] {
+        let observation = analyze_with_fixture(file, source, &["MAGO_INVOCATION_METHOD_CALL_HOOK"])?;
+
+        assert_eq!(observation.issues, [], "{file}");
+        assert_eq!(observation.invocations, ["method-call-hook-make-static"], "{file}");
+    }
+
+    Ok(())
+}
+
 /// Analyzes `source`, saved as `file`, with the invocation fixture worker. Each name in `switches` is a fixture
 /// environment variable set to `1`.
 fn analyze_with_fixture(

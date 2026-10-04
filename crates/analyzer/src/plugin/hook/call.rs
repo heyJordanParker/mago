@@ -1,5 +1,8 @@
 //! Call hooks for function and method call events.
 
+use mago_names::ResolvedNames;
+use mago_names::binding::Binding;
+use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::ArgumentList;
 use mago_syntax::cst::ClassLikeMemberSelector;
@@ -91,6 +94,24 @@ pub struct StaticCall<'ast, 'arena> {
     pub method: &'ast ClassLikeMemberSelector<'arena>,
     pub argument_list: &'ast ArgumentList<'arena>,
     pub span: Span,
+}
+
+impl<'ast, 'arena> StaticCall<'ast, 'arena> {
+    /// Returns the static call a PHP# method call writes, `Class.method()`, when the binder bound its object to a
+    /// class, and `None` for an instance call.
+    #[must_use]
+    pub fn from_method_call(call: &'ast MethodCall<'arena>, resolved_names: &ResolvedNames<'_>) -> Option<Self> {
+        let Expression::ConstantAccess(access) = call.object else {
+            return None;
+        };
+
+        (resolved_names.binding(&access.name) == Some(Binding::Class)).then(|| Self {
+            class: call.object,
+            method: &call.method,
+            argument_list: &call.argument_list,
+            span: call.span(),
+        })
+    }
 }
 
 /// Hook trait for intercepting static method call analysis.

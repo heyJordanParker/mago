@@ -38,7 +38,7 @@ use mago_word::word;
 use crate::analysis_result::AnalysisResult;
 use crate::artifacts::AnalysisArtifacts;
 use crate::artifacts::ResolvedMethodCall;
-use crate::utils::expression::is_bound_class;
+use crate::plugin::hook::StaticCall;
 
 use super::ExternalAnalysisSession;
 use super::ExternalPlugin;
@@ -211,7 +211,7 @@ fn build_node_analysis_plan<'ast, 'arena>(
         // A PHP# static call, `Calc.make()`, is a method call whose object the binder bound to a class. A hook that
         // targets static calls receives it, as it receives `Calc::make()` in PHP.
         let is_sharp_static_call =
-            matches!(node, Node::MethodCall(call) if is_bound_class(call.object, resolved_names));
+            matches!(node, Node::MethodCall(call) if StaticCall::from_method_call(call, resolved_names).is_some());
         if is_sharp_static_call {
             requested |= requirements.requirements(NodeKind::StaticMethodCall);
         }

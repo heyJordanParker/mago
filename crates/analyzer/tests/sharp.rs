@@ -403,7 +403,8 @@ impl ExpressionHook for CallKindRecorder {
         if let Expression::Call(Call::Method(call)) = expression
             && let ClassLikeMemberSelector::Identifier(method) = &call.method
         {
-            let kind = if context.is_static_method_call(call) { "static" } else { "instance" };
+            let is_static = StaticCall::from_method_call(call, context.resolved_names()).is_some();
+            let kind = if is_static { "static" } else { "instance" };
             self.record(format!("{} {kind}", String::from_utf8_lossy(method.value)));
         }
 

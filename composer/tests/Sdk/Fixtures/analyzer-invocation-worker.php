@@ -25,6 +25,7 @@ use Mago\Sdk\Analyzer\IssueFilterHook;
 use Mago\Sdk\Analyzer\Metadata\MemberIdentifier;
 use Mago\Sdk\Analyzer\Metadata\MethodFields;
 use Mago\Sdk\Analyzer\MethodAssertionProvider;
+use Mago\Sdk\Analyzer\MethodCallAnalysisHook;
 use Mago\Sdk\Analyzer\MethodReturnTypeProvider;
 use Mago\Sdk\Analyzer\MethodTarget;
 use Mago\Sdk\Analyzer\NodeAnalysisContext;
@@ -861,7 +862,7 @@ final class InvocationCallKindHook implements NodeAnalysisHook
         }
     }
 
-    private static function describe(NodeAnalysisContext $context, CallExpression $call): string
+    public static function describe(NodeAnalysisContext $context, CallExpression $call): string
     {
         $name = $call->getName($context->source) ?? throw new RuntimeException(
             'A call-kind hook received an unnamed call.',
@@ -873,6 +874,28 @@ final class InvocationCallKindHook implements NodeAnalysisHook
         };
 
         return $name . '-' . $kind;
+    }
+}
+
+/**
+ * @mago-expect lint:single-class-per-file
+ */
+final class InvocationMethodCallHook implements MethodCallAnalysisHook
+{
+    public function getTargets(): array
+    {
+        return [MethodTarget::exact('Demo\\Calc', 'make')];
+    }
+
+    public function getRequirements(): array
+    {
+        return [FileAnalysisRequirement::TargetSubtree, FileAnalysisRequirement::SourceText];
+    }
+
+    public function analyze(NodeAnalysisContext $context): void
+    {
+        $call = CallExpression::fromNode($context->source, $context->node);
+        InvocationAudit::record('method-call-hook-' . InvocationCallKindHook::describe($context, $call));
     }
 }
 
@@ -889,6 +912,7 @@ final class InvocationPlugin implements IssueFilterHook, Plugin
         private readonly bool $registerMethodProvider,
         private readonly bool $registerIssueFilter,
         private readonly array $callKindTargets,
+        private readonly bool $registerMethodCallHook,
     ) {}
 
     public function getDefinition(): PluginDefinition
@@ -916,6 +940,9 @@ final class InvocationPlugin implements IssueFilterHook, Plugin
         }
         if ($this->callKindTargets !== []) {
             $registry->registerNodeAnalysisHook(new InvocationCallKindHook($this->callKindTargets));
+        }
+        if ($this->registerMethodCallHook) {
+            $registry->registerMethodCallAnalysisHook(new InvocationMethodCallHook());
         }
     }
 
@@ -956,10 +983,13 @@ $callKindTargets = match (true) {
     getenv('MAGO_INVOCATION_STATIC_CALL_KINDS') === '1' => [NodeKind::StaticMethodCall],
     default => [],
 };
+$registerMethodCallHook = getenv('MAGO_INVOCATION_METHOD_CALL_HOOK') === '1';
 
 (new Worker(new Extension(
     identifier: 'mago/invocation-proof',
     name: 'Mago invocation proof',
     version: '1.0.0',
-    analyzerPlugins: [new InvocationPlugin($registerMethodProvider, $registerIssueFilter, $callKindTargets)],
+    analyzerPlugins: [
+        new InvocationPlugin($registerMethodProvider, $registerIssueFilter, $callKindTargets, $registerMethodCallHook),
+    ],
 )))->run();
