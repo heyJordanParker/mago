@@ -343,7 +343,7 @@ debug = true
 strip = 'none'
 
 [profile.dev]
-debug = 'full'
+debug = 'line-tables-only'
 opt-level = 0
 lto = 'off'
 panic = 'unwind'

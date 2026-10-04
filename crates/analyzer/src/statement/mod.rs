@@ -19,8 +19,15 @@ use mago_syntax::cst::Call;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::ExpressionStatement;
+use mago_syntax::cst::ForOfTarget;
+use mago_syntax::cst::Foreach;
+use mago_syntax::cst::ForeachBody;
+use mago_syntax::cst::ForeachKeyValueTarget;
+use mago_syntax::cst::ForeachTarget;
+use mago_syntax::cst::ForeachValueTarget;
 use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::Identifier;
+use mago_syntax::cst::LocalIdentifier;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::Statement;
 use mago_word::Word;
@@ -248,6 +255,31 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Statement<'arena> {
             Statement::Try(r#try) => r#try.analyze(context, block_context, artifacts),
             Statement::Foreach(foreach) => foreach.analyze(context, block_context, artifacts),
             Statement::For(r#for) => r#for.analyze(context, block_context, artifacts),
+            Statement::ForOf(for_of) => {
+                // A PHP# `for … of` runs as the PHP `foreach` over its collection, into the variables it declares.
+                let variable = |name: LocalIdentifier<'arena>| -> &'arena Expression<'arena> {
+                    context.arena.alloc(Expression::ConstantAccess(ConstantAccess { name: Identifier::Local(name) }))
+                };
+                let target = match &for_of.target {
+                    ForOfTarget::Value(value) => ForeachTarget::Value(ForeachValueTarget { value: variable(*value) }),
+                    ForOfTarget::KeyValue(pair) => ForeachTarget::KeyValue(ForeachKeyValueTarget {
+                        key: variable(pair.key),
+                        double_arrow: pair.comma,
+                        value: variable(pair.value),
+                    }),
+                };
+                let foreach = context.arena.alloc(Foreach {
+                    foreach: for_of.r#for,
+                    left_parenthesis: for_of.left_parenthesis,
+                    expression: for_of.expression,
+                    r#as: for_of.of,
+                    target,
+                    right_parenthesis: for_of.right_parenthesis,
+                    body: ForeachBody::Statement(for_of.body),
+                });
+
+                foreach.analyze(context, block_context, artifacts)
+            }
             Statement::While(r#while) => r#while.analyze(context, block_context, artifacts),
             Statement::DoWhile(do_while) => do_while.analyze(context, block_context, artifacts),
             Statement::Continue(r#continue) => r#continue.analyze(context, block_context, artifacts),

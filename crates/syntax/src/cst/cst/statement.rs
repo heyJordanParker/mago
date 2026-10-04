@@ -26,6 +26,7 @@ use crate::cst::cst::r#loop::Break;
 use crate::cst::cst::r#loop::Continue;
 use crate::cst::cst::r#loop::do_while::DoWhile;
 use crate::cst::cst::r#loop::r#for::For;
+use crate::cst::cst::r#loop::for_of::ForOf;
 use crate::cst::cst::r#loop::foreach::Foreach;
 use crate::cst::cst::r#loop::r#while::While;
 use crate::cst::cst::namespace::Namespace;
@@ -76,6 +77,7 @@ pub enum Statement<'arena> {
     Try(Try<'arena>),
     Foreach(Foreach<'arena>),
     For(For<'arena>),
+    ForOf(ForOf<'arena>),
     While(While<'arena>),
     DoWhile(DoWhile<'arena>),
     Continue(Continue<'arena>),
@@ -115,6 +117,7 @@ impl Statement<'_> {
             Statement::Declare(Declare { body: DeclareBody::ColonDelimited(b), .. }) => b.terminator.is_closing_tag(),
             Statement::For(For { body: ForBody::Statement(b), .. }) => b.terminates_scripting(),
             Statement::For(For { body: ForBody::ColonDelimited(b), .. }) => b.terminator.is_closing_tag(),
+            Statement::ForOf(for_of) => for_of.body.terminates_scripting(),
             Statement::Foreach(Foreach { body: ForeachBody::Statement(b), .. }) => b.terminates_scripting(),
             Statement::Foreach(Foreach { body: ForeachBody::ColonDelimited(b), .. }) => b.terminator.is_closing_tag(),
             Statement::While(While { body: WhileBody::Statement(b), .. }) => b.terminates_scripting(),
@@ -147,7 +150,14 @@ impl Statement<'_> {
     #[inline]
     #[must_use]
     pub const fn is_loop(&self) -> bool {
-        matches!(self, Statement::For(_) | Statement::Foreach(_) | Statement::While(_) | Statement::DoWhile(_))
+        matches!(
+            self,
+            Statement::For(_)
+                | Statement::ForOf(_)
+                | Statement::Foreach(_)
+                | Statement::While(_)
+                | Statement::DoWhile(_)
+        )
     }
 
     #[inline]
@@ -214,6 +224,7 @@ impl HasSpan for Statement<'_> {
             Statement::Try(statement) => statement.span(),
             Statement::Foreach(statement) => statement.span(),
             Statement::For(statement) => statement.span(),
+            Statement::ForOf(statement) => statement.span(),
             Statement::While(statement) => statement.span(),
             Statement::DoWhile(statement) => statement.span(),
             Statement::Continue(statement) => statement.span(),

@@ -1609,6 +1609,7 @@ mod tests {
     use mago_database::Database;
     use mago_database::DatabaseConfiguration;
     use mago_database::file::File;
+    use mago_word::word;
 
     static PLUGIN_REGISTRY: LazyLock<Arc<PluginRegistry>> =
         LazyLock::new(|| Arc::new(PluginRegistry::with_library_providers()));
@@ -3109,6 +3110,34 @@ mod tests {
         service.update_database(db.read_only());
         service.analyze_incremental(None).expect("Incremental failed.");
         assert_matches_full(&service, &db, "helper became used");
+    }
+
+    /// An array callable names a method its class does not have yet; the class adds it.
+    #[test]
+    fn test_watch_array_callable_method_added_later() {
+        let foo_v1 = "<?php\nfinal class Foo {}\n";
+        let caller =
+            "<?php\n/** @return list<string> */\nfunction callable_pair(): array { return [Foo::class, 'bar']; }\n";
+
+        let mut db = make_database(vec![("src/Foo.php", foo_v1), ("src/caller.php", caller)]);
+        let mut service = make_watch_service(&db);
+        service.analyze().expect("Initial analysis failed.");
+        assert_matches_full(&service, &db, "initial - Foo has no bar");
+
+        let foo_v2 = "<?php\nfinal class Foo {\n    public static function bar(): void {}\n}\n";
+        db.update(FileId::new(b"src/Foo.php"), Cow::Owned(foo_v2.as_bytes().to_vec()));
+        service.update_database(db.read_only());
+        service.analyze_incremental(None).expect("Incremental failed.");
+        assert_matches_full(&service, &db, "Foo added bar");
+
+        let mut fresh = make_watch_service(&db);
+        fresh.analyze().expect("Full analysis failed.");
+        let bar = (word(b"foo"), word(b"bar"));
+        assert_eq!(
+            service.symbol_references().count_referencing_symbols(&bar, false),
+            fresh.symbol_references().count_referencing_symbols(&bar, false),
+            "incremental references to Foo::bar != full"
+        );
     }
 
     /// Cross-file reference: function called from another file, that file removes the call.

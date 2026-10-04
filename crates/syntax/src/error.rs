@@ -54,6 +54,8 @@ pub enum ParseError {
     QualifiedNameInSharp(Box<str>, Span),
     /// A PHP# parameter written without its type, such as `run(extra)`, at its name.
     UntypedParameterInSharp(Span),
+    /// TypeScript's `in` written in a PHP# `for … of` loop, at the `in`.
+    ForInInSharp(Span),
 }
 
 impl HasFileId for SyntaxError {
@@ -77,7 +79,8 @@ impl HasFileId for ParseError {
             ParseError::RecursionLimitExceeded(span) => span.file_id,
             ParseError::PhpSyntaxInSharp(_, span)
             | ParseError::QualifiedNameInSharp(_, span)
-            | ParseError::UntypedParameterInSharp(span) => span.file_id,
+            | ParseError::UntypedParameterInSharp(span)
+            | ParseError::ForInInSharp(span) => span.file_id,
         }
     }
 }
@@ -105,7 +108,8 @@ impl HasSpan for ParseError {
             ParseError::RecursionLimitExceeded(span) => *span,
             ParseError::PhpSyntaxInSharp(_, span)
             | ParseError::QualifiedNameInSharp(_, span)
-            | ParseError::UntypedParameterInSharp(span) => *span,
+            | ParseError::UntypedParameterInSharp(span)
+            | ParseError::ForInInSharp(span) => *span,
         }
     }
 }
@@ -169,6 +173,7 @@ impl std::fmt::Display for ParseError {
                 T!["function"] => "`function` is PHP syntax: a PHP# method starts with its return type".to_string(),
                 T!["$variable"] => "A `$` variable is PHP syntax: PHP# names have no `$`".to_string(),
                 T!["use"] => "`use` is PHP syntax: PHP# imports a class with `import`".to_string(),
+                T!["foreach"] => "`foreach` is PHP syntax: PHP# loops over a collection with `for … of`".to_string(),
                 kind => format!("`{kind}` is PHP syntax that PHP# does not have"),
             },
             ParseError::QualifiedNameInSharp(name, _) => {
@@ -177,6 +182,9 @@ impl std::fmt::Display for ParseError {
                 format!("A `\\` name is PHP syntax: add `import {name};` and write `{short_name}`")
             }
             ParseError::UntypedParameterInSharp(_) => "A PHP# parameter needs a type, as in `int extra`.".to_string(),
+            ParseError::ForInInSharp(_) => {
+                "PHP# loops over a collection with `of`, as in `for (const line of lines)`.".to_string()
+            }
         };
 
         write!(f, "{message}")

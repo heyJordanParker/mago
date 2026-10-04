@@ -114,6 +114,7 @@ impl ControlAction {
                             },
                             None,
                         ),
+                        Statement::ForOf(for_of) => (vec![for_of.body], None),
                         Statement::DoWhile(do_while) => (vec![do_while.statement], Some(do_while.condition)),
                         Statement::While(while_loop) => (
                             match &while_loop.body {

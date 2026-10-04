@@ -348,6 +348,10 @@ pub mod utils {
             }
 
             fn walk_for(&self, r#for: &'ast For<'arena>, context: &mut VariableWalkerState<'_, '_, 'arena, A>) {
+                if let Some(declaration) = &r#for.declaration {
+                    self.walk_local_declaration(declaration, context);
+                }
+
                 for i in &r#for.initializations {
                     self.walk_expression(i, context);
                 }
