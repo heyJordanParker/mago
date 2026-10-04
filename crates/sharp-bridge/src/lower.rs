@@ -164,13 +164,11 @@ struct Lowering<'lowering, 'arena> {
     nodes: Vec<sharp_node>,
     children: Vec<u32>,
     texts: Vec<Box<[u8]>>,
-    /// Engine compile errors the checks above do not report.
-    errors: Vec<Diagnostic>,
 }
 
 impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     fn new(file: &'lowering File, names: &'lowering ResolvedNames<'arena>) -> Self {
-        Self { file, names, nodes: Vec::new(), children: Vec::new(), texts: Vec::new(), errors: Vec::new() }
+        Self { file, names, nodes: Vec::new(), children: Vec::new(), texts: Vec::new() }
     }
 
     /// `declare(strict_types=1);` first, then the namespaces and classes. Imports are not lowered: every class name
@@ -183,9 +181,6 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
         let root = self.node(SHARP_AST_STMT_LIST, 0, 1, &statements);
         self.nodes[root as usize].end_line = last_line(&self.file.contents);
-        if !self.errors.is_empty() {
-            return Unit::failed(self.errors);
-        }
 
         Unit::boxed(self.nodes, self.children, root, Vec::new(), self.texts)
     }
@@ -487,19 +482,13 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let line = self.line(literal);
 
         match literal {
-            Literal::String(string) => match string.value {
-                Some(value) => self.string(0, line, value),
-                None => {
-                    self.errors.push(diagnostic(
-                        self.file,
-                        Some(string.span),
-                        sharp_severity::SHARP_COMPILE_ERROR,
-                        "Invalid UTF-8 codepoint escape sequence".to_owned(),
-                    ));
+            Literal::String(string) => {
+                let Some(value) = string.value else {
+                    unreachable!("semantics refuses an invalid codepoint escape");
+                };
 
-                    NULL
-                }
-            },
+                self.string(0, line, value)
+            }
             Literal::Integer(integer) => match integer.value.and_then(|value| i64::try_from(value).ok()) {
                 Some(value) => self.zval(line, sharp_value::SHARP_LONG, |node| node.long_value = value),
                 None => {

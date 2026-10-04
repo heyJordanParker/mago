@@ -205,15 +205,6 @@ fn a_method_without_a_body_returns_the_checker_error() {
     );
 }
 
-/// PHP's compiler refuses the same string with this message, so the engine never runs it.
-#[test]
-fn an_invalid_unicode_escape_returns_the_engine_compile_error() {
-    let lowered = Lowered::new(&method("        let text = \"\\u{110000}\";\n        return 1;\n"));
-
-    assert_eq!(lowered.diagnostics(), ["9:20 compile error: Invalid UTF-8 codepoint escape sequence"]);
-    assert_eq!(lowered.unit().node_count, 0);
-}
-
 /// The Zend scanner ends a line at `\n`, `\r\n` and a lone `\r`, and stops on the line after the last line ending.
 #[test]
 fn the_root_end_line_is_the_last_line_the_zend_scanner_counts() {
