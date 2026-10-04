@@ -924,11 +924,33 @@ fn report_static_read(root: &ConstantAccess, member: &LocalIdentifier, span: Spa
 fn report_bare_member(span: Span, name: &[u8], context: &mut Context<'_, '_, '_>) {
     let call = if is_method_of_enclosing_class(context.program, span, name) { "()" } else { "" };
     let name = BytesDisplay(name);
+    let message = match enclosing_static_method_class(context.program, span) {
+        Some(class) => format!(
+            "Write `{}.{name}{call}`: a static method reaches the members of its class through the class name.",
+            BytesDisplay(class.name.value)
+        ),
+        None => format!("Write `this.{name}{call}`: members of the same object are always written with `this.`."),
+    };
 
-    context.report(
-        Issue::error(format!("Write `this.{name}{call}`: members of the same object are always written with `this.`."))
-            .with_annotation(Annotation::primary(span).with_message("Used here.")),
-    );
+    context.report(Issue::error(message).with_annotation(Annotation::primary(span).with_message("Used here.")));
+}
+
+/// The class of the static method whose body holds `span`, which has no `this`.
+fn enclosing_static_method_class<'ast, 'arena>(
+    program: &'ast Program<'arena>,
+    span: Span,
+) -> Option<&'ast Class<'arena>> {
+    let class = enclosing_class(program, span)?;
+
+    class
+        .members
+        .iter()
+        .any(|member| {
+            matches!(member, ClassLikeMember::Method(method)
+                if method.span().contains(&span.start)
+                    && method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Static(_))))
+        })
+        .then_some(class)
 }
 
 /// Returns `true` when `name` is a method of the class whose body holds `span`. Method names are case-insensitive.

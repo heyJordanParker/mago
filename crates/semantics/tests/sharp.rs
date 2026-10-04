@@ -294,6 +294,16 @@ fn a_bare_member_name_is_an_error_that_names_this() {
 }
 
 #[test]
+fn a_bare_member_in_a_static_method_names_the_class() {
+    let code = "class Report\n{\n    public static int helper() { return 0; }\n\n    public static int run() { return helper(); }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["5:38 Write `Report.helper()`: a static method reaches the members of its class through the class name."]
+    );
+}
+
+#[test]
 fn access_modifiers_static_named_arguments_and_defaults_are_in_the_slice() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    public static int total(int extra = 1)\n    {\n        return Report.part(first: extra, second: 2);\n    }\n\n    protected static int part(int first, int second = 0)\n    {\n        return first * second;\n    }\n\n    private int none()\n    {\n        return 0;\n    }\n}\n";
 
