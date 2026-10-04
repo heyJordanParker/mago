@@ -7,6 +7,7 @@ use mago_database::file::File as MagoFile;
 use mago_linter::Linter;
 use mago_names::resolver::NameResolver;
 use mago_reporting::IssueCollection;
+use mago_syntax::dialect::Dialect;
 use mago_syntax::parser::parse_file_with_settings;
 
 use crate::linter::LinterContext;
@@ -22,6 +23,11 @@ pub struct FileAnalysis {
 /// derivative the server keeps.
 #[must_use]
 pub fn build(file: &MagoFile, linter_ctx: &LinterContext) -> FileAnalysis {
+    // The linter reads PHP only, so a PHP# file is not linted yet.
+    if Dialect::of(file).is_sharp() {
+        return FileAnalysis { lint_issues: IssueCollection::default() };
+    }
+
     let arena = LocalArena::new();
 
     let program = parse_file_with_settings(&arena, file, linter_ctx.parser_settings);

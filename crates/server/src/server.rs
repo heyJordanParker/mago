@@ -275,11 +275,11 @@ mod tests {
         );
     }
 
-    fn server(contents: &'static str) -> (Server, FileId) {
+    fn server(name: &'static str, contents: &'static str) -> (Server, FileId) {
         let mut database =
             Database::new(DatabaseConfiguration::new(Path::new("/lint"), vec![], vec![], vec![], vec![]));
         let id = database.add(File::new(
-            Cow::Borrowed(b"src/a.php"),
+            Cow::Borrowed(name.as_bytes()),
             FileType::Host,
             None,
             Cow::Borrowed(contents.as_bytes()),
@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn a_file_analysis_follows_the_file_contents() {
-        let (mut server, id) = server("<?php\n");
+        let (mut server, id) = server("src/a.php", "<?php\n");
         let first = server.file_analysis_for(id).expect("the file is in the database");
         assert_eq!(first.lint_issues.len(), 1);
         assert!(Arc::ptr_eq(&first, &server.file_analysis_for(id).expect("cached")));
@@ -307,5 +307,16 @@ mod tests {
         let messages =
             server.lint_issues().flat_map(IssueCollection::iter).map(|issue| &issue.message).collect::<Vec<_>>();
         assert_eq!(messages, ["Redundant file with no executable code or declarations."]);
+    }
+
+    #[test]
+    fn a_sharp_file_passes_through_a_file_analysis_unlinted() {
+        let (mut server, id) = server(
+            "src/Report.sharp",
+            "namespace App.Tenant;\n\nclass Report\n{\n    public int run(int extra)\n    {\n        let total = extra * 2;\n        return this.scale(total);\n    }\n\n    private int scale(int total)\n    {\n        return total;\n    }\n}\n",
+        );
+
+        let analysis = server.file_analysis_for(id).expect("the file is in the database");
+        assert!(analysis.lint_issues.is_empty(), "{:#?}", analysis.lint_issues);
     }
 }
