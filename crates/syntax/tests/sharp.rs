@@ -4,6 +4,7 @@ use std::borrow::Cow;
 
 use mago_allocator::LocalArena;
 use mago_database::file::File;
+use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_syntax::cst::*;
 use mago_syntax::dialect::Dialect;
@@ -159,6 +160,27 @@ fn void_method_without_modifiers_starts_at_its_return_type() {
 }
 
 #[test]
+fn a_constructor_is_a_method_named_after_its_class_without_a_return_type() {
+    const CODE: &str = "class Report\n{\n    public Report(private int count, int extra) {}\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(ClassLikeMember::Method(constructor)) = class_members(program).first() else {
+        panic!("expected a method, got {:#?}", class_members(program));
+    };
+    assert_eq!(constructor.function, None);
+    assert_eq!(constructor.return_type_hint, None);
+    assert_eq!(source(CODE, &constructor.name), "Report");
+    assert_eq!(source(CODE, constructor), "public Report(private int count, int extra) {}");
+    let [count, extra] = constructor.parameter_list.parameters.as_slice() else {
+        panic!("expected two parameters, got {:#?}", constructor.parameter_list);
+    };
+    assert_eq!(source(CODE, count), "private int count");
+    assert_eq!(source(CODE, extra), "int extra");
+}
+
+#[test]
 fn a_method_with_a_long_return_type_parses() {
     const CODE: &str = "class Report\n{\n    public static int|string|null total() { return 1; }\n}\n";
     let arena = LocalArena::new();
@@ -177,6 +199,89 @@ fn a_by_reference_parameter_is_a_parse_error() {
     let program = parse(&arena, "src/Report.sharp", "class Report\n{\n    public void fill(int &count) {}\n}\n");
 
     assert!(!program.errors.is_empty());
+}
+
+/// `required`, `via`, a named constructor and a computed property are spec syntax outside the slice. Each one is a
+/// single error where it starts, and the class around it still parses.
+#[test]
+fn spec_syntax_outside_the_slice_is_one_not_supported_error_where_it_starts() {
+    for (member, message, start) in [
+        ("public required int count { get; set; }", "`required` is not supported yet in PHP#.", "required"),
+        ("public string name { get; set; } via Trimmed, Tracked;", "`via` is not supported yet in PHP#.", "via"),
+        (
+            "public Report(public int id { get; } via Tracked, int other) {}",
+            "`via` is not supported yet in PHP#.",
+            "via",
+        ),
+        (
+            "public Report.fromJson(string json) : this(json.length) {}",
+            "A named constructor is not supported yet in PHP#.",
+            "Report.fromJson",
+        ),
+        (
+            "public Report make() { return new Report.fromJson(\"{}\"); }",
+            "A named constructor is not supported yet in PHP#.",
+            "Report.fromJson",
+        ),
+        ("public string slug => this.name;", "A computed property is not supported yet in PHP#.", "=>"),
+    ] {
+        let arena = LocalArena::new();
+        let code: &'static str = Box::leak(
+            format!("class Report\n{{\n    {member}\n\n    public int run() {{ return 1; }}\n}}\n").into_boxed_str(),
+        );
+        let program = parse(&arena, "src/Report.sharp", code);
+
+        let [error] = program.errors else {
+            panic!("expected one error for `{member}`, got {:#?}", program.errors);
+        };
+        assert_eq!(error.to_string(), message, "{member}");
+        assert_eq!(source(code, error), start, "{member}");
+        let Some(Statement::Class(class)) = program.statements.first() else {
+            panic!("expected a class for `{member}`, got {:#?}", program.statements);
+        };
+        assert!(
+            class
+                .members
+                .iter()
+                .any(|member| matches!(member, ClassLikeMember::Method(run) if run.name.value == b"run")),
+            "the class keeps parsing after `{member}`"
+        );
+    }
+}
+
+/// A PHP#-only parse error is its own message, so `mago analyze` shows the rule as the issue's title.
+#[test]
+fn a_sharp_parse_error_shows_its_message_as_the_issue_title() {
+    for (code, message) in [
+        (
+            "class Report\n{\n    public int run() { return this->total; }\n}\n",
+            "`->` is PHP syntax: PHP# writes member access with `.`",
+        ),
+        (
+            "class Report\n{\n    public int run() { return \\Lib\\Calc.make(); }\n}\n",
+            "A `\\` name is PHP syntax: add `import Lib.Calc;` and write `Calc`",
+        ),
+        (
+            "class Report\n{\n    public int run(extra) { return 1; }\n}\n",
+            "A PHP# parameter needs a type, as in `int extra`.",
+        ),
+        (
+            "class Report\n{\n    public required int count { get; set; }\n}\n",
+            "`required` is not supported yet in PHP#.",
+        ),
+        (
+            "class Report\n{\n    public void run() { for (const line in lines) {} }\n}\n",
+            "PHP# loops over a collection with `of`, as in `for (const line of lines)`.",
+        ),
+    ] {
+        let arena = LocalArena::new();
+        let program = parse(&arena, "src/Report.sharp", code);
+
+        let [error] = program.errors else {
+            panic!("expected one error for `{code}`, got {:#?}", program.errors);
+        };
+        assert_eq!(Issue::from(error).message, message, "{code}");
+    }
 }
 
 #[test]
@@ -298,6 +403,35 @@ fn a_field_keeps_its_type_and_bare_name() {
 }
 
 #[test]
+fn an_auto_property_takes_its_initial_value_after_its_accessors() {
+    const CODE: &str =
+        "class Report\n{\n    public int views { get; private set; } = 0;\n    public string name { get; }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [ClassLikeMember::Property(Property::Hooked(views)), ClassLikeMember::Property(Property::Hooked(name))] =
+        class_members(program).as_slice()
+    else {
+        panic!("expected two properties, got {:#?}", class_members(program));
+    };
+    assert_eq!(source(CODE, views), "public int views { get; private set; } = 0;");
+    assert_eq!(source(CODE, &views.hook_list), "{ get; private set; }");
+    let initial_value = views.initial_value.as_ref().expect("an initial value");
+    assert_eq!(source(CODE, initial_value.value), "0");
+    assert_eq!(source(CODE, name), "public string name { get; }");
+    assert_eq!(name.initial_value, None);
+}
+
+#[test]
+fn a_php_hooked_property_has_no_trailing_initial_value() {
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.php", "<?php class Report { public int $views { get; } = 0; }");
+
+    assert!(!program.errors.is_empty());
+}
+
+#[test]
 fn let_and_const_declare_locals_with_an_initializer() {
     const CODE: &str =
         "class Report\n{\n    void run()\n    {\n        let label = \"one\";\n        const base = 2;\n    }\n}\n";
@@ -389,6 +523,28 @@ fn a_for_loop_declares_its_counter_with_let_or_const() {
 
     assert!(endless.declaration.as_ref().is_some_and(LocalDeclaration::is_const));
     assert!(endless.conditions.is_empty());
+}
+
+#[test]
+fn a_for_loop_declares_its_counter_with_its_type_written() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        for (int i = 0; i < 3; i++) {\n        }\n        for (const int? j = null; ; ) {\n        }\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::For(counted), Statement::For(endless)] = method_body(program) else {
+        panic!("expected two for loops, got {:#?}", method_body(program));
+    };
+
+    let declaration = counted.declaration.as_ref().expect("a declaration");
+    assert_eq!(source(CODE, declaration.hint.expect("a type")), "int");
+    assert!(!declaration.is_const());
+    assert_eq!(source(CODE, declaration), "int i = 0;");
+    assert_eq!(counted.conditions.len(), 1);
+
+    let declaration = endless.declaration.as_ref().expect("a declaration");
+    assert_eq!(source(CODE, declaration.hint.expect("a type")), "int?");
+    assert!(declaration.is_const());
 }
 
 #[test]

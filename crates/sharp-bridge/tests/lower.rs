@@ -443,6 +443,320 @@ fn a_method_is_a_public_function_with_its_return_type_after_its_parameters() {
 }
 
 /// ```php
+/// private int $count = 0;
+/// protected \Lib\Calc $calc;
+/// ```
+///
+/// `[4]` and `[2]` are `ZEND_ACC_PRIVATE` and `ZEND_ACC_PROTECTED`.
+#[test]
+fn a_field_is_a_property_group_of_one_property() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private int count = 0;\n    protected Calc calc;\n}\n",
+    );
+    let class = lowered.child(lowered.unit().root, 2);
+
+    assert_eq!(
+        lowered.render(lowered.child(class, 2)),
+        indoc! {r#"
+            STMT_LIST
+              PROP_GROUP [4]
+                ZVAL [1] "int"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "count"
+                    ZVAL 0
+                    null
+                    null
+                null
+              PROP_GROUP [2]
+                ZVAL "Lib\\Calc"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "calc"
+                    null
+                    null
+                    null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// public private(set) int $views = 0;
+/// public string $name;
+/// public readonly int $id;
+/// protected protected(set) int $total;   // written `public int total { get; protected set; }`
+/// private readonly int $hidden;
+/// ```
+///
+/// An auto-property is a property with asymmetric visibility. `[4097]` is `ZEND_ACC_PUBLIC | ZEND_ACC_PRIVATE_SET`,
+/// and `[2049]` is `ZEND_ACC_PUBLIC | ZEND_ACC_PROTECTED_SET`. A get-only property is `readonly`, so `[129]` is
+/// `ZEND_ACC_PUBLIC | ZEND_ACC_READONLY` and `[132]` is `ZEND_ACC_PRIVATE | ZEND_ACC_READONLY`.
+#[test]
+fn an_auto_property_is_a_property_with_its_set_visibility() {
+    let lowered = Lowered::new(
+        "class Report\n{\n    public int views { get; private set; } = 0;\n    public string name { get; set; }\n    public int id { get; }\n    public int total { get; protected set; }\n    private int hidden { get; }\n}\n",
+    );
+    let groups: Vec<(u32, String)> = lowered
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.kind == sharp_kind::SHARP_AST_PROP_GROUP)
+        .map(|(index, node)| (node.attr, lowered.render(lowered.child(index as u32, 1))))
+        .collect();
+
+    assert_eq!(
+        groups,
+        [
+            (4097, "PROP_DECL\n  PROP_ELEM\n    ZVAL \"views\"\n    ZVAL 0\n    null\n    null\n".to_owned()),
+            (1, "PROP_DECL\n  PROP_ELEM\n    ZVAL \"name\"\n    null\n    null\n    null\n".to_owned()),
+            (129, "PROP_DECL\n  PROP_ELEM\n    ZVAL \"id\"\n    null\n    null\n    null\n".to_owned()),
+            (2049, "PROP_DECL\n  PROP_ELEM\n    ZVAL \"total\"\n    null\n    null\n    null\n".to_owned()),
+            (132, "PROP_DECL\n  PROP_ELEM\n    ZVAL \"hidden\"\n    null\n    null\n    null\n".to_owned()),
+        ]
+    );
+}
+
+/// ```php
+/// public function __construct(int $start)
+/// {
+///     $this->count = $start;
+/// }
+/// ```
+///
+/// The constructor has no return type, and its first line is its name's, where PHP writes `function`.
+#[test]
+fn the_constructor_is_a_public_function_named_construct() {
+    let lowered = Lowered::new(
+        "class Report\n{\n    private int count;\n\n    public\n    Report(int start)\n    {\n        this.count = start;\n    }\n}\n",
+    );
+    let constructor =
+        lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a constructor");
+
+    assert_eq!(
+        lowered.render(constructor as u32),
+        indoc! {r#"
+            METHOD [1] "__construct" @6-9
+              PARAM_LIST
+                PARAM
+                  ZVAL [1] "int"
+                  ZVAL "start"
+                  null
+                  null
+                  null
+                  null
+              null
+              STMT_LIST
+                ASSIGN
+                  PROP
+                    VAR
+                      ZVAL "this"
+                    ZVAL "count"
+                  VAR
+                    ZVAL "start"
+              null
+              null
+        "#}
+    );
+}
+
+/// ```php
+/// public function __construct(private int $count, public readonly int $id, protected string $name, int $extra) {}
+/// ```
+///
+/// A parameter that declares a member carries the member's flags: `[4]` is `ZEND_ACC_PRIVATE`, `[129]` is
+/// `ZEND_ACC_PUBLIC | ZEND_ACC_READONLY`, and `[2]` is `ZEND_ACC_PROTECTED`.
+#[test]
+fn a_constructor_parameter_with_an_access_modifier_is_a_promoted_parameter() {
+    let lowered = Lowered::new(
+        "class Report\n{\n    public Report(private int count, public int id { get; }, protected string name { get; set; }, int extra) {}\n}\n",
+    );
+    let parameters: Vec<(String, u32)> = lowered
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.kind == sharp_kind::SHARP_AST_PARAM)
+        .map(|(index, node)| {
+            assert_eq!(lowered.child(index as u32, 5), u32::MAX, "a promoted parameter has no hooks");
+
+            (text(lowered.nodes()[lowered.child(index as u32, 1) as usize].text), node.attr)
+        })
+        .collect();
+
+    assert_eq!(
+        parameters,
+        [("count".to_owned(), 4), ("id".to_owned(), 129), ("name".to_owned(), 2), ("extra".to_owned(), 0)]
+    );
+}
+
+/// ```php
+/// private \Lib\Calc $calc;
+/// public int $total = 2;
+/// public function __construct(int $start)
+/// {
+///     $this->calc = new \Lib\Calc(1);
+///     $this->count = $start;
+/// }
+/// ```
+///
+/// A constant initial value is the property's default. Any other runs at the start of the constructor.
+#[test]
+fn a_non_constant_initial_value_runs_at_the_start_of_the_constructor() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private Calc calc = new Calc(1);\n    public int total { get; set; } = 1 + 1;\n\n    public Report(int start)\n    {\n        this.count = start;\n    }\n}\n",
+    );
+    let class = lowered.child(lowered.unit().root, 2);
+
+    assert_eq!(
+        lowered.render(lowered.child(class, 2)),
+        indoc! {r#"
+            STMT_LIST
+              PROP_GROUP [4]
+                ZVAL "Lib\\Calc"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "calc"
+                    null
+                    null
+                    null
+                null
+              PROP_GROUP [1]
+                ZVAL [1] "int"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "total"
+                    BINARY_OP [1]
+                      ZVAL 1
+                      ZVAL 1
+                    null
+                    null
+                null
+              METHOD [1] "__construct" @10-13
+                PARAM_LIST
+                  PARAM
+                    ZVAL [1] "int"
+                    ZVAL "start"
+                    null
+                    null
+                    null
+                    null
+                null
+                STMT_LIST
+                  ASSIGN
+                    PROP
+                      VAR
+                        ZVAL "this"
+                      ZVAL "calc"
+                    NEW
+                      ZVAL "Lib\\Calc"
+                      ARG_LIST
+                        ZVAL 1
+                  ASSIGN
+                    PROP
+                      VAR
+                        ZVAL "this"
+                      ZVAL "count"
+                    VAR
+                      ZVAL "start"
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// private \Lib\Calc $calc;
+/// public function __construct()
+/// {
+///     $this->calc = new \Lib\Calc(1);
+/// }
+/// ```
+///
+/// A class with a non-constant initial value and no constructor gets a public one, which spans the class.
+#[test]
+fn a_class_with_a_non_constant_initial_value_and_no_constructor_gets_one() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private Calc calc = new Calc(1);\n}\n",
+    );
+    let class = lowered.child(lowered.unit().root, 2);
+
+    assert_eq!(
+        lowered.render(lowered.child(class, 2)),
+        indoc! {r#"
+            STMT_LIST
+              PROP_GROUP [4]
+                ZVAL "Lib\\Calc"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "calc"
+                    null
+                    null
+                    null
+                null
+              METHOD [1] "__construct" @5-8
+                PARAM_LIST
+                null
+                STMT_LIST
+                  ASSIGN
+                    PROP
+                      VAR
+                        ZVAL "this"
+                      ZVAL "calc"
+                    NEW
+                      ZVAL "Lib\\Calc"
+                      ARG_LIST
+                        ZVAL 1
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// public readonly string $code;
+/// public function __construct()
+/// {
+///     $this->code = 'none';
+/// }
+/// ```
+///
+/// PHP takes no default on a `readonly` property, so a get-only property's initial value runs in the constructor even
+/// when it is constant.
+#[test]
+fn a_get_only_property_gets_its_initial_value_in_the_constructor() {
+    let lowered = Lowered::new("class Report\n{\n    public string code { get; } = \"none\";\n}\n");
+    let class = lowered.child(lowered.unit().root, 1);
+
+    assert_eq!(
+        lowered.render(lowered.child(class, 2)),
+        indoc! {r#"
+            STMT_LIST
+              PROP_GROUP [129]
+                ZVAL [1] "string"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "code"
+                    null
+                    null
+                    null
+                null
+              METHOD [1] "__construct" @1-4
+                PARAM_LIST
+                null
+                STMT_LIST
+                  ASSIGN
+                    PROP
+                      VAR
+                        ZVAL "this"
+                      ZVAL "code"
+                    ZVAL "none"
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
 /// public static function make(): void {}
 /// private function hide() {}
 /// protected function share() {}
@@ -677,6 +991,30 @@ fn calc_make_is_a_static_call_on_the_imported_class() {
                   ZVAL "make"
                   ARG_LIST
                     ZVAL 2
+        "#}
+    );
+}
+
+/// ```php
+/// return new \Lib\Calc($extra, rate: 2);
+/// ```
+///
+/// The class is its full name with `ZEND_NAME_FQ`, which is 0.
+#[test]
+fn new_creates_the_imported_class_by_its_full_name() {
+    assert_eq!(
+        body("        return new Calc(extra, rate: 2);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                NEW
+                  ZVAL "Lib\\Calc"
+                  ARG_LIST
+                    VAR
+                      ZVAL "extra"
+                    NAMED_ARG
+                      ZVAL "rate"
+                      ZVAL 2
         "#}
     );
 }
@@ -1223,6 +1561,39 @@ fn for_loops_are_for_nodes_with_an_expression_list_per_part() {
     );
 }
 
+/// A typed counter lowers as a `let` counter does: its type only tells the checker the counter's type.
+///
+/// ```php
+/// for ($step = 0; $step < $extra; ) {
+/// }
+/// ```
+#[test]
+fn a_typed_for_counter_is_the_assignment_of_its_value() {
+    assert_eq!(
+        body("        for (int step = 0; step < extra; ) {\n        }\n        return extra;\n"),
+        indoc! {r#"
+            STMT_LIST
+              FOR
+                EXPR_LIST
+                  ASSIGN
+                    VAR
+                      ZVAL "step"
+                    ZVAL 0
+                EXPR_LIST
+                  BINARY_OP [20]
+                    VAR
+                      ZVAL "step"
+                    VAR
+                      ZVAL "extra"
+                null
+                STMT_LIST
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
 /// ```php
 /// foreach (\Lib\Calc::make(2) as $value) {
 ///     $extra += $value;
@@ -1281,7 +1652,8 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_PARAM_LIST
         | sharp_kind::SHARP_AST_CONST_DECL
         | sharp_kind::SHARP_AST_IF
-        | sharp_kind::SHARP_AST_EXPR_LIST => None,
+        | sharp_kind::SHARP_AST_EXPR_LIST
+        | sharp_kind::SHARP_AST_PROP_DECL => None,
         sharp_kind::SHARP_AST_ZVAL => Some(0),
         sharp_kind::SHARP_AST_VAR
         | sharp_kind::SHARP_AST_CONST
@@ -1311,12 +1683,14 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_NULLSAFE_PROP
         | sharp_kind::SHARP_AST_IF_ELEM
         | sharp_kind::SHARP_AST_WHILE
-        | sharp_kind::SHARP_AST_DO_WHILE => Some(2),
+        | sharp_kind::SHARP_AST_DO_WHILE
+        | sharp_kind::SHARP_AST_NEW => Some(2),
         sharp_kind::SHARP_AST_METHOD_CALL
         | sharp_kind::SHARP_AST_STATIC_CALL
         | sharp_kind::SHARP_AST_CONST_ELEM
-        | sharp_kind::SHARP_AST_NULLSAFE_METHOD_CALL => Some(3),
-        sharp_kind::SHARP_AST_FOR | sharp_kind::SHARP_AST_FOREACH => Some(4),
+        | sharp_kind::SHARP_AST_NULLSAFE_METHOD_CALL
+        | sharp_kind::SHARP_AST_PROP_GROUP => Some(3),
+        sharp_kind::SHARP_AST_FOR | sharp_kind::SHARP_AST_FOREACH | sharp_kind::SHARP_AST_PROP_ELEM => Some(4),
         sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_CLASS => Some(5),
         sharp_kind::SHARP_AST_PARAM => Some(6),
     }

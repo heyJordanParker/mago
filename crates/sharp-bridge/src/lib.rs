@@ -72,6 +72,10 @@ pub enum sharp_kind {
     SHARP_AST_FOR,
     SHARP_AST_EXPR_LIST,
     SHARP_AST_FOREACH,
+    SHARP_AST_PROP_GROUP,
+    SHARP_AST_PROP_DECL,
+    SHARP_AST_PROP_ELEM,
+    SHARP_AST_NEW,
 }
 
 #[repr(u8)]

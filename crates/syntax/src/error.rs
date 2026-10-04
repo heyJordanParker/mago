@@ -59,6 +59,8 @@ pub enum ParseError {
     NestingTooDeepInSharp(Span),
     /// TypeScript's `in` written in a PHP# `for … of` loop, at the `in`.
     ForInInSharp(Span),
+    /// PHP# syntax the engine cannot run yet, such as `required` or a named constructor, where it starts.
+    NotSupportedYetInSharp(&'static str, Span),
 }
 
 impl HasFileId for SyntaxError {
@@ -84,7 +86,8 @@ impl HasFileId for ParseError {
             | ParseError::QualifiedNameInSharp(_, span)
             | ParseError::UntypedParameterInSharp(span)
             | ParseError::NestingTooDeepInSharp(span)
-            | ParseError::ForInInSharp(span) => span.file_id,
+            | ParseError::ForInInSharp(span)
+            | ParseError::NotSupportedYetInSharp(_, span) => span.file_id,
         }
     }
 }
@@ -114,7 +117,8 @@ impl HasSpan for ParseError {
             | ParseError::QualifiedNameInSharp(_, span)
             | ParseError::UntypedParameterInSharp(span)
             | ParseError::NestingTooDeepInSharp(span)
-            | ParseError::ForInInSharp(span) => *span,
+            | ParseError::ForInInSharp(span)
+            | ParseError::NotSupportedYetInSharp(_, span) => *span,
         }
     }
 }
@@ -193,6 +197,7 @@ impl std::fmt::Display for ParseError {
             ParseError::ForInInSharp(_) => {
                 "PHP# loops over a collection with `of`, as in `for (const line of lines)`.".to_string()
             }
+            ParseError::NotSupportedYetInSharp(construct, _) => format!("{construct} is not supported yet in PHP#."),
         };
 
         write!(f, "{message}")
@@ -229,14 +234,24 @@ impl From<SyntaxError> for ParseError {
 
 impl From<&ParseError> for Issue {
     fn from(error: &ParseError) -> Self {
-        if let ParseError::SyntaxError(syntax_error) = error {
-            syntax_error.into()
-        } else {
-            Issue::error("Parse error encountered during parsing")
+        match error {
+            ParseError::SyntaxError(syntax_error) => syntax_error.into(),
+            // A PHP# parse error names the rule it breaks, so its message is the title.
+            ParseError::PhpSyntaxInSharp(..)
+            | ParseError::QualifiedNameInSharp(..)
+            | ParseError::UntypedParameterInSharp(..)
+            | ParseError::ForInInSharp(..) => Issue::error(error.to_string())
+                .with_code(PARSE_ERROR_CODE)
+                .with_annotation(Annotation::primary(error.span()).with_message("Written here.")),
+            ParseError::NotSupportedYetInSharp(_, span) => Issue::error(error.to_string())
+                .with_code(PARSE_ERROR_CODE)
+                .with_annotation(Annotation::primary(*span).with_message("Not supported yet."))
+                .with_note("The PHP# engine cannot run this spec syntax yet."),
+            _ => Issue::error("Parse error encountered during parsing")
                 .with_code(PARSE_ERROR_CODE)
                 .with_annotation(Annotation::primary(error.span()).with_message(error.to_string()))
                 .with_note("This error indicates that the parser encountered a parse issue.")
-                .with_help("Check the syntax of your code.")
+                .with_help("Check the syntax of your code."),
         }
     }
 }

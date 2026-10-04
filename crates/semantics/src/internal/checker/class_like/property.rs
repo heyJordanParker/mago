@@ -464,6 +464,9 @@ pub fn check_property(
     }
 
     match &property {
+        // A PHP# initial value may run in the constructor, and a PHP# accessor list is C#'s, not PHP's hooks, so
+        // `check_slice` decides both.
+        _ if context.program.dialect.is_sharp() => {}
         Property::Plain(plain_property) => {
             if !context.version.is_supported(Feature::AsymmetricVisibility)
                 && let Some(write_visibility) = plain_property.modifiers.get_first_write_visibility()

@@ -620,7 +620,7 @@ impl IssueProcessor {
                 }
 
                 // A fix writes PHP syntax, so a run that would edit a PHP# file is refused before anything is written.
-                refuse_sharp_file("--fix", file)?;
+                refuse_sharp_file("analyze --fix", file)?;
 
                 let final_content = if format_after_fix {
                     let ephemeral_file = File::ephemeral(file.name.clone(), Cow::Owned(fixed_content));

@@ -48,7 +48,7 @@ fn the_slice_fixture_has_no_semantic_issues() {
 
 #[test]
 fn every_construct_outside_the_slice_is_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\nenum Suit\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        switch (extra) {\n            default: return 1;\n        }\n        echo extra;\n        const made = new Report();\n        const arrow = fn() => 1;\n        const closure = function () { return 1; };\n        const partial = this.run(...);\n        const text = \"total {$extra}\";\n        return extra;\n    }\n}\n";
+    let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\nenum Suit\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        switch (extra) {\n            default: return 1;\n        }\n        echo extra;\n        const made = new Report;\n        const arrow = fn() => 1;\n        const closure = function () { return 1; };\n        const partial = this.run(...);\n        const text = \"total {$extra}\";\n        return extra;\n    }\n}\n";
 
     assert_eq!(
         issues(code),
@@ -59,7 +59,7 @@ fn every_construct_outside_the_slice_is_not_supported_yet() {
             "10:1 This statement is not supported yet in PHP#.",
             "18:9 This statement is not supported yet in PHP#.",
             "21:9 This statement is not supported yet in PHP#.",
-            "22:22 This expression is not supported yet in PHP#.",
+            "22:22 This `new` without arguments is not supported yet in PHP#.",
             "23:23 This expression is not supported yet in PHP#.",
             "24:25 This expression is not supported yet in PHP#.",
             "25:25 This expression is not supported yet in PHP#.",
@@ -632,6 +632,87 @@ fn a_method_named_after_its_class_is_not_supported_yet() {
 }
 
 #[test]
+fn the_constructor_is_named_after_its_class_without_a_return_type() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private int count;\n\n    public Report(int start)\n    {\n        this.count = start;\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_constructor_parameter_with_an_access_modifier_declares_a_field_or_a_property() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Planner;\n\nclass Report\n{\n    public Report(\n        private Planner planner,\n        protected int count = 0,\n        public int id { get; },\n        public string name { get; private set; },\n        private int hidden { get; set; },\n        int extra,\n    ) {\n        this.id = extra + count;\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_promoted_member_read_without_this_is_an_error_that_names_this() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public Report(private int count)\n    {\n        count = 1;\n    }\n\n    public int total()\n    {\n        return count;\n    }\n}\n";
+
+    assert_eq!(issues(code), ["12:16 Write `this.count`: members of the same object are always written with `this.`."]);
+}
+
+#[test]
+fn a_public_constructor_parameter_without_accessors_is_an_error() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public Report(public int id) {}\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:19 A `public` constructor parameter needs accessors: a public member is a property, as in `public int id { get; }`."
+        ]
+    );
+}
+
+#[test]
+fn a_promoted_member_follows_the_rules_of_the_same_declaration_in_the_class_body() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public Report(public int a { set; }, private int b { get; private set; }, public int c { get => 1; }) {}\n\n    public void reset()\n    {\n        this.a = 1;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:30 A PHP# property needs a `get` accessor.",
+            "5:63 The `set` accessor of a PHP# property must be narrower than the property.",
+            "5:94 This accessor is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn a_promoted_member_outside_the_slice_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public Report(private readonly int a, private static int b) {}\n\n    public void run(private int c) {}\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:27 This modifier is not supported yet in PHP#.",
+            "7:21 Promoted properties are not allowed outside of constructors.",
+            "5:51 Parameter `b` cannot have the `static` modifier.",
+        ]
+    );
+}
+
+#[test]
+fn a_method_without_a_return_type_named_otherwise_is_an_error() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public report() {}\n    public Calc() {}\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:12 A PHP# method needs a return type: only the constructor, named after its class, has none.",
+            "6:12 A PHP# method needs a return type: only the constructor, named after its class, has none.",
+        ]
+    );
+}
+
+#[test]
+fn a_static_constructor_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public static Report() {}\n}\n";
+
+    assert_eq!(issues(code), ["5:19 A static constructor is not supported yet in PHP#."]);
+}
+
+#[test]
 fn a_method_without_a_body_reports_only_the_php_error() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int run();\n}\n";
 
@@ -639,10 +720,90 @@ fn a_method_without_a_body_reports_only_the_php_error() {
 }
 
 #[test]
-fn fields_are_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private int count = 0;\n}\n";
+fn a_field_is_private_or_protected_with_a_type_and_an_optional_constant_initial_value() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private int count = 0;\n    protected float rate = 1.5 * -PHP_INT_MAX;\n    private string label;\n}\n";
 
-    assert_eq!(issues(code), ["5:5 PHP# fields are not supported yet."]);
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn an_initial_value_may_be_any_expression_a_method_body_has_without_this() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private Calc calc = new Calc(1, rate: 2);\n    private int made = Calc.make() + 1;\n    public int total { get; set; } = new Calc(2).add(1, 2);\n    private int count = this.made;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["10:25 An initial value cannot use `this`: it runs before the constructor body, while the object is built."]
+    );
+}
+
+#[test]
+fn a_public_field_is_an_error() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int count = 0;\n}\n";
+
+    assert_eq!(issues(code), ["5:5 A PHP# field cannot be `public`: a field is `private` or `protected`."]);
+}
+
+#[test]
+fn a_field_without_an_access_modifier_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    int count = 0;\n}\n";
+
+    assert_eq!(issues(code), ["5:9 A field without `private` or `protected` is not supported yet in PHP#."]);
+}
+
+#[test]
+fn fields_outside_the_slice_are_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private static int count = 0;\n    private int first, second;\n    private int? maybe;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:13 This modifier is not supported yet in PHP#.",
+            "6:5 A field declaring several names is not supported yet in PHP#.",
+            "7:13 This type is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn an_auto_property_has_get_an_optional_narrower_set_and_an_optional_constant_initial_value() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int views { get; private set; } = 0;\n    public string name { get; set; } = \"none\";\n    public float rate { get; protected set; }\n    protected int total { get; private set; }\n    public int id { get; }\n    private int hidden { get; set; }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn an_auto_property_breaking_the_accessor_rules_is_an_error() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int a { get; public set; }\n    private int b { get; private set; }\n    protected int c { get; public set; }\n    public int d { set; }\n    public int e { get; get; }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:25 The `set` accessor of a PHP# property must be narrower than the property.",
+            "6:26 The `set` accessor of a PHP# property must be narrower than the property.",
+            "7:28 The `set` accessor of a PHP# property must be narrower than the property.",
+            "8:16 A PHP# property needs a `get` accessor.",
+            "9:25 A PHP# property declares each accessor once.",
+        ]
+    );
+}
+
+#[test]
+fn properties_outside_the_slice_are_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    int a { get; set; }\n    public static int b { get; }\n    public int c { private get; set; }\n    public int d { get => 1; }\n    public int e { get; set { } }\n    public int f { get; init; }\n    public int g = 0 { get; }\n    public int h { get; set(int value); }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:9 A property without `public`, `protected` or `private` is not supported yet in PHP#.",
+            "6:12 This modifier is not supported yet in PHP#.",
+            "7:20 This accessor is not supported yet in PHP#.",
+            "8:20 This accessor is not supported yet in PHP#.",
+            "9:25 This accessor is not supported yet in PHP#.",
+            "10:25 This accessor is not supported yet in PHP#.",
+            "11:16 An initial value before the accessors is not supported yet in PHP#.",
+            "12:25 This accessor is not supported yet in PHP#.",
+        ]
+    );
 }
 
 #[test]
@@ -721,6 +882,22 @@ fn a_typed_local_takes_the_types_of_the_slice_but_not_void() {
             "9:9 This type is not supported yet in PHP#.",
             "9:9 Type `mixed` cannot be nullable.",
             "11:9 Cannot assign to `kept`: it is declared with `const`.",
+        ]
+    );
+}
+
+#[test]
+fn a_typed_for_counter_takes_the_types_of_the_slice_but_not_void() {
+    let code = leak(method(
+        "        for (void step = null; ; ) {\n        }\n        for (iterable items = null; ; ) {\n        }\n        for (const int? kept = null; ; kept = 1) {\n        }\n        return 1;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:14 A local cannot be `void`: `void` is only a return type.",
+            "9:14 This type is not supported yet in PHP#.",
+            "11:40 Cannot assign to `kept`: it is declared with `const`.",
         ]
     );
 }
@@ -806,6 +983,29 @@ fn an_invalid_codepoint_escape_is_an_error_as_in_php() {
     assert_eq!(
         issues(code),
         ["7:21 Invalid UTF-8 codepoint escape sequence.", "8:23 Invalid UTF-8 codepoint escape sequence.",]
+    );
+}
+
+#[test]
+fn new_creates_a_class_written_by_its_short_name_with_its_arguments() {
+    let code = leak(method("        const made = new Report(extra, total: 2);\n        return made.run(1);\n"));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn new_outside_the_slice_is_not_supported_yet() {
+    let code = leak(method(
+        "        const kind = new (Report);\n        const other = new class {};\n        const spread = new Report(...extra);\n        return 1;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:22 This expression is not supported yet in PHP#.",
+            "8:23 This expression is not supported yet in PHP#.",
+            "9:35 This spread argument is not supported yet in PHP#.",
+        ]
     );
 }
 

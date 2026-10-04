@@ -2,6 +2,7 @@ use mago_allocator::Arena;
 
 use mago_database::file::File;
 use mago_names::ResolvedNames;
+use mago_names::binding::php_method_name;
 use mago_names::scope::NamespaceScope;
 use mago_names::scope::php_name;
 use mago_php_version::PHPVersion;
@@ -619,7 +620,7 @@ where
         let mut class_like_metadata =
             self.codebase.class_likes.remove(&current_class).expect("Expected class-like metadata to be present");
 
-        let name = ascii_lowercase_word(method.name.value);
+        let name = ascii_lowercase_word(php_method_name(method));
 
         if class_like_metadata.methods.contains(&name) {
             if class_like_metadata.pseudo_methods.contains(&name)

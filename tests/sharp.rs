@@ -18,6 +18,13 @@ const REPORT: &str = include_str!("fixtures/sharp/Report.sharp");
 /// A PHP class whose property read on a possibly `null` value gets the analyzer's `?->` fix.
 const BOX: &str = "<?php\n\ndeclare(strict_types=1);\n\nnamespace Lib;\n\nfinal class Box\n{\n    public int $value = 0;\n\n    public static function maybe(): ?self\n    {\n        return null;\n    }\n}\n";
 
+/// A PHP file the linter reports for its missing `declare(strict_types=1);` and the formatter rewrites.
+const MESSY: &str = "<?php\n\nnamespace Lib;\n\nfunction  one( ): int {return 1;}\n";
+
+fn valid_report() -> String {
+    REPORT.replace("let label = \"one\";", "let label = 1;")
+}
+
 fn workspace(report: &str) -> tempfile::TempDir {
     let directory = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(directory.path().join("src/Demo")).unwrap();
@@ -58,7 +65,7 @@ fn analyze_reports_a_string_passed_to_a_php_int_parameter_at_the_sharp_position(
 
 #[test]
 fn analyze_finds_no_issues_once_the_argument_is_an_int() {
-    let directory = workspace(&REPORT.replace("let label = \"one\";", "let label = 1;"));
+    let directory = workspace(&valid_report());
 
     let output = run(directory.path(), "analyze", &[]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -131,7 +138,7 @@ fn analyze_finishes_on_deeply_nested_files() {
 
 #[test]
 fn analyze_fix_runs_on_php_files_beside_a_valid_sharp_file() {
-    let directory = workspace(&REPORT.replace("let label = \"one\";", "let label = 1;"));
+    let directory = workspace(&valid_report());
     let reader = "<?php\n\ndeclare(strict_types=1);\n\nnamespace Lib;\n\nfunction read(): ?int\n{\n    $box = Box::maybe();\n    return $box->value;\n}\n";
     std::fs::write(directory.path().join("src/Lib/Box.php"), BOX).unwrap();
     std::fs::write(directory.path().join("src/Lib/read.php"), reader).unwrap();
@@ -140,7 +147,7 @@ fn analyze_fix_runs_on_php_files_beside_a_valid_sharp_file() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    assert!(!stderr.contains("not supported yet"), "{stdout}{stderr}");
+    assert!(!stderr.contains("does not support PHP# files yet"), "{stdout}{stderr}");
     assert!(stdout.contains("$box?->value"), "{stdout}{stderr}");
     assert_eq!(std::fs::read_to_string(directory.path().join("src/Lib/read.php")).unwrap(), reader);
 }
@@ -155,8 +162,7 @@ fn analyze_fix_refuses_a_fix_that_would_edit_a_sharp_file() {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(!output.status.success(), "{stderr}");
-    assert!(stderr.contains("not supported yet"), "{stderr}");
-    assert!(stderr.contains("src/Demo/Report.sharp"), "{stderr}");
+    assert!(stderr.contains("`mago analyze --fix` does not support PHP# files yet: src/Demo/Report.sharp"), "{stderr}");
     assert_eq!(report(directory.path()), source);
 }
 
@@ -170,24 +176,109 @@ fn linting_one_sharp_file_is_refused() {
     assert!(matches!(result, Err(OrchestratorError::SharpNotSupported { tool: "lint", .. })), "{result:?}");
 }
 
+fn messy_workspace() -> tempfile::TempDir {
+    let directory = workspace(&valid_report());
+    std::fs::write(directory.path().join("src/Lib/messy.php"), MESSY).unwrap();
+    directory
+}
+
+/// Runs `mago` on a workspace holding `Report.sharp` and `messy.php`, checks that `tool` skipped the PHP# file,
+/// and returns the output with the contents of `messy.php` afterwards.
+fn run_beside_messy_php(command: &str, arguments: &[&str], tool: &str) -> (Output, String) {
+    run_in_messy_workspace(&messy_workspace(), command, arguments, tool)
+}
+
+fn run_in_messy_workspace(
+    directory: &tempfile::TempDir,
+    command: &str,
+    arguments: &[&str],
+    tool: &str,
+) -> (Output, String) {
+    let output = run(directory.path(), command, arguments);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(stderr.contains(&format!("`mago {tool}` skips PHP# files")), "{command} {arguments:?}: {stderr}");
+    assert!(!stderr.contains("panicked"), "{command} {arguments:?}: {stderr}");
+    assert_eq!(report(directory.path()), valid_report(), "{command} {arguments:?} changed the PHP# file");
+
+    (output, std::fs::read_to_string(directory.path().join("src/Lib/messy.php")).unwrap())
+}
+
 #[test]
-fn lint_format_guard_and_fixes_refuse_a_sharp_file_and_leave_it_unchanged() {
+fn lint_reports_the_php_file_and_skips_the_sharp_file() {
+    let (output, _) = run_beside_messy_php("lint", &["--reporting-format", "emacs"], "lint");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.lines().any(|line| line.starts_with("src/Lib/messy.php:1:1:warning - strict-types:")), "{stdout}");
+}
+
+#[test]
+fn lint_fix_fixes_the_php_file_and_skips_the_sharp_file() {
+    let (output, messy) = run_beside_messy_php("lint", &["--fix", "--potentially-unsafe"], "lint");
+
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(messy.contains("declare(strict_types=1);"), "{messy}");
+}
+
+#[test]
+fn format_formats_the_php_file_and_skips_the_sharp_file() {
+    let (output, messy) = run_beside_messy_php("fmt", &[], "format");
+
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(messy.contains("function one(): int"), "{messy}");
+}
+
+#[test]
+fn guard_checks_the_php_file_and_skips_the_sharp_file() {
+    let (output, _) = run_beside_messy_php("guard", &[], "guard");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "{stderr}");
+    assert!(!stderr.contains("No files found to check with guard."), "{stderr}");
+}
+
+#[test]
+fn fix_formats_the_php_file_and_skips_the_sharp_file() {
+    let (output, messy) = run_beside_messy_php("fix", &[], "format");
+
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(messy.contains("function one(): int"), "{messy}");
+}
+
+#[test]
+fn lint_and_format_skip_a_staged_sharp_file() {
+    let directory = messy_workspace();
+    for arguments in [&["init", "--quiet"][..], &["add", "src"][..]] {
+        assert!(Command::new("git").args(arguments).current_dir(directory.path()).status().unwrap().success());
+    }
+
+    let (output, _) = run_in_messy_workspace(&directory, "lint", &["--staged", "--reporting-format", "emacs"], "lint");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}{}", String::from_utf8_lossy(&output.stderr));
+    assert!(stdout.lines().any(|line| line.starts_with("src/Lib/messy.php:1:1:warning - strict-types:")), "{stdout}");
+
+    let (output, _) = run_in_messy_workspace(&directory, "fmt", &["--staged"], "format");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("Formatted and re-staged 1 file(s)."), "{stderr}");
+}
+
+#[test]
+fn lint_format_and_guard_refuse_a_sharp_file_named_on_the_command_line() {
     let directory = workspace(REPORT);
 
-    for (command, arguments) in [
-        ("lint", &[][..]),
-        ("format", &["--dry-run"][..]),
-        ("format", &[][..]),
-        ("guard", &[][..]),
-        ("fix", &[][..]),
-        ("fix", &["--no-guard"][..]),
+    for (command, arguments, message) in [
+        ("lint", &["src/Demo/Report.sharp"][..], "`mago lint` does not support PHP# files yet"),
+        ("lint", &["--fix", "src/Demo/Report.sharp"][..], "`mago lint` does not support PHP# files yet"),
+        ("fmt", &["src/Demo/Report.sharp"][..], "`mago format` does not support PHP# files yet"),
+        ("guard", &["src/Demo/Report.sharp"][..], "`mago guard` does not support PHP# files yet"),
     ] {
         let output = run(directory.path(), command, arguments);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
         assert!(!output.status.success(), "{command} {arguments:?} succeeded: {stderr}");
-        assert!(stderr.contains("not supported yet"), "{command} {arguments:?}: {stderr}");
-        assert!(stderr.contains("src/Demo/Report.sharp"), "{command} {arguments:?}: {stderr}");
+        assert!(stderr.contains(&format!("{message}: src/Demo/Report.sharp")), "{command} {arguments:?}: {stderr}");
         assert_eq!(report(directory.path()), REPORT, "{command} {arguments:?} changed the file");
     }
 }

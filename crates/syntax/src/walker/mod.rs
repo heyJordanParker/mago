@@ -970,6 +970,10 @@ generate_ast_walker! {
 
         walker.walk_property_item(&hooked_property.item, context);
         walker.walk_property_hook_list(&hooked_property.hook_list, context);
+
+        if let Some(initial_value) = &hooked_property.initial_value {
+            walker.walk_expression(initial_value.value, context);
+        }
     }
 
     'arena PropertyHookList as property_hook_list => {

@@ -9,19 +9,24 @@ impl<'arena, A> Parser<'_, 'arena, A>
 where
     A: Arena,
 {
-    /// Whether a PHP# local declaration starts here: `const`, or `let` followed by a name.
+    /// Whether a PHP# local declaration starts here: `const`, `let` followed by a name, or a type followed by a name
+    /// and `=`.
     pub(crate) fn is_at_local_declaration(&mut self) -> Result<bool, ParseError> {
         if !self.dialect.is_sharp() {
             return Ok(false);
         }
 
-        Ok(match self.stream.lookahead(0)? {
-            Some(token) if token.kind == T!["const"] => true,
-            Some(token) if token.kind == T![Identifier] && token.value == b"let" => {
-                self.stream.peek_kind(1)?.is_some_and(|kind| kind.is_identifier_maybe_reserved())
+        match self.stream.lookahead(0)? {
+            Some(token) if token.kind == T!["const"] => Ok(true),
+            Some(token)
+                if token.kind == T![Identifier]
+                    && token.value == b"let"
+                    && self.stream.peek_kind(1)?.is_some_and(|kind| kind.is_identifier_maybe_reserved()) =>
+            {
+                Ok(true)
             }
-            _ => false,
-        })
+            _ => self.is_at_typed_local(),
+        }
     }
 
     /// Parses a PHP# local: `let` or `const`, then its type when it is written, its name, `=` and its value. A local
@@ -47,7 +52,7 @@ where
 
     /// Returns `true` when the next tokens read as a type, a name and `=`: a name, an optional `?` written
     /// right after it, another name and `=`. A spaced `?` is the conditional operator.
-    pub(crate) fn is_at_typed_local(&mut self) -> Result<bool, ParseError> {
+    fn is_at_typed_local(&mut self) -> Result<bool, ParseError> {
         let Some(hint) = self.stream.lookahead(0)? else {
             return Ok(false);
         };

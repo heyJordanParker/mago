@@ -102,7 +102,7 @@ fn analyze(
     for (name, file_id) in &file_ids {
         let file = database.get_ref(file_id).expect("file was just added");
         let program = parse_file(&arena, file);
-        assert!(!program.has_errors(), "{name} did not parse: {:?}", program.errors);
+        assert!(programs.is_empty() || !program.has_errors(), "{name} did not parse: {:?}", program.errors);
 
         let names = NameResolver::new(&arena).resolve(program);
         metadata.extend(scan_program(&arena, file, program, &names, settings.version));
@@ -117,7 +117,8 @@ fn analyze(
         .analyze(program, &mut result)
         .expect("analysis succeeds");
 
-    result.issues.into_iter().collect()
+    // The analyzed file's parse errors come first, as `mago analyze` reports them beside the analysis.
+    program.errors.iter().map(Issue::from).chain(result.issues).collect()
 }
 
 #[test]
@@ -477,6 +478,16 @@ fn a_value_that_is_not_the_written_type_of_a_local_is_reported() {
 }
 
 #[test]
+fn a_typed_for_counter_takes_only_values_of_its_written_type() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(int? extra)\n    {\n        for (int step = \"one\"; step < 3; step++) {\n        }\n        for (int? found = null; found === null; ) {\n            found = extra;\n        }\n        for (int count = 0; count < 3; count++) {\n            count = 1.5;\n        }\n        return 0;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[]),
+        ["7:25 invalid-local-assignment-value", "13:21 invalid-local-assignment-value"]
+    );
+}
+
+#[test]
 fn the_nullable_return_help_writes_the_nullable_type_as_the_file_does() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(int? extra)\n    {\n        return extra;\n    }\n}\n";
     let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function total(?int $extra): int\n    {\n        return $extra;\n    }\n}\n";
@@ -520,6 +531,116 @@ fn a_sharp_import_passes_the_use_statement_and_casing_checks_as_in_php() {
 
     assert_eq!(sharp_issues, ["4:8 incorrect-class-like-casing", "5:8 non-existent-use-import"]);
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn a_field_is_the_php_property_of_the_same_name() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    private int count = 0;\n    protected string label = \"one\";\n\n    public int total(int extra)\n    {\n        this.count += extra;\n        this.label = 2;\n        return this.count;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    private int $count = 0;\n    protected string $label = \"one\";\n\n    public function total(int $extra): int\n    {\n        $this->count += $extra;\n        $this->label = 2;\n        return $this->count;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[]);
+
+    assert_eq!(sharp_issues, ["11:22 invalid-property-assignment-value"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn new_checks_the_constructor_arguments_as_in_php() {
+    let money = "<?php\n\nnamespace Lib;\n\nfinal class Money\n{\n    public function __construct(public int $cents)\n    {\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Money;\n\nclass Report\n{\n    public static int total()\n    {\n        const money = new Money(\"one\");\n        return new Money(cents: 2).cents + money.cents;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Money;\n\nclass Report\n{\n    public static function total(): int\n    {\n        $money = new Money(\"one\");\n        return new Money(cents: 2)->cents + $money->cents;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Money.php", money)]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[("src/Lib/Money.php", money)]);
+
+    assert_eq!(sharp_issues, ["9:33 invalid-argument"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn the_constructor_is_the_php_constructor() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    private int count;\n\n    public Report(int start)\n    {\n        this.count = start;\n    }\n\n    public int total()\n    {\n        return this.count;\n    }\n\n    public static int make()\n    {\n        return new Report(\"one\").total() + new Report(start: 2).total();\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    private int $count;\n\n    public function __construct(int $start)\n    {\n        $this->count = $start;\n    }\n\n    public function total(): int\n    {\n        return $this->count;\n    }\n\n    public static function make(): int\n    {\n        return new Report(\"one\")->total() + new Report(start: 2)->total();\n    }\n}\n";
+    let caller =
+        "<?php\n\nnamespace App;\n\nfunction run(): int\n{\n    return (new \\Demo\\Report(\"one\"))->total();\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[]);
+
+    assert_eq!(sharp_issues, ["19:27 invalid-argument"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+    assert_eq!(issues(("src/App/run.php", caller), &[("src/Demo/Report.sharp", sharp)]), ["7:30 invalid-argument"]);
+}
+
+#[test]
+fn an_auto_property_is_the_php_property_with_its_set_visibility() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public int views { get; private set; } = 0;\n    public string name { get; set; }\n    public int id { get; }\n\n    public Report(int id)\n    {\n        this.id = id;\n        this.name = \"report\";\n    }\n\n    public int bump()\n    {\n        this.views++;\n        return this.views + this.id;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public private(set) int $views = 0;\n    public string $name;\n    public readonly int $id;\n\n    public function __construct(int $id)\n    {\n        $this->id = $id;\n        $this->name = \"report\";\n    }\n\n    public function bump(): int\n    {\n        $this->views++;\n        return $this->views + $this->id;\n    }\n}\n";
+    let caller = "<?php\n\nnamespace App;\n\nfunction run(\\Demo\\Report $report): string\n{\n    $report->name = 'other';\n    $report->views = 2;\n    $report->id = 3;\n    return $report->name . $report->views . $report->id;\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[]);
+    let caller_of_sharp = issues(("src/App/run.php", caller), &[("src/Demo/Report.sharp", sharp)]);
+    let caller_of_php = issues(("src/App/run.php", caller), &[("src/Demo/Report.php", php)]);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+    assert_eq!(caller_of_sharp.len(), 2, "{caller_of_sharp:?}");
+    assert_eq!(caller_of_sharp, caller_of_php);
+}
+
+#[test]
+fn a_promoted_member_is_the_promoted_php_property() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public Report(private int count, public int id { get; }, public string name { get; protected set; })\n    {\n    }\n\n    public int total()\n    {\n        return this.count + this.id;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public function __construct(private int $count, public readonly int $id, public protected(set) string $name)\n    {\n    }\n\n    public function total(): int\n    {\n        return $this->count + $this->id;\n    }\n}\n";
+    let caller = "<?php\n\nnamespace App;\n\nfunction run(\\Demo\\Report $report): string\n{\n    $report->id = 3;\n    $report->name = 'other';\n    return $report->name . $report->id;\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[]);
+    let caller_of_sharp = issues(("src/App/run.php", caller), &[("src/Demo/Report.sharp", sharp)]);
+    let caller_of_php = issues(("src/App/run.php", caller), &[("src/Demo/Report.php", php)]);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+    assert_eq!(caller_of_sharp.len(), 2, "{caller_of_sharp:?}");
+    assert_eq!(caller_of_sharp, caller_of_php);
+}
+
+#[test]
+fn an_initial_value_that_is_not_constant_is_checked_against_the_member_type() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    private Clock clock = new Clock();\n    public int ticks { get; private set; } = new Clock().tick();\n    private string label = new Clock();\n\n    public string read()\n    {\n        return this.label;\n    }\n\n    public Clock now()\n    {\n        return this.clock;\n    }\n}\n\nclass Clock\n{\n    public int tick()\n    {\n        return 1;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), ["7:28 invalid-property-default-value"]);
+}
+
+#[test]
+fn a_get_only_property_is_readonly_and_set_once_in_the_constructor() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public string code { get; } = \"none\";\n    public int count { get; }\n\n    public Report(public int id { get; }, int start)\n    {\n        this.count = start;\n        this.count = 2;\n        this.id = 3;\n        this.code = \"x\";\n    }\n\n    public void reset(Report other)\n    {\n        other.count = 1;\n        this.count = 0;\n    }\n}\n";
+
+    // The first write in the constructor sets `count`. Every other write would throw `Error` on `readonly`: a second
+    // write, a property set from its parameter or its initial value, another object's property, and a write outside
+    // the constructor.
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[]),
+        [
+            "11:14 invalid-property-write",
+            "12:14 invalid-property-write",
+            "13:14 invalid-property-write",
+            "18:15 invalid-property-write",
+            "19:14 invalid-property-write",
+        ]
+    );
+}
+
+/// A parse error reports its spot once, so returning what failed to parse adds no `never-return`, in PHP# and PHP.
+#[test]
+fn returning_a_value_that_failed_to_parse_adds_no_issue() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public Report make(string json)\n    {\n        return new Report.fromJson(json);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfunction make(): int\n{\n    return );\n}\n";
+
+    assert_eq!(issues(("src/Demo/make.php", php), &[]), ["7:12 parse"]);
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), ["7:20 parse"]);
 }
 
 #[test]

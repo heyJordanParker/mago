@@ -68,6 +68,7 @@ pub use crate::cst::cst::class_like::property::PropertyHookBody;
 pub use crate::cst::cst::class_like::property::PropertyHookConcreteBody;
 pub use crate::cst::cst::class_like::property::PropertyHookConcreteExpressionBody;
 pub use crate::cst::cst::class_like::property::PropertyHookList;
+pub use crate::cst::cst::class_like::property::PropertyInitialValue;
 pub use crate::cst::cst::class_like::property::PropertyItem;
 pub use crate::cst::cst::class_like::trait_use::TraitUse;
 pub use crate::cst::cst::class_like::trait_use::TraitUseAbsoluteMethodReference;

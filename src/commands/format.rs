@@ -62,6 +62,7 @@ use crate::utils::create_orchestrator;
 use crate::utils::git;
 use crate::utils::git::get_staged_file;
 use crate::utils::git::update_staged_file;
+use crate::utils::skip_sharp_files;
 
 /// Command for formatting PHP source files according to style rules.
 ///
@@ -177,6 +178,7 @@ impl FormatCommand {
 
         let mut orchestrator = create_orchestrator(&configuration, color_choice, false, true, false);
         orchestrator.add_exclude_patterns(configuration.formatter.excludes.iter());
+        skip_sharp_files(&mut orchestrator, "format");
         if !self.path.is_empty() {
             orchestrator.set_source_paths(self.path.iter().map(|p| p.to_string_lossy().to_string()));
         }
@@ -308,6 +310,7 @@ impl FormatCommand {
 
         let mut orchestrator = create_orchestrator(&configuration, color_choice, false, true, false);
         orchestrator.add_exclude_patterns(configuration.formatter.excludes.iter());
+        skip_sharp_files(&mut orchestrator, "format");
 
         let database = orchestrator.load_database(workspace, false, None, None)?;
 

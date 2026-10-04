@@ -4,6 +4,7 @@ use mago_allocator::LocalArena;
 use mago_database::file::File;
 use mago_names::ResolvedNames;
 use mago_names::binding::Binding;
+use mago_names::binding::php_method_name;
 use mago_names::resolver::NameResolver;
 use mago_names::scope::php_name;
 use mago_php_version::PHPVersion;
@@ -22,6 +23,7 @@ use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::ConstantAccess;
+use mago_syntax::cst::DirectVariable;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::For;
 use mago_syntax::cst::ForBody;
@@ -30,15 +32,21 @@ use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::Hint;
 use mago_syntax::cst::If;
 use mago_syntax::cst::IfBody;
+use mago_syntax::cst::Instantiation;
 use mago_syntax::cst::Literal;
 use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::MethodBody;
 use mago_syntax::cst::MethodCall;
 use mago_syntax::cst::Modifier;
+use mago_syntax::cst::ModifierSequenceExt;
 use mago_syntax::cst::NamespaceBody;
 use mago_syntax::cst::PositionalArgument;
 use mago_syntax::cst::Program;
+use mago_syntax::cst::Property;
+use mago_syntax::cst::PropertyHookList;
+use mago_syntax::cst::PropertyItem;
+use mago_syntax::cst::Sequence;
 use mago_syntax::cst::Statement;
 use mago_syntax::cst::UnaryPostfixOperator;
 use mago_syntax::cst::UnaryPrefixOperator;
@@ -78,6 +86,7 @@ use crate::sharp_kind::SHARP_AST_METHOD;
 use crate::sharp_kind::SHARP_AST_METHOD_CALL;
 use crate::sharp_kind::SHARP_AST_NAMED_ARG;
 use crate::sharp_kind::SHARP_AST_NAMESPACE;
+use crate::sharp_kind::SHARP_AST_NEW;
 use crate::sharp_kind::SHARP_AST_NULLSAFE_METHOD_CALL;
 use crate::sharp_kind::SHARP_AST_NULLSAFE_PROP;
 use crate::sharp_kind::SHARP_AST_OR;
@@ -88,6 +97,9 @@ use crate::sharp_kind::SHARP_AST_POST_INC;
 use crate::sharp_kind::SHARP_AST_PRE_DEC;
 use crate::sharp_kind::SHARP_AST_PRE_INC;
 use crate::sharp_kind::SHARP_AST_PROP;
+use crate::sharp_kind::SHARP_AST_PROP_DECL;
+use crate::sharp_kind::SHARP_AST_PROP_ELEM;
+use crate::sharp_kind::SHARP_AST_PROP_GROUP;
 use crate::sharp_kind::SHARP_AST_RETURN;
 use crate::sharp_kind::SHARP_AST_STATIC_CALL;
 use crate::sharp_kind::SHARP_AST_STMT_LIST;
@@ -110,6 +122,9 @@ const ZEND_ACC_PUBLIC: u32 = 1 << 0;
 const ZEND_ACC_PROTECTED: u32 = 1 << 1;
 const ZEND_ACC_PRIVATE: u32 = 1 << 2;
 const ZEND_ACC_STATIC: u32 = 1 << 4;
+const ZEND_ACC_READONLY: u32 = 1 << 7;
+const ZEND_ACC_PROTECTED_SET: u32 = 1 << 11;
+const ZEND_ACC_PRIVATE_SET: u32 = 1 << 12;
 const ZEND_TYPE_NULLABLE: u32 = 1 << 8;
 const ZEND_ADD: u32 = 1;
 const ZEND_SUB: u32 = 2;
@@ -253,17 +268,51 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         }
     }
 
+    /// A class sets the initial values PHP takes as no default, those that are not constant or belong to a `readonly`
+    /// property, at the start of its constructor, in declaration order. A class without a constructor gets a public
+    /// one that spans the class.
     fn class(&mut self, class: &Class) -> u32 {
-        let mut methods = Vec::new();
+        let mut initial_values = Vec::new();
         for member in &class.members {
-            let ClassLikeMember::Method(method) = member else {
-                unreachable!("check_slice refuses the class member `{member}`");
-            };
-
-            methods.push(self.method(method));
+            if let ClassLikeMember::Property(property) = member
+                && let Some(value) = initial_value(property)
+                && !is_default(property, value)
+            {
+                initial_values.push(self.initial_value(property.first_variable(), value));
+            }
         }
 
-        let members = self.node(SHARP_AST_STMT_LIST, 0, self.line(class.left_brace), &methods);
+        let mut members = Vec::new();
+        let mut has_constructor = false;
+        for member in &class.members {
+            members.push(match member {
+                ClassLikeMember::Method(method) if php_method_name(method) == b"__construct" => {
+                    has_constructor = true;
+
+                    self.method(method, &initial_values)
+                }
+                ClassLikeMember::Method(method) => self.method(method, &[]),
+                ClassLikeMember::Property(property) => self.property(property),
+                _ => unreachable!("check_slice refuses the class member `{member}`"),
+            });
+        }
+
+        if !has_constructor && !initial_values.is_empty() {
+            let line = self.line(class.left_brace);
+            let parameters = self.node(SHARP_AST_PARAM_LIST, 0, line, &[]);
+            let body = self.node(SHARP_AST_STMT_LIST, 0, line, &initial_values);
+
+            members.push(self.declaration(
+                SHARP_AST_METHOD,
+                ZEND_ACC_PUBLIC,
+                class.class.span,
+                class.right_brace,
+                b"__construct",
+                &[parameters, NULL, body, NULL, NULL],
+            ));
+        }
+
+        let members = self.node(SHARP_AST_STMT_LIST, 0, self.line(class.left_brace), &members);
 
         self.declaration(
             SHARP_AST_CLASS,
@@ -276,19 +325,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     /// A method is a `function` with its return type after its parameters. Its first line is where PHP writes
-    /// `function`: the return type, which every PHP# method starts with.
-    fn method(&mut self, method: &Method) -> u32 {
-        let mut flags = 0;
-        for modifier in &method.modifiers {
-            flags |= match modifier {
-                Modifier::Public(_) => ZEND_ACC_PUBLIC,
-                Modifier::Protected(_) => ZEND_ACC_PROTECTED,
-                Modifier::Private(_) => ZEND_ACC_PRIVATE,
-                Modifier::Static(_) => ZEND_ACC_STATIC,
-                _ => unreachable!("check_slice refuses the method modifier `{modifier}`"),
-            };
-        }
-
+    /// `function`: the return type, or the name of the constructor, which runs as `__construct` and has no return
+    /// type. The constructor's body starts with the class's initial values that are not constant.
+    fn method(&mut self, method: &Method, initial_values: &[u32]) -> u32 {
+        let flags = modifier_flags(&method.modifiers);
         if flags & (ZEND_ACC_PUBLIC | ZEND_ACC_PROTECTED | ZEND_ACC_PRIVATE) == 0 {
             unreachable!("check_slice refuses a method without an access modifier");
         }
@@ -302,18 +342,22 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let MethodBody::Concrete(body) = &method.body else {
             unreachable!("semantics refuses a method without a body");
         };
-        let body = self.block(body);
-        let Some(return_type_hint) = &method.return_type_hint else {
-            unreachable!("the PHP# parser gives every method its return type");
+        let mut statements = initial_values.to_vec();
+        for statement in &body.statements {
+            statements.push(self.statement(statement));
+        }
+        let body = self.node(SHARP_AST_STMT_LIST, 0, self.line(body), &statements);
+        let (start, return_type) = match &method.return_type_hint {
+            Some(return_type_hint) => (return_type_hint.span(), self.hint(&return_type_hint.hint)),
+            None => (method.name.span, NULL),
         };
-        let return_type = self.hint(&return_type_hint.hint);
 
         self.declaration(
             SHARP_AST_METHOD,
             flags,
-            return_type_hint,
+            start,
             method.body.span(),
-            method.name.value,
+            php_method_name(method),
             &[parameters, NULL, body, return_type, NULL],
         )
     }
@@ -325,8 +369,48 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let hint = self.hint(hint);
         let name = self.string(0, self.line(parameter.variable.span), parameter.variable.name);
         let default = parameter.default_value.as_ref().map_or(NULL, |default| self.expression(default.value));
+        let accessor_flags =
+            parameter.hooks.as_ref().map_or(0, |accessors| accessor_flags(&parameter.modifiers, accessors));
+        let flags = modifier_flags(&parameter.modifiers) | accessor_flags;
 
-        self.node(SHARP_AST_PARAM, 0, self.line(parameter), &[hint, name, default, NULL, NULL, NULL])
+        self.node(SHARP_AST_PARAM, flags, self.line(parameter), &[hint, name, default, NULL, NULL, NULL])
+    }
+
+    /// A field or an auto-property is a property group of one property, as php-src's grammar builds
+    /// `private int $count = 0;`, `public private(set) int $views = 0;` and `public readonly int $id;`. A constant
+    /// initial value is its default, unless the property is `readonly`.
+    fn property(&mut self, property: &Property) -> u32 {
+        let accessor_flags = match property {
+            Property::Plain(_) => 0,
+            Property::Hooked(auto_property) => accessor_flags(&auto_property.modifiers, &auto_property.hook_list),
+        };
+        let Some(hint) = property.hint() else {
+            unreachable!("the PHP# parser gives every field and property its type");
+        };
+        let hint = self.hint(hint);
+        let variable = property.first_variable();
+        let line = self.line(variable);
+        let name = self.string(0, line, variable.name);
+        let default = match initial_value(property) {
+            Some(value) if is_default(property, value) => self.expression(value),
+            _ => NULL,
+        };
+        let element = self.node(SHARP_AST_PROP_ELEM, 0, line, &[name, default, NULL, NULL]);
+        let declaration = self.node(SHARP_AST_PROP_DECL, 0, line, &[element]);
+        let flags = modifier_flags(property.modifiers()) | accessor_flags;
+
+        self.node(SHARP_AST_PROP_GROUP, flags, self.line(property), &[hint, declaration, NULL])
+    }
+
+    /// `$this->name = value;` on the line of the member's name.
+    fn initial_value(&mut self, variable: &DirectVariable, value: &Expression) -> u32 {
+        let line = self.line(variable);
+        let this = self.variable(variable.span, b"this");
+        let name = self.string(0, line, variable.name);
+        let property = self.node(SHARP_AST_PROP, 0, line, &[this, name]);
+        let value = self.expression(value);
+
+        self.node(SHARP_AST_ASSIGN, 0, line, &[property, value])
     }
 
     /// A built-in type is written unqualified, and a class by its full name. A nullable type is its type with
@@ -504,6 +588,16 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.node(kind, attr, line, &[lhs, rhs])
             }
             Expression::Call(Call::Method(call)) => self.method_call(call),
+            Expression::Instantiation(Instantiation {
+                class: Expression::Identifier(class),
+                argument_list: Some(arguments),
+                ..
+            }) => {
+                let class = self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class));
+                let arguments = self.arguments(arguments);
+
+                self.node(SHARP_AST_NEW, 0, line, &[class, arguments])
+            }
             Expression::Access(Access::Property(access)) => {
                 let object = self.expression(access.object);
                 let property = self.member(&access.property);
@@ -702,6 +796,72 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     fn line(&self, node: impl HasSpan) -> u32 {
         self.lines.line(node.span().start.offset)
     }
+}
+
+/// The flags of a member's modifiers. Every modifier is named, so a new one does not compile until it is decided.
+fn modifier_flags(modifiers: &Sequence<Modifier>) -> u32 {
+    let mut flags = 0;
+    for modifier in modifiers {
+        flags |= match modifier {
+            Modifier::Public(_) => ZEND_ACC_PUBLIC,
+            Modifier::Protected(_) => ZEND_ACC_PROTECTED,
+            Modifier::Private(_) => ZEND_ACC_PRIVATE,
+            Modifier::Static(_) => ZEND_ACC_STATIC,
+            Modifier::Final(_)
+            | Modifier::Abstract(_)
+            | Modifier::Readonly(_)
+            | Modifier::PublicSet(_)
+            | Modifier::ProtectedSet(_)
+            | Modifier::PrivateSet(_) => unreachable!("check_slice refuses the modifier `{modifier}`"),
+        };
+    }
+
+    flags
+}
+
+/// The initial value of a field or an auto-property.
+fn initial_value<'arena>(property: &Property<'arena>) -> Option<&'arena Expression<'arena>> {
+    match property {
+        Property::Plain(field) => match field.items.first() {
+            Some(PropertyItem::Concrete(item)) => Some(item.value),
+            _ => None,
+        },
+        Property::Hooked(auto_property) => {
+            auto_property.initial_value.as_ref().map(|initial_value| initial_value.value)
+        }
+    }
+}
+
+/// Whether PHP takes an initial value as the property's default: a constant expression without `new`, on a property
+/// that is not `readonly`, which takes no default.
+fn is_default(property: &Property, value: &Expression) -> bool {
+    !matches!(property, Property::Hooked(auto_property) if is_get_only(&auto_property.hook_list))
+        && value.is_constant(&PHPVersion::PHP85, false)
+}
+
+/// Whether an accessor list has no `set`. Spec section 6.1 sets a get-only property in the constructor, which PHP's
+/// `readonly` enforces.
+fn is_get_only(accessors: &PropertyHookList) -> bool {
+    !accessors.hooks.iter().any(|accessor| accessor.name.value == b"set")
+}
+
+/// The flags an auto-property's accessors add: `readonly` for a get-only property, or the set visibility php-src
+/// writes `private(set)` or `protected(set)` from the `set` accessor's access modifier. A private property needs no
+/// set visibility.
+fn accessor_flags(modifiers: &Sequence<Modifier>, accessors: &PropertyHookList) -> u32 {
+    if is_get_only(accessors) {
+        return ZEND_ACC_READONLY;
+    }
+
+    let set = accessors.hooks.iter().find(|accessor| accessor.name.value == b"set");
+    let flags = match set.and_then(|set| set.modifiers.first()) {
+        None => 0,
+        Some(Modifier::Protected(_)) => ZEND_ACC_PROTECTED_SET,
+        Some(Modifier::Private(_)) => ZEND_ACC_PRIVATE_SET,
+        Some(modifier) => unreachable!("check_slice refuses the accessor modifier `{modifier}`"),
+    };
+
+    if modifiers.contains_private() { 0 } else { flags }
 }
 
 /// The binary operators of the slice, as php-src's grammar builds them. Every operator is named, so a new one does

@@ -242,6 +242,27 @@ where
             return self.parse_arrow_function_or_closure();
         }
 
+        // `new Report.fromJson(…)` calls a named constructor, spec section 9.1: in PHP# a name after `new` is a class,
+        // so a `.` after it names the constructor. It parses whole as one error, and its value is the error expression.
+        if self.dialect.is_sharp()
+            && token.kind == T!["new"]
+            && next == Some(T![Identifier])
+            && self.stream.peek_kind(2)? == Some(T!["."])
+            && self.stream.peek_kind(3)?.is_some_and(|kind| kind.is_identifier_maybe_reserved())
+        {
+            let new = self.stream.consume_span()?;
+            let class = self.parse_local_identifier()?;
+            self.stream.consume()?;
+            let name = self.parse_local_identifier()?;
+            let end = match self.parse_optional_argument_list()? {
+                Some(arguments) => arguments.span(),
+                None => name.span,
+            };
+            self.errors.push(ParseError::NotSupportedYetInSharp("A named constructor", class.span.join(name.span)));
+
+            return Ok(self.arena.alloc(Expression::Error(new.join(end))));
+        }
+
         Ok(self.arena.alloc(match (token.kind, next) {
             (T!["static"], _) => Expression::Static(self.expect_any_keyword()?),
             (T!["self"], _) if !is_call => Expression::Self_(self.expect_any_keyword()?),
