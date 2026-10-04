@@ -299,7 +299,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
     fn parameter(&mut self, parameter: &FunctionLikeParameter) -> u32 {
         let Some(hint) = &parameter.hint else {
-            unreachable!("check_slice refuses a parameter without a type");
+            unreachable!("semantics refuses a parameter without a type");
         };
         let hint = self.hint(hint);
         let name = self.string(0, self.line(parameter.variable.span), parameter.variable.name);

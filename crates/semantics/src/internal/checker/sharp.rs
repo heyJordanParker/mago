@@ -378,12 +378,6 @@ fn is_slice_parameter(parameter: &FunctionLikeParameter) -> Result<(), (Span, &'
             "A by-reference parameter is not supported yet in PHP#.",
             "The engine passes every PHP# argument by value.",
         ))
-    } else if parameter.hint.is_none() {
-        Err((
-            parameter.variable.span,
-            "A parameter without a type is not supported in PHP#.",
-            "A PHP# parameter is written with its type, as in `int extra`.",
-        ))
     } else {
         Ok(())
     }

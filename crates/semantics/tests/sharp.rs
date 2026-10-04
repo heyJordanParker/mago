@@ -498,16 +498,10 @@ fn a_by_reference_parameter_is_not_supported_yet() {
 }
 
 #[test]
-fn a_parameter_without_a_type_is_an_error() {
+fn a_dollar_parameter_without_a_type_reports_only_the_dollar_error() {
     let code = leak(method("        return 1;\n").replace("int extra", "$extra"));
 
-    assert_eq!(
-        issues(code),
-        [
-            "5:20 A parameter without a type is not supported in PHP#.",
-            "5:20 PHP# variables have no `$`: write `extra`."
-        ]
-    );
+    assert_eq!(issues(code), ["5:20 PHP# variables have no `$`: write `extra`."]);
 }
 
 #[test]
