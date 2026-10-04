@@ -301,6 +301,61 @@ fn a_for_loop_declares_its_counter_with_let_or_const() {
 }
 
 #[test]
+fn for_of_declares_its_loop_variable_or_key_and_value() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        for (const line of lines) {\n        }\n        for (let [key, plan] of this.plans()) {\n        }\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::ForOf(values), Statement::ForOf(entries)] = method_body(program) else {
+        panic!("expected two for … of loops, got {:#?}", method_body(program));
+    };
+
+    assert!(values.is_const());
+    let ForOfTarget::Value(line) = &values.target else {
+        panic!("expected one loop variable, got {:#?}", values.target);
+    };
+    assert_eq!(line.value, b"line");
+    assert_eq!(bare_name(values.expression), b"lines");
+    assert_eq!(source(CODE, &values.of), "of");
+    assert_eq!(source(CODE, values), "for (const line of lines) {\n        }");
+
+    assert!(!entries.is_const());
+    let ForOfTarget::KeyValue(pair) = &entries.target else {
+        panic!("expected a key and a value, got {:#?}", entries.target);
+    };
+    assert_eq!((pair.key.value, pair.value.value), (&b"key"[..], &b"plan"[..]));
+    assert_eq!(source(CODE, &entries.target), "[key, plan]");
+    assert!(matches!(entries.expression, Expression::Call(Call::Method(_))));
+}
+
+#[test]
+fn for_in_is_a_parse_error_that_names_of() {
+    let arena = LocalArena::new();
+    let program = parse(
+        &arena,
+        "src/Report.sharp",
+        "class Report\n{\n    void run()\n    {\n        for (const line in lines) {\n        }\n    }\n}\n",
+    );
+
+    let messages: Vec<String> = program.errors.iter().map(ToString::to_string).collect();
+    assert_eq!(messages, ["PHP# loops over a collection with `of`, as in `for (const line of lines)`."]);
+}
+
+#[test]
+fn foreach_is_a_php_syntax_error() {
+    let arena = LocalArena::new();
+    let program = parse(
+        &arena,
+        "src/Report.sharp",
+        "class Report\n{\n    void run()\n    {\n        foreach (lines as line) {\n        }\n    }\n}\n",
+    );
+
+    let messages: Vec<String> = program.errors.iter().map(ToString::to_string).collect();
+    assert_eq!(messages, ["`foreach` is PHP syntax: PHP# loops over a collection with `for … of`"]);
+}
+
+#[test]
 fn a_php_for_loop_has_no_declaration() {
     let arena = LocalArena::new();
     let program = parse(&arena, "src/Report.php", "<?php for ($i = 0; $i < 3; $i++) {}");

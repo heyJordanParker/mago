@@ -206,6 +206,52 @@ fn a_for_loop_without_braces_or_with_a_colon_body_is_not_supported_yet() {
 }
 
 #[test]
+fn for_of_over_values_or_keys_and_values_is_in_the_slice() {
+    let code = leak(method(
+        "        for (const value of Store.values()) {\n            extra += value;\n        }\n        for (let [key, value] of Store.values()) {\n            value += key;\n            extra += value;\n        }\n        return extra;\n",
+    ));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_const_loop_variable_cannot_be_assigned_and_is_out_of_scope_after_its_loop() {
+    let code = leak(method(
+        "        for (const [key, value] of Store.values()) {\n            value = key;\n        }\n        return value;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "10:16 `value` is used after the block that declares it closes.",
+            "8:13 Cannot assign to `value`: it is declared with `const`.",
+        ]
+    );
+}
+
+#[test]
+fn a_loop_variable_named_this_or_a_superglobal_is_an_error() {
+    let code = leak(method(
+        "        for (const this of Store.values()) {\n        }\n        for (const [_GET, value] of Store.values()) {\n        }\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:20 Cannot name a loop variable `this`: `this` is the object the method runs on.",
+            "9:21 `_GET` is the name of a PHP superglobal: rename this loop variable.",
+        ]
+    );
+}
+
+#[test]
+fn a_for_of_loop_without_braces_is_not_supported_yet() {
+    let code = leak(method("        for (const value of Store.values()) extra += value;\n        return extra;\n"));
+
+    assert_eq!(issues(code), ["7:9 This statement without braces is not supported yet in PHP#."]);
+}
+
+#[test]
 fn reassigning_a_const_local_is_an_error() {
     let code = leak(method("        const base = 2;\n        base = 3;\n        return base;\n"));
 

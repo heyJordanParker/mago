@@ -118,6 +118,26 @@ fn a_for_counter_lives_until_its_loop_ends() {
 }
 
 #[test]
+fn for_of_loop_variables_live_until_their_loop_ends() {
+    const CODE: &str = "class Report\n{\n    public int run(array values)\n    {\n        for (const [key, entry] of values) {\n            key;\n            entry;\n        }\n        for (let item of values) {\n            item;\n        }\n        return entry;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "key", 1), Some(local(CODE, "key", 0, LocalKind::Const)));
+    assert_eq!(binding(&names, CODE, "entry", 1), Some(local(CODE, "entry", 0, LocalKind::Const)));
+    assert_eq!(binding(&names, CODE, "item", 1), Some(local(CODE, "item", 0, LocalKind::Let)));
+    assert!(binding(&names, CODE, "values", 1).is_some());
+    assert_eq!(binding(&names, CODE, "values", 1), binding(&names, CODE, "values", 2));
+    assert_eq!(
+        names.binding_errors(),
+        [BindingError::OutOfScope {
+            name: span(CODE, "entry", 2),
+            local: declared(CODE, "entry", 0, LocalKind::Const)
+        }]
+    );
+}
+
+#[test]
 fn redeclaring_a_name_an_enclosing_block_declares_is_a_binding_error() {
     const CODE: &str = "class Report\n{\n    public int run(int count)\n    {\n        let total = 1;\n        {\n            let total = 2;\n            let count = 3;\n        }\n        return total;\n    }\n}\n";
     let arena = LocalArena::new();

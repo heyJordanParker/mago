@@ -67,6 +67,7 @@ pub enum sharp_kind {
     SHARP_AST_CONTINUE,
     SHARP_AST_FOR,
     SHARP_AST_EXPR_LIST,
+    SHARP_AST_FOREACH,
 }
 
 #[repr(u8)]

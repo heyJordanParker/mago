@@ -962,6 +962,56 @@ fn for_loops_are_for_nodes_with_an_expression_list_per_part() {
     );
 }
 
+/// ```php
+/// foreach (\Lib\Calc::make(2) as $value) {
+///     $extra += $value;
+/// }
+/// foreach (\Lib\Calc::make(3) as $key => $value) {
+/// }
+/// ```
+///
+/// `FOREACH` takes the collection, the value variable, the key variable or null, and the body.
+#[test]
+fn for_of_loops_are_foreach_nodes_with_the_value_before_the_key() {
+    assert_eq!(
+        body(
+            "        for (const value of Calc.make(2)) {\n            extra += value;\n        }\n        for (let [key, value] of Calc.make(3)) {\n        }\n        return extra;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              FOREACH
+                STATIC_CALL
+                  ZVAL "Lib\\Calc"
+                  ZVAL "make"
+                  ARG_LIST
+                    ZVAL 2
+                VAR
+                  ZVAL "value"
+                null
+                STMT_LIST
+                  ASSIGN_OP [1]
+                    VAR
+                      ZVAL "extra"
+                    VAR
+                      ZVAL "value"
+              FOREACH
+                STATIC_CALL
+                  ZVAL "Lib\\Calc"
+                  ZVAL "make"
+                  ARG_LIST
+                    ZVAL 3
+                VAR
+                  ZVAL "value"
+                VAR
+                  ZVAL "key"
+                STMT_LIST
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
 /// The child count `zend_ast_get_num_children` gives a fixed-size kind, or 5 for a declaration. `None` for a list.
 fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
     match kind {
@@ -1001,7 +1051,7 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         sharp_kind::SHARP_AST_METHOD_CALL | sharp_kind::SHARP_AST_STATIC_CALL | sharp_kind::SHARP_AST_CONST_ELEM => {
             Some(3)
         }
-        sharp_kind::SHARP_AST_FOR => Some(4),
+        sharp_kind::SHARP_AST_FOR | sharp_kind::SHARP_AST_FOREACH => Some(4),
         sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_CLASS => Some(5),
         sharp_kind::SHARP_AST_PARAM => Some(6),
     }

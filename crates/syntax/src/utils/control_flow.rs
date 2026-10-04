@@ -139,6 +139,10 @@ pub fn find_control_flows_in_statement<'arena>(statement: &'arena Statement<'are
                 }
             }
         }
+        Statement::ForOf(for_of) => {
+            controls.extend(find_control_flows_in_expression(for_of.expression));
+            controls.extend(find_control_flows_in_statement(for_of.body));
+        }
         Statement::While(r#while) => {
             controls.extend(find_control_flows_in_expression(r#while.condition));
 

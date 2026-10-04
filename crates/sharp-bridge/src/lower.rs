@@ -25,6 +25,7 @@ use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::For;
 use mago_syntax::cst::ForBody;
+use mago_syntax::cst::ForOfTarget;
 use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::Hint;
 use mago_syntax::cst::If;
@@ -65,6 +66,7 @@ use crate::sharp_kind::SHARP_AST_DECLARE;
 use crate::sharp_kind::SHARP_AST_DO_WHILE;
 use crate::sharp_kind::SHARP_AST_EXPR_LIST;
 use crate::sharp_kind::SHARP_AST_FOR;
+use crate::sharp_kind::SHARP_AST_FOREACH;
 use crate::sharp_kind::SHARP_AST_GREATER;
 use crate::sharp_kind::SHARP_AST_GREATER_EQUAL;
 use crate::sharp_kind::SHARP_AST_IF;
@@ -334,6 +336,18 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             Statement::LocalDeclaration(local) => self.local(local),
             Statement::If(r#if) => self.r#if(r#if),
             Statement::For(r#for) => self.r#for(r#for),
+            Statement::ForOf(for_of) => {
+                let collection = self.expression(for_of.expression);
+                let (key, value) = match &for_of.target {
+                    ForOfTarget::Value(value) => (NULL, self.variable(value.span, value.value)),
+                    ForOfTarget::KeyValue(pair) => {
+                        (self.variable(pair.key.span, pair.key.value), self.variable(pair.value.span, pair.value.value))
+                    }
+                };
+                let body = self.statement(for_of.body);
+
+                self.node(SHARP_AST_FOREACH, 0, self.line(for_of), &[collection, value, key, body])
+            }
             Statement::While(r#while) => {
                 let WhileBody::Statement(body) = &r#while.body else {
                     unreachable!("check_slice refuses a colon-delimited `while`");

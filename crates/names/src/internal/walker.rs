@@ -19,6 +19,7 @@ use mago_syntax::cst::Enum;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::Extends;
 use mago_syntax::cst::For;
+use mago_syntax::cst::ForOf;
 use mago_syntax::cst::Function;
 use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::FunctionLikeParameter;
@@ -307,6 +308,21 @@ where
         if self.sharp {
             self.locals.exit_block();
         }
+    }
+
+    /// A `for … of` loop is a block of its own. The collection binds before the loop variables exist, and the loop
+    /// variables live until the loop ends.
+    fn walk_for_of(&mut self, for_of: &'ast ForOf<'arena>, context: &mut NameResolutionContext<'arena, A>) {
+        self.locals.enter_block();
+        self.walk_expression(for_of.expression, context);
+
+        let kind = if for_of.is_const() { LocalKind::Const } else { LocalKind::Let };
+        for name in for_of.target.names() {
+            self.declare(name.value, name.span, kind);
+        }
+
+        self.walk_statement(for_of.body, context);
+        self.locals.exit_block();
     }
 
     fn walk_out_function_like_parameter(

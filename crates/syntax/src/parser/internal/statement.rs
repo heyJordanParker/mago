@@ -128,7 +128,7 @@ where
             T!["if"] => Statement::If(self.parse_if()?),
             T!["switch"] => Statement::Switch(self.parse_switch()?),
             T!["foreach"] => Statement::Foreach(self.parse_foreach()?),
-            T!["for"] => Statement::For(self.parse_for()?),
+            T!["for"] => self.parse_for()?,
             T!["while"] => Statement::While(self.parse_while()?),
             T!["do"] => Statement::DoWhile(self.parse_do_while()?),
             T!["continue"] => Statement::Continue(self.parse_continue()?),

@@ -94,6 +94,12 @@ class Report
         }
         for (total = 0; total < 3; total++, times--) {
         }
+        for (const value of Calc.values()) {
+            total += value;
+        }
+        for (let [key, value] of Calc.values()) {
+            total += key * value;
+        }
         return total;
     }
 }

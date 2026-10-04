@@ -24,6 +24,7 @@ use mago_syntax::cst::Continue;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::For;
 use mago_syntax::cst::ForBody;
+use mago_syntax::cst::ForOf;
 use mago_syntax::cst::Function;
 use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::FunctionLikeParameter;
@@ -76,8 +77,9 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - Types: `int`, `float`, `bool`, `string` and a class written by its short name, and `void` as a return type.
 ///   PHP's own check reports a `void` parameter.
 /// - In a method body: blocks, expression statements, `return`, `let` and `const` declarations, `if` with `else if`
-///   and `else`, `while`, `do … while`, `for` with a `let` or `const` counter or with expressions, and `break` and
-///   `continue` without a level. The body of `if`, `else` and each loop is a block in braces.
+///   and `else`, `while`, `do … while`, `for` with a `let` or `const` counter or with expressions, `for … of` over a
+///   value or a key and value, and `break` and `continue` without a level. The body of `if`, `else` and each loop is a
+///   block in braces.
 /// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter or a member written
 ///   `object.name`.
 /// - In expressions: literals, parentheses, bare names, assignment, the operators below, and method calls and
@@ -274,6 +276,7 @@ fn enter(
                 | Statement::While(_)
                 | Statement::DoWhile(_)
                 | Statement::For(_)
+                | Statement::ForOf(_)
                 | Statement::Break(Break { level: None, .. })
                 | Statement::Continue(Continue { level: None, .. }),
             )
@@ -290,7 +293,10 @@ fn enter(
             | Node::WhileBody(WhileBody::Statement(_))
             | Node::DoWhile(_)
             | Node::For(_)
-            | Node::ForBody(ForBody::Statement(_)),
+            | Node::ForBody(ForBody::Statement(_))
+            | Node::ForOf(_)
+            | Node::ForOfTarget(_)
+            | Node::ForOfKeyValueTarget(_),
             Body,
         ) => Some(Body),
 
@@ -478,6 +484,7 @@ fn has_braces(statement: &Statement) -> bool {
         }
         Statement::While(While { body: WhileBody::Statement(body), .. })
         | Statement::For(For { body: ForBody::Statement(body), .. }) => is_block(body),
+        Statement::ForOf(for_of) => is_block(for_of.body),
         Statement::DoWhile(do_while) => is_block(do_while.statement),
         _ => true,
     }
@@ -625,7 +632,7 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, a name, and an optional default."
         }
         Place::Body => {
-            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const`, `if` with `else if` and `else`, `while`, `do … while`, `for`, and `break` and `continue` without a level, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `++` and `--`, and method calls and property reads written with `.`."
+            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const`, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, and `break` and `continue` without a level, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `++` and `--`, and method calls and property reads written with `.`."
         }
         Place::Default => {
             "A parameter default is a literal, a constant, or arithmetic, comparison and logical operators on them."
@@ -696,6 +703,13 @@ fn check_const_write(target: &Expression, write: &str, context: &mut Context<'_,
 #[inline]
 pub fn check_local_declaration(local_declaration: &LocalDeclaration, context: &mut Context<'_, '_, '_>) {
     check_local_name(local_declaration.name.value, local_declaration.name.span, "local", context);
+}
+
+#[inline]
+pub fn check_for_of(for_of: &ForOf, context: &mut Context<'_, '_, '_>) {
+    for name in for_of.target.names() {
+        check_local_name(name.value, name.span, "loop variable", context);
+    }
 }
 
 #[inline]

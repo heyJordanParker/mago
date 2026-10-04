@@ -4,6 +4,7 @@ use crate::T;
 use crate::cst::cst::For;
 use crate::cst::cst::ForBody;
 use crate::cst::cst::ForColonDelimitedBody;
+use crate::cst::cst::Statement;
 use crate::cst::sequence::Sequence;
 use crate::cst::sequence::TokenSeparatedSequence;
 use crate::error::ParseError;
@@ -14,12 +15,17 @@ impl<'arena, A> Parser<'_, 'arena, A>
 where
     A: Arena,
 {
-    pub(crate) fn parse_for(&mut self) -> Result<For<'arena>, ParseError> {
+    /// Parses a `for` loop, or a PHP# `for … of` loop when its header declares a loop variable followed by `of`.
+    pub(crate) fn parse_for(&mut self) -> Result<Statement<'arena>, ParseError> {
         let r#for = self.expect_keyword(T!["for"])?;
         let left_parenthesis = self.stream.eat_span(T!["("])?;
+        if self.is_at_for_of()? {
+            return Ok(Statement::ForOf(self.parse_for_of(r#for, left_parenthesis)?));
+        }
+
         let declaration = if self.is_at_local_declaration()? { Some(self.parse_local_declaration()?) } else { None };
 
-        Ok(For {
+        Ok(Statement::For(For {
             r#for,
             left_parenthesis,
             initializations: {
@@ -96,7 +102,7 @@ where
             },
             right_parenthesis: self.stream.eat_span(T![")"])?,
             body: self.parse_for_body()?,
-        })
+        }))
     }
 
     fn parse_for_body(&mut self) -> Result<ForBody<'arena>, ParseError> {
