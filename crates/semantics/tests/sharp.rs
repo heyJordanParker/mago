@@ -67,7 +67,6 @@ fn every_construct_outside_the_slice_is_not_supported_yet() {
             "24:25 This expression is not supported yet in PHP#.",
             "25:25 This expression is not supported yet in PHP#.",
             "26:22 This expression is not supported yet in PHP#.",
-            "26:30 PHP# variables have no `$`: write `extra`.",
         ]
     );
 }
@@ -146,11 +145,7 @@ fn dollar_variables_are_errors() {
 
     assert_eq!(
         issues(code),
-        [
-            "7:9 PHP# variables have no `$`: write `total`.",
-            "8:9 Variable variables are not part of PHP#.",
-            "8:10 PHP# variables have no `$`: write `total`.",
-        ]
+        ["7:9 PHP# variables have no `$`: write `total`.", "8:9 Variable variables are not part of PHP#.",]
     );
 }
 
@@ -172,9 +167,15 @@ fn compact_extract_and_global_are_errors() {
             "7:9 `compact()` is not part of PHP#.",
             "8:9 `extract()` is not part of PHP#.",
             "9:9 `global` is not part of PHP#.",
-            "9:16 PHP# variables have no `$`: write `config`.",
         ]
     );
+}
+
+#[test]
+fn a_dollar_variable_in_a_string_reports_one_error() {
+    let code = leak(method("        return \"{$extra}\";\n"));
+
+    assert_eq!(issues(code), ["7:16 This expression is not supported yet in PHP#."]);
 }
 
 #[test]

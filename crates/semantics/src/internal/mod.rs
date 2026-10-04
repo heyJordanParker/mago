@@ -39,7 +39,6 @@ use mago_syntax::cst::Try;
 use mago_syntax::cst::UnaryPostfix;
 use mago_syntax::cst::UnaryPrefix;
 use mago_syntax::cst::UnaryPrefixOperator;
-use mago_syntax::cst::Variable;
 use mago_syntax::walker::Walker;
 
 use crate::internal::context::Context;
@@ -221,13 +220,6 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingW
     fn walk_in_global(&self, global: &'ast Global<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
         if context.program.dialect.is_sharp() {
             checker::sharp::check_global(global, context);
-        }
-    }
-
-    #[inline]
-    fn walk_in_variable(&self, variable: &'ast Variable<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
-        if context.program.dialect.is_sharp() {
-            checker::sharp::check_variable(variable, context);
         }
     }
 

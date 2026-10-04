@@ -299,11 +299,15 @@ fn enter(
             Some(Body)
         }
 
-        // PHP# never has top-level functions, `global`, `$` variables, `compact()`, `extract()` or a member called
-        // without `this.`: `check_function`, `check_global`, `check_variable` and `check_function_call` report them.
-        (Node::Statement(Statement::Function(_)), File)
-        | (Node::Statement(Statement::Global(_)), Body)
-        | (Node::Expression(Expression::Variable(_)), Body | Default) => None,
+        // PHP# never has `$` variables. A `$` variable inside a construct the walk refuses adds no second error.
+        (Node::Expression(Expression::Variable(variable)), Body | Default) => {
+            check_variable(variable, context);
+
+            None
+        }
+        // PHP# never has top-level functions, `global`, `compact()`, `extract()` or a member called without `this.`:
+        // `check_function`, `check_global` and `check_function_call` report them.
+        (Node::Statement(Statement::Function(_)), File) | (Node::Statement(Statement::Global(_)), Body) => None,
         (Node::Expression(Expression::Call(Call::Function(function_call))), Body)
             if is_checked_function_call(function_call, context) =>
         {
@@ -769,8 +773,7 @@ pub fn check_global(global: &Global, context: &mut Context<'_, '_, '_>) {
     );
 }
 
-#[inline]
-pub fn check_variable(variable: &Variable, context: &mut Context<'_, '_, '_>) {
+fn check_variable(variable: &Variable, context: &mut Context<'_, '_, '_>) {
     match variable {
         Variable::Direct(direct) => report_dollar_variable(direct.name, direct.span, context),
         Variable::Indirect(_) | Variable::Nested(_) => context.report(
