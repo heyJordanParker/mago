@@ -166,7 +166,8 @@ impl std::fmt::Display for ParseError {
             ParseError::RecursionLimitExceeded(_) => "Maximum recursion depth exceeded".to_string(),
             ParseError::PhpSyntaxInSharp(kind, _) => match kind {
                 T!["->"] => "`->` is PHP syntax: PHP# writes member access with `.`".to_string(),
-                T!["?->"] => "`?->` is PHP syntax: PHP# writes member access with `.`".to_string(),
+                T!["?->"] => "`?->` is PHP syntax: PHP# writes null-safe member access with `?.`".to_string(),
+                T!["?"] => "`?` before a type is PHP syntax: PHP# writes it after the type, as in `int?`".to_string(),
                 T!["::"] => "`::` is PHP syntax: PHP# writes static access with `.`".to_string(),
                 T![".="] => "`.=` is PHP syntax: in PHP# `.` is member access".to_string(),
                 T!["function"] => "`function` is PHP syntax: a PHP# method starts with its return type".to_string(),

@@ -259,6 +259,13 @@ fn reassigning_a_const_local_is_an_error() {
 }
 
 #[test]
+fn null_coalescing_assignment_to_a_const_local_is_an_error() {
+    let code = leak(method("        const base = null;\n        base ??= 3;\n        return base;\n"));
+
+    assert_eq!(issues(code), ["8:9 Cannot assign to `base`: it is declared with `const`."]);
+}
+
+#[test]
 fn reassigning_a_const_local_spelled_in_capitals_is_an_error() {
     let code = leak(method("        CONST base = 2;\n        base = 3;\n        return base;\n"));
 
@@ -394,6 +401,35 @@ fn writing_a_static_member_is_not_supported_yet() {
             "7:9 Writing `Calc.rate` is not supported yet.",
             "8:9 Writing `Calc.count` is not supported yet.",
             "9:9 Reading `Calc.rate` without a call is not supported yet.",
+        ]
+    );
+}
+
+#[test]
+fn null_safe_access_on_a_class_is_an_error_that_names_the_dot() {
+    let code = leak(method("        Calc?.make();\n        return Calc?.rate;\n"));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:9 `Calc` is a class, which is never null: write `Calc.make`.",
+            "8:16 `Calc` is a class, which is never null: write `Calc.rate`.",
+        ]
+    );
+}
+
+#[test]
+fn a_write_through_null_safe_access_is_not_supported() {
+    let code = leak(method(
+        "        this?.count = 1;\n        this?.count ??= 2;\n        this?.count++;\n        return 1;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:9 This write target is not supported yet in PHP#.",
+            "8:9 This write target is not supported yet in PHP#.",
+            "9:9 This write target is not supported yet in PHP#.",
         ]
     );
 }
@@ -619,13 +655,12 @@ fn a_variadic_parameter_is_not_supported_yet() {
 #[test]
 fn operators_outside_the_slice_are_not_supported_yet() {
     let code = leak(method(
-        "        let a = extra ?? 1;\n        a = @extra;\n        a = (int) extra;\n        a = extra ** 2;\n        a = extra & 1;\n        a = extra | 1;\n        a = extra ^ 1;\n        a = extra << 1;\n        a = extra >> 1;\n        a = ~extra;\n        a = extra xor true;\n        a = extra and true;\n        a = extra or true;\n        a = extra <=> 1;\n        a = extra <> 1;\n        a %= 2;\n        a **= 2;\n        a &= 2;\n        a ??= 2;\n        return a;\n",
+        "        let a = extra;\n        a = @extra;\n        a = (int) extra;\n        a = extra ** 2;\n        a = extra & 1;\n        a = extra | 1;\n        a = extra ^ 1;\n        a = extra << 1;\n        a = extra >> 1;\n        a = ~extra;\n        a = extra xor true;\n        a = extra and true;\n        a = extra or true;\n        a = extra <=> 1;\n        a = extra <> 1;\n        a %= 2;\n        a **= 2;\n        a &= 2;\n        return a;\n",
     ));
 
     assert_eq!(
         issues(code),
         [
-            "7:23 This operator is not supported yet in PHP#.",
             "8:13 This operator is not supported yet in PHP#.",
             "9:13 This operator is not supported yet in PHP#.",
             "10:19 This operator is not supported yet in PHP#.",
@@ -643,7 +678,6 @@ fn operators_outside_the_slice_are_not_supported_yet() {
             "22:11 This operator is not supported yet in PHP#.",
             "23:11 This operator is not supported yet in PHP#.",
             "24:11 This operator is not supported yet in PHP#.",
-            "25:11 This operator is not supported yet in PHP#.",
         ]
     );
 }
@@ -657,20 +691,27 @@ fn a_member_name_written_as_an_expression_is_not_supported_yet() {
 
 #[test]
 fn types_outside_the_slice_are_not_supported_yet() {
-    let code = "class Report\n{\n    public mixed run(?int a, int|string b, iterable c, callable d, (Lib&Other)|null e)\n    {\n        return 1;\n    }\n\n    public self make(Lib f, float g, bool h, string i)\n    {\n        return this;\n    }\n}\n";
+    let code = "class Report\n{\n    public mixed run(iterable? a, int|string b, iterable c, callable d, (Lib&Other)|null e)\n    {\n        return 1;\n    }\n\n    public self make(Lib f, float g, bool h, string i)\n    {\n        return this;\n    }\n}\n";
 
     assert_eq!(
         issues(code),
         [
             "3:12 This type is not supported yet in PHP#.",
             "3:22 This type is not supported yet in PHP#.",
-            "3:30 This type is not supported yet in PHP#.",
-            "3:44 This type is not supported yet in PHP#.",
-            "3:56 This type is not supported yet in PHP#.",
-            "3:68 This type is not supported yet in PHP#.",
+            "3:35 This type is not supported yet in PHP#.",
+            "3:49 This type is not supported yet in PHP#.",
+            "3:61 This type is not supported yet in PHP#.",
+            "3:73 This type is not supported yet in PHP#.",
             "8:12 This type is not supported yet in PHP#.",
         ]
     );
+}
+
+#[test]
+fn a_nullable_void_reports_only_the_php_error() {
+    let code = "class Report\n{\n    public void? run()\n    {\n    }\n}\n";
+
+    assert_eq!(issues(code), ["3:12 Type `void` cannot be nullable."]);
 }
 
 #[test]
@@ -681,16 +722,10 @@ fn a_by_reference_parameter_is_not_supported_yet() {
 }
 
 #[test]
-fn a_parameter_without_a_type_is_an_error() {
+fn a_dollar_parameter_without_a_type_reports_only_the_dollar_error() {
     let code = leak(method("        return 1;\n").replace("int extra", "$extra"));
 
-    assert_eq!(
-        issues(code),
-        [
-            "5:20 A parameter without a type is not supported in PHP#.",
-            "5:20 PHP# variables have no `$`: write `extra`."
-        ]
-    );
+    assert_eq!(issues(code), ["5:20 PHP# variables have no `$`: write `extra`."]);
 }
 
 #[test]

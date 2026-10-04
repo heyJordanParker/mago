@@ -51,14 +51,38 @@ class Report
     public void touch(Calc calc)
     {
         calc.rate = 2;
+        calc.rate += 1;
+        calc.rate++;
+        this.count += 1;
         calc.add(1, 2);
         const made = Calc.make();
         const read = calc.rate;
+        const chained = Calc.make().add(1).rate;
+        const sum = Calc.make().add(1, 2);
+        const big = 0xFFFFFFFFFFFFFFFF;
+        return;
     }
 
     public Report same()
     {
         return this;
+    }
+
+    private float ratio()
+    {
+        return 0.5;
+    }
+
+    public Calc? find(int? id, Calc? fallback = null, string? label = "none", float? rate = null, bool? on = null ?? true)
+    {
+        const first = id ?? 0;
+        let second = id;
+        second ??= first;
+        id ??= 1;
+        fallback.rate ??= rate;
+        const sum = fallback?.add(1, 2) ?? fallback?.rate;
+        const again = this?.find(id)?.rate.cents;
+        return fallback ?? null;
     }
 
     public int branch(int value)

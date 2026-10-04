@@ -239,6 +239,27 @@ fn the_root_end_line_is_the_last_line_the_zend_scanner_counts() {
     assert_eq!(end_lines, [1, 2, 2, 2, 5]);
 }
 
+/// Node lines, declaration lines and diagnostic lines count a lone `\r` as a line ending too.
+#[test]
+fn every_line_is_the_line_the_zend_scanner_counts() {
+    let class = Lowered::new("class Report\r\n{\r}\n\n");
+    let root = &class.nodes()[class.unit().root as usize];
+    let declaration = &class.nodes()[class.child(class.unit().root, 1) as usize];
+    assert_eq!((declaration.line, declaration.end_line, root.end_line), (1, 3, 5));
+
+    let method = Lowered::new("class Report\r{\r    public int run()\r    {\r        return 1;\r    }\r}\r");
+    let lines: Vec<(String, u32, u32)> = method
+        .nodes()
+        .iter()
+        .filter(|node| node.kind == sharp_kind::SHARP_AST_METHOD || node.kind == sharp_kind::SHARP_AST_RETURN)
+        .map(|node| (format!("{:?}", node.kind), node.line, node.end_line))
+        .collect();
+    assert_eq!(lines, [("SHARP_AST_RETURN".to_owned(), 5, 0), ("SHARP_AST_METHOD".to_owned(), 3, 6)]);
+
+    let refused = Lowered::new("class Report\r{\r    public void run() { echo 1; }\r}\r");
+    assert_eq!(refused.diagnostics(), ["3:25 compile error: This statement is not supported yet in PHP#."]);
+}
+
 /// ```php
 /// <?php
 /// declare(strict_types=1);
@@ -421,6 +442,47 @@ fn parameters_carry_their_type_name_and_default() {
 }
 
 /// ```php
+/// public function find(?int $id, ?\Lib\Calc $other = null): ?\Lib\Calc { return null; }
+/// ```
+///
+/// `[256]` is `ZEND_TYPE_NULLABLE`, which php-src's grammar adds to the type's attr, and `[257]` adds it to
+/// `ZEND_NAME_NOT_FQ`.
+#[test]
+fn a_nullable_type_is_its_type_with_the_nullable_flag() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public Calc? find(int? id, Calc? other = null) { return null; }\n}\n",
+    );
+    let method = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a method");
+
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 0)),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                ZVAL [257] "int"
+                ZVAL "id"
+                null
+                null
+                null
+                null
+              PARAM
+                ZVAL [256] "Lib\\Calc"
+                ZVAL "other"
+                ZVAL null
+                null
+                null
+                null
+        "#}
+    );
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 3)),
+        indoc! {r#"
+            ZVAL [256] "Lib\\Calc"
+        "#}
+    );
+}
+
+/// ```php
 /// public function run(): void
 /// {
 ///     return;
@@ -561,6 +623,29 @@ fn member_calls_and_reads_on_values_are_instance_access() {
                         ZVAL "rate"
                         ZVAL 2
                   ZVAL "value"
+        "#}
+    );
+}
+
+/// ```php
+/// return \Lib\Calc::make()->add($extra);
+/// ```
+#[test]
+fn a_call_on_a_static_call_result_is_an_instance_call() {
+    assert_eq!(
+        body("        return Calc.make().add(extra);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                METHOD_CALL
+                  STATIC_CALL
+                    ZVAL "Lib\\Calc"
+                    ZVAL "make"
+                    ARG_LIST
+                  ZVAL "add"
+                  ARG_LIST
+                    VAR
+                      ZVAL "extra"
         "#}
     );
 }
@@ -742,6 +827,84 @@ fn compound_assignments_are_assign_ops() {
     let operators: Vec<&str> = tree.lines().filter(|line| line.starts_with("  ") && !line.starts_with("   ")).collect();
 
     assert_eq!(operators, ["  ASSIGN", "  ASSIGN_OP [2]", "  ASSIGN_OP [3]", "  ASSIGN_OP [4]", "  RETURN"]);
+}
+
+/// ```php
+/// return $extra ?? $this->total() ?? 0;
+/// ```
+///
+/// `??` is right-associative, as php-src's grammar declares it.
+#[test]
+fn null_coalescing_is_coalesce() {
+    assert_eq!(
+        body("        return extra ?? this.total() ?? 0;\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                COALESCE
+                  VAR
+                    ZVAL "extra"
+                  COALESCE
+                    METHOD_CALL
+                      VAR
+                        ZVAL "this"
+                      ZVAL "total"
+                      ARG_LIST
+                    ZVAL 0
+        "#}
+    );
+}
+
+/// ```php
+/// $extra ??= 1; $this->count ??= $extra;
+/// ```
+#[test]
+fn null_coalescing_assignment_is_assign_coalesce() {
+    assert_eq!(
+        body("        extra ??= 1;\n        this.count ??= extra;\n        return extra;\n"),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN_COALESCE
+                VAR
+                  ZVAL "extra"
+                ZVAL 1
+              ASSIGN_COALESCE
+                PROP
+                  VAR
+                    ZVAL "this"
+                  ZVAL "count"
+                VAR
+                  ZVAL "extra"
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
+/// return $this?->total($extra)?->value->cents;
+/// ```
+#[test]
+fn null_safe_calls_and_reads_are_nullsafe_kinds() {
+    assert_eq!(
+        body("        return this?.total(extra)?.value.cents;\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                PROP
+                  NULLSAFE_PROP
+                    NULLSAFE_METHOD_CALL
+                      VAR
+                        ZVAL "this"
+                      ZVAL "total"
+                      ARG_LIST
+                        VAR
+                          ZVAL "extra"
+                    ZVAL "value"
+                  ZVAL "cents"
+        "#}
+    );
 }
 
 /// ```php
@@ -1045,12 +1208,16 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_DECLARE
         | sharp_kind::SHARP_AST_NAMESPACE
         | sharp_kind::SHARP_AST_NAMED_ARG
+        | sharp_kind::SHARP_AST_COALESCE
+        | sharp_kind::SHARP_AST_ASSIGN_COALESCE
+        | sharp_kind::SHARP_AST_NULLSAFE_PROP
         | sharp_kind::SHARP_AST_IF_ELEM
         | sharp_kind::SHARP_AST_WHILE
         | sharp_kind::SHARP_AST_DO_WHILE => Some(2),
-        sharp_kind::SHARP_AST_METHOD_CALL | sharp_kind::SHARP_AST_STATIC_CALL | sharp_kind::SHARP_AST_CONST_ELEM => {
-            Some(3)
-        }
+        sharp_kind::SHARP_AST_METHOD_CALL
+        | sharp_kind::SHARP_AST_STATIC_CALL
+        | sharp_kind::SHARP_AST_CONST_ELEM
+        | sharp_kind::SHARP_AST_NULLSAFE_METHOD_CALL => Some(3),
         sharp_kind::SHARP_AST_FOR | sharp_kind::SHARP_AST_FOREACH => Some(4),
         sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_CLASS => Some(5),
         sharp_kind::SHARP_AST_PARAM => Some(6),

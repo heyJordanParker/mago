@@ -182,6 +182,17 @@ fn a_name_before_a_partial_method_application_is_a_class() {
 }
 
 #[test]
+fn a_name_before_null_safe_access_is_a_class_unless_it_is_a_local() {
+    const CODE: &str = "class Report\n{\n    public void run(Calc calc)\n    {\n        Calc?.make();\n        Money?.rate;\n        calc?.add(1);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "Calc?", 0), Some(Binding::Class));
+    assert_eq!(binding(&names, CODE, "Money?", 0), Some(Binding::Class));
+    assert_eq!(binding(&names, CODE, "calc?", 0), Some(local(CODE, "calc", 0, LocalKind::Parameter)));
+}
+
+#[test]
 fn a_static_call_is_a_method_call_whose_object_binds_as_a_class() {
     const CODE: &str = "class Report\n{\n    public int run(Calc calc)\n    {\n        return Calc.make().add(1) + calc.add(2) + this.run(calc);\n    }\n}\n";
     let arena = LocalArena::new();
