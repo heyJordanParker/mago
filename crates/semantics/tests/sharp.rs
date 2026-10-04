@@ -495,6 +495,20 @@ fn a_write_goes_only_to_a_local_a_parameter_or_a_member() {
 }
 
 #[test]
+fn a_second_namespace_is_not_supported_yet() {
+    let code = "namespace A;\n\nclass Y\n{\n}\n\nnamespace B;\n\nimport B.X;\n\nclass X\n{\n}\n";
+
+    assert_eq!(issues(code), ["7:1 This namespace is not supported yet in PHP#."]);
+}
+
+#[test]
+fn a_braced_or_global_namespace_is_not_supported_yet() {
+    for code in ["namespace A\n{\n    class Y\n    {\n    }\n}\n", "namespace\n{\n    class Y\n    {\n    }\n}\n"] {
+        assert_eq!(issues(code), ["1:1 This namespace is not supported yet in PHP#."], "{code}");
+    }
+}
+
+#[test]
 fn a_spread_argument_is_not_supported_yet() {
     let code = leak(method("        const parts = this.parts();\n        return this.total(...parts);\n"));
 

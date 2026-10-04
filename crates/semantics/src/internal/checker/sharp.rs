@@ -28,6 +28,8 @@ use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::LocalIdentifier;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::Modifier;
+use mago_syntax::cst::Namespace;
+use mago_syntax::cst::NamespaceBody;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::Program;
 use mago_syntax::cst::Statement;
@@ -53,7 +55,8 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// Checks a PHP# file against the slice: the only constructs a `.sharp` file may use, and the contract the
 /// engine's lowering implements.
 ///
-/// - At file level: `namespace`, `import` and `class`.
+/// - At file level: `namespace`, `import` and `class`. A file has at most one namespace, named and written without
+///   braces.
 /// - A class: a name and methods, with no attributes, modifiers, `extends` or `implements`.
 /// - A method: `public`, `protected` or `private`, an optional `static`, parameters, a return type and a body. Its name
 ///   does not start with `__`, which PHP reserves for magic methods, and is not its class's name, compared ignoring
@@ -133,6 +136,16 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
     }
 
     match (node, place) {
+        (Node::Statement(Statement::Namespace(namespace)), File) if !is_slice_namespace(namespace, context.program) => {
+            report_not_supported(
+                namespace.r#namespace.span,
+                "namespace",
+                "A PHP# file has at most one namespace, written `namespace App.Tenant;` before its imports.",
+                context,
+            );
+
+            None
+        }
         (Node::Keyword(_) | Node::LocalIdentifier(_) | Node::Identifier(Identifier::Local(_)), _) => Some(place),
         (Node::Terminator(Terminator::Semicolon(_)), _) => Some(place),
 
@@ -307,6 +320,21 @@ fn is_slice_method(method: &Method, program: &Program) -> Result<(), (&'static s
     };
 
     Err(refusal)
+}
+
+/// Whether the slice has a namespace: the file's first, with a name and no braces.
+fn is_slice_namespace(namespace: &Namespace, program: &Program) -> bool {
+    namespace.name.is_some()
+        && matches!(namespace.body, NamespaceBody::Implicit(_))
+        && first_namespace(program).is_some_and(|first| first.span() == namespace.span())
+}
+
+/// The first namespace of a PHP# file, the only one the slice has.
+fn first_namespace<'ast, 'arena>(program: &'ast Program<'arena>) -> Option<&'ast Namespace<'arena>> {
+    program.statements.iter().find_map(|statement| match statement {
+        Statement::Namespace(namespace) => Some(namespace),
+        _ => None,
+    })
 }
 
 /// The expression a node writes: the left side of an assignment, or the operand of `++` or `--`.
@@ -597,10 +625,7 @@ pub fn check_class_name(class: &Class, context: &mut Context<'_, '_, '_>) {
 #[inline]
 pub fn check_declarations(program: &Program, context: &mut Context<'_, '_, '_>) {
     let (classes, imports) = declarations(program);
-    let namespace = program.statements.iter().find_map(|statement| match statement {
-        Statement::Namespace(namespace) => namespace.name.as_ref().map(php_name),
-        _ => None,
-    });
+    let namespace = first_namespace(program).and_then(|namespace| namespace.name.as_ref()).map(php_name);
 
     for (index, import) in imports.iter().enumerate() {
         let short_name = import.name.last_segment();
@@ -808,7 +833,7 @@ fn check_member_access(
     );
 }
 
-/// The classes and imports a PHP# file declares, in source order.
+/// The classes and imports a PHP# file declares at its top level and in its first namespace, in source order.
 fn declarations<'ast, 'arena>(
     program: &'ast Program<'arena>,
 ) -> (Vec<&'ast Class<'arena>>, Vec<&'ast UseItem<'arena>>) {
@@ -816,11 +841,11 @@ fn declarations<'ast, 'arena>(
     let mut imports = Vec::new();
     for statement in &program.statements {
         collect_declarations(statement, &mut classes, &mut imports);
-        if let Statement::Namespace(namespace) = statement {
-            for statement in namespace.statements() {
-                collect_declarations(statement, &mut classes, &mut imports);
-            }
-        }
+    }
+
+    // The slice refuses a second namespace, so its declarations are not the file's.
+    for statement in first_namespace(program).into_iter().flat_map(|namespace| namespace.statements().iter()) {
+        collect_declarations(statement, &mut classes, &mut imports);
     }
 
     (classes, imports)
