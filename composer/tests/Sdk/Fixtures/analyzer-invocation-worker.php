@@ -845,7 +845,17 @@ final class InvocationCallKindHook implements NodeAnalysisHook
 
     public function analyze(NodeAnalysisContext $context): void
     {
-        $call = CallExpression::fromNode($context->source, $context->node, $context->invocationKind);
+        $call = CallExpression::fromNode($context->source, $context->node);
+        InvocationAudit::record('call-kind-' . self::describe($context, $call));
+
+        $receiver = $call->receiver === null ? null : CallExpression::fromExpression($context->source, $call->receiver);
+        if ($receiver !== null) {
+            InvocationAudit::record('receiver-call-kind-' . self::describe($context, $receiver));
+        }
+    }
+
+    private static function describe(NodeAnalysisContext $context, CallExpression $call): string
+    {
         $name = $call->getName($context->source) ?? throw new RuntimeException(
             'A call-kind hook received an unnamed call.',
         );
@@ -855,7 +865,7 @@ final class InvocationCallKindHook implements NodeAnalysisHook
             default => 'other',
         };
 
-        InvocationAudit::record('call-kind-' . $name . '-' . $kind);
+        return $name . '-' . $kind;
     }
 }
 

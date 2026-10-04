@@ -17,5 +17,7 @@ final class ResolvedName
         public readonly Span $span,
         public readonly string $name,
         public readonly bool $imported,
+        /** What the bare PHP# name refers to, or null for a PHP name. */
+        public readonly ?Binding $binding = null,
     ) {}
 }

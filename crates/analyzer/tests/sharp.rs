@@ -12,6 +12,7 @@ use mago_analyzer::Analyzer;
 use mago_analyzer::analysis_result::AnalysisResult;
 use mago_analyzer::plugin::PluginRegistry;
 use mago_analyzer::plugin::context::HookContext;
+use mago_analyzer::plugin::hook::ExpressionHook;
 use mago_analyzer::plugin::hook::ExpressionHookResult;
 use mago_analyzer::plugin::hook::HookResult;
 use mago_analyzer::plugin::hook::StaticCall;
@@ -23,10 +24,14 @@ use mago_codex::populator::populate_codebase;
 use mago_codex::scanner::scan_program;
 use mago_database::DatabaseReader;
 use mago_database::file::File;
+use mago_names::binding::Binding;
 use mago_names::resolver::NameResolver;
 use mago_prelude::Prelude;
 use mago_span::HasSpan;
 use mago_span::Span;
+use mago_syntax::cst::Call;
+use mago_syntax::cst::ClassLikeMemberSelector;
+use mago_syntax::cst::Expression;
 use mago_syntax::parser::parse_file;
 use mago_word::WordSet;
 
@@ -376,6 +381,58 @@ impl StaticMethodCallHook for StaticCallRecorder {
 
         Ok(())
     }
+}
+
+/// Records each method call an expression hook sees, as static or instance by the binding of its object.
+#[derive(Clone, Default)]
+struct CallKindRecorder(Arc<Mutex<Vec<String>>>);
+
+impl Provider for CallKindRecorder {
+    fn meta() -> &'static ProviderMeta {
+        static META: ProviderMeta = ProviderMeta::new("test::call-kind", "call kind", "Records method call kinds.");
+
+        &META
+    }
+}
+
+impl ExpressionHook for CallKindRecorder {
+    fn before_expression(
+        &self,
+        expression: &Expression<'_>,
+        context: &mut HookContext<'_, '_>,
+    ) -> HookResult<ExpressionHookResult> {
+        if let Expression::Call(Call::Method(call)) = expression
+            && let ClassLikeMemberSelector::Identifier(method) = &call.method
+        {
+            let is_class = matches!(
+                call.object,
+                Expression::ConstantAccess(access) if context.resolved_names().binding(&access.name) == Some(Binding::Class)
+            );
+            let kind = if is_class { "static" } else { "instance" };
+            self.record(format!("{} {kind}", String::from_utf8_lossy(method.value)));
+        }
+
+        Ok(ExpressionHookResult::Continue)
+    }
+}
+
+impl CallKindRecorder {
+    fn record(&self, call: String) {
+        self.0.lock().unwrap().push(call);
+    }
+}
+
+#[test]
+fn an_expression_hook_tells_a_sharp_static_call_by_the_binding_of_its_object() {
+    let sharp = "namespace Demo;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public static int total()\n    {\n        return Calc.make().add(1, 2);\n    }\n}\n";
+    let recorder = CallKindRecorder::default();
+    let mut registry = PluginRegistry::default();
+    registry.register_expression_hook(recorder.clone());
+
+    let issues = issues_in(&registry, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Calc.php", CALC)]);
+
+    assert_eq!(issues, Vec::<String>::new());
+    assert_eq!(*recorder.0.lock().unwrap(), ["add instance", "make static"]);
 }
 
 #[test]

@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use mago_allocator::Arena;
 use mago_codex::context::ScopeContext;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
@@ -13,6 +14,7 @@ use mago_codex::ttype::atomic::scalar::string::TString;
 use mago_codex::ttype::atomic::scalar::string::TStringLiteral;
 use mago_codex::ttype::union::TUnion;
 use mago_database::file::File;
+use mago_names::ResolvedNames;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
@@ -26,6 +28,7 @@ use mago_word::word;
 
 use crate::artifacts::AnalysisArtifacts;
 use crate::code::IssueCode;
+use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::invocation::Invocation;
 use crate::invocation::InvocationArgument;
@@ -210,19 +213,30 @@ impl<'codebase, 'artifacts, 'block> ProviderContext<'codebase, 'artifacts, 'bloc
 pub struct HookContext<'ctx, 'block> {
     pub(crate) codebase: &'ctx CodebaseMetadata,
     pub(crate) source_file: &'ctx File,
+    pub(crate) resolved_names: &'ctx ResolvedNames<'ctx>,
     pub(crate) block_context: &'block mut BlockContext<'ctx>,
     pub(crate) artifacts: &'block mut AnalysisArtifacts,
     pub(crate) reported_issues: RefCell<Vec<ReportedIssue>>,
 }
 
 impl<'ctx, 'block> HookContext<'ctx, 'block> {
-    pub(crate) fn new(
-        codebase: &'ctx CodebaseMetadata,
-        source_file: &'ctx File,
+    pub(crate) fn new<'arena, A>(
+        context: &Context<'ctx, 'arena, A>,
         block_context: &'block mut BlockContext<'ctx>,
         artifacts: &'block mut AnalysisArtifacts,
-    ) -> Self {
-        Self { codebase, source_file, artifacts, block_context, reported_issues: RefCell::new(Vec::new()) }
+    ) -> Self
+    where
+        'arena: 'ctx,
+        A: Arena,
+    {
+        Self {
+            codebase: context.codebase,
+            source_file: context.source_file,
+            resolved_names: context.resolved_names,
+            artifacts,
+            block_context,
+            reported_issues: RefCell::new(Vec::new()),
+        }
     }
 
     /// Report an issue from a hook.
@@ -238,6 +252,13 @@ impl<'ctx, 'block> HookContext<'ctx, 'block> {
     #[inline]
     pub fn codebase(&self) -> &'ctx CodebaseMetadata {
         self.codebase
+    }
+
+    /// Get the file's resolved names, including what each bare PHP# name is bound to, such as the class `Calc` in
+    /// the static call `Calc.make()`.
+    #[inline]
+    pub fn resolved_names(&self) -> &'ctx ResolvedNames<'ctx> {
+        self.resolved_names
     }
 
     /// Get the type of an expression.

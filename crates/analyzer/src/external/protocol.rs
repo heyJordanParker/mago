@@ -181,8 +181,8 @@ const TARGET_EXACT: u8 = 1;
 const TARGET_PREFIX: u8 = 2;
 const TARGET_NAMESPACE: u8 = 3;
 const INVOCATION_FUNCTION: u8 = 1;
-pub(super) const INVOCATION_INSTANCE_METHOD: u8 = 2;
-pub(super) const INVOCATION_STATIC_METHOD: u8 = 3;
+const INVOCATION_INSTANCE_METHOD: u8 = 2;
+const INVOCATION_STATIC_METHOD: u8 = 3;
 
 const TYPE_REFERENCE: u8 = 0;
 const TYPE_MIXED: u8 = 1;

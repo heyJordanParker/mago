@@ -209,8 +209,7 @@ where
         }
 
         if self.plugin_registry.has_program_hooks() {
-            let mut hook_context =
-                HookContext::new(context.codebase, context.source_file, &mut block_context, &mut artifacts);
+            let mut hook_context = HookContext::new(&context, &mut block_context, &mut artifacts);
 
             if self.plugin_registry.before_program(self.source_file, program, &mut hook_context)? == HookAction::Skip {
                 for reported in hook_context.take_issues() {
@@ -243,8 +242,7 @@ where
 
         // Call after_program hooks
         if self.plugin_registry.has_program_hooks() {
-            let mut hook_context =
-                HookContext::new(context.codebase, context.source_file, &mut block_context, &mut artifacts);
+            let mut hook_context = HookContext::new(&context, &mut block_context, &mut artifacts);
             self.plugin_registry.after_program(self.source_file, program, &mut hook_context)?;
             for reported in hook_context.take_issues() {
                 context.collector.report_with_code(reported.code, reported.issue);

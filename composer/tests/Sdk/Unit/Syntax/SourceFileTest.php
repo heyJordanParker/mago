@@ -8,6 +8,7 @@ use Mago\Sdk\Internal\Syntax\NodeStore;
 use Mago\Sdk\Internal\Syntax\ResolvedNameStore;
 use Mago\Sdk\Internal\Syntax\TriviaStore;
 use Mago\Sdk\PHPVersion;
+use Mago\Sdk\Syntax\Binding;
 use Mago\Sdk\Syntax\NodeKind;
 use Mago\Sdk\Syntax\SourceFile;
 use Mago\Sdk\Syntax\TriviaKind;
@@ -28,7 +29,7 @@ final class SourceFileTest extends TestCase
         $nodeStore = new NodeStore([NodeKind::Program, NodeKind::FunctionCall], $nodeRecords, 3);
         $resolvedName = 'Psl\\Iter\\any';
         $nameStarts = pack('N', 1);
-        $nameRecords = pack('NNNC', 4, 0, strlen($resolvedName), 0);
+        $nameRecords = pack('NNNCC', 4, 0, strlen($resolvedName), 0, 3);
         $nameStore = new ResolvedNameStore($nameStarts, $nameRecords, $resolvedName, 1);
         $triviaStore = new TriviaStore(pack('CNN', 4, 0, 10), 1);
         $sourceFile = new SourceFile(
@@ -52,6 +53,7 @@ final class SourceFileTest extends TestCase
         self::assertSame(0, $sourceFile->getParent($targets[0])?->id);
         self::assertSame('123', $sourceFile->getText($targets[0]));
         self::assertSame($resolvedName, $sourceFile->getResolvedName($targets[0])?->name);
+        self::assertSame(Binding::ClassName, $sourceFile->getResolvedName($targets[0])?->binding);
         self::assertSame(TriviaKind::DocBlockComment, $sourceFile->getTrivia()[0]->kind);
     }
 }

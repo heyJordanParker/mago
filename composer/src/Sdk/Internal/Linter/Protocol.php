@@ -30,7 +30,7 @@ final class Protocol
     private const MAGIC = 'MLNT';
     private const MAGIC_U32 = 0x4D4C_4E54;
     private const MAJOR = 1;
-    private const MINOR = 0;
+    private const MINOR = 1;
     private const VERSION_U32 = (self::MAJOR << 16) | self::MINOR;
     private const DESCRIBE_RESPONSE = 0x8001;
     private const LINT_FILE_RESPONSE = 0x8002;

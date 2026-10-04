@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Mago\Sdk\Internal\Syntax;
 
+use Mago\Sdk\Exception\ProtocolException;
 use Mago\Sdk\Span;
+use Mago\Sdk\Syntax\Binding;
 use Mago\Sdk\Syntax\ResolvedName;
 
 use function array_flip;
@@ -20,7 +22,7 @@ use function unpack;
 final class ResolvedNameStore
 {
     public const START_SIZE = 4;
-    public const RECORD_SIZE = 13;
+    public const RECORD_SIZE = 14;
 
     /**
      * @var array<int<0, max>, ResolvedName>
@@ -100,6 +102,15 @@ final class ResolvedNameStore
             new Span($start, $record[1]),
             substr($this->bytes, $record[2], $record[3]),
             ord($this->records[$recordOffset + 12]) === 1,
+            match (ord($this->records[$recordOffset + 13])) {
+                0 => null,
+                1 => Binding::Local,
+                2 => Binding::This,
+                3 => Binding::ClassName,
+                4 => Binding::Constant,
+                5 => Binding::Member,
+                default => throw new ProtocolException('A resolved name has an unknown binding.'),
+            },
         );
     }
 }

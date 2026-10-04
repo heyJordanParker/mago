@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Mago\Sdk\Syntax;
 
-use Mago\Sdk\Analyzer\InvocationKind;
 use Mago\Sdk\Exception\InvalidArgumentException;
 
 use function count;
@@ -32,18 +31,12 @@ final class CallExpression
         public readonly ?Node $receiver,
         public readonly ?Node $member,
         array $arguments,
-        private readonly ?InvocationKind $invocationKind,
+        private readonly bool $static,
     ) {
         $this->arguments = $arguments;
     }
 
-    /**
-     * Builds the view over a call node.
-     *
-     * Pass the analyzer's invocation kind when a hook has it, as `NodeAnalysisContext::$invocationKind`. A PHP# static
-     * call, `Calc.make()`, is a method-call node, and only the invocation kind tells it from an instance call.
-     */
-    public static function fromNode(SourceFile $source, Node $node, ?InvocationKind $invocationKind = null): self
+    public static function fromNode(SourceFile $source, Node $node): self
     {
         if (
             $node->kind !== NodeKind::FunctionCall
@@ -88,7 +81,14 @@ final class CallExpression
             );
         }
 
-        return new self($node, $callee, $function ? null : $callee, $member, $arguments, $invocationKind);
+        // A PHP# static call, `Calc.make()`, is a method call whose receiver is a bare name Mago bound to a class.
+        $static =
+            $node->kind === NodeKind::StaticMethodCall
+            || $node->kind === NodeKind::MethodCall
+            && $callee->kind === NodeKind::ConstantAccess
+            && $source->getResolvedName($callee)?->binding === Binding::ClassName;
+
+        return new self($node, $callee, $function ? null : $callee, $member, $arguments, $static);
     }
 
     public static function fromExpression(SourceFile $source, Node $node): ?self
@@ -119,17 +119,14 @@ final class CallExpression
 
     public function isStaticMethod(): bool
     {
-        return (
-            $this->node->kind === NodeKind::StaticMethodCall
-            || $this->invocationKind === InvocationKind::StaticMethod
-        );
+        return $this->static;
     }
 
     public function isMethod(): bool
     {
         return (
             ($this->node->kind === NodeKind::MethodCall || $this->node->kind === NodeKind::NullSafeMethodCall)
-            && $this->invocationKind !== InvocationKind::StaticMethod
+            && !$this->static
         );
     }
 

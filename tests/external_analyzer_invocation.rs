@@ -633,14 +633,18 @@ fn node_hooks_see_a_sharp_static_call_as_static_as_in_php() -> Result<(), Box<dy
         return Ok(());
     }
 
-    const SHARP: &str = "namespace Demo;\n\nclass Calc\n{\n    public static int make()\n    {\n        return 1;\n    }\n\n    public int add(int value)\n    {\n        return value;\n    }\n}\n\nclass Report\n{\n    public static int total(Calc calc)\n    {\n        return Calc.make() + calc.add(1);\n    }\n}\n";
-    const PHP: &str = "<?php\n\nnamespace Demo;\n\nclass Calc\n{\n    public static function make(): int\n    {\n        return 1;\n    }\n\n    public function add(int $value): int\n    {\n        return $value;\n    }\n}\n\nclass Report\n{\n    public static function total(Calc $calc): int\n    {\n        return Calc::make() + $calc->add(1);\n    }\n}\n";
+    const SHARP: &str = "namespace Demo;\n\nclass Calc\n{\n    public static Calc make(Calc calc)\n    {\n        return calc;\n    }\n\n    public int add(int value)\n    {\n        return value;\n    }\n}\n\nclass Report\n{\n    public static int total(Calc calc)\n    {\n        return Calc.make(calc).add(1);\n    }\n}\n";
+    const PHP: &str = "<?php\n\nnamespace Demo;\n\nclass Calc\n{\n    public static function make(Calc $calc): Calc\n    {\n        return $calc;\n    }\n\n    public function add(int $value): int\n    {\n        return $value;\n    }\n}\n\nclass Report\n{\n    public static function total(Calc $calc): int\n    {\n        return Calc::make($calc)->add(1);\n    }\n}\n";
 
     for (file, source) in [("src/Report.sharp", SHARP), ("src/Report.php", PHP)] {
         let observation = analyze_with_fixture(file, source, &["MAGO_INVOCATION_CALL_KINDS"])?;
 
         assert_eq!(observation.issues, [], "{file}");
-        assert_eq!(observation.invocations, ["call-kind-make-static", "call-kind-add-instance"], "{file}");
+        assert_eq!(
+            observation.invocations,
+            ["call-kind-add-instance", "receiver-call-kind-make-static", "call-kind-make-static"],
+            "{file}"
+        );
     }
 
     Ok(())

@@ -1,7 +1,9 @@
 //! Compact syntax snapshots shared by external linter and analyzer protocols.
 
 use mago_names::ResolvedNames;
+use mago_names::binding::Binding;
 use mago_span::HasSpan;
+use mago_span::Position;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::NodeKind;
 use mago_syntax::cst::Program;
@@ -18,7 +20,7 @@ pub const NO_NODE: u32 = u32::MAX;
 pub const NODE_RECORD_SIZE: usize = 21;
 
 /// Width of one packed resolved-name record, excluding its start column.
-pub const NAME_RECORD_SIZE: usize = 13;
+pub const NAME_RECORD_SIZE: usize = 14;
 
 /// Width of one packed comment-trivia record.
 pub const TRIVIA_RECORD_SIZE: usize = 9;
@@ -50,7 +52,8 @@ struct SnapshotNode {
 pub struct SourceSnapshot<'arena> {
     nodes: Vec<SnapshotNode>,
     targets: Vec<u32>,
-    names: Vec<(u32, u32, &'arena [u8], bool)>,
+    /// Each resolved name as `(start, end, name, imported, binding)`, the binding encoded by [`binding_code`].
+    names: Vec<(u32, u32, &'arena [u8], bool, u8)>,
     trivia: Vec<(u8, u32, u32)>,
 }
 
@@ -87,8 +90,8 @@ impl<'arena> SourceSnapshot<'arena> {
         let mut stack = Vec::with_capacity(64);
         Self::append_subtree(Node::Program(program), &mut is_target, &mut nodes, &mut targets, &mut stack)?;
 
-        let mut names = resolved_names.iter().collect::<Vec<_>>();
-        names.sort_unstable_by_key(|(start, end, _, _)| (*start, *end));
+        let mut names = resolved_names.iter().map(|name| with_binding(resolved_names, name)).collect::<Vec<_>>();
+        names.sort_unstable_by_key(|(start, end, _, _, _)| (*start, *end));
 
         Ok(Self { nodes, targets, names, trivia: collect_trivia(program) })
     }
@@ -185,8 +188,9 @@ impl<'arena> SourceSnapshot<'arena> {
                     .get(range_index)
                     .is_some_and(|(range_start, range_end)| range_start <= start && end <= range_end)
             })
+            .map(|name| with_binding(resolved_names, name))
             .collect::<Vec<_>>();
-        names.sort_unstable_by_key(|(start, end, _, _)| (*start, *end));
+        names.sort_unstable_by_key(|(start, end, _, _, _)| (*start, *end));
 
         Ok(Some(Self {
             nodes,
@@ -261,22 +265,23 @@ impl<'arena> SourceSnapshot<'arena> {
         }
 
         writer.write_length(self.names.len())?;
-        for (start, _, _, _) in &self.names {
+        for (start, _, _, _, _) in &self.names {
             writer.write_u32(*start);
         }
 
         let mut name_offset = 0usize;
-        for (_, end, name, imported) in &self.names {
+        for (_, end, name, imported, binding) in &self.names {
             writer.write_u32(*end);
             writer.write_length(name_offset)?;
             writer.write_length(name.len())?;
             writer.write_bool(*imported);
+            writer.write_u8(*binding);
             name_offset =
                 name_offset.checked_add(name.len()).ok_or(PayloadError::LengthOverflow { length: usize::MAX })?;
         }
 
         writer.write_length(name_offset)?;
-        for (_, _, name, _) in &self.names {
+        for (_, _, name, _, _) in &self.names {
             writer.write_raw(name);
         }
 
@@ -299,7 +304,7 @@ impl<'arena> SourceSnapshot<'arena> {
             .saturating_add(4)
             .saturating_add(self.names.len().saturating_mul(4 + NAME_RECORD_SIZE))
             .saturating_add(4)
-            .saturating_add(self.names.iter().map(|(_, _, name, _)| name.len()).sum::<usize>())
+            .saturating_add(self.names.iter().map(|(_, _, name, _, _)| name.len()).sum::<usize>())
             .saturating_add(4)
             .saturating_add(self.trivia.len().saturating_mul(TRIVIA_RECORD_SIZE))
     }
@@ -322,6 +327,28 @@ impl<'arena> SourceSnapshot<'arena> {
     #[must_use]
     pub const fn trivia_count(&self) -> usize {
         self.trivia.len()
+    }
+}
+
+/// Adds the binding of the bare PHP# name that starts the resolved name, so a hook can tell the class `Calc` in the
+/// static call `Calc.make()` from a local.
+fn with_binding<'arena>(
+    resolved_names: &ResolvedNames<'arena>,
+    (start, end, name, imported): (u32, u32, &'arena [u8], bool),
+) -> (u32, u32, &'arena [u8], bool, u8) {
+    (start, end, name, imported, binding_code(resolved_names.binding(&Position::new(start))))
+}
+
+/// The byte a resolved-name record carries for its binding: `0` for a PHP name, then one value per [`Binding`]
+/// variant in declaration order.
+const fn binding_code(binding: Option<Binding>) -> u8 {
+    match binding {
+        None => 0,
+        Some(Binding::Local(_)) => 1,
+        Some(Binding::This) => 2,
+        Some(Binding::Class) => 3,
+        Some(Binding::Constant) => 4,
+        Some(Binding::Member) => 5,
     }
 }
 

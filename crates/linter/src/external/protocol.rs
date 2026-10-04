@@ -39,7 +39,7 @@ use super::ExternalRule;
 
 pub const LINTER_PROTOCOL_MAGIC: [u8; 4] = *b"MLNT";
 pub const LINTER_PROTOCOL_MAJOR: u16 = 1;
-pub const LINTER_PROTOCOL_MINOR: u16 = 0;
+pub const LINTER_PROTOCOL_MINOR: u16 = 1;
 
 const HEADER_LENGTH: usize = 12;
 const DESCRIBE_REQUEST: u16 = 1;
@@ -555,6 +555,8 @@ pub(super) mod testing {
                 reader.read_u32("name length")? as usize,
                 reader.read_bool("imported")?,
             ));
+            // A PHP file's names have no binding, and the linter refuses PHP# files.
+            reader.read_u8("name binding")?;
         }
 
         let names_buffer = reader.read_bytes("resolved names")?;

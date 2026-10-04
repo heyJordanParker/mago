@@ -53,6 +53,7 @@ if ($resolved !== null) {
     $resolved->name;     // e.g. Psl\Iter\any
     $resolved->span;     // range of the name in source
     $resolved->imported; // whether an import participated
+    $resolved->binding;  // what a bare PHP# name refers to, or null in PHP
 }
 ```
 
@@ -92,7 +93,7 @@ foreach ($call->arguments as $argument) {
 }
 ```
 
-A targeted analysis hook passes `$context->invocationKind` as the third argument of `fromNode()`. A PHP# static call, `Calc.make()`, is a `MethodCall` node, and only that kind makes `isStaticMethod()` true and `isMethod()` false for it.
+A PHP# static call, `Calc.make()`, is a `MethodCall` node whose receiver is a bare name. Each resolved name of a PHP# file carries its `binding`, and `Calc` has `Binding::ClassName`, so `isStaticMethod()` is true and `isMethod()` false for that call. A PHP name has a `null` binding.
 
 `fromNode()` throws when its input is not a supported call node or the retained node is missing the expected call structure. `fromExpression()` unwraps expression and call wrappers and returns `null` when the selection is not a supported call.
 

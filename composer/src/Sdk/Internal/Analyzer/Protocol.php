@@ -1067,23 +1067,11 @@ final class Protocol
             $contents = $reader->readBoolean() ? $reader->readBytes() : '';
             $sourceFile = SourceFileCodec::read($reader, $phpVersion, $nodeKinds, $file, $contents);
             $targetCount = $reader->readCount(1_000_000);
-            $targetNodes = $sourceFile->getTargetNodes();
-            if ($targetCount !== count($targetNodes)) {
+            if ($targetCount !== count($sourceFile->getTargetNodes())) {
                 throw new ProtocolException('Node-analysis data does not match the targeted syntax snapshot.');
             }
             for ($index = 0; $index < $targetCount; ++$index) {
                 $requirements = $reader->readU8();
-                $invocationKind = match ($targetNodes[$index]->kind) {
-                    NodeKind::MethodCall,
-                    NodeKind::NullSafeMethodCall,
-                    NodeKind::StaticMethodCall,
-                        => match ($reader->readU8()) {
-                        self::INVOCATION_INSTANCE_METHOD => InvocationKind::InstanceMethod,
-                        self::INVOCATION_STATIC_METHOD => InvocationKind::StaticMethod,
-                        default => throw new ProtocolException('A method-call target has an unknown invocation kind.'),
-                    },
-                    default => null,
-                };
                 $targetType = ($requirements & (1 << 1)) !== 0 ? self::readOptionalType($reader) : null;
                 $receiverType = ($requirements & (1 << 2)) !== 0 ? self::readOptionalType($reader) : null;
                 $argumentTypes = [];
@@ -1131,7 +1119,6 @@ final class Protocol
                     $argumentTypes,
                     $variableDefinedness,
                     $targetedHookIndices,
-                    $invocationKind,
                 );
             }
         }

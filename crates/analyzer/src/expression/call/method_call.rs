@@ -65,7 +65,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for MethodCall<'arena> {
         A: Arena,
     {
         if context.plugin_registry.has_method_call_hooks() {
-            let mut hook_context = HookContext::new(context.codebase, context.source_file, block_context, artifacts);
+            let mut hook_context = HookContext::new(context, block_context, artifacts);
             let result = context.plugin_registry.before_method_call(self, &mut hook_context)?;
             for reported in hook_context.take_issues() {
                 context.collector.report_with_code(reported.code, reported.issue);
@@ -95,7 +95,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for MethodCall<'arena> {
         )?;
 
         if context.plugin_registry.has_method_call_hooks() {
-            let mut hook_context = HookContext::new(context.codebase, context.source_file, block_context, artifacts);
+            let mut hook_context = HookContext::new(context, block_context, artifacts);
             context.plugin_registry.after_method_call(self, &mut hook_context)?;
             for reported in hook_context.take_issues() {
                 context.collector.report_with_code(reported.code, reported.issue);
@@ -117,7 +117,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for NullSafeMethodCall<'arena> {
         A: Arena,
     {
         if context.plugin_registry.has_nullsafe_method_call_hooks() {
-            let mut hook_context = HookContext::new(context.codebase, context.source_file, block_context, artifacts);
+            let mut hook_context = HookContext::new(context, block_context, artifacts);
             let result = context.plugin_registry.before_nullsafe_method_call(self, &mut hook_context)?;
             for reported in hook_context.take_issues() {
                 context.collector.report_with_code(reported.code, reported.issue);
@@ -147,7 +147,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for NullSafeMethodCall<'arena> {
         )?;
 
         if context.plugin_registry.has_nullsafe_method_call_hooks() {
-            let mut hook_context = HookContext::new(context.codebase, context.source_file, block_context, artifacts);
+            let mut hook_context = HookContext::new(context, block_context, artifacts);
             context.plugin_registry.after_nullsafe_method_call(self, &mut hook_context)?;
             for reported in hook_context.take_issues() {
                 context.collector.report_with_code(reported.code, reported.issue);

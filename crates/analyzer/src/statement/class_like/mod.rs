@@ -395,7 +395,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Class<'arena> {
 
         // Call plugin on_enter_class hooks
         if context.plugin_registry.has_class_hooks() {
-            let mut hook_context = HookContext::new(context.codebase, context.source_file, block_context, artifacts);
+            let mut hook_context = HookContext::new(context, block_context, artifacts);
             context.plugin_registry.on_enter_class(self, class_like_metadata, &mut hook_context)?;
             for reported in hook_context.take_issues() {
                 context.collector.report_with_code(reported.code, reported.issue);
@@ -501,7 +501,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Class<'arena> {
 
         // Call plugin on_leave_class hooks
         if context.plugin_registry.has_class_hooks() {
-            let mut hook_context = HookContext::new(context.codebase, context.source_file, block_context, artifacts);
+            let mut hook_context = HookContext::new(context, block_context, artifacts);
             context.plugin_registry.on_leave_class(self, class_like_metadata, &mut hook_context)?;
             for reported in hook_context.take_issues() {
                 context.collector.report_with_code(reported.code, reported.issue);
@@ -538,7 +538,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Interface<'arena> {
 
         // Call plugin on_enter_interface hooks
         if context.plugin_registry.has_interface_hooks() {
-            let mut hook_context = HookContext::new(context.codebase, context.source_file, block_context, artifacts);
+            let mut hook_context = HookContext::new(context, block_context, artifacts);
             context.plugin_registry.on_enter_interface(self, class_like_metadata, &mut hook_context)?;
             for reported in hook_context.take_issues() {
                 context.collector.report_with_code(reported.code, reported.issue);
@@ -582,7 +582,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Interface<'arena> {
 
         // Call plugin on_leave_interface hooks
         if context.plugin_registry.has_interface_hooks() {
-            let mut hook_context = HookContext::new(context.codebase, context.source_file, block_context, artifacts);
+            let mut hook_context = HookContext::new(context, block_context, artifacts);
             context.plugin_registry.on_leave_interface(self, class_like_metadata, &mut hook_context)?;
             for reported in hook_context.take_issues() {
                 context.collector.report_with_code(reported.code, reported.issue);
@@ -619,7 +619,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Trait<'arena> {
 
         // Call plugin on_enter_trait hooks
         if context.plugin_registry.has_trait_hooks() {
-            let mut hook_context = HookContext::new(context.codebase, context.source_file, block_context, artifacts);
+            let mut hook_context = HookContext::new(context, block_context, artifacts);
             context.plugin_registry.on_enter_trait(self, class_like_metadata, &mut hook_context)?;
             for reported in hook_context.take_issues() {
                 context.collector.report_with_code(reported.code, reported.issue);
@@ -663,7 +663,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Trait<'arena> {
 
         // Call plugin on_leave_trait hooks
         if context.plugin_registry.has_trait_hooks() {
-            let mut hook_context = HookContext::new(context.codebase, context.source_file, block_context, artifacts);
+            let mut hook_context = HookContext::new(context, block_context, artifacts);
             context.plugin_registry.on_leave_trait(self, class_like_metadata, &mut hook_context)?;
             for reported in hook_context.take_issues() {
                 context.collector.report_with_code(reported.code, reported.issue);
@@ -700,7 +700,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Enum<'arena> {
 
         // Call plugin on_enter_enum hooks
         if context.plugin_registry.has_enum_hooks() {
-            let mut hook_context = HookContext::new(context.codebase, context.source_file, block_context, artifacts);
+            let mut hook_context = HookContext::new(context, block_context, artifacts);
             context.plugin_registry.on_enter_enum(self, class_like_metadata, &mut hook_context)?;
             for reported in hook_context.take_issues() {
                 context.collector.report_with_code(reported.code, reported.issue);
@@ -741,7 +741,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Enum<'arena> {
 
         // Call plugin on_leave_enum hooks
         if context.plugin_registry.has_enum_hooks() {
-            let mut hook_context = HookContext::new(context.codebase, context.source_file, block_context, artifacts);
+            let mut hook_context = HookContext::new(context, block_context, artifacts);
             context.plugin_registry.on_leave_enum(self, class_like_metadata, &mut hook_context)?;
             for reported in hook_context.take_issues() {
                 context.collector.report_with_code(reported.code, reported.issue);

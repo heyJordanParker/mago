@@ -70,7 +70,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
         artifacts.record_variable_definedness(Node::Expression(self), block_context);
 
         if context.plugin_registry.has_expression_hooks() {
-            let mut hook_context = HookContext::new(context.codebase, context.source_file, block_context, artifacts);
+            let mut hook_context = HookContext::new(context, block_context, artifacts);
             let expression_hook_result = context.plugin_registry.before_expression(self, &mut hook_context)?;
             for reported in hook_context.take_issues() {
                 context.collector.report_with_code(reported.code, reported.issue);
@@ -241,7 +241,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
         result?;
 
         if context.plugin_registry.has_expression_hooks() {
-            let mut hook_context = HookContext::new(context.codebase, context.source_file, block_context, artifacts);
+            let mut hook_context = HookContext::new(context, block_context, artifacts);
             context.plugin_registry.after_expression(self, &mut hook_context)?;
             for reported in hook_context.take_issues() {
                 context.collector.report_with_code(reported.code, reported.issue);
