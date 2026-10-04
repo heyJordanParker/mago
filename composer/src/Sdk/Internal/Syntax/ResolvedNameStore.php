@@ -104,11 +104,9 @@ final class ResolvedNameStore
             ord($this->records[$recordOffset + 12]) === 1,
             match (ord($this->records[$recordOffset + 13])) {
                 0 => null,
-                1 => Binding::Local,
-                2 => Binding::This,
-                3 => Binding::ClassName,
-                4 => Binding::Constant,
-                5 => Binding::Member,
+                1 => Binding::ClassName,
+                2 => Binding::Constant,
+                3 => Binding::Member,
                 default => throw new ProtocolException('A resolved name has an unknown binding.'),
             },
         );

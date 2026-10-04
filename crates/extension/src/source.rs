@@ -339,16 +339,14 @@ fn with_binding<'arena>(
     (start, end, name, imported, binding_code(resolved_names.binding(&Position::new(start))))
 }
 
-/// The byte a resolved-name record carries for its binding: `0` for a PHP name, then one value per [`Binding`]
-/// variant in declaration order.
+/// The byte a resolved-name record carries for its binding: `0` for a PHP name, then `1` for a class, `2` for a
+/// constant and `3` for a member. Locals and `this` have no resolved name, so no record carries them.
 const fn binding_code(binding: Option<Binding>) -> u8 {
     match binding {
-        None => 0,
-        Some(Binding::Local(_)) => 1,
-        Some(Binding::This) => 2,
-        Some(Binding::Class) => 3,
-        Some(Binding::Constant) => 4,
-        Some(Binding::Member) => 5,
+        None | Some(Binding::Local(_) | Binding::This) => 0,
+        Some(Binding::Class) => 1,
+        Some(Binding::Constant) => 2,
+        Some(Binding::Member) => 3,
     }
 }
 
