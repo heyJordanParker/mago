@@ -84,7 +84,7 @@ where
             Issue::error("`+` with an operand that may be a string is not supported yet.")
                 .with_annotation(Annotation::primary(binary.span()).with_message("This may join strings."))
                 .with_annotation(Annotation::secondary(operator).with_message("`+` used here."))
-                .with_note("In PHP#, `+` joins strings. What it does at runtime is still undecided."),
+                .with_note("In PHP#, `+` joins strings, which the engine does not run yet."),
         );
 
         assign_arithmetic_type(artifacts, get_mixed(), binary);

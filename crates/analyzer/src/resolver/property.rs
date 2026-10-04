@@ -1495,7 +1495,7 @@ fn report_non_existent_property<A>(
                     Annotation::secondary(object_span).with_message(format!("On instance of `{classname}`")),
                 )
                 .with_help(format!("Call the method: `{method_name}(...)`."))
-                .with_note("What a method named without a call means at runtime is still undecided."),
+                .with_note("The engine does not run a method used as a value yet."),
         );
 
         return;

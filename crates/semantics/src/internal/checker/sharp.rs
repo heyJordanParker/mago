@@ -226,7 +226,7 @@ fn check_expression(expression: &Expression, context: &mut Context<'_, '_, '_>) 
             }
         }
         Expression::Access(Access::Property(property_access)) => check_expression(property_access.object, context),
-        // PHP# never has `$` variables, `compact()` or `extract()`, and a bare member call is not supported yet:
+        // PHP# never has `$` variables, `compact()`, `extract()` or a member called without `this.`:
         // `check_variable` and `check_function_call` report them.
         Expression::Variable(_) => {}
         Expression::Call(Call::Function(function_call)) if is_checked_function_call(function_call, context) => {}
@@ -653,16 +653,14 @@ fn report_static_read(root: &ConstantAccess, member: &LocalIdentifier, span: Spa
     context.report(
         Issue::error(format!("Reading `{class}.{member}` without a call is not supported yet."))
             .with_annotation(Annotation::primary(span).with_message("Read here."))
-            .with_note("What reading a static member without a call means at runtime is still undecided."),
+            .with_note("The engine does not run a static member read without a call yet."),
     );
 }
 
 fn report_bare_member(span: Span, name: BytesDisplay<'_>, context: &mut Context<'_, '_, '_>) {
     context.report(
-        Issue::error(format!("Using the member `{name}` without `this.` is not supported yet."))
-            .with_annotation(Annotation::primary(span).with_message("Used here."))
-            .with_help(format!("Write `this.{name}`."))
-            .with_note("What a bare member name means at runtime is still undecided."),
+        Issue::error(format!("Write `this.{name}`: members of the same object are always written with `this.`."))
+            .with_annotation(Annotation::primary(span).with_message("Used here.")),
     );
 }
 

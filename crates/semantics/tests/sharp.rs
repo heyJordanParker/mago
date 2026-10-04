@@ -272,15 +272,15 @@ fn a_local_or_parameter_named_after_a_superglobal_is_an_error() {
 }
 
 #[test]
-fn a_bare_member_name_is_not_supported_yet() {
+fn a_bare_member_name_is_an_error_that_names_this() {
     let code =
         "class Report\n{\n    public int count() { return 0; }\n\n    public int run() { return count + run(); }\n}\n";
 
     assert_eq!(
         issues(code),
         [
-            "5:31 Using the member `count` without `this.` is not supported yet.",
-            "5:39 Using the member `run` without `this.` is not supported yet.",
+            "5:31 Write `this.count`: members of the same object are always written with `this.`.",
+            "5:39 Write `this.run`: members of the same object are always written with `this.`.",
         ]
     );
 }
