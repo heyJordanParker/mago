@@ -207,6 +207,36 @@ fn dot_reads_as_member_access_whatever_the_name_before_it() {
 }
 
 #[test]
+fn php_member_access_and_concatenating_assignment_are_parse_errors_that_name_the_dot() {
+    for (code, message) in [
+        ("calc->add()", "`->` is PHP syntax: PHP# writes member access with `.`"),
+        ("calc?->add()", "`?->` is PHP syntax: PHP# writes member access with `.`"),
+        ("Calc::make()", "`::` is PHP syntax: PHP# writes static access with `.`"),
+        ("label .= \"x\"", "`.=` is PHP syntax: in PHP# `.` is member access"),
+    ] {
+        let source = format!("class Report\n{{\n    void run()\n    {{\n        {code};\n    }}\n}}\n");
+        let arena = LocalArena::new();
+        let program = parse(&arena, "src/Report.sharp", Box::leak(source.into_boxed_str()));
+
+        let messages: Vec<String> = program.errors.iter().map(ToString::to_string).collect();
+        assert_eq!(messages, [message], "{code}");
+    }
+}
+
+#[test]
+fn a_method_written_with_function_is_a_parse_error() {
+    let arena = LocalArena::new();
+    let program =
+        parse(&arena, "src/Report.sharp", "class Report\n{\n    public function run(): int { return 1; }\n}\n");
+
+    let messages: Vec<String> = program.errors.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        messages.first().map(String::as_str),
+        Some("`function` is PHP syntax: a PHP# method starts with its return type")
+    );
+}
+
+#[test]
 fn dot_keeps_concatenating_in_php() {
     let arena = LocalArena::new();
     let program = parse(&arena, "src/Report.php", "<?php $a . $b;");

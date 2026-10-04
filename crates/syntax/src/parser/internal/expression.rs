@@ -148,6 +148,11 @@ where
         precedence: Precedence,
     ) -> Result<&'arena Expression<'arena>, ParseError> {
         while let Some(next) = self.stream.lookahead(0)? {
+            // The error stands, and the PHP operator still parses so the rest of the file does.
+            if self.dialect.is_sharp() && matches!(next.kind, T!["->" | "?->" | "::" | ".="]) {
+                self.errors.push(ParseError::PhpSyntaxInSharp(next.kind, next.span_for(self.stream.file_id())));
+            }
+
             let kind = self.operator_kind(next.kind);
 
             if !matches!(precedence, Precedence::Instanceof | Precedence::New)

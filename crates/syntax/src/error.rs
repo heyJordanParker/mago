@@ -6,6 +6,7 @@ use mago_span::HasSpan;
 use mago_span::Position;
 use mago_span::Span;
 
+use crate::T;
 use crate::cst::LiteralStringKind;
 use crate::token::TokenKind;
 
@@ -47,6 +48,8 @@ pub enum ParseError {
     UnexpectedToken(Expected, TokenKind, Span),
     UnclosedLiteralString(LiteralStringKind, Span),
     RecursionLimitExceeded(Span),
+    /// PHP syntax written in a PHP# file, such as `->` where PHP# writes `.`.
+    PhpSyntaxInSharp(TokenKind, Span),
 }
 
 impl HasFileId for SyntaxError {
@@ -68,6 +71,7 @@ impl HasFileId for ParseError {
             ParseError::UnexpectedToken(_, _, span) => span.file_id,
             ParseError::UnclosedLiteralString(_, span) => span.file_id,
             ParseError::RecursionLimitExceeded(span) => span.file_id,
+            ParseError::PhpSyntaxInSharp(_, span) => span.file_id,
         }
     }
 }
@@ -93,6 +97,7 @@ impl HasSpan for ParseError {
             ParseError::UnexpectedToken(_, _, span) => *span,
             ParseError::UnclosedLiteralString(_, span) => *span,
             ParseError::RecursionLimitExceeded(span) => *span,
+            ParseError::PhpSyntaxInSharp(_, span) => *span,
         }
     }
 }
@@ -147,6 +152,14 @@ impl std::fmt::Display for ParseError {
                 LiteralStringKind::DoubleQuoted => "Unclosed double-quoted string".to_string(),
             },
             ParseError::RecursionLimitExceeded(_) => "Maximum recursion depth exceeded".to_string(),
+            ParseError::PhpSyntaxInSharp(kind, _) => match kind {
+                T!["->"] => "`->` is PHP syntax: PHP# writes member access with `.`".to_string(),
+                T!["?->"] => "`?->` is PHP syntax: PHP# writes member access with `.`".to_string(),
+                T!["::"] => "`::` is PHP syntax: PHP# writes static access with `.`".to_string(),
+                T![".="] => "`.=` is PHP syntax: in PHP# `.` is member access".to_string(),
+                T!["function"] => "`function` is PHP syntax: a PHP# method starts with its return type".to_string(),
+                kind => format!("`{kind}` is PHP syntax that PHP# does not have"),
+            },
         };
 
         write!(f, "{message}")
