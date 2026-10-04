@@ -582,7 +582,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 }
 
-/// The binary operators of the slice, as php-src's grammar builds them.
+/// The binary operators of the slice, as php-src's grammar builds them. Every operator is named, so a new one does
+/// not compile until it is decided.
 fn binary_kind(operator: BinaryOperator) -> (sharp_kind, u32) {
     match operator {
         BinaryOperator::Addition(_) => (SHARP_AST_BINARY_OP, ZEND_ADD),
@@ -600,11 +601,25 @@ fn binary_kind(operator: BinaryOperator) -> (sharp_kind, u32) {
         BinaryOperator::GreaterThanOrEqual(_) => (SHARP_AST_GREATER_EQUAL, 0),
         BinaryOperator::And(_) => (SHARP_AST_AND, 0),
         BinaryOperator::Or(_) => (SHARP_AST_OR, 0),
-        _ => unreachable!("check_slice refuses the operator `{operator}`"),
+        BinaryOperator::Exponentiation(_)
+        | BinaryOperator::BitwiseAnd(_)
+        | BinaryOperator::BitwiseOr(_)
+        | BinaryOperator::BitwiseXor(_)
+        | BinaryOperator::LeftShift(_)
+        | BinaryOperator::RightShift(_)
+        | BinaryOperator::NullCoalesce(_)
+        | BinaryOperator::AngledNotEqual(_)
+        | BinaryOperator::Spaceship(_)
+        | BinaryOperator::StringConcat(_)
+        | BinaryOperator::Instanceof(_)
+        | BinaryOperator::LowAnd(_)
+        | BinaryOperator::LowOr(_)
+        | BinaryOperator::LowXor(_) => unreachable!("check_slice refuses the operator `{operator}`"),
     }
 }
 
-/// The prefix operators of the slice, as php-src's grammar builds them.
+/// The prefix operators of the slice, as php-src's grammar builds them. Every operator is named, so a new one does
+/// not compile until it is decided.
 fn prefix_kind(operator: &UnaryPrefixOperator) -> (sharp_kind, u32) {
     match operator {
         UnaryPrefixOperator::Negation(_) => (SHARP_AST_UNARY_MINUS, 0),
@@ -612,11 +627,27 @@ fn prefix_kind(operator: &UnaryPrefixOperator) -> (sharp_kind, u32) {
         UnaryPrefixOperator::Not(_) => (SHARP_AST_UNARY_OP, ZEND_BOOL_NOT),
         UnaryPrefixOperator::PreIncrement(_) => (SHARP_AST_PRE_INC, 0),
         UnaryPrefixOperator::PreDecrement(_) => (SHARP_AST_PRE_DEC, 0),
-        _ => unreachable!("check_slice refuses the operator `{operator}`"),
+        UnaryPrefixOperator::ErrorControl(_)
+        | UnaryPrefixOperator::Reference(_)
+        | UnaryPrefixOperator::ArrayCast(..)
+        | UnaryPrefixOperator::BoolCast(..)
+        | UnaryPrefixOperator::BooleanCast(..)
+        | UnaryPrefixOperator::DoubleCast(..)
+        | UnaryPrefixOperator::RealCast(..)
+        | UnaryPrefixOperator::FloatCast(..)
+        | UnaryPrefixOperator::IntCast(..)
+        | UnaryPrefixOperator::IntegerCast(..)
+        | UnaryPrefixOperator::ObjectCast(..)
+        | UnaryPrefixOperator::UnsetCast(..)
+        | UnaryPrefixOperator::StringCast(..)
+        | UnaryPrefixOperator::BinaryCast(..)
+        | UnaryPrefixOperator::VoidCast(..)
+        | UnaryPrefixOperator::BitwiseNot(_) => unreachable!("check_slice refuses the operator `{operator}`"),
     }
 }
 
-/// The assignment operators of the slice, as php-src's grammar builds them.
+/// The assignment operators of the slice, as php-src's grammar builds them. Every operator is named, so a new one
+/// does not compile until it is decided.
 fn assignment_kind(operator: &AssignmentOperator) -> (sharp_kind, u32) {
     match operator {
         AssignmentOperator::Assign(_) => (SHARP_AST_ASSIGN, 0),
@@ -624,7 +655,15 @@ fn assignment_kind(operator: &AssignmentOperator) -> (sharp_kind, u32) {
         AssignmentOperator::Subtraction(_) => (SHARP_AST_ASSIGN_OP, ZEND_SUB),
         AssignmentOperator::Multiplication(_) => (SHARP_AST_ASSIGN_OP, ZEND_MUL),
         AssignmentOperator::Division(_) => (SHARP_AST_ASSIGN_OP, ZEND_DIV),
-        _ => unreachable!("check_slice refuses the operator `{operator}`"),
+        AssignmentOperator::Modulo(_)
+        | AssignmentOperator::Exponentiation(_)
+        | AssignmentOperator::Concat(_)
+        | AssignmentOperator::BitwiseAnd(_)
+        | AssignmentOperator::BitwiseOr(_)
+        | AssignmentOperator::BitwiseXor(_)
+        | AssignmentOperator::LeftShift(_)
+        | AssignmentOperator::RightShift(_)
+        | AssignmentOperator::Coalesce(_) => unreachable!("check_slice refuses the operator `{operator}`"),
     }
 }
 
