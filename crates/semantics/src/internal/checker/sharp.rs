@@ -63,7 +63,8 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   case, which PHP# gives to the constructor.
 /// - A parameter: a type, a name and an optional default. A default is a literal, a constant, or the operators
 ///   below on them, without `++` and `--`.
-/// - Types: `int`, `float`, `bool`, `string`, `void` and a class written by its short name.
+/// - Types: `int`, `float`, `bool`, `string` and a class written by its short name, and `void` as a return type.
+///   PHP's own check reports a `void` parameter.
 /// - In a method body: blocks, expression statements, `return`, and `let` and `const` declarations.
 /// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter or a member written
 ///   `object.name`.

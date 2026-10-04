@@ -474,6 +474,13 @@ fn types_outside_the_slice_are_not_supported_yet() {
 }
 
 #[test]
+fn a_void_parameter_reports_only_the_php_error() {
+    let code = "class Report\n{\n    public void run(void nothing)\n    {\n    }\n}\n";
+
+    assert_eq!(issues(code), ["3:21 Invalid parameter type: bottom type `void` cannot be used as a parameter type."]);
+}
+
+#[test]
 fn a_parameter_default_is_a_constant_expression() {
     let code = "class Report\n{\n    public int run(int a = -1 + 2 * PHP_INT_MAX, int b = a, int c = this.run(), bool d = !true)\n    {\n        return a;\n    }\n}\n";
 
