@@ -1,5 +1,6 @@
 use crate::T;
 use crate::cst::cst::AttributeList;
+use crate::cst::cst::DirectVariable;
 use crate::cst::cst::Hint;
 use crate::cst::cst::HookedProperty;
 use crate::cst::cst::Keyword;
@@ -31,6 +32,12 @@ where
         modifiers: Sequence<'arena, Modifier<'arena>>,
     ) -> Result<Property<'arena>, ParseError> {
         let var = self.maybe_expect_keyword(T!["var"])?;
+        if let Some(var) = &var
+            && self.dialect.is_sharp()
+        {
+            self.errors.push(ParseError::PhpSyntaxInSharp(T!["var"], var.span));
+        }
+
         let hint = self.parse_optional_type_hint()?;
 
         self.parse_property_with_hint(attributes, modifiers, var, hint)
@@ -98,15 +105,32 @@ where
     }
 
     fn parse_property_abstract_item(&mut self) -> Result<PropertyAbstractItem<'arena>, ParseError> {
-        Ok(PropertyAbstractItem { variable: self.parse_direct_variable()? })
+        Ok(PropertyAbstractItem { variable: self.parse_property_variable()? })
     }
 
     fn parse_property_concrete_item(&mut self) -> Result<PropertyConcreteItem<'arena>, ParseError> {
         Ok(PropertyConcreteItem {
-            variable: self.parse_direct_variable()?,
+            variable: self.parse_property_variable()?,
             equals: self.stream.eat_span(T!["="])?,
             value: self.parse_expression()?,
         })
+    }
+
+    /// Parses the name a property declares. A PHP# field names it bare, and a `$` variable there is PHP syntax.
+    fn parse_property_variable(&mut self) -> Result<DirectVariable<'arena>, ParseError> {
+        if !self.dialect.is_sharp() {
+            return self.parse_direct_variable();
+        }
+
+        if self.stream.is_at(T![Identifier])? {
+            return self.parse_bare_variable();
+        }
+
+        // The error stands, and the PHP property still parses so the rest of the class does.
+        let variable = self.parse_direct_variable()?;
+        self.errors.push(ParseError::PhpSyntaxInSharp(T!["$variable"], variable.span));
+
+        Ok(variable)
     }
 
     pub(crate) fn parse_optional_property_hook_list(&mut self) -> Result<Option<PropertyHookList<'arena>>, ParseError> {

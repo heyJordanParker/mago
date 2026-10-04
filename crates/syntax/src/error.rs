@@ -158,6 +158,7 @@ impl std::fmt::Display for ParseError {
                 T!["::"] => "`::` is PHP syntax: PHP# writes static access with `.`".to_string(),
                 T![".="] => "`.=` is PHP syntax: in PHP# `.` is member access".to_string(),
                 T!["function"] => "`function` is PHP syntax: a PHP# method starts with its return type".to_string(),
+                T!["$variable"] => "A `$` variable is PHP syntax: PHP# names have no `$`".to_string(),
                 kind => format!("`{kind}` is PHP syntax that PHP# does not have"),
             },
         };

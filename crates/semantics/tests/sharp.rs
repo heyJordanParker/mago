@@ -337,6 +337,13 @@ fn final_abstract_and_readonly_are_not_supported_yet() {
 }
 
 #[test]
+fn fields_are_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private int count = 0;\n}\n";
+
+    assert_eq!(issues(code), ["5:5 PHP# fields are not supported yet."]);
+}
+
+#[test]
 fn a_variadic_parameter_is_not_supported_yet() {
     let code = leak(method("        return 1;\n").replace("int extra", "int ...extra"));
 

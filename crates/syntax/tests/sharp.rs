@@ -7,6 +7,7 @@ use mago_database::file::File;
 use mago_span::HasSpan;
 use mago_syntax::cst::*;
 use mago_syntax::dialect::Dialect;
+use mago_syntax::error::ParseError;
 use mago_syntax::parser::parse_file;
 
 fn parse<'arena>(arena: &'arena LocalArena, name: &'static str, code: &'static str) -> &'arena Program<'arena> {
@@ -178,12 +179,45 @@ fn a_parameter_with_a_dnf_type_parses() {
 }
 
 #[test]
-fn property_parses_as_in_php() {
+fn a_dollar_property_is_a_php_syntax_error() {
+    const CODE: &str = "class Report\n{\n    private int $count = 0;\n}\n";
     let arena = LocalArena::new();
-    let program = parse(&arena, "src/Report.sharp", "class Report\n{\n    private int $count = 0;\n}\n");
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert_eq!(program.errors.len(), 1, "{:#?}", program.errors);
+    let Some(ParseError::PhpSyntaxInSharp(_, span)) = program.errors.first() else {
+        panic!("expected a PHP-syntax error, got {:#?}", program.errors);
+    };
+    assert_eq!(source(CODE, span), "$count");
+}
+
+#[test]
+fn var_is_a_php_syntax_error() {
+    const CODE: &str = "class Report\n{\n    var int count;\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert_eq!(program.errors.len(), 1, "{:#?}", program.errors);
+    let Some(ParseError::PhpSyntaxInSharp(_, span)) = program.errors.first() else {
+        panic!("expected a PHP-syntax error, got {:#?}", program.errors);
+    };
+    assert_eq!(source(CODE, span), "var");
+}
+
+#[test]
+fn a_field_keeps_its_type_and_bare_name() {
+    const CODE: &str = "class Report\n{\n    private int count = 0;\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
 
     assert!(program.errors.is_empty(), "{:#?}", program.errors);
-    assert!(matches!(class_members(program).first(), Some(ClassLikeMember::Property(_))));
+    let Some(ClassLikeMember::Property(Property::Plain(field))) = class_members(program).first() else {
+        panic!("expected a field, got {:#?}", class_members(program));
+    };
+    assert_eq!(source(CODE, field.hint.as_ref().expect("a type")), "int");
+    let item = field.items.first().expect("one field");
+    assert_eq!(source(CODE, item.variable()), "count");
+    assert_eq!(source(CODE, field), "private int count = 0;");
 }
 
 #[test]

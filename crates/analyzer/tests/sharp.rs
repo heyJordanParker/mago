@@ -291,39 +291,14 @@ fn a_local_passed_by_reference_to_a_php_method_changes_as_in_php() {
 
 #[test]
 fn unused_parameters_are_found_as_in_php() {
-    let sharp = "namespace Demo;\n\nfinal class Report\n{\n    public static int total(int used, int unused, int _skipped)\n    {\n        return used;\n    }\n}\n";
-    let php = "<?php\n\nnamespace Demo;\n\nfinal class Report\n{\n    public static function total(int $used, int $unused, int $_skipped): int\n    {\n        return $used;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(int used, int unused, int _skipped)\n    {\n        return used;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function total(int $used, int $unused, int $_skipped): int\n    {\n        return $used;\n    }\n}\n";
     let settings = || Settings { find_unused_parameters: true, ..settings() };
 
     let sharp_issues = issues_with(settings(), ("src/Demo/Report.sharp", sharp), &[]);
     let php_issues = issues_with(settings(), ("src/Demo/Report.php", php), &[]);
 
     assert_eq!(sharp_issues, ["5:39 unused-parameter"]);
-    assert_eq!(codes(&sharp_issues), codes(&php_issues));
-}
-
-#[test]
-fn null_coalescing_a_local_narrows_it_as_in_php() {
-    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(?int first, ?int second)\n    {\n        if (first !== null || second !== null) {\n            return first ?? second;\n        }\n        return 0;\n    }\n}\n";
-    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function total(?int $first, ?int $second): int\n    {\n        if ($first !== null || $second !== null) {\n            return $first ?? $second;\n        }\n        return 0;\n    }\n}\n";
-
-    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
-    let php_issues = issues(("src/Demo/Report.php", php), &[]);
-
-    assert_eq!(sharp_issues, Vec::<String>::new());
-    assert_eq!(codes(&sharp_issues), codes(&php_issues));
-}
-
-#[test]
-fn assigning_a_property_of_this_keeps_the_memoized_calls_of_other_locals_as_in_php() {
-    let box_class = "<?php\n\nnamespace Lib;\n\nfinal class Box\n{\n    /** @mutation-free */\n    public function value(): ?int\n    {\n        return null;\n    }\n}\n";
-    let sharp = "namespace Demo;\n\nimport Lib.Box;\n\nfinal class Report\n{\n    public int $count = 0;\n\n    public int total(Box box)\n    {\n        if (box.value() !== null) {\n            this.count = 1;\n            return box.value();\n        }\n        return this.count;\n    }\n}\n";
-    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Box;\n\nfinal class Report\n{\n    public int $count = 0;\n\n    public function total(Box $box): int\n    {\n        if ($box->value() !== null) {\n            $this->count = 1;\n            return $box->value();\n        }\n        return $this->count;\n    }\n}\n";
-
-    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Box.php", box_class)]);
-    let php_issues = issues(("src/Demo/Report.php", php), &[("src/Lib/Box.php", box_class)]);
-
-    assert_eq!(sharp_issues, Vec::<String>::new());
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
 }
 

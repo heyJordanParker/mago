@@ -110,6 +110,11 @@ fn check_class(class: &Class, context: &mut Context<'_, '_, '_>) {
     for member in &class.members {
         match member {
             ClassLikeMember::Method(method) => check_method(method, context),
+            ClassLikeMember::Property(field) => context.report(
+                Issue::error("PHP# fields are not supported yet.")
+                    .with_annotation(Annotation::primary(field.span()).with_message("Not supported yet."))
+                    .with_note("In a class, PHP# supports methods."),
+            ),
             _ => report_not_supported(member.span(), "class member", "In a class, PHP# supports methods.", context),
         }
     }

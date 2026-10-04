@@ -38,11 +38,12 @@ where
         })
     }
 
-    /// Parses a PHP# class member that starts with a type or a variable: a method, whose return type comes first with
-    /// no colon and no `function` keyword, or a property, which names its variable with a `$` as it does in PHP.
+    /// Parses a PHP# class member that starts with its type: a method, whose return type comes first with no colon
+    /// and no `function` keyword, or a field, `int count = 0;`.
     ///
-    /// The type is parsed once, and the token after it decides: a `$` variable makes a property, anything else a
-    /// method. A type has no length limit, so no fixed lookahead can decide before it.
+    /// The type is parsed once, and the name after it decides: a name followed by `(` makes a method, anything else
+    /// a field. A type has no length limit, so no fixed lookahead can decide before it. A PHP property, which starts
+    /// with `var` or a `$` variable, still parses so the rest of the class does, and its PHP syntax is an error.
     pub(crate) fn parse_sharp_member_with_attributes_and_modifiers(
         &mut self,
         attributes: Sequence<'arena, AttributeList<'arena>>,
@@ -55,7 +56,7 @@ where
         }
 
         let hint = self.parse_type_hint()?;
-        if self.stream.is_at(T!["$variable"])? {
+        if !matches!(self.stream.peek_kind(1)?, Some(T!["("])) {
             return Ok(ClassLikeMember::Property(self.parse_property_with_hint(
                 attributes,
                 modifiers,
