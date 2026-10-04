@@ -5,6 +5,7 @@ use mago_reporting::Issue;
 use mago_reporting::IssueCollection;
 use mago_span::HasSpan;
 use mago_span::Position;
+use mago_syntax::cst::Label;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::Program;
 
@@ -19,6 +20,8 @@ pub struct Context<'ctx, 'ast, 'arena> {
     /// The statements and expressions the walk is inside, innermost last.
     pub ancestors: Vec<Node<'ast, 'arena>>,
     pub hint_depth: usize,
+    /// Every `goto` label of the file, collected at its first `goto`.
+    pub labels: Option<Vec<&'ast Label<'arena>>>,
 
     issues: IssueCollection,
 }
@@ -38,6 +41,7 @@ impl<'ctx, 'ast, 'arena> Context<'ctx, 'ast, 'arena> {
             issues: IssueCollection::default(),
             ancestors: vec![],
             hint_depth: 0,
+            labels: None,
         }
     }
 

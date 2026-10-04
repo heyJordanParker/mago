@@ -695,17 +695,20 @@ fn a_coalescing_chain_of_100_000_terms_is_one_parse_error() {
     assert!(namespace_statements(program).is_empty(), "{:#?}", program.statements);
 }
 
-/// PHP itself compiles a sum of tens of thousands of terms, so a PHP file keeps every nesting the parser builds.
+/// PHP itself compiles a sum of tens of thousands of terms, so a PHP file keeps every nesting the parser builds, and
+/// a search of the whole tree reaches its innermost term.
 #[test]
 fn a_php_file_keeps_nesting_deeper_than_512_levels() {
     let code = format!(
         "<?php\nnamespace App;\n\nclass Report\n{{\n    public function run(int $extra): int\n    {{\n        return {};\n    }}\n}}\n",
-        vec!["$extra"; 1_000].join(" + ")
+        vec!["$extra"; 100_000].join(" + ")
     );
     let arena = LocalArena::new();
     let program = parse(&arena, "src/Report.php", Box::leak(code.into_boxed_str()));
-
     assert!(program.errors.is_empty(), "{:#?}", program.errors);
+
+    let terms = Node::Program(program).filter_map(|node| matches!(node, Node::DirectVariable(_)).then_some(()));
+    assert_eq!(terms.len(), 100_001);
 }
 
 #[test]
