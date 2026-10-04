@@ -2,7 +2,9 @@
 # Counts the instructions the front end spends on a generated class of 10,000 and of 20,000 methods, as `.sharp`
 # through `sharp_lower` and as `.php` through the checker, and the instructions PHP's own compile spends on the `.php`
 # class through `php -l`. Each count is the "instructions retired" of `/usr/bin/time -l` on macOS, three runs each.
-# The first lines count each process on an empty file, the startup every later count includes.
+# The first lines count each process on an empty file, the startup every later count includes. The `.sharp` class is
+# also counted stopped after parsing, after binding names and after the semantic checks, so each difference is one
+# pass, and `sharp_lower` adds the lowering.
 #
 # Usage: crates/sharp-bridge/bench.sh [methods...]
 
@@ -17,7 +19,7 @@ trap 'rm -rf "$classes"' EXIT
 
 instructions() {
     for run in 1 2 3; do
-        /usr/bin/time -l "$@" 2>&1 >/dev/null | awk '/instructions retired/ { printf " %.2fe9", $1 / 1e9 }'
+        /usr/bin/time -l "$@" 2>&1 >/dev/null | awk '/instructions retired/ { printf " %.3fe9", $1 / 1e9 }'
     done
 }
 
@@ -42,6 +44,9 @@ for methods in "$@"; do
     }' > "$classes/Big$methods.php"
 
     echo "$methods methods, $(wc -c < "$classes/Big$methods.sharp" | tr -d ' ') bytes of PHP#:"
+    echo "  parse .sharp:      $(instructions "$front_end" --until parse "$classes/Big$methods.sharp")"
+    echo "  + names .sharp:    $(instructions "$front_end" --until names "$classes/Big$methods.sharp")"
+    echo "  + checks .sharp:   $(instructions "$front_end" --until checks "$classes/Big$methods.sharp")"
     echo "  sharp_lower .sharp:$(instructions "$front_end" "$classes/Big$methods.sharp")"
     echo "  checker .php:      $(instructions "$front_end" "$classes/Big$methods.php")"
     echo "  php -l .php:       $(instructions php -l "$classes/Big$methods.php")"
