@@ -34,6 +34,13 @@ where
         Ok(DirectVariable { span: token.span_for(self.stream.file_id()), name: token.value })
     }
 
+    /// Parses the bare name a PHP# parameter declares, which has no `$`.
+    pub(crate) fn parse_bare_variable(&mut self) -> Result<DirectVariable<'arena>, ParseError> {
+        let token = self.stream.eat(T![Identifier])?;
+
+        Ok(DirectVariable { span: token.span_for(self.stream.file_id()), name: token.value })
+    }
+
     pub(crate) fn parse_indirect_variable(&mut self) -> Result<IndirectVariable<'arena>, ParseError> {
         let dollar_left_brace = self.stream.eat_span(T!["${"])?;
 

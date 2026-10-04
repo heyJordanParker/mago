@@ -36,6 +36,7 @@ use crate::cst::cst::UnaryPostfix;
 use crate::cst::cst::UnaryPostfixOperator;
 use crate::cst::cst::UnaryPrefix;
 use crate::cst::cst::UnaryPrefixOperator;
+use crate::dialect::Dialect;
 use crate::error::ParseError;
 use crate::parser::MAX_RECURSION_DEPTH;
 use crate::parser::Parser;
@@ -147,33 +148,35 @@ where
         precedence: Precedence,
     ) -> Result<&'arena Expression<'arena>, ParseError> {
         while let Some(next) = self.stream.lookahead(0)? {
+            let kind = self.operator_kind(next.kind);
+
             if !matches!(precedence, Precedence::Instanceof | Precedence::New)
-                && !matches!(next.kind, T!["(" | "::"])
+                && !matches!(kind, T!["(" | "::"])
                 && let Expression::Identifier(identifier) = left
             {
                 left = self.arena.alloc(Expression::ConstantAccess(ConstantAccess { name: *identifier }));
             }
 
             // Stop parsing if the next token is a terminator.
-            if matches!(next.kind, T![";" | "?>"]) {
+            if matches!(kind, T![";" | "?>"]) {
                 break;
             }
 
             // Don't allow function calls on error expressions.
             // This prevents `if(...)` from being parsed as a function call when `if` is an unexpected token.
-            if matches!(left, Expression::Error(_)) && matches!(next.kind, T!["("]) {
+            if matches!(left, Expression::Error(_)) && matches!(kind, T!["("]) {
                 break;
             }
 
-            if next.kind.is_postfix() {
-                let postfix_precedence = Precedence::postfix(&next.kind);
+            if kind.is_postfix() {
+                let postfix_precedence = Precedence::postfix(&kind);
                 if postfix_precedence < precedence {
                     break;
                 }
 
-                left = self.parse_postfix_expression(left, precedence)?;
-            } else if next.kind.is_infix() {
-                let infix_precedence = Precedence::infix(&next.kind);
+                left = self.parse_postfix_expression(left, kind, precedence)?;
+            } else if kind.is_infix() {
+                let infix_precedence = Precedence::infix(&kind);
 
                 if infix_precedence < precedence {
                     break;
@@ -344,14 +347,23 @@ where
         })
     }
 
+    /// Returns the operator a token stands for in the current dialect.
+    ///
+    /// In PHP#, `.` is member access, which PHP writes `->`.
+    const fn operator_kind(&self, kind: TokenKind) -> TokenKind {
+        match (self.dialect, kind) {
+            (Dialect::Sharp, T!["."]) => T!["->"],
+            _ => kind,
+        }
+    }
+
     fn parse_postfix_expression(
         &mut self,
         lhs: &'arena Expression<'arena>,
+        operator: TokenKind,
         precedence: Precedence,
     ) -> Result<&'arena Expression<'arena>, ParseError> {
-        let operator = self.stream.lookahead(0)?.ok_or_else(|| self.stream.unexpected(None, &[]))?;
-
-        Ok(self.arena.alloc(match operator.kind {
+        Ok(self.arena.alloc(match operator {
             T!["("] => {
                 let partial_args = self.parse_partial_argument_list()?;
 

@@ -55,7 +55,7 @@ struct FunctionLikeParts<'arena> {
     pub attribute_lists: &'arena Sequence<'arena, AttributeList<'arena>>,
     pub modifiers: Option<&'arena Sequence<'arena, Modifier<'arena>>>,
     pub static_keyword: Option<&'arena Keyword<'arena>>,
-    pub fn_or_function: &'arena Keyword<'arena>,
+    pub fn_or_function: Option<&'arena Keyword<'arena>>,
     pub ampersand: Option<Span>,
     pub name: Option<&'arena LocalIdentifier<'arena>>,
     pub parameter_list: &'arena FunctionLikeParameterList<'arena>,
@@ -70,7 +70,7 @@ impl<'arena> FunctionLikeParts<'arena> {
             attribute_lists: &closure.attribute_lists,
             modifiers: None,
             static_keyword: closure.r#static.as_ref(),
-            fn_or_function: &closure.function,
+            fn_or_function: Some(&closure.function),
             ampersand: closure.ampersand,
             name: None,
             parameter_list: &closure.parameter_list,
@@ -85,7 +85,7 @@ impl<'arena> FunctionLikeParts<'arena> {
             attribute_lists: &function.attribute_lists,
             modifiers: None,
             static_keyword: None,
-            fn_or_function: &function.function,
+            fn_or_function: Some(&function.function),
             ampersand: function.ampersand,
             name: Some(&function.name),
             parameter_list: &function.parameter_list,
@@ -100,7 +100,7 @@ impl<'arena> FunctionLikeParts<'arena> {
             attribute_lists: &method.attribute_lists,
             modifiers: Some(&method.modifiers),
             static_keyword: None,
-            fn_or_function: &method.function,
+            fn_or_function: method.function.as_ref(),
             ampersand: method.ampersand,
             name: Some(&method.name),
             parameter_list: &method.parameter_list,
@@ -114,12 +114,14 @@ impl<'arena> FunctionLikeParts<'arena> {
     }
 
     fn get_leading_comment_span(&self) -> Span {
-        if let Some(modifiers) = self.modifiers {
-            modifiers.first_span().unwrap_or(self.fn_or_function.span)
+        if let Some(modifiers) = self.modifiers
+            && let Some(span) = modifiers.first_span()
+        {
+            span
         } else if let Some(static_kw) = self.static_keyword {
             static_kw.span
         } else {
-            self.fn_or_function.span
+            self.fn_or_function.map_or_else(|| self.parameter_list.span(), |keyword| keyword.span)
         }
     }
 
@@ -189,7 +191,9 @@ impl<'arena> FunctionLikeParts<'arena> {
         }
 
         // Add function keyword
-        signature.push(self.fn_or_function.format(f));
+        if let Some(fn_or_function) = self.fn_or_function {
+            signature.push(fn_or_function.format(f));
+        }
 
         // Add space before params if needed (closures)
         if space_before_params {

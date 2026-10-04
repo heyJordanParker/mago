@@ -20,6 +20,6 @@ where
     pub(crate) fn parse_function_like_return_type_hint(
         &mut self,
     ) -> Result<FunctionLikeReturnTypeHint<'arena>, ParseError> {
-        Ok(FunctionLikeReturnTypeHint { colon: self.stream.eat_span(T![":"])?, hint: self.parse_type_hint()? })
+        Ok(FunctionLikeReturnTypeHint { colon: Some(self.stream.eat_span(T![":"])?), hint: self.parse_type_hint()? })
     }
 }

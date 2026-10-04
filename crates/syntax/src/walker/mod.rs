@@ -115,6 +115,7 @@ use crate::cst::cst::LiteralFloat;
 use crate::cst::cst::LiteralInteger;
 use crate::cst::cst::LiteralString;
 use crate::cst::cst::LiteralStringPart;
+use crate::cst::cst::LocalDeclaration;
 use crate::cst::cst::LocalIdentifier;
 use crate::cst::cst::MagicConstant;
 use crate::cst::cst::Match;
@@ -411,6 +412,7 @@ generate_ast_walker! {
             Statement::Static(r#static) => walker.walk_static(r#static, context),
             Statement::HaltCompiler(halt_compiler) => walker.walk_halt_compiler(halt_compiler, context),
             Statement::Unset(unset) => walker.walk_unset(unset, context),
+            Statement::LocalDeclaration(local_declaration) => walker.walk_local_declaration(local_declaration, context),
             Statement::Noop(_) => {
                 // Do nothing by default
             },
@@ -1089,11 +1091,20 @@ generate_ast_walker! {
             walker.walk_modifier(modifier, context);
         }
 
-        walker.walk_keyword(&method.function, context);
-        walker.walk_local_identifier(&method.name, context);
-        walker.walk_function_like_parameter_list(&method.parameter_list, context);
-        if let Some(hint) = &method.return_type_hint {
-            walker.walk_function_like_return_type_hint(hint, context);
+        if let Some(function) = &method.function {
+            walker.walk_keyword(function, context);
+            walker.walk_local_identifier(&method.name, context);
+            walker.walk_function_like_parameter_list(&method.parameter_list, context);
+            if let Some(hint) = &method.return_type_hint {
+                walker.walk_function_like_return_type_hint(hint, context);
+            }
+        } else {
+            if let Some(hint) = &method.return_type_hint {
+                walker.walk_function_like_return_type_hint(hint, context);
+            }
+
+            walker.walk_local_identifier(&method.name, context);
+            walker.walk_function_like_parameter_list(&method.parameter_list, context);
         }
 
         walker.walk_method_body(&method.body, context);
@@ -1589,6 +1600,13 @@ generate_ast_walker! {
         }
 
         walker.walk_terminator(&unset.terminator, context);
+    }
+
+    'arena LocalDeclaration as local_declaration => {
+        walker.walk_keyword(&local_declaration.keyword, context);
+        walker.walk_local_identifier(&local_declaration.name, context);
+        walker.walk_expression(local_declaration.value, context);
+        walker.walk_terminator(&local_declaration.terminator, context);
     }
 
     'arena Expression as expression => {

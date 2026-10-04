@@ -32,6 +32,8 @@ pub enum Variable<'arena> {
 /// ```php
 /// $foo
 /// ```
+///
+/// A PHP# parameter names its variable without a `$`, as in `int foo`, so its name has no `$`.
 #[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct DirectVariable<'arena> {

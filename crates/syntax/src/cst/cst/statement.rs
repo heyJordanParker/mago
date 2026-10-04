@@ -21,6 +21,7 @@ use crate::cst::cst::goto::Goto;
 use crate::cst::cst::goto::Label;
 use crate::cst::cst::halt_compiler::HaltCompiler;
 use crate::cst::cst::inline::Inline;
+use crate::cst::cst::local_declaration::LocalDeclaration;
 use crate::cst::cst::r#loop::Break;
 use crate::cst::cst::r#loop::Continue;
 use crate::cst::cst::r#loop::do_while::DoWhile;
@@ -89,6 +90,7 @@ pub enum Statement<'arena> {
     Static(Static<'arena>),
     HaltCompiler(HaltCompiler<'arena>),
     Unset(Unset<'arena>),
+    LocalDeclaration(LocalDeclaration<'arena>),
     Noop(Span),
 }
 
@@ -136,6 +138,7 @@ impl Statement<'_> {
             Statement::Global(global) => global.terminator.is_closing_tag(),
             Statement::Static(r#static) => r#static.terminator.is_closing_tag(),
             Statement::Unset(unset) => unset.terminator.is_closing_tag(),
+            Statement::LocalDeclaration(local_declaration) => local_declaration.terminator.is_closing_tag(),
             Statement::HaltCompiler(_) => true,
             _ => false,
         }
@@ -224,6 +227,7 @@ impl HasSpan for Statement<'_> {
             Statement::Global(statement) => statement.span(),
             Statement::Static(statement) => statement.span(),
             Statement::Unset(statement) => statement.span(),
+            Statement::LocalDeclaration(statement) => statement.span(),
             Statement::HaltCompiler(statement) => statement.span(),
             Statement::Noop(span) => *span,
         }

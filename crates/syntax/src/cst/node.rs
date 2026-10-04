@@ -122,6 +122,7 @@ use crate::cst::cst::LiteralFloat;
 use crate::cst::cst::LiteralInteger;
 use crate::cst::cst::LiteralString;
 use crate::cst::cst::LiteralStringPart;
+use crate::cst::cst::LocalDeclaration;
 use crate::cst::cst::LocalIdentifier;
 use crate::cst::cst::MagicConstant;
 use crate::cst::cst::Match;
@@ -458,6 +459,7 @@ pub enum NodeKind {
     ParenthesizedHint,
     UnionHint,
     Unset,
+    LocalDeclaration,
     DirectVariable,
     IndirectVariable,
     NestedVariable,
@@ -693,6 +695,7 @@ pub enum Node<'ast, 'arena> {
     ParenthesizedHint(&'ast ParenthesizedHint<'arena>),
     UnionHint(&'ast UnionHint<'arena>),
     Unset(&'ast Unset<'arena>),
+    LocalDeclaration(&'ast LocalDeclaration<'arena>),
     DirectVariable(&'ast DirectVariable<'arena>),
     IndirectVariable(&'ast IndirectVariable<'arena>),
     NestedVariable(&'ast NestedVariable<'arena>),
@@ -778,6 +781,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 | Self::Static(_)
                 | Self::HaltCompiler(_)
                 | Self::Unset(_)
+                | Self::LocalDeclaration(_)
         )
     }
 
@@ -1004,6 +1008,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Self::ParenthesizedHint(_) => NodeKind::ParenthesizedHint,
             Self::UnionHint(_) => NodeKind::UnionHint,
             Self::Unset(_) => NodeKind::Unset,
+            Self::LocalDeclaration(_) => NodeKind::LocalDeclaration,
             Self::DirectVariable(_) => NodeKind::DirectVariable,
             Self::IndirectVariable(_) => NodeKind::IndirectVariable,
             Self::NestedVariable(_) => NodeKind::NestedVariable,
@@ -1259,11 +1264,19 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 for item in node.modifiers.iter() {
                     f(Node::Modifier(item));
                 }
-                f(Node::Keyword(&node.function));
-                f(Node::LocalIdentifier(&node.name));
-                f(Node::FunctionLikeParameterList(&node.parameter_list));
-                for item in node.return_type_hint.iter() {
-                    f(Node::FunctionLikeReturnTypeHint(item));
+                if let Some(function) = &node.function {
+                    f(Node::Keyword(function));
+                    f(Node::LocalIdentifier(&node.name));
+                    f(Node::FunctionLikeParameterList(&node.parameter_list));
+                    for item in node.return_type_hint.iter() {
+                        f(Node::FunctionLikeReturnTypeHint(item));
+                    }
+                } else {
+                    for item in node.return_type_hint.iter() {
+                        f(Node::FunctionLikeReturnTypeHint(item));
+                    }
+                    f(Node::LocalIdentifier(&node.name));
+                    f(Node::FunctionLikeParameterList(&node.parameter_list));
                 }
                 f(Node::MethodBody(&node.body));
             }
@@ -2282,6 +2295,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 Statement::Static(node) => f(Node::Static(node)),
                 Statement::HaltCompiler(node) => f(Node::HaltCompiler(node)),
                 Statement::Unset(node) => f(Node::Unset(node)),
+                Statement::LocalDeclaration(node) => f(Node::LocalDeclaration(node)),
                 Statement::Noop(_) => {}
             },
             Node::ExpressionStatement(node) => {
@@ -2376,6 +2390,12 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 for e in node.values.iter() {
                     f(Node::Expression(e));
                 }
+                f(Node::Terminator(&node.terminator));
+            }
+            Node::LocalDeclaration(node) => {
+                f(Node::Keyword(&node.keyword));
+                f(Node::LocalIdentifier(&node.name));
+                f(Node::Expression(node.value));
                 f(Node::Terminator(&node.terminator));
             }
             Node::DirectVariable(_) => {}
@@ -2634,6 +2654,7 @@ impl HasSpan for Node<'_, '_> {
             Self::ParenthesizedHint(node) => node.span(),
             Self::UnionHint(node) => node.span(),
             Self::Unset(node) => node.span(),
+            Self::LocalDeclaration(node) => node.span(),
             Self::DirectVariable(node) => node.span(),
             Self::IndirectVariable(node) => node.span(),
             Self::NestedVariable(node) => node.span(),

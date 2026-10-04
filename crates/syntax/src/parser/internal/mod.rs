@@ -23,6 +23,7 @@ pub(crate) mod identifier;
 pub(crate) mod inline;
 pub(crate) mod instantiation;
 pub(crate) mod literal;
+pub(crate) mod local_declaration;
 pub(crate) mod r#loop;
 pub(crate) mod magic_constant;
 pub(crate) mod modifier;

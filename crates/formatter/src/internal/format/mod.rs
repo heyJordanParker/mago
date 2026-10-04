@@ -2054,11 +2054,14 @@ where
 {
     fn format(&'arena self, f: &mut FormatterState<'_, 'arena, A>) -> Document<'arena, A> {
         wrap!(f, self, FunctionLikeReturnTypeHint, {
-            Document::Group(Group::new(vec_in![f.arena;
-                format_token(f, self.colon, b":"),
-                Document::space(),
-                self.hint.format(f),
-            ]))
+            match self.colon {
+                Some(colon) => Document::Group(Group::new(vec_in![f.arena;
+                    format_token(f, colon, b":"),
+                    Document::space(),
+                    self.hint.format(f),
+                ])),
+                None => self.hint.format(f),
+            }
         })
     }
 }

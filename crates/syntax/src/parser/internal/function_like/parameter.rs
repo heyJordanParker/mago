@@ -38,7 +38,11 @@ where
             hint: self.parse_optional_type_hint()?,
             ampersand: if self.stream.is_at(T!["&"])? { Some(self.stream.eat_span(T!["&"])?) } else { None },
             ellipsis: if self.stream.is_at(T!["..."])? { Some(self.stream.eat_span(T!["..."])?) } else { None },
-            variable: self.parse_direct_variable()?,
+            variable: if self.dialect.is_sharp() && self.stream.is_at(T![Identifier])? {
+                self.parse_bare_variable()?
+            } else {
+                self.parse_direct_variable()?
+            },
             default_value: self.parse_optional_function_like_parameter_default_value()?,
             hooks: self.parse_optional_property_hook_list()?,
         })

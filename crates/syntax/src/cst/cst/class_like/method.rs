@@ -24,12 +24,18 @@ use crate::cst::sequence::Sequence;
 ///    }
 /// }
 /// ```
+///
+/// A PHP# method has no `function` keyword, and its return type, which has no colon, comes before its name:
+///
+/// ```csharp
+/// public string bar() { return "baz"; }
+/// ```
 #[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Method<'arena> {
     pub attribute_lists: Sequence<'arena, AttributeList<'arena>>,
     pub modifiers: Sequence<'arena, Modifier<'arena>>,
-    pub function: Keyword<'arena>,
+    pub function: Option<Keyword<'arena>>,
     pub ampersand: Option<Span>,
     pub name: LocalIdentifier<'arena>,
     pub parameter_list: FunctionLikeParameterList<'arena>,
@@ -97,7 +103,15 @@ impl HasSpan for Method<'_> {
             return Span::between(modifier.span(), self.body.span());
         }
 
-        Span::between(self.function.span, self.body.span())
+        if let Some(function) = self.function {
+            return Span::between(function.span, self.body.span());
+        }
+
+        if let Some(return_type_hint) = &self.return_type_hint {
+            return Span::between(return_type_hint.span(), self.body.span());
+        }
+
+        Span::between(self.name.span, self.body.span())
     }
 }
 
