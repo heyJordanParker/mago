@@ -25,6 +25,8 @@ use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::Hint;
+use mago_syntax::cst::If;
+use mago_syntax::cst::IfBody;
 use mago_syntax::cst::Literal;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::MethodBody;
@@ -56,6 +58,8 @@ use crate::sharp_kind::SHARP_AST_CONST_ELEM;
 use crate::sharp_kind::SHARP_AST_DECLARE;
 use crate::sharp_kind::SHARP_AST_GREATER;
 use crate::sharp_kind::SHARP_AST_GREATER_EQUAL;
+use crate::sharp_kind::SHARP_AST_IF;
+use crate::sharp_kind::SHARP_AST_IF_ELEM;
 use crate::sharp_kind::SHARP_AST_METHOD;
 use crate::sharp_kind::SHARP_AST_METHOD_CALL;
 use crate::sharp_kind::SHARP_AST_NAMED_ARG;
@@ -323,8 +327,27 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 self.node(SHARP_AST_ASSIGN, 0, self.line(local), &[variable, value])
             }
+            Statement::If(r#if) => self.r#if(r#if),
             _ => unreachable!("check_slice refuses the statement `{statement}`"),
         }
+    }
+
+    /// An `IF` list with one `IF_ELEM` per branch, and a null condition for `else`. php-src's grammar reads
+    /// `else if` as an `else` whose statement is the next `if`.
+    fn r#if(&mut self, r#if: &If) -> u32 {
+        let IfBody::Statement(body) = &r#if.body else {
+            unreachable!("check_slice refuses a colon-delimited `if`");
+        };
+
+        let condition = self.expression(r#if.condition);
+        let statement = self.statement(body.statement);
+        let mut branches = vec![self.node(SHARP_AST_IF_ELEM, 0, self.line(r#if.condition), &[condition, statement])];
+        if let Some(else_clause) = &body.else_clause {
+            let statement = self.statement(else_clause.statement);
+            branches.push(self.node(SHARP_AST_IF_ELEM, 0, self.line(else_clause.statement), &[NULL, statement]));
+        }
+
+        self.node(SHARP_AST_IF, 0, self.line(r#if), &branches)
     }
 
     fn expression(&mut self, expression: &Expression) -> u32 {

@@ -790,13 +790,62 @@ fn a_block_is_a_statement_list_and_a_constant_is_looked_up_by_its_short_name() {
     );
 }
 
+/// ```php
+/// if ($extra > 1) {
+///     return 1;
+/// } else if ($extra < 0) {
+///     return 2;
+/// } else {
+///     return 3;
+/// }
+/// ```
+///
+/// php-src reads `else if` as an `else` whose statement is the next `if`. An `else` has a null condition.
+#[test]
+fn if_else_if_and_else_are_if_lists_of_if_elems() {
+    assert_eq!(
+        body(
+            "        if (extra > 1) {\n            return 1;\n        } else if (extra < 0) {\n            return 2;\n        } else {\n            return 3;\n        }\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              IF
+                IF_ELEM
+                  GREATER
+                    VAR
+                      ZVAL "extra"
+                    ZVAL 1
+                  STMT_LIST
+                    RETURN
+                      ZVAL 1
+                IF_ELEM
+                  null
+                  IF
+                    IF_ELEM
+                      BINARY_OP [20]
+                        VAR
+                          ZVAL "extra"
+                        ZVAL 0
+                      STMT_LIST
+                        RETURN
+                          ZVAL 2
+                    IF_ELEM
+                      null
+                      STMT_LIST
+                        RETURN
+                          ZVAL 3
+        "#}
+    );
+}
+
 /// The child count `zend_ast_get_num_children` gives a fixed-size kind, or 5 for a declaration. `None` for a list.
 fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
     match kind {
         sharp_kind::SHARP_AST_ARG_LIST
         | sharp_kind::SHARP_AST_STMT_LIST
         | sharp_kind::SHARP_AST_PARAM_LIST
-        | sharp_kind::SHARP_AST_CONST_DECL => None,
+        | sharp_kind::SHARP_AST_CONST_DECL
+        | sharp_kind::SHARP_AST_IF => None,
         sharp_kind::SHARP_AST_ZVAL => Some(0),
         sharp_kind::SHARP_AST_VAR
         | sharp_kind::SHARP_AST_CONST
@@ -818,7 +867,8 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_OR
         | sharp_kind::SHARP_AST_DECLARE
         | sharp_kind::SHARP_AST_NAMESPACE
-        | sharp_kind::SHARP_AST_NAMED_ARG => Some(2),
+        | sharp_kind::SHARP_AST_NAMED_ARG
+        | sharp_kind::SHARP_AST_IF_ELEM => Some(2),
         sharp_kind::SHARP_AST_METHOD_CALL | sharp_kind::SHARP_AST_STATIC_CALL | sharp_kind::SHARP_AST_CONST_ELEM => {
             Some(3)
         }

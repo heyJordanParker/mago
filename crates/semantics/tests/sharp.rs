@@ -48,7 +48,7 @@ fn the_slice_fixture_has_no_semantic_issues() {
 
 #[test]
 fn every_construct_outside_the_slice_is_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\nenum Suit\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        if (extra) {\n            return 1;\n        }\n        echo extra;\n        const made = new Report();\n        const arrow = fn() => 1;\n        const closure = function () { return 1; };\n        const partial = this.run(...);\n        const text = \"total {$extra}\";\n        return extra;\n    }\n}\n";
+    let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\nenum Suit\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        switch (extra) {\n            default: return 1;\n        }\n        echo extra;\n        const made = new Report();\n        const arrow = fn() => 1;\n        const closure = function () { return 1; };\n        const partial = this.run(...);\n        const text = \"total {$extra}\";\n        return extra;\n    }\n}\n";
 
     assert_eq!(
         issues(code),
@@ -66,6 +66,51 @@ fn every_construct_outside_the_slice_is_not_supported_yet() {
             "26:22 This expression is not supported yet in PHP#.",
         ]
     );
+}
+
+#[test]
+fn if_else_if_and_else_with_braces_are_in_the_slice() {
+    let code = leak(method(
+        "        if (extra > 1) {\n            return 1;\n        } else if (extra < 0) {\n            return 2;\n        } else {\n            return 3;\n        }\n",
+    ));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn an_if_or_else_without_braces_is_not_supported_yet() {
+    let code = leak(method(
+        "        if (extra > 1) return 1;\n        if (extra > 2) {\n            return 2;\n        } else return 3;\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:9 This statement without braces is not supported yet in PHP#.",
+            "8:9 This statement without braces is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn elseif_and_a_colon_delimited_if_are_not_supported_yet() {
+    let code = leak(method(
+        "        if (extra > 1) {\n            return 1;\n        } elseif (extra > 2) {\n            return 2;\n        }\n        if (extra > 3):\n            return 3;\n        endif;\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        ["9:11 This `elseif` is not supported yet in PHP#.", "12:23 This construct is not supported yet in PHP#."]
+    );
+}
+
+#[test]
+fn a_local_declared_in_an_if_branch_is_out_of_scope_after_it() {
+    let code = leak(method(
+        "        if (extra > 1) {\n            let inner = 1;\n        } else {\n            let inner = 2;\n        }\n        return inner;\n",
+    ));
+
+    assert_eq!(issues(code), ["12:16 `inner` is used after the block that declares it closes."]);
 }
 
 #[test]

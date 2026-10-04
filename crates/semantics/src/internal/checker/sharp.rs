@@ -26,6 +26,8 @@ use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::Global;
 use mago_syntax::cst::Hint;
 use mago_syntax::cst::Identifier;
+use mago_syntax::cst::If;
+use mago_syntax::cst::IfBody;
 use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::LocalIdentifier;
 use mago_syntax::cst::Method;
@@ -67,7 +69,8 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   a literal, a constant, or the operators below on them, without `++` and `--`.
 /// - Types: `int`, `float`, `bool`, `string` and a class written by its short name, and `void` as a return type.
 ///   PHP's own check reports a `void` parameter.
-/// - In a method body: blocks, expression statements, `return`, and `let` and `const` declarations.
+/// - In a method body: blocks, expression statements, `return`, `let` and `const` declarations, and `if` with
+///   `else if` and `else`. The body of `if`, `else` and each loop is a block in braces.
 /// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter or a member written
 ///   `object.name`.
 /// - In expressions: literals, parentheses, bare names, assignment, the operators below, and method calls and
@@ -244,13 +247,31 @@ fn enter(
         (Node::FunctionLikeParameterDefaultValue(_), Parameter) => Some(Default),
         (Node::Block(_), Method | Body) => Some(Body),
 
+        (Node::Statement(statement), Body) if !has_braces(statement) => {
+            report_not_supported(
+                statement.span(),
+                "statement without braces",
+                "PHP# writes the body of `if`, `else` and each loop as a block in braces.",
+                context,
+            );
+
+            None
+        }
         (
             Node::Statement(
-                Statement::Block(_) | Statement::Expression(_) | Statement::Return(_) | Statement::LocalDeclaration(_),
+                Statement::Block(_)
+                | Statement::Expression(_)
+                | Statement::Return(_)
+                | Statement::LocalDeclaration(_)
+                | Statement::If(_),
             )
             | Node::ExpressionStatement(_)
             | Node::Return(_)
-            | Node::LocalDeclaration(_),
+            | Node::LocalDeclaration(_)
+            | Node::If(_)
+            | Node::IfBody(IfBody::Statement(_))
+            | Node::IfStatementBody(_)
+            | Node::IfStatementBodyElseClause(_),
             Body,
         ) => Some(Body),
 
@@ -424,6 +445,22 @@ fn write_target<'ast, 'arena>(node: Node<'ast, 'arena>) -> Option<&'ast Expressi
     }
 }
 
+/// Whether every body of an `if`, `else` or loop is a block in braces. An `else` may also hold the next `if`.
+fn has_braces(statement: &Statement) -> bool {
+    let is_block = |statement: &Statement| matches!(statement, Statement::Block(_));
+
+    match statement {
+        Statement::If(If { body: IfBody::Statement(body), .. }) => {
+            is_block(body.statement)
+                && body
+                    .else_clause
+                    .as_ref()
+                    .is_none_or(|clause| is_block(clause.statement) || matches!(clause.statement, Statement::If(_)))
+        }
+        _ => true,
+    }
+}
+
 /// Whether the slice can write an expression: a local, a parameter, or a member written `object.name`.
 fn is_slice_target(target: &Expression, context: &Context<'_, '_, '_>) -> bool {
     match target {
@@ -538,6 +575,9 @@ fn report_unsupported(node: Node<'_, '_>, place: Place, context: &mut Context<'_
         Node::AttributeList(_) => {
             return report_not_supported(node.span(), "attribute", "PHP# writes attributes as `[...]`.", context);
         }
+        Node::IfStatementBodyElseIfClause(_) => {
+            return report_not_supported(node.span(), "`elseif`", "PHP# writes `else if`.", context);
+        }
         Node::Extends(_) => "`extends` clause",
         Node::Implements(_) => "`implements` clause",
         Node::ClassLikeMember(_) => "class member",
@@ -563,7 +603,7 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, a name, and an optional default."
         }
         Place::Body => {
-            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const`, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `++` and `--`, and method calls and property reads written with `.`."
+            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const`, and `if` with `else if` and `else`, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `++` and `--`, and method calls and property reads written with `.`."
         }
         Place::Default => {
             "A parameter default is a literal, a constant, or arithmetic, comparison and logical operators on them."
