@@ -66,15 +66,16 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - A parameter: always a type, a name and an optional default, and neither variadic nor by reference. A default is
 ///   a literal, a constant, or the operators below on them, without `++` and `--`.
 /// - Types: `int`, `float`, `bool`, `string` and a class written by its short name, and `void` as a return type.
-///   PHP's own check reports a `void` parameter.
+///   PHP's own check reports a `void` parameter. Each of them is nullable when written with `?` after it, as in
+///   `int?`, and PHP's own check reports `void?`.
 /// - In a method body: blocks, expression statements, `return`, and `let` and `const` declarations.
 /// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter or a member written
 ///   `object.name`.
 /// - In expressions: literals, parentheses, bare names, assignment, the operators below, and method calls and
-///   property reads written with `.` and a member name, with positional and named arguments. A string literal's
-///   `\u{...}` escapes are valid codepoints, as PHP requires.
-/// - Operators: `+ - * / %`, `== != === !== < > <= >=`, `&& || !`, unary `-` and `+`, `++` and `--`, and
-///   `= += -= *= /=`.
+///   property reads written with `.` or `?.` and a member name, with positional and named arguments. `?.` never
+///   follows a class. A string literal's `\u{...}` escapes are valid codepoints, as PHP requires.
+/// - Operators: `+ - * / %`, `== != === !== < > <= >=`, `&& || !`, `??`, unary `-` and `+`, `++` and `--`, and
+///   `= += -= *= /= ??=`.
 ///
 /// The check visits every node and refuses any node, or any position of a node, that this list does not name. It
 /// reports each refusal once, at its outermost node. It does not run on a file with a parse error, which is the one
@@ -240,6 +241,7 @@ fn enter(
             }
         },
         (Node::Hint(hint), Method | Parameter) if is_slice_type(hint) => Some(place),
+        (Node::NullableHint(_), Method | Parameter) => Some(place),
         (Node::DirectVariable(_), Parameter) => Some(Parameter),
         (Node::FunctionLikeParameterDefaultValue(_), Parameter) => Some(Default),
         (Node::Block(_), Method | Body) => Some(Body),
@@ -294,14 +296,14 @@ fn enter(
             Node::Expression(
                 Expression::Assignment(_)
                 | Expression::UnaryPostfix(_)
-                | Expression::Call(Call::Method(_))
-                | Expression::Access(Access::Property(_)),
+                | Expression::Call(Call::Method(_) | Call::NullSafeMethod(_))
+                | Expression::Access(Access::Property(_) | Access::NullSafeProperty(_)),
             )
             | Node::Assignment(_)
             | Node::UnaryPostfix(_)
             | Node::UnaryPostfixOperator(UnaryPostfixOperator::PostIncrement(_) | UnaryPostfixOperator::PostDecrement(_))
-            | Node::Call(Call::Method(_))
-            | Node::Access(Access::Property(_))
+            | Node::Call(Call::Method(_) | Call::NullSafeMethod(_))
+            | Node::Access(Access::Property(_) | Access::NullSafeProperty(_))
             | Node::ClassLikeMemberSelector(ClassLikeMemberSelector::Identifier(_))
             | Node::ArgumentList(_)
             | Node::Argument(_)
@@ -319,6 +321,10 @@ fn enter(
             check_member_access(access.span(), access.object, &access.property, MemberUse::Read, checked, context);
 
             Some(Body)
+        }
+        (Node::NullSafeMethodCall(call), Body) => check_null_safe_object(call.span(), call.object, &call.method, context),
+        (Node::NullSafePropertyAccess(access), Body) => {
+            check_null_safe_object(access.span(), access.object, &access.property, context)
         }
 
         // PHP# never has `$` variables. A `$` variable inside a construct the walk refuses adds no second error.
@@ -427,7 +433,8 @@ fn is_slice_target(target: &Expression, context: &Context<'_, '_, '_>) -> bool {
     }
 }
 
-/// Whether the slice has a type: the built-in types of spec section 24, or a class written by its short name.
+/// Whether the slice has a type: the built-in types of spec section 24, or a class written by its short name, or a
+/// nullable type, whose inner type the walk checks next.
 fn is_slice_type(hint: &Hint) -> bool {
     matches!(
         hint,
@@ -437,6 +444,7 @@ fn is_slice_type(hint: &Hint) -> bool {
             | Hint::String(_)
             | Hint::Void(_)
             | Hint::Identifier(Identifier::Local(_))
+            | Hint::Nullable(_)
     )
 }
 
@@ -458,14 +466,14 @@ const fn is_slice_binary_operator(operator: &BinaryOperator) -> bool {
         | BinaryOperator::GreaterThan(_)
         | BinaryOperator::GreaterThanOrEqual(_)
         | BinaryOperator::And(_)
-        | BinaryOperator::Or(_) => true,
+        | BinaryOperator::Or(_)
+        | BinaryOperator::NullCoalesce(_) => true,
         BinaryOperator::Exponentiation(_)
         | BinaryOperator::BitwiseAnd(_)
         | BinaryOperator::BitwiseOr(_)
         | BinaryOperator::BitwiseXor(_)
         | BinaryOperator::LeftShift(_)
         | BinaryOperator::RightShift(_)
-        | BinaryOperator::NullCoalesce(_)
         | BinaryOperator::AngledNotEqual(_)
         | BinaryOperator::Spaceship(_)
         | BinaryOperator::StringConcat(_)
@@ -509,7 +517,8 @@ const fn is_slice_assignment_operator(operator: &AssignmentOperator) -> bool {
         | AssignmentOperator::Addition(_)
         | AssignmentOperator::Subtraction(_)
         | AssignmentOperator::Multiplication(_)
-        | AssignmentOperator::Division(_) => true,
+        | AssignmentOperator::Division(_)
+        | AssignmentOperator::Coalesce(_) => true,
         AssignmentOperator::Modulo(_)
         | AssignmentOperator::Exponentiation(_)
         | AssignmentOperator::Concat(_)
@@ -517,8 +526,7 @@ const fn is_slice_assignment_operator(operator: &AssignmentOperator) -> bool {
         | AssignmentOperator::BitwiseOr(_)
         | AssignmentOperator::BitwiseXor(_)
         | AssignmentOperator::LeftShift(_)
-        | AssignmentOperator::RightShift(_)
-        | AssignmentOperator::Coalesce(_) => false,
+        | AssignmentOperator::RightShift(_) => false,
     }
 }
 
@@ -551,16 +559,16 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# class has a name and methods, with no attributes, modifiers, `extends` or `implements`."
         }
         Place::Method => {
-            "A PHP# method takes `public`, `protected`, `private` and `static`, parameters, and a return type of `int`, `float`, `bool`, `string`, `void` or a class."
+            "A PHP# method takes `public`, `protected`, `private` and `static`, parameters, and a return type of `int`, `float`, `bool`, `string`, `void` or a class, each but `void` nullable as in `int?`."
         }
         Place::Parameter => {
-            "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, a name, and an optional default."
+            "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, a name, and an optional default."
         }
         Place::Body => {
-            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const`, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `++` and `--`, and method calls and property reads written with `.`."
+            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const`, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, `++` and `--`, and method calls and property reads written with `.` or `?.`."
         }
         Place::Default => {
-            "A parameter default is a literal, a constant, or arithmetic, comparison and logical operators on them."
+            "A parameter default is a literal, a constant, or arithmetic, comparison, logical and `??` operators on them."
         }
     }
 }
@@ -995,6 +1003,33 @@ fn report_static_access(
     };
 
     context.report(issue);
+}
+
+/// Checks the object of `object?.member`. A class is never null, so `?.` after a class is an error that names `.`.
+fn check_null_safe_object(
+    access: Span,
+    object: &Expression,
+    member: &ClassLikeMemberSelector,
+    context: &mut Context<'_, '_, '_>,
+) -> Option<Place> {
+    if let Expression::ConstantAccess(class) = object
+        && context.names.binding(&class.name) == Some(Binding::Class)
+        && let ClassLikeMemberSelector::Identifier(member) = member
+    {
+        let class = BytesDisplay(class.name.value());
+
+        context.report(
+            Issue::error(format!(
+                "`{class}` is a class, which is never null: write `{class}.{}`.",
+                BytesDisplay(member.value)
+            ))
+            .with_annotation(Annotation::primary(access).with_message("Null-safe access written here.")),
+        );
+
+        return None;
+    }
+
+    Some(Place::Body)
 }
 
 fn report_bare_member(span: Span, name: &[u8], context: &mut Context<'_, '_, '_>) {

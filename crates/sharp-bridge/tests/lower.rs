@@ -442,6 +442,47 @@ fn parameters_carry_their_type_name_and_default() {
 }
 
 /// ```php
+/// public function find(?int $id, ?\Lib\Calc $other = null): ?\Lib\Calc { return null; }
+/// ```
+///
+/// `[256]` is `ZEND_TYPE_NULLABLE`, which php-src's grammar adds to the type's attr, and `[257]` adds it to
+/// `ZEND_NAME_NOT_FQ`.
+#[test]
+fn a_nullable_type_is_its_type_with_the_nullable_flag() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public Calc? find(int? id, Calc? other = null) { return null; }\n}\n",
+    );
+    let method = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a method");
+
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 0)),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                ZVAL [257] "int"
+                ZVAL "id"
+                null
+                null
+                null
+                null
+              PARAM
+                ZVAL [256] "Lib\\Calc"
+                ZVAL "other"
+                ZVAL null
+                null
+                null
+                null
+        "#}
+    );
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 3)),
+        indoc! {r#"
+            ZVAL [256] "Lib\\Calc"
+        "#}
+    );
+}
+
+/// ```php
 /// public function run(): void
 /// {
 ///     return;
@@ -789,6 +830,84 @@ fn compound_assignments_are_assign_ops() {
 }
 
 /// ```php
+/// return $extra ?? $this->total() ?? 0;
+/// ```
+///
+/// `??` is right-associative, as php-src's grammar declares it.
+#[test]
+fn null_coalescing_is_coalesce() {
+    assert_eq!(
+        body("        return extra ?? this.total() ?? 0;\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                COALESCE
+                  VAR
+                    ZVAL "extra"
+                  COALESCE
+                    METHOD_CALL
+                      VAR
+                        ZVAL "this"
+                      ZVAL "total"
+                      ARG_LIST
+                    ZVAL 0
+        "#}
+    );
+}
+
+/// ```php
+/// $extra ??= 1; $this->count ??= $extra;
+/// ```
+#[test]
+fn null_coalescing_assignment_is_assign_coalesce() {
+    assert_eq!(
+        body("        extra ??= 1;\n        this.count ??= extra;\n        return extra;\n"),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN_COALESCE
+                VAR
+                  ZVAL "extra"
+                ZVAL 1
+              ASSIGN_COALESCE
+                PROP
+                  VAR
+                    ZVAL "this"
+                  ZVAL "count"
+                VAR
+                  ZVAL "extra"
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
+/// return $this?->total($extra)?->value->cents;
+/// ```
+#[test]
+fn null_safe_calls_and_reads_are_nullsafe_kinds() {
+    assert_eq!(
+        body("        return this?.total(extra)?.value.cents;\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                PROP
+                  NULLSAFE_PROP
+                    NULLSAFE_METHOD_CALL
+                      VAR
+                        ZVAL "this"
+                      ZVAL "total"
+                      ARG_LIST
+                        VAR
+                          ZVAL "extra"
+                    ZVAL "value"
+                  ZVAL "cents"
+        "#}
+    );
+}
+
+/// ```php
 /// return ($extra + 1) * 2;
 /// ```
 #[test]
@@ -862,10 +981,14 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_OR
         | sharp_kind::SHARP_AST_DECLARE
         | sharp_kind::SHARP_AST_NAMESPACE
-        | sharp_kind::SHARP_AST_NAMED_ARG => Some(2),
-        sharp_kind::SHARP_AST_METHOD_CALL | sharp_kind::SHARP_AST_STATIC_CALL | sharp_kind::SHARP_AST_CONST_ELEM => {
-            Some(3)
-        }
+        | sharp_kind::SHARP_AST_NAMED_ARG
+        | sharp_kind::SHARP_AST_COALESCE
+        | sharp_kind::SHARP_AST_ASSIGN_COALESCE
+        | sharp_kind::SHARP_AST_NULLSAFE_PROP => Some(2),
+        sharp_kind::SHARP_AST_METHOD_CALL
+        | sharp_kind::SHARP_AST_STATIC_CALL
+        | sharp_kind::SHARP_AST_CONST_ELEM
+        | sharp_kind::SHARP_AST_NULLSAFE_METHOD_CALL => Some(3),
         sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_CLASS => Some(5),
         sharp_kind::SHARP_AST_PARAM => Some(6),
     }

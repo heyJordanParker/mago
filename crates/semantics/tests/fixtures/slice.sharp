@@ -72,4 +72,16 @@ class Report
     {
         return 0.5;
     }
+
+    public Calc? find(int? id, Calc? fallback = null, string? label = "none", float? rate = null, bool? on = null ?? true)
+    {
+        const first = id ?? 0;
+        let second = id;
+        second ??= first;
+        id ??= 1;
+        fallback.rate ??= rate;
+        const sum = fallback?.add(1, 2) ?? fallback?.rate;
+        const again = this?.find(id)?.rate.cents;
+        return fallback ?? null;
+    }
 }

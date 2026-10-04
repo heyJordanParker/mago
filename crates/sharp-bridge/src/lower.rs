@@ -47,9 +47,11 @@ use crate::sharp_kind;
 use crate::sharp_kind::SHARP_AST_AND;
 use crate::sharp_kind::SHARP_AST_ARG_LIST;
 use crate::sharp_kind::SHARP_AST_ASSIGN;
+use crate::sharp_kind::SHARP_AST_ASSIGN_COALESCE;
 use crate::sharp_kind::SHARP_AST_ASSIGN_OP;
 use crate::sharp_kind::SHARP_AST_BINARY_OP;
 use crate::sharp_kind::SHARP_AST_CLASS;
+use crate::sharp_kind::SHARP_AST_COALESCE;
 use crate::sharp_kind::SHARP_AST_CONST;
 use crate::sharp_kind::SHARP_AST_CONST_DECL;
 use crate::sharp_kind::SHARP_AST_CONST_ELEM;
@@ -60,6 +62,8 @@ use crate::sharp_kind::SHARP_AST_METHOD;
 use crate::sharp_kind::SHARP_AST_METHOD_CALL;
 use crate::sharp_kind::SHARP_AST_NAMED_ARG;
 use crate::sharp_kind::SHARP_AST_NAMESPACE;
+use crate::sharp_kind::SHARP_AST_NULLSAFE_METHOD_CALL;
+use crate::sharp_kind::SHARP_AST_NULLSAFE_PROP;
 use crate::sharp_kind::SHARP_AST_OR;
 use crate::sharp_kind::SHARP_AST_PARAM;
 use crate::sharp_kind::SHARP_AST_PARAM_LIST;
@@ -89,6 +93,7 @@ const ZEND_ACC_PUBLIC: u32 = 1 << 0;
 const ZEND_ACC_PROTECTED: u32 = 1 << 1;
 const ZEND_ACC_PRIVATE: u32 = 1 << 2;
 const ZEND_ACC_STATIC: u32 = 1 << 4;
+const ZEND_TYPE_NULLABLE: u32 = 1 << 8;
 const ZEND_ADD: u32 = 1;
 const ZEND_SUB: u32 = 2;
 const ZEND_MUL: u32 = 3;
@@ -307,13 +312,20 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_PARAM, 0, self.line(parameter), &[hint, name, default, NULL, NULL, NULL])
     }
 
-    /// A built-in type is written unqualified, and a class by its full name.
+    /// A built-in type is written unqualified, and a class by its full name. A nullable type is its type with
+    /// `ZEND_TYPE_NULLABLE`, as php-src's grammar builds `?int`.
     fn hint(&mut self, hint: &Hint) -> u32 {
         match hint {
             Hint::Integer(name) | Hint::Float(name) | Hint::Bool(name) | Hint::String(name) | Hint::Void(name) => {
                 self.string(ZEND_NAME_NOT_FQ, self.line(name.span), name.value)
             }
             Hint::Identifier(class) => self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class)),
+            Hint::Nullable(nullable) => {
+                let index = self.hint(nullable.hint);
+                self.nodes[index as usize].attr |= ZEND_TYPE_NULLABLE;
+
+                index
+            }
             _ => unreachable!("check_slice refuses the type `{hint}`"),
         }
     }
@@ -392,6 +404,19 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 let property = self.member(&access.property);
 
                 self.node(SHARP_AST_PROP, 0, line, &[object, property])
+            }
+            Expression::Call(Call::NullSafeMethod(call)) => {
+                let object = self.expression(call.object);
+                let method = self.member(&call.method);
+                let arguments = self.arguments(&call.argument_list);
+
+                self.node(SHARP_AST_NULLSAFE_METHOD_CALL, 0, line, &[object, method, arguments])
+            }
+            Expression::Access(Access::NullSafeProperty(access)) => {
+                let object = self.expression(access.object);
+                let property = self.member(&access.property);
+
+                self.node(SHARP_AST_NULLSAFE_PROP, 0, line, &[object, property])
             }
             _ => unreachable!("check_slice refuses the expression `{expression}`"),
         }
@@ -593,13 +618,13 @@ fn binary_kind(operator: BinaryOperator) -> (sharp_kind, u32) {
         BinaryOperator::GreaterThanOrEqual(_) => (SHARP_AST_GREATER_EQUAL, 0),
         BinaryOperator::And(_) => (SHARP_AST_AND, 0),
         BinaryOperator::Or(_) => (SHARP_AST_OR, 0),
+        BinaryOperator::NullCoalesce(_) => (SHARP_AST_COALESCE, 0),
         BinaryOperator::Exponentiation(_)
         | BinaryOperator::BitwiseAnd(_)
         | BinaryOperator::BitwiseOr(_)
         | BinaryOperator::BitwiseXor(_)
         | BinaryOperator::LeftShift(_)
         | BinaryOperator::RightShift(_)
-        | BinaryOperator::NullCoalesce(_)
         | BinaryOperator::AngledNotEqual(_)
         | BinaryOperator::Spaceship(_)
         | BinaryOperator::StringConcat(_)
@@ -647,6 +672,7 @@ fn assignment_kind(operator: &AssignmentOperator) -> (sharp_kind, u32) {
         AssignmentOperator::Subtraction(_) => (SHARP_AST_ASSIGN_OP, ZEND_SUB),
         AssignmentOperator::Multiplication(_) => (SHARP_AST_ASSIGN_OP, ZEND_MUL),
         AssignmentOperator::Division(_) => (SHARP_AST_ASSIGN_OP, ZEND_DIV),
+        AssignmentOperator::Coalesce(_) => (SHARP_AST_ASSIGN_COALESCE, 0),
         AssignmentOperator::Modulo(_)
         | AssignmentOperator::Exponentiation(_)
         | AssignmentOperator::Concat(_)
@@ -654,8 +680,7 @@ fn assignment_kind(operator: &AssignmentOperator) -> (sharp_kind, u32) {
         | AssignmentOperator::BitwiseOr(_)
         | AssignmentOperator::BitwiseXor(_)
         | AssignmentOperator::LeftShift(_)
-        | AssignmentOperator::RightShift(_)
-        | AssignmentOperator::Coalesce(_) => unreachable!("check_slice refuses the operator `{operator}`"),
+        | AssignmentOperator::RightShift(_) => unreachable!("check_slice refuses the operator `{operator}`"),
     }
 }
 

@@ -41,7 +41,14 @@ where
         let token = self.stream.lookahead(0)?.ok_or_else(|| self.stream.unexpected(None, &[]))?;
 
         let hint = match &token.kind {
-            T!["?"] => Hint::Nullable(self.parse_nullable_type_hint()?),
+            T!["?"] => {
+                let nullable = self.parse_nullable_type_hint()?;
+                if self.dialect.is_sharp() {
+                    self.errors.push(ParseError::PhpSyntaxInSharp(T!["?"], nullable.question_mark));
+                }
+
+                Hint::Nullable(nullable)
+            }
             T!["("] => Hint::Parenthesized(self.parse_parenthesized_type_hint()?),
             T!["array"] => Hint::Array(self.expect_any_keyword()?),
             T!["callable"] => Hint::Callable(self.expect_any_keyword()?),
@@ -88,6 +95,15 @@ where
                     ],
                 ));
             }
+        };
+
+        // PHP# writes a nullable type with `?` after it, as in `int?`.
+        let hint = if self.dialect.is_sharp() && self.stream.is_at(T!["?"])? {
+            let question_mark = self.stream.eat_span(T!["?"])?;
+
+            Hint::Nullable(NullableHint { question_mark, hint: self.arena.alloc(hint) })
+        } else {
+            hint
         };
 
         let next = self.stream.lookahead(0)?;
