@@ -345,6 +345,13 @@ fn final_abstract_and_readonly_are_not_supported_yet() {
 }
 
 #[test]
+fn a_method_without_a_body_reports_only_the_php_error() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int run();\n}\n";
+
+    assert_eq!(issues(code), ["5:21 Non-Abstract method `Report::run` must have a concrete body."]);
+}
+
+#[test]
 fn fields_are_not_supported_yet() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    private int count = 0;\n}\n";
 
@@ -356,6 +363,73 @@ fn a_variadic_parameter_is_not_supported_yet() {
     let code = leak(method("        return 1;\n").replace("int extra", "int ...extra"));
 
     assert_eq!(issues(code), ["5:24 This variadic parameter is not supported yet in PHP#."]);
+}
+
+#[test]
+fn operators_outside_the_slice_are_not_supported_yet() {
+    let code = leak(method(
+        "        let a = extra ?? 1;\n        a = @extra;\n        a = (int) extra;\n        a = extra ** 2;\n        a = extra & 1;\n        a = extra | 1;\n        a = extra ^ 1;\n        a = extra << 1;\n        a = extra >> 1;\n        a = ~extra;\n        a = extra xor true;\n        a = extra and true;\n        a = extra or true;\n        a = extra <=> 1;\n        a = extra <> 1;\n        a %= 2;\n        a **= 2;\n        a &= 2;\n        a ??= 2;\n        return a;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:23 This operator is not supported yet in PHP#.",
+            "8:13 This operator is not supported yet in PHP#.",
+            "9:13 This operator is not supported yet in PHP#.",
+            "10:19 This operator is not supported yet in PHP#.",
+            "11:19 This operator is not supported yet in PHP#.",
+            "12:19 This operator is not supported yet in PHP#.",
+            "13:19 This operator is not supported yet in PHP#.",
+            "14:19 This operator is not supported yet in PHP#.",
+            "15:19 This operator is not supported yet in PHP#.",
+            "16:13 This operator is not supported yet in PHP#.",
+            "17:19 This operator is not supported yet in PHP#.",
+            "18:19 This operator is not supported yet in PHP#.",
+            "19:19 This operator is not supported yet in PHP#.",
+            "20:19 This operator is not supported yet in PHP#.",
+            "21:19 This operator is not supported yet in PHP#.",
+            "22:11 This operator is not supported yet in PHP#.",
+            "23:11 This operator is not supported yet in PHP#.",
+            "24:11 This operator is not supported yet in PHP#.",
+            "25:11 This operator is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn a_member_name_written_as_an_expression_is_not_supported_yet() {
+    let code = leak(method("        return this.{\"run\"}(extra);\n"));
+
+    assert_eq!(issues(code), ["7:21 This member name is not supported yet in PHP#."]);
+}
+
+#[test]
+fn types_outside_the_slice_are_not_supported_yet() {
+    let code = "class Report\n{\n    public mixed run(?int a, int|string b, iterable c, callable d, (Lib&Other)|null e)\n    {\n        return 1;\n    }\n\n    public self make(Lib f, float g, bool h, string i)\n    {\n        return this;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "3:12 This type is not supported yet in PHP#.",
+            "3:22 This type is not supported yet in PHP#.",
+            "3:30 This type is not supported yet in PHP#.",
+            "3:44 This type is not supported yet in PHP#.",
+            "3:56 This type is not supported yet in PHP#.",
+            "3:68 This type is not supported yet in PHP#.",
+            "8:12 This type is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn a_parameter_default_is_a_constant_expression() {
+    let code = "class Report\n{\n    public int run(int a = -1 + 2 * PHP_INT_MAX, int b = a, int c = this.run(), bool d = !true)\n    {\n        return a;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["3:58 This expression is not supported yet in PHP#.", "3:69 This expression is not supported yet in PHP#.",]
+    );
 }
 
 #[test]

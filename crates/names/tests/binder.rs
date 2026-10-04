@@ -166,6 +166,17 @@ fn an_initializer_does_not_see_the_local_it_declares() {
 }
 
 #[test]
+fn a_parameter_default_does_not_see_the_parameter_it_belongs_to() {
+    const CODE: &str =
+        "class Report\n{\n    public int run(int limit = limit)\n    {\n        return limit;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "limit", 1), Some(Binding::Constant));
+    assert_eq!(binding(&names, CODE, "limit", 2), Some(local(CODE, "limit", 0, LocalKind::Parameter)));
+}
+
+#[test]
 fn a_member_of_the_enclosing_class_without_this_is_recorded() {
     const CODE: &str = "class Report\n{\n    private int count()\n    {\n        return 1;\n    }\n\n    public int total()\n    {\n        return count() + total();\n    }\n}\n";
     let arena = LocalArena::new();

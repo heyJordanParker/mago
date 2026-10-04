@@ -27,12 +27,10 @@ use mago_syntax::cst::List;
 use mago_syntax::cst::Literal;
 use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::Match;
-use mago_syntax::cst::MethodCall;
 use mago_syntax::cst::Namespace;
 use mago_syntax::cst::PartialApplication;
 use mago_syntax::cst::Pipe;
 use mago_syntax::cst::Program;
-use mago_syntax::cst::PropertyAccess;
 use mago_syntax::cst::Statement;
 use mago_syntax::cst::Switch;
 use mago_syntax::cst::Trait;
@@ -226,36 +224,6 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingW
     fn walk_in_variable(&self, variable: &'ast Variable<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
         if context.program.dialect.is_sharp() {
             checker::sharp::check_variable(variable, context);
-        }
-    }
-
-    #[inline]
-    fn walk_in_method_call(&self, method_call: &'ast MethodCall<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
-        if context.program.dialect.is_sharp() {
-            checker::sharp::check_member_access(
-                method_call.span(),
-                method_call.object,
-                &method_call.method,
-                true,
-                context,
-            );
-        }
-    }
-
-    #[inline]
-    fn walk_in_property_access(
-        &self,
-        property_access: &'ast PropertyAccess<'arena>,
-        context: &mut Context<'_, 'ast, 'arena>,
-    ) {
-        if context.program.dialect.is_sharp() {
-            checker::sharp::check_member_access(
-                property_access.span(),
-                property_access.object,
-                &property_access.property,
-                false,
-                context,
-            );
         }
     }
 

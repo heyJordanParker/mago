@@ -9,9 +9,9 @@ use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::Access;
-use mago_syntax::cst::Argument;
 use mago_syntax::cst::Assignment;
-use mago_syntax::cst::AttributeList;
+use mago_syntax::cst::AssignmentOperator;
+use mago_syntax::cst::BinaryOperator;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeMember;
@@ -22,15 +22,15 @@ use mago_syntax::cst::Function;
 use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::Global;
+use mago_syntax::cst::Hint;
+use mago_syntax::cst::Identifier;
 use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::LocalIdentifier;
-use mago_syntax::cst::Method;
-use mago_syntax::cst::MethodBody;
 use mago_syntax::cst::Modifier;
-use mago_syntax::cst::PositionalArgument;
+use mago_syntax::cst::Node;
 use mago_syntax::cst::Program;
-use mago_syntax::cst::Sequence;
 use mago_syntax::cst::Statement;
+use mago_syntax::cst::Terminator;
 use mago_syntax::cst::UnaryPostfix;
 use mago_syntax::cst::UnaryPostfixOperator;
 use mago_syntax::cst::UnaryPrefix;
@@ -49,195 +49,337 @@ use crate::internal::context::Context;
 const SUPERGLOBALS: [&[u8]; 9] =
     [b"GLOBALS", b"_SERVER", b"_GET", b"_POST", b"_FILES", b"_COOKIE", b"_SESSION", b"_REQUEST", b"_ENV"];
 
-/// Checks a PHP# file against the slice allow-list: the only constructs a `.sharp` file may use, and the contract
-/// the engine's lowering implements.
+/// Checks a PHP# file against the slice: the only constructs a `.sharp` file may use, and the contract the
+/// engine's lowering implements.
 ///
-/// - At file level: `namespace`, `import` and `class`, with no attributes, modifiers, `extends` or `implements`.
-/// - In a class: methods, with `public`, `protected`, `private` and `static` as their only modifiers.
-/// - Method parameters: a type, a name and an optional default.
+/// - At file level: `namespace`, `import` and `class`.
+/// - A class: a name and methods, with no attributes, modifiers, `extends` or `implements`.
+/// - A method: `public`, `protected`, `private` and `static`, parameters, a return type and a body.
+/// - A parameter: a type, a name and an optional default. A default is a literal, a constant, or the operators
+///   below on them, without `++` and `--`.
+/// - Types: `int`, `float`, `bool`, `string`, `void` and a class written by its short name.
 /// - In a method body: blocks, expression statements, `return`, and `let` and `const` declarations.
-/// - In expressions: literals, parentheses, bare names, assignment, binary operators, prefix operators, postfix `++`
-///   and `--`, and method calls and property access written with `.`, with positional and named arguments.
+/// - In expressions: literals, parentheses, bare names, assignment, the operators below, and method calls and
+///   property reads written with `.` and a member name, with positional and named arguments.
+/// - Operators: `+ - * / %`, `== != === !== < > <= >=`, `&& || !`, unary `-` and `+`, `++` and `--`, and
+///   `= += -= *= /=`.
 ///
-/// Every other construct is not supported yet, reported once at its outermost node. The constructs PHP# never has,
-/// such as `$` variables, keep their own errors.
+/// The check visits every node and refuses any node, or any position of a node, that this list does not name. It
+/// reports each refusal once, at its outermost node. The constructs PHP# never has, such as `$` variables, `global`
+/// and top-level functions, keep their own errors.
 #[inline]
 pub fn check_slice(program: &Program, context: &mut Context<'_, '_, '_>) {
-    for statement in &program.statements {
-        check_file_statement(statement, context);
-    }
+    check_node(Node::Program(program), Place::File, context);
 }
 
-fn check_file_statement(statement: &Statement, context: &mut Context<'_, '_, '_>) {
-    match statement {
-        Statement::Namespace(namespace) => {
-            for statement in namespace.statements() {
-                check_file_statement(statement, context);
-            }
+/// Where a node of a PHP# file sits, for the parts of the slice that depend on it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Place {
+    /// The file's statements, its namespace and its imports.
+    File,
+    /// A class and its members.
+    Class,
+    /// A method's modifiers, parameters and return type.
+    Method,
+    /// One parameter.
+    Parameter,
+    /// A method body.
+    Body,
+    /// A parameter default.
+    Default,
+}
+
+fn check_node(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) {
+    if let Some(place) = enter(node, place, context) {
+        for child in node.children() {
+            check_node(child, place, context);
         }
-        Statement::Use(_) => {}
-        Statement::Class(class) => check_class(class, context),
-        // PHP# never has top-level functions: `check_function` reports them.
-        Statement::Function(_) => {}
-        _ => report_not_supported(
-            statement.span(),
-            "statement",
-            "At file level, PHP# supports `namespace`, `import` and `class`.",
-            context,
-        ),
     }
 }
 
-fn check_class(class: &Class, context: &mut Context<'_, '_, '_>) {
-    report_attributes(&class.attribute_lists, context);
-    for modifier in &class.modifiers {
-        report_not_supported(modifier.span(), "modifier", "A PHP# class takes no modifiers.", context);
-    }
+/// Decides one node at its place. Returns the place of its children when the slice has the node, and `None` when
+/// the node is reported.
+fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) -> Option<Place> {
+    use Place::Body;
+    use Place::Class;
+    use Place::Default;
+    use Place::File;
+    use Place::Method;
+    use Place::Parameter;
 
-    if let Some(extends) = &class.extends {
-        report_not_supported(extends.span(), "`extends` clause", "A PHP# class has no parent class.", context);
-    }
+    match (node, place) {
+        (Node::Keyword(_) | Node::LocalIdentifier(_) | Node::Identifier(Identifier::Local(_)), _) => Some(place),
+        (Node::Terminator(Terminator::Semicolon(_)), _) => Some(place),
 
-    if let Some(implements) = &class.implements {
-        report_not_supported(
-            implements.span(),
-            "`implements` clause",
-            "A PHP# class implements no interfaces.",
-            context,
-        );
-    }
+        (
+            Node::Program(_)
+            | Node::Statement(Statement::Namespace(_) | Statement::Use(_) | Statement::Class(_))
+            | Node::Namespace(_)
+            | Node::NamespaceBody(_)
+            | Node::NamespaceImplicitBody(_)
+            | Node::Block(_)
+            | Node::Identifier(Identifier::Dotted(_))
+            | Node::DottedIdentifier(_)
+            | Node::Use(_)
+            | Node::UseItems(UseItems::Sequence(_))
+            | Node::UseItemSequence(_)
+            | Node::UseItem(_),
+            File,
+        ) => Some(File),
+        (Node::Class(_), File) => Some(Class),
 
-    for member in &class.members {
-        match member {
-            ClassLikeMember::Method(method) => check_method(method, context),
-            ClassLikeMember::Property(field) => context.report(
+        (Node::ClassLikeMember(ClassLikeMember::Method(_)), Class) => Some(Class),
+        (Node::ClassLikeMember(ClassLikeMember::Property(field)), Class) => {
+            context.report(
                 Issue::error("PHP# fields are not supported yet.")
                     .with_annotation(Annotation::primary(field.span()).with_message("Not supported yet."))
-                    .with_note("In a class, PHP# supports methods."),
-            ),
-            _ => report_not_supported(member.span(), "class member", "In a class, PHP# supports methods.", context),
-        }
-    }
-}
-
-fn check_method(method: &Method, context: &mut Context<'_, '_, '_>) {
-    report_attributes(&method.attribute_lists, context);
-    for modifier in &method.modifiers {
-        if !matches!(
-            modifier,
-            Modifier::Public(_) | Modifier::Protected(_) | Modifier::Private(_) | Modifier::Static(_)
-        ) {
-            report_not_supported(
-                modifier.span(),
-                "modifier",
-                "On a method, PHP# supports `public`, `protected`, `private` and `static`.",
-                context,
+                    .with_note(supported(Class)),
             );
+
+            None
         }
-    }
+        (Node::Method(_), Class) => Some(Method),
 
-    for parameter in &method.parameter_list.parameters {
-        check_method_parameter(parameter, context);
-    }
+        (
+            Node::Modifier(Modifier::Public(_) | Modifier::Protected(_) | Modifier::Private(_) | Modifier::Static(_))
+            | Node::FunctionLikeParameterList(_)
+            | Node::FunctionLikeReturnTypeHint(_)
+            | Node::MethodBody(_)
+            // A method without a body is `abstract`, which the slice refuses, or a PHP error.
+            | Node::MethodAbstractBody(_),
+            Method,
+        ) => Some(Method),
+        (Node::FunctionLikeParameter(parameter), Method) if parameter.ellipsis.is_none() => Some(Parameter),
+        (Node::Hint(hint), Method | Parameter) if is_slice_type(hint) => Some(place),
+        (Node::DirectVariable(_), Parameter) => Some(Parameter),
+        (Node::FunctionLikeParameterDefaultValue(_), Parameter) => Some(Default),
+        (Node::Block(_), Method | Body) => Some(Body),
 
-    if let MethodBody::Concrete(block) = &method.body {
-        for statement in &block.statements {
-            check_body_statement(statement, context);
+        (
+            Node::Statement(
+                Statement::Block(_) | Statement::Expression(_) | Statement::Return(_) | Statement::LocalDeclaration(_),
+            )
+            | Node::ExpressionStatement(_)
+            | Node::Return(_)
+            | Node::LocalDeclaration(_),
+            Body,
+        ) => Some(Body),
+
+        (
+            Node::Expression(
+                Expression::Literal(_)
+                | Expression::ConstantAccess(_)
+                | Expression::Parenthesized(_)
+                | Expression::Binary(_)
+                | Expression::UnaryPrefix(_),
+            )
+            | Node::Literal(_)
+            | Node::LiteralInteger(_)
+            | Node::LiteralFloat(_)
+            | Node::LiteralString(_)
+            | Node::Parenthesized(_)
+            | Node::Binary(_)
+            | Node::UnaryPrefix(_),
+            Body | Default,
+        ) => Some(place),
+        (Node::ConstantAccess(_), Body) => Some(Body),
+        (Node::ConstantAccess(constant), Default) if context.names.binding(&constant.name) == Some(Binding::Constant) => {
+            Some(Default)
+        }
+        (Node::BinaryOperator(operator), Body | Default) if is_slice_binary_operator(operator) => Some(place),
+        (Node::UnaryPrefixOperator(operator), Body | Default) if is_slice_prefix_operator(operator, place) => {
+            Some(place)
+        }
+
+        (
+            Node::Expression(
+                Expression::Assignment(_)
+                | Expression::UnaryPostfix(_)
+                | Expression::Call(Call::Method(_))
+                | Expression::Access(Access::Property(_)),
+            )
+            | Node::Assignment(_)
+            | Node::UnaryPostfix(_)
+            | Node::UnaryPostfixOperator(UnaryPostfixOperator::PostIncrement(_) | UnaryPostfixOperator::PostDecrement(_))
+            | Node::Call(Call::Method(_))
+            | Node::Access(Access::Property(_))
+            | Node::ClassLikeMemberSelector(ClassLikeMemberSelector::Identifier(_))
+            | Node::ArgumentList(_)
+            | Node::Argument(_)
+            | Node::NamedArgument(_),
+            Body,
+        ) => Some(Body),
+        (Node::AssignmentOperator(operator), Body) if is_slice_assignment_operator(operator) => Some(Body),
+        (Node::PositionalArgument(argument), Body) if argument.ellipsis.is_none() => Some(Body),
+        (Node::MethodCall(method_call), Body) => {
+            check_member_access(method_call.span(), method_call.object, &method_call.method, true, context);
+
+            Some(Body)
+        }
+        (Node::PropertyAccess(property_access), Body) => {
+            check_member_access(property_access.span(), property_access.object, &property_access.property, false, context);
+
+            Some(Body)
+        }
+
+        // PHP# never has top-level functions, `global`, `$` variables, `compact()`, `extract()` or a member called
+        // without `this.`: `check_function`, `check_global`, `check_variable` and `check_function_call` report them.
+        (Node::Statement(Statement::Function(_)), File)
+        | (Node::Statement(Statement::Global(_)), Body)
+        | (Node::Expression(Expression::Variable(_)), Body | Default) => None,
+        (Node::Expression(Expression::Call(Call::Function(function_call))), Body)
+            if is_checked_function_call(function_call, context) =>
+        {
+            None
+        }
+
+        _ => {
+            report_unsupported(node, place, context);
+
+            None
         }
     }
 }
 
-fn check_method_parameter(parameter: &FunctionLikeParameter, context: &mut Context<'_, '_, '_>) {
-    const SUPPORTED: &str = "PHP# supports parameters with a type, a name and an optional default.";
+/// Whether the slice has a type: the built-in types of spec section 24, or a class written by its short name.
+fn is_slice_type(hint: &Hint) -> bool {
+    matches!(
+        hint,
+        Hint::Integer(_)
+            | Hint::Float(_)
+            | Hint::Bool(_)
+            | Hint::String(_)
+            | Hint::Void(_)
+            | Hint::Identifier(Identifier::Local(_))
+    )
+}
 
-    report_attributes(&parameter.attribute_lists, context);
-    if let Some(ellipsis) = parameter.ellipsis {
-        report_not_supported(ellipsis, "variadic parameter", SUPPORTED, context);
-    }
-
-    if let Some(default_value) = &parameter.default_value {
-        check_expression(default_value.value, context);
+/// Whether the slice has a binary operator. Every operator is named, so a new one does not compile until it is
+/// decided.
+const fn is_slice_binary_operator(operator: &BinaryOperator) -> bool {
+    match operator {
+        BinaryOperator::Addition(_)
+        | BinaryOperator::Subtraction(_)
+        | BinaryOperator::Multiplication(_)
+        | BinaryOperator::Division(_)
+        | BinaryOperator::Modulo(_)
+        | BinaryOperator::Equal(_)
+        | BinaryOperator::NotEqual(_)
+        | BinaryOperator::Identical(_)
+        | BinaryOperator::NotIdentical(_)
+        | BinaryOperator::LessThan(_)
+        | BinaryOperator::LessThanOrEqual(_)
+        | BinaryOperator::GreaterThan(_)
+        | BinaryOperator::GreaterThanOrEqual(_)
+        | BinaryOperator::And(_)
+        | BinaryOperator::Or(_) => true,
+        BinaryOperator::Exponentiation(_)
+        | BinaryOperator::BitwiseAnd(_)
+        | BinaryOperator::BitwiseOr(_)
+        | BinaryOperator::BitwiseXor(_)
+        | BinaryOperator::LeftShift(_)
+        | BinaryOperator::RightShift(_)
+        | BinaryOperator::NullCoalesce(_)
+        | BinaryOperator::AngledNotEqual(_)
+        | BinaryOperator::Spaceship(_)
+        | BinaryOperator::StringConcat(_)
+        | BinaryOperator::Instanceof(_)
+        | BinaryOperator::LowAnd(_)
+        | BinaryOperator::LowOr(_)
+        | BinaryOperator::LowXor(_) => false,
     }
 }
 
-fn report_attributes(attribute_lists: &Sequence<'_, AttributeList<'_>>, context: &mut Context<'_, '_, '_>) {
-    for attribute_list in attribute_lists {
-        report_not_supported(attribute_list.span(), "attribute", "PHP# writes attributes as `[...]`.", context);
+/// Whether the slice has a prefix operator at a place. A parameter default has no `++` or `--`. Every operator is
+/// named, so a new one does not compile until it is decided.
+fn is_slice_prefix_operator(operator: &UnaryPrefixOperator, place: Place) -> bool {
+    match operator {
+        UnaryPrefixOperator::Negation(_) | UnaryPrefixOperator::Plus(_) | UnaryPrefixOperator::Not(_) => true,
+        UnaryPrefixOperator::PreIncrement(_) | UnaryPrefixOperator::PreDecrement(_) => place == Place::Body,
+        UnaryPrefixOperator::ErrorControl(_)
+        | UnaryPrefixOperator::Reference(_)
+        | UnaryPrefixOperator::ArrayCast(..)
+        | UnaryPrefixOperator::BoolCast(..)
+        | UnaryPrefixOperator::BooleanCast(..)
+        | UnaryPrefixOperator::DoubleCast(..)
+        | UnaryPrefixOperator::RealCast(..)
+        | UnaryPrefixOperator::FloatCast(..)
+        | UnaryPrefixOperator::IntCast(..)
+        | UnaryPrefixOperator::IntegerCast(..)
+        | UnaryPrefixOperator::ObjectCast(..)
+        | UnaryPrefixOperator::UnsetCast(..)
+        | UnaryPrefixOperator::StringCast(..)
+        | UnaryPrefixOperator::BinaryCast(..)
+        | UnaryPrefixOperator::VoidCast(..)
+        | UnaryPrefixOperator::BitwiseNot(_) => false,
     }
 }
 
-fn check_body_statement(statement: &Statement, context: &mut Context<'_, '_, '_>) {
-    match statement {
-        Statement::Block(block) => {
-            for statement in &block.statements {
-                check_body_statement(statement, context);
-            }
-        }
-        Statement::Expression(statement) => check_expression(statement.expression, context),
-        Statement::Return(r#return) => {
-            if let Some(value) = r#return.value {
-                check_expression(value, context);
-            }
-        }
-        Statement::LocalDeclaration(local_declaration) => check_expression(local_declaration.value, context),
-        // PHP# never has `global`: `check_global` reports it.
-        Statement::Global(_) => {}
-        _ => report_not_supported(
-            statement.span(),
-            "statement",
-            "In a method, PHP# supports blocks, expression statements, `return`, `let` and `const`.",
-            context,
-        ),
+/// Whether the slice has an assignment operator. Every operator is named, so a new one does not compile until it
+/// is decided.
+const fn is_slice_assignment_operator(operator: &AssignmentOperator) -> bool {
+    match operator {
+        AssignmentOperator::Assign(_)
+        | AssignmentOperator::Addition(_)
+        | AssignmentOperator::Subtraction(_)
+        | AssignmentOperator::Multiplication(_)
+        | AssignmentOperator::Division(_) => true,
+        AssignmentOperator::Modulo(_)
+        | AssignmentOperator::Exponentiation(_)
+        | AssignmentOperator::Concat(_)
+        | AssignmentOperator::BitwiseAnd(_)
+        | AssignmentOperator::BitwiseOr(_)
+        | AssignmentOperator::BitwiseXor(_)
+        | AssignmentOperator::LeftShift(_)
+        | AssignmentOperator::RightShift(_)
+        | AssignmentOperator::Coalesce(_) => false,
     }
 }
 
-fn check_expression(expression: &Expression, context: &mut Context<'_, '_, '_>) {
-    match expression {
-        Expression::Literal(_) | Expression::ConstantAccess(_) => {}
-        Expression::Parenthesized(parenthesized) => check_expression(parenthesized.expression, context),
-        Expression::Assignment(assignment) => {
-            check_expression(assignment.lhs, context);
-            check_expression(assignment.rhs, context);
+fn report_unsupported(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) {
+    let construct = match node {
+        Node::Statement(_) => "statement",
+        Node::Expression(_) | Node::ConstantAccess(_) => "expression",
+        Node::BinaryOperator(_) | Node::UnaryPrefixOperator(_) | Node::AssignmentOperator(_) => "operator",
+        Node::Hint(_) => "type",
+        Node::Modifier(_) => "modifier",
+        Node::AttributeList(_) => {
+            return report_not_supported(node.span(), "attribute", "PHP# writes attributes as `[...]`.", context);
         }
-        Expression::Binary(binary) => {
-            check_expression(binary.lhs, context);
-            check_expression(binary.rhs, context);
+        Node::Extends(_) => "`extends` clause",
+        Node::Implements(_) => "`implements` clause",
+        Node::ClassLikeMember(_) => "class member",
+        Node::ClassLikeMemberSelector(_) => "member name",
+        Node::FunctionLikeParameter(FunctionLikeParameter { ellipsis: Some(ellipsis), .. }) => {
+            return report_not_supported(*ellipsis, "variadic parameter", supported(place), context);
         }
-        Expression::UnaryPrefix(unary_prefix) => check_expression(unary_prefix.operand, context),
-        Expression::UnaryPostfix(unary_postfix) => check_expression(unary_postfix.operand, context),
-        Expression::Call(Call::Method(method_call)) => {
-            check_expression(method_call.object, context);
-            for argument in &method_call.argument_list.arguments {
-                match argument {
-                    Argument::Positional(PositionalArgument { ellipsis: None, value }) => {
-                        check_expression(value, context)
-                    }
-                    Argument::Named(named) => check_expression(named.value, context),
-                    Argument::Positional(_) => report_not_supported(
-                        argument.span(),
-                        "spread argument",
-                        "PHP# supports positional and named arguments.",
-                        context,
-                    ),
-                }
-            }
-        }
-        Expression::Access(Access::Property(property_access)) => check_expression(property_access.object, context),
-        // PHP# never has `$` variables, `compact()`, `extract()` or a member called without `this.`:
-        // `check_variable` and `check_function_call` report them.
-        Expression::Variable(_) => {}
-        Expression::Call(Call::Function(function_call)) if is_checked_function_call(function_call, context) => {}
-        _ => report_unsupported_expression(expression.span(), context),
-    }
+        Node::PositionalArgument(_) => "spread argument",
+        _ => "construct",
+    };
+
+    report_not_supported(node.span(), construct, supported(place), context);
 }
 
-fn report_unsupported_expression(span: Span, context: &mut Context<'_, '_, '_>) {
-    report_not_supported(
-        span,
-        "expression",
-        "PHP# supports literals, parentheses, bare names, assignment, binary operators, prefix operators, postfix `++` and `--`, and method calls and property access with `.`.",
-        context,
-    );
+/// What the slice has at a place, as the note of a refusal there.
+const fn supported(place: Place) -> &'static str {
+    match place {
+        Place::File => "At file level, PHP# supports `namespace`, `import` and `class`.",
+        Place::Class => {
+            "A PHP# class has a name and methods, with no attributes, modifiers, `extends` or `implements`."
+        }
+        Place::Method => {
+            "A PHP# method takes `public`, `protected`, `private` and `static`, parameters, and a return type of `int`, `float`, `bool`, `string`, `void` or a class."
+        }
+        Place::Parameter => {
+            "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, a name, and an optional default."
+        }
+        Place::Body => {
+            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const`, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `++` and `--`, and method calls and property reads written with `.`."
+        }
+        Place::Default => {
+            "A parameter default is a literal, a constant, or arithmetic, comparison and logical operators on them."
+        }
+    }
 }
 
 fn report_not_supported(span: Span, construct: &str, supported: &str, context: &mut Context<'_, '_, '_>) {
@@ -501,8 +643,7 @@ pub fn check_variable(variable: &Variable, context: &mut Context<'_, '_, '_>) {
 ///
 /// A chain rooted at a class reads static members. Reading one without a call is not supported yet, and a chain of
 /// capitalized names is a full name, which belongs in an `import` line.
-#[inline]
-pub fn check_member_access(
+fn check_member_access(
     access: Span,
     object: &Expression,
     member: &ClassLikeMemberSelector,

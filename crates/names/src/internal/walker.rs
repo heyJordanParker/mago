@@ -283,7 +283,7 @@ where
         }
     }
 
-    fn walk_in_function_like_parameter(
+    fn walk_out_function_like_parameter(
         &mut self,
         parameter: &'ast FunctionLikeParameter<'arena>,
         _context: &mut NameResolutionContext<'arena, A>,
