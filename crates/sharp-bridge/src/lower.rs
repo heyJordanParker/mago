@@ -134,8 +134,7 @@ pub(crate) fn lower(path: Vec<u8>, source: Vec<u8>) -> Box<Unit> {
         return Unit::failed(errors);
     }
 
-    Lowering { file: &file, names: &names, nodes: Vec::new(), children: Vec::new(), texts: Vec::new(), errors }
-        .program(program)
+    Lowering::new(&file, &names).program(program)
 }
 
 /// A diagnostic at the start of `span`. Without a span it is at line 0, column 0, which the ABI defines as no
@@ -169,7 +168,11 @@ struct Lowering<'lowering, 'arena> {
     errors: Vec<Diagnostic>,
 }
 
-impl Lowering<'_, '_> {
+impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
+    fn new(file: &'lowering File, names: &'lowering ResolvedNames<'arena>) -> Self {
+        Self { file, names, nodes: Vec::new(), children: Vec::new(), texts: Vec::new(), errors: Vec::new() }
+    }
+
     /// `declare(strict_types=1);` first, then the namespaces and classes. Imports are not lowered: every class name
     /// in the tree is fully qualified.
     fn program(mut self, program: &Program) -> Box<Unit> {
@@ -356,7 +359,11 @@ impl Lowering<'_, '_> {
             }
             Expression::UnaryPrefix(unary) => {
                 let (kind, attr) = prefix_kind(&unary.operator);
-                let operand = self.expression(unary.operand);
+                let operand = if unary.operator.is_increment_or_decrement() {
+                    self.target(unary.operand)
+                } else {
+                    self.expression(unary.operand)
+                };
 
                 self.node(kind, attr, line, &[operand])
             }
@@ -365,13 +372,13 @@ impl Lowering<'_, '_> {
                     UnaryPostfixOperator::PostIncrement(_) => SHARP_AST_POST_INC,
                     UnaryPostfixOperator::PostDecrement(_) => SHARP_AST_POST_DEC,
                 };
-                let operand = self.expression(unary.operand);
+                let operand = self.target(unary.operand);
 
                 self.node(kind, 0, line, &[operand])
             }
             Expression::Assignment(assignment) => {
                 let (kind, attr) = assignment_kind(&assignment.operator);
-                let lhs = self.expression(assignment.lhs);
+                let lhs = self.target(assignment.lhs);
                 let rhs = self.expression(assignment.rhs);
 
                 self.node(kind, attr, line, &[lhs, rhs])
@@ -384,6 +391,18 @@ impl Lowering<'_, '_> {
                 self.node(SHARP_AST_PROP, 0, line, &[object, property])
             }
             _ => unreachable!("check_slice refuses the expression `{expression}`"),
+        }
+    }
+
+    /// What an assignment, a compound assignment, `++` or `--` writes: a local or parameter, or `object.name`, as
+    /// php-src's `variable` rule takes them.
+    fn target(&mut self, target: &Expression) -> u32 {
+        match target {
+            Expression::ConstantAccess(name) if matches!(self.names.binding(&name.name), Some(Binding::Local(_))) => {
+                self.variable(name.span(), name.name.value())
+            }
+            Expression::Access(Access::Property(_)) => self.expression(target),
+            _ => unreachable!("check_slice refuses writing to `{target}`"),
         }
     }
 
@@ -606,5 +625,36 @@ fn assignment_kind(operator: &AssignmentOperator) -> (sharp_kind, u32) {
         AssignmentOperator::Multiplication(_) => (SHARP_AST_ASSIGN_OP, ZEND_MUL),
         AssignmentOperator::Division(_) => (SHARP_AST_ASSIGN_OP, ZEND_DIV),
         _ => unreachable!("check_slice refuses the operator `{operator}`"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catch_panic;
+
+    /// Lowers `body` as the body of a method, skipping the semantic checks that would refuse it.
+    fn lower_unchecked(body: &str) -> Box<Unit> {
+        let source = format!("class Report\n{{\n    public void run()\n    {{\n{body}    }}\n}}\n");
+
+        catch_panic(|| {
+            let file = File::ephemeral(Cow::Borrowed(b"src/Report.sharp"), Cow::Owned(source.into_bytes()));
+            let arena = LocalArena::new();
+            let program = parse_file(&arena, &file);
+            let names = NameResolver::new(&arena).resolve(program);
+
+            Lowering::new(&file, &names).program(program)
+        })
+    }
+
+    #[test]
+    fn a_write_to_anything_but_a_local_or_a_member_returns_an_internal_error_and_no_nodes() {
+        for body in ["        PHP_INT_MAX = 1;\n", "        PHP_INT_MAX += 1;\n", "        PHP_INT_MAX++;\n"] {
+            let unit = lower_unchecked(body);
+
+            assert_eq!(unit.abi.node_count, 0, "{body}");
+            assert_eq!(unit.diagnostics.len(), 1, "{body}");
+            assert!(unit.texts[0].starts_with(b"internal error in the PHP# front end: "), "{body}");
+        }
     }
 }
