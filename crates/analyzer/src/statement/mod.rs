@@ -27,6 +27,7 @@ use mago_syntax::cst::ForeachTarget;
 use mago_syntax::cst::ForeachValueTarget;
 use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::Identifier;
+use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::LocalIdentifier;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::Statement;
@@ -200,57 +201,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Statement<'arena> {
             }
             Statement::Expression(expression) => expression.expression.analyze(context, block_context, artifacts),
             Statement::LocalDeclaration(local_declaration) => {
-                // A written type binds every value the local takes, and is its type after the declaration, as a
-                // `@var` tag on the PHP assignment would make it.
-                let variable_id = php_variable_name(local_declaration.name.value);
-                let local_type = local_declaration.hint.as_ref().map(|hint| {
-                    let mut local_type =
-                        get_union_from_hint(hint, block_context.scope.get_class_like_name(), context.resolved_names);
-                    populate_union_type(
-                        &mut local_type,
-                        &context.codebase.symbols,
-                        block_context.scope.get_reference_source().as_ref(),
-                        &mut artifacts.symbol_references,
-                        true,
-                    );
-                    expander::expand_union(
-                        context.codebase,
-                        &mut local_type,
-                        &TypeExpansionOptions {
-                            self_class: block_context.scope.get_class_like_name(),
-                            ..Default::default()
-                        },
-                    );
-
-                    (Rc::new(local_type), hint.span())
-                });
-
-                match &local_type {
-                    Some(local_type) => block_context.local_types.insert(variable_id, local_type.clone()),
-                    None => block_context.local_types.remove(&variable_id),
-                };
-
-                // A PHP# local declaration runs as the PHP assignment of its value to the variable it declares.
-                let name = context.arena.alloc(Expression::ConstantAccess(ConstantAccess {
-                    name: Identifier::Local(local_declaration.name),
-                }));
-
-                analyze_assignment(
-                    context,
-                    block_context,
-                    artifacts,
-                    Some(local_declaration.name.span.join(local_declaration.value.span())),
-                    name,
-                    None,
-                    Some(local_declaration.value),
-                    None,
-                )?;
-
-                if let Some((local_type, _)) = local_type {
-                    block_context.locals.insert(variable_id, local_type);
-                }
-
-                Ok(())
+                local_declaration.analyze(context, block_context, artifacts)
             }
             Statement::Try(r#try) => r#try.analyze(context, block_context, artifacts),
             Statement::Foreach(foreach) => foreach.analyze(context, block_context, artifacts),
@@ -317,6 +268,66 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Statement<'arena> {
         block_context.conditionally_referenced_variable_ids.clear();
 
         artifacts.record_static_local_types(block_context, context.codebase, context.settings.combiner_options());
+
+        Ok(())
+    }
+}
+
+impl<'ast, 'arena> Analyzable<'ast, 'arena> for LocalDeclaration<'arena> {
+    fn analyze<'ctx, A>(
+        &'ast self,
+        context: &mut Context<'ctx, 'arena, A>,
+        block_context: &mut BlockContext<'ctx>,
+        artifacts: &mut AnalysisArtifacts,
+    ) -> Result<(), AnalysisError>
+    where
+        A: Arena,
+    {
+        // A written type binds every value the local takes, and is its type after the declaration, as a `@var` tag
+        // on the PHP assignment would make it.
+        let variable_id = php_variable_name(self.name.value);
+        let local_type = self.hint.map(|hint| {
+            let mut local_type =
+                get_union_from_hint(hint, block_context.scope.get_class_like_name(), context.resolved_names);
+            populate_union_type(
+                &mut local_type,
+                &context.codebase.symbols,
+                block_context.scope.get_reference_source().as_ref(),
+                &mut artifacts.symbol_references,
+                true,
+            );
+            expander::expand_union(
+                context.codebase,
+                &mut local_type,
+                &TypeExpansionOptions { self_class: block_context.scope.get_class_like_name(), ..Default::default() },
+            );
+
+            (Rc::new(local_type), hint.span())
+        });
+
+        match &local_type {
+            Some(local_type) => block_context.local_types.insert(variable_id, local_type.clone()),
+            None => block_context.local_types.remove(&variable_id),
+        };
+
+        // A PHP# local declaration runs as the PHP assignment of its value to the variable it declares.
+        let name =
+            context.arena.alloc(Expression::ConstantAccess(ConstantAccess { name: Identifier::Local(self.name) }));
+
+        analyze_assignment(
+            context,
+            block_context,
+            artifacts,
+            Some(self.name.span.join(self.value.span())),
+            name,
+            None,
+            Some(self.value),
+            None,
+        )?;
+
+        if let Some((local_type, _)) = local_type {
+            block_context.locals.insert(variable_id, local_type);
+        }
 
         Ok(())
     }

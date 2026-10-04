@@ -1152,6 +1152,39 @@ fn for_loops_are_for_nodes_with_an_expression_list_per_part() {
     );
 }
 
+/// A typed counter lowers as a `let` counter does: its type only tells the checker the counter's type.
+///
+/// ```php
+/// for ($step = 0; $step < $extra; ) {
+/// }
+/// ```
+#[test]
+fn a_typed_for_counter_is_the_assignment_of_its_value() {
+    assert_eq!(
+        body("        for (int step = 0; step < extra; ) {\n        }\n        return extra;\n"),
+        indoc! {r#"
+            STMT_LIST
+              FOR
+                EXPR_LIST
+                  ASSIGN
+                    VAR
+                      ZVAL "step"
+                    ZVAL 0
+                EXPR_LIST
+                  BINARY_OP [20]
+                    VAR
+                      ZVAL "step"
+                    VAR
+                      ZVAL "extra"
+                null
+                STMT_LIST
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
 /// ```php
 /// foreach (\Lib\Calc::make(2) as $value) {
 ///     $extra += $value;

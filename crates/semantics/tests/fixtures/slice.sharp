@@ -123,6 +123,12 @@ class Report
         }
         for (total = 0; total < 3; total++, times--) {
         }
+        for (int count = 0; count < times; count++) {
+            total += count;
+        }
+        for (const Calc? none = null; none === null; ) {
+            break;
+        }
         for (const value of Calc.values()) {
             total += value;
         }

@@ -392,6 +392,28 @@ fn a_for_loop_declares_its_counter_with_let_or_const() {
 }
 
 #[test]
+fn a_for_loop_declares_its_counter_with_its_type_written() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        for (int i = 0; i < 3; i++) {\n        }\n        for (const int? j = null; ; ) {\n        }\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::For(counted), Statement::For(endless)] = method_body(program) else {
+        panic!("expected two for loops, got {:#?}", method_body(program));
+    };
+
+    let declaration = counted.declaration.as_ref().expect("a declaration");
+    assert_eq!(source(CODE, declaration.hint.expect("a type")), "int");
+    assert!(!declaration.is_const());
+    assert_eq!(source(CODE, declaration), "int i = 0;");
+    assert_eq!(counted.conditions.len(), 1);
+
+    let declaration = endless.declaration.as_ref().expect("a declaration");
+    assert_eq!(source(CODE, declaration.hint.expect("a type")), "int?");
+    assert!(declaration.is_const());
+}
+
+#[test]
 fn for_of_declares_its_loop_variable_or_key_and_value() {
     const CODE: &str = "class Report\n{\n    void run()\n    {\n        for (const line of lines) {\n        }\n        for (let [key, plan] of this.plans()) {\n        }\n    }\n}\n";
     let arena = LocalArena::new();
