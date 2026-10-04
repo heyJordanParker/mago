@@ -9,29 +9,37 @@ use mago_syntax::cst::Call;
 use mago_syntax::cst::Class;
 use mago_syntax::cst::Closure;
 use mago_syntax::cst::Constant;
+use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Declare;
 use mago_syntax::cst::Enum;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::Function;
+use mago_syntax::cst::FunctionCall;
+use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::FunctionLikeParameterList;
 use mago_syntax::cst::FunctionLikeReturnTypeHint;
+use mago_syntax::cst::Global;
 use mago_syntax::cst::Goto;
 use mago_syntax::cst::Hint;
 use mago_syntax::cst::Instantiation;
 use mago_syntax::cst::Interface;
 use mago_syntax::cst::List;
 use mago_syntax::cst::Literal;
+use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::Match;
+use mago_syntax::cst::MethodCall;
 use mago_syntax::cst::Namespace;
 use mago_syntax::cst::PartialApplication;
 use mago_syntax::cst::Pipe;
 use mago_syntax::cst::Program;
+use mago_syntax::cst::PropertyAccess;
 use mago_syntax::cst::Statement;
 use mago_syntax::cst::Switch;
 use mago_syntax::cst::Trait;
 use mago_syntax::cst::TraitUseAliasAdaptation;
 use mago_syntax::cst::Try;
 use mago_syntax::cst::UnaryPrefixOperator;
+use mago_syntax::cst::Variable;
 use mago_syntax::walker::Walker;
 
 use crate::internal::context::Context;
@@ -147,6 +155,96 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingW
     #[inline]
     fn walk_in_function(&self, function: &'ast Function<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
         checker::function_like::check_function(function, context);
+
+        if context.program.dialect.is_sharp() {
+            checker::sharp::check_function(function, context);
+        }
+    }
+
+    #[inline]
+    fn walk_in_local_declaration(
+        &self,
+        local_declaration: &'ast LocalDeclaration<'arena>,
+        context: &mut Context<'_, 'ast, 'arena>,
+    ) {
+        checker::sharp::check_local_declaration(local_declaration, context);
+    }
+
+    #[inline]
+    fn walk_in_function_like_parameter(
+        &self,
+        function_like_parameter: &'ast FunctionLikeParameter<'arena>,
+        context: &mut Context<'_, 'ast, 'arena>,
+    ) {
+        if context.program.dialect.is_sharp() {
+            checker::sharp::check_parameter(function_like_parameter, context);
+        }
+    }
+
+    #[inline]
+    fn walk_in_constant_access(
+        &self,
+        constant_access: &'ast ConstantAccess<'arena>,
+        context: &mut Context<'_, 'ast, 'arena>,
+    ) {
+        if context.program.dialect.is_sharp() {
+            checker::sharp::check_constant_access(constant_access, context);
+        }
+    }
+
+    #[inline]
+    fn walk_in_function_call(
+        &self,
+        function_call: &'ast FunctionCall<'arena>,
+        context: &mut Context<'_, 'ast, 'arena>,
+    ) {
+        if context.program.dialect.is_sharp() {
+            checker::sharp::check_function_call(function_call, context);
+        }
+    }
+
+    #[inline]
+    fn walk_in_global(&self, global: &'ast Global<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
+        if context.program.dialect.is_sharp() {
+            checker::sharp::check_global(global, context);
+        }
+    }
+
+    #[inline]
+    fn walk_in_variable(&self, variable: &'ast Variable<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
+        if context.program.dialect.is_sharp() {
+            checker::sharp::check_variable(variable, context);
+        }
+    }
+
+    #[inline]
+    fn walk_in_method_call(&self, method_call: &'ast MethodCall<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
+        if context.program.dialect.is_sharp() {
+            checker::sharp::check_member_access(
+                method_call.span(),
+                method_call.object,
+                &method_call.method,
+                true,
+                context,
+            );
+        }
+    }
+
+    #[inline]
+    fn walk_in_property_access(
+        &self,
+        property_access: &'ast PropertyAccess<'arena>,
+        context: &mut Context<'_, 'ast, 'arena>,
+    ) {
+        if context.program.dialect.is_sharp() {
+            checker::sharp::check_member_access(
+                property_access.span(),
+                property_access.object,
+                &property_access.property,
+                false,
+                context,
+            );
+        }
     }
 
     #[inline]
@@ -208,6 +306,10 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingW
     #[inline]
     fn walk_in_assignment(&self, assignment: &'ast Assignment<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
         checker::assignment::check_assignment(assignment, context);
+
+        if context.program.dialect.is_sharp() {
+            checker::sharp::check_assignment(assignment, context);
+        }
     }
 
     #[inline]

@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use mago_database::file::File;
 use mago_names::ResolvedNames;
 use mago_php_version::PHPVersion;
@@ -18,6 +20,8 @@ pub struct Context<'ctx, 'ast, 'arena> {
     pub source_file: &'ctx File,
     pub ancestors: Vec<Span>,
     pub hint_depth: usize,
+    /// The PHP# property reads already checked as part of the chain around them.
+    pub property_chain_objects: HashSet<Span>,
 
     issues: IssueCollection,
 }
@@ -37,6 +41,7 @@ impl<'ctx, 'ast, 'arena> Context<'ctx, 'ast, 'arena> {
             issues: IssueCollection::default(),
             ancestors: vec![],
             hint_depth: 0,
+            property_chain_objects: HashSet::new(),
         }
     }
 

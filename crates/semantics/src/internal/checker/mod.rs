@@ -36,6 +36,7 @@ pub mod hint;
 pub mod literal;
 pub mod partial_application;
 pub mod pipe;
+pub mod sharp;
 pub mod statement;
 pub mod r#try;
 
