@@ -147,7 +147,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for NestedVariable<'arena> {
     }
 }
 
-fn read_variable<'ctx, A>(
+pub(crate) fn read_variable<'ctx, A>(
     context: &mut Context<'ctx, '_, A>,
     block_context: &mut BlockContext<'ctx>,
     artifacts: &mut AnalysisArtifacts,

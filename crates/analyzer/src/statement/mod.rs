@@ -9,9 +9,11 @@ use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_syntax::cst::Call;
+use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::ExpressionStatement;
 use mago_syntax::cst::FunctionCall;
+use mago_syntax::cst::Identifier;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::Statement;
 use mago_word::Word;
@@ -22,6 +24,7 @@ use crate::artifacts::AnalysisArtifacts;
 use crate::code::IssueCode;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::expression::assignment::analyze_assignment;
 use crate::plugin::HookAction;
 use crate::plugin::context::HookContext;
 use crate::utils::docblock::populate_docblock_variables;
@@ -181,6 +184,23 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Statement<'arena> {
                 analyze_statements(block.statements.as_slice(), context, block_context, artifacts)
             }
             Statement::Expression(expression) => expression.expression.analyze(context, block_context, artifacts),
+            Statement::LocalDeclaration(local_declaration) => {
+                // A PHP# local declaration runs as the PHP assignment of its value to the variable it declares.
+                let name = context.arena.alloc(Expression::ConstantAccess(ConstantAccess {
+                    name: Identifier::Local(local_declaration.name),
+                }));
+
+                analyze_assignment(
+                    context,
+                    block_context,
+                    artifacts,
+                    Some(local_declaration.name.span.join(local_declaration.value.span())),
+                    name,
+                    None,
+                    Some(local_declaration.value),
+                    None,
+                )
+            }
             Statement::Try(r#try) => r#try.analyze(context, block_context, artifacts),
             Statement::Foreach(foreach) => foreach.analyze(context, block_context, artifacts),
             Statement::For(r#for) => r#for.analyze(context, block_context, artifacts),

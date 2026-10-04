@@ -348,6 +348,7 @@ final class AnalyzerCodeModuleGenerator
         'unavailable-constant',
         'unavailable-class-constant',
         'unavailable-enum-case',
+        'not-supported-yet',
     ];
 
     /**

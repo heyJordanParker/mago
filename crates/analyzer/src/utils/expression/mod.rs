@@ -11,6 +11,7 @@ use mago_codex::ttype::atomic::array::key::ArrayKey;
 use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::union::TUnion;
 use mago_names::ResolvedNames;
+use mago_names::binding::Binding;
 use mago_span::HasSpan;
 use mago_syntax::cst::Access;
 use mago_syntax::cst::ArrayAccess;
@@ -19,6 +20,7 @@ use mago_syntax::cst::ClassLikeConstantSelector;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::FunctionCall;
+use mago_syntax::cst::Identifier;
 use mago_syntax::cst::Literal;
 use mago_syntax::cst::MethodCall;
 use mago_syntax::cst::NullSafeMethodCall;
@@ -189,6 +191,17 @@ pub fn get_variable_id<'arena>(variable: &Variable<'arena>) -> Option<&'arena [u
     }
 }
 
+/// Returns the variable a bare PHP# name reads when the binder bound it to a local or to `this`.
+///
+/// A PHP# local `total` runs as the PHP variable `$total`, so its id is `$total`.
+pub fn get_bare_name_variable_id(name: &Identifier<'_>, resolved_names: &ResolvedNames<'_>) -> Option<Word> {
+    match resolved_names.binding(name)? {
+        Binding::Local(_) | Binding::Redeclared(_) => Some(concat_word!(b"$", name.value())),
+        Binding::This => Some(word(b"$this")),
+        _ => None,
+    }
+}
+
 pub fn get_member_selector_id<'ast, 'arena>(
     selector: &'ast ClassLikeMemberSelector<'arena>,
     this_class_name: Option<Word>,
@@ -276,6 +289,7 @@ fn get_extended_expression_id<'ast, 'arena>(
             return get_expression_id(operand, this_class_name, resolved_names, codebase);
         }
         Expression::Variable(variable) => word(get_variable_id(variable)?),
+        Expression::ConstantAccess(access) => get_bare_name_variable_id(&access.name, resolved_names)?,
         Expression::Access(access) => match access {
             Access::Property(property_access) => get_property_access_expression_id(
                 property_access.object,

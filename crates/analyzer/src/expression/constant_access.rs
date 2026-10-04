@@ -4,6 +4,7 @@ use mago_codex::scanner::inference::get_platform_constant_type;
 use mago_codex::ttype::expander;
 use mago_codex::ttype::expander::TypeExpansionOptions;
 use mago_codex::ttype::get_mixed;
+use mago_names::binding::Binding;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -16,6 +17,8 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::expression::variable::read_variable;
+use crate::utils::expression::get_bare_name_variable_id;
 use mago_bytes::BytesDisplay;
 
 impl<'arena> Analyzable<'_, 'arena> for ConstantAccess<'arena> {
@@ -28,6 +31,22 @@ impl<'arena> Analyzable<'_, 'arena> for ConstantAccess<'arena> {
     where
         A: Arena,
     {
+        if let Some(variable_id) = get_bare_name_variable_id(&self.name, context.resolved_names) {
+            let resulting_type = read_variable(context, block_context, artifacts, variable_id.as_bytes(), self.span());
+            artifacts.set_rc_expression_type(self, resulting_type);
+
+            return Ok(());
+        }
+
+        // The semantic checks report these PHP# names, and a class is only ever the object of a member access.
+        if let Some(Binding::Class | Binding::Member | Binding::OutOfScope(_)) =
+            context.resolved_names.binding(&self.name)
+        {
+            artifacts.set_expression_type(self, get_mixed());
+
+            return Ok(());
+        }
+
         let name_bytes = context.resolved_names.get(self);
         let name = BytesDisplay(name_bytes);
         let unqualified_name = self.name.value();

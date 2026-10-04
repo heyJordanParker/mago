@@ -17,10 +17,12 @@ use mago_codex::ttype::atomic::scalar::int::TInteger;
 use mago_codex::ttype::combiner;
 use mago_codex::ttype::comparator::ComparisonResult;
 use mago_codex::ttype::comparator::atomic_comparator;
+use mago_codex::ttype::comparator::union_comparator;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_never;
 use mago_codex::ttype::get_non_negative_int;
 use mago_codex::ttype::get_positive_int;
+use mago_codex::ttype::get_string;
 use mago_codex::ttype::union::TUnion;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -28,6 +30,7 @@ use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::Binary;
 use mago_syntax::cst::BinaryOperator;
+use mago_syntax::dialect::Dialect;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
@@ -58,6 +61,25 @@ where
 
     if left_type.is_never() || right_type.is_never() {
         assign_arithmetic_type(artifacts, get_never(), binary);
+        return Ok(());
+    }
+
+    // In PHP# `+` joins strings, which the engine cannot run yet.
+    if let BinaryOperator::Addition(operator) = binary.operator
+        && Dialect::of(context.source_file).is_sharp()
+        && [&left_type, &right_type].into_iter().any(|operand| {
+            union_comparator::can_expression_types_be_identical(context.codebase, operand, &get_string(), false, false)
+        })
+    {
+        context.collector.report_with_code(
+            IssueCode::NotSupportedYet,
+            Issue::error("`+` with an operand that may be a string is not supported yet.")
+                .with_annotation(Annotation::primary(binary.span()).with_message("This may join strings."))
+                .with_annotation(Annotation::secondary(operator).with_message("`+` used here."))
+                .with_note("In PHP#, `+` joins strings. What it does at runtime is still undecided."),
+        );
+
+        assign_arithmetic_type(artifacts, get_mixed(), binary);
         return Ok(());
     }
 

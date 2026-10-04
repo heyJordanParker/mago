@@ -1,6 +1,7 @@
 use foldhash::HashMap;
 use indexmap::IndexMap;
 use mago_allocator::Arena;
+use mago_bytes::BytesDisplay;
 use mago_bytes::trim_start_byte;
 use mago_codex::identifier::method::MethodIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
@@ -31,6 +32,7 @@ use mago_span::Span;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::Variable;
+use mago_syntax::dialect::Dialect;
 use mago_text_edit::TextEdit;
 use mago_word::Word;
 use mago_word::concat_word;
@@ -1476,6 +1478,26 @@ fn report_non_existent_property<A>(
 ) where
     A: Arena,
 {
+    let method_name = trim_start_byte(prop_name.as_bytes(), b'$');
+    if Dialect::of(context.source_file).is_sharp() && context.codebase.method_exists(classname.as_bytes(), method_name)
+    {
+        let classname = display_class_like_name(context, classname);
+        let method_name = BytesDisplay(method_name);
+
+        context.collector.report_with_code(
+            IssueCode::NotSupportedYet,
+            Issue::error(format!("Using the method `{classname}.{method_name}` as a value is not supported yet."))
+                .with_annotation(Annotation::primary(selector_span).with_message("Method named here without a call."))
+                .with_annotation(
+                    Annotation::secondary(object_span).with_message(format!("On instance of `{classname}`")),
+                )
+                .with_help(format!("Call the method: `{method_name}(...)`."))
+                .with_note("What a method named without a call means at runtime is still undecided."),
+        );
+
+        return;
+    }
+
     let class_kind_str = context.codebase.get_class_like(classname.as_bytes()).map_or("class", |m| m.kind.as_str());
     let classname = display_class_like_name(context, classname);
 

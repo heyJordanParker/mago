@@ -12,11 +12,14 @@ use mago_codex::ttype::get_null;
 use mago_codex::ttype::get_void;
 use mago_codex::ttype::template::TemplateResult;
 use mago_codex::ttype::union::TUnion;
+use mago_names::binding::Binding;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::Call;
+use mago_syntax::cst::Expression;
+use mago_syntax::cst::StaticMethodCall;
 use mago_word::Word;
 use mago_word::WordMap;
 use mago_word::ascii_lowercase_word;
@@ -111,6 +114,20 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Call<'arena> {
     {
         match self {
             Call::Function(call) => call.analyze(context, block_context, artifacts),
+            // PHP# writes the static call `Class::m()` as `Class.m()`, with a bare name the binder bound to a class.
+            Call::Method(call)
+                if let Expression::ConstantAccess(object) = call.object
+                    && context.resolved_names.binding(&object.name) == Some(Binding::Class) =>
+            {
+                let static_call = StaticMethodCall {
+                    class: call.object,
+                    double_colon: call.arrow,
+                    method: call.method.clone(),
+                    argument_list: call.argument_list.clone(),
+                };
+
+                context.arena.alloc(static_call).analyze(context, block_context, artifacts)
+            }
             Call::Method(call) => call.analyze(context, block_context, artifacts),
             Call::NullSafeMethod(call) => call.analyze(context, block_context, artifacts),
             Call::StaticMethod(call) => call.analyze(context, block_context, artifacts),

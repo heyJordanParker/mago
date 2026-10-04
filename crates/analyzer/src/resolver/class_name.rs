@@ -12,6 +12,7 @@ use mago_codex::ttype::atomic::object::r#enum::TEnum;
 use mago_codex::ttype::atomic::object::named::TNamedObject;
 use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::atomic::scalar::class_like_string::TClassLikeString;
+use mago_names::binding::Binding;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -19,6 +20,7 @@ use mago_span::Span;
 use mago_syntax::cst::Access;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::Expression;
+use mago_syntax::cst::Identifier;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
@@ -205,6 +207,27 @@ impl ResolvedClassname {
     }
 }
 
+/// Resolves a class written by name: a PHP name, or a bare PHP# name the binder bound to a class.
+fn resolve_named_class<A>(
+    context: &mut Context<'_, '_, A>,
+    block_context: &BlockContext<'_>,
+    name_node: &Identifier<'_>,
+) -> ResolvedClassname
+where
+    A: Arena,
+{
+    let fqcn = word(context.resolved_names.get(name_node));
+
+    crate::utils::casing::check_class_like_casing(context, fqcn, name_node.span());
+    crate::utils::experimental::check_experimental_class_like(context, block_context, fqcn, name_node.span());
+
+    ResolvedClassname::new(
+        Some(fqcn),
+        ResolutionOrigin::Named { is_parent: false, is_self: false },
+        context.codebase.is_enum_or_final_class(fqcn.as_bytes()),
+    )
+}
+
 /// Resolves a CST `Expression` to one or more `ResolvedClassname` instances.
 ///
 /// This function analyzes various forms of expressions that can represent a class name
@@ -227,16 +250,12 @@ where
     let mut possible_types = vec![];
     match class_expression.unparenthesized() {
         Expression::Identifier(name_node) => {
-            let fqcn = word(context.resolved_names.get(name_node));
-
-            crate::utils::casing::check_class_like_casing(context, fqcn, name_node.span());
-            crate::utils::experimental::check_experimental_class_like(context, block_context, fqcn, name_node.span());
-
-            possible_types.push(ResolvedClassname::new(
-                Some(fqcn),
-                ResolutionOrigin::Named { is_parent: false, is_self: false },
-                context.codebase.is_enum_or_final_class(fqcn.as_bytes()),
-            ));
+            possible_types.push(resolve_named_class(context, block_context, name_node));
+        }
+        Expression::ConstantAccess(constant_access)
+            if context.resolved_names.binding(&constant_access.name) == Some(Binding::Class) =>
+        {
+            possible_types.push(resolve_named_class(context, block_context, &constant_access.name));
         }
         Expression::Self_(self_keyword) => {
             if let Some(self_class) = block_context.scope.get_class_like() {

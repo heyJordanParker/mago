@@ -125,7 +125,7 @@ where
     }
 
     if let (Some(source_expression), Some(target_variable_id)) = (source_expression, &target_variable_id)
-        && matches!(target_expression, Expression::Variable(_))
+        && is_variable_target(target_expression, Some(*target_variable_id))
         && is_closure_expression(source_expression)
         && let Some(preliminary_type) = get_closure_expression_type(context.source_file, source_expression)
     {
@@ -300,7 +300,7 @@ where
     if successful
         && assignment_operator.is_none()
         && let (Some(target_variable_id), Some(source_expression)) = (target_variable_id, source_expression)
-        && matches!(target_expression, Expression::Variable(_))
+        && is_variable_target(target_expression, Some(target_variable_id))
     {
         add_nullsafe_assignment_clauses(target_variable_id, source_expression, context, block_context);
     }
@@ -374,7 +374,9 @@ where
         analyze_reference_assignment(context, block_context, target_expression, source_expression);
     }
 
-    if let Some(root) = get_root_expression_id(target_expression) {
+    let is_variable = is_variable_target(target_expression, target_expression_id);
+    let root = if is_variable { target_expression_id } else { get_root_expression_id(target_expression) };
+    if let Some(root) = root {
         let belongs_to_root =
             |key: &Word| key.as_bytes().strip_prefix(root.as_bytes()).is_some_and(|suffix| suffix.starts_with(b"->"));
 
@@ -382,7 +384,7 @@ where
         block_context.stable_method_calls.retain(|key| !belongs_to_root(key));
         block_context.clauses.retain(|clause| !clause.possibilities.keys().any(belongs_to_root));
         block_context.reconciled_expression_clauses.retain(|clause| !clause.possibilities.keys().any(belongs_to_root));
-    } else if !matches!(target_expression, Expression::Variable(_)) {
+    } else if !is_variable {
         block_context.stable_method_call_assertions.clear();
         block_context.stable_method_calls.clear();
         block_context.clauses.retain(|clause| {
@@ -394,17 +396,20 @@ where
     }
 
     match target_expression {
-        Expression::Variable(target_variable) if target_expression_id.is_some() => analyze_assignment_to_variable(
-            context,
-            block_context,
-            artifacts,
-            target_variable.span(),
-            source_expression,
-            source_type,
-            // SAFETY: `target_expression_id` is guaranteed to be `Some` here.
-            unsafe { *target_expression_id.as_ref().unwrap_unchecked() },
-            destructuring,
-        ),
+        Expression::Variable(_) | Expression::ConstantAccess(_)
+            if is_variable && let Some(target_expression_id) = target_expression_id =>
+        {
+            analyze_assignment_to_variable(
+                context,
+                block_context,
+                artifacts,
+                target_expression.span(),
+                source_expression,
+                source_type,
+                target_expression_id,
+                destructuring,
+            );
+        }
         Expression::Access(Access::Property(property_access)) => property_assignment::analyze(
             context,
             block_context,
@@ -456,6 +461,16 @@ where
     }
 
     Ok(true)
+}
+
+/// Returns true when an assignment target is a variable: a PHP variable, or a bare PHP# name the binder bound to a
+/// local or to `this`, which is the only kind of bare name that has an id.
+const fn is_variable_target(target_expression: &Expression<'_>, target_expression_id: Option<Word>) -> bool {
+    match target_expression {
+        Expression::Variable(_) => true,
+        Expression::ConstantAccess(_) => target_expression_id.is_some(),
+        _ => false,
+    }
 }
 
 fn analyze_reference_assignment<'ctx, 'ast, 'arena, A>(

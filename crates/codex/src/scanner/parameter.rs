@@ -4,6 +4,7 @@ use mago_span::HasSpan;
 use mago_syntax::cst::FunctionLikeParameter;
 use mago_word::Word;
 use mago_word::WordMap;
+use mago_word::concat_word;
 use mago_word::word;
 
 use crate::metadata::constant::ConstantMetadata;
@@ -61,13 +62,13 @@ where
         flags |= MetadataFlags::PROMOTED_PROPERTY;
     }
 
-    let mut metadata = FunctionLikeParameterMetadata::new(
-        VariableIdentifier(word(parameter.variable.name)),
-        parameter.span(),
-        parameter.variable.span,
-        flags,
-    )
-    .with_attributes(scan_attribute_lists(&parameter.attribute_lists, context, scope, classname));
+    // A PHP# parameter is written without `$` and runs as the PHP variable `$name`, which PHP callers name.
+    let name = parameter.variable.name;
+    let name = if name.starts_with(b"$") { word(name) } else { concat_word!(b"$", name) };
+
+    let mut metadata =
+        FunctionLikeParameterMetadata::new(VariableIdentifier(name), parameter.span(), parameter.variable.span, flags)
+            .with_attributes(scan_attribute_lists(&parameter.attribute_lists, context, scope, classname));
 
     metadata.set_type_declaration_metadata(
         parameter.hint.as_ref().map(|hint| get_type_metadata_from_hint(hint, classname, context)),
