@@ -54,7 +54,8 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///
 /// - At file level: `namespace`, `import` and `class`.
 /// - A class: a name and methods, with no attributes, modifiers, `extends` or `implements`.
-/// - A method: `public`, `protected`, `private` and `static`, parameters, a return type and a body.
+/// - A method: `public`, `protected`, `private` and `static`, parameters, a return type and a body. Its name does not
+///   start with `__`, which PHP reserves for magic methods.
 /// - A parameter: a type, a name and an optional default. A default is a literal, a constant, or the operators
 ///   below on them, without `++` and `--`.
 /// - Types: `int`, `float`, `bool`, `string`, `void` and a class written by its short name.
@@ -143,7 +144,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
             None
         }
-        (Node::Method(_), Class) => Some(Method),
+        (Node::Method(method), Class) if !method.name.value.starts_with(b"__") => Some(Method),
 
         (
             Node::Modifier(Modifier::Public(_) | Modifier::Protected(_) | Modifier::Private(_) | Modifier::Static(_))
@@ -354,6 +355,14 @@ fn report_unsupported(node: Node<'_, '_>, place: Place, context: &mut Context<'_
         Node::Extends(_) => "`extends` clause",
         Node::Implements(_) => "`implements` clause",
         Node::ClassLikeMember(_) => "class member",
+        Node::Method(method) => {
+            return report_not_supported(
+                method.name.span,
+                "method name",
+                "PHP reserves method names that start with `__` for its magic methods.",
+                context,
+            );
+        }
         Node::ClassLikeMemberSelector(_) => "member name",
         Node::FunctionLikeParameter(FunctionLikeParameter { ellipsis: Some(ellipsis), .. }) => {
             return report_not_supported(*ellipsis, "variadic parameter", supported(place), context);

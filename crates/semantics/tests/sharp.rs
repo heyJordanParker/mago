@@ -345,6 +345,21 @@ fn final_abstract_and_readonly_are_not_supported_yet() {
 }
 
 #[test]
+fn a_method_name_starting_with_two_underscores_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public void __clone() { }\n    public int __get(string name) { return 1; }\n    public int __invoke() { return 1; }\n    public string __toString() { return \"report\"; }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:17 This method name is not supported yet in PHP#.",
+            "6:16 This method name is not supported yet in PHP#.",
+            "7:16 This method name is not supported yet in PHP#.",
+            "8:19 This method name is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
 fn a_method_without_a_body_reports_only_the_php_error() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int run();\n}\n";
 
