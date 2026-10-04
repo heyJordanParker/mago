@@ -964,8 +964,10 @@ fn report_static_access(
 }
 
 fn report_bare_member(span: Span, name: &[u8], context: &mut Context<'_, '_, '_>) {
-    let call = if is_method_of_enclosing_class(context.program, span, name) { "()" } else { "" };
-    let name = BytesDisplay(name);
+    let (name, call) = match enclosing_class_method(context.program, span, name) {
+        Some(method) => (BytesDisplay(method.name.value), "()"),
+        None => (BytesDisplay(name), ""),
+    };
     let message = match enclosing_static_method_class(context.program, span) {
         Some(class) => format!(
             "Write `{}.{name}{call}`: a static method reaches the members of its class through the class name.",
@@ -995,12 +997,15 @@ fn enclosing_static_method_class<'ast, 'arena>(
         .then_some(class)
 }
 
-/// Returns `true` when `name` is a method of the class whose body holds `span`. Method names are case-insensitive.
-fn is_method_of_enclosing_class(program: &Program, span: Span, name: &[u8]) -> bool {
-    enclosing_class(program, span).is_some_and(|class| {
-        class.members.iter().any(
-            |member| matches!(member, ClassLikeMember::Method(method) if method.name.value.eq_ignore_ascii_case(name)),
-        )
+/// The method named `name` of the class whose body holds `span`. Method names are case-insensitive.
+fn enclosing_class_method<'ast, 'arena>(
+    program: &'ast Program<'arena>,
+    span: Span,
+    name: &[u8],
+) -> Option<&'ast Method<'arena>> {
+    enclosing_class(program, span)?.members.iter().find_map(|member| match member {
+        ClassLikeMember::Method(method) if method.name.value.eq_ignore_ascii_case(name) => Some(method),
+        _ => None,
     })
 }
 

@@ -311,6 +311,16 @@ fn a_bare_member_name_is_an_error_that_names_this() {
 }
 
 #[test]
+fn a_bare_method_name_matches_ignoring_case_as_in_php() {
+    let code = "class Report\n{\n    public int total() { return 0; }\n\n    public int run() { return Total(); }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["5:31 Write `this.total()`: members of the same object are always written with `this.`."]
+    );
+}
+
+#[test]
 fn a_bare_member_in_a_static_method_names_the_class() {
     let code = "class Report\n{\n    public static int helper() { return 0; }\n\n    public static int run() { return helper(); }\n}\n";
 

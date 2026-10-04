@@ -187,6 +187,16 @@ fn a_member_of_the_enclosing_class_without_this_is_recorded() {
 }
 
 #[test]
+fn a_member_name_matches_as_php_matches_it() {
+    const CODE: &str = "class Report\n{\n    const int RATE = 2;\n\n    public int total()\n    {\n        return Total() + Rate;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "Total()", 0), Some(Binding::Member));
+    assert_eq!(binding(&names, CODE, "Rate", 0), Some(Binding::Constant));
+}
+
+#[test]
 fn php_variable_name_adds_a_dollar_only_to_a_bare_name() {
     assert_eq!(php_variable_name(b"total").as_bytes(), b"$total");
     assert_eq!(php_variable_name(b"$total").as_bytes(), b"$total");
