@@ -40,13 +40,10 @@ fn leak(code: String) -> &'static str {
     Box::leak(code.into_boxed_str())
 }
 
+/// One file that uses every construct `check_slice` accepts. The engine's bridge lowers the same file.
 #[test]
-fn the_slice_has_no_semantic_issues() {
-    let code = leak(method(
-        "        let label = \"one\";\n        const base = 2;\n        label = \"two\";\n        {\n            let inner = base * extra - 1;\n            inner = inner / 2;\n            inner++;\n            --inner;\n            inner--;\n        }\n        return this.total(base, extra) + Calc.make().add(label);\n",
-    ));
-
-    assert_eq!(issues(code), Vec::<String>::new());
+fn the_slice_fixture_has_no_semantic_issues() {
+    assert_eq!(issues(include_str!("fixtures/slice.sharp")), Vec::<String>::new());
 }
 
 #[test]
@@ -328,13 +325,6 @@ fn a_bare_member_in_a_static_method_names_the_class() {
         issues(code),
         ["5:38 Write `Report.helper()`: a static method reaches the members of its class through the class name."]
     );
-}
-
-#[test]
-fn access_modifiers_static_named_arguments_and_defaults_are_in_the_slice() {
-    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public static int total(int extra = 1)\n    {\n        return Report.part(first: extra, second: 2);\n    }\n\n    protected static int part(int first, int second = 0)\n    {\n        return first * second;\n    }\n\n    private int none()\n    {\n        return 0;\n    }\n}\n";
-
-    assert_eq!(issues(code), Vec::<String>::new());
 }
 
 #[test]
