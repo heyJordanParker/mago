@@ -23,9 +23,15 @@ use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Expression;
+use mago_syntax::cst::For;
+use mago_syntax::cst::ForBody;
+use mago_syntax::cst::ForOfTarget;
 use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::Hint;
+use mago_syntax::cst::If;
+use mago_syntax::cst::IfBody;
 use mago_syntax::cst::Literal;
+use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::MethodBody;
 use mago_syntax::cst::MethodCall;
@@ -36,6 +42,7 @@ use mago_syntax::cst::Program;
 use mago_syntax::cst::Statement;
 use mago_syntax::cst::UnaryPostfixOperator;
 use mago_syntax::cst::UnaryPrefixOperator;
+use mago_syntax::cst::WhileBody;
 use mago_syntax::dialect::Dialect;
 use mago_syntax::parser::parse_file_with_dialect;
 use mago_syntax::settings::ParserSettings;
@@ -50,14 +57,22 @@ use crate::sharp_kind::SHARP_AST_ASSIGN;
 use crate::sharp_kind::SHARP_AST_ASSIGN_COALESCE;
 use crate::sharp_kind::SHARP_AST_ASSIGN_OP;
 use crate::sharp_kind::SHARP_AST_BINARY_OP;
+use crate::sharp_kind::SHARP_AST_BREAK;
 use crate::sharp_kind::SHARP_AST_CLASS;
 use crate::sharp_kind::SHARP_AST_COALESCE;
 use crate::sharp_kind::SHARP_AST_CONST;
 use crate::sharp_kind::SHARP_AST_CONST_DECL;
 use crate::sharp_kind::SHARP_AST_CONST_ELEM;
+use crate::sharp_kind::SHARP_AST_CONTINUE;
 use crate::sharp_kind::SHARP_AST_DECLARE;
+use crate::sharp_kind::SHARP_AST_DO_WHILE;
+use crate::sharp_kind::SHARP_AST_EXPR_LIST;
+use crate::sharp_kind::SHARP_AST_FOR;
+use crate::sharp_kind::SHARP_AST_FOREACH;
 use crate::sharp_kind::SHARP_AST_GREATER;
 use crate::sharp_kind::SHARP_AST_GREATER_EQUAL;
+use crate::sharp_kind::SHARP_AST_IF;
+use crate::sharp_kind::SHARP_AST_IF_ELEM;
 use crate::sharp_kind::SHARP_AST_METHOD;
 use crate::sharp_kind::SHARP_AST_METHOD_CALL;
 use crate::sharp_kind::SHARP_AST_NAMED_ARG;
@@ -79,6 +94,7 @@ use crate::sharp_kind::SHARP_AST_UNARY_MINUS;
 use crate::sharp_kind::SHARP_AST_UNARY_OP;
 use crate::sharp_kind::SHARP_AST_UNARY_PLUS;
 use crate::sharp_kind::SHARP_AST_VAR;
+use crate::sharp_kind::SHARP_AST_WHILE;
 use crate::sharp_kind::SHARP_AST_ZVAL;
 use crate::sharp_node;
 use crate::sharp_severity;
@@ -348,14 +364,102 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 self.node(SHARP_AST_RETURN, 0, self.line(r#return), &[value])
             }
-            Statement::LocalDeclaration(local) => {
-                let variable = self.variable(local.name.span, local.name.value);
-                let value = self.expression(local.value);
+            Statement::LocalDeclaration(local) => self.local(local),
+            Statement::If(r#if) => self.r#if(r#if),
+            Statement::For(r#for) => self.r#for(r#for),
+            Statement::ForOf(for_of) => {
+                let collection = self.expression(for_of.expression);
+                let (key, value) = match &for_of.target {
+                    ForOfTarget::Value(value) => (NULL, self.variable(value.span, value.value)),
+                    ForOfTarget::KeyValue(pair) => {
+                        (self.variable(pair.key.span, pair.key.value), self.variable(pair.value.span, pair.value.value))
+                    }
+                };
+                let body = self.statement(for_of.body);
 
-                self.node(SHARP_AST_ASSIGN, 0, self.line(local), &[variable, value])
+                self.node(SHARP_AST_FOREACH, 0, self.line(for_of), &[collection, value, key, body])
             }
+            Statement::While(r#while) => {
+                let WhileBody::Statement(body) = &r#while.body else {
+                    unreachable!("check_slice refuses a colon-delimited `while`");
+                };
+                let condition = self.expression(r#while.condition);
+                let body = self.statement(body);
+
+                self.node(SHARP_AST_WHILE, 0, self.line(r#while), &[condition, body])
+            }
+            Statement::DoWhile(do_while) => {
+                let body = self.statement(do_while.statement);
+                let condition = self.expression(do_while.condition);
+
+                self.node(SHARP_AST_DO_WHILE, 0, self.line(do_while), &[body, condition])
+            }
+            Statement::Break(r#break) => self.node(SHARP_AST_BREAK, 0, self.line(r#break), &[NULL]),
+            Statement::Continue(r#continue) => self.node(SHARP_AST_CONTINUE, 0, self.line(r#continue), &[NULL]),
             _ => unreachable!("check_slice refuses the statement `{statement}`"),
         }
+    }
+
+    /// A `let` or `const` local is the assignment of its value to its variable.
+    fn local(&mut self, local: &LocalDeclaration) -> u32 {
+        let variable = self.variable(local.name.span, local.name.value);
+        let value = self.expression(local.value);
+
+        self.node(SHARP_AST_ASSIGN, 0, self.line(local), &[variable, value])
+    }
+
+    /// Each part of the header is an `EXPR_LIST`, or null when it is empty. A `let` or `const` counter is the
+    /// first part.
+    fn r#for(&mut self, r#for: &For) -> u32 {
+        let ForBody::Statement(body) = &r#for.body else {
+            unreachable!("check_slice refuses a colon-delimited `for`");
+        };
+
+        let mut initializations = Vec::new();
+        if let Some(declaration) = &r#for.declaration {
+            initializations.push(self.local(declaration));
+        }
+        for initialization in &r#for.initializations {
+            initializations.push(self.expression(initialization));
+        }
+
+        let initializations = self.expression_list(&initializations);
+        let conditions: Vec<u32> = r#for.conditions.iter().map(|condition| self.expression(condition)).collect();
+        let conditions = self.expression_list(&conditions);
+        let increments: Vec<u32> = r#for.increments.iter().map(|increment| self.expression(increment)).collect();
+        let increments = self.expression_list(&increments);
+        let body = self.statement(body);
+
+        self.node(SHARP_AST_FOR, 0, self.line(r#for), &[initializations, conditions, increments, body])
+    }
+
+    /// An `EXPR_LIST` at the line of its first expression, or null when there are no expressions.
+    fn expression_list(&mut self, expressions: &[u32]) -> u32 {
+        let Some(&first) = expressions.first() else {
+            return NULL;
+        };
+
+        let line = self.nodes[first as usize].line;
+
+        self.node(SHARP_AST_EXPR_LIST, 0, line, expressions)
+    }
+
+    /// An `IF` list with one `IF_ELEM` per branch, and a null condition for `else`. php-src's grammar reads
+    /// `else if` as an `else` whose statement is the next `if`.
+    fn r#if(&mut self, r#if: &If) -> u32 {
+        let IfBody::Statement(body) = &r#if.body else {
+            unreachable!("check_slice refuses a colon-delimited `if`");
+        };
+
+        let condition = self.expression(r#if.condition);
+        let statement = self.statement(body.statement);
+        let mut branches = vec![self.node(SHARP_AST_IF_ELEM, 0, self.line(r#if.condition), &[condition, statement])];
+        if let Some(else_clause) = &body.else_clause {
+            let statement = self.statement(else_clause.statement);
+            branches.push(self.node(SHARP_AST_IF_ELEM, 0, self.line(else_clause.statement), &[NULL, statement]));
+        }
+
+        self.node(SHARP_AST_IF, 0, self.line(r#if), &branches)
     }
 
     fn expression(&mut self, expression: &Expression) -> u32 {

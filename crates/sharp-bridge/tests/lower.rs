@@ -953,13 +953,237 @@ fn a_block_is_a_statement_list_and_a_constant_is_looked_up_by_its_short_name() {
     );
 }
 
+/// ```php
+/// if ($extra > 1) {
+///     return 1;
+/// } else if ($extra < 0) {
+///     return 2;
+/// } else {
+///     return 3;
+/// }
+/// ```
+///
+/// php-src reads `else if` as an `else` whose statement is the next `if`. An `else` has a null condition.
+#[test]
+fn if_else_if_and_else_are_if_lists_of_if_elems() {
+    assert_eq!(
+        body(
+            "        if (extra > 1) {\n            return 1;\n        } else if (extra < 0) {\n            return 2;\n        } else {\n            return 3;\n        }\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              IF
+                IF_ELEM
+                  GREATER
+                    VAR
+                      ZVAL "extra"
+                    ZVAL 1
+                  STMT_LIST
+                    RETURN
+                      ZVAL 1
+                IF_ELEM
+                  null
+                  IF
+                    IF_ELEM
+                      BINARY_OP [20]
+                        VAR
+                          ZVAL "extra"
+                        ZVAL 0
+                      STMT_LIST
+                        RETURN
+                          ZVAL 2
+                    IF_ELEM
+                      null
+                      STMT_LIST
+                        RETURN
+                          ZVAL 3
+        "#}
+    );
+}
+
+/// ```php
+/// while ($extra > 0) {
+///     $extra -= 1;
+/// }
+/// do {
+///     $extra += 1;
+/// } while ($extra < 3);
+/// ```
+///
+/// `WHILE` takes its condition first, and `DO_WHILE` its body first.
+#[test]
+fn while_and_do_while_are_their_php_kinds() {
+    assert_eq!(
+        body(
+            "        while (extra > 0) {\n            extra -= 1;\n        }\n        do {\n            extra += 1;\n        } while (extra < 3);\n        return extra;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              WHILE
+                GREATER
+                  VAR
+                    ZVAL "extra"
+                  ZVAL 0
+                STMT_LIST
+                  ASSIGN_OP [2]
+                    VAR
+                      ZVAL "extra"
+                    ZVAL 1
+              DO_WHILE
+                STMT_LIST
+                  ASSIGN_OP [1]
+                    VAR
+                      ZVAL "extra"
+                    ZVAL 1
+                BINARY_OP [20]
+                  VAR
+                    ZVAL "extra"
+                  ZVAL 3
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
+/// while (true) {
+///     continue;
+///     break;
+/// }
+/// ```
+///
+/// A `break` or `continue` without a level has a null depth.
+#[test]
+fn break_and_continue_have_a_null_depth() {
+    assert_eq!(
+        body("        while (true) {\n            continue;\n            break;\n        }\n        return 1;\n"),
+        indoc! {"
+            STMT_LIST
+              WHILE
+                ZVAL true
+                STMT_LIST
+                  CONTINUE
+                    null
+                  BREAK
+                    null
+              RETURN
+                ZVAL 1
+        "}
+    );
+}
+
+/// ```php
+/// for ($step = 0; $step < $extra; $step++, $extra--) {
+/// }
+/// for (;;) {
+///     break;
+/// }
+/// ```
+///
+/// Each part of the header is an `EXPR_LIST`, or null when it is empty. A `let` counter is the assignment of its
+/// value.
+#[test]
+fn for_loops_are_for_nodes_with_an_expression_list_per_part() {
+    assert_eq!(
+        body(
+            "        for (let step = 0; step < extra; step++, extra--) {\n        }\n        for (;;) {\n            break;\n        }\n        return extra;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              FOR
+                EXPR_LIST
+                  ASSIGN
+                    VAR
+                      ZVAL "step"
+                    ZVAL 0
+                EXPR_LIST
+                  BINARY_OP [20]
+                    VAR
+                      ZVAL "step"
+                    VAR
+                      ZVAL "extra"
+                EXPR_LIST
+                  POST_INC
+                    VAR
+                      ZVAL "step"
+                  POST_DEC
+                    VAR
+                      ZVAL "extra"
+                STMT_LIST
+              FOR
+                null
+                null
+                null
+                STMT_LIST
+                  BREAK
+                    null
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
+/// foreach (\Lib\Calc::make(2) as $value) {
+///     $extra += $value;
+/// }
+/// foreach (\Lib\Calc::make(3) as $key => $value) {
+/// }
+/// ```
+///
+/// `FOREACH` takes the collection, the value variable, the key variable or null, and the body.
+#[test]
+fn for_of_loops_are_foreach_nodes_with_the_value_before_the_key() {
+    assert_eq!(
+        body(
+            "        for (const value of Calc.make(2)) {\n            extra += value;\n        }\n        for (let [key, value] of Calc.make(3)) {\n        }\n        return extra;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              FOREACH
+                STATIC_CALL
+                  ZVAL "Lib\\Calc"
+                  ZVAL "make"
+                  ARG_LIST
+                    ZVAL 2
+                VAR
+                  ZVAL "value"
+                null
+                STMT_LIST
+                  ASSIGN_OP [1]
+                    VAR
+                      ZVAL "extra"
+                    VAR
+                      ZVAL "value"
+              FOREACH
+                STATIC_CALL
+                  ZVAL "Lib\\Calc"
+                  ZVAL "make"
+                  ARG_LIST
+                    ZVAL 3
+                VAR
+                  ZVAL "value"
+                VAR
+                  ZVAL "key"
+                STMT_LIST
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
 /// The child count `zend_ast_get_num_children` gives a fixed-size kind, or 5 for a declaration. `None` for a list.
 fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
     match kind {
         sharp_kind::SHARP_AST_ARG_LIST
         | sharp_kind::SHARP_AST_STMT_LIST
         | sharp_kind::SHARP_AST_PARAM_LIST
-        | sharp_kind::SHARP_AST_CONST_DECL => None,
+        | sharp_kind::SHARP_AST_CONST_DECL
+        | sharp_kind::SHARP_AST_IF
+        | sharp_kind::SHARP_AST_EXPR_LIST => None,
         sharp_kind::SHARP_AST_ZVAL => Some(0),
         sharp_kind::SHARP_AST_VAR
         | sharp_kind::SHARP_AST_CONST
@@ -970,7 +1194,9 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_PRE_DEC
         | sharp_kind::SHARP_AST_POST_INC
         | sharp_kind::SHARP_AST_POST_DEC
-        | sharp_kind::SHARP_AST_RETURN => Some(1),
+        | sharp_kind::SHARP_AST_RETURN
+        | sharp_kind::SHARP_AST_BREAK
+        | sharp_kind::SHARP_AST_CONTINUE => Some(1),
         sharp_kind::SHARP_AST_PROP
         | sharp_kind::SHARP_AST_ASSIGN
         | sharp_kind::SHARP_AST_ASSIGN_OP
@@ -984,11 +1210,15 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_NAMED_ARG
         | sharp_kind::SHARP_AST_COALESCE
         | sharp_kind::SHARP_AST_ASSIGN_COALESCE
-        | sharp_kind::SHARP_AST_NULLSAFE_PROP => Some(2),
+        | sharp_kind::SHARP_AST_NULLSAFE_PROP
+        | sharp_kind::SHARP_AST_IF_ELEM
+        | sharp_kind::SHARP_AST_WHILE
+        | sharp_kind::SHARP_AST_DO_WHILE => Some(2),
         sharp_kind::SHARP_AST_METHOD_CALL
         | sharp_kind::SHARP_AST_STATIC_CALL
         | sharp_kind::SHARP_AST_CONST_ELEM
         | sharp_kind::SHARP_AST_NULLSAFE_METHOD_CALL => Some(3),
+        sharp_kind::SHARP_AST_FOR | sharp_kind::SHARP_AST_FOREACH => Some(4),
         sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_CLASS => Some(5),
         sharp_kind::SHARP_AST_PARAM => Some(6),
     }

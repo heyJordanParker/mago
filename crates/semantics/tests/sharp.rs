@@ -48,7 +48,7 @@ fn the_slice_fixture_has_no_semantic_issues() {
 
 #[test]
 fn every_construct_outside_the_slice_is_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\nenum Suit\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        if (extra) {\n            return 1;\n        }\n        echo extra;\n        const made = new Report();\n        const arrow = fn() => 1;\n        const closure = function () { return 1; };\n        const partial = this.run(...);\n        const text = \"total {$extra}\";\n        return extra;\n    }\n}\n";
+    let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\nenum Suit\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        switch (extra) {\n            default: return 1;\n        }\n        echo extra;\n        const made = new Report();\n        const arrow = fn() => 1;\n        const closure = function () { return 1; };\n        const partial = this.run(...);\n        const text = \"total {$extra}\";\n        return extra;\n    }\n}\n";
 
     assert_eq!(
         issues(code),
@@ -66,6 +66,189 @@ fn every_construct_outside_the_slice_is_not_supported_yet() {
             "26:22 This expression is not supported yet in PHP#.",
         ]
     );
+}
+
+#[test]
+fn if_else_if_and_else_with_braces_are_in_the_slice() {
+    let code = leak(method(
+        "        if (extra > 1) {\n            return 1;\n        } else if (extra < 0) {\n            return 2;\n        } else {\n            return 3;\n        }\n",
+    ));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn an_if_or_else_without_braces_is_not_supported_yet() {
+    let code = leak(method(
+        "        if (extra > 1) return 1;\n        if (extra > 2) {\n            return 2;\n        } else return 3;\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:9 This statement without braces is not supported yet in PHP#.",
+            "8:9 This statement without braces is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn elseif_and_a_colon_delimited_if_are_not_supported_yet() {
+    let code = leak(method(
+        "        if (extra > 1) {\n            return 1;\n        } elseif (extra > 2) {\n            return 2;\n        }\n        if (extra > 3):\n            return 3;\n        endif;\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        ["9:11 This `elseif` is not supported yet in PHP#.", "12:23 This construct is not supported yet in PHP#."]
+    );
+}
+
+#[test]
+fn a_local_declared_in_an_if_branch_is_out_of_scope_after_it() {
+    let code = leak(method(
+        "        if (extra > 1) {\n            let inner = 1;\n        } else {\n            let inner = 2;\n        }\n        return inner;\n",
+    ));
+
+    assert_eq!(issues(code), ["12:16 `inner` is used after the block that declares it closes."]);
+}
+
+#[test]
+fn while_and_do_while_with_braces_are_in_the_slice() {
+    let code = leak(method(
+        "        while (extra > 0) {\n            extra -= 1;\n        }\n        do {\n            extra += 1;\n        } while (extra < 3);\n        return extra;\n",
+    ));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_loop_without_braces_or_with_a_colon_body_is_not_supported_yet() {
+    let code = leak(method(
+        "        while (extra > 0) extra -= 1;\n        do extra += 1; while (extra < 3);\n        while (extra > 1):\n            extra -= 1;\n        endwhile;\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:9 This statement without braces is not supported yet in PHP#.",
+            "8:9 This statement without braces is not supported yet in PHP#.",
+            "9:26 This construct is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn a_local_declared_in_a_loop_body_is_out_of_scope_after_it() {
+    let code = leak(method(
+        "        while (extra > 0) {\n            let step = 1;\n            extra -= step;\n        }\n        do {\n            let step = 2;\n        } while (extra < 0);\n        return step;\n",
+    ));
+
+    assert_eq!(issues(code), ["14:16 `step` is used after the block that declares it closes."]);
+}
+
+#[test]
+fn break_and_continue_without_a_level_are_in_the_slice() {
+    let code = leak(method(
+        "        while (extra > 0) {\n            extra -= 1;\n            if (extra > 5) {\n                continue;\n            }\n            break;\n        }\n        return extra;\n",
+    ));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn break_and_continue_with_a_level_are_not_supported_yet() {
+    let code = leak(method(
+        "        while (extra > 0) {\n            while (extra > 1) {\n                break 2;\n            }\n            continue 1;\n        }\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        ["9:17 This statement is not supported yet in PHP#.", "11:13 This statement is not supported yet in PHP#."]
+    );
+}
+
+#[test]
+fn a_for_loop_with_a_let_counter_or_expressions_is_in_the_slice() {
+    let code = leak(method(
+        "        let total = 0;\n        for (let step = 0; step < extra; step++) {\n            total += step;\n        }\n        for (total = 0; total < 3; total++, extra--) {\n        }\n        for (;;) {\n            break;\n        }\n        return total;\n",
+    ));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_for_counter_is_out_of_scope_after_its_loop_and_const_when_declared_so() {
+    let code = leak(method("        for (const step = 0; step < extra; step++) {\n        }\n        return step;\n"));
+
+    assert_eq!(
+        issues(code),
+        [
+            "9:16 `step` is used after the block that declares it closes.",
+            "7:44 Cannot increment `step`: it is declared with `const`.",
+        ]
+    );
+}
+
+#[test]
+fn a_for_loop_without_braces_or_with_a_colon_body_is_not_supported_yet() {
+    let code = leak(method(
+        "        for (let step = 0; step < 3; step++) extra++;\n        for (;;):\n            break;\n        endfor;\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:9 This statement without braces is not supported yet in PHP#.",
+            "8:17 This construct is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn for_of_over_values_or_keys_and_values_is_in_the_slice() {
+    let code = leak(method(
+        "        for (const value of Store.values()) {\n            extra += value;\n        }\n        for (let [key, value] of Store.values()) {\n            value += key;\n            extra += value;\n        }\n        return extra;\n",
+    ));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_const_loop_variable_cannot_be_assigned_and_is_out_of_scope_after_its_loop() {
+    let code = leak(method(
+        "        for (const [key, value] of Store.values()) {\n            value = key;\n        }\n        return value;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "10:16 `value` is used after the block that declares it closes.",
+            "8:13 Cannot assign to `value`: it is declared with `const`.",
+        ]
+    );
+}
+
+#[test]
+fn a_loop_variable_named_this_or_a_superglobal_is_an_error() {
+    let code = leak(method(
+        "        for (const this of Store.values()) {\n        }\n        for (const [_GET, value] of Store.values()) {\n        }\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:20 Cannot name a loop variable `this`: `this` is the object the method runs on.",
+            "9:21 `_GET` is the name of a PHP superglobal: rename this loop variable.",
+        ]
+    );
+}
+
+#[test]
+fn a_for_of_loop_without_braces_is_not_supported_yet() {
+    let code = leak(method("        for (const value of Store.values()) extra += value;\n        return extra;\n"));
+
+    assert_eq!(issues(code), ["7:9 This statement without braces is not supported yet in PHP#."]);
 }
 
 #[test]

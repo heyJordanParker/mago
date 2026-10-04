@@ -14,18 +14,25 @@ use mago_syntax::cst::Access;
 use mago_syntax::cst::Assignment;
 use mago_syntax::cst::AssignmentOperator;
 use mago_syntax::cst::BinaryOperator;
+use mago_syntax::cst::Break;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::ConstantAccess;
+use mago_syntax::cst::Continue;
 use mago_syntax::cst::Expression;
+use mago_syntax::cst::For;
+use mago_syntax::cst::ForBody;
+use mago_syntax::cst::ForOf;
 use mago_syntax::cst::Function;
 use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::Global;
 use mago_syntax::cst::Hint;
 use mago_syntax::cst::Identifier;
+use mago_syntax::cst::If;
+use mago_syntax::cst::IfBody;
 use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::LocalIdentifier;
 use mago_syntax::cst::Method;
@@ -44,6 +51,8 @@ use mago_syntax::cst::Use;
 use mago_syntax::cst::UseItem;
 use mago_syntax::cst::UseItems;
 use mago_syntax::cst::Variable;
+use mago_syntax::cst::While;
+use mago_syntax::cst::WhileBody;
 
 use crate::internal::consts::RESERVED_CLASS_NAMES;
 use crate::internal::consts::RESERVED_KEYWORDS;
@@ -68,7 +77,10 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - Types: `int`, `float`, `bool`, `string` and a class written by its short name, and `void` as a return type.
 ///   PHP's own check reports a `void` parameter. Each of them is nullable when written with `?` after it, as in
 ///   `int?`, and PHP's own check reports `void?`.
-/// - In a method body: blocks, expression statements, `return`, and `let` and `const` declarations.
+/// - In a method body: blocks, expression statements, `return`, `let` and `const` declarations, `if` with `else if`
+///   and `else`, `while`, `do … while`, `for` with a `let` or `const` counter or with expressions, `for … of` over a
+///   value or a key and value, and `break` and `continue` without a level. The body of `if`, `else` and each loop is a
+///   block in braces.
 /// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter or a member written
 ///   `object.name`.
 /// - In expressions: literals, parentheses, bare names, assignment, the operators below, and method calls and
@@ -246,13 +258,47 @@ fn enter(
         (Node::FunctionLikeParameterDefaultValue(_), Parameter) => Some(Default),
         (Node::Block(_), Method | Body) => Some(Body),
 
+        (Node::Statement(statement), Body) if !has_braces(statement) => {
+            report_not_supported(
+                statement.span(),
+                "statement without braces",
+                "PHP# writes the body of `if`, `else` and each loop as a block in braces.",
+                context,
+            );
+
+            None
+        }
         (
             Node::Statement(
-                Statement::Block(_) | Statement::Expression(_) | Statement::Return(_) | Statement::LocalDeclaration(_),
+                Statement::Block(_)
+                | Statement::Expression(_)
+                | Statement::Return(_)
+                | Statement::LocalDeclaration(_)
+                | Statement::If(_)
+                | Statement::While(_)
+                | Statement::DoWhile(_)
+                | Statement::For(_)
+                | Statement::ForOf(_)
+                | Statement::Break(Break { level: None, .. })
+                | Statement::Continue(Continue { level: None, .. }),
             )
+            | Node::Break(_)
+            | Node::Continue(_)
             | Node::ExpressionStatement(_)
             | Node::Return(_)
-            | Node::LocalDeclaration(_),
+            | Node::LocalDeclaration(_)
+            | Node::If(_)
+            | Node::IfBody(IfBody::Statement(_))
+            | Node::IfStatementBody(_)
+            | Node::IfStatementBodyElseClause(_)
+            | Node::While(_)
+            | Node::WhileBody(WhileBody::Statement(_))
+            | Node::DoWhile(_)
+            | Node::For(_)
+            | Node::ForBody(ForBody::Statement(_))
+            | Node::ForOf(_)
+            | Node::ForOfTarget(_)
+            | Node::ForOfKeyValueTarget(_),
             Body,
         ) => Some(Body),
 
@@ -424,6 +470,26 @@ fn write_target<'ast, 'arena>(node: Node<'ast, 'arena>) -> Option<&'ast Expressi
     }
 }
 
+/// Whether every body of an `if`, `else` or loop is a block in braces. An `else` may also hold the next `if`.
+fn has_braces(statement: &Statement) -> bool {
+    let is_block = |statement: &Statement| matches!(statement, Statement::Block(_));
+
+    match statement {
+        Statement::If(If { body: IfBody::Statement(body), .. }) => {
+            is_block(body.statement)
+                && body
+                    .else_clause
+                    .as_ref()
+                    .is_none_or(|clause| is_block(clause.statement) || matches!(clause.statement, Statement::If(_)))
+        }
+        Statement::While(While { body: WhileBody::Statement(body), .. })
+        | Statement::For(For { body: ForBody::Statement(body), .. }) => is_block(body),
+        Statement::ForOf(for_of) => is_block(for_of.body),
+        Statement::DoWhile(do_while) => is_block(do_while.statement),
+        _ => true,
+    }
+}
+
 /// Whether the slice can write an expression: a local, a parameter, or a member written `object.name`.
 fn is_slice_target(target: &Expression, context: &Context<'_, '_, '_>) -> bool {
     match target {
@@ -540,6 +606,9 @@ fn report_unsupported(node: Node<'_, '_>, place: Place, context: &mut Context<'_
         Node::AttributeList(_) => {
             return report_not_supported(node.span(), "attribute", "PHP# writes attributes as `[...]`.", context);
         }
+        Node::IfStatementBodyElseIfClause(_) => {
+            return report_not_supported(node.span(), "`elseif`", "PHP# writes `else if`.", context);
+        }
         Node::Extends(_) => "`extends` clause",
         Node::Implements(_) => "`implements` clause",
         Node::ClassLikeMember(_) => "class member",
@@ -565,7 +634,7 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, a name, and an optional default."
         }
         Place::Body => {
-            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const`, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, `++` and `--`, and method calls and property reads written with `.` or `?.`."
+            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const`, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, and `break` and `continue` without a level, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, `++` and `--`, and method calls and property reads written with `.` or `?.`."
         }
         Place::Default => {
             "A parameter default is a literal, a constant, or arithmetic, comparison, logical and `??` operators on them."
@@ -636,6 +705,13 @@ fn check_const_write(target: &Expression, write: &str, context: &mut Context<'_,
 #[inline]
 pub fn check_local_declaration(local_declaration: &LocalDeclaration, context: &mut Context<'_, '_, '_>) {
     check_local_name(local_declaration.name.value, local_declaration.name.span, "local", context);
+}
+
+#[inline]
+pub fn check_for_of(for_of: &ForOf, context: &mut Context<'_, '_, '_>) {
+    for name in for_of.target.names() {
+        check_local_name(name.value, name.span, "loop variable", context);
+    }
 }
 
 #[inline]
