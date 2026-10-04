@@ -99,7 +99,10 @@ where
 
                 Hint::Union(UnionHint { left: self.arena.alloc(left), pipe, right: self.arena.alloc(right) })
             }
-            Some(T!["&"]) if !matches!(self.stream.peek_kind(1)?, Some(T!["$variable"] | T!["..."] | T!["&"])) => {
+            Some(T!["&"])
+                if !matches!(self.stream.peek_kind(1)?, Some(T!["$variable"] | T!["..."] | T!["&"]))
+                    && !self.is_at_sharp_reference_parameter()? =>
+            {
                 let left = hint;
                 let ampersand = self.stream.eat_span(T!["&"])?;
                 let right = self.parse_type_hint()?;
@@ -112,6 +115,14 @@ where
             }
             _ => hint,
         })
+    }
+
+    /// Returns `true` at the `&` of a PHP# by-reference parameter, `int &name`. PHP# names the parameter without a
+    /// `$`, so the `&` is followed by a name and then by what ends a parameter, where an intersection type continues.
+    fn is_at_sharp_reference_parameter(&mut self) -> Result<bool, ParseError> {
+        Ok(self.dialect.is_sharp()
+            && matches!(self.stream.peek_kind(1)?, Some(T![Identifier]))
+            && matches!(self.stream.peek_kind(2)?, Some(T![")" | "," | "="])))
     }
 
     pub(crate) fn parse_nullable_type_hint(&mut self) -> Result<NullableHint<'arena>, ParseError> {

@@ -1,5 +1,6 @@
 use crate::T;
 use crate::cst::cst::AttributeList;
+use crate::cst::cst::ClassLikeMember;
 use crate::cst::cst::FunctionLikeReturnTypeHint;
 use crate::cst::cst::Method;
 use crate::cst::cst::MethodAbstractBody;
@@ -37,36 +38,42 @@ where
         })
     }
 
-    /// Parses a PHP# method, whose return type comes first, with no colon and no `function` keyword.
-    pub(crate) fn parse_sharp_method_with_attributes_and_modifiers(
+    /// Parses a PHP# class member that starts with a type or a variable: a method, whose return type comes first with
+    /// no colon and no `function` keyword, or a property, which names its variable with a `$` as it does in PHP.
+    ///
+    /// The type is parsed once, and the token after it decides: a `$` variable makes a property, anything else a
+    /// method. A type has no length limit, so no fixed lookahead can decide before it.
+    pub(crate) fn parse_sharp_member_with_attributes_and_modifiers(
         &mut self,
         attributes: Sequence<'arena, AttributeList<'arena>>,
         modifiers: Sequence<'arena, Modifier<'arena>>,
-    ) -> Result<Method<'arena>, ParseError> {
-        Ok(Method {
+    ) -> Result<ClassLikeMember<'arena>, ParseError> {
+        if self.stream.is_at(T!["var"])? || self.stream.is_at(T!["$variable"])? {
+            return Ok(ClassLikeMember::Property(
+                self.parse_property_with_attributes_and_modifiers(attributes, modifiers)?,
+            ));
+        }
+
+        let hint = self.parse_type_hint()?;
+        if self.stream.is_at(T!["$variable"])? {
+            return Ok(ClassLikeMember::Property(self.parse_property_with_hint(
+                attributes,
+                modifiers,
+                None,
+                Some(hint),
+            )?));
+        }
+
+        Ok(ClassLikeMember::Method(Method {
             attribute_lists: attributes,
             modifiers,
             function: None,
-            return_type_hint: Some(FunctionLikeReturnTypeHint { colon: None, hint: self.parse_type_hint()? }),
+            return_type_hint: Some(FunctionLikeReturnTypeHint { colon: None, hint }),
             ampersand: None,
             name: self.parse_local_identifier()?,
             parameter_list: self.parse_function_like_parameter_list()?,
             body: self.parse_method_body()?,
-        })
-    }
-
-    /// Returns `true` when the next class member is a PHP# method: a type, then a name, then `(`.
-    ///
-    /// A property names its variable with a `$`, as it does in PHP.
-    pub(crate) fn is_at_sharp_method(&mut self) -> Result<bool, ParseError> {
-        let mut offset = 0;
-        loop {
-            match (self.stream.peek_kind(offset)?, self.stream.peek_kind(offset + 1)?) {
-                (Some(kind), Some(T!["("])) if kind.is_identifier_maybe_reserved() => return Ok(true),
-                (None | Some(T!["$variable" | ";" | "=" | "{" | "}"]), _) => return Ok(false),
-                _ => offset += 1,
-            }
-        }
+        }))
     }
 
     fn parse_method_body(&mut self) -> Result<MethodBody<'arena>, ParseError> {

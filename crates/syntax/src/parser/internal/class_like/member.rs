@@ -37,9 +37,9 @@ where
             ),
             T!["case"] => ClassLikeMember::EnumCase(self.parse_enum_case_with_attributes(Sequence::empty())?),
             T!["use"] => ClassLikeMember::TraitUse(self.parse_trait_use()?),
-            _ if self.dialect.is_sharp() && self.is_at_sharp_method()? => ClassLikeMember::Method(
-                self.parse_sharp_method_with_attributes_and_modifiers(Sequence::empty(), Sequence::empty())?,
-            ),
+            _ if self.dialect.is_sharp() => {
+                self.parse_sharp_member_with_attributes_and_modifiers(Sequence::empty(), Sequence::empty())?
+            }
             _ => ClassLikeMember::Property(
                 self.parse_property_with_attributes_and_modifiers(Sequence::empty(), Sequence::empty())?,
             ),
@@ -64,9 +64,9 @@ where
             T!["function"] => {
                 ClassLikeMember::Method(self.parse_method_with_attributes_and_modifiers(attributes, Sequence::empty())?)
             }
-            _ if self.dialect.is_sharp() && self.is_at_sharp_method()? => ClassLikeMember::Method(
-                self.parse_sharp_method_with_attributes_and_modifiers(attributes, Sequence::empty())?,
-            ),
+            _ if self.dialect.is_sharp() => {
+                self.parse_sharp_member_with_attributes_and_modifiers(attributes, Sequence::empty())?
+            }
             _ => ClassLikeMember::Property(
                 self.parse_property_with_attributes_and_modifiers(attributes, Sequence::empty())?,
             ),
@@ -86,8 +86,8 @@ where
             T!["function"] => {
                 ClassLikeMember::Method(self.parse_method_with_attributes_and_modifiers(attributes, modifiers)?)
             }
-            _ if self.dialect.is_sharp() && self.is_at_sharp_method()? => {
-                ClassLikeMember::Method(self.parse_sharp_method_with_attributes_and_modifiers(attributes, modifiers)?)
+            _ if self.dialect.is_sharp() => {
+                self.parse_sharp_member_with_attributes_and_modifiers(attributes, modifiers)?
             }
             _ => ClassLikeMember::Property(self.parse_property_with_attributes_and_modifiers(attributes, modifiers)?),
         })

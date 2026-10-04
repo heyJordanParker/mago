@@ -1,6 +1,8 @@
 use crate::T;
 use crate::cst::cst::AttributeList;
+use crate::cst::cst::Hint;
 use crate::cst::cst::HookedProperty;
+use crate::cst::cst::Keyword;
 use crate::cst::cst::Modifier;
 use crate::cst::cst::PlainProperty;
 use crate::cst::cst::Property;
@@ -30,6 +32,18 @@ where
     ) -> Result<Property<'arena>, ParseError> {
         let var = self.maybe_expect_keyword(T!["var"])?;
         let hint = self.parse_optional_type_hint()?;
+
+        self.parse_property_with_hint(attributes, modifiers, var, hint)
+    }
+
+    /// Parses the rest of a property once its `var` keyword and type hint are parsed.
+    pub(crate) fn parse_property_with_hint(
+        &mut self,
+        attributes: Sequence<'arena, AttributeList<'arena>>,
+        modifiers: Sequence<'arena, Modifier<'arena>>,
+        var: Option<Keyword<'arena>>,
+        hint: Option<Hint<'arena>>,
+    ) -> Result<Property<'arena>, ParseError> {
         let item = self.parse_property_item()?;
 
         let next = self.stream.peek_kind(0)?;

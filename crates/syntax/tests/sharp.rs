@@ -141,6 +141,39 @@ fn void_method_without_modifiers_starts_at_its_return_type() {
 }
 
 #[test]
+fn a_method_with_a_long_return_type_parses() {
+    const CODE: &str = "class Report\n{\n    public static int|string|null total() { return 1; }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(ClassLikeMember::Method(method)) = class_members(program).first() else {
+        panic!("expected a method, got {:#?}", class_members(program));
+    };
+    assert_eq!(source(CODE, method.return_type_hint.as_ref().expect("a return type")), "int|string|null");
+}
+
+#[test]
+fn a_by_reference_parameter_keeps_its_ampersand_and_bare_name() {
+    const CODE: &str = "class Report\n{\n    public void fill(int &count, A&B both) {}\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(ClassLikeMember::Method(method)) = class_members(program).first() else {
+        panic!("expected a method, got {:#?}", class_members(program));
+    };
+    let [count, both] = method.parameter_list.parameters.as_slice() else {
+        panic!("expected two parameters, got {:#?}", method.parameter_list);
+    };
+    assert_eq!(source(CODE, count.hint.as_ref().expect("a type")), "int");
+    assert_eq!(count.ampersand.map(|ampersand| source(CODE, &ampersand)), Some("&"));
+    assert_eq!(source(CODE, &count.variable), "count");
+    assert_eq!(source(CODE, both.hint.as_ref().expect("a type")), "A&B");
+    assert_eq!(both.ampersand, None);
+}
+
+#[test]
 fn property_parses_as_in_php() {
     let arena = LocalArena::new();
     let program = parse(&arena, "src/Report.sharp", "class Report\n{\n    private int $count = 0;\n}\n");
