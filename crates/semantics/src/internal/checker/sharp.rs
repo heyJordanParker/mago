@@ -65,8 +65,13 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   `= += -= *= /=`.
 ///
 /// The check visits every node and refuses any node, or any position of a node, that this list does not name. It
-/// reports each refusal once, at its outermost node. The constructs PHP# never has, such as `$` variables, `global`
-/// and top-level functions, keep their own errors.
+/// reports each refusal once, at its outermost node. It does not run on a file with a parse error, which is the one
+/// error to fix first. The constructs PHP# never has, such as `$` variables, `global` and top-level functions, keep
+/// their own errors.
+///
+/// Two more refusals need inferred types, so the analyzer makes them as its part of this contract:
+/// - `+` with an operand that may be a string, in `analyze_arithmetic_operation`.
+/// - an instance method used as a value, such as `order.total` without a call, in `report_non_existent_property`.
 #[inline]
 pub fn check_slice(program: &Program, context: &mut Context<'_, '_, '_>) {
     check_node(Node::Program(program), Place::File, context);

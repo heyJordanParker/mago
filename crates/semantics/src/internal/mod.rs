@@ -88,7 +88,11 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingW
         checker::statement::check_top_level_statements(program, context);
 
         if program.dialect.is_sharp() {
-            checker::sharp::check_slice(program, context);
+            // A parse error already stops the file, so it is the one error to fix first.
+            if program.errors.is_empty() {
+                checker::sharp::check_slice(program, context);
+            }
+
             checker::sharp::check_declarations(program, context);
             checker::sharp::check_binding_errors(context);
         }
