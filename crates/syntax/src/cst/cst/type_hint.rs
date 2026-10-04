@@ -106,6 +106,12 @@ pub struct IntersectionHint<'arena> {
 /// ```php
 /// ?string
 /// ```
+///
+/// PHP# writes the question mark after the type:
+///
+/// ```csharp
+/// string?
+/// ```
 #[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct NullableHint<'arena> {
@@ -294,6 +300,12 @@ impl HasSpan for IntersectionHint<'_> {
 
 impl HasSpan for NullableHint<'_> {
     fn span(&self) -> Span {
-        Span::between(self.question_mark, self.hint.span())
+        let hint = self.hint.span();
+
+        if self.question_mark.start < hint.start {
+            Span::between(self.question_mark, hint)
+        } else {
+            Span::between(hint, self.question_mark)
+        }
     }
 }

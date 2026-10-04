@@ -14,18 +14,25 @@ use mago_syntax::cst::Access;
 use mago_syntax::cst::Assignment;
 use mago_syntax::cst::AssignmentOperator;
 use mago_syntax::cst::BinaryOperator;
+use mago_syntax::cst::Break;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::ConstantAccess;
+use mago_syntax::cst::Continue;
 use mago_syntax::cst::Expression;
+use mago_syntax::cst::For;
+use mago_syntax::cst::ForBody;
+use mago_syntax::cst::ForOf;
 use mago_syntax::cst::Function;
 use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::Global;
 use mago_syntax::cst::Hint;
 use mago_syntax::cst::Identifier;
+use mago_syntax::cst::If;
+use mago_syntax::cst::IfBody;
 use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::LocalIdentifier;
 use mago_syntax::cst::Method;
@@ -50,6 +57,8 @@ use mago_syntax::cst::Use;
 use mago_syntax::cst::UseItem;
 use mago_syntax::cst::UseItems;
 use mago_syntax::cst::Variable;
+use mago_syntax::cst::While;
+use mago_syntax::cst::WhileBody;
 
 use crate::internal::consts::RESERVED_CLASS_NAMES;
 use crate::internal::consts::RESERVED_KEYWORDS;
@@ -85,16 +94,20 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - A parameter: always a type, a name and an optional default, and neither variadic nor by reference. A default is
 ///   a literal, a constant, or the operators below on them, without `++` and `--`.
 /// - Types: `int`, `float`, `bool`, `string` and a class written by its short name, and `void` as a return type.
-///   PHP's own check reports a `void` parameter.
-/// - In a method body: blocks, expression statements, `return`, and `let` and `const` declarations.
+///   PHP's own check reports a `void` parameter. Each of them is nullable when written with `?` after it, as in
+///   `int?`, and PHP's own check reports `void?`.
+/// - In a method body: blocks, expression statements, `return`, `let` and `const` declarations, `if` with `else if`
+///   and `else`, `while`, `do … while`, `for` with a `let` or `const` counter or with expressions, `for … of` over a
+///   value or a key and value, and `break` and `continue` without a level. The body of `if`, `else` and each loop is a
+///   block in braces.
 /// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter or a member written
 ///   `object.name`.
 /// - In expressions: literals, parentheses, bare names, assignment, the operators below, and method calls and
-///   property reads written with `.` and a member name, and `new Class(...)` on a class written by its short name,
-///   with positional and named arguments. A string literal's
-///   `\u{...}` escapes are valid codepoints, as PHP requires.
-/// - Operators: `+ - * / %`, `== != === !== < > <= >=`, `&& || !`, unary `-` and `+`, `++` and `--`, and
-///   `= += -= *= /=`.
+///   property reads written with `.` or `?.` and a member name, and `new Class(...)` on a class written by its short
+///   name, with positional and named arguments. `?.` never follows a class. A string literal's `\u{...}` escapes are
+///   valid codepoints, as PHP requires.
+/// - Operators: `+ - * / %`, `== != === !== < > <= >=`, `&& || !`, `??`, unary `-` and `+`, `++` and `--`, and
+///   `= += -= *= /= ??=`.
 ///
 /// The check visits every node and refuses any node, or any position of a node, that this list does not name. It
 /// reports each refusal once, at its outermost node. It does not run on a file with a parse error, which is the one
@@ -308,6 +321,7 @@ fn enter(
             }
         },
         (Node::Hint(hint), Method | Parameter) if is_slice_type(hint) => Some(place),
+        (Node::NullableHint(_), Method | Parameter) => Some(place),
         (Node::DirectVariable(_), Parameter) => Some(Parameter),
         // An access modifier declares a member, and `check_accessors` checked its accessors. PHP reports `static`,
         // `final` and `abstract` on a parameter, a member declared outside the constructor, and accessors without one.
@@ -326,13 +340,47 @@ fn enter(
         (Node::FunctionLikeParameterDefaultValue(_), Parameter) => Some(Default),
         (Node::Block(_), Method | Body) => Some(Body),
 
+        (Node::Statement(statement), Body) if !has_braces(statement) => {
+            report_not_supported(
+                statement.span(),
+                "statement without braces",
+                "PHP# writes the body of `if`, `else` and each loop as a block in braces.",
+                context,
+            );
+
+            None
+        }
         (
             Node::Statement(
-                Statement::Block(_) | Statement::Expression(_) | Statement::Return(_) | Statement::LocalDeclaration(_),
+                Statement::Block(_)
+                | Statement::Expression(_)
+                | Statement::Return(_)
+                | Statement::LocalDeclaration(_)
+                | Statement::If(_)
+                | Statement::While(_)
+                | Statement::DoWhile(_)
+                | Statement::For(_)
+                | Statement::ForOf(_)
+                | Statement::Break(Break { level: None, .. })
+                | Statement::Continue(Continue { level: None, .. }),
             )
+            | Node::Break(_)
+            | Node::Continue(_)
             | Node::ExpressionStatement(_)
             | Node::Return(_)
-            | Node::LocalDeclaration(_),
+            | Node::LocalDeclaration(_)
+            | Node::If(_)
+            | Node::IfBody(IfBody::Statement(_))
+            | Node::IfStatementBody(_)
+            | Node::IfStatementBodyElseClause(_)
+            | Node::While(_)
+            | Node::WhileBody(WhileBody::Statement(_))
+            | Node::DoWhile(_)
+            | Node::For(_)
+            | Node::ForBody(ForBody::Statement(_))
+            | Node::ForOf(_)
+            | Node::ForOfTarget(_)
+            | Node::ForOfKeyValueTarget(_),
             Body,
         ) => Some(Body),
 
@@ -376,14 +424,14 @@ fn enter(
             Node::Expression(
                 Expression::Assignment(_)
                 | Expression::UnaryPostfix(_)
-                | Expression::Call(Call::Method(_))
-                | Expression::Access(Access::Property(_)),
+                | Expression::Call(Call::Method(_) | Call::NullSafeMethod(_))
+                | Expression::Access(Access::Property(_) | Access::NullSafeProperty(_)),
             )
             | Node::Assignment(_)
             | Node::UnaryPostfix(_)
             | Node::UnaryPostfixOperator(UnaryPostfixOperator::PostIncrement(_) | UnaryPostfixOperator::PostDecrement(_))
-            | Node::Call(Call::Method(_))
-            | Node::Access(Access::Property(_))
+            | Node::Call(Call::Method(_) | Call::NullSafeMethod(_))
+            | Node::Access(Access::Property(_) | Access::NullSafeProperty(_))
             | Node::ClassLikeMemberSelector(ClassLikeMemberSelector::Identifier(_))
             | Node::ArgumentList(_)
             | Node::Argument(_)
@@ -419,6 +467,10 @@ fn enter(
             check_member_access(access.span(), access.object, &access.property, MemberUse::Read, checked, context);
 
             Some(Body)
+        }
+        (Node::NullSafeMethodCall(call), Body) => check_null_safe_object(call.span(), call.object, &call.method, context),
+        (Node::NullSafePropertyAccess(access), Body) => {
+            check_null_safe_object(access.span(), access.object, &access.property, context)
         }
 
         // PHP# never has `$` variables. A `$` variable inside a construct the walk refuses adds no second error.
@@ -493,12 +545,6 @@ fn is_slice_parameter(parameter: &FunctionLikeParameter) -> Result<(), (Span, &'
             ampersand,
             "A by-reference parameter is not supported yet in PHP#.",
             "The engine passes every PHP# argument by value.",
-        ))
-    } else if parameter.hint.is_none() {
-        Err((
-            parameter.variable.span,
-            "A parameter without a type is not supported in PHP#.",
-            "A PHP# parameter is written with its type, as in `int extra`.",
         ))
     } else {
         Ok(())
@@ -671,6 +717,26 @@ fn write_target<'ast, 'arena>(node: Node<'ast, 'arena>) -> Option<&'ast Expressi
     }
 }
 
+/// Whether every body of an `if`, `else` or loop is a block in braces. An `else` may also hold the next `if`.
+fn has_braces(statement: &Statement) -> bool {
+    let is_block = |statement: &Statement| matches!(statement, Statement::Block(_));
+
+    match statement {
+        Statement::If(If { body: IfBody::Statement(body), .. }) => {
+            is_block(body.statement)
+                && body
+                    .else_clause
+                    .as_ref()
+                    .is_none_or(|clause| is_block(clause.statement) || matches!(clause.statement, Statement::If(_)))
+        }
+        Statement::While(While { body: WhileBody::Statement(body), .. })
+        | Statement::For(For { body: ForBody::Statement(body), .. }) => is_block(body),
+        Statement::ForOf(for_of) => is_block(for_of.body),
+        Statement::DoWhile(do_while) => is_block(do_while.statement),
+        _ => true,
+    }
+}
+
 /// Whether the slice can write an expression: a local, a parameter, or a member written `object.name`.
 fn is_slice_target(target: &Expression, context: &Context<'_, '_, '_>) -> bool {
     match target {
@@ -680,7 +746,8 @@ fn is_slice_target(target: &Expression, context: &Context<'_, '_, '_>) -> bool {
     }
 }
 
-/// Whether the slice has a type: the built-in types of spec section 24, or a class written by its short name.
+/// Whether the slice has a type: the built-in types of spec section 24, or a class written by its short name, or a
+/// nullable type, whose inner type the walk checks next.
 fn is_slice_type(hint: &Hint) -> bool {
     matches!(
         hint,
@@ -690,6 +757,7 @@ fn is_slice_type(hint: &Hint) -> bool {
             | Hint::String(_)
             | Hint::Void(_)
             | Hint::Identifier(Identifier::Local(_))
+            | Hint::Nullable(_)
     )
 }
 
@@ -711,14 +779,14 @@ const fn is_slice_binary_operator(operator: &BinaryOperator) -> bool {
         | BinaryOperator::GreaterThan(_)
         | BinaryOperator::GreaterThanOrEqual(_)
         | BinaryOperator::And(_)
-        | BinaryOperator::Or(_) => true,
+        | BinaryOperator::Or(_)
+        | BinaryOperator::NullCoalesce(_) => true,
         BinaryOperator::Exponentiation(_)
         | BinaryOperator::BitwiseAnd(_)
         | BinaryOperator::BitwiseOr(_)
         | BinaryOperator::BitwiseXor(_)
         | BinaryOperator::LeftShift(_)
         | BinaryOperator::RightShift(_)
-        | BinaryOperator::NullCoalesce(_)
         | BinaryOperator::AngledNotEqual(_)
         | BinaryOperator::Spaceship(_)
         | BinaryOperator::StringConcat(_)
@@ -762,7 +830,8 @@ const fn is_slice_assignment_operator(operator: &AssignmentOperator) -> bool {
         | AssignmentOperator::Addition(_)
         | AssignmentOperator::Subtraction(_)
         | AssignmentOperator::Multiplication(_)
-        | AssignmentOperator::Division(_) => true,
+        | AssignmentOperator::Division(_)
+        | AssignmentOperator::Coalesce(_) => true,
         AssignmentOperator::Modulo(_)
         | AssignmentOperator::Exponentiation(_)
         | AssignmentOperator::Concat(_)
@@ -770,8 +839,7 @@ const fn is_slice_assignment_operator(operator: &AssignmentOperator) -> bool {
         | AssignmentOperator::BitwiseOr(_)
         | AssignmentOperator::BitwiseXor(_)
         | AssignmentOperator::LeftShift(_)
-        | AssignmentOperator::RightShift(_)
-        | AssignmentOperator::Coalesce(_) => false,
+        | AssignmentOperator::RightShift(_) => false,
     }
 }
 
@@ -780,10 +848,13 @@ fn report_unsupported(node: Node<'_, '_>, place: Place, context: &mut Context<'_
         Node::Statement(_) => "statement",
         Node::Expression(_) | Node::ConstantAccess(_) => "expression",
         Node::BinaryOperator(_) | Node::UnaryPrefixOperator(_) | Node::AssignmentOperator(_) => "operator",
-        Node::Hint(_) => "type",
+        Node::Hint(_) | Node::NullableHint(_) => "type",
         Node::Modifier(_) => "modifier",
         Node::AttributeList(_) => {
             return report_not_supported(node.span(), "attribute", "PHP# writes attributes as `[...]`.", context);
+        }
+        Node::IfStatementBodyElseIfClause(_) => {
+            return report_not_supported(node.span(), "`elseif`", "PHP# writes `else if`.", context);
         }
         Node::Extends(_) => "`extends` clause",
         Node::Implements(_) => "`implements` clause",
@@ -807,16 +878,16 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# field is `private` or `protected`, and a property has the accessors `get;` and an optional `set;`. Both have a type of `int`, `float`, `bool`, `string` or a class, a name, and an optional initial value."
         }
         Place::Method => {
-            "A PHP# method takes `public`, `protected`, `private` and `static`, parameters, and a return type of `int`, `float`, `bool`, `string`, `void` or a class."
+            "A PHP# method takes `public`, `protected`, `private` and `static`, parameters, and a return type of `int`, `float`, `bool`, `string`, `void` or a class, each but `void` nullable as in `int?`."
         }
         Place::Parameter => {
-            "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, a name, and an optional default."
+            "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, a name, and an optional default."
         }
         Place::Body => {
-            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const`, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `++` and `--`, method calls and property reads written with `.`, and `new Class(...)`."
+            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const`, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, and `break` and `continue` without a level, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, `++` and `--`, method calls and property reads written with `.` or `?.`, and `new Class(...)`."
         }
         Place::Default => {
-            "A parameter default is a literal, a constant, or arithmetic, comparison and logical operators on them."
+            "A parameter default is a literal, a constant, or arithmetic, comparison, logical and `??` operators on them."
         }
     }
 }
@@ -884,6 +955,13 @@ fn check_const_write(target: &Expression, write: &str, context: &mut Context<'_,
 #[inline]
 pub fn check_local_declaration(local_declaration: &LocalDeclaration, context: &mut Context<'_, '_, '_>) {
     check_local_name(local_declaration.name.value, local_declaration.name.span, "local", context);
+}
+
+#[inline]
+pub fn check_for_of(for_of: &ForOf, context: &mut Context<'_, '_, '_>) {
+    for name in for_of.target.names() {
+        check_local_name(name.value, name.span, "loop variable", context);
+    }
 }
 
 #[inline]
@@ -1251,6 +1329,33 @@ fn report_static_access(
     };
 
     context.report(issue);
+}
+
+/// Checks the object of `object?.member`. A class is never null, so `?.` after a class is an error that names `.`.
+fn check_null_safe_object(
+    access: Span,
+    object: &Expression,
+    member: &ClassLikeMemberSelector,
+    context: &mut Context<'_, '_, '_>,
+) -> Option<Place> {
+    if let Expression::ConstantAccess(class) = object
+        && context.names.binding(&class.name) == Some(Binding::Class)
+        && let ClassLikeMemberSelector::Identifier(member) = member
+    {
+        let class = BytesDisplay(class.name.value());
+
+        context.report(
+            Issue::error(format!(
+                "`{class}` is a class, which is never null: write `{class}.{}`.",
+                BytesDisplay(member.value)
+            ))
+            .with_annotation(Annotation::primary(access).with_message("Null-safe access written here.")),
+        );
+
+        return None;
+    }
+
+    Some(Place::Body)
 }
 
 fn report_bare_member(span: Span, name: &[u8], context: &mut Context<'_, '_, '_>) {

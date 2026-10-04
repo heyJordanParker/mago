@@ -239,6 +239,27 @@ fn the_root_end_line_is_the_last_line_the_zend_scanner_counts() {
     assert_eq!(end_lines, [1, 2, 2, 2, 5]);
 }
 
+/// Node lines, declaration lines and diagnostic lines count a lone `\r` as a line ending too.
+#[test]
+fn every_line_is_the_line_the_zend_scanner_counts() {
+    let class = Lowered::new("class Report\r\n{\r}\n\n");
+    let root = &class.nodes()[class.unit().root as usize];
+    let declaration = &class.nodes()[class.child(class.unit().root, 1) as usize];
+    assert_eq!((declaration.line, declaration.end_line, root.end_line), (1, 3, 5));
+
+    let method = Lowered::new("class Report\r{\r    public int run()\r    {\r        return 1;\r    }\r}\r");
+    let lines: Vec<(String, u32, u32)> = method
+        .nodes()
+        .iter()
+        .filter(|node| node.kind == sharp_kind::SHARP_AST_METHOD || node.kind == sharp_kind::SHARP_AST_RETURN)
+        .map(|node| (format!("{:?}", node.kind), node.line, node.end_line))
+        .collect();
+    assert_eq!(lines, [("SHARP_AST_RETURN".to_owned(), 5, 0), ("SHARP_AST_METHOD".to_owned(), 3, 6)]);
+
+    let refused = Lowered::new("class Report\r{\r    public void run() { echo 1; }\r}\r");
+    assert_eq!(refused.diagnostics(), ["3:25 compile error: This statement is not supported yet in PHP#."]);
+}
+
 /// ```php
 /// <?php
 /// declare(strict_types=1);
@@ -735,6 +756,47 @@ fn parameters_carry_their_type_name_and_default() {
 }
 
 /// ```php
+/// public function find(?int $id, ?\Lib\Calc $other = null): ?\Lib\Calc { return null; }
+/// ```
+///
+/// `[256]` is `ZEND_TYPE_NULLABLE`, which php-src's grammar adds to the type's attr, and `[257]` adds it to
+/// `ZEND_NAME_NOT_FQ`.
+#[test]
+fn a_nullable_type_is_its_type_with_the_nullable_flag() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public Calc? find(int? id, Calc? other = null) { return null; }\n}\n",
+    );
+    let method = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a method");
+
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 0)),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                ZVAL [257] "int"
+                ZVAL "id"
+                null
+                null
+                null
+                null
+              PARAM
+                ZVAL [256] "Lib\\Calc"
+                ZVAL "other"
+                ZVAL null
+                null
+                null
+                null
+        "#}
+    );
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 3)),
+        indoc! {r#"
+            ZVAL [256] "Lib\\Calc"
+        "#}
+    );
+}
+
+/// ```php
 /// public function run(): void
 /// {
 ///     return;
@@ -899,6 +961,29 @@ fn member_calls_and_reads_on_values_are_instance_access() {
                         ZVAL "rate"
                         ZVAL 2
                   ZVAL "value"
+        "#}
+    );
+}
+
+/// ```php
+/// return \Lib\Calc::make()->add($extra);
+/// ```
+#[test]
+fn a_call_on_a_static_call_result_is_an_instance_call() {
+    assert_eq!(
+        body("        return Calc.make().add(extra);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                METHOD_CALL
+                  STATIC_CALL
+                    ZVAL "Lib\\Calc"
+                    ZVAL "make"
+                    ARG_LIST
+                  ZVAL "add"
+                  ARG_LIST
+                    VAR
+                      ZVAL "extra"
         "#}
     );
 }
@@ -1083,6 +1168,84 @@ fn compound_assignments_are_assign_ops() {
 }
 
 /// ```php
+/// return $extra ?? $this->total() ?? 0;
+/// ```
+///
+/// `??` is right-associative, as php-src's grammar declares it.
+#[test]
+fn null_coalescing_is_coalesce() {
+    assert_eq!(
+        body("        return extra ?? this.total() ?? 0;\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                COALESCE
+                  VAR
+                    ZVAL "extra"
+                  COALESCE
+                    METHOD_CALL
+                      VAR
+                        ZVAL "this"
+                      ZVAL "total"
+                      ARG_LIST
+                    ZVAL 0
+        "#}
+    );
+}
+
+/// ```php
+/// $extra ??= 1; $this->count ??= $extra;
+/// ```
+#[test]
+fn null_coalescing_assignment_is_assign_coalesce() {
+    assert_eq!(
+        body("        extra ??= 1;\n        this.count ??= extra;\n        return extra;\n"),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN_COALESCE
+                VAR
+                  ZVAL "extra"
+                ZVAL 1
+              ASSIGN_COALESCE
+                PROP
+                  VAR
+                    ZVAL "this"
+                  ZVAL "count"
+                VAR
+                  ZVAL "extra"
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
+/// return $this?->total($extra)?->value->cents;
+/// ```
+#[test]
+fn null_safe_calls_and_reads_are_nullsafe_kinds() {
+    assert_eq!(
+        body("        return this?.total(extra)?.value.cents;\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                PROP
+                  NULLSAFE_PROP
+                    NULLSAFE_METHOD_CALL
+                      VAR
+                        ZVAL "this"
+                      ZVAL "total"
+                      ARG_LIST
+                        VAR
+                          ZVAL "extra"
+                    ZVAL "value"
+                  ZVAL "cents"
+        "#}
+    );
+}
+
+/// ```php
 /// return ($extra + 1) * 2;
 /// ```
 #[test]
@@ -1128,6 +1291,228 @@ fn a_block_is_a_statement_list_and_a_constant_is_looked_up_by_its_short_name() {
     );
 }
 
+/// ```php
+/// if ($extra > 1) {
+///     return 1;
+/// } else if ($extra < 0) {
+///     return 2;
+/// } else {
+///     return 3;
+/// }
+/// ```
+///
+/// php-src reads `else if` as an `else` whose statement is the next `if`. An `else` has a null condition.
+#[test]
+fn if_else_if_and_else_are_if_lists_of_if_elems() {
+    assert_eq!(
+        body(
+            "        if (extra > 1) {\n            return 1;\n        } else if (extra < 0) {\n            return 2;\n        } else {\n            return 3;\n        }\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              IF
+                IF_ELEM
+                  GREATER
+                    VAR
+                      ZVAL "extra"
+                    ZVAL 1
+                  STMT_LIST
+                    RETURN
+                      ZVAL 1
+                IF_ELEM
+                  null
+                  IF
+                    IF_ELEM
+                      BINARY_OP [20]
+                        VAR
+                          ZVAL "extra"
+                        ZVAL 0
+                      STMT_LIST
+                        RETURN
+                          ZVAL 2
+                    IF_ELEM
+                      null
+                      STMT_LIST
+                        RETURN
+                          ZVAL 3
+        "#}
+    );
+}
+
+/// ```php
+/// while ($extra > 0) {
+///     $extra -= 1;
+/// }
+/// do {
+///     $extra += 1;
+/// } while ($extra < 3);
+/// ```
+///
+/// `WHILE` takes its condition first, and `DO_WHILE` its body first.
+#[test]
+fn while_and_do_while_are_their_php_kinds() {
+    assert_eq!(
+        body(
+            "        while (extra > 0) {\n            extra -= 1;\n        }\n        do {\n            extra += 1;\n        } while (extra < 3);\n        return extra;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              WHILE
+                GREATER
+                  VAR
+                    ZVAL "extra"
+                  ZVAL 0
+                STMT_LIST
+                  ASSIGN_OP [2]
+                    VAR
+                      ZVAL "extra"
+                    ZVAL 1
+              DO_WHILE
+                STMT_LIST
+                  ASSIGN_OP [1]
+                    VAR
+                      ZVAL "extra"
+                    ZVAL 1
+                BINARY_OP [20]
+                  VAR
+                    ZVAL "extra"
+                  ZVAL 3
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
+/// while (true) {
+///     continue;
+///     break;
+/// }
+/// ```
+///
+/// A `break` or `continue` without a level has a null depth.
+#[test]
+fn break_and_continue_have_a_null_depth() {
+    assert_eq!(
+        body("        while (true) {\n            continue;\n            break;\n        }\n        return 1;\n"),
+        indoc! {"
+            STMT_LIST
+              WHILE
+                ZVAL true
+                STMT_LIST
+                  CONTINUE
+                    null
+                  BREAK
+                    null
+              RETURN
+                ZVAL 1
+        "}
+    );
+}
+
+/// ```php
+/// for ($step = 0; $step < $extra; $step++, $extra--) {
+/// }
+/// for (;;) {
+///     break;
+/// }
+/// ```
+///
+/// Each part of the header is an `EXPR_LIST`, or null when it is empty. A `let` counter is the assignment of its
+/// value.
+#[test]
+fn for_loops_are_for_nodes_with_an_expression_list_per_part() {
+    assert_eq!(
+        body(
+            "        for (let step = 0; step < extra; step++, extra--) {\n        }\n        for (;;) {\n            break;\n        }\n        return extra;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              FOR
+                EXPR_LIST
+                  ASSIGN
+                    VAR
+                      ZVAL "step"
+                    ZVAL 0
+                EXPR_LIST
+                  BINARY_OP [20]
+                    VAR
+                      ZVAL "step"
+                    VAR
+                      ZVAL "extra"
+                EXPR_LIST
+                  POST_INC
+                    VAR
+                      ZVAL "step"
+                  POST_DEC
+                    VAR
+                      ZVAL "extra"
+                STMT_LIST
+              FOR
+                null
+                null
+                null
+                STMT_LIST
+                  BREAK
+                    null
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
+/// foreach (\Lib\Calc::make(2) as $value) {
+///     $extra += $value;
+/// }
+/// foreach (\Lib\Calc::make(3) as $key => $value) {
+/// }
+/// ```
+///
+/// `FOREACH` takes the collection, the value variable, the key variable or null, and the body.
+#[test]
+fn for_of_loops_are_foreach_nodes_with_the_value_before_the_key() {
+    assert_eq!(
+        body(
+            "        for (const value of Calc.make(2)) {\n            extra += value;\n        }\n        for (let [key, value] of Calc.make(3)) {\n        }\n        return extra;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              FOREACH
+                STATIC_CALL
+                  ZVAL "Lib\\Calc"
+                  ZVAL "make"
+                  ARG_LIST
+                    ZVAL 2
+                VAR
+                  ZVAL "value"
+                null
+                STMT_LIST
+                  ASSIGN_OP [1]
+                    VAR
+                      ZVAL "extra"
+                    VAR
+                      ZVAL "value"
+              FOREACH
+                STATIC_CALL
+                  ZVAL "Lib\\Calc"
+                  ZVAL "make"
+                  ARG_LIST
+                    ZVAL 3
+                VAR
+                  ZVAL "value"
+                VAR
+                  ZVAL "key"
+                STMT_LIST
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
 /// The child count `zend_ast_get_num_children` gives a fixed-size kind, or 5 for a declaration. `None` for a list.
 fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
     match kind {
@@ -1135,6 +1520,8 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_STMT_LIST
         | sharp_kind::SHARP_AST_PARAM_LIST
         | sharp_kind::SHARP_AST_CONST_DECL
+        | sharp_kind::SHARP_AST_IF
+        | sharp_kind::SHARP_AST_EXPR_LIST
         | sharp_kind::SHARP_AST_PROP_DECL => None,
         sharp_kind::SHARP_AST_ZVAL => Some(0),
         sharp_kind::SHARP_AST_VAR
@@ -1146,7 +1533,9 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_PRE_DEC
         | sharp_kind::SHARP_AST_POST_INC
         | sharp_kind::SHARP_AST_POST_DEC
-        | sharp_kind::SHARP_AST_RETURN => Some(1),
+        | sharp_kind::SHARP_AST_RETURN
+        | sharp_kind::SHARP_AST_BREAK
+        | sharp_kind::SHARP_AST_CONTINUE => Some(1),
         sharp_kind::SHARP_AST_PROP
         | sharp_kind::SHARP_AST_ASSIGN
         | sharp_kind::SHARP_AST_ASSIGN_OP
@@ -1158,12 +1547,19 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_DECLARE
         | sharp_kind::SHARP_AST_NAMESPACE
         | sharp_kind::SHARP_AST_NAMED_ARG
+        | sharp_kind::SHARP_AST_COALESCE
+        | sharp_kind::SHARP_AST_ASSIGN_COALESCE
+        | sharp_kind::SHARP_AST_NULLSAFE_PROP
+        | sharp_kind::SHARP_AST_IF_ELEM
+        | sharp_kind::SHARP_AST_WHILE
+        | sharp_kind::SHARP_AST_DO_WHILE
         | sharp_kind::SHARP_AST_NEW => Some(2),
         sharp_kind::SHARP_AST_METHOD_CALL
         | sharp_kind::SHARP_AST_STATIC_CALL
         | sharp_kind::SHARP_AST_CONST_ELEM
+        | sharp_kind::SHARP_AST_NULLSAFE_METHOD_CALL
         | sharp_kind::SHARP_AST_PROP_GROUP => Some(3),
-        sharp_kind::SHARP_AST_PROP_ELEM => Some(4),
+        sharp_kind::SHARP_AST_FOR | sharp_kind::SHARP_AST_FOREACH | sharp_kind::SHARP_AST_PROP_ELEM => Some(4),
         sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_CLASS => Some(5),
         sharp_kind::SHARP_AST_PARAM => Some(6),
     }

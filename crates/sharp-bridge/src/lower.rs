@@ -25,10 +25,16 @@ use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::DirectVariable;
 use mago_syntax::cst::Expression;
+use mago_syntax::cst::For;
+use mago_syntax::cst::ForBody;
+use mago_syntax::cst::ForOfTarget;
 use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::Hint;
+use mago_syntax::cst::If;
+use mago_syntax::cst::IfBody;
 use mago_syntax::cst::Instantiation;
 use mago_syntax::cst::Literal;
+use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::MethodBody;
 use mago_syntax::cst::MethodCall;
@@ -44,6 +50,7 @@ use mago_syntax::cst::Sequence;
 use mago_syntax::cst::Statement;
 use mago_syntax::cst::UnaryPostfixOperator;
 use mago_syntax::cst::UnaryPrefixOperator;
+use mago_syntax::cst::WhileBody;
 use mago_syntax::dialect::Dialect;
 use mago_syntax::parser::parse_file_with_dialect;
 use mago_syntax::settings::ParserSettings;
@@ -55,20 +62,32 @@ use crate::sharp_kind;
 use crate::sharp_kind::SHARP_AST_AND;
 use crate::sharp_kind::SHARP_AST_ARG_LIST;
 use crate::sharp_kind::SHARP_AST_ASSIGN;
+use crate::sharp_kind::SHARP_AST_ASSIGN_COALESCE;
 use crate::sharp_kind::SHARP_AST_ASSIGN_OP;
 use crate::sharp_kind::SHARP_AST_BINARY_OP;
+use crate::sharp_kind::SHARP_AST_BREAK;
 use crate::sharp_kind::SHARP_AST_CLASS;
+use crate::sharp_kind::SHARP_AST_COALESCE;
 use crate::sharp_kind::SHARP_AST_CONST;
 use crate::sharp_kind::SHARP_AST_CONST_DECL;
 use crate::sharp_kind::SHARP_AST_CONST_ELEM;
+use crate::sharp_kind::SHARP_AST_CONTINUE;
 use crate::sharp_kind::SHARP_AST_DECLARE;
+use crate::sharp_kind::SHARP_AST_DO_WHILE;
+use crate::sharp_kind::SHARP_AST_EXPR_LIST;
+use crate::sharp_kind::SHARP_AST_FOR;
+use crate::sharp_kind::SHARP_AST_FOREACH;
 use crate::sharp_kind::SHARP_AST_GREATER;
 use crate::sharp_kind::SHARP_AST_GREATER_EQUAL;
+use crate::sharp_kind::SHARP_AST_IF;
+use crate::sharp_kind::SHARP_AST_IF_ELEM;
 use crate::sharp_kind::SHARP_AST_METHOD;
 use crate::sharp_kind::SHARP_AST_METHOD_CALL;
 use crate::sharp_kind::SHARP_AST_NAMED_ARG;
 use crate::sharp_kind::SHARP_AST_NAMESPACE;
 use crate::sharp_kind::SHARP_AST_NEW;
+use crate::sharp_kind::SHARP_AST_NULLSAFE_METHOD_CALL;
+use crate::sharp_kind::SHARP_AST_NULLSAFE_PROP;
 use crate::sharp_kind::SHARP_AST_OR;
 use crate::sharp_kind::SHARP_AST_PARAM;
 use crate::sharp_kind::SHARP_AST_PARAM_LIST;
@@ -87,6 +106,7 @@ use crate::sharp_kind::SHARP_AST_UNARY_MINUS;
 use crate::sharp_kind::SHARP_AST_UNARY_OP;
 use crate::sharp_kind::SHARP_AST_UNARY_PLUS;
 use crate::sharp_kind::SHARP_AST_VAR;
+use crate::sharp_kind::SHARP_AST_WHILE;
 use crate::sharp_kind::SHARP_AST_ZVAL;
 use crate::sharp_node;
 use crate::sharp_severity;
@@ -104,6 +124,7 @@ const ZEND_ACC_STATIC: u32 = 1 << 4;
 const ZEND_ACC_READONLY: u32 = 1 << 7;
 const ZEND_ACC_PROTECTED_SET: u32 = 1 << 11;
 const ZEND_ACC_PRIVATE_SET: u32 = 1 << 12;
+const ZEND_TYPE_NULLABLE: u32 = 1 << 8;
 const ZEND_ADD: u32 = 1;
 const ZEND_SUB: u32 = 2;
 const ZEND_MUL: u32 = 3;
@@ -125,6 +146,7 @@ const NULL: u32 = u32::MAX;
 /// name, because `ext/sharp` decided that before calling.
 pub(crate) fn lower(path: Vec<u8>, source: Vec<u8>) -> Box<Unit> {
     let file = File::ephemeral(Cow::Owned(path), Cow::Owned(source));
+    let lines = Lines::new(&file.contents);
     let arena = LocalArena::new();
     let program = parse_file_with_dialect(&arena, &file, Dialect::Sharp, ParserSettings::default());
     if !program.errors.is_empty() {
@@ -132,9 +154,7 @@ pub(crate) fn lower(path: Vec<u8>, source: Vec<u8>) -> Box<Unit> {
             program
                 .errors
                 .iter()
-                .map(|error| {
-                    diagnostic(&file, Some(error.span()), sharp_severity::SHARP_PARSE_ERROR, error.to_string())
-                })
+                .map(|error| lines.diagnostic(Some(error.span()), sharp_severity::SHARP_PARSE_ERROR, error.to_string()))
                 .collect(),
         );
     }
@@ -144,40 +164,56 @@ pub(crate) fn lower(path: Vec<u8>, source: Vec<u8>) -> Box<Unit> {
         .check(&file, program, &names)
         .iter()
         .filter(|issue| issue.level == Level::Error)
-        .map(|issue| {
-            diagnostic(&file, issue.primary_span(), sharp_severity::SHARP_COMPILE_ERROR, issue.message.clone())
-        })
+        .map(|issue| lines.diagnostic(issue.primary_span(), sharp_severity::SHARP_COMPILE_ERROR, issue.message.clone()))
         .collect();
     if !errors.is_empty() {
         return Unit::failed(errors);
     }
 
-    Lowering::new(&file, &names).program(program)
+    Lowering::new(&lines, &names).program(program)
 }
 
-/// A diagnostic at the start of `span`. Without a span it is at line 0, column 0, which the ABI defines as no
-/// position.
-fn diagnostic(file: &File, span: Option<Span>, severity: sharp_severity, message: String) -> Diagnostic {
-    let (line, column) = span
-        .map_or((0, 0), |span| (file.line_number(span.start.offset) + 1, file.column_number(span.start.offset) + 1));
+/// The offset each line starts at, counted as the Zend scanner counts: `\n`, `\r\n` and a lone `\r` each end a line.
+struct Lines(Vec<u32>);
 
-    Diagnostic { line, column, severity, message }
-}
+impl Lines {
+    fn new(source: &[u8]) -> Self {
+        let mut starts = vec![0];
+        for (index, &byte) in source.iter().enumerate() {
+            if byte == b'\n' || (byte == b'\r' && source.get(index + 1) != Some(&b'\n')) {
+                starts.push(index as u32 + 1);
+            }
+        }
 
-/// The line the Zend scanner ends on, which counts `\n`, `\r\n` and a lone `\r` each as one line ending.
-fn last_line(source: &[u8]) -> u32 {
-    let line_endings = source
-        .iter()
-        .enumerate()
-        .filter(|&(index, &byte)| byte == b'\n' || (byte == b'\r' && source.get(index + 1) != Some(&b'\n')))
-        .count();
+        Self(starts)
+    }
 
-    line_endings as u32 + 1
+    /// The 1-based line `offset` is on.
+    fn line(&self, offset: u32) -> u32 {
+        self.0.partition_point(|&start| start <= offset) as u32
+    }
+
+    /// The file's last line, the one after its last line ending.
+    fn last(&self) -> u32 {
+        self.0.len() as u32
+    }
+
+    /// A diagnostic at the start of `span`, with a 1-based line and byte column. Without a span it is at line 0,
+    /// column 0, which the ABI defines as no position.
+    fn diagnostic(&self, span: Option<Span>, severity: sharp_severity, message: String) -> Diagnostic {
+        let (line, column) = span.map_or((0, 0), |span| {
+            let line = self.line(span.start.offset);
+
+            (line, span.start.offset - self.0[line as usize - 1] + 1)
+        });
+
+        Diagnostic { line, column, severity, message }
+    }
 }
 
 /// Lowers one checked file. Every node is pushed after its children, and each node's children are contiguous.
 struct Lowering<'lowering, 'arena> {
-    file: &'lowering File,
+    lines: &'lowering Lines,
     names: &'lowering ResolvedNames<'arena>,
     nodes: Vec<sharp_node>,
     children: Vec<u32>,
@@ -185,8 +221,8 @@ struct Lowering<'lowering, 'arena> {
 }
 
 impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
-    fn new(file: &'lowering File, names: &'lowering ResolvedNames<'arena>) -> Self {
-        Self { file, names, nodes: Vec::new(), children: Vec::new(), texts: Vec::new() }
+    fn new(lines: &'lowering Lines, names: &'lowering ResolvedNames<'arena>) -> Self {
+        Self { lines, names, nodes: Vec::new(), children: Vec::new(), texts: Vec::new() }
     }
 
     /// `declare(strict_types=1);` first, then the namespaces and classes. Imports are not lowered: every class name
@@ -198,7 +234,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         }
 
         let root = self.node(SHARP_AST_STMT_LIST, 0, 1, &statements);
-        self.nodes[root as usize].end_line = last_line(&self.file.contents);
+        self.nodes[root as usize].end_line = self.lines.last();
 
         Unit::boxed(self.nodes, self.children, root, Vec::new(), self.texts)
     }
@@ -292,6 +328,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// type. The constructor's body starts with the class's initial values that are not constant.
     fn method(&mut self, method: &Method, initial_values: &[u32]) -> u32 {
         let flags = modifier_flags(&method.modifiers);
+        if flags & (ZEND_ACC_PUBLIC | ZEND_ACC_PROTECTED | ZEND_ACC_PRIVATE) == 0 {
+            unreachable!("check_slice refuses a method without an access modifier");
+        }
+
         let mut parameters = Vec::new();
         for parameter in &method.parameter_list.parameters {
             parameters.push(self.parameter(parameter));
@@ -323,7 +363,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
     fn parameter(&mut self, parameter: &FunctionLikeParameter) -> u32 {
         let Some(hint) = &parameter.hint else {
-            unreachable!("check_slice refuses a parameter without a type");
+            unreachable!("semantics refuses a parameter without a type");
         };
         let hint = self.hint(hint);
         let name = self.string(0, self.line(parameter.variable.span), parameter.variable.name);
@@ -372,13 +412,20 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_ASSIGN, 0, line, &[property, value])
     }
 
-    /// A built-in type is written unqualified, and a class by its full name.
+    /// A built-in type is written unqualified, and a class by its full name. A nullable type is its type with
+    /// `ZEND_TYPE_NULLABLE`, as php-src's grammar builds `?int`.
     fn hint(&mut self, hint: &Hint) -> u32 {
         match hint {
             Hint::Integer(name) | Hint::Float(name) | Hint::Bool(name) | Hint::String(name) | Hint::Void(name) => {
                 self.string(ZEND_NAME_NOT_FQ, self.line(name.span), name.value)
             }
             Hint::Identifier(class) => self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class)),
+            Hint::Nullable(nullable) => {
+                let index = self.hint(nullable.hint);
+                self.nodes[index as usize].attr |= ZEND_TYPE_NULLABLE;
+
+                index
+            }
             _ => unreachable!("check_slice refuses the type `{hint}`"),
         }
     }
@@ -401,14 +448,102 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 self.node(SHARP_AST_RETURN, 0, self.line(r#return), &[value])
             }
-            Statement::LocalDeclaration(local) => {
-                let variable = self.variable(local.name.span, local.name.value);
-                let value = self.expression(local.value);
+            Statement::LocalDeclaration(local) => self.local(local),
+            Statement::If(r#if) => self.r#if(r#if),
+            Statement::For(r#for) => self.r#for(r#for),
+            Statement::ForOf(for_of) => {
+                let collection = self.expression(for_of.expression);
+                let (key, value) = match &for_of.target {
+                    ForOfTarget::Value(value) => (NULL, self.variable(value.span, value.value)),
+                    ForOfTarget::KeyValue(pair) => {
+                        (self.variable(pair.key.span, pair.key.value), self.variable(pair.value.span, pair.value.value))
+                    }
+                };
+                let body = self.statement(for_of.body);
 
-                self.node(SHARP_AST_ASSIGN, 0, self.line(local), &[variable, value])
+                self.node(SHARP_AST_FOREACH, 0, self.line(for_of), &[collection, value, key, body])
             }
+            Statement::While(r#while) => {
+                let WhileBody::Statement(body) = &r#while.body else {
+                    unreachable!("check_slice refuses a colon-delimited `while`");
+                };
+                let condition = self.expression(r#while.condition);
+                let body = self.statement(body);
+
+                self.node(SHARP_AST_WHILE, 0, self.line(r#while), &[condition, body])
+            }
+            Statement::DoWhile(do_while) => {
+                let body = self.statement(do_while.statement);
+                let condition = self.expression(do_while.condition);
+
+                self.node(SHARP_AST_DO_WHILE, 0, self.line(do_while), &[body, condition])
+            }
+            Statement::Break(r#break) => self.node(SHARP_AST_BREAK, 0, self.line(r#break), &[NULL]),
+            Statement::Continue(r#continue) => self.node(SHARP_AST_CONTINUE, 0, self.line(r#continue), &[NULL]),
             _ => unreachable!("check_slice refuses the statement `{statement}`"),
         }
+    }
+
+    /// A `let` or `const` local is the assignment of its value to its variable.
+    fn local(&mut self, local: &LocalDeclaration) -> u32 {
+        let variable = self.variable(local.name.span, local.name.value);
+        let value = self.expression(local.value);
+
+        self.node(SHARP_AST_ASSIGN, 0, self.line(local), &[variable, value])
+    }
+
+    /// Each part of the header is an `EXPR_LIST`, or null when it is empty. A `let` or `const` counter is the
+    /// first part.
+    fn r#for(&mut self, r#for: &For) -> u32 {
+        let ForBody::Statement(body) = &r#for.body else {
+            unreachable!("check_slice refuses a colon-delimited `for`");
+        };
+
+        let mut initializations = Vec::new();
+        if let Some(declaration) = &r#for.declaration {
+            initializations.push(self.local(declaration));
+        }
+        for initialization in &r#for.initializations {
+            initializations.push(self.expression(initialization));
+        }
+
+        let initializations = self.expression_list(&initializations);
+        let conditions: Vec<u32> = r#for.conditions.iter().map(|condition| self.expression(condition)).collect();
+        let conditions = self.expression_list(&conditions);
+        let increments: Vec<u32> = r#for.increments.iter().map(|increment| self.expression(increment)).collect();
+        let increments = self.expression_list(&increments);
+        let body = self.statement(body);
+
+        self.node(SHARP_AST_FOR, 0, self.line(r#for), &[initializations, conditions, increments, body])
+    }
+
+    /// An `EXPR_LIST` at the line of its first expression, or null when there are no expressions.
+    fn expression_list(&mut self, expressions: &[u32]) -> u32 {
+        let Some(&first) = expressions.first() else {
+            return NULL;
+        };
+
+        let line = self.nodes[first as usize].line;
+
+        self.node(SHARP_AST_EXPR_LIST, 0, line, expressions)
+    }
+
+    /// An `IF` list with one `IF_ELEM` per branch, and a null condition for `else`. php-src's grammar reads
+    /// `else if` as an `else` whose statement is the next `if`.
+    fn r#if(&mut self, r#if: &If) -> u32 {
+        let IfBody::Statement(body) = &r#if.body else {
+            unreachable!("check_slice refuses a colon-delimited `if`");
+        };
+
+        let condition = self.expression(r#if.condition);
+        let statement = self.statement(body.statement);
+        let mut branches = vec![self.node(SHARP_AST_IF_ELEM, 0, self.line(r#if.condition), &[condition, statement])];
+        if let Some(else_clause) = &body.else_clause {
+            let statement = self.statement(else_clause.statement);
+            branches.push(self.node(SHARP_AST_IF_ELEM, 0, self.line(else_clause.statement), &[NULL, statement]));
+        }
+
+        self.node(SHARP_AST_IF, 0, self.line(r#if), &branches)
     }
 
     fn expression(&mut self, expression: &Expression) -> u32 {
@@ -467,6 +602,19 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 let property = self.member(&access.property);
 
                 self.node(SHARP_AST_PROP, 0, line, &[object, property])
+            }
+            Expression::Call(Call::NullSafeMethod(call)) => {
+                let object = self.expression(call.object);
+                let method = self.member(&call.method);
+                let arguments = self.arguments(&call.argument_list);
+
+                self.node(SHARP_AST_NULLSAFE_METHOD_CALL, 0, line, &[object, method, arguments])
+            }
+            Expression::Access(Access::NullSafeProperty(access)) => {
+                let object = self.expression(access.object);
+                let property = self.member(&access.property);
+
+                self.node(SHARP_AST_NULLSAFE_PROP, 0, line, &[object, property])
             }
             _ => unreachable!("check_slice refuses the expression `{expression}`"),
         }
@@ -596,7 +744,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         children: &[u32],
     ) -> u32 {
         let index = self.node(kind, flags, self.line(start), children);
-        let end_line = self.file.line_number(end.span().end.offset) + 1;
+        let end_line = self.lines.line(end.span().end.offset);
         let name = store_text(&mut self.texts, name.to_vec());
 
         let node = &mut self.nodes[index as usize];
@@ -645,7 +793,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     fn line(&self, node: impl HasSpan) -> u32 {
-        self.file.line_number(node.span().start.offset) + 1
+        self.lines.line(node.span().start.offset)
     }
 }
 
@@ -734,13 +882,13 @@ fn binary_kind(operator: BinaryOperator) -> (sharp_kind, u32) {
         BinaryOperator::GreaterThanOrEqual(_) => (SHARP_AST_GREATER_EQUAL, 0),
         BinaryOperator::And(_) => (SHARP_AST_AND, 0),
         BinaryOperator::Or(_) => (SHARP_AST_OR, 0),
+        BinaryOperator::NullCoalesce(_) => (SHARP_AST_COALESCE, 0),
         BinaryOperator::Exponentiation(_)
         | BinaryOperator::BitwiseAnd(_)
         | BinaryOperator::BitwiseOr(_)
         | BinaryOperator::BitwiseXor(_)
         | BinaryOperator::LeftShift(_)
         | BinaryOperator::RightShift(_)
-        | BinaryOperator::NullCoalesce(_)
         | BinaryOperator::AngledNotEqual(_)
         | BinaryOperator::Spaceship(_)
         | BinaryOperator::StringConcat(_)
@@ -788,6 +936,7 @@ fn assignment_kind(operator: &AssignmentOperator) -> (sharp_kind, u32) {
         AssignmentOperator::Subtraction(_) => (SHARP_AST_ASSIGN_OP, ZEND_SUB),
         AssignmentOperator::Multiplication(_) => (SHARP_AST_ASSIGN_OP, ZEND_MUL),
         AssignmentOperator::Division(_) => (SHARP_AST_ASSIGN_OP, ZEND_DIV),
+        AssignmentOperator::Coalesce(_) => (SHARP_AST_ASSIGN_COALESCE, 0),
         AssignmentOperator::Modulo(_)
         | AssignmentOperator::Exponentiation(_)
         | AssignmentOperator::Concat(_)
@@ -795,8 +944,7 @@ fn assignment_kind(operator: &AssignmentOperator) -> (sharp_kind, u32) {
         | AssignmentOperator::BitwiseOr(_)
         | AssignmentOperator::BitwiseXor(_)
         | AssignmentOperator::LeftShift(_)
-        | AssignmentOperator::RightShift(_)
-        | AssignmentOperator::Coalesce(_) => unreachable!("check_slice refuses the operator `{operator}`"),
+        | AssignmentOperator::RightShift(_) => unreachable!("check_slice refuses the operator `{operator}`"),
     }
 }
 
@@ -805,37 +953,34 @@ mod tests {
     use super::*;
     use crate::catch_panic;
 
-    /// Lowers a method with `parameters` and `body`, skipping the semantic checks that would refuse them.
-    fn lower_unchecked(parameters: &str, body: &str) -> Box<Unit> {
-        let source = format!("class Report\n{{\n    public void run({parameters})\n    {{\n{body}    }}\n}}\n");
+    /// Lowers a class holding `method`, skipping the semantic checks that would refuse it, and asserts the result is
+    /// one internal error and no nodes.
+    fn assert_internal_error(method: &str) {
+        let source = format!("class Report\n{{\n    {method}\n}}\n");
 
-        catch_panic(|| {
+        let unit = catch_panic(|| {
             let file = File::ephemeral(Cow::Borrowed(b"src/Report.sharp"), Cow::Owned(source.into_bytes()));
             let arena = LocalArena::new();
             let program = parse_file_with_dialect(&arena, &file, Dialect::Sharp, ParserSettings::default());
             let names = NameResolver::new(&arena).resolve(program);
 
-            Lowering::new(&file, &names).program(program)
-        })
+            Lowering::new(&Lines::new(&file.contents), &names).program(program)
+        });
+
+        assert_eq!(unit.abi.node_count, 0, "{method}");
+        assert_eq!(unit.diagnostics.len(), 1, "{method}");
+        assert!(unit.texts[0].starts_with(b"internal error in the PHP# front end: "), "{method}");
     }
 
     #[test]
     fn a_write_to_anything_but_a_local_or_a_member_returns_an_internal_error_and_no_nodes() {
-        for body in ["        PHP_INT_MAX = 1;\n", "        PHP_INT_MAX += 1;\n", "        PHP_INT_MAX++;\n"] {
-            let unit = lower_unchecked("", body);
-
-            assert_eq!(unit.abi.node_count, 0, "{body}");
-            assert_eq!(unit.diagnostics.len(), 1, "{body}");
-            assert!(unit.texts[0].starts_with(b"internal error in the PHP# front end: "), "{body}");
-        }
+        assert_internal_error("public void run() { PHP_INT_MAX = 1; }");
+        assert_internal_error("public void run() { PHP_INT_MAX += 1; }");
+        assert_internal_error("public void run() { PHP_INT_MAX++; }");
     }
 
     #[test]
     fn a_parameter_without_a_type_returns_an_internal_error_and_no_nodes() {
-        let unit = lower_unchecked("$extra", "");
-
-        assert_eq!(unit.abi.node_count, 0);
-        assert_eq!(unit.diagnostics.len(), 1);
-        assert!(unit.texts[0].starts_with(b"internal error in the PHP# front end: "));
+        assert_internal_error("public void run($extra) {}");
     }
 }

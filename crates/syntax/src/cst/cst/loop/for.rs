@@ -5,6 +5,7 @@ use mago_span::Span;
 
 use crate::cst::cst::expression::Expression;
 use crate::cst::cst::keyword::Keyword;
+use crate::cst::cst::local_declaration::LocalDeclaration;
 use crate::cst::cst::statement::Statement;
 use crate::cst::cst::terminator::Terminator;
 use crate::cst::sequence::Sequence;
@@ -26,6 +27,9 @@ use crate::cst::sequence::TokenSeparatedSequence;
 pub struct For<'arena> {
     pub r#for: Keyword<'arena>,
     pub left_parenthesis: Span,
+    /// The PHP# local the loop declares, as in `for (let i = 0; i < n; i++)`. Its terminator is the
+    /// `initializations_semicolon`, and `initializations` is then empty. Always `None` in PHP.
+    pub declaration: Option<LocalDeclaration<'arena>>,
     pub initializations: TokenSeparatedSequence<'arena, &'arena Expression<'arena>>,
     pub initializations_semicolon: Span,
     pub conditions: TokenSeparatedSequence<'arena, &'arena Expression<'arena>>,

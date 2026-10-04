@@ -66,6 +66,9 @@ use crate::cst::cst::Extends;
 use crate::cst::cst::For;
 use crate::cst::cst::ForBody;
 use crate::cst::cst::ForColonDelimitedBody;
+use crate::cst::cst::ForOf;
+use crate::cst::cst::ForOfKeyValueTarget;
+use crate::cst::cst::ForOfTarget;
 use crate::cst::cst::Foreach;
 use crate::cst::cst::ForeachBody;
 use crate::cst::cst::ForeachColonDelimitedBody;
@@ -398,6 +401,7 @@ generate_ast_walker! {
             Statement::Try(r#try) => walker.walk_try(r#try, context),
             Statement::Foreach(foreach) => walker.walk_foreach(foreach, context),
             Statement::For(r#for) => walker.walk_for(r#for, context),
+            Statement::ForOf(for_of) => walker.walk_for_of(for_of, context),
             Statement::While(r#while) => walker.walk_while(r#while, context),
             Statement::DoWhile(do_while) => walker.walk_do_while(do_while, context),
             Statement::Continue(r#continue) => walker.walk_continue(r#continue, context),
@@ -1293,6 +1297,10 @@ generate_ast_walker! {
     'arena For as r#for => {
         walker.walk_keyword(&r#for.r#for, context);
 
+        if let Some(declaration) = &r#for.declaration {
+            walker.walk_local_declaration(declaration, context);
+        }
+
         for initialization in &r#for.initializations {
             walker.walk_expression(initialization, context);
         }
@@ -1326,6 +1334,27 @@ generate_ast_walker! {
 
         walker.walk_keyword(&for_colon_delimited_body.end_for, context);
         walker.walk_terminator(&for_colon_delimited_body.terminator, context);
+    }
+
+    'arena ForOf as for_of => {
+        walker.walk_keyword(&for_of.r#for, context);
+        walker.walk_keyword(&for_of.keyword, context);
+        walker.walk_expression(for_of.expression, context);
+        walker.walk_keyword(&for_of.of, context);
+        walker.walk_for_of_target(&for_of.target, context);
+        walker.walk_statement(for_of.body, context);
+    }
+
+    'arena ForOfTarget as for_of_target => {
+        match for_of_target {
+            ForOfTarget::Value(value) => walker.walk_local_identifier(value, context),
+            ForOfTarget::KeyValue(key_value) => walker.walk_for_of_key_value_target(key_value, context),
+        }
+    }
+
+    'arena ForOfKeyValueTarget as for_of_key_value_target => {
+        walker.walk_local_identifier(&for_of_key_value_target.key, context);
+        walker.walk_local_identifier(&for_of_key_value_target.value, context);
     }
 
     'arena While as r#while => {

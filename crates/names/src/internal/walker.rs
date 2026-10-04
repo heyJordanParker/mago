@@ -18,6 +18,8 @@ use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Enum;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::Extends;
+use mago_syntax::cst::For;
+use mago_syntax::cst::ForOf;
 use mago_syntax::cst::Function;
 use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::FunctionLikeParameter;
@@ -32,6 +34,8 @@ use mago_syntax::cst::Method;
 use mago_syntax::cst::MethodCall;
 use mago_syntax::cst::MethodPartialApplication;
 use mago_syntax::cst::Namespace;
+use mago_syntax::cst::NullSafeMethodCall;
+use mago_syntax::cst::NullSafePropertyAccess;
 use mago_syntax::cst::PropertyAccess;
 use mago_syntax::cst::Sequence;
 use mago_syntax::cst::StaticMethodCall;
@@ -96,7 +100,7 @@ impl<'arena> NameWalker<'arena> {
         self.resolved_names.bind(declaration, Binding::Local(local));
     }
 
-    /// Marks a bare name written before `.`, which binds as a class unless it names a local or `this`.
+    /// Marks a bare name written before `.` or `?.`, which binds as a class unless it names a local or `this`.
     fn mark_member_object(&mut self, object: &Expression<'arena>) {
         if self.sharp
             && let Expression::ConstantAccess(object) = object
@@ -305,6 +309,34 @@ where
         }
     }
 
+    /// A PHP# `for` is a block of its own, so the local it declares lives until the loop ends.
+    fn walk_in_for(&mut self, _for: &'ast For<'arena>, _context: &mut NameResolutionContext<'arena, A>) {
+        if self.sharp {
+            self.locals.enter_block();
+        }
+    }
+
+    fn walk_out_for(&mut self, _for: &'ast For<'arena>, _context: &mut NameResolutionContext<'arena, A>) {
+        if self.sharp {
+            self.locals.exit_block();
+        }
+    }
+
+    /// A `for … of` loop is a block of its own. The collection binds before the loop variables exist, and the loop
+    /// variables live until the loop ends.
+    fn walk_for_of(&mut self, for_of: &'ast ForOf<'arena>, context: &mut NameResolutionContext<'arena, A>) {
+        self.locals.enter_block();
+        self.walk_expression(for_of.expression, context);
+
+        let kind = if for_of.is_const() { LocalKind::Const } else { LocalKind::Let };
+        for name in for_of.target.names() {
+            self.declare(name.value, name.span, kind);
+        }
+
+        self.walk_statement(for_of.body, context);
+        self.locals.exit_block();
+    }
+
     fn walk_out_function_like_parameter(
         &mut self,
         parameter: &'ast FunctionLikeParameter<'arena>,
@@ -347,6 +379,22 @@ where
         _context: &mut NameResolutionContext<'arena, A>,
     ) {
         self.mark_member_object(property_access.object);
+    }
+
+    fn walk_in_null_safe_method_call(
+        &mut self,
+        null_safe_method_call: &'ast NullSafeMethodCall<'arena>,
+        _context: &mut NameResolutionContext<'arena, A>,
+    ) {
+        self.mark_member_object(null_safe_method_call.object);
+    }
+
+    fn walk_in_null_safe_property_access(
+        &mut self,
+        null_safe_property_access: &'ast NullSafePropertyAccess<'arena>,
+        _context: &mut NameResolutionContext<'arena, A>,
+    ) {
+        self.mark_member_object(null_safe_property_access.object);
     }
 
     fn walk_in_interface(
