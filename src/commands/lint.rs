@@ -48,10 +48,12 @@ use crate::commands::args::substitution::SubstitutionArgs;
 use crate::commands::outcome::CommandOutcome;
 use crate::commands::stdin_input;
 use crate::config::Configuration;
+use crate::consts::SHARP_EXTENSION;
 use crate::error::Error;
 use crate::extensions::initialize_external_linter;
 use crate::utils::create_orchestrator;
 use crate::utils::git;
+use crate::utils::skip_sharp_files;
 
 /// Command for linting PHP source code.
 ///
@@ -237,6 +239,7 @@ impl LintCommand {
         let mut orchestrator = create_orchestrator(&configuration, color_choice, self.pedantic, true, false);
         orchestrator.add_exclude_patterns(configuration.linter.excludes.iter());
         orchestrator.add_exclude_patterns(substitution_excludes.iter());
+        skip_sharp_files(&mut orchestrator, "lint");
         for substitution in &substitutions {
             orchestrator.config.paths.push(substitution.temporary.to_string_lossy().into_owned());
         }
@@ -249,7 +252,8 @@ impl LintCommand {
         )?;
 
         if !self.stdin_input && self.staged {
-            let staged_paths = git::get_staged_file_paths(&configuration.source.workspace)?;
+            let mut staged_paths = git::get_staged_file_paths(&configuration.source.workspace)?;
+            staged_paths.retain(|path| path.extension().is_none_or(|extension| extension != SHARP_EXTENSION));
             if staged_paths.is_empty() {
                 tracing::info!("No staged files to lint.");
                 return Ok(ExitCode::SUCCESS.into());

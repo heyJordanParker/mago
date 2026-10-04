@@ -58,6 +58,7 @@ use crate::config::Configuration;
 use crate::consts::PRELUDE_BYTES;
 use crate::error::Error;
 use crate::utils::create_orchestrator;
+use crate::utils::skip_sharp_files;
 
 /// Command for enforcing architectural rules and layer dependencies.
 ///
@@ -203,6 +204,7 @@ impl GuardCommand {
         let mut orchestrator = create_orchestrator(&configuration, color_choice, false, true, false);
         orchestrator.add_exclude_patterns(configuration.guard.excludes.iter());
         orchestrator.add_exclude_patterns(substitution_excludes.iter());
+        skip_sharp_files(&mut orchestrator, "guard");
         for substitution in &substitutions {
             orchestrator.config.paths.push(substitution.temporary.to_string_lossy().into_owned());
         }
