@@ -256,7 +256,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     /// A method is a `function` with its return type after its parameters. Its first line is where PHP writes
-    /// `function`: the return type, or the name when there is none.
+    /// `function`: the return type, which every PHP# method starts with.
     fn method(&mut self, method: &Method) -> u32 {
         let mut flags = 0;
         for modifier in &method.modifiers {
@@ -283,13 +283,15 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             unreachable!("semantics refuses a method without a body");
         };
         let body = self.block(body);
-        let return_type = method.return_type_hint.as_ref().map_or(NULL, |return_type| self.hint(&return_type.hint));
-        let start = method.return_type_hint.as_ref().map_or(method.name.span, HasSpan::span);
+        let Some(return_type_hint) = &method.return_type_hint else {
+            unreachable!("the PHP# parser gives every method its return type");
+        };
+        let return_type = self.hint(&return_type_hint.hint);
 
         self.declaration(
             SHARP_AST_METHOD,
             flags,
-            start,
+            return_type_hint,
             method.body.span(),
             method.name.value,
             &[parameters, NULL, body, return_type, NULL],
