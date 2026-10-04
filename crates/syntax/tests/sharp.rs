@@ -9,6 +9,8 @@ use mago_syntax::cst::*;
 use mago_syntax::dialect::Dialect;
 use mago_syntax::error::ParseError;
 use mago_syntax::parser::parse_file;
+use mago_syntax::parser::parse_file_with_dialect;
+use mago_syntax::settings::ParserSettings;
 
 fn parse<'arena>(arena: &'arena LocalArena, name: &'static str, code: &'static str) -> &'arena Program<'arena> {
     let file = File::ephemeral(Cow::Borrowed(name.as_bytes()), Cow::Borrowed(code.as_bytes()));
@@ -24,6 +26,21 @@ fn sharp_file_starts_in_code() {
     assert!(program.errors.is_empty(), "{:#?}", program.errors);
     assert_eq!(program.dialect, Dialect::Sharp);
     assert!(matches!(program.statements.first(), Some(Statement::Namespace(_))), "{:#?}", program.statements);
+}
+
+#[test]
+fn a_caller_parses_a_file_in_the_dialect_it_names_whatever_the_file_name() {
+    let arena = LocalArena::new();
+    let sharp = File::ephemeral(Cow::Borrowed(b"Report.php"), Cow::Borrowed(b"namespace App.Tenant;\n"));
+    let php = File::ephemeral(Cow::Borrowed(b"Report.sharp"), Cow::Borrowed(b"<?php namespace App\\Tenant;\n"));
+
+    let sharp_program = parse_file_with_dialect(&arena, &sharp, Dialect::Sharp, ParserSettings::default());
+    let php_program = parse_file_with_dialect(&arena, &php, Dialect::Php, ParserSettings::default());
+
+    assert!(sharp_program.errors.is_empty(), "{:#?}", sharp_program.errors);
+    assert_eq!(sharp_program.dialect, Dialect::Sharp);
+    assert!(php_program.errors.is_empty(), "{:#?}", php_program.errors);
+    assert_eq!(php_program.dialect, Dialect::Php);
 }
 
 fn source<'a>(code: &'a str, node: &impl HasSpan) -> &'a str {
