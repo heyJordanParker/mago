@@ -109,7 +109,7 @@ where
 fn is_plain_property_with_default(prop: &Property<'_>) -> bool {
     match prop {
         Property::Plain(p) => p.items.iter().any(|item| matches!(item, PropertyItem::Concrete(_))),
-        Property::Hooked(_) => false,
+        Property::Hooked(_) | Property::Computed(_) => false,
     }
 }
 
@@ -118,6 +118,7 @@ fn property_has_attributes(prop: &Property<'_>) -> bool {
     match prop {
         Property::Plain(p) => !p.attribute_lists.is_empty(),
         Property::Hooked(p) => !p.attribute_lists.is_empty(),
+        Property::Computed(p) => !p.attribute_lists.is_empty(),
     }
 }
 
@@ -138,11 +139,7 @@ fn have_compatible_modifiers(prev: &ClassLikeMember<'_>, curr: &ClassLikeMember<
 
 /// Get a signature representing the modifiers of a property.
 fn get_property_modifier_signature(prop: &Property<'_>) -> u32 {
-    let modifiers = match prop {
-        Property::Plain(p) => &p.modifiers,
-        Property::Hooked(p) => &p.modifiers,
-    };
-    calculate_modifier_signature(modifiers)
+    calculate_modifier_signature(prop.modifiers())
 }
 
 /// Get a signature representing the modifiers of a constant.
@@ -307,7 +304,7 @@ fn calculate_plain_property_widths(prop: &Property<'_>) -> (usize, usize) {
             let name_width = p.items.iter().map(|item| item.variable().name.len()).max().unwrap_or(0);
             (type_width, name_width)
         }
-        Property::Hooked(_) => (0, 0),
+        Property::Hooked(_) | Property::Computed(_) => (0, 0),
     }
 }
 

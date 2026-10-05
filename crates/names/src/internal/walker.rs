@@ -155,6 +155,15 @@ where
     }
 }
 
+/// The class of PHP#'s engine-level standard library that a bare `name` before `.` binds to unless the file imports it.
+fn sharp_library_class(name: &[u8]) -> Option<&'static [u8]> {
+    match name {
+        b"Int" => Some(b"Sharp\\Int"),
+        b"Float" => Some(b"Sharp\\Float"),
+        _ => None,
+    }
+}
+
 fn class_member_names<'arena>(members: &Sequence<'arena, ClassLikeMember<'arena>>) -> ClassMembers<'arena> {
     let mut names = ClassMembers::default();
     for member in members {
@@ -674,7 +683,13 @@ where
                 (Binding::Constant, NameKind::Constant)
             };
 
-            let (fqn, imported) = context.resolve(kind, name);
+            let (mut fqn, imported) = context.resolve(kind, name);
+            if is_member_object
+                && !imported
+                && let Some(class) = sharp_library_class(name)
+            {
+                fqn = class;
+            }
             self.resolved_names.insert_at(span, fqn, imported);
             self.resolved_names.bind(span, binding);
 

@@ -21,6 +21,7 @@ public class Report
     public string name { get; set; }
     public int id { get; }
     private Calc calc = new Calc(Calc.make(), rate: 2);
+    public string slug => strtolower(this.name);
 
     [Entity(true)]
     public Report(int start, private Calc helper, [Field(-1.5)] public int total { get; private set; })
@@ -149,6 +150,27 @@ public class Report
             value += 1;
         }
         return value;
+    }
+
+    private string choose(int value, bool on)
+    {
+        const sign = value > 0 ? 1 : (value < 0 ? -1 : 0);
+        return (on ? sign > 0 : false) ? "positive" : "other";
+    }
+
+    private string convert(float price, int count)
+    {
+        const cents = (int)(price * 100);
+        return (string)cents + (string)(float)count;
+    }
+
+    private int doubled() => this.count * 2;
+
+    private void reset() => this.count = 0;
+
+    private float parse(string quantity, string? price)
+    {
+        return Int.parse(quantity) * (Float.tryParse(price) ?? Float.parse("0.5")) + (Int.tryParse(price) ?? 0);
     }
 
     public int attempt(int value)

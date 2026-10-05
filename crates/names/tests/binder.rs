@@ -281,6 +281,28 @@ fn a_static_call_is_a_method_call_whose_object_binds_as_a_class() {
 }
 
 #[test]
+fn a_bare_int_or_float_before_a_dot_is_the_class_in_the_sharp_namespace() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nclass Report\n{\n    public float run(string text)\n    {\n        return Int.parse(text) + Float.tryParse(text) ?? 0.0;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "Int", 0), Some(Binding::Class));
+    assert_eq!(resolved(&names, CODE, "Int", 0), b"Sharp\\Int");
+    assert_eq!(binding(&names, CODE, "Float.", 0), Some(Binding::Class));
+    assert_eq!(resolved(&names, CODE, "Float.", 0), b"Sharp\\Float");
+}
+
+#[test]
+fn an_imported_int_is_the_imported_class() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nimport App.Shared.Int;\n\nclass Report\n{\n    public int run(string text)\n    {\n        return Int.parse(text);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "Int.parse", 0), Some(Binding::Class));
+    assert_eq!(resolved(&names, CODE, "Int.parse", 0), b"App\\Shared\\Int");
+}
+
+#[test]
 fn locals_of_one_method_are_not_visible_in_another() {
     const CODE: &str = "class Report\n{\n    public int first()\n    {\n        let value = 1;\n        return value;\n    }\n\n    public int second()\n    {\n        return value;\n    }\n}\n";
     let arena = LocalArena::new();

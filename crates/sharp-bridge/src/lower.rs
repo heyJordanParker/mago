@@ -25,6 +25,7 @@ use mago_syntax::cst::ClassLikeConstant;
 use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::CompositeString;
+use mago_syntax::cst::Conditional;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::DirectVariable;
 use mago_syntax::cst::Expression;
@@ -55,6 +56,7 @@ use mago_syntax::cst::PartialArgumentList;
 use mago_syntax::cst::PositionalArgument;
 use mago_syntax::cst::Program;
 use mago_syntax::cst::Property;
+use mago_syntax::cst::PropertyHookConcreteExpressionBody;
 use mago_syntax::cst::PropertyHookList;
 use mago_syntax::cst::Sequence;
 use mago_syntax::cst::Statement;
@@ -84,6 +86,7 @@ use crate::sharp_kind::SHARP_AST_ATTRIBUTE_LIST;
 use crate::sharp_kind::SHARP_AST_BINARY_OP;
 use crate::sharp_kind::SHARP_AST_BREAK;
 use crate::sharp_kind::SHARP_AST_CALL;
+use crate::sharp_kind::SHARP_AST_CAST;
 use crate::sharp_kind::SHARP_AST_CATCH;
 use crate::sharp_kind::SHARP_AST_CATCH_LIST;
 use crate::sharp_kind::SHARP_AST_CLASS;
@@ -92,6 +95,7 @@ use crate::sharp_kind::SHARP_AST_CLASS_CONST_DECL;
 use crate::sharp_kind::SHARP_AST_CLASS_CONST_GROUP;
 use crate::sharp_kind::SHARP_AST_CLASS_NAME;
 use crate::sharp_kind::SHARP_AST_COALESCE;
+use crate::sharp_kind::SHARP_AST_CONDITIONAL;
 use crate::sharp_kind::SHARP_AST_CONST;
 use crate::sharp_kind::SHARP_AST_CONST_DECL;
 use crate::sharp_kind::SHARP_AST_CONST_ELEM;
@@ -125,6 +129,8 @@ use crate::sharp_kind::SHARP_AST_PROP;
 use crate::sharp_kind::SHARP_AST_PROP_DECL;
 use crate::sharp_kind::SHARP_AST_PROP_ELEM;
 use crate::sharp_kind::SHARP_AST_PROP_GROUP;
+use crate::sharp_kind::SHARP_AST_PROPERTY_HOOK;
+use crate::sharp_kind::SHARP_AST_PROPERTY_HOOK_SHORT_BODY;
 use crate::sharp_kind::SHARP_AST_RETURN;
 use crate::sharp_kind::SHARP_AST_STATIC_CALL;
 use crate::sharp_kind::SHARP_AST_STATIC_PROP;
@@ -158,6 +164,10 @@ const ZEND_ACC_READONLY: u32 = 1 << 7;
 const ZEND_ACC_PROTECTED_SET: u32 = 1 << 11;
 const ZEND_ACC_PRIVATE_SET: u32 = 1 << 12;
 const ZEND_TYPE_NULLABLE: u32 = 1 << 8;
+const ZEND_PARENTHESIZED_CONDITIONAL: u32 = 1;
+const IS_LONG: u32 = 4;
+const IS_DOUBLE: u32 = 5;
+const IS_STRING: u32 = 6;
 const ZEND_ADD: u32 = 1;
 const ZEND_SUB: u32 = 2;
 const ZEND_MUL: u32 = 3;
@@ -438,14 +448,25 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         }
 
         let parameters = self.node(SHARP_AST_PARAM_LIST, 0, self.line(&method.parameter_list), &parameters);
+        let mut statements = initial_values.to_vec();
         let body = match &method.body {
-            MethodBody::Concrete(body) => {
-                let mut statements = initial_values.to_vec();
-                for statement in &body.statements {
+            MethodBody::Concrete(block) => {
+                for statement in &block.statements {
                     statements.push(self.statement(statement));
                 }
 
-                self.node(SHARP_AST_STMT_LIST, 0, self.line(body), &statements)
+                self.node(SHARP_AST_STMT_LIST, 0, self.line(block), &statements)
+            }
+            MethodBody::Expression(body) => {
+                let line = self.line(body);
+                let expression = self.expression(body.expression);
+                statements.push(if method.returns_value() {
+                    self.node(SHARP_AST_RETURN, 0, line, &[expression])
+                } else {
+                    expression
+                });
+
+                self.node(SHARP_AST_STMT_LIST, 0, line, &statements)
             }
             MethodBody::Abstract(_) => NULL,
         };
@@ -484,15 +505,19 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_PARAM, flags, self.line(parameter), &[hint, name, default, attributes, NULL, NULL])
     }
 
-    /// A field or an auto-property is a property group of one property, as php-src's grammar builds
-    /// `private int $count = 0;`, `public private(set) int $views = 0;` and `public readonly int $id;`. A constant
-    /// initial value is its default, unless the property is `readonly`.
+    /// A field, an auto-property or a computed property is a property group of one property, as php-src's grammar
+    /// builds `private int $count = 0;`, `public private(set) int $views = 0;`, `public readonly int $id;` and
+    /// `public string $slug { get => expr; }`. A constant initial value is its default, unless the property is
+    /// `readonly`.
     fn property(&mut self, property: &Property) -> u32 {
-        let (accessor_flags, attribute_lists) = match property {
-            Property::Plain(field) => (0, &field.attribute_lists),
-            Property::Hooked(auto_property) => {
-                (accessor_flags(&auto_property.modifiers, &auto_property.hook_list), &auto_property.attribute_lists)
-            }
+        let (accessor_flags, attribute_lists, hooks) = match property {
+            Property::Plain(field) => (0, &field.attribute_lists, NULL),
+            Property::Hooked(auto_property) => (
+                accessor_flags(&auto_property.modifiers, &auto_property.hook_list),
+                &auto_property.attribute_lists,
+                NULL,
+            ),
+            Property::Computed(computed) => (0, &computed.attribute_lists, self.get_hook(&computed.body)),
         };
         let Some(hint) = property.hint() else {
             unreachable!("the PHP# parser gives every field and property its type");
@@ -507,12 +532,30 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             }
             _ => NULL,
         };
-        let element = self.node(SHARP_AST_PROP_ELEM, 0, line, &[name, default, NULL, NULL]);
+        let element = self.node(SHARP_AST_PROP_ELEM, 0, line, &[name, default, NULL, hooks]);
         let declaration = self.node(SHARP_AST_PROP_DECL, 0, line, &[element]);
         let flags = modifier_flags(property.modifiers()) | accessor_flags;
         let attributes = self.attributes(attribute_lists, None);
 
         self.node(SHARP_AST_PROP_GROUP, flags, self.line(property), &[hint, declaration, attributes])
+    }
+
+    /// A computed property's `=> expr;` is a hook list of one `get` hook whose body is the short body php-src's
+    /// grammar builds for `get => expr;`, on the arrow's lines.
+    fn get_hook(&mut self, body: &PropertyHookConcreteExpressionBody) -> u32 {
+        let line = self.line(body.arrow);
+        let expression = self.expression(body.expression);
+        let short_body = self.node(SHARP_AST_PROPERTY_HOOK_SHORT_BODY, 0, line, &[expression]);
+        let hook = self.declaration(
+            SHARP_AST_PROPERTY_HOOK,
+            0,
+            body.arrow,
+            body,
+            b"get",
+            &[NULL, NULL, short_body, NULL, NULL],
+        );
+
+        self.node(SHARP_AST_STMT_LIST, 0, line, &[hook])
     }
 
     /// A declaration's attributes are one `ATTRIBUTE_LIST` with an `ATTRIBUTE_GROUP` per `[...]`, as php-src's grammar
@@ -762,7 +805,21 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
         ensure_sufficient_stack(|| match expression {
             Expression::Literal(literal) => self.literal(literal),
-            Expression::Parenthesized(parenthesized) => self.expression(parenthesized.expression),
+            Expression::Parenthesized(parenthesized) => {
+                let index = self.expression(parenthesized.expression);
+                if let Expression::Conditional(_) = parenthesized.expression {
+                    self.nodes[index as usize].attr = ZEND_PARENTHESIZED_CONDITIONAL;
+                }
+
+                index
+            }
+            Expression::Conditional(Conditional { condition, then: Some(then), r#else, .. }) => {
+                let condition = self.expression(condition);
+                let then = self.expression(then);
+                let r#else = self.expression(r#else);
+
+                self.node(SHARP_AST_CONDITIONAL, 0, line, &[condition, then, r#else])
+            }
             Expression::ConstantAccess(name) => self.name(name),
             Expression::Binary(binary) => {
                 let (kind, attr) = binary_kind(binary.operator);
@@ -1225,6 +1282,9 @@ fn prefix_kind(operator: &UnaryPrefixOperator) -> (sharp_kind, u32) {
         UnaryPrefixOperator::Not(_) => (SHARP_AST_UNARY_OP, ZEND_BOOL_NOT),
         UnaryPrefixOperator::PreIncrement(_) => (SHARP_AST_PRE_INC, 0),
         UnaryPrefixOperator::PreDecrement(_) => (SHARP_AST_PRE_DEC, 0),
+        UnaryPrefixOperator::IntCast(..) => (SHARP_AST_CAST, IS_LONG),
+        UnaryPrefixOperator::FloatCast(..) => (SHARP_AST_CAST, IS_DOUBLE),
+        UnaryPrefixOperator::StringCast(..) => (SHARP_AST_CAST, IS_STRING),
         UnaryPrefixOperator::ErrorControl(_)
         | UnaryPrefixOperator::Reference(_)
         | UnaryPrefixOperator::ArrayCast(..)
@@ -1232,12 +1292,9 @@ fn prefix_kind(operator: &UnaryPrefixOperator) -> (sharp_kind, u32) {
         | UnaryPrefixOperator::BooleanCast(..)
         | UnaryPrefixOperator::DoubleCast(..)
         | UnaryPrefixOperator::RealCast(..)
-        | UnaryPrefixOperator::FloatCast(..)
-        | UnaryPrefixOperator::IntCast(..)
         | UnaryPrefixOperator::IntegerCast(..)
         | UnaryPrefixOperator::ObjectCast(..)
         | UnaryPrefixOperator::UnsetCast(..)
-        | UnaryPrefixOperator::StringCast(..)
         | UnaryPrefixOperator::BinaryCast(..)
         | UnaryPrefixOperator::VoidCast(..)
         | UnaryPrefixOperator::BitwiseNot(_) => unreachable!("check_slice refuses the operator `{operator}`"),

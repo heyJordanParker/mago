@@ -76,14 +76,17 @@ pub mod unused_parameter;
 #[derive(Debug, Clone, Copy)]
 pub enum FunctionLikeBody<'ast, 'arena> {
     Statements(&'ast [Statement<'arena>], Span),
+    /// An arrow function's or a PHP# method's expression body, which returns the expression.
     Expression(&'ast Expression<'arena>),
+    /// A PHP# `void` method's or constructor's expression body, which runs the expression as a statement.
+    ExpressionStatement(&'ast Expression<'arena>),
 }
 
 impl HasSpan for FunctionLikeBody<'_, '_> {
     fn span(&self) -> Span {
         match self {
             FunctionLikeBody::Statements(_, span) => *span,
-            FunctionLikeBody::Expression(expr) => expr.span(),
+            FunctionLikeBody::Expression(expr) | FunctionLikeBody::ExpressionStatement(expr) => expr.span(),
         }
     }
 }
@@ -299,6 +302,9 @@ where
                     artifacts.get_rc_expression_type(value).cloned().unwrap_or_else(|| Rc::new(get_mixed()));
 
                 handle_return_value(context, block_context, &mut artifacts, Some(value), value_type, value.span());
+            }
+            FunctionLikeBody::ExpressionStatement(value) => {
+                value.analyze(context, block_context, &mut artifacts)?;
             }
         }
     }

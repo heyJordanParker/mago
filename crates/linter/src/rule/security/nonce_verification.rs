@@ -157,6 +157,10 @@ impl LintRule for NonceVerificationRule {
             Node::Function(function) => function.body.statements.as_slice(),
             Node::Method(method) => match &method.body {
                 MethodBody::Concrete(block) => block.statements.as_slice(),
+                MethodBody::Expression(body) => {
+                    self.collect_and_report(ctx, Node::Expression(body.expression), custom_nonce, false);
+                    return;
+                }
                 MethodBody::Abstract(_) => return,
             },
             Node::Closure(closure) => closure.body.statements.as_slice(),

@@ -666,6 +666,27 @@ pub fn check_interface<'ast, 'arena>(interface: &'ast Interface<'arena>, context
                             }
                         }
                     }
+                    Property::Computed(computed_property) => {
+                        let property_name = BytesDisplay(computed_property.variable.name);
+
+                        context.report(
+                            Issue::error(format!(
+                                "Interface virtual property `{interface_name}::{property_name}` must be abstract."
+                            ))
+                            .with_annotation(
+                                Annotation::primary(computed_property.body.span()).with_message("Body defined here."),
+                            )
+                            .with_annotation(
+                                Annotation::secondary(computed_property.variable.span())
+                                    .with_message("Property declared here."),
+                            )
+                            .with_annotation(
+                                Annotation::secondary(interface.span())
+                                    .with_message(format!("Interface `{interface_fqcn}` defined here.")),
+                            )
+                            .with_note("Abstract hooked properties must not contain a body."),
+                        );
+                    }
                 }
 
                 check_property(
@@ -1281,8 +1302,8 @@ pub fn check_members<'ast, 'arena>(
                         }
                     }
                 }
-                Property::Hooked(hooked_property) => {
-                    let item_variable = hooked_property.item.variable();
+                Property::Hooked(_) | Property::Computed(_) => {
+                    let item_variable = property.first_variable();
                     let item_name_bytes: &[u8] = item_variable.name;
                     let item_name = BytesDisplay(item_name_bytes);
 

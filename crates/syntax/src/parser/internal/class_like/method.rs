@@ -7,6 +7,7 @@ use crate::cst::cst::Identifier;
 use crate::cst::cst::Method;
 use crate::cst::cst::MethodAbstractBody;
 use crate::cst::cst::MethodBody;
+use crate::cst::cst::MethodExpressionBody;
 use crate::cst::cst::Modifier;
 use crate::cst::sequence::Sequence;
 use crate::error::ParseError;
@@ -114,9 +115,15 @@ where
         }))
     }
 
+    /// Parses a method's body. A PHP# method may also have an expression body, `=> expr;`, as spec section 7 writes it.
     fn parse_method_body(&mut self) -> Result<MethodBody<'arena>, ParseError> {
         Ok(match self.stream.peek_kind(0)? {
             Some(T![";" | "?>"]) => MethodBody::Abstract(MethodAbstractBody { terminator: self.parse_terminator()? }),
+            Some(T!["=>"]) if self.dialect.is_sharp() => MethodBody::Expression(MethodExpressionBody {
+                arrow: self.stream.eat_span(T!["=>"])?,
+                expression: self.parse_expression()?,
+                semicolon: self.stream.eat_span(T![";"])?,
+            }),
             _ => MethodBody::Concrete(self.parse_block()?),
         })
     }

@@ -1094,6 +1094,46 @@ fn an_auto_property_breaking_the_accessor_rules_is_an_error() {
 }
 
 #[test]
+fn a_method_with_an_expression_body_is_in_the_slice() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private int count = 0;\n\n    public Report(int count) => this.count = count;\n\n    public int total() => this.count > 0 ? this.count : 0;\n\n    protected void touch() => this.count++;\n\n    public static string name(string text) => strtolower(text);\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_computed_property_is_in_the_slice_with_any_access_modifier() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private string name = \"\";\n\n    public string slug => strtolower(this.name);\n    protected bool named => this.name != \"\";\n    private int size => strlen(this.name) > 3 ? 1 : 0;\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn an_expression_body_is_checked_as_a_method_body() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private int count = 0;\n\n    public int total() => this.count ?: 1;\n    public int size => this.count ?: 1;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:38 PHP# has no `?:`: write `a ?? b` to replace null, or `c ? a : b` with a `bool` condition.",
+            "8:35 PHP# has no `?:`: write `a ?? b` to replace null, or `c ? a : b` with a `bool` condition.",
+        ]
+    );
+}
+
+#[test]
+fn a_static_computed_property_or_one_without_an_access_modifier_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public static int count => 1;\n    int size => 2;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:12 A static computed property is not supported yet in PHP#.",
+            "6:9 A property without `public`, `protected` or `private` is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
 fn properties_outside_the_slice_are_not_supported_yet() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    int a { get; set; }\n    public static int b { get; }\n    public int c { private get; set; }\n    public int d { get => 1; }\n    public int e { get; set { } }\n    public int f { get; init; }\n    public int g = 0 { get; }\n    public int h { get; set(int value); }\n}\n";
 
@@ -1129,27 +1169,26 @@ fn exponentiation_and_its_compound_assignment_are_in_the_slice() {
 #[test]
 fn operators_outside_the_slice_are_not_supported_yet() {
     let code = leak(method(
-        "        let a = extra;\n        a = @extra;\n        a = (int) extra;\n        a = extra & 1;\n        a = extra | 1;\n        a = extra ^ 1;\n        a = extra << 1;\n        a = extra >> 1;\n        a = ~extra;\n        a = extra xor true;\n        a = extra and true;\n        a = extra or true;\n        a = extra <=> 1;\n        a = extra <> 1;\n        a %= 2;\n        a &= 2;\n        return a;\n",
+        "        let a = extra;\n        a = @extra;\n        a = extra & 1;\n        a = extra | 1;\n        a = extra ^ 1;\n        a = extra << 1;\n        a = extra >> 1;\n        a = ~extra;\n        a = extra xor true;\n        a = extra and true;\n        a = extra or true;\n        a = extra <=> 1;\n        a = extra <> 1;\n        a %= 2;\n        a &= 2;\n        return a;\n",
     ));
 
     assert_eq!(
         issues(code),
         [
             "8:13 This operator is not supported yet in PHP#.",
-            "9:13 This operator is not supported yet in PHP#.",
+            "9:19 This operator is not supported yet in PHP#.",
             "10:19 This operator is not supported yet in PHP#.",
             "11:19 This operator is not supported yet in PHP#.",
             "12:19 This operator is not supported yet in PHP#.",
             "13:19 This operator is not supported yet in PHP#.",
-            "14:19 This operator is not supported yet in PHP#.",
-            "15:13 This operator is not supported yet in PHP#.",
+            "14:13 This operator is not supported yet in PHP#.",
+            "15:19 This operator is not supported yet in PHP#.",
             "16:19 This operator is not supported yet in PHP#.",
             "17:19 This operator is not supported yet in PHP#.",
             "18:19 This operator is not supported yet in PHP#.",
             "19:19 This operator is not supported yet in PHP#.",
-            "20:19 This operator is not supported yet in PHP#.",
+            "20:11 This operator is not supported yet in PHP#.",
             "21:11 This operator is not supported yet in PHP#.",
-            "22:11 This operator is not supported yet in PHP#.",
         ]
     );
 }
@@ -1340,6 +1379,89 @@ fn a_member_of_typeof_is_not_supported_yet() {
             "8:9 Reading a member of `typeof(Order)` is not supported yet.",
         ]
     );
+}
+
+#[test]
+fn the_ternary_is_in_the_slice_with_a_nested_ternary_in_parentheses() {
+    let code = leak(method(
+        "        const sign = extra > 0 ? 1 : (extra < 0 ? -1 : 0);\n        return (extra > 9 ? true : false) ? sign : 0;\n",
+    ));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn the_two_operand_ternary_is_not_part_of_php_sharp() {
+    let code = leak(method("        return extra ?: 1;\n"));
+
+    assert_eq!(
+        issues(code),
+        ["7:22 PHP# has no `?:`: write `a ?? b` to replace null, or `c ? a : b` with a `bool` condition."]
+    );
+}
+
+#[test]
+fn a_ternary_nested_in_a_condition_without_parentheses_is_an_error_as_in_php() {
+    let code = leak(method("        return extra > 1 ? 1 : extra > 0 ? 2 : 3;\n"));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:16 Unparenthesized `a ? b : c ? d : e` is not supported. Use either `(a ? b : c) ? d : e` or `a ? b : (c ? d : e)`."
+        ]
+    );
+}
+
+#[test]
+fn casts_between_numbers_are_in_the_slice() {
+    let code = leak(method(
+        "        const cents = (int)(extra * 1.5);\n        const share = (float)extra;\n        const label = (string)share;\n        return cents;\n",
+    ));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn bool_array_and_object_casts_do_not_exist_in_php_sharp() {
+    let code = leak(method(
+        "        const a = (bool)extra;\n        const b = (array)extra;\n        const c = (object)extra;\n        return 1;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:19 PHP# has no `(bool)`: compare the value instead, as in `count > 0` or `flag == \"1\"`.",
+            "8:19 PHP# has no `(array)`: `(int)`, `(float)` and `(string)` convert between numbers only.",
+            "9:19 PHP# has no `(object)`: `(int)`, `(float)` and `(string)` convert between numbers only.",
+        ]
+    );
+}
+
+#[test]
+fn php_cast_aliases_do_not_exist_in_php_sharp() {
+    let code = leak(method(
+        "        const a = (integer)extra;\n        const b = (double)extra;\n        const c = (real)extra;\n        const d = (boolean)extra;\n        const e = (binary)extra;\n        return 1;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:19 PHP# has no `(integer)`: write `(int)`.",
+            "8:19 PHP# has no `(double)`: write `(float)`.",
+            "9:19 PHP# has no `(real)`: write `(float)`.",
+            "10:19 PHP# has no `(boolean)`: compare the value instead, as in `count > 0` or `flag == \"1\"`.",
+            "11:19 PHP# has no `(binary)`: write `(string)`.",
+        ]
+    );
+}
+
+#[test]
+fn a_cast_or_a_ternary_in_a_parameter_default_is_not_supported_yet() {
+    let cast = leak(method("        return extra;\n").replace("int extra", "int extra = (int)1.5"));
+    let ternary = leak(method("        return extra;\n").replace("int extra", "int extra = true ? 1 : 2"));
+
+    assert_eq!(issues(cast), ["5:32 This operator is not supported yet in PHP#."]);
+    assert_eq!(issues(ternary), ["5:32 This expression is not supported yet in PHP#."]);
 }
 
 #[test]

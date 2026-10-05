@@ -344,7 +344,7 @@ pub fn check_method<'ast, 'arena>(
 
             is_abstract = true;
         }
-        MethodBody::Concrete(body) => {
+        MethodBody::Concrete(_) | MethodBody::Expression(_) => {
             if let Some(abstract_modifier) = last_abstract {
                 is_abstract = true;
 
@@ -352,7 +352,7 @@ pub fn check_method<'ast, 'arena>(
                     Issue::error(format!(
                         "Method `{class_like_name}::{method_name}` is abstract and cannot have a concrete body.",
                     ))
-                    .with_annotation(Annotation::primary(body.span()))
+                    .with_annotation(Annotation::primary(method.body.span()))
                     .with_annotations([
                         Annotation::primary(abstract_modifier.span()),
                         Annotation::secondary(class_like_span)
@@ -366,7 +366,7 @@ pub fn check_method<'ast, 'arena>(
                     Issue::error(format!(
                         "Interface method `{class_like_name}::{method_name}` is implicitly abstract and cannot have a concrete body.",
                     ))
-                    .with_annotation(Annotation::primary(body.span()))
+                    .with_annotation(Annotation::primary(method.body.span()))
                     .with_annotations([
                         Annotation::secondary(class_like_span)
                             .with_message(format!("{class_like_kind} `{class_like_fqcn}` is defined here.")),
@@ -376,19 +376,21 @@ pub fn check_method<'ast, 'arena>(
                 );
             }
 
-            let hint = if let Some(return_hint) = &method.return_type_hint {
-                &return_hint.hint
-            } else {
-                return;
-            };
+            // A PHP# expression body has no `return` statement to check.
+            if let MethodBody::Concrete(body) = &method.body {
+                let hint = if let Some(return_hint) = &method.return_type_hint {
+                    &return_hint.hint
+                } else {
+                    return;
+                };
 
-            let returns = mago_syntax::utils::find_returns_in_block(body);
+                let returns = mago_syntax::utils::find_returns_in_block(body);
 
-            match &hint {
-                Hint::Void(_) => {
-                    for r#return in returns {
-                        if let Some(val) = &r#return.value {
-                            context.report(
+                match &hint {
+                    Hint::Void(_) => {
+                        for r#return in returns {
+                            if let Some(val) = &r#return.value {
+                                context.report(
                                 Issue::error(format!(
                                     "Method `{class_like_name}::{method_name}` with return type of `void` must not return a value.",
                                 ))
@@ -403,12 +405,12 @@ pub fn check_method<'ast, 'arena>(
                                 ])
                                 .with_help("Remove the return type hint, or remove the return value."),
                             );
+                            }
                         }
                     }
-                }
-                Hint::Never(_) => {
-                    for r#return in returns {
-                        context.report(
+                    Hint::Never(_) => {
+                        for r#return in returns {
+                            context.report(
                             Issue::error(format!(
                                 "Function `{class_like_name}::{method_name}` with return type of `never` must not return.",
                             ))
@@ -423,12 +425,12 @@ pub fn check_method<'ast, 'arena>(
                             ])
                             .with_help("Remove the return type hint, or remove the return statement."),
                         );
+                        }
                     }
-                }
-                _ if !returns_generator(context, body, hint) => {
-                    for r#return in returns {
-                        if r#return.value.is_none() {
-                            context.report(
+                    _ if !returns_generator(context, body, hint) => {
+                        for r#return in returns {
+                            if r#return.value.is_none() {
+                                context.report(
                                 Issue::error(format!(
                                     "Method `{class_like_name}::{method_name}` with return type must return a value.",
                                 ))
@@ -444,10 +446,11 @@ pub fn check_method<'ast, 'arena>(
                                 .with_note("Did you mean `return null;` instead of `return;`?")
                                 .with_help("Add a return value to the statement."),
                             );
+                            }
                         }
                     }
+                    _ => {}
                 }
-                _ => {}
             }
         }
     }

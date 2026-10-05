@@ -9,6 +9,8 @@ use Mago\Sdk\Analyzer\AfterAnalysisHook;
 use Mago\Sdk\Analyzer\BeforeAnalysisContext;
 use Mago\Sdk\Analyzer\BeforeAnalysisHook;
 use Mago\Sdk\Analyzer\FileAnalysis;
+use Mago\Sdk\Analyzer\NodeAnalysisContext;
+use Mago\Sdk\Analyzer\NodeAnalysisHook;
 use Mago\Sdk\Analyzer\Plugin;
 use Mago\Sdk\Analyzer\PluginDefinition;
 use Mago\Sdk\Analyzer\PluginRegistry;
@@ -17,10 +19,12 @@ use Mago\Sdk\Reporting\Issue;
 use Mago\Sdk\Reporting\Level;
 use Mago\Sdk\SourceLocation;
 use Mago\Sdk\Span;
+use Mago\Sdk\Syntax\NodeKind;
 use Mago\Sdk\Worker;
 use RuntimeException;
 
 use function dirname;
+use function str_contains;
 use function strcspn;
 use function strlen;
 use function strpos;
@@ -30,13 +34,14 @@ use function usort;
 require_once dirname(__DIR__, 4) . '/vendor/autoload.php';
 
 /**
- * The hooks the analysis server tests drive: a before-analysis issue, a failing after-analysis
- * hook, and a cross-file rule that reports a route declared by two analyzed files.
+ * The hooks the analysis server tests drive: a before-analysis issue, a node hook that reports
+ * each function and fails in a file marked `node hook: fail`, a failing after-analysis hook, and a
+ * cross-file rule that reports a route declared by two analyzed files.
  *
  * @mago-expect lint:cyclomatic-complexity
  * @mago-expect lint:file-name
  */
-final class ServerProofPlugin implements Plugin, BeforeAnalysisHook, AfterAnalysisHook
+final class ServerProofPlugin implements Plugin, BeforeAnalysisHook, NodeAnalysisHook, AfterAnalysisHook
 {
     public function getDefinition(): PluginDefinition
     {
@@ -46,7 +51,27 @@ final class ServerProofPlugin implements Plugin, BeforeAnalysisHook, AfterAnalys
     public function register(PluginRegistry $registry): void
     {
         $registry->registerBeforeAnalysisHook($this);
+        $registry->registerNodeAnalysisHook($this);
         $registry->registerAfterAnalysisHook($this);
+    }
+
+    public function getTargets(): array
+    {
+        return [NodeKind::Function];
+    }
+
+    public function getRequirements(): array
+    {
+        return [];
+    }
+
+    public function analyze(NodeAnalysisContext $context): void
+    {
+        if (str_contains($context->analysis->getSourceFile()->contents, 'node hook: fail')) {
+            throw new RuntimeException("The node hook ran on `{$context->analysis->file}`.");
+        }
+
+        $context->report(Level::Warning, 'node', Issue::new('Node hook ran.', $context->node->span));
     }
 
     public function beforeAnalysis(BeforeAnalysisContext $context): void

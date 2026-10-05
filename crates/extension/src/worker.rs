@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::io::BufReader;
 use std::io::BufWriter;
@@ -25,9 +26,6 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 use std::time::Instant;
-
-use foldhash::HashMap;
-use foldhash::HashMapExt;
 
 use crate::command::WorkerCommand;
 use crate::error::WorkerError;
@@ -130,6 +128,7 @@ impl Write for WorkerStdin {
 
 enum PendingEvent {
     Frame(Frame),
+    Started,
     Failure(String),
 }
 
@@ -173,7 +172,7 @@ struct WorkerInner {
     maximum_payload_size: usize,
     writer: Mutex<Option<BufWriter<WorkerStdin>>>,
     child: Mutex<Option<Child>>,
-    pending: Mutex<HashMap<u64, mpsc::Sender<PendingEvent>>>,
+    pending: Mutex<BTreeMap<u64, mpsc::Sender<PendingEvent>>>,
     stderr: Mutex<StderrTail>,
     trace_enabled: bool,
     trace_summary_emitted: AtomicBool,
@@ -183,19 +182,74 @@ struct WorkerInner {
 
 impl WorkerInner {
     fn send(&self, frame: &Frame) -> Result<(), WorkerError> {
+        let written = self.write(&mut lock(&self.writer), frame);
+        self.finish_write(frame, written)
+    }
+
+    /// Sends a top-level request under the next identifier and registers its response channel. Returns the
+    /// identifier, and whether the worker starts the request at once: a worker serves requests in the order they
+    /// arrive, so a request waits while one sent before it is still pending.
+    fn send_request(&self, payload: Vec<u8>, sender: mpsc::Sender<PendingEvent>) -> Result<(u64, bool), WorkerError> {
+        let (request_id, starts, frame, written) = {
+            let mut writer = lock(&self.writer);
+            let request_id = self.next_request_id();
+            let starts = {
+                let mut pending = lock(&self.pending);
+                pending.insert(request_id, sender);
+                pending.len() == 1
+            };
+            let frame = Frame::request(request_id, payload);
+            let written = self.write(&mut writer, &frame);
+            (request_id, starts, frame, written)
+        };
+
+        self.finish_write(&frame, written).inspect_err(|_| {
+            self.take_pending(request_id);
+        })?;
+
+        Ok((request_id, starts))
+    }
+
+    /// Removes a request the worker no longer serves, and tells the request after it that the worker starts it now.
+    fn take_pending(&self, request_id: u64) -> Option<mpsc::Sender<PendingEvent>> {
+        let mut pending = lock(&self.pending);
+        let sender = pending.remove(&request_id)?;
+        if let Some((next, next_sender)) = pending.first_key_value()
+            && *next > request_id
+        {
+            let _result = next_sender.send(PendingEvent::Started);
+        }
+
+        Some(sender)
+    }
+
+    fn next_request_id(&self) -> u64 {
+        loop {
+            let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+            if id != 0 {
+                return id;
+            }
+        }
+    }
+
+    fn write(&self, writer: &mut Option<BufWriter<WorkerStdin>>, frame: &Frame) -> Result<(), WorkerError> {
         if self.state.load(Ordering::Acquire) != STATE_RUNNING {
             return Err(self.disconnected("worker is not running"));
         }
 
-        let result = {
-            let mut writer = lock(&self.writer);
-            let writer = writer.as_mut().ok_or_else(|| self.disconnected("worker stdin is closed"))?;
-            frame.write_to(writer, self.maximum_payload_size).and_then(|()| writer.flush().map_err(Into::into))
-        };
+        let writer = writer.as_mut().ok_or_else(|| self.disconnected("worker stdin is closed"))?;
+        frame
+            .write_to(writer, self.maximum_payload_size)
+            .and_then(|()| writer.flush().map_err(Into::into))
+            .map_err(|source| WorkerError::Protocol { worker: self.id, source })
+    }
 
-        if let Err(source) = result {
-            let error = WorkerError::Protocol { worker: self.id, source };
-            self.fail(error.to_string());
+    fn finish_write(&self, frame: &Frame, written: Result<(), WorkerError>) -> Result<(), WorkerError> {
+        if let Err(error) = written {
+            if matches!(error, WorkerError::Protocol { .. }) {
+                self.fail(error.to_string());
+            }
+
             return Err(error);
         }
 
@@ -232,13 +286,10 @@ impl WorkerInner {
             return;
         }
 
-        let sender = {
-            let mut pending = lock(&self.pending);
-            if frame.kind == FrameKind::Response {
-                pending.remove(&pending_id)
-            } else {
-                pending.get(&pending_id).cloned()
-            }
+        let sender = if frame.kind == FrameKind::Response {
+            self.take_pending(pending_id)
+        } else {
+            lock(&self.pending).get(&pending_id).cloned()
         };
 
         if let Some(sender) = sender {
@@ -394,7 +445,7 @@ impl Worker {
             maximum_payload_size: options.maximum_payload_size,
             writer: Mutex::new(Some(BufWriter::new(stdin))),
             child: Mutex::new(Some(child)),
-            pending: Mutex::new(HashMap::new()),
+            pending: Mutex::new(BTreeMap::new()),
             stderr: Mutex::new(StderrTail::new(options.stderr_tail_size)),
             trace_enabled,
             trace_summary_emitted: AtomicBool::new(false),
@@ -476,27 +527,27 @@ impl Worker {
 
         let _trace =
             self.inner.trace_enabled.then(|| WorkerRequestTrace { inner: &self.inner, started_at: Instant::now() });
-        let request_id = self.next_request_id();
         let (sender, receiver) = mpsc::channel();
-        lock(&self.inner.pending).insert(request_id, sender);
+        let (request_id, starts) = self.inner.send_request(payload, sender)?;
 
-        if let Err(error) = self.inner.send(&Frame::request(request_id, payload)) {
-            lock(&self.inner.pending).remove(&request_id);
-            return Err(error);
-        }
-
-        let started_at = Instant::now();
+        let mut started_at = starts.then(Instant::now);
         loop {
-            let Some(remaining) = self.request_timeout.checked_sub(started_at.elapsed()) else {
-                self.timeout(request_id);
-                return Err(WorkerError::Timeout {
-                    worker: self.id(),
-                    request: request_id,
-                    duration: self.request_timeout,
-                });
+            let event = match started_at {
+                Some(started_at) => {
+                    let Some(remaining) = self.request_timeout.checked_sub(started_at.elapsed()) else {
+                        return Err(self.timeout(request_id));
+                    };
+                    receiver.recv_timeout(remaining)
+                }
+                None => receiver.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
             };
 
-            match receiver.recv_timeout(remaining) {
+            if matches!(event, Ok(PendingEvent::Started | PendingEvent::Frame(_))) {
+                started_at.get_or_insert_with(Instant::now);
+            }
+
+            match event {
+                Ok(PendingEvent::Started) => {}
                 Ok(PendingEvent::Frame(frame)) => match frame.kind {
                     FrameKind::Response => {
                         if frame.flags.contains(FrameFlags::ERROR) {
@@ -526,7 +577,7 @@ impl Worker {
                                 b"Mago did not install a handler for nested worker requests".to_vec(),
                             );
                             let _result = self.inner.send(&response);
-                            lock(&self.inner.pending).remove(&request_id);
+                            self.inner.take_pending(request_id);
                             return Err(WorkerError::UnexpectedRequest { worker: self.id(), request: frame.id });
                         };
 
@@ -553,7 +604,7 @@ impl Worker {
                         if self.inner.trace_enabled {
                             self.inner.telemetry.cancellations.fetch_add(1, Ordering::Relaxed);
                         }
-                        lock(&self.inner.pending).remove(&request_id);
+                        self.inner.take_pending(request_id);
                         return Err(WorkerError::Cancelled { worker: self.id(), request: request_id });
                     }
                     FrameKind::Shutdown => {
@@ -564,38 +615,26 @@ impl Worker {
                     return Err(self.inner.disconnected(failure));
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    self.timeout(request_id);
-                    return Err(WorkerError::Timeout {
-                        worker: self.id(),
-                        request: request_id,
-                        duration: self.request_timeout,
-                    });
+                    return Err(self.timeout(request_id));
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    lock(&self.inner.pending).remove(&request_id);
+                    self.inner.take_pending(request_id);
                     return Err(self.inner.disconnected("response channel closed"));
                 }
             }
         }
     }
 
-    fn next_request_id(&self) -> u64 {
-        loop {
-            let id = self.inner.next_request_id.fetch_add(1, Ordering::Relaxed);
-            if id != 0 {
-                return id;
-            }
-        }
-    }
-
-    fn timeout(&self, request_id: u64) {
+    fn timeout(&self, request_id: u64) -> WorkerError {
         if self.inner.trace_enabled {
             self.inner.telemetry.timeouts.fetch_add(1, Ordering::Relaxed);
         }
         tracing::trace!(worker = self.id(), request = request_id, timeout = ?self.request_timeout, "Extension worker request timed out.");
-        lock(&self.inner.pending).remove(&request_id);
+        self.inner.take_pending(request_id);
         let _result = self.inner.send(&Frame::cancel(request_id));
         self.inner.fail(format!("request {request_id} timed out"));
+
+        WorkerError::Timeout { worker: self.id(), request: request_id, duration: self.request_timeout }
     }
 
     pub fn reserve(self: &Arc<Self>) -> WorkerReservation {
@@ -712,7 +751,7 @@ impl Worker {
             maximum_payload_size: options.maximum_payload_size,
             writer: Mutex::new(Some(BufWriter::new(WorkerStdin::Test(writer)))),
             child: Mutex::new(None),
-            pending: Mutex::new(HashMap::new()),
+            pending: Mutex::new(BTreeMap::new()),
             stderr: Mutex::new(StderrTail::new(options.stderr_tail_size)),
             trace_enabled: tracing::enabled!(tracing::Level::TRACE),
             trace_summary_emitted: AtomicBool::new(false),
@@ -1084,6 +1123,70 @@ mod tests {
     }
 
     #[test]
+    fn a_request_waiting_behind_others_gets_the_whole_deadline_once_the_worker_starts_it() {
+        let deadline = Duration::from_secs(1);
+        let (worker, mut peer_reader, mut peer_writer) = connected_worker(deadline);
+        let peer = std::thread::spawn(move || {
+            for _ in 0..3 {
+                let request = Frame::read_from(&mut peer_reader, 1024)
+                    .expect("request should decode")
+                    .expect("request should be present");
+                std::thread::sleep(deadline - Duration::from_millis(200));
+                Frame::response(request.id, 0, request.payload)
+                    .write_to(&mut peer_writer, 1024)
+                    .expect("response should encode");
+                peer_writer.flush().expect("response should flush");
+            }
+        });
+
+        let responses = send_three_at_once(&worker);
+
+        assert!(responses.iter().all(Result::is_ok), "{responses:?}");
+        peer.join().expect("peer thread should join");
+        worker.shutdown();
+    }
+
+    #[test]
+    fn a_worker_that_hangs_on_a_request_fails_at_the_deadline() {
+        let deadline = Duration::from_millis(200);
+        let (worker, mut peer_reader, mut peer_writer) = connected_worker(deadline);
+        let peer = std::thread::spawn(move || {
+            let first = Frame::read_from(&mut peer_reader, 1024)
+                .expect("first request should decode")
+                .expect("first request should be present");
+            for _ in 0..2 {
+                Frame::read_from(&mut peer_reader, 1024)
+                    .expect("request should decode")
+                    .expect("request should be present");
+            }
+            Frame::response(first.id, 0, first.payload)
+                .write_to(&mut peer_writer, 1024)
+                .expect("response should encode");
+            peer_writer.flush().expect("response should flush");
+
+            let cancel = Frame::read_from(&mut peer_reader, 1024)
+                .expect("cancellation should decode")
+                .expect("cancellation should be present");
+            assert_eq!(cancel.kind, FrameKind::Cancel);
+        });
+
+        let started_at = Instant::now();
+        let responses = send_three_at_once(&worker);
+        let elapsed = started_at.elapsed();
+
+        assert_eq!(responses.iter().filter(|response| response.is_ok()).count(), 1, "{responses:?}");
+        assert_eq!(
+            responses.iter().filter(|response| matches!(response, Err(WorkerError::Timeout { .. }))).count(),
+            1,
+            "{responses:?}"
+        );
+        assert!(elapsed >= deadline && elapsed < deadline * 2, "the hung request failed after {elapsed:?}");
+        assert!(!worker.is_running());
+        peer.join().expect("peer thread should join");
+        worker.shutdown();
+    }
+
+    #[test]
     fn reports_worker_cancellation_without_marking_the_worker_disconnected() {
         let (worker, mut peer_reader, mut peer_writer) = connected_worker(Duration::from_secs(2));
         let peer = std::thread::spawn(move || {
@@ -1105,6 +1208,20 @@ mod tests {
 
         worker.shutdown();
         peer.join().expect("peer thread should join");
+    }
+
+    fn send_three_at_once(worker: &Arc<Worker>) -> [Result<Vec<u8>, WorkerError>; 3] {
+        let barrier = Barrier::new(3);
+        std::thread::scope(|scope| {
+            let requests: [_; 3] = std::array::from_fn(|_| {
+                scope.spawn(|| {
+                    barrier.wait();
+                    worker.request(b"request".to_vec())
+                })
+            });
+
+            requests.map(|request| request.join().expect("request thread should join"))
+        })
     }
 
     fn connected_worker(timeout: Duration) -> (Arc<Worker>, TcpStream, TcpStream) {

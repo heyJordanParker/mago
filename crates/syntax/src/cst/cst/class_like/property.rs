@@ -23,6 +23,7 @@ use crate::cst::sequence::TokenSeparatedSequence;
 pub enum Property<'arena> {
     Plain(PlainProperty<'arena>),
     Hooked(HookedProperty<'arena>),
+    Computed(ComputedProperty<'arena>),
 }
 
 /// Represents a class-like property declaration in PHP.
@@ -84,6 +85,21 @@ pub struct HookedProperty<'arena> {
     pub item: PropertyItem<'arena>,
     pub hook_list: PropertyHookList<'arena>,
     pub initial_value: Option<PropertyInitialValue<'arena>>,
+}
+
+/// A PHP# computed property, which runs its expression on every read, as PHP's `get => expr;` hook does:
+///
+/// ```csharp
+/// public string slug => Str.slug(name);
+/// ```
+#[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct ComputedProperty<'arena> {
+    pub attribute_lists: Sequence<'arena, AttributeList<'arena>>,
+    pub modifiers: Sequence<'arena, Modifier<'arena>>,
+    pub hint: Option<Hint<'arena>>,
+    pub variable: DirectVariable<'arena>,
+    pub body: PropertyHookConcreteExpressionBody<'arena>,
 }
 
 /// The initial value a PHP# auto-property writes after its accessors: `= 0;`.
@@ -232,6 +248,7 @@ impl<'arena> Property<'arena> {
         match &self {
             Property::Hooked(h) => &h.modifiers,
             Property::Plain(p) => &p.modifiers,
+            Property::Computed(c) => &c.modifiers,
         }
     }
 
@@ -240,6 +257,7 @@ impl<'arena> Property<'arena> {
         match &self {
             Property::Hooked(h) => h.var.as_ref(),
             Property::Plain(p) => p.var.as_ref(),
+            Property::Computed(_) => None,
         }
     }
 
@@ -261,6 +279,7 @@ impl<'arena> Property<'arena> {
         match &self {
             Property::Plain(inner) => inner.items.iter().map(PropertyItem::variable).collect(),
             Property::Hooked(inner) => vec![inner.item.variable()],
+            Property::Computed(inner) => vec![&inner.variable],
         }
     }
 
@@ -269,6 +288,7 @@ impl<'arena> Property<'arena> {
         match &self {
             Property::Hooked(h) => h.hint.as_ref(),
             Property::Plain(p) => p.hint.as_ref(),
+            Property::Computed(c) => c.hint.as_ref(),
         }
     }
 
@@ -285,6 +305,7 @@ impl<'arena> Property<'arena> {
                 PropertyItem::Concrete(item) => Some(item.value),
                 PropertyItem::Abstract(_) => hooked.initial_value.as_ref().map(|initial_value| initial_value.value),
             },
+            Property::Computed(_) => None,
         }
     }
 }
@@ -312,7 +333,21 @@ impl HasSpan for Property<'_> {
         match &self {
             Property::Plain(inner) => inner.span(),
             Property::Hooked(inner) => inner.span(),
+            Property::Computed(inner) => inner.span(),
         }
+    }
+}
+
+impl HasSpan for ComputedProperty<'_> {
+    fn span(&self) -> Span {
+        let start = match (self.attribute_lists.first(), self.modifiers.first(), &self.hint) {
+            (Some(attribute_list), _, _) => attribute_list.span(),
+            (None, Some(modifier), _) => modifier.span(),
+            (None, None, Some(hint)) => hint.span(),
+            (None, None, None) => self.variable.span(),
+        };
+
+        Span::between(start, self.body.span())
     }
 }
 

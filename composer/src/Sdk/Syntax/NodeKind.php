@@ -67,6 +67,8 @@ enum NodeKind: string
     case Method = 'Method';
     case MethodAbstractBody = 'MethodAbstractBody';
     case MethodBody = 'MethodBody';
+    case MethodExpressionBody = 'MethodExpressionBody';
+    case ComputedProperty = 'ComputedProperty';
     case HookedProperty = 'HookedProperty';
     case PlainProperty = 'PlainProperty';
     case Property = 'Property';
