@@ -13,6 +13,9 @@ use std::panic::AssertUnwindSafe;
 use std::ptr;
 use std::slice;
 
+use mago_allocator::Arena;
+use mago_allocator::LocalArena;
+
 mod lower;
 
 /// UTF-8, not NUL-terminated.
@@ -194,7 +197,7 @@ struct Unit {
     nodes: Vec<sharp_node>,
     children: Vec<u32>,
     diagnostics: Vec<sharp_diagnostic>,
-    texts: Vec<Box<[u8]>>,
+    texts: LocalArena,
 }
 
 /// A diagnostic before the bridge stores its message.
@@ -207,14 +210,14 @@ struct Diagnostic {
 
 impl Unit {
     fn failed(diagnostics: Vec<Diagnostic>) -> Box<Self> {
-        let mut texts = Vec::with_capacity(diagnostics.len());
+        let texts = LocalArena::new();
         let diagnostics = diagnostics
             .into_iter()
             .map(|diagnostic| sharp_diagnostic {
                 line: diagnostic.line,
                 column: diagnostic.column,
                 severity: diagnostic.severity,
-                message: store_text(&mut texts, diagnostic.message.into_bytes()),
+                message: store_text(&texts, diagnostic.message.as_bytes()),
             })
             .collect();
 
@@ -226,7 +229,7 @@ impl Unit {
         children: Vec<u32>,
         root: u32,
         diagnostics: Vec<sharp_diagnostic>,
-        texts: Vec<Box<[u8]>>,
+        texts: LocalArena,
     ) -> Box<Self> {
         let abi = sharp_unit {
             nodes: nodes.as_ptr(),
@@ -242,13 +245,11 @@ impl Unit {
     }
 }
 
-/// Keeps `bytes` in `texts`, where they never move, and returns the string that points to them.
-fn store_text(texts: &mut Vec<Box<[u8]>>, bytes: Vec<u8>) -> sharp_str {
-    let text = bytes.into_boxed_slice();
-    let stored = sharp_str { ptr: text.as_ptr().cast::<c_char>(), len: text.len() };
-    texts.push(text);
+/// Copies `bytes` into `texts`, where they never move, and returns the string that points to them.
+fn store_text(texts: &LocalArena, bytes: &[u8]) -> sharp_str {
+    let text = texts.alloc_slice_copy(bytes);
 
-    stored
+    sharp_str { ptr: text.as_ptr().cast::<c_char>(), len: text.len() }
 }
 
 /// Runs the lowering, and returns a panic inside it as one compile error, so the engine never unwinds.
@@ -285,6 +286,13 @@ unsafe fn bytes(pointer: *const c_char, len: usize) -> Vec<u8> {
 
 impl sharp_str {
     const EMPTY: Self = Self { ptr: ptr::null(), len: 0 };
+
+    /// The bytes of a stored text, which live as long as the unit that stores them.
+    #[cfg(test)]
+    fn bytes(&self) -> &[u8] {
+        // SAFETY: `store_text` returned this string, so it points to `len` bytes its unit owns.
+        unsafe { slice::from_raw_parts(self.ptr.cast::<u8>(), self.len) }
+    }
 }
 
 #[cfg(test)]
@@ -300,6 +308,6 @@ mod tests {
         assert_eq!(unit.abi.node_count, 0);
         assert_eq!(unit.diagnostics.len(), 1);
         assert_eq!(unit.diagnostics[0].severity, sharp_severity::SHARP_COMPILE_ERROR);
-        assert_eq!(&*unit.texts[0], b"internal error in the PHP# front end: forced");
+        assert_eq!(unit.diagnostics[0].message.bytes(), b"internal error in the PHP# front end: forced");
     }
 }

@@ -218,12 +218,12 @@ struct Lowering<'lowering, 'arena> {
     names: &'lowering ResolvedNames<'arena>,
     nodes: Vec<sharp_node>,
     children: Vec<u32>,
-    texts: Vec<Box<[u8]>>,
+    texts: LocalArena,
 }
 
 impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     fn new(lines: &'lowering Lines, names: &'lowering ResolvedNames<'arena>) -> Self {
-        Self { lines, names, nodes: Vec::new(), children: Vec::new(), texts: Vec::new() }
+        Self { lines, names, nodes: Vec::new(), children: Vec::new(), texts: LocalArena::new() }
     }
 
     /// `declare(strict_types=1);` first, then the namespaces and classes. Imports are not lowered: every class name
@@ -746,7 +746,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     ) -> u32 {
         let index = self.node(kind, flags, self.line(start), children);
         let end_line = self.lines.line(end.span().end.offset);
-        let name = store_text(&mut self.texts, name.to_vec());
+        let name = store_text(&self.texts, name);
 
         let node = &mut self.nodes[index as usize];
         node.end_line = end_line;
@@ -756,7 +756,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     fn string(&mut self, attr: u32, line: u32, text: &[u8]) -> u32 {
-        let text = store_text(&mut self.texts, text.to_vec());
+        let text = store_text(&self.texts, text);
 
         self.zval(line, sharp_value::SHARP_STRING, |node| {
             node.attr = attr;
@@ -970,7 +970,7 @@ mod tests {
 
         assert_eq!(unit.abi.node_count, 0, "{method}");
         assert_eq!(unit.diagnostics.len(), 1, "{method}");
-        assert!(unit.texts[0].starts_with(b"internal error in the PHP# front end: "), "{method}");
+        assert!(unit.diagnostics[0].message.bytes().starts_with(b"internal error in the PHP# front end: "), "{method}");
     }
 
     #[test]
