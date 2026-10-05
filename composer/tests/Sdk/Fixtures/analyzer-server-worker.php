@@ -8,6 +8,7 @@ use Mago\Sdk\Analyzer\AfterAnalysisContext;
 use Mago\Sdk\Analyzer\AfterAnalysisHook;
 use Mago\Sdk\Analyzer\BeforeAnalysisContext;
 use Mago\Sdk\Analyzer\BeforeAnalysisHook;
+use Mago\Sdk\Analyzer\FileAnalysis;
 use Mago\Sdk\Analyzer\NodeAnalysisContext;
 use Mago\Sdk\Analyzer\NodeAnalysisHook;
 use Mago\Sdk\Analyzer\Plugin;
@@ -23,13 +24,12 @@ use Mago\Sdk\Worker;
 use RuntimeException;
 
 use function dirname;
-use function preg_match_all;
 use function str_contains;
+use function strcspn;
 use function strlen;
+use function strpos;
+use function substr;
 use function usort;
-
-use const PREG_OFFSET_CAPTURE;
-use const PREG_SET_ORDER;
 
 require_once dirname(__DIR__, 4) . '/vendor/autoload.php';
 
@@ -38,6 +38,7 @@ require_once dirname(__DIR__, 4) . '/vendor/autoload.php';
  * each function and fails in a file marked `node hook: fail`, a failing after-analysis hook, and a
  * cross-file rule that reports a route declared by two analyzed files.
  *
+ * @mago-expect lint:cyclomatic-complexity
  * @mago-expect lint:file-name
  */
 final class ServerProofPlugin implements Plugin, BeforeAnalysisHook, NodeAnalysisHook, AfterAnalysisHook
@@ -88,19 +89,25 @@ final class ServerProofPlugin implements Plugin, BeforeAnalysisHook, NodeAnalysi
         }
 
         $files = $context->analysis->files;
-        usort($files, static fn($left, $right): int => $left->file <=> $right->file);
+        usort($files, static fn(FileAnalysis $left, FileAnalysis $right): int => $left->file <=> $right->file);
 
         $owners = [];
         foreach ($files as $file) {
-            preg_match_all('/route: (\S+)/', $file->getSourceFile()->contents, $matches, PREG_SET_ORDER | PREG_OFFSET_CAPTURE);
-            foreach ($matches as [, [$route, $offset]]) {
+            $contents = $file->getSourceFile()->contents;
+            $marker = strpos($contents, 'route: ');
+            while ($marker !== false) {
+                $start = $marker + strlen('route: ');
+                $end = $start + strcspn($contents, " \t\n\v\f\r", $start);
+                $marker = strpos($contents, 'route: ', $end);
+
+                $route = substr($contents, $start, $end - $start);
                 $owner = $owners[$route] ?? null;
                 if ($owner === null) {
                     $owners[$route] = $file->file;
                     continue;
                 }
 
-                $location = new SourceLocation($file->file, new Span($offset, $offset + strlen($route)));
+                $location = new SourceLocation($file->file, new Span($start, $end));
                 $context->report(
                     Level::Error,
                     'duplicate-route',
