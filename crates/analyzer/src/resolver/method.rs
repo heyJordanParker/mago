@@ -10,6 +10,7 @@ use mago_codex::metadata::ttype::TypeMetadata;
 use mago_codex::misc::GenericParent;
 use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
+use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::generic::TGenericParameter;
 use mago_codex::ttype::atomic::mixed::TMixed;
 use mago_codex::ttype::atomic::object::TObject;
@@ -19,6 +20,7 @@ use mago_codex::ttype::comparator::union_comparator::is_contained_by;
 use mago_codex::ttype::expander;
 use mago_codex::ttype::expander::StaticClassType;
 use mago_codex::ttype::expander::TypeExpansionOptions;
+use mago_codex::ttype::get_array_parameters;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_specialized_template_type;
 use mago_codex::ttype::template::GenericTemplate;
@@ -231,11 +233,16 @@ where
             }
 
             let closure_object;
+            let collection_methods;
             let obj_type = match object_atomic {
                 TAtomic::Object(obj_type) => obj_type,
                 TAtomic::Callable(callable) if callable.is_closure() => {
                     closure_object = TObject::new_named(word("Closure"));
                     &closure_object
+                }
+                TAtomic::Array(array) if context.dialect.is_sharp() => {
+                    collection_methods = get_collection_methods(array, context.codebase);
+                    &collection_methods
                 }
                 _ => {
                     if object_atomic.is_mixed() {
@@ -1040,6 +1047,17 @@ where
     }
 
     true
+}
+
+/// The class whose methods a PHP# collection has, as spec section 12 writes them: a `List<T>` is called as
+/// `Sharp\ListMethods<T>` and a `Map<K, V>` as `Sharp\MapMethods<K, V>`, so each method is typed by the elements.
+fn get_collection_methods(array: &TArray, codebase: &CodebaseMetadata) -> TObject {
+    let (key, value) = get_array_parameters(array, codebase);
+
+    TObject::Named(match array {
+        TArray::List(_) => TNamedObject::new_with_type_parameters(word("Sharp\\ListMethods"), Some(vec![value])),
+        TArray::Keyed(_) => TNamedObject::new_with_type_parameters(word("Sharp\\MapMethods"), Some(vec![key, value])),
+    })
 }
 
 fn report_call_on_non_object<A>(

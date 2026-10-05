@@ -1094,6 +1094,46 @@ fn a_key_and_value_loop_reads_a_map_and_its_keys_as_php_stores_them() {
     );
 }
 
+/// A `List` has `add`, `set`, `get` and `entries()`, and a `Map` has `delete` and `get`, each typed by the elements of
+/// the collection it is called on, as spec section 12 decides.
+#[test]
+fn collection_methods_take_and_give_the_types_of_their_elements() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public List<Line> lines { get; private set; } = [];\n    private Map<string, int> counts = [:];\n\n    public int total(Line line, List<Line> extra)\n    {\n        this.lines.add(line);\n        extra.add(line);\n        extra.set(0, line);\n        this.counts.delete(\"a\");\n        let sum = (this.counts.get(\"b\") ?? 0) + (extra.get(0)?.cents ?? 0);\n        for (const [index, item] of extra.entries()) {\n            sum += index + item.cents;\n        }\n        return sum;\n    }\n\n    public void wrong(List<Line> extra, Map<string, int> counts)\n    {\n        extra.add(1);\n        extra.set(\"a\", new Line(1));\n        counts.add(1);\n        extra.delete(0);\n    }\n}\n\nclass Line\n{\n    public Line(public int cents { get; })\n    {\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Order.sharp", sharp), &[]),
+        ["23:19 invalid-argument", "24:19 invalid-argument", "25:16 non-existent-method", "26:15 non-existent-method"]
+    );
+}
+
+/// A method that changes a collection writes it back where it lives, so spec section 12 allows it only on a place
+/// the caller can write: a local, a parameter, or a property whose `set` the caller reaches. The runtime never meets
+/// a write the checker accepts and it refuses.
+#[test]
+fn a_changing_collection_method_needs_a_place_the_caller_can_write() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public List<int> lines { get; private set; } = [];\n    public List<int> fixed { get; } = [];\n    public List<int> computed => [1];\n}\n\nclass Shop\n{\n    public int change(Order order, Map<string, List<int>> groups)\n    {\n        order.lines.add(1);\n        order.fixed.add(1);\n        order.computed.add(1);\n        this.make().add(1);\n        return count(order.lines.entries()) + (order.fixed.get(0) ?? 0) + count(groups);\n    }\n\n    public List<int> make()\n    {\n        return [];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Shop.sharp", sharp), &[]),
+        [
+            "14:15 invalid-property-write",
+            "15:15 invalid-property-write",
+            "16:15 invalid-property-write",
+            "17:9 invalid-pass-by-reference"
+        ]
+    );
+}
+
+/// A property with hooks changes through `get` and then `set`, as Swift and decision 014 do, so a changing method
+/// may run on it where its `set` is reachable.
+#[test]
+fn a_changing_collection_method_may_run_on_a_property_with_a_set_hook() {
+    let sharp = "namespace Demo;\n\nimport Lib.Box;\n\nclass Shop\n{\n    public void fill(Box box)\n    {\n        box.items.add(1);\n    }\n}\n";
+    let box_class = "<?php\n\nnamespace Lib;\n\nfinal class Box\n{\n    /** @var list<int> */\n    public array $items = [] {\n        get => $this->items;\n        set(array $value) {\n            $this->items = $value;\n        }\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Shop.sharp", sharp), &[("src/Lib/Box.php", box_class)]), Vec::<String>::new());
+}
+
 /// `+=`, `++` and `--` read an index, then write it. On a `Map` the read is bare, and on a `List` the write is, so
 /// both are refused, as Kotlin refuses `map[k] += 1`, and the help writes the form that compiles.
 #[test]
