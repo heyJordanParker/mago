@@ -1004,7 +1004,7 @@ const TOTALS: &str = "<?php\n\nnamespace Lib;\n\nfinal class Totals\n{\n    /** 
 
 #[test]
 fn lists_and_maps_type_their_literals_indexes_and_loops_as_php_arrays() {
-    let sharp = "namespace Demo;\n\nimport Lib.Totals;\n\nclass Order\n{\n    public List<Line> lines { get; private set; } = [];\n    private Map<string, int> counts = [:];\n\n    public int total(List<Line> extra)\n    {\n        List<Line> all = [new Line(1), new Line(2)];\n        all[0] = extra[0];\n        this.lines = all;\n        this.counts[\"lines\"] = count(this.lines);\n        this.counts[\"lines\"] += 1;\n        const named = [\"a\": 1, \"b\": 2];\n        let sum = named[\"a\"] + Totals.sum(Totals.sizes());\n        for (const line of all) {\n            sum += line.cents;\n        }\n        for (const [name, size] of this.counts) {\n            sum += strlen(name) + size;\n        }\n        for (const [index, line] of this.lines) {\n            sum += index * line.cents;\n        }\n        if (in_array(2, Totals.sizes(), true)) {\n            sum += 1;\n        }\n        return sum + this.counts[\"lines\"];\n    }\n}\n\nclass Line\n{\n    public Line(public int cents { get; })\n    {\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Totals;\n\nclass Order\n{\n    public List<Line> lines { get; private set; } = [];\n    private Map<string, int> counts = [:];\n\n    public int total(List<Line> extra)\n    {\n        List<Line> all = [new Line(1), extra[0]];\n        this.lines = all;\n        this.counts[\"lines\"] = count(this.lines);\n        const named = [\"a\": 1, \"b\": 2];\n        let sum = (named[\"a\"] ?? 0) + Totals.sum(Totals.sizes()) + all[1].cents;\n        for (const line of all) {\n            sum += line.cents;\n        }\n        for (const [name, size] of this.counts) {\n            if (name == \"lines\") {\n                sum += size;\n            }\n        }\n        for (const line of this.lines) {\n            sum += line.cents;\n        }\n        if (in_array(2, Totals.sizes(), true)) {\n            sum += 1;\n        }\n        return sum + (this.counts[\"lines\"] ?? 0);\n    }\n}\n\nclass Line\n{\n    public Line(public int cents { get; })\n    {\n    }\n}\n";
 
     assert_eq!(issues(("src/Demo/Order.sharp", sharp), &[("src/Lib/Totals.php", TOTALS)]), Vec::<String>::new());
 }
@@ -1030,7 +1030,7 @@ fn a_wrong_element_type_is_reported_where_it_enters_the_collection() {
 /// cannot reach the `set` cannot change the collection, as PHP refuses the same write when it runs.
 #[test]
 fn an_index_write_to_a_property_needs_its_set() {
-    let sharp = "namespace Demo;\n\nclass Order\n{\n    public List<int> lines { get; private set; } = [];\n    public Map<string, int> codes { get; }\n\n    public Order()\n    {\n        this.codes = [:];\n    }\n\n    public void change(Order other)\n    {\n        this.lines[0] = 1;\n        other.lines[0] = 1;\n        this.codes[\"a\"] = 1;\n    }\n}\n\nclass Shop\n{\n    public void change(Order order)\n    {\n        order.lines[0] = 1;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public Map<int, int> lines { get; private set; } = [:];\n    public Map<string, int> codes { get; }\n\n    public Order()\n    {\n        this.codes = [:];\n    }\n\n    public void change(Order other)\n    {\n        this.lines[0] = 1;\n        other.lines[0] = 1;\n        this.codes[\"a\"] = 1;\n    }\n}\n\nclass Shop\n{\n    public void change(Order order)\n    {\n        order.lines[0] = 1;\n    }\n}\n";
     let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    public private(set) array $lines = [];\n    public readonly array $codes;\n\n    public function __construct()\n    {\n        $this->codes = [];\n    }\n\n    public function change(Order $other): void\n    {\n        $this->lines[0] = 1;\n        $other->lines[0] = 1;\n        $this->codes['a'] = 1;\n    }\n}\n\nclass Shop\n{\n    public function change(Order $order): void\n    {\n        $order->lines[0] = 1;\n    }\n}\n";
 
     let sharp_issues = issues(("src/Demo/Order.sharp", sharp), &[]);
@@ -1038,4 +1038,58 @@ fn an_index_write_to_a_property_needs_its_set() {
 
     assert_eq!(sharp_issues, ["17:14 invalid-property-write", "25:15 invalid-property-write"]);
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+/// A bare `x[i]` throws when the key is missing, which fits a `List`, whose keys run without gaps. A `Map` key is
+/// often missing, so a `Map` is read with `??`, as spec section 12 decides. A compound assignment reads first.
+#[test]
+fn a_bare_index_read_on_a_map_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Prices\n{\n    private Map<string, int> prices = [\"pro\": 5];\n\n    public int read(Map<string, int> plans, List<int> sizes, string plan)\n    {\n        let total = sizes[0] + (plans[plan] ?? 0) + (this.prices[plan] ?? 0);\n        total += plans[plan];\n        this.prices[plan] += 1;\n        const named = [\"a\": 1];\n        return total + named[\"a\"];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Prices.sharp", sharp), &[]),
+        [
+            "10:18 possibly-undefined-array-index",
+            "11:9 possibly-undefined-array-index",
+            "13:24 possibly-undefined-array-index",
+        ]
+    );
+}
+
+/// `?.` reads a missing key as null, as `??` does, because `x[k]?.name` runs as `($x[$k] ?? null)?->name`.
+#[test]
+fn a_null_safe_access_on_an_index_reads_a_missing_key_as_null() {
+    let sharp = "namespace Demo;\n\nclass Shelf\n{\n    public string? first(Map<string, Item> items, string key)\n    {\n        return items[key]?.name ?? items[key]?.label();\n    }\n}\n\nclass Item\n{\n    public Item(public string name { get; })\n    {\n    }\n\n    public string? label()\n    {\n        return null;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Shelf.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// Writing `x[i] = v` to a `List` could leave a gap in its keys, so spec section 12 writes a `List` with `set` and
+/// `add`. Every step of the target that is a `List` is reported.
+#[test]
+fn an_index_write_to_a_list_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Sizes\n{\n    public void change(List<int> sizes, Map<string, List<int>> groups, List<Map<string, int>> rows)\n    {\n        sizes[0] = 1;\n        sizes[0] += 1;\n        groups[\"a\"][0] = 1;\n        rows[0][\"a\"] = 1;\n        groups[\"b\"] = [1];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Sizes.sharp", sharp), &[]),
+        [
+            "7:9 invalid-array-access",
+            "8:9 invalid-array-access",
+            "9:9 invalid-array-access",
+            "10:9 invalid-array-access"
+        ]
+    );
+}
+
+/// `for (const [k, v] of x)` reads the keys of a `Map`. A `List`'s indexes come from `entries()`, as spec section 12
+/// writes. PHP stores an all-digit string key as an `int`, so the key of a `Map<string, V>` reads back as
+/// `int|string`.
+#[test]
+fn a_key_and_value_loop_reads_a_map_and_its_keys_as_php_stores_them() {
+    let sharp = "namespace Demo;\n\nclass Loops\n{\n    public int run(List<int> sizes, Map<string, int> counts)\n    {\n        let total = 0;\n        for (const [index, size] of sizes) {\n            total += index + size;\n        }\n        for (const [name, count] of counts) {\n            total += strlen(name) + count;\n        }\n        return total;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Loops.sharp", sharp), &[]),
+        ["8:37 invalid-iterator", "12:29 possibly-invalid-argument"]
+    );
 }

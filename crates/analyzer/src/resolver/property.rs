@@ -37,7 +37,6 @@ use mago_word::Word;
 use mago_word::concat_word;
 use mago_word::word;
 
-use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
 use crate::code::IssueCode;
 use crate::context::Context;
@@ -47,6 +46,7 @@ use crate::external::PropertyAccessKind;
 use crate::resolver::class_name::report_non_existent_class_like;
 use crate::resolver::method::run_forwarded_methods;
 use crate::resolver::selector::resolve_member_selector;
+use crate::utils::expression::analyze_member_object;
 use crate::utils::expression::is_this;
 use crate::utils::names::display_class_like_name;
 use crate::utils::template::get_template_types_for_class_member;
@@ -107,10 +107,7 @@ where
 {
     let mut result = PropertyResolutionResult::default();
 
-    let was_inside_general_use = block_context.flags.inside_general_use();
-    block_context.flags.set_inside_general_use(true);
-    object_expression.analyze(context, block_context, artifacts)?;
-    block_context.flags.set_inside_general_use(was_inside_general_use);
+    analyze_member_object(context, block_context, artifacts, object_expression, is_null_safe)?;
 
     let selectors = resolve_member_selector(context, block_context, artifacts, property_selector, true)?;
 

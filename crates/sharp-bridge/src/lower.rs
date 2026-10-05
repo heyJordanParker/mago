@@ -777,14 +777,14 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.node(SHARP_AST_PROP, 0, line, &[object, property])
             }
             Expression::Call(Call::NullSafeMethod(call)) => {
-                let object = self.expression(call.object);
+                let object = self.null_safe_object(call.object);
                 let method = self.member(&call.method);
                 let arguments = self.arguments(&call.argument_list);
 
                 self.node(SHARP_AST_NULLSAFE_METHOD_CALL, 0, line, &[object, method, arguments])
             }
             Expression::Access(Access::NullSafeProperty(access)) => {
-                let object = self.expression(access.object);
+                let object = self.null_safe_object(access.object);
                 let property = self.member(&access.property);
 
                 self.node(SHARP_AST_NULLSAFE_PROP, 0, line, &[object, property])
@@ -804,6 +804,20 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             }
             _ => unreachable!("check_slice refuses the expression `{expression}`"),
         })
+    }
+
+    /// The object of `?.`. An index there reads a missing key as null, as `??` does, so `x[k]?.name` is
+    /// `($x[$k] ?? null)?->name`, where a bare `x[k]` throws on a missing key (spec section 12).
+    fn null_safe_object(&mut self, object: &Expression) -> u32 {
+        let value = self.expression(object);
+        if !matches!(object.unparenthesized(), Expression::ArrayAccess(_)) {
+            return value;
+        }
+
+        let line = self.line(object);
+        let null = self.zval(line, sharp_value::SHARP_NULL, |_| {});
+
+        self.node(SHARP_AST_COALESCE, 0, line, &[value, null])
     }
 
     /// A list or map literal is an `ARRAY` with `ZEND_ARRAY_SYNTAX_SHORT`, as php-src's grammar builds `[…]`. Each

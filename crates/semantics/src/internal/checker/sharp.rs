@@ -120,7 +120,8 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   by `|`, and an optional variable written without `$`, which lives until the clause's block ends. A local statement can have its type written, as in `Money? total = null;` or
 ///   `const int base = 2;`, from the types above but `void`.
 /// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter, a member written
-///   `object.name`, or an index of one of them written `target[key]`.
+///   `object.name`, or an index of one of them written `target[key]`. The analyzer, which knows the types, allows an
+///   index write only on a `Map`, and a read not under `??` or `?.` only on a `List`, as spec section 12 decides.
 /// - In expressions: literals, list literals `[a, b]`, map literals `["key": value]` and `[:]`, index reads
 ///   `value[key]`, templates, parentheses, bare names, assignment, the operators below, and method calls
 ///   and property reads written with `.` or `?.` and a member name, `new Class(...)` on a class written by its short

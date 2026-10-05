@@ -34,7 +34,6 @@ use mago_word::Word;
 use mago_word::ascii_lowercase_word;
 use mago_word::word;
 
-use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
 use crate::code::IssueCode;
 use crate::context::Context;
@@ -43,6 +42,7 @@ use crate::error::AnalysisError;
 use crate::resolver::class_name::report_non_existent_class_like;
 use crate::resolver::property::localize_property_type;
 use crate::resolver::selector::resolve_member_selector;
+use crate::utils::expression::analyze_member_object;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_method_name;
 use crate::visibility::check_method_visibility;
@@ -178,10 +178,7 @@ where
     let mut result = MethodResolutionResult::default();
     let mut asserted_descendant_method_references = Vec::new();
 
-    let was_inside_general_use = block_context.flags.inside_general_use();
-    block_context.flags.set_inside_general_use(true);
-    object.analyze(context, block_context, artifacts)?;
-    block_context.flags.set_inside_general_use(was_inside_general_use);
+    analyze_member_object(context, block_context, artifacts, object, is_null_safe)?;
 
     let resolved_selectors = resolve_member_selector(context, block_context, artifacts, selector, false)?;
     let mut method_names = Vec::new();

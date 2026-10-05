@@ -1679,6 +1679,40 @@ fn null_safe_calls_and_reads_are_nullsafe_kinds() {
 }
 
 /// ```php
+/// return ($extra[0] ?? null)?->value ?? ($extra[1] ?? null)?->total();
+/// ```
+///
+/// `?.` reads a missing key as null, as `??` does, so the index it reads from is the left side of a `COALESCE`.
+#[test]
+fn null_safe_access_on_an_index_coalesces_a_missing_key_to_null() {
+    assert_eq!(
+        body("        return extra[0]?.value ?? (extra[1])?.total();\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                COALESCE
+                  NULLSAFE_PROP
+                    COALESCE
+                      DIM
+                        VAR
+                          ZVAL "extra"
+                        ZVAL 0
+                      ZVAL null
+                    ZVAL "value"
+                  NULLSAFE_METHOD_CALL
+                    COALESCE
+                      DIM
+                        VAR
+                          ZVAL "extra"
+                        ZVAL 1
+                      ZVAL null
+                    ZVAL "total"
+                    ARG_LIST
+        "#}
+    );
+}
+
+/// ```php
 /// return ($extra + 1) * 2;
 /// ```
 #[test]

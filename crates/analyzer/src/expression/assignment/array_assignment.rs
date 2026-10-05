@@ -715,6 +715,20 @@ where
             array_expression_type = scoped_type;
         }
 
+        // Spec section 12 keeps a PHP# `List`'s keys without gaps, so it changes by `set` and `add`, never by index.
+        if context.dialect.is_sharp()
+            && array_expression_type.types.iter().any(|atomic| matches!(atomic, TAtomic::Array(TArray::List(_))))
+        {
+            context.collector.report_with_code(
+                IssueCode::InvalidArrayAccess,
+                Issue::error("A `List` is not written by index, because a write could leave a gap in its keys.")
+                    .with_annotation(Annotation::primary(array_target.span()).with_message("This writes to a `List`."))
+                    .with_help(
+                        "Change an element with `list.set(index, value)`, and append one with `list.add(value)`.",
+                    ),
+            );
+        }
+
         let new_index_type = array_target_index_type.unwrap_or(Rc::new(get_non_negative_int()));
 
         let is_last = i == array_target_expressions.len() - 1;
