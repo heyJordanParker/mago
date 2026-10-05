@@ -54,15 +54,16 @@ pub struct CheckingWalker;
 impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingWalker {
     #[inline]
     fn walk_in_node(&self, node: Node<'ast, 'arena>, context: &mut Context<'_, 'ast, 'arena>) {
-        // A parse error already stops the file, so it is the one error to fix first.
-        if context.program.dialect.is_sharp() && context.program.errors.is_empty() {
+        if checks_slice(context) {
             checker::sharp::check_slice(node, context);
         }
     }
 
     #[inline]
     fn walk_out_node(&self, _node: Node<'ast, 'arena>, context: &mut Context<'_, 'ast, 'arena>) {
-        context.slice_places.pop();
+        if checks_slice(context) {
+            context.slice_places.pop();
+        }
     }
 
     #[inline]
@@ -383,4 +384,11 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingW
     fn walk_in_pipe(&self, pipe: &'ast Pipe<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
         checker::pipe::check_pipe(pipe, context);
     }
+}
+
+/// Whether the walk checks the PHP# slice, so the place stack pops only what it pushed. A parse error already stops
+/// the file, so it is the one error to fix first.
+#[inline]
+fn checks_slice(context: &Context<'_, '_, '_>) -> bool {
+    context.program.dialect.is_sharp() && context.program.errors.is_empty()
 }
