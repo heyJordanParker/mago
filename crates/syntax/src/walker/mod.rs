@@ -37,6 +37,7 @@ use crate::cst::cst::Closure;
 use crate::cst::cst::ClosureUseClause;
 use crate::cst::cst::ClosureUseClauseVariable;
 use crate::cst::cst::CompositeString;
+use crate::cst::cst::ComputedProperty;
 use crate::cst::cst::Conditional;
 use crate::cst::cst::Constant;
 use crate::cst::cst::ConstantAccess;
@@ -133,6 +134,7 @@ use crate::cst::cst::Method;
 use crate::cst::cst::MethodAbstractBody;
 use crate::cst::cst::MethodBody;
 use crate::cst::cst::MethodCall;
+use crate::cst::cst::MethodExpressionBody;
 use crate::cst::cst::MethodPartialApplication;
 use crate::cst::cst::MissingArrayElement;
 use crate::cst::cst::MixedUseItemList;
@@ -923,7 +925,27 @@ generate_ast_walker! {
             Property::Hooked(hooked_property) => {
                 walker.walk_hooked_property(hooked_property, context);
             }
+            Property::Computed(computed_property) => {
+                walker.walk_computed_property(computed_property, context);
+            }
         }
+    }
+
+    'arena ComputedProperty as computed_property => {
+        for attribute_list in &computed_property.attribute_lists {
+            walker.walk_attribute_list(attribute_list, context);
+        }
+
+        for modifier in &computed_property.modifiers {
+            walker.walk_modifier(modifier, context);
+        }
+
+        if let Some(hint) = &computed_property.hint {
+            walker.walk_hint(hint, context);
+        }
+
+        walker.walk_direct_variable(&computed_property.variable, context);
+        walker.walk_property_hook_concrete_expression_body(&computed_property.body, context);
     }
 
     'arena PlainProperty as plain_property => {
@@ -1147,7 +1169,14 @@ generate_ast_walker! {
             MethodBody::Concrete(method_concrete_body) => {
                 walker.walk_block(method_concrete_body, context);
             }
+            MethodBody::Expression(method_expression_body) => {
+                walker.walk_method_expression_body(method_expression_body, context);
+            }
         }
+    }
+
+    'arena MethodExpressionBody as method_expression_body => {
+        walker.walk_expression(method_expression_body.expression, context);
     }
 
     'arena MethodAbstractBody as method_abstract_body => {

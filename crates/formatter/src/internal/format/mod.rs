@@ -1023,6 +1023,7 @@ where
             match self {
                 Property::Plain(p) => p.format(f),
                 Property::Hooked(p) => p.format(f),
+                Property::Computed(_) => unreachable!("`mago format` skips PHP# files, the only ones with it"),
             }
         })
     }

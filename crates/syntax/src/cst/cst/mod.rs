@@ -57,6 +57,8 @@ pub use crate::cst::cst::class_like::member::ClassLikeMemberSequenceExt;
 pub use crate::cst::cst::class_like::method::Method;
 pub use crate::cst::cst::class_like::method::MethodAbstractBody;
 pub use crate::cst::cst::class_like::method::MethodBody;
+pub use crate::cst::cst::class_like::method::MethodExpressionBody;
+pub use crate::cst::cst::class_like::property::ComputedProperty;
 pub use crate::cst::cst::class_like::property::HookedProperty;
 pub use crate::cst::cst::class_like::property::PlainProperty;
 pub use crate::cst::cst::class_like::property::Property;

@@ -42,6 +42,7 @@ use crate::cst::cst::Closure;
 use crate::cst::cst::ClosureUseClause;
 use crate::cst::cst::ClosureUseClauseVariable;
 use crate::cst::cst::CompositeString;
+use crate::cst::cst::ComputedProperty;
 use crate::cst::cst::Conditional;
 use crate::cst::cst::Constant;
 use crate::cst::cst::ConstantAccess;
@@ -138,6 +139,7 @@ use crate::cst::cst::Method;
 use crate::cst::cst::MethodAbstractBody;
 use crate::cst::cst::MethodBody;
 use crate::cst::cst::MethodCall;
+use crate::cst::cst::MethodExpressionBody;
 use crate::cst::cst::MethodPartialApplication;
 use crate::cst::cst::MissingArrayElement;
 use crate::cst::cst::MixedUseItemList;
@@ -296,6 +298,8 @@ pub enum NodeKind {
     Method,
     MethodAbstractBody,
     MethodBody,
+    MethodExpressionBody,
+    ComputedProperty,
     HookedProperty,
     PlainProperty,
     Property,
@@ -536,6 +540,8 @@ pub enum Node<'ast, 'arena> {
     Method(&'ast Method<'arena>),
     MethodAbstractBody(&'ast MethodAbstractBody<'arena>),
     MethodBody(&'ast MethodBody<'arena>),
+    MethodExpressionBody(&'ast MethodExpressionBody<'arena>),
+    ComputedProperty(&'ast ComputedProperty<'arena>),
     HookedProperty(&'ast HookedProperty<'arena>),
     PlainProperty(&'ast PlainProperty<'arena>),
     Property(&'ast Property<'arena>),
@@ -853,6 +859,8 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Self::Method(_) => NodeKind::Method,
             Self::MethodAbstractBody(_) => NodeKind::MethodAbstractBody,
             Self::MethodBody(_) => NodeKind::MethodBody,
+            Self::MethodExpressionBody(_) => NodeKind::MethodExpressionBody,
+            Self::ComputedProperty(_) => NodeKind::ComputedProperty,
             Self::HookedProperty(_) => NodeKind::HookedProperty,
             Self::PlainProperty(_) => NodeKind::PlainProperty,
             Self::Property(_) => NodeKind::Property,
@@ -1300,7 +1308,22 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Node::MethodBody(node) => match node {
                 MethodBody::Abstract(node) => f(Node::MethodAbstractBody(node)),
                 MethodBody::Concrete(node) => f(Node::Block(node)),
+                MethodBody::Expression(node) => f(Node::MethodExpressionBody(node)),
             },
+            Node::MethodExpressionBody(node) => f(Node::Expression(node.expression)),
+            Node::ComputedProperty(node) => {
+                for item in node.attribute_lists.iter() {
+                    f(Node::AttributeList(item));
+                }
+                for item in node.modifiers.iter() {
+                    f(Node::Modifier(item));
+                }
+                for item in node.hint.iter() {
+                    f(Node::Hint(item));
+                }
+                f(Node::DirectVariable(&node.variable));
+                f(Node::PropertyHookConcreteExpressionBody(&node.body));
+            }
             Node::HookedProperty(node) => {
                 for item in node.attribute_lists.iter() {
                     f(Node::AttributeList(item));
@@ -1340,6 +1363,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Node::Property(node) => match node {
                 Property::Plain(node) => f(Node::PlainProperty(node)),
                 Property::Hooked(node) => f(Node::HookedProperty(node)),
+                Property::Computed(node) => f(Node::ComputedProperty(node)),
             },
             Node::PropertyAbstractItem(node) => {
                 f(Node::DirectVariable(&node.variable));
@@ -2530,6 +2554,8 @@ impl HasSpan for Node<'_, '_> {
             Self::Method(node) => node.span(),
             Self::MethodAbstractBody(node) => node.span(),
             Self::MethodBody(node) => node.span(),
+            Self::MethodExpressionBody(node) => node.span(),
+            Self::ComputedProperty(node) => node.span(),
             Self::HookedProperty(node) => node.span(),
             Self::PlainProperty(node) => node.span(),
             Self::Property(node) => node.span(),

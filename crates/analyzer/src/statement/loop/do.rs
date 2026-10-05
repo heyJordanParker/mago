@@ -160,6 +160,8 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for DoWhile<'arena> {
             infinite_loop,
         );
 
+        context.report_non_bool_condition(self.condition, artifacts.get_expression_type(self.condition), "do … while");
+
         Ok(())
     }
 }

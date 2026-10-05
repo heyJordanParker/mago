@@ -6,7 +6,9 @@ use mago_word::WordSet;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
 use mago_codex::reference::SymbolReferences;
+use mago_codex::ttype::TType;
 use mago_codex::ttype::resolution::TypeResolutionContext;
+use mago_codex::ttype::union::TUnion;
 use mago_collector::Collector;
 use mago_database::file::File;
 use mago_names::ResolvedNames;
@@ -19,6 +21,7 @@ use mago_reporting::IssueCollection;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::comments::docblock::PrecedingDocblocks;
+use mago_syntax::cst::Expression;
 use mago_syntax::cst::Identifier;
 use mago_syntax::cst::Trivia;
 use mago_syntax::dialect::Dialect;
@@ -131,6 +134,35 @@ where
     #[inline]
     pub(crate) fn check_throws(&self) -> bool {
         self.settings.check_throws && !self.dialect.is_sharp()
+    }
+
+    /// Reports a PHP# condition, or an operand of `&&`, `||` or `!`, whose type is not `bool`. Spec section 21 makes each
+    /// of them a `bool`, so PHP's truthiness never applies. A PHP file keeps testing truthiness.
+    pub(crate) fn report_non_bool_condition(
+        &mut self,
+        condition: &Expression<'_>,
+        condition_type: Option<&TUnion>,
+        construct: &'static str,
+    ) {
+        if !self.dialect.is_sharp() {
+            return;
+        }
+
+        let Some(condition_type) = condition_type else {
+            return;
+        };
+
+        if condition_type.is_bool() || condition_type.is_never() {
+            return;
+        }
+
+        self.collector.report_with_code(
+            IssueCode::InvalidOperand,
+            Issue::error(format!("`{construct}` takes a `bool`, but this is `{}`.", condition_type.get_id()))
+                .with_annotation(Annotation::primary(condition.span()).with_message("This is not `bool`."))
+                .with_note("Spec section 21 makes every PHP# condition a `bool`, so PHP's truthiness never applies.")
+                .with_help("Compare the value, as in `count > 0` or `name != \"\"`."),
+        );
     }
 
     #[inline]
