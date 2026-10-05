@@ -19,7 +19,7 @@ Les indicateurs globaux doivent venir avant `analyze`. Voir l'[aperçu de la CLI
 
 | Argument | Description |
 | :--- | :--- |
-| `[PATHS]...` | Fichiers ou répertoires à analyser. Lorsqu'ils sont fournis, ils remplacent les `paths` de `mago.toml` pour cette exécution. |
+| `[PATHS]...` | Fichiers ou répertoires dont les problèmes sont signalés. Mago analyse toujours chaque fichier des `paths` de `mago.toml`, plus ceux-ci, afin que les vérifications qui comparent des fichiers voient tout le projet. Il signale les problèmes situés dans ces chemins, plus les problèmes qui ne nomment aucun fichier. |
 
 ## Options spécifiques à l'analyseur
 

@@ -1436,6 +1436,7 @@ dependencies = [
  "mago-php-version",
  "mago-prelude",
  "mago-reporting",
+ "mago-server",
  "mago-syntax",
  "mago-syntax-core",
  "mago-text-edit",
@@ -1518,6 +1519,14 @@ dependencies = [
  "regex",
  "ryu",
  "tracing",
+]
+
+[[package]]
+name = "mago-build-id"
+version = "1.53.0"
+dependencies = [
+ "tempfile",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -1861,6 +1870,19 @@ dependencies = [
  "mago-span",
  "mago-syntax",
  "mago-syntax-core",
+]
+
+[[package]]
+name = "mago-server"
+version = "1.53.0"
+dependencies = [
+ "foldhash",
+ "mago-analyzer",
+ "mago-codex",
+ "mago-database",
+ "mago-orchestrator",
+ "mago-reporting",
+ "mago-syntax",
 ]
 
 [[package]]

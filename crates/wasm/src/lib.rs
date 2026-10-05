@@ -202,7 +202,6 @@ pub fn run(code: String, settings_js: JsValue) -> Result<JsValue, JsValue> {
         prelude.symbol_references,
         analyzer_settings,
         ParserSettings::default(),
-        false,
         plugin_registry,
     );
 
@@ -322,7 +321,6 @@ pub fn analyze(code: String, php_version: &str) -> Result<JsValue, JsValue> {
         prelude.symbol_references,
         settings,
         ParserSettings::default(),
-        false,
         plugin_registry,
     );
 
