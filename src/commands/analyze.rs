@@ -55,7 +55,6 @@ use mago_codex::reference::SymbolReferences;
 use mago_database::Database;
 use mago_database::DatabaseConfiguration;
 use mago_database::DatabaseReader;
-use mago_database::file::File;
 use mago_database::file::FileType;
 use mago_database::membership::WorkspaceMatcher;
 use mago_database::watcher::DatabaseWatcher;
@@ -558,18 +557,7 @@ impl AnalyzeCommand {
 
             tracing::info!("Detected {} file change(s), re-analyzing...", changed_file_ids.len());
 
-            for file_id in &changed_file_ids {
-                if let Ok(file) = watcher.database().get(file_id) {
-                    server.database_mut().add(File::new(
-                        file.name.clone(),
-                        file.file_type,
-                        file.path.clone(),
-                        file.contents.clone(),
-                    ));
-                } else {
-                    server.database_mut().delete(*file_id);
-                }
-            }
+            *server.database_mut() = watcher.database().clone().into_static();
 
             let analysis_result = server.analyze_incremental(&changed_file_ids)?;
 
