@@ -207,6 +207,7 @@ impl AnalysisService {
                 &artifacts,
                 &self.codebase,
                 node_analysis_requirements.as_ref(),
+                true,
             )?);
             let mut project_result = AnalysisResult::new(analysis_result.symbol_references);
             project_result.issues = issues.clone();

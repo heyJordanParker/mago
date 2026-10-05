@@ -4,6 +4,7 @@ use std::borrow::Cow;
 
 use mago_allocator::LocalArena;
 use mago_database::file::File;
+use mago_php_version::PHPVersion;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_syntax::cst::*;
@@ -201,7 +202,66 @@ fn a_by_reference_parameter_is_a_parse_error() {
     assert!(!program.errors.is_empty());
 }
 
-/// `required`, `via`, a named constructor and a computed property are spec syntax outside the slice. Each one is a
+#[test]
+fn an_expression_bodied_method_is_its_arrow_its_expression_and_a_semicolon() {
+    const CODE: &str = "class Report\n{\n    public int total() => this.count + 1;\n\n    public void touch() => this.save();\n\n    public Report(int count) => this.count = count;\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let bodies: Vec<_> = class_members(program)
+        .iter()
+        .map(|member| {
+            let ClassLikeMember::Method(method) = member else {
+                panic!("expected a method, got {member:#?}");
+            };
+            let MethodBody::Expression(body) = &method.body else {
+                panic!("expected an expression body, got {:#?}", method.body);
+            };
+
+            (source(CODE, method), source(CODE, &method.body), source(CODE, body.expression))
+        })
+        .collect();
+
+    assert_eq!(
+        bodies,
+        [
+            ("public int total() => this.count + 1;", "=> this.count + 1;", "this.count + 1"),
+            ("public void touch() => this.save();", "=> this.save();", "this.save()"),
+            ("public Report(int count) => this.count = count;", "=> this.count = count;", "this.count = count"),
+        ]
+    );
+}
+
+#[test]
+fn a_computed_property_is_its_type_its_name_and_an_expression_body() {
+    const CODE: &str = "class Report\n{\n    [Shown] public string slug => Str.slug(this.name);\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(ClassLikeMember::Property(Property::Computed(property))) = class_members(program).first() else {
+        panic!("expected a computed property, got {:#?}", class_members(program));
+    };
+    assert_eq!(property.variable.name, b"slug");
+    assert_eq!(source(CODE, property.hint.as_ref().expect("a type")), "string");
+    assert_eq!(source(CODE, &property.body), "=> Str.slug(this.name);");
+    assert_eq!(source(CODE, property.body.expression), "Str.slug(this.name)");
+    assert_eq!(source(CODE, property), "[Shown] public string slug => Str.slug(this.name);");
+}
+
+#[test]
+fn php_keeps_refusing_an_arrow_after_a_method_or_a_property() {
+    for member in ["public function total(): int => 1;", "public int $total => 1;"] {
+        let arena = LocalArena::new();
+        let code: &'static str = Box::leak(format!("<?php class Report {{ {member} }}").into_boxed_str());
+        let program = parse(&arena, "src/Report.php", code);
+
+        assert!(!program.errors.is_empty(), "{member}");
+    }
+}
+
+/// `required`, `via` and a named constructor are spec syntax outside the slice. Each one is a
 /// single error where it starts, and the class around it still parses.
 #[test]
 fn spec_syntax_outside_the_slice_is_one_not_supported_error_where_it_starts() {
@@ -223,7 +283,6 @@ fn spec_syntax_outside_the_slice_is_one_not_supported_error_where_it_starts() {
             "A named constructor is not supported yet in PHP#.",
             "Report.fromJson",
         ),
-        ("public string slug => this.name;", "A computed property is not supported yet in PHP#.", "=>"),
     ] {
         let arena = LocalArena::new();
         let code: &'static str = Box::leak(
@@ -1001,6 +1060,46 @@ fn a_php_file_keeps_nesting_deeper_than_512_levels() {
 
     let terms = Node::Program(program).filter_map(|node| matches!(node, Node::DirectVariable(_)).then_some(()));
     assert_eq!(terms.len(), 100_001);
+}
+
+/// The span of a PHP sum or call chain of 10,000 terms reaches its first term, and whether it is constant reaches its
+/// last, on a thread whose stack is far smaller than one frame per term, as a rayon worker's or a PHP fiber's stack is
+/// for a deep enough chain.
+#[test]
+fn a_php_chain_of_10_000_terms_has_a_span_and_a_constness_on_a_small_stack() {
+    let sum = vec!["1"; 10_000].join(" + ");
+    let chain = format!("$this{}", "->run(1)".repeat(10_000));
+    let code = format!(
+        "<?php\nnamespace App;\n\nclass Report\n{{\n    public function run(int $extra): int\n    {{\n        return {sum};\n    }}\n\n    public function chain(): self\n    {{\n        return {chain};\n    }}\n}}\n"
+    );
+    let [sum_span, chain_span] = [&sum, &chain].map(|terms| {
+        let start = code.find(terms.as_str()).expect("the chain is written");
+        (start, start + terms.len())
+    });
+
+    let values = std::thread::Builder::new()
+        .stack_size(128 * 1024)
+        .spawn(move || {
+            let arena = LocalArena::new();
+            let program = parse(&arena, "src/Report.php", Box::leak(code.into_boxed_str()));
+            assert!(program.errors.is_empty(), "{:#?}", program.errors);
+
+            Node::Program(program).filter_map(|node| match node {
+                Node::Return(statement) => statement.value.map(|value| {
+                    let span = value.span();
+                    (
+                        (span.start.offset as usize, span.end.offset as usize),
+                        value.is_constant(&PHPVersion::LATEST, false),
+                    )
+                }),
+                _ => None,
+            })
+        })
+        .expect("the thread starts")
+        .join()
+        .expect("the spans and constness are computed");
+
+    assert_eq!(values, [(sum_span, true), (chain_span, false)]);
 }
 
 /// The source of every attribute list under `node`, in source order.

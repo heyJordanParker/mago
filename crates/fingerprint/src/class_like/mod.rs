@@ -8,6 +8,7 @@ use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeConstant;
 use mago_syntax::cst::ClassLikeConstantItem;
 use mago_syntax::cst::ClassLikeMember;
+use mago_syntax::cst::ComputedProperty;
 use mago_syntax::cst::Enum;
 use mago_syntax::cst::EnumBackingTypeHint;
 use mago_syntax::cst::EnumCase;
@@ -292,7 +293,31 @@ impl Fingerprintable for Property<'_> {
                 "property_hooked".hash(hasher);
                 hooked.fingerprint_with_hasher(hasher, resolved_names, options);
             }
+            Property::Computed(computed) => {
+                "property_computed".hash(hasher);
+                computed.fingerprint_with_hasher(hasher, resolved_names, options);
+            }
         }
+    }
+}
+
+impl Fingerprintable for ComputedProperty<'_> {
+    #[inline]
+    fn fingerprint_with_hasher<H>(
+        &self,
+        hasher: &mut H,
+        resolved_names: &ResolvedNames,
+        options: &FingerprintOptions<'_>,
+    ) where
+        H: std::hash::Hasher,
+    {
+        for attribute_list in &self.attribute_lists {
+            attribute_list.fingerprint_with_hasher(hasher, resolved_names, options);
+        }
+        crate::modifier::fingerprint_modifiers(self.modifiers.iter(), hasher, resolved_names, options);
+        self.hint.fingerprint_with_hasher(hasher, resolved_names, options);
+        self.variable.fingerprint_with_hasher(hasher, resolved_names, options);
+        self.body.expression.fingerprint_with_hasher(hasher, resolved_names, options);
     }
 }
 
@@ -548,6 +573,10 @@ impl Fingerprintable for MethodBody<'_> {
             MethodBody::Concrete(block) => {
                 "method_concrete".hash(hasher);
                 block.fingerprint_with_hasher(hasher, resolved_names, options);
+            }
+            MethodBody::Expression(body) => {
+                "method_expression".hash(hasher);
+                body.expression.fingerprint_with_hasher(hasher, resolved_names, options);
             }
         }
     }

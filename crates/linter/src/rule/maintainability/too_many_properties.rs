@@ -113,7 +113,7 @@ impl LintRule for TooManyPropertiesRule {
                 Property::Plain(plain_property) => {
                     properties += plain_property.items.len();
                 }
-                Property::Hooked(_) => {
+                Property::Hooked(_) | Property::Computed(_) => {
                     properties += 1;
                 }
             }

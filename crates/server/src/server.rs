@@ -1,7 +1,7 @@
 //! The single-workspace [`Server`]: the transport-agnostic core that owns one
 //! workspace's file database and analysis service, and answers queries against them.
 
-use foldhash::HashMap;
+use foldhash::HashSet;
 
 use mago_analyzer::analysis_result::AnalysisResult;
 use mago_codex::metadata::CodebaseMetadata;
@@ -10,9 +10,9 @@ use mago_database::Database;
 use mago_database::DatabaseReader;
 use mago_database::file::FileId;
 use mago_database::membership::WorkspaceMatcher;
+use mago_orchestrator::error::OrchestratorError;
 use mago_orchestrator::service::incremental_analysis::IncrementalAnalysisService;
 use mago_reporting::Issue;
-use mago_reporting::IssueCollection;
 
 use crate::error::ServerError;
 use crate::settings::Settings;
@@ -25,6 +25,7 @@ use crate::settings::Settings;
 pub struct Server {
     database: Database<'static>,
     service: IncrementalAnalysisService,
+    scope: Option<WorkspaceMatcher>,
 }
 
 impl Server {
@@ -44,7 +45,7 @@ impl Server {
         let service = IncrementalAnalysisService::new(database.read_only(), prelude, analyzer, parser, plugin_registry)
             .with_progress_bars(use_progress_bars);
 
-        Self { database, service }
+        Self { database, service, scope: None }
     }
 
     /// Build the codebase and run the before-analysis hooks, then analyze no
@@ -52,6 +53,16 @@ impl Server {
     #[must_use]
     pub fn scan_only(mut self) -> Self {
         self.service = self.service.scan_only();
+        self
+    }
+
+    /// Analyze the whole workspace, but report only the issues in files `scope` contains, plus the
+    /// issues that name no file. An issue is reported in its primary annotation's file, else in its
+    /// first annotation's. The node-analysis hooks report only in the file they inspect, so they run
+    /// only in the files `scope` contains.
+    #[must_use]
+    pub fn scoped_to(mut self, scope: WorkspaceMatcher) -> Self {
+        self.scope = Some(scope);
         self
     }
 
@@ -74,7 +85,7 @@ impl Server {
     /// Returns [`ServerError`] if the underlying analysis fails. The failed
     /// pass leaves no state behind: the next pass analyzes the whole workspace.
     pub fn analyze(&mut self) -> Result<AnalysisResult, ServerError> {
-        self.service.analyze().inspect_err(|_| self.service.reset()).map_err(ServerError::from)
+        self.pass(IncrementalAnalysisService::analyze)
     }
 
     /// Refresh the analysis service's view of the database, then re-analyze the
@@ -86,41 +97,46 @@ impl Server {
     /// pass leaves no state behind: the next pass analyzes the whole workspace.
     pub fn analyze_incremental(&mut self, changed: &[FileId]) -> Result<AnalysisResult, ServerError> {
         self.service.update_database(self.database.read_only());
-        let result = if self.service.is_initialized() {
-            self.service.analyze_incremental(Some(changed))
+        if self.service.is_initialized() {
+            self.pass(|service| service.analyze_incremental(Some(changed)))
         } else {
-            self.service.analyze()
-        };
-
-        result.inspect_err(|_| self.service.reset()).map_err(ServerError::from)
+            self.pass(IncrementalAnalysisService::analyze)
+        }
     }
 
-    /// The issues of the most recent analysis pass reported in a file `scope` contains, plus the
-    /// issues that name no file. An issue is reported in its primary annotation's file, else in its
-    /// first annotation's.
-    #[must_use]
-    pub fn issues_in(&self, scope: &WorkspaceMatcher) -> IssueCollection {
-        let mut in_scope = HashMap::<FileId, bool>::default();
+    /// Run one analysis pass with the node-analysis hooks only in the scope's files, and report
+    /// only their issues. A failed pass resets the service.
+    fn pass(
+        &mut self,
+        analyze: impl FnOnce(&mut IncrementalAnalysisService) -> Result<AnalysisResult, OrchestratorError>,
+    ) -> Result<AnalysisResult, ServerError> {
+        let files = self.scope.as_ref().map(|scope| {
+            self.database
+                .files()
+                .filter(|file| file.path.as_deref().is_some_and(|path| scope.contains(path)))
+                .map(|file| file.id)
+                .collect::<HashSet<_>>()
+        });
+        self.service.set_node_analysis_files(files.clone());
 
-        self.service
-            .last_issues()
-            .unwrap_or_default()
+        analyze(&mut self.service)
+            .inspect_err(|_| self.service.reset())
+            .map(|result| reported_in(result, files.as_ref()))
+            .map_err(ServerError::from)
+    }
+}
+
+/// `result` with only the issues reported in `files`, plus the issues that name no file, or every
+/// issue when `files` is `None`.
+fn reported_in(mut result: AnalysisResult, files: Option<&HashSet<FileId>>) -> AnalysisResult {
+    if let Some(files) = files {
+        result.issues = std::mem::take(&mut result.issues)
             .into_iter()
-            .filter(|issue| {
-                let Some(file_id) = reported_file(issue) else {
-                    return true;
-                };
-
-                *in_scope.entry(file_id).or_insert_with(|| {
-                    self.database
-                        .get_ref(&file_id)
-                        .ok()
-                        .and_then(|file| file.path.as_deref())
-                        .is_some_and(|path| scope.contains(path))
-                })
-            })
-            .collect()
+            .filter(|issue| reported_file(issue).is_none_or(|file_id| files.contains(&file_id)))
+            .collect();
     }
+
+    result
 }
 
 /// The file `issue` is reported in: its primary annotation's file, else its first annotation's, or
@@ -178,7 +194,7 @@ mod tests {
     }
 
     #[test]
-    fn the_issues_in_a_scope_are_those_whose_primary_annotation_lies_in_it() {
+    fn a_scoped_server_reports_the_issues_whose_primary_annotation_lies_in_its_scope() {
         let (mut server, _, b) = two_file_server();
         let all = server.analyze().expect("analysis").issues;
 
@@ -190,7 +206,7 @@ mod tests {
             vec![b"php"],
         ))
         .expect("the scope compiles");
-        let scoped = server.issues_in(&scope);
+        let scoped = two_file_server().0.scoped_to(scope).analyze().expect("scoped analysis").issues;
 
         let primary_file = |issue: &Issue| {
             issue

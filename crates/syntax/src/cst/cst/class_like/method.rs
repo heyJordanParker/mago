@@ -6,11 +6,13 @@ use mago_span::Span;
 use crate::cst::Terminator;
 use crate::cst::cst::attribute::AttributeList;
 use crate::cst::cst::block::Block;
+use crate::cst::cst::expression::Expression;
 use crate::cst::cst::function_like::parameter::FunctionLikeParameterList;
 use crate::cst::cst::function_like::r#return::FunctionLikeReturnTypeHint;
 use crate::cst::cst::identifier::LocalIdentifier;
 use crate::cst::cst::keyword::Keyword;
 use crate::cst::cst::modifier::Modifier;
+use crate::cst::cst::type_hint::Hint;
 use crate::cst::sequence::Sequence;
 
 /// Represents a method statement in PHP.
@@ -50,6 +52,21 @@ pub struct Method<'arena> {
 pub enum MethodBody<'arena> {
     Abstract(MethodAbstractBody<'arena>),
     Concrete(Block<'arena>),
+    Expression(MethodExpressionBody<'arena>),
+}
+
+/// The expression body of a PHP# method, which returns the expression, or runs it in a `void` method and the
+/// constructor, as in C#:
+///
+/// ```csharp
+/// public int total() => this.a + this.b;
+/// ```
+#[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct MethodExpressionBody<'arena> {
+    pub arrow: Span,
+    pub expression: &'arena Expression<'arena>,
+    pub semicolon: Span,
 }
 
 /// Represents the abstract body of a method statement in PHP.
@@ -86,6 +103,14 @@ impl Method<'_> {
         matches!(self.body, MethodBody::Abstract(_))
     }
 
+    /// Returns `true` if the method returns a value: it has a return type other than `void` and `never`. A PHP#
+    /// expression body returns its expression in such a method, and runs it as a statement in any other.
+    #[inline]
+    #[must_use]
+    pub const fn returns_value(&self) -> bool {
+        matches!(&self.return_type_hint, Some(hint) if !matches!(hint.hint, Hint::Void(_) | Hint::Never(_)))
+    }
+
     /// Returns `true` if the method is static.
     #[inline]
     pub fn is_static(&self) -> bool {
@@ -120,7 +145,14 @@ impl HasSpan for MethodBody<'_> {
         match self {
             MethodBody::Abstract(body) => body.span(),
             MethodBody::Concrete(body) => body.span(),
+            MethodBody::Expression(body) => body.span(),
         }
+    }
+}
+
+impl HasSpan for MethodExpressionBody<'_> {
+    fn span(&self) -> Span {
+        Span::between(self.arrow, self.semicolon)
     }
 }
 

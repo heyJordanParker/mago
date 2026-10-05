@@ -165,6 +165,7 @@ struct NodeAnalysisTarget<'ast, 'arena> {
     node: Node<'ast, 'arena>,
     requirements: u8,
     targeted_hook_routes: Vec<u32>,
+    is_sharp_static_call: bool,
 }
 
 struct NodeAnalysisPlan<'ast, 'arena> {
@@ -246,7 +247,12 @@ fn build_node_analysis_plan<'ast, 'arena>(
         {
             let index = targets.len();
             by_node.insert((kind as u8, span.start.offset, span.end.offset), index);
-            targets.push(NodeAnalysisTarget { node, requirements: requested, targeted_hook_routes });
+            targets.push(NodeAnalysisTarget {
+                node,
+                requirements: requested,
+                targeted_hook_routes,
+                is_sharp_static_call,
+            });
         }
 
         let start = stack.len();
@@ -329,6 +335,9 @@ pub(super) fn has_node_analysis_target(
 impl FileAnalysisSnapshot {
     /// Builds a compact, thread-safe snapshot of one file's lazy analysis data.
     ///
+    /// Without `node_analysis`, the node-analysis hooks skip the file. Its syntax still marks
+    /// their targets, so an after-analysis hook reads it as when they run.
+    ///
     /// # Errors
     ///
     /// Returns an error when the source snapshot or an inferred type cannot be represented by the extension protocol.
@@ -339,6 +348,7 @@ impl FileAnalysisSnapshot {
         artifacts: &AnalysisArtifacts,
         codebase: &CodebaseMetadata,
         node_analysis_requirements: Option<&NodeAnalysisRequirements>,
+        node_analysis: bool,
     ) -> Result<Self, ExternalAnalyzerError> {
         let node_analysis_plan = node_analysis_requirements
             .map(|requirements| build_node_analysis_plan(program, artifacts, resolved_names, codebase, requirements));
@@ -356,7 +366,7 @@ impl FileAnalysisSnapshot {
         })?;
 
         let (encoded_target_source, encoded_target_analysis, node_analysis_targets) = if let Some(plan) =
-            node_analysis_plan.as_ref().filter(|_| matched_target_count != 0)
+            node_analysis_plan.as_ref().filter(|_| node_analysis && matched_target_count != 0)
         {
             let target_source = SourceSnapshot::targeted_with_filter(
                 program,
@@ -526,6 +536,7 @@ fn write_target_analysis(
         for route in &target.targeted_hook_routes {
             writer.write_u32(*route);
         }
+        writer.write_bool(target.is_sharp_static_call);
     }
 
     Ok(())

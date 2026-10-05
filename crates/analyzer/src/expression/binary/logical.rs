@@ -702,7 +702,7 @@ where
 
 /// Checks a single operand of a logical operation (like AND, OR, XOR) for problematic types.
 /// Reports errors for `mixed` and warnings for types that PHP coerces to boolean
-/// (e.g., `null`, `array`, `resource`, `object`).
+/// (e.g., `null`, `array`, `resource`, `object`). A PHP# operand must be `bool`, so no coercion applies.
 fn check_logical_operand<'arena, A>(
     context: &mut Context<'_, 'arena, A>,
     operand: &Expression<'arena>,
@@ -712,7 +712,9 @@ fn check_logical_operand<'arena, A>(
 ) where
     A: Arena,
 {
-    if operand_type.is_mixed() {
+    if context.dialect.is_sharp() {
+        context.report_non_bool_condition(operand, Some(operand_type), operator_name);
+    } else if operand_type.is_mixed() {
         context.collector.report_with_code(
             IssueCode::MixedOperand,
             Issue::error(format!("{side} operand in `{operator_name}` operation has `mixed` type."))
