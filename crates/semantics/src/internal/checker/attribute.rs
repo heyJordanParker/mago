@@ -19,6 +19,9 @@ pub fn check_attribute_list(attribute_list: &AttributeList, context: &mut Contex
         );
     }
 
+    // In PHP#, `check_slice` refuses every argument outside its constant expressions, which PHP takes as constant.
+    let checks_constants = !context.program.dialect.is_sharp();
+
     for attr in &attribute_list.attributes {
         let name = BytesDisplay(attr.name.value());
 
@@ -40,7 +43,7 @@ pub fn check_attribute_list(attribute_list: &AttributeList, context: &mut Contex
                             );
                         }
 
-                        if !arg.value.is_constant(&context.version, true) {
+                        if checks_constants && !arg.value.is_constant(&context.version, true) {
                             context.report(
                                 Issue::error(format!(
                                     "Attribute `{name}` argument contains a non-constant expression."
@@ -56,7 +59,7 @@ pub fn check_attribute_list(attribute_list: &AttributeList, context: &mut Contex
                         }
                     }
                     PartialArgument::Named(arg) => {
-                        if !arg.value.is_constant(&context.version, true) {
+                        if checks_constants && !arg.value.is_constant(&context.version, true) {
                             context.report(
                                 Issue::error(format!(
                                     "Attribute `{name}` argument contains a non-constant expression."
