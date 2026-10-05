@@ -34,6 +34,9 @@ pub(crate) const MAX_RECURSION_DEPTH: u16 = 512;
 #[derive(Debug, Default)]
 pub struct State {
     pub within_string_interpolation: bool,
+    /// Whether the parser is inside a `{ … }` block of statements, where a PHP# statement never starts with an
+    /// attribute list.
+    pub within_block: bool,
     pub recursion_depth: u16,
 }
 
