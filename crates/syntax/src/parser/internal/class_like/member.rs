@@ -19,7 +19,7 @@ where
     pub(crate) fn parse_classlike_member(&mut self) -> Result<ClassLikeMember<'arena>, ParseError> {
         let token = self.stream.lookahead(0)?.ok_or_else(|| self.stream.unexpected(None, &[]))?;
         Ok(match token.kind {
-            T!["#["] => {
+            T!["#["] | T!["["] if token.kind == T!["#["] || self.dialect.is_sharp() => {
                 let attributes = self.parse_attribute_list_sequence()?;
 
                 self.parse_classlike_member_with_attributes(attributes)?

@@ -17,7 +17,7 @@ pub enum OrchestratorError {
     CacheLockPoisoned,
     /// A tool was asked to process a PHP# file, which it does not support yet.
     SharpNotSupported {
-        /// The tool, such as `lint`.
+        /// The `mago` command, such as `lint`.
         tool: &'static str,
         /// The name of the PHP# file.
         file: String,
@@ -33,7 +33,7 @@ impl std::fmt::Display for OrchestratorError {
             Self::Analysis(error) => write!(f, "Analysis error: {error}"),
             Self::CacheLockPoisoned => write!(f, "Cache lock poisoned"),
             Self::SharpNotSupported { tool, file } => {
-                write!(f, "`{tool}` on PHP# files is not supported yet: {file}. Exclude PHP# files from `{tool}`.")
+                write!(f, "`mago {tool}` does not support PHP# files yet: {file}")
             }
             Self::General(message) => write!(f, "{message}"),
         }

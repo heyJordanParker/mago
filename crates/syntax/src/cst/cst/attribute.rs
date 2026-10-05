@@ -8,6 +8,8 @@ use crate::cst::sequence::TokenSeparatedSequence;
 /// Represents a list of attributes.
 ///
 /// Example: `#[Foo, Bar(1)]` in `#[Foo, Bar(1)] class Foo {}`
+///
+/// PHP# writes it `[Foo, Bar(1)]`, and `hash_left_bracket` is then the `[`.
 #[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct AttributeList<'arena> {

@@ -1796,6 +1796,122 @@ fn for_of_loops_are_foreach_nodes_with_the_value_before_the_key() {
     );
 }
 
+/// ```php
+/// #[\Lib\Entity(label: "Orders", order: 2 * 3), \App\Tenant\Searchable]
+/// #[\Lib\Entity(null)]
+/// class Report
+/// {
+///     #[\Lib\Field] private int $count = 0;
+///
+///     public function __construct(#[\Lib\Field(-1.5)] public readonly int $total)
+///     {
+///     }
+///
+///     #[\Lib\Entity(true, PHP_INT_MAX)]
+///     public function run(#[\Lib\Field] int $extra): void
+///     {
+///     }
+/// }
+/// ```
+///
+/// Each `#[...]` is an `ATTRIBUTE_GROUP`, and a declaration's groups are one `ATTRIBUTE_LIST` in the child
+/// `zend_ast_with_attributes` gives it: the 4th of a class, the 5th of a method, the 3rd of a property group and the
+/// 4th of a parameter.
+#[test]
+fn attributes_are_attribute_lists_of_attribute_groups_on_their_declarations() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Field;\nimport Lib.Entity;\n\n[Entity(label: \"Orders\", order: 2 * 3), Searchable]\n[Entity(null)]\nclass Report\n{\n    [Field] private int count = 0;\n\n    public Report([Field(-1.5)] public int total { get; })\n    {\n    }\n\n    [Entity(true, PHP_INT_MAX)]\n    public void run([Field] int extra)\n    {\n    }\n}\n",
+    );
+
+    assert_eq!(
+        lowered.render(lowered.child(lowered.unit().root, 2)),
+        indoc! {r#"
+            CLASS "Report" @8-20
+              null
+              null
+              STMT_LIST
+                PROP_GROUP [4]
+                  ZVAL [1] "int"
+                  PROP_DECL
+                    PROP_ELEM
+                      ZVAL "count"
+                      ZVAL 0
+                      null
+                      null
+                  ATTRIBUTE_LIST
+                    ATTRIBUTE_GROUP
+                      ATTRIBUTE
+                        ZVAL "Lib\\Field"
+                        null
+                METHOD [1] "__construct" @12-14
+                  PARAM_LIST
+                    PARAM [129]
+                      ZVAL [1] "int"
+                      ZVAL "total"
+                      null
+                      ATTRIBUTE_LIST
+                        ATTRIBUTE_GROUP
+                          ATTRIBUTE
+                            ZVAL "Lib\\Field"
+                            ARG_LIST
+                              UNARY_MINUS
+                                ZVAL 1.5
+                      null
+                      null
+                  null
+                  STMT_LIST
+                  null
+                  null
+                METHOD [1] "run" @17-19
+                  PARAM_LIST
+                    PARAM
+                      ZVAL [1] "int"
+                      ZVAL "extra"
+                      null
+                      ATTRIBUTE_LIST
+                        ATTRIBUTE_GROUP
+                          ATTRIBUTE
+                            ZVAL "Lib\\Field"
+                            null
+                      null
+                      null
+                  null
+                  STMT_LIST
+                  ZVAL [1] "void"
+                  ATTRIBUTE_LIST
+                    ATTRIBUTE_GROUP
+                      ATTRIBUTE
+                        ZVAL "Lib\\Entity"
+                        ARG_LIST
+                          ZVAL true
+                          CONST
+                            ZVAL [1] "PHP_INT_MAX"
+              ATTRIBUTE_LIST
+                ATTRIBUTE_GROUP
+                  ATTRIBUTE
+                    ZVAL "Lib\\Entity"
+                    ARG_LIST
+                      NAMED_ARG
+                        ZVAL "label"
+                        ZVAL "Orders"
+                      NAMED_ARG
+                        ZVAL "order"
+                        BINARY_OP [3]
+                          ZVAL 2
+                          ZVAL 3
+                  ATTRIBUTE
+                    ZVAL "App\\Tenant\\Searchable"
+                    null
+                ATTRIBUTE_GROUP
+                  ATTRIBUTE
+                    ZVAL "Lib\\Entity"
+                    ARG_LIST
+                      ZVAL null
+              null
+        "#}
+    );
+}
+
 /// The child count `zend_ast_get_num_children` gives a fixed-size kind, or 5 for a declaration. `None` for a list.
 fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
     match kind {
@@ -1806,6 +1922,8 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_IF
         | sharp_kind::SHARP_AST_EXPR_LIST
         | sharp_kind::SHARP_AST_PROP_DECL
+        | sharp_kind::SHARP_AST_ATTRIBUTE_LIST
+        | sharp_kind::SHARP_AST_ATTRIBUTE_GROUP
         | sharp_kind::SHARP_AST_CLASS_CONST_DECL => None,
         sharp_kind::SHARP_AST_ZVAL => Some(0),
         sharp_kind::SHARP_AST_VAR
@@ -1839,6 +1957,7 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_WHILE
         | sharp_kind::SHARP_AST_DO_WHILE
         | sharp_kind::SHARP_AST_NEW
+        | sharp_kind::SHARP_AST_ATTRIBUTE
         | sharp_kind::SHARP_AST_STATIC_PROP
         | sharp_kind::SHARP_AST_CLASS_CONST => Some(2),
         sharp_kind::SHARP_AST_METHOD_CALL

@@ -837,3 +837,19 @@ fn static_call_hooks_see_a_sharp_static_call_as_its_parts_as_in_php() {
         ["before Calc make () Calc::make()", "after Calc make () Calc::make()"]
     );
 }
+
+#[test]
+fn attribute_arguments_are_checked_against_the_attribute_constructor_as_in_php() {
+    let field = "<?php\n\nnamespace Lib;\n\n#[\\Attribute]\nfinal class Field\n{\n    public function __construct(public string $label, public int $width = 1)\n    {\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Field;\n\n[Field(\"Report\")]\nclass Report\n{\n    [Field(label: 3)] private int count = 0;\n\n    [Field(\"run\", width: \"wide\")]\n    public int run([Field(width: 2)] int extra, [Field(\"page\", 2, 3)] int page)\n    {\n        return extra + page + this.count;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Field;\n\n#[Field(\"Report\")]\nclass Report\n{\n    #[Field(label: 3)] private int $count = 0;\n\n    #[Field(\"run\", width: \"wide\")]\n    public function run(#[Field(width: 2)] int $extra, #[Field(\"page\", 2, 3)] int $page): int\n    {\n        return $extra + $page + $this->count;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Field.php", field)]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[("src/Lib/Field.php", field)]);
+
+    assert_eq!(
+        sharp_issues,
+        ["8:19 invalid-argument", "10:26 invalid-argument", "11:26 too-few-arguments", "11:67 too-many-arguments"]
+    );
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}

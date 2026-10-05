@@ -42,6 +42,7 @@ use mago_syntax::cst::ModifierSequenceExt;
 use mago_syntax::cst::Namespace;
 use mago_syntax::cst::NamespaceBody;
 use mago_syntax::cst::Node;
+use mago_syntax::cst::PartialArgument;
 use mago_syntax::cst::Program;
 use mago_syntax::cst::Property;
 use mago_syntax::cst::PropertyHookBody;
@@ -75,10 +76,14 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///
 /// - At file level: `namespace`, `import`, `class` and `interface`. A file has at most one namespace, named and
 ///   written without braces.
-/// - A class: an optional `public`, `abstract` or `final`, a name, constants, fields, properties and methods, with no
-///   attributes, other modifiers, `extends` or `implements`.
+/// - A class: attributes, an optional `public`, `abstract` or `final`, a name, constants, fields, properties and
+///   methods, with no other modifiers, `extends` or `implements`.
 /// - An interface: a name and methods, with no attributes, modifiers or `extends`. An interface method has no modifier,
 ///   parameters, a return type and no body, as spec section 29 writes `Money quote(Cart cart);`.
+/// - Attributes: on a class, a method, a field, a property and a parameter, written `[Name]` or `[Name(arguments)]`,
+///   several in one list, as in `[Field("Name"), Searchable]`, or in several lists. An argument is positional or
+///   named, and is a constant expression as a parameter default is. An attribute target, as in `[return: NotNull]`,
+///   is a parse error.
 /// - A constant: `public`, `protected` or `private`, an optional type from the types below but `void`, one name, and a
 ///   value as a parameter default is.
 /// - A field: `private` or `protected`, an optional `static`, a type, one name and an optional initial value. A
@@ -101,7 +106,7 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   member: a field when `private` or `protected` without accessors, and a property with accessors, which follow the
 ///   auto-property rules. A `public` parameter without accessors is an error, as spec section 9 says.
 /// - A parameter: always a type, a name and an optional default, and neither variadic nor by reference. A default is
-///   a literal, a constant, or the operators below on them, without `++` and `--`.
+///   a constant expression: a literal, a constant, or the operators below on them, without `++` and `--`.
 /// - Types: `int`, `float`, `bool`, `string` and a class written by its short name, and `void` as a return type.
 ///   PHP's own check reports a `void` parameter. Each of them is nullable when written with `?` after it, as in
 ///   `int?`, and PHP's own check reports `void?`.
@@ -150,15 +155,17 @@ enum Place {
     /// A field or a property, both of which the CST calls a property: its modifiers, type and name.
     FieldOrProperty,
     /// A class constant: its modifiers, type and name.
-    Constant,
+    ClassConstant,
     /// A method's modifiers, parameters and return type.
     Method,
     /// One parameter.
     Parameter,
     /// A method body.
     Body,
-    /// A parameter default.
-    Default,
+    /// An attribute list: its attributes' names and arguments.
+    Attribute,
+    /// A constant expression: a parameter default, an attribute argument or a class constant's value.
+    Constant,
 }
 
 /// Walks `node` at `place`. `checked` holds the spans of the member accesses already checked, so the walk checks
@@ -179,10 +186,11 @@ fn enter(
     checked: &mut HashSet<Span>,
     context: &mut Context<'_, '_, '_>,
 ) -> Option<Place> {
+    use Place::Attribute;
     use Place::Body;
     use Place::Class;
+    use Place::ClassConstant;
     use Place::Constant;
-    use Place::Default;
     use Place::FieldOrProperty;
     use Place::File;
     use Place::Interface;
@@ -269,6 +277,15 @@ fn enter(
             | Node::MethodAbstractBody(_),
             Signature,
         ) => Some(Signature),
+        (Node::AttributeList(_), Class | Method | FieldOrProperty | Parameter) => Some(Attribute),
+        (
+            Node::Attribute(_)
+            | Node::PartialArgumentList(_)
+            | Node::PartialArgument(PartialArgument::Positional(_) | PartialArgument::Named(_)),
+            Attribute,
+        ) => Some(Attribute),
+        (Node::PositionalArgument(argument), Attribute) if argument.ellipsis.is_none() => Some(Constant),
+        (Node::NamedArgument(_), Attribute) => Some(Constant),
 
         (Node::ClassLikeMember(ClassLikeMember::Method(_)), Class) => Some(Class),
         (Node::ClassLikeMember(ClassLikeMember::Property(property)), Class) => {
@@ -282,7 +299,7 @@ fn enter(
             }
         }
         (Node::ClassLikeMember(ClassLikeMember::Constant(constant)), Class) => match is_slice_constant(constant) {
-            Ok(()) => Some(Constant),
+            Ok(()) => Some(ClassConstant),
             Err(issue) => {
                 context.report(*issue);
 
@@ -292,11 +309,13 @@ fn enter(
         (
             Node::ClassLikeConstant(_)
             | Node::Modifier(Modifier::Public(_) | Modifier::Protected(_) | Modifier::Private(_)),
-            Constant,
-        ) => Some(Constant),
-        (Node::Hint(hint), Constant) if is_slice_type(hint) && !matches!(hint, Hint::Void(_)) => Some(Constant),
-        (Node::NullableHint(_), Constant) => Some(Constant),
-        (Node::ClassLikeConstantItem(_), Constant) => Some(Default),
+            ClassConstant,
+        ) => Some(ClassConstant),
+        (Node::Hint(hint), ClassConstant) if is_slice_type(hint) && !matches!(hint, Hint::Void(_)) => {
+            Some(ClassConstant)
+        }
+        (Node::NullableHint(_), ClassConstant) => Some(ClassConstant),
+        (Node::ClassLikeConstantItem(_), ClassConstant) => Some(Constant),
         (Node::HookedProperty(property), FieldOrProperty) => {
             check_accessors(&property.modifiers, &property.hook_list, property.item.variable().span, context);
 
@@ -410,7 +429,7 @@ fn enter(
             Parameter,
         ) => Some(Parameter),
         (Node::PropertyHookList(_), Parameter) => None,
-        (Node::FunctionLikeParameterDefaultValue(_), Parameter) => Some(Default),
+        (Node::FunctionLikeParameterDefaultValue(_), Parameter) => Some(Constant),
         (Node::Block(_), Method | Body) => Some(Body),
 
         (Node::Statement(statement), Body) if !has_braces(statement) => {
@@ -458,7 +477,7 @@ fn enter(
         ) => Some(Body),
 
         // PHP refuses the file at compile time, so the engine would too.
-        (Node::LiteralString(string), Body | Default) if string.value.is_none() => {
+        (Node::LiteralString(string), Body | Constant) if string.value.is_none() => {
             context.report(
                 Issue::error("Invalid UTF-8 codepoint escape sequence.")
                     .with_annotation(Annotation::primary(string.span).with_message("Escape written here."))
@@ -482,15 +501,17 @@ fn enter(
             | Node::Parenthesized(_)
             | Node::Binary(_)
             | Node::UnaryPrefix(_),
-            Body | Default,
+            Body | Constant,
         ) => Some(place),
         (Node::ConstantAccess(_), Body) => Some(Body),
         (Node::Expression(Expression::TypeOf(_)) | Node::TypeOf(_), Body) => Some(Body),
-        (Node::ConstantAccess(constant), Default) if context.names.binding(&constant.name) == Some(Binding::Constant) => {
-            Some(Default)
+        (Node::ConstantAccess(constant), Constant)
+            if context.names.binding(&constant.name) == Some(Binding::Constant) =>
+        {
+            Some(Constant)
         }
-        (Node::BinaryOperator(operator), Body | Default) if is_slice_binary_operator(operator) => Some(place),
-        (Node::UnaryPrefixOperator(operator), Body | Default) if is_slice_prefix_operator(operator, place) => {
+        (Node::BinaryOperator(operator), Body | Constant) if is_slice_binary_operator(operator) => Some(place),
+        (Node::UnaryPrefixOperator(operator), Body | Constant) if is_slice_prefix_operator(operator, place) => {
             Some(place)
         }
 
@@ -548,7 +569,7 @@ fn enter(
         }
 
         // PHP# never has `$` variables. A `$` variable inside a construct the walk refuses adds no second error.
-        (Node::Expression(Expression::Variable(variable)), Body | Default) => {
+        (Node::Expression(Expression::Variable(variable)), Body | Constant) => {
             check_variable(variable, context);
 
             None
@@ -736,7 +757,7 @@ fn is_slice_constant(constant: &ClassLikeConstant) -> Result<(), Box<Issue>> {
         Err(not_supported(
             constant.span(),
             "A constant declaring several names is not supported yet in PHP#.",
-            supported(Place::Constant),
+            supported(Place::ClassConstant),
         ))
     } else if !constant.modifiers.contains_visibility() {
         Err(not_supported(
@@ -997,9 +1018,6 @@ fn report_unsupported(node: Node<'_, '_>, place: Place, context: &mut Context<'_
         Node::BinaryOperator(_) | Node::UnaryPrefixOperator(_) | Node::AssignmentOperator(_) => "operator",
         Node::Hint(_) | Node::NullableHint(_) => "type",
         Node::Modifier(_) => "modifier",
-        Node::AttributeList(_) => {
-            return report_not_supported(node.span(), "attribute", "PHP# writes attributes as `[...]`.", context);
-        }
         Node::IfStatementBodyElseIfClause(_) => {
             return report_not_supported(node.span(), "`elseif`", "PHP# writes `else if`.", context);
         }
@@ -1019,7 +1037,7 @@ const fn supported(place: Place) -> &'static str {
     match place {
         Place::File => "At file level, PHP# supports `namespace`, `import`, `class` and `interface`.",
         Place::Class => {
-            "A PHP# class has an optional `public`, `abstract` or `final`, a name, constants, fields, properties and methods, with no attributes, other modifiers, `extends` or `implements`."
+            "A PHP# class has attributes, an optional `public`, `abstract` or `final`, a name, constants, fields, properties and methods, with no other modifiers, `extends` or `implements`."
         }
         Place::Interface => {
             "A PHP# interface has a name and methods, with no attributes, modifiers, `extends`, constants or properties."
@@ -1030,7 +1048,7 @@ const fn supported(place: Place) -> &'static str {
         Place::FieldOrProperty => {
             "A PHP# field is `private` or `protected`, and a property has the accessors `get;` and an optional `set;`. Both may be `static`, and have a type of `int`, `float`, `bool`, `string` or a class, a name, and an optional initial value."
         }
-        Place::Constant => {
+        Place::ClassConstant => {
             "A PHP# constant has `public`, `protected` or `private`, an optional type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, one name, and a constant value."
         }
         Place::Method => {
@@ -1042,8 +1060,11 @@ const fn supported(place: Place) -> &'static str {
         Place::Body => {
             "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, and `break` and `continue` without a level, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, `++` and `--`, method calls and property reads written with `.` or `?.`, `new Class(...)` and `typeof(Class)`."
         }
-        Place::Default => {
-            "A parameter default is a literal, a constant, or arithmetic, comparison, logical and `??` operators on them."
+        Place::Attribute => {
+            "A PHP# attribute is a class name with optional positional and named arguments, as in `[Field(\"Name\", searchable: true)]`."
+        }
+        Place::Constant => {
+            "A parameter default, an attribute argument or a constant's value is a literal, a constant, or arithmetic, comparison, logical and `??` operators on them."
         }
     }
 }
