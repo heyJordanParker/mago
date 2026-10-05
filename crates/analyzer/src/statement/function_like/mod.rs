@@ -1215,8 +1215,8 @@ fn check_thrown_types<'ctx, A>(
 ) where
     A: Arena,
 {
-    if !context.settings.check_throws {
-        // If the setting is disabled, we skip the check.
+    if !context.check_throws() {
+        // If the setting is disabled, or the file is PHP#, we skip the check.
         return;
     }
 

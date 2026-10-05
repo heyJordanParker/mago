@@ -248,7 +248,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
             }
         }
 
-        if context.settings.check_throws && context.plugin_registry.has_expression_throw_providers() {
+        if context.check_throws() && context.plugin_registry.has_expression_throw_providers() {
             let exceptions = context.plugin_registry.get_expression_thrown_exceptions(
                 context.codebase,
                 context.source_file,

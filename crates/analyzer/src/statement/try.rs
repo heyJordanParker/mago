@@ -71,7 +71,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Try<'arena> {
         let was_inside_try = block_context.flags.inside_try();
         block_context.flags.set_inside_try(true);
         let mut exception_entry_locals: WordMap<Vec<WordSet>> = WordMap::default();
-        if self.catch_clauses.is_empty() || !context.settings.check_throws {
+        if self.catch_clauses.is_empty() || !context.check_throws() {
             analyze_statements(self.block.statements.as_slice(), context, block_context, artifacts)?;
         } else {
             for statement in &self.block.statements {
