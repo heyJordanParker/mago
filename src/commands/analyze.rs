@@ -428,12 +428,12 @@ impl AnalyzeCommand {
 
     /// Decodes the prelude's stub files, which join the workspace database, or none with `--no-stubs`.
     ///
-    /// The prelude's codebase is dropped here: the server decodes its own through [`Self::prelude`].
+    /// The server decodes the prelude's codebase itself, through [`Self::prelude`].
     fn prelude_database(&self) -> Database<'static> {
         if self.no_stubs {
             Prelude::default().database
         } else {
-            Prelude::decode(PRELUDE_BYTES).expect("Failed to decode embedded prelude").database
+            Prelude::decode_database(PRELUDE_BYTES).expect("Failed to decode embedded prelude")
         }
     }
 
