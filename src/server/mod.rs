@@ -5,6 +5,7 @@
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
+use crate::config::Configuration;
 use crate::error::Error;
 
 mod client;
@@ -41,6 +42,16 @@ pub(crate) fn analyze(check: Check) -> Result<Analyzed, Error> {
     }
 
     analyzed(client::ask(&runtime, &request)?)
+}
+
+/// D3: the name of the first enabled extension host that inherits the environment. The daemon's
+/// workers serve many clients, so none of them may inherit one client's environment.
+pub(crate) fn inheriting_host(configuration: &Configuration) -> Option<&str> {
+    configuration
+        .extension_hosts
+        .iter()
+        .find(|(_, host)| host.enabled && host.inherit_environment)
+        .map(|(name, _)| name.as_str())
 }
 
 /// Compares the daemon's warm state of `check`'s worktree with a fresh analysis.

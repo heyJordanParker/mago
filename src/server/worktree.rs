@@ -34,6 +34,7 @@ use crate::error::Error;
 use crate::extensions::initialize_external_analyzer;
 use crate::server::discovery::Runtime;
 use crate::server::fingerprint::Fingerprint;
+use crate::server::inheriting_host;
 use crate::server::message::Analyzed;
 use crate::server::message::Response;
 use crate::server::message::Verification;
@@ -204,8 +205,14 @@ impl Writer {
     ) {
         let start = Instant::now();
         let waits = analyses.iter().map(|(_, queued, _)| start.duration_since(*queued)).max().unwrap_or_default();
+        let paths = analyses.iter().map(|(paths, _, _)| paths);
+        let scope = if verifications.is_empty() && paths.clone().all(|paths| !paths.is_empty()) {
+            paths.flatten().cloned().collect()
+        } else {
+            Vec::new()
+        };
 
-        let issues = match self.pass() {
+        let issues = match self.scope(&scope).and_then(|scope| self.pass(scope)) {
             Ok(issues) => issues,
             Err(error) => {
                 tracing::error!(
@@ -242,9 +249,9 @@ impl Writer {
         );
     }
 
-    /// Sweeps the worktree and analyzes what changed, registering it first when it is not warm.
-    /// Returns every issue of the worktree.
-    fn pass(&mut self) -> Result<IssueCollection, Error> {
+    /// Sweeps the worktree and analyzes what changed, with the node-analysis hooks in `scope`,
+    /// registering it first when it is not warm. Returns the issues reported in `scope`.
+    fn pass(&mut self, scope: Option<WorkspaceMatcher>) -> Result<IssueCollection, Error> {
         let mut cold_start = None;
         if self.warm.is_none() {
             cold_start = Some(ColdStart::wait(&self.cold_starts));
@@ -271,6 +278,7 @@ impl Writer {
         let warm = self.warm.as_mut().ok_or_else(|| Error::Server("the worktree did not register".to_string()))?;
         let changed = std::mem::take(&mut warm.pending);
         let start = Instant::now();
+        warm.server.set_scope(scope);
         let issues = warm.server.analyze_incremental(&changed)?.issues;
         tracing::info!("{}: analyzed {} changed file(s) in {:?}.", workspace.display(), changed.len(), start.elapsed());
 
@@ -353,27 +361,35 @@ impl Writer {
         Ok(())
     }
 
+    /// The files `paths` name, or `None` for every file when `paths` is empty.
+    fn scope(&self, paths: &[PathBuf]) -> Result<Option<WorkspaceMatcher>, Error> {
+        if paths.is_empty() {
+            return Ok(None);
+        }
+
+        let workspace = self.configuration.source.workspace.as_path();
+        let paths = paths.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>();
+        let extensions =
+            self.configuration.source.extensions.iter().map(|extension| Cow::Borrowed(extension.as_bytes()));
+        let scope = WorkspaceMatcher::from_configuration(&DatabaseConfiguration {
+            workspace: Cow::Borrowed(workspace),
+            paths: paths.iter().map(|path| Cow::Borrowed(path.as_bytes())).collect(),
+            includes: Vec::new(),
+            patches: Vec::new(),
+            excludes: Vec::new(),
+            extensions: extensions.collect(),
+            glob: self.configuration.source.glob.to_database_settings(),
+        })?;
+
+        Ok(Some(scope))
+    }
+
     /// The issues `paths` report, or every issue for no path, with the files they annotate or edit.
     fn analyzed(&self, issues: &IssueCollection, paths: &[PathBuf]) -> Result<Response, Error> {
         let warm = self.warm.as_ref().ok_or_else(|| Error::Server("the worktree is not warm".to_string()))?;
-        let issues = if paths.is_empty() {
-            issues.clone()
-        } else {
-            let workspace = self.configuration.source.workspace.as_path();
-            let paths = paths.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>();
-            let extensions =
-                self.configuration.source.extensions.iter().map(|extension| Cow::Borrowed(extension.as_bytes()));
-            let scope = WorkspaceMatcher::from_configuration(&DatabaseConfiguration {
-                workspace: Cow::Borrowed(workspace),
-                paths: paths.iter().map(|path| Cow::Borrowed(path.as_bytes())).collect(),
-                includes: Vec::new(),
-                patches: Vec::new(),
-                excludes: Vec::new(),
-                extensions: extensions.collect(),
-                glob: self.configuration.source.glob.to_database_settings(),
-            })?;
-
-            warm.server.issues_in(&scope)
+        let issues = match self.scope(paths)? {
+            Some(scope) => warm.server.issues_in(&scope),
+            None => issues.clone(),
         };
 
         let annotated = issues
@@ -467,12 +483,11 @@ impl Writer {
     }
 }
 
-/// D3: a daemon's workers serve many clients, so none of them may inherit one client's environment.
 fn refuse_inherited_environment(configuration: &Configuration) -> Result<(), Error> {
-    match configuration.extension_hosts.iter().find(|(_, host)| host.enabled && host.inherit_environment) {
-        Some((name, _)) => Err(Error::Server(format!(
+    match inheriting_host(configuration) {
+        Some(name) => Err(Error::Server(format!(
             "extension host \"{name}\" inherits the environment, which the analysis server cannot pass to its workers. \
-             Set `inherit-environment = false` and list what the workers need under `environment`, or run `mago analyze --no-server`."
+             Set `inherit-environment = false` and list what the workers need under `environment`."
         ))),
         None => Ok(()),
     }

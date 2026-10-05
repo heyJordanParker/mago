@@ -25,7 +25,8 @@ const FIRST: &str = "<?php\n\n// route: /home\nfunction first(): int { return 't
 
 const SECOND: &str = "<?php\n\n// route: /home\nfunction second(): int { return 2; }\n";
 
-/// A worker whose node hook reports the message `extension/message.php` returns.
+/// A worker whose node hook reports the message `extension/message.php` returns, and appends the
+/// file it inspects to `node-hooks.log`.
 const MESSAGE_WORKER: &str = r#"<?php
 
 declare(strict_types=1);
@@ -69,6 +70,7 @@ final class MessagePlugin implements Plugin, NodeAnalysisHook
 
     public function analyze(NodeAnalysisContext $context): void
     {
+        file_put_contents(dirname(__DIR__) . '/node-hooks.log', $context->analysis->file . "\n", FILE_APPEND);
         $context->report(Level::Warning, 'message', Issue::new($this->message, $context->node->span));
     }
 }
@@ -560,7 +562,7 @@ fn a_worker_speaking_another_minor_version_is_refused() {
 }
 
 #[test]
-fn a_host_that_inherits_the_environment_is_refused() {
+fn a_host_that_inherits_the_environment_is_analyzed_in_process() {
     if !available() {
         return;
     }
@@ -571,13 +573,44 @@ fn a_host_that_inherits_the_environment_is_refused() {
     let configuration = std::fs::read_to_string(workspace.join("mago.toml")).expect("mago.toml");
     write(workspace, "mago.toml", &configuration.replace("inherit-environment = false", ""));
 
-    let refused = server.analyze(workspace, &[]);
-    let stderr = String::from_utf8_lossy(&refused.stderr);
-    assert!(!refused.status.success(), "{stderr}");
-    assert!(stderr.contains("extension host \"proof\" inherits the environment"), "{stderr}");
+    let in_process = server.check(workspace, &[]);
+    let stderr = String::from_utf8_lossy(&in_process.stderr);
+    assert!(String::from_utf8_lossy(&in_process.stdout).contains("server-proof/duplicate-route"), "{in_process:?}");
+    assert_eq!(stderr.matches("Set `inherit-environment = false`").count(), 1, "{stderr}");
+    assert!(server.log().is_empty(), "no server starts: {}", server.log());
 
-    let cold = server.analyze(workspace, &["--no-server"]);
-    assert!(String::from_utf8_lossy(&cold.stdout).contains("server-proof/duplicate-route"), "{cold:?}");
+    write(workspace, "mago.toml", &configuration);
+    let served = server.check(workspace, &[]);
+    assert!(!String::from_utf8_lossy(&served.stderr).contains("inherit-environment"), "{served:?}");
+    assert_eq!(server.occurrences("started as process"), 1, "{}", server.log());
+}
+
+#[test]
+fn a_check_runs_the_node_hooks_of_the_files_it_names_once() {
+    if !available() {
+        return;
+    }
+
+    let server = Server::new();
+    let workspace = message_project();
+    let workspace = workspace.path();
+    write(workspace, "src/Second.php", SECOND);
+    let hooked = |file: &str| {
+        let log = std::fs::read_to_string(workspace.join("node-hooks.log")).unwrap_or_default();
+        log.lines().filter(|line| *line == file).count()
+    };
+
+    server.analyze(workspace, &["src/First.php"]);
+    assert_eq!((hooked("src/First.php"), hooked("src/Second.php")), (1, 0), "{}", server.log());
+
+    server.analyze(workspace, &["src/Second.php"]);
+    server.analyze(workspace, &["src/Second.php"]);
+    server.analyze(workspace, &["src/First.php"]);
+    assert_eq!((hooked("src/First.php"), hooked("src/Second.php")), (1, 1), "{}", server.log());
+
+    for file in ["src/First.php", "src/Second.php"] {
+        assert!(String::from_utf8_lossy(&server.check(workspace, &[file]).stdout).contains("message"));
+    }
 }
 
 #[test]

@@ -281,7 +281,12 @@ impl AnalyzeCommand {
 
         #[cfg(unix)]
         if !self.no_server && !self.stdin_input && !self.scan_only && self.substitution.substitutions.is_empty() {
-            return self.execute_through_server(&configuration, color_choice);
+            match server::inheriting_host(&configuration) {
+                None => return self.execute_through_server(&configuration, color_choice),
+                Some(host) => tracing::warn!(
+                    "Extension host \"{host}\" inherits the environment, so this check runs without the analysis server. Set `inherit-environment = false` on it to use the server."
+                ),
+            }
         }
 
         let trace_enabled = tracing::enabled!(tracing::Level::TRACE);
@@ -366,9 +371,7 @@ impl AnalyzeCommand {
         if self.scan_only {
             server = server.scan_only();
         }
-        if let Some(scope) = scope {
-            server = server.scoped_to(scope);
-        }
+        server.set_scope(scope);
         let issues = server.analyze()?.issues;
         let service_run_duration = service_run_start.map(|s| s.elapsed());
         let report_start = trace_enabled.then(Instant::now);
@@ -590,9 +593,7 @@ impl AnalyzeCommand {
         let database =
             orchestrator.load_database(&configuration.source.workspace, true, Some(prelude_database), None)?;
         let mut server = Server::new(database.clone().into_static(), self.prelude(), server_settings(&orchestrator));
-        if let Some(scope) = scope {
-            server = server.scoped_to(scope);
-        }
+        server.set_scope(scope);
 
         let mut watcher = DatabaseWatcher::new(database);
 

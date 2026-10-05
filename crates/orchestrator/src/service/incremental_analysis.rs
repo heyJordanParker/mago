@@ -70,6 +70,8 @@ struct FileState {
     codebase_issues: IssueCollection,
     deferred_pragmas: Option<DeferredPragmas>,
     late_symbol_references: SymbolReferences,
+    /// Whether the node-analysis hooks ran on the file in its last analysis.
+    node_analysis: bool,
 }
 
 struct SelectiveAnalysisOutput {
@@ -239,8 +241,15 @@ impl IncrementalAnalysisService {
     /// Runs the external node-analysis hooks only in `files` from the next analysis on, or in every
     /// file with `None`. A node-analysis hook reports issues in the file it inspects, so a caller that
     /// reports only some files' issues skips the hooks everywhere else.
+    ///
+    /// An incremental analysis analyzes again, once, every unchanged file that enters `files` after
+    /// an analysis skipped its hooks. A file whose hooks ran keeps their issues while it is unchanged.
     pub fn set_node_analysis_files(&mut self, files: Option<HashSet<FileId>>) {
         self.node_analysis_files = files;
+    }
+
+    fn runs_node_analysis(&self, file_id: FileId) -> bool {
+        self.node_analysis_files.as_ref().is_none_or(|files| files.contains(&file_id))
     }
 
     /// Returns whether the service has been initialized (initial full analysis completed).
@@ -598,6 +607,7 @@ impl IncrementalAnalysisService {
                     codebase_issues: IssueCollection::default(),
                     deferred_pragmas: None,
                     late_symbol_references: SymbolReferences::new(),
+                    node_analysis: self.runs_node_analysis(file_id),
                 },
             );
         }
@@ -768,7 +778,28 @@ impl IncrementalAnalysisService {
             }
         }
 
-        if changed_files.is_empty() && deleted_count == 0 {
+        // An unchanged file whose node-analysis hooks did not run is analyzed again, without a
+        // rescan, once a pass runs them in it. Its symbols stay populated, so it keeps its codebase
+        // issues unless the invalidation cascade reaches it.
+        let newly_covered: HashSet<FileId> = if self.scan_only {
+            HashSet::default()
+        } else {
+            unchanged_file_ids
+                .iter()
+                .copied()
+                .filter(|file_id| {
+                    self.runs_node_analysis(*file_id)
+                        && self.file_states.get(file_id).is_some_and(|state| !state.node_analysis)
+                        && self.database.get(file_id).is_ok_and(|file| file.file_type == FileType::Host)
+                })
+                .collect()
+        };
+        if !newly_covered.is_empty() {
+            tracing::debug!("{} unchanged file(s) analyzed again for the node-analysis hooks", newly_covered.len());
+        }
+        let contents_changed = !changed_files.is_empty() || deleted_count > 0;
+
+        if !contents_changed && newly_covered.is_empty() {
             tracing::debug!("No files changed, reconstructing cached issues");
             let mut result = AnalysisResult::new(SymbolReferences::new());
             result.issues = self.collect_all_issues();
@@ -871,9 +902,10 @@ impl IncrementalAnalysisService {
 
         // A return taken from a method body changes with that body, and the signature diff cannot
         // see it, so its callers in unchanged files would keep the old return.
-        let returns_from_bodies = std::iter::once(&self.codebase)
-            .chain(new_file_scans.iter().map(|(_, metadata)| metadata))
-            .any(|metadata| metadata.function_likes.values().any(|method| method.return_from_body.is_some()));
+        let returns_from_bodies = contents_changed
+            && std::iter::once(&self.codebase)
+                .chain(new_file_scans.iter().map(|(_, metadata)| metadata))
+                .any(|metadata| metadata.function_likes.values().any(|method| method.return_from_body.is_some()));
         if returns_from_bodies {
             return self.analyze();
         }
@@ -952,7 +984,8 @@ impl IncrementalAnalysisService {
             }
             self.apply_scan_results(&mut merged_codebase, &new_file_scans);
 
-            let files_to_skip: HashSet<FileId> = unchanged_file_ids.iter().copied().collect();
+            let files_to_skip: HashSet<FileId> =
+                unchanged_file_ids.iter().copied().filter(|file_id| !newly_covered.contains(file_id)).collect();
             let mut symbol_references = std::mem::take(&mut self.native_symbol_references);
             symbol_references.retain_references_from_files(&current_file_names);
 
@@ -1006,6 +1039,14 @@ impl IncrementalAnalysisService {
                 HashSet::default(),
                 changed_symbols,
             );
+            for file_id in &newly_covered {
+                if let Some(signature) = merged_codebase.get_file_signature(file_id) {
+                    let names: Vec<_> = signature.ast_nodes.iter().map(|node| node.name).collect();
+                    for name in names {
+                        merged_codebase.safe_symbols.remove(&name);
+                    }
+                }
+            }
             let SelectiveAnalysisOutput {
                 result: mut analysis_result,
                 native_symbol_references,
@@ -1037,7 +1078,7 @@ impl IncrementalAnalysisService {
 
             // Clear codebase issues for every file analyzed in this generation.
             for (file_id, state) in self.file_states.iter_mut() {
-                if !files_to_skip.contains(file_id) {
+                if !files_to_skip.contains(file_id) && !newly_covered.contains(file_id) {
                     state.codebase_issues = IssueCollection::default();
                 }
             }
@@ -1054,6 +1095,8 @@ impl IncrementalAnalysisService {
                     state.analysis_issues = issues;
                     state.deferred_pragmas = per_file_pragmas.get(&file_id).cloned();
                     state.late_symbol_references = late_symbol_references_by_file.remove(&file_id).unwrap_or_default();
+                    state.node_analysis =
+                        self.node_analysis_files.as_ref().is_none_or(|files| files.contains(&file_id));
                 }
             }
 
@@ -1077,6 +1120,7 @@ impl IncrementalAnalysisService {
                         codebase_issues,
                         deferred_pragmas,
                         late_symbol_references,
+                        node_analysis: self.node_analysis_files.as_ref().is_none_or(|files| files.contains(&file_id)),
                     },
                 );
             }
@@ -1178,6 +1222,7 @@ impl IncrementalAnalysisService {
             dirty_symbols,
         );
         let mut files_to_skip: HashSet<FileId> = HashSet::default();
+        let mut covered_only: HashSet<FileId> = HashSet::default();
         for &file_id in &unchanged_file_ids {
             let file_invalid = self
                 .database
@@ -1199,7 +1244,9 @@ impl IncrementalAnalysisService {
                     })
                 };
 
-                if all_safe {
+                if all_safe && newly_covered.contains(&file_id) {
+                    covered_only.insert(file_id);
+                } else if all_safe {
                     files_to_skip.insert(file_id);
                 }
             }
@@ -1296,7 +1343,7 @@ impl IncrementalAnalysisService {
         // Clear codebase issues for files that were NOT skipped (their symbols were re-populated).
         // Files in files_to_skip keep their old codebase_issues intact.
         for (file_id, state) in self.file_states.iter_mut() {
-            if !files_to_skip.contains(file_id) {
+            if !files_to_skip.contains(file_id) && !covered_only.contains(file_id) {
                 state.codebase_issues = IssueCollection::default();
             }
         }
@@ -1313,6 +1360,7 @@ impl IncrementalAnalysisService {
                 state.analysis_issues = issues;
                 state.deferred_pragmas = per_file_pragmas.get(&file_id).cloned();
                 state.late_symbol_references = late_symbol_references_by_file.remove(&file_id).unwrap_or_default();
+                state.node_analysis = self.node_analysis_files.as_ref().is_none_or(|files| files.contains(&file_id));
             }
         }
 
@@ -1335,6 +1383,7 @@ impl IncrementalAnalysisService {
                     codebase_issues,
                     deferred_pragmas,
                     late_symbol_references,
+                    node_analysis: self.node_analysis_files.as_ref().is_none_or(|files| files.contains(&file_id)),
                 },
             );
         }
@@ -1579,7 +1628,7 @@ impl IncrementalAnalysisService {
                             &artifacts,
                             codebase,
                             node_analysis_requirements.as_ref(),
-                            self.node_analysis_files.as_ref().is_none_or(|files| files.contains(&file_id)),
+                            self.runs_node_analysis(file_id),
                         )
                         .map_err(|error| {
                             OrchestratorError::General(format!("Failed to retain external analysis data: {error}"))
@@ -3036,6 +3085,48 @@ mod tests {
                 ..Default::default()
             },
         )
+    }
+
+    /// A file that enters the node-analysis files is analyzed again without a rescan, and keeps its
+    /// codebase issues, alone or beside a signature edit.
+    #[test]
+    fn a_file_entering_the_node_analysis_files_answers_like_a_full_analysis() {
+        let base = "<?php\nclass Base {\n    public function process(): string { return 'hello'; }\n}\n";
+        let child = concat!(
+            "<?php\n",
+            "class Child extends Base {\n",
+            "    public function process(): float { return 1.0; }\n",
+            "    public function value(): int { return 'text'; }\n",
+            "}\n",
+            "/** @extends Missing<int> */\n",
+            "final class Tagged extends Base {}\n",
+        );
+        let other = "<?php\n/** @extends Missing<int> */\nfinal class Other extends Base {}\n";
+        let unrelated = "<?php\nfunction unrelated(): int { return 1; }\n";
+        let mut db = make_database(vec![
+            ("src/Base.php", base),
+            ("src/Child.php", child),
+            ("src/Other.php", other),
+            ("src/unrelated.php", unrelated),
+        ]);
+        let files = |names: &[&str]| Some(names.iter().map(|name| FileId::new(name.as_bytes())).collect());
+
+        let mut service = make_watch_service(&db);
+        service.set_node_analysis_files(files(&["src/unrelated.php"]));
+        service.analyze().expect("Full analysis failed.");
+
+        service.set_node_analysis_files(files(&["src/Child.php"]));
+        service.analyze_incremental(Some(&[])).expect("Incremental analysis failed.");
+        assert_matches_full(&service, &db, "a file enters alone");
+
+        db.update(
+            FileId::new(b"src/unrelated.php"),
+            Cow::Borrowed(b"<?php\nfunction unrelated(): string { return 1; }\n"),
+        );
+        service.update_database(db.read_only());
+        service.set_node_analysis_files(files(&["src/Other.php", "src/unrelated.php"]));
+        service.analyze_incremental(Some(&[FileId::new(b"src/unrelated.php")])).expect("Incremental analysis failed.");
+        assert_matches_full(&service, &db, "a file enters beside a signature edit");
     }
 
     /// Compare incremental analysis against a fresh full analysis.

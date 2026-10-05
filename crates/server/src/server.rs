@@ -84,14 +84,13 @@ impl Server {
         self
     }
 
-    /// Analyze the whole workspace, but report only the issues in files `scope` contains, plus the
-    /// issues that name no file. An issue is reported in its primary annotation's file, else in its
-    /// first annotation's. The node-analysis hooks report only in the file they inspect, so they run
-    /// only in the files `scope` contains.
-    #[must_use]
-    pub fn scoped_to(mut self, scope: WorkspaceMatcher) -> Self {
-        self.scope = Some(scope);
-        self
+    /// From the next pass on, analyze the whole workspace but report only the issues in files `scope`
+    /// contains, plus the issues that name no file, or every issue with `None`. An issue is reported
+    /// in its primary annotation's file, else in its first annotation's. The node-analysis hooks
+    /// report only in the file they inspect, so they run only in the files `scope` contains: a pass
+    /// analyzes again each unchanged file that enters the scope after a pass skipped its hooks.
+    pub fn set_scope(&mut self, scope: Option<WorkspaceMatcher>) {
+        self.scope = scope;
     }
 
     /// Borrow the workspace file database.
@@ -135,8 +134,8 @@ impl Server {
     /// The issues of the last pass reported in files `scope` contains, plus the issues that name no
     /// file, or nothing before the first pass.
     ///
-    /// A server that is not [scoped](Server::scoped_to) runs the node-analysis hooks in every
-    /// file, so it answers any scope.
+    /// The answer holds the node-analysis hooks' issues only in the files of the last pass's
+    /// [scope](Server::set_scope).
     #[must_use]
     pub fn issues_in(&self, scope: &WorkspaceMatcher) -> IssueCollection {
         let files = self.files_in(scope);
@@ -254,7 +253,9 @@ mod tests {
             vec![b"php"],
         ))
         .expect("the scope compiles");
-        let scoped = two_file_server().0.scoped_to(scope).analyze().expect("scoped analysis").issues;
+        let mut scoped = two_file_server().0;
+        scoped.set_scope(Some(scope));
+        let scoped = scoped.analyze().expect("scoped analysis").issues;
 
         let primary_file = |issue: &Issue| {
             issue
