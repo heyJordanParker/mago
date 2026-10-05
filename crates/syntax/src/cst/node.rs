@@ -6,6 +6,7 @@ use strum::EnumString;
 
 use mago_span::HasSpan;
 use mago_span::Span;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 
 use crate::cst::Program;
 use crate::cst::cst::Access;
@@ -740,7 +741,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
         F: Fn(&Node<'ast, 'arena>) -> Option<T>,
         T: 'ast,
     {
-        self.visit_children(|child| child.filter_map_internal(f, result));
+        ensure_sufficient_stack(|| self.visit_children(|child| child.filter_map_internal(f, result)));
 
         if let Some(item) = f(self) {
             result.push(item);

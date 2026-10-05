@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use mago_bytes::BytesDisplay;
 use mago_php_version::feature::Feature;
 use mago_reporting::Annotation;
@@ -1240,9 +1242,9 @@ pub fn check_members<'ast, 'arena>(
 ) {
     let class_like_name = BytesDisplay(class_like_name);
     let class_like_fqcn = BytesDisplay(class_like_fqcn);
-    let mut method_names: Vec<(Span, Vec<u8>)> = vec![];
-    let mut constant_names: Vec<(bool, Vec<u8>, Span)> = vec![];
-    let mut property_names: Vec<(bool, &[u8], Span)> = vec![];
+    let mut method_names: HashMap<Vec<u8>, Span> = HashMap::new();
+    let mut constant_names: HashMap<&[u8], (bool, Span)> = HashMap::new();
+    let mut property_names: HashMap<&[u8], (bool, Span)> = HashMap::new();
 
     for member in members {
         match &member {
@@ -1252,9 +1254,7 @@ pub fn check_members<'ast, 'arena>(
                         let item_name_bytes: &[u8] = item.variable().name;
                         let item_name = BytesDisplay(item_name_bytes);
 
-                        if let Some((is_promoted, _, span)) =
-                            property_names.iter().find(|(_, name, _)| item_name_bytes.eq(*name))
-                        {
+                        if let Some((is_promoted, span)) = property_names.get(item_name_bytes) {
                             let message = if *is_promoted {
                                 format!(
                                     "property `{class_like_name}::{item_name}` has already been defined as a promoted property"
@@ -1277,7 +1277,7 @@ pub fn check_members<'ast, 'arena>(
                                     .with_help("remove the duplicate property"),
                             );
                         } else {
-                            property_names.push((false, item_name_bytes, item.variable().span()));
+                            property_names.insert(item_name_bytes, (false, item.variable().span()));
                         }
                     }
                 }
@@ -1286,9 +1286,7 @@ pub fn check_members<'ast, 'arena>(
                     let item_name_bytes: &[u8] = item_variable.name;
                     let item_name = BytesDisplay(item_name_bytes);
 
-                    if let Some((is_promoted, _, span)) =
-                        property_names.iter().find(|(_, name, _)| item_name_bytes.eq(*name))
-                    {
+                    if let Some((is_promoted, span)) = property_names.get(item_name_bytes) {
                         let message = if *is_promoted {
                             format!(
                                 "property `{class_like_name}::{item_name}` has already been defined as a promoted property"
@@ -1310,7 +1308,7 @@ pub fn check_members<'ast, 'arena>(
                                 .with_help("remove the duplicate property"),
                         );
                     } else {
-                        property_names.push((false, item_name_bytes, item_variable.span()));
+                        property_names.insert(item_name_bytes, (false, item_variable.span()));
                     }
                 }
             },
@@ -1319,9 +1317,7 @@ pub fn check_members<'ast, 'arena>(
                 let method_name = BytesDisplay(method_name_bytes);
                 let lowercase_method_name = method_name_bytes.to_ascii_lowercase();
 
-                if let Some((previous, _)) =
-                    method_names.iter().find(|(_, previous_name)| lowercase_method_name.eq(previous_name))
-                {
+                if let Some(previous) = method_names.get(&lowercase_method_name) {
                     context.report(
                         Issue::error(format!(
                             "{class_like_kind} method `{class_like_name}::{method_name}` has already been defined"
@@ -1334,7 +1330,7 @@ pub fn check_members<'ast, 'arena>(
                         ]),
                     );
                 } else {
-                    method_names.push((method.name.span(), lowercase_method_name));
+                    method_names.insert(lowercase_method_name, method.name.span());
                 }
 
                 if method_name_bytes.eq_ignore_ascii_case(CONSTRUCTOR_MAGIC_METHOD) {
@@ -1343,9 +1339,7 @@ pub fn check_members<'ast, 'arena>(
                             let item_name_bytes: &[u8] = parameter.variable.name;
                             let item_name = BytesDisplay(item_name_bytes);
 
-                            if let Some((is_promoted, _, span)) =
-                                property_names.iter().find(|(_, name, _)| item_name_bytes.eq(*name))
-                            {
+                            if let Some((is_promoted, span)) = property_names.get(item_name_bytes) {
                                 let message = if *is_promoted {
                                     format!(
                                         "promoted property `{class_like_name}::{item_name}` has already been defined"
@@ -1370,7 +1364,7 @@ pub fn check_members<'ast, 'arena>(
                                         .with_help("remove the duplicate property"),
                                 );
                             } else {
-                                property_names.push((true, item_name_bytes, parameter.variable.span()));
+                                property_names.insert(item_name_bytes, (true, parameter.variable.span()));
                             }
                         }
                     }
@@ -1380,10 +1374,8 @@ pub fn check_members<'ast, 'arena>(
                 for item in &class_like_constant.items {
                     let item_name_bytes: &[u8] = item.name.value;
 
-                    if let Some((is_constant, name, span)) =
-                        constant_names.iter().find(|t| t.1.as_slice() == item_name_bytes)
-                    {
-                        let name = BytesDisplay(name.as_slice());
+                    if let Some((is_constant, span)) = constant_names.get(item_name_bytes) {
+                        let name = BytesDisplay(item_name_bytes);
                         if *is_constant {
                             context.report(
                                 Issue::error(format!(
@@ -1414,17 +1406,15 @@ pub fn check_members<'ast, 'arena>(
                             );
                         }
                     } else {
-                        constant_names.push((true, item_name_bytes.to_vec(), item.name.span()));
+                        constant_names.insert(item_name_bytes, (true, item.name.span()));
                     }
                 }
             }
             ClassLikeMember::EnumCase(enum_case) => {
                 let case_name_bytes: &[u8] = enum_case.item.name().value;
 
-                if let Some((is_constant, name, span)) =
-                    constant_names.iter().find(|t| t.1.as_slice() == case_name_bytes)
-                {
-                    let name = BytesDisplay(name.as_slice());
+                if let Some((is_constant, span)) = constant_names.get(case_name_bytes) {
+                    let name = BytesDisplay(case_name_bytes);
                     if *is_constant {
                         context.report(
                             Issue::error(format!(
@@ -1455,7 +1445,7 @@ pub fn check_members<'ast, 'arena>(
 
                     continue;
                 }
-                constant_names.push((false, case_name_bytes.to_vec(), enum_case.item.name().span()));
+                constant_names.insert(case_name_bytes, (false, enum_case.item.name().span()));
             }
             _ => {}
         }

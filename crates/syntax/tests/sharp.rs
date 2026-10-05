@@ -577,6 +577,39 @@ fn for_of_declares_its_loop_variable_or_key_and_value() {
 }
 
 #[test]
+fn a_catch_clause_names_its_variable_without_a_dollar() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        try {\n        } catch (Missing | Broken failure) {\n        } catch (Throwable) {\n        } finally {\n        }\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::Try(r#try)] = method_body(program) else {
+        panic!("expected a try, got {:#?}", method_body(program));
+    };
+    let [named, unnamed] = r#try.catch_clauses.as_slice() else {
+        panic!("expected two catch clauses, got {:#?}", r#try.catch_clauses);
+    };
+
+    assert_eq!(source(CODE, &named.hint), "Missing | Broken");
+    let variable = named.variable.as_ref().expect("a variable");
+    assert_eq!(variable.name, b"failure");
+    assert_eq!(source(CODE, variable), "failure");
+    assert_eq!(source(CODE, &unnamed.hint), "Throwable");
+    assert!(unnamed.variable.is_none());
+    assert!(r#try.finally_clause.is_some());
+}
+
+#[test]
+fn a_dollar_catch_variable_is_a_php_syntax_error() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        try {\n        } catch (Missing $failure) {\n        }\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    let spans: Vec<&str> = program.errors.iter().map(|error| source(CODE, error)).collect();
+    assert_eq!(spans, ["$failure"]);
+}
+
+#[test]
 fn for_in_is_a_parse_error_that_names_of() {
     let arena = LocalArena::new();
     let program = parse(
@@ -763,6 +796,211 @@ fn a_method_written_with_function_is_a_parse_error() {
         messages.first().map(String::as_str),
         Some("`function` is PHP syntax: a PHP# method starts with its return type")
     );
+}
+
+fn returned_template<'arena>(program: &'arena Program<'arena>) -> &'arena InterpolatedString<'arena> {
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Expression::CompositeString(CompositeString::Interpolated(template)) = expression(&method_body(program)[0])
+    else {
+        panic!("expected a template, got {:#?}", method_body(program));
+    };
+
+    template
+}
+
+#[test]
+fn a_template_is_an_interpolated_string_whose_dollar_braces_take_any_expression() {
+    const CODE: &str = "class Report\n{\n    string run()\n    {\n        return `Order ${order.number}: ${count(items) + 1} items`;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+    let template = returned_template(program);
+
+    assert_eq!(source(CODE, template), "`Order ${order.number}: ${count(items) + 1} items`");
+    let parts: Vec<&str> = template.parts.iter().map(|part| source(CODE, part)).collect();
+    assert_eq!(parts, ["Order ", "${order.number}", ": ", "${count(items) + 1}", " items"]);
+    let [_, StringPart::BracedExpression(number), _, StringPart::BracedExpression(count), _] =
+        template.parts.as_slice()
+    else {
+        panic!("expected two interpolations, got {:#?}", template.parts);
+    };
+    assert!(matches!(number.expression, Expression::Access(Access::Property(_))), "{:#?}", number.expression);
+    assert!(matches!(count.expression, Expression::Binary(_)), "{:#?}", count.expression);
+}
+
+#[test]
+fn a_template_has_no_empty_text_around_its_interpolations() {
+    const CODE: &str = "class Report\n{\n    string run()\n    {\n        return `${first}${last}`;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+    let template = returned_template(program);
+
+    let parts: Vec<&str> = template.parts.iter().map(|part| source(CODE, part)).collect();
+    assert_eq!(parts, ["${first}", "${last}"]);
+}
+
+#[test]
+fn a_template_reads_dollar_names_and_braces_as_text_and_decodes_javascript_escapes() {
+    const CODE: &str = "class Report\n{\n    string run()\n    {\n        return `$price {$tax} \\${total} \\x41\\u{42} \\`a\\\nb`;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+    let template = returned_template(program);
+
+    let [StringPart::Literal(text)] = template.parts.as_slice() else {
+        panic!("expected one literal part, got {:#?}", template.parts);
+    };
+    assert_eq!(text.value, Some(&b"$price {$tax} ${total} AB `ab"[..]));
+}
+
+#[test]
+fn an_escape_javascript_refuses_is_a_parse_error_at_the_escape() {
+    for escape in ["\\1", "\\01", "\\x4", "\\u12", "\\u{110000}"] {
+        let code = format!("class Report\n{{\n    string run()\n    {{\n        return `a{escape}`;\n    }}\n}}\n");
+        let code: &'static str = Box::leak(code.into_boxed_str());
+        let arena = LocalArena::new();
+        let program = parse(&arena, "src/Report.sharp", code);
+
+        let messages: Vec<String> = program.errors.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            messages,
+            ["A template takes JavaScript's escapes, as in `\\n`, `\\x41` or `\\u{1F600}`."],
+            "{escape}"
+        );
+        assert_eq!(source(code, &program.errors[0]), &escape[..2], "{escape}");
+    }
+}
+
+#[test]
+fn a_double_quoted_string_never_interpolates() {
+    const CODE: &str =
+        "class Report\n{\n    string run()\n    {\n        return \"$price {$tax} ${total}\";\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Expression::Literal(Literal::String(string)) = expression(&method_body(program)[0]) else {
+        panic!("expected a literal string, got {:#?}", method_body(program));
+    };
+    assert_eq!(string.value, Some(&b"$price {$tax} ${total}"[..]));
+}
+
+#[test]
+fn backticks_keep_executing_a_shell_command_in_php() {
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.php", "<?php `ls $dir`;");
+
+    let Some(Statement::Expression(statement)) = program.statements.get(1) else {
+        panic!("expected an expression statement, got {:#?}", program.statements);
+    };
+    let Expression::CompositeString(CompositeString::ShellExecute(command)) = statement.expression else {
+        panic!("expected a shell command, got {:#?}", statement.expression);
+    };
+    assert!(
+        matches!(command.parts.as_slice(), [StringPart::Literal(_), StringPart::Expression(_)]),
+        "{:#?}",
+        command.parts
+    );
+}
+
+/// A PHP# method returning a sum of `terms` terms.
+fn sum(terms: usize) -> &'static str {
+    let code = format!(
+        "namespace App;\n\nclass Report\n{{\n    public int run(int extra)\n    {{\n        return {};\n    }}\n}}\n",
+        vec!["extra"; terms].join(" + ")
+    );
+
+    Box::leak(code.into_boxed_str())
+}
+
+/// The statements of the file's namespace, which declares it.
+fn namespace_statements<'program>(program: &'program Program<'program>) -> &'program [Statement<'program>] {
+    let Some(Statement::Namespace(namespace)) = program.statements.first() else {
+        panic!("expected a namespace, got {:#?}", program.statements);
+    };
+
+    namespace.statements().as_slice()
+}
+
+/// The namespace, the class and the `return` are three levels, so a sum of 509 terms nests its innermost term 512
+/// levels deep, and a sum of 510 terms nests it 513 levels deep. The parser leaves out the class it refuses, at its
+/// innermost term.
+#[test]
+fn nesting_deeper_than_512_levels_is_a_parse_error_that_leaves_out_its_statement() {
+    let arena = LocalArena::new();
+    let accepted = parse(&arena, "src/Report.sharp", sum(509));
+    assert!(accepted.errors.is_empty(), "{:#?}", accepted.errors);
+
+    let code = sum(510);
+    let refused = parse(&arena, "src/Report.sharp", code);
+    let [error @ ParseError::NestingTooDeepInSharp(span)] = refused.errors else {
+        panic!("expected one nesting error, got {:#?}", refused.errors);
+    };
+    assert_eq!(error.to_string(), "PHP# nests statements, expressions and types at most 512 levels deep.");
+    assert_eq!(&code[span.start.offset as usize..span.end.offset as usize], "extra");
+    assert_eq!(span.start.offset as usize, code.find("extra + ").expect("the sum is written"));
+    assert!(namespace_statements(refused).is_empty(), "{:#?}", refused.statements);
+}
+
+/// The parser refuses one statement of the namespace, and keeps the next.
+#[test]
+fn a_statement_nested_too_deep_leaves_the_next_statement_in_the_file() {
+    let code = format!("{}\nclass Total\n{{\n}}\n", sum(510));
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", Box::leak(code.into_boxed_str()));
+
+    assert!(matches!(program.errors, [ParseError::NestingTooDeepInSharp(_)]), "{:#?}", program.errors);
+    let [Statement::Class(class)] = namespace_statements(program) else {
+        panic!("expected the second class, got {:#?}", program.statements);
+    };
+    assert_eq!(class.name.value, b"Total");
+}
+
+/// A type counts as a level as a statement or expression does, so a union of 100,000 members is refused.
+#[test]
+fn a_union_of_100_000_types_is_a_parse_error() {
+    let union = (0..100_000).map(|index| format!("A{index}")).collect::<Vec<_>>().join("|");
+    let code = format!(
+        "namespace App;\n\nclass Report\n{{\n    public {union} run()\n    {{\n        return null;\n    }}\n}}\n"
+    );
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", Box::leak(code.into_boxed_str()));
+
+    assert!(matches!(program.errors, [ParseError::NestingTooDeepInSharp(_)]), "{:#?}", program.errors);
+    assert!(namespace_statements(program).is_empty(), "{:#?}", program.statements);
+}
+
+/// `??` nests to its right, so the parser's recursion reaches the limit every 512 terms of a long chain. The
+/// statement still gets one error.
+#[test]
+fn a_coalescing_chain_of_100_000_terms_is_one_parse_error() {
+    let code = sum(100_000).replace(" + ", " ?? ");
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", Box::leak(code.into_boxed_str()));
+
+    assert!(
+        matches!(
+            program.errors.iter().filter(|error| matches!(error, ParseError::NestingTooDeepInSharp(_))).count(),
+            1
+        ),
+        "{:#?}",
+        program.errors
+    );
+    assert!(namespace_statements(program).is_empty(), "{:#?}", program.statements);
+}
+
+/// PHP itself compiles a sum of tens of thousands of terms, so a PHP file keeps every nesting the parser builds, and
+/// a search of the whole tree reaches its innermost term.
+#[test]
+fn a_php_file_keeps_nesting_deeper_than_512_levels() {
+    let code = format!(
+        "<?php\nnamespace App;\n\nclass Report\n{{\n    public function run(int $extra): int\n    {{\n        return {};\n    }}\n}}\n",
+        vec!["$extra"; 100_000].join(" + ")
+    );
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.php", Box::leak(code.into_boxed_str()));
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+
+    let terms = Node::Program(program).filter_map(|node| matches!(node, Node::DirectVariable(_)).then_some(()));
+    assert_eq!(terms.len(), 100_001);
 }
 
 /// The source of every attribute list under `node`, in source order.

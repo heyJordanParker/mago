@@ -126,6 +126,13 @@ where
         Ok(())
     }
 
+    /// Whether thrown exceptions are tracked and reported. A PHP# file declares none: spec section 31 makes an exception
+    /// a bug and an expected failure a `Result`.
+    #[inline]
+    pub(crate) fn check_throws(&self) -> bool {
+        self.settings.check_throws && !self.dialect.is_sharp()
+    }
+
     #[inline]
     pub(crate) fn is_class_initializer_for(&self, metadata: &ClassLikeMetadata, method: Word) -> bool {
         self.settings.is_class_initializer_for(metadata, method)

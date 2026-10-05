@@ -41,6 +41,7 @@ use mago_orchestrator::OrchestratorError;
 use mago_php_version::PHPVersion;
 use mago_php_version::error::ParsingError;
 use mago_reporting::error::ReportingError;
+use mago_server::ServerError;
 
 use crate::version_check::VersionPinParseError;
 
@@ -529,6 +530,18 @@ impl From<ThreadPoolBuildError> for Error {
 impl From<OrchestratorError> for Error {
     fn from(error: OrchestratorError) -> Self {
         Self::Orchestrator(error)
+    }
+}
+
+/// Converts analysis server errors into CLI errors.
+///
+/// This enables the `?` operator to automatically convert [`ServerError`]
+/// into [`Error`] when propagating errors from an analysis server.
+impl From<ServerError> for Error {
+    fn from(error: ServerError) -> Self {
+        match error {
+            ServerError::Orchestrator(error) => Self::Orchestrator(error),
+        }
     }
 }
 

@@ -207,6 +207,80 @@ fn a_method_without_a_body_returns_the_checker_error() {
     );
 }
 
+/// Each body nests one chain 100,000 levels deep: a sum, a call chain, a null-safe call chain, a `??` chain and a
+/// `??=` chain. With the namespace, the class and the `return`, that is far past the 512 levels the parser allows.
+/// The parser builds a sum or a call chain in a loop and finds it too deep at its innermost term, the first one
+/// written. It builds `??` and `??=` by recursing to the right and stops at the term 510 levels into the chain.
+#[test]
+fn a_file_nested_100_000_levels_deep_returns_the_depth_error_and_no_nodes() {
+    let bodies = [
+        (format!("        return {};\n", vec!["extra"; 100_000].join(" + ")), 16),
+        (format!("        return this{};\n", ".total()".repeat(100_000)), 16),
+        (format!("        return this{};\n", "?.total()".repeat(100_000)), 16),
+        (format!("        return {};\n", vec!["extra"; 100_000].join(" ?? ")), 16 + 509 * "extra ?? ".len()),
+        (format!("        return {};\n", vec!["extra"; 100_000].join(" ??= ")), 16 + 509 * "extra ??= ".len()),
+    ];
+
+    for (body, column) in bodies {
+        let lowered = Lowered::new(&method(&body));
+
+        assert_eq!(
+            lowered.diagnostics(),
+            [format!("9:{column} parse error: PHP# nests statements, expressions and types at most 512 levels deep.")]
+        );
+        assert_eq!(lowered.unit().node_count, 0);
+    }
+}
+
+/// A union nests its types to the right, and each type is a level, so a 100,000-member return type is too deep at
+/// its member 509: the namespace, the class and 509 unions are around it.
+#[test]
+fn a_union_of_100_000_types_returns_the_depth_error_and_no_nodes() {
+    let union = (0..100_000).map(|index| format!("A{index}")).collect::<Vec<_>>().join("|");
+    let lowered = Lowered::new(&format!(
+        "namespace App.Tenant;\n\nclass Report\n{{\n    public {union} run()\n    {{\n        return null;\n    }}\n}}\n"
+    ));
+    let column = "    public ".len() + union.find("A509|").expect("the union has member 509") + 1;
+
+    assert_eq!(
+        lowered.diagnostics(),
+        [format!("5:{column} parse error: PHP# nests statements, expressions and types at most 512 levels deep.")]
+    );
+    assert_eq!(lowered.unit().node_count, 0);
+}
+
+/// A 509-term sum or `??` chain in a method nests its innermost term 512 levels deep, the most the checker allows, and
+/// so do a null-safe call chain of 509 calls and a 510-term sum as a field's initial value. The bridge lowers each on a
+/// thread whose stack is far smaller than the recursion needs, as a PHP thread or fiber may be.
+#[test]
+fn the_deepest_file_the_checker_accepts_lowers_on_a_small_stack() {
+    let codes = [
+        method(&format!("        return {};\n", vec!["extra"; 509].join(" + "))),
+        method(&format!("        return {};\n", vec!["extra"; 509].join(" ?? "))),
+        method(&format!("        this{};\n        return extra;\n", "?.total(extra)".repeat(508))),
+        format!(
+            "namespace App.Tenant;\n\nclass Report\n{{\n    private int total = {};\n}}\n",
+            vec!["1"; 510].join(" + ")
+        ),
+    ];
+
+    for code in codes {
+        let node_count = std::thread::Builder::new()
+            .stack_size(128 * 1024)
+            .spawn(move || {
+                let lowered = Lowered::new(&code);
+                assert_eq!(lowered.diagnostics(), Vec::<String>::new());
+
+                lowered.unit().node_count
+            })
+            .expect("the thread starts")
+            .join()
+            .expect("the lowering returns");
+
+        assert!(node_count > 509 * 2, "{node_count} nodes");
+    }
+}
+
 /// `ext/sharp` decides the dialect from the file name, so the bridge parses and checks PHP# whatever name it gets.
 #[test]
 fn a_file_of_any_name_is_parsed_and_checked_as_php_sharp() {
@@ -1559,16 +1633,45 @@ fn unary_operators_are_the_kinds_php_gives_them() {
 }
 
 /// ```php
-/// $a -= 1; $a *= 2; $a /= 3;
+/// $a -= 1; $a *= 2; $a /= 3; $a **= 4;
 /// ```
 ///
-/// `[2]`, `[3]` and `[4]` are `ZEND_SUB`, `ZEND_MUL` and `ZEND_DIV`.
+/// `[2]`, `[3]`, `[4]` and `[12]` are `ZEND_SUB`, `ZEND_MUL`, `ZEND_DIV` and `ZEND_POW`.
 #[test]
 fn compound_assignments_are_assign_ops() {
-    let tree = body("        let a = 1;\n        a -= 1;\n        a *= 2;\n        a /= 3;\n        return a;\n");
+    let tree = body(
+        "        let a = 1;\n        a -= 1;\n        a *= 2;\n        a /= 3;\n        a **= 4;\n        return a;\n",
+    );
     let operators: Vec<&str> = tree.lines().filter(|line| line.starts_with("  ") && !line.starts_with("   ")).collect();
 
-    assert_eq!(operators, ["  ASSIGN", "  ASSIGN_OP [2]", "  ASSIGN_OP [3]", "  ASSIGN_OP [4]", "  RETURN"]);
+    assert_eq!(
+        operators,
+        ["  ASSIGN", "  ASSIGN_OP [2]", "  ASSIGN_OP [3]", "  ASSIGN_OP [4]", "  ASSIGN_OP [12]", "  RETURN"]
+    );
+}
+
+/// ```php
+/// return -$a ** $a ** 2;
+/// ```
+///
+/// `[12]` is `ZEND_POW`. `**` groups to the right and binds tighter than unary `-`, as php-src's grammar has it.
+#[test]
+fn exponentiation_is_a_right_grouped_pow_under_unary_minus() {
+    assert_eq!(
+        body("        return -extra ** extra ** 2;\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                UNARY_MINUS
+                  BINARY_OP [12]
+                    VAR
+                      ZVAL "extra"
+                    BINARY_OP [12]
+                      VAR
+                        ZVAL "extra"
+                      ZVAL 2
+        "#}
+    );
 }
 
 /// ```php
@@ -1951,6 +2054,201 @@ fn for_of_loops_are_foreach_nodes_with_the_value_before_the_key() {
 }
 
 /// ```php
+/// throw new \App\Tenant\Failure($extra);
+/// return $extra ?? throw new \App\Tenant\Failure(0);
+/// ```
+///
+/// `throw` is an expression, and a `throw` statement is that expression alone.
+#[test]
+fn throw_is_a_throw_expression() {
+    assert_eq!(
+        body("        throw new Failure(extra);\n        return extra ?? throw new Failure(0);\n"),
+        indoc! {r#"
+            STMT_LIST
+              THROW
+                NEW
+                  ZVAL "App\\Tenant\\Failure"
+                  ARG_LIST
+                    VAR
+                      ZVAL "extra"
+              RETURN
+                COALESCE
+                  VAR
+                    ZVAL "extra"
+                  THROW
+                    NEW
+                      ZVAL "App\\Tenant\\Failure"
+                      ARG_LIST
+                        ZVAL 0
+        "#}
+    );
+}
+
+/// ```php
+/// try {
+///     $extra += 1;
+/// } catch (\Lib\Calc | \App\Tenant\Missing $failure) {
+///     throw $failure;
+/// } catch (\App\Tenant\Broken) {
+/// } finally {
+///     $extra -= 1;
+/// }
+/// ```
+///
+/// `TRY` takes the try block, a `CATCH_LIST` and the finally block or null. Each `CATCH` takes a `NAME_LIST` of
+/// classes, the variable's name or null, and its block.
+#[test]
+fn try_is_a_try_node_with_a_catch_list_and_a_finally_block() {
+    assert_eq!(
+        body(
+            "        try {\n            extra += 1;\n        } catch (Calc | Missing failure) {\n            throw failure;\n        } catch (Broken) {\n        } finally {\n            extra -= 1;\n        }\n        return extra;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              TRY
+                STMT_LIST
+                  ASSIGN_OP [1]
+                    VAR
+                      ZVAL "extra"
+                    ZVAL 1
+                CATCH_LIST
+                  CATCH
+                    NAME_LIST
+                      ZVAL "Lib\\Calc"
+                      ZVAL "App\\Tenant\\Missing"
+                    ZVAL "failure"
+                    STMT_LIST
+                      THROW
+                        VAR
+                          ZVAL "failure"
+                  CATCH
+                    NAME_LIST
+                      ZVAL "App\\Tenant\\Broken"
+                    null
+                    STMT_LIST
+                STMT_LIST
+                  ASSIGN_OP [2]
+                    VAR
+                      ZVAL "extra"
+                    ZVAL 1
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
+/// try {
+/// } finally {
+/// }
+/// ```
+#[test]
+fn try_without_a_catch_has_an_empty_catch_list() {
+    assert_eq!(
+        body("        try {\n        } finally {\n        }\n        return extra;\n"),
+        indoc! {r#"
+            STMT_LIST
+              TRY
+                STMT_LIST
+                CATCH_LIST
+                STMT_LIST
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
+/// return \strlen(\sprintf("%d", \count($extra, mode: 0)));
+/// ```
+///
+/// PHP# calls only PHP's built-in functions, so a call names the global function with `ZEND_NAME_FQ`, which is 0.
+#[test]
+fn a_function_call_is_a_call_of_the_global_function() {
+    assert_eq!(
+        body("        return strlen(sprintf(\"%d\", count(extra, mode: 0)));\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CALL
+                  ZVAL "strlen"
+                  ARG_LIST
+                    CALL
+                      ZVAL "sprintf"
+                      ARG_LIST
+                        ZVAL "%d"
+                        CALL
+                          ZVAL "count"
+                          ARG_LIST
+                            VAR
+                              ZVAL "extra"
+                            NAMED_ARG
+                              ZVAL "mode"
+                              ZVAL 0
+        "#}
+    );
+}
+
+/// ```php
+/// $label = "Order {$extra}: " . \strlen("x") . "!"; $alone = "{$extra}"; $plain = "plain A"; return $extra;
+/// ```
+///
+/// php-src's grammar builds an interpolated string as an `ENCAPS_LIST` of its text and its expressions, and a
+/// string without one as a `ZVAL`. A template's `${…}` takes any expression, which `ENCAPS_LIST` compiles as PHP's
+/// `{$…}` does.
+#[test]
+fn a_template_is_an_encaps_list_of_its_text_and_interpolations() {
+    assert_eq!(
+        body(
+            "        const label = `Order ${extra}: ${strlen(\"x\")}!`;\n        const alone = `${extra}`;\n        const plain = `plain \\x41`;\n        return extra;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "label"
+                ENCAPS_LIST
+                  ZVAL "Order "
+                  VAR
+                    ZVAL "extra"
+                  ZVAL ": "
+                  CALL
+                    ZVAL "strlen"
+                    ARG_LIST
+                      ZVAL "x"
+                  ZVAL "!"
+              ASSIGN
+                VAR
+                  ZVAL "alone"
+                ENCAPS_LIST
+                  VAR
+                    ZVAL "extra"
+              ASSIGN
+                VAR
+                  ZVAL "plain"
+                ZVAL "plain A"
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
+/// php-src takes a list's line from its first child, and each piece of text's from where it starts.
+#[test]
+fn a_template_over_several_lines_keeps_the_line_of_each_part() {
+    let lowered = Lowered::new(&method("        return `total:\n${extra} more`;\n"));
+    let list = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_ENCAPS_LIST).expect("a list");
+    let lines: Vec<u32> =
+        (0..3).map(|index| lowered.nodes()[lowered.child(list as u32, index) as usize].line).collect();
+
+    assert_eq!(lowered.nodes()[list].line, 9);
+    assert_eq!(lines, [9, 10, 10]);
+}
+
+/// ```php
 /// #[\Lib\Entity(label: "Orders", order: 2 * 3), \App\Tenant\Searchable]
 /// #[\Lib\Entity(null)]
 /// class Report
@@ -2078,8 +2376,10 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_PROP_DECL
         | sharp_kind::SHARP_AST_ATTRIBUTE_LIST
         | sharp_kind::SHARP_AST_ATTRIBUTE_GROUP
-        | sharp_kind::SHARP_AST_CLASS_CONST_DECL
-        | sharp_kind::SHARP_AST_NAME_LIST => None,
+        | sharp_kind::SHARP_AST_CATCH_LIST
+        | sharp_kind::SHARP_AST_NAME_LIST
+        | sharp_kind::SHARP_AST_ENCAPS_LIST
+        | sharp_kind::SHARP_AST_CLASS_CONST_DECL => None,
         sharp_kind::SHARP_AST_ZVAL => Some(0),
         sharp_kind::SHARP_AST_VAR
         | sharp_kind::SHARP_AST_CONST
@@ -2093,6 +2393,7 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_RETURN
         | sharp_kind::SHARP_AST_BREAK
         | sharp_kind::SHARP_AST_CONTINUE
+        | sharp_kind::SHARP_AST_THROW
         | sharp_kind::SHARP_AST_CLASS_NAME => Some(1),
         sharp_kind::SHARP_AST_PROP
         | sharp_kind::SHARP_AST_ASSIGN
@@ -2113,6 +2414,7 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_DO_WHILE
         | sharp_kind::SHARP_AST_NEW
         | sharp_kind::SHARP_AST_ATTRIBUTE
+        | sharp_kind::SHARP_AST_CALL
         | sharp_kind::SHARP_AST_STATIC_PROP
         | sharp_kind::SHARP_AST_CLASS_CONST => Some(2),
         sharp_kind::SHARP_AST_METHOD_CALL
@@ -2120,6 +2422,8 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_CONST_ELEM
         | sharp_kind::SHARP_AST_NULLSAFE_METHOD_CALL
         | sharp_kind::SHARP_AST_PROP_GROUP
+        | sharp_kind::SHARP_AST_TRY
+        | sharp_kind::SHARP_AST_CATCH
         | sharp_kind::SHARP_AST_CLASS_CONST_GROUP => Some(3),
         sharp_kind::SHARP_AST_FOR | sharp_kind::SHARP_AST_FOREACH | sharp_kind::SHARP_AST_PROP_ELEM => Some(4),
         sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_CLASS => Some(5),

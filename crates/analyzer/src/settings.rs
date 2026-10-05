@@ -51,7 +51,7 @@ pub struct Settings {
     /// Enable checking for unhandled thrown exceptions.
     ///
     /// When `true`, the analyzer will report any exception that is thrown but not caught
-    /// in a `try-catch` block or documented in a `@throws` tag.
+    /// in a `try-catch` block or documented in a `@throws` tag. It skips PHP# files, which declare no thrown exceptions.
     ///
     /// This check is disabled by default (`false`) as it can be computationally expensive.
     pub check_throws: bool,

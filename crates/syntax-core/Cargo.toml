@@ -19,6 +19,9 @@ mago-span = { workspace = true }
 memchr = { workspace = true }
 serde = { workspace = true, optional = true }
 
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+stacker = { workspace = true }
+
 [features]
 default = []
 serde = [

@@ -19,7 +19,7 @@ Global flags must come before `analyze`. See the [CLI overview](/fundamentals/co
 
 | Argument | Description |
 | :--- | :--- |
-| `[PATHS]...` | Files or directories to analyze. When provided, these replace the `paths` from `mago.toml` for this run. |
+| `[PATHS]...` | Files or directories to report issues for. Mago still analyzes every file in the `paths` from `mago.toml`, plus these, so checks that compare files see the whole project. It reports the issues in these paths, plus issues that name no file. |
 
 ## Analyzer-specific options
 

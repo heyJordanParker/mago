@@ -186,6 +186,7 @@ mago-collector = { path = "crates/collector", version = "1.53.0" }
 mago-database = { path = "crates/database", version = "1.53.0", default-features = false }
 mago-guard = { path = "crates/guard", version = "1.53.0" }
 mago-orchestrator = { path = "crates/orchestrator", version = "1.53.0" }
+mago-server = { path = "crates/server", version = "1.53.0" }
 mago-extension = { path = "crates/extension", version = "1.53.0" }
 mago-sharp-bridge = { path = "crates/sharp-bridge", version = "1.53.0" }
 tracing = { version = "0.1.40" }
@@ -226,6 +227,7 @@ tempfile = "3.15.0"
 colored = "3.0.0"
 blake3 = "1.8.1"
 memchr = "2.7.4"
+stacker = "0.1.25"
 dialoguer = "0.12.0"
 unicode-width = { version = "0.2.0", default-features = false }
 itertools = "0.14.0"
@@ -272,6 +274,7 @@ mago-algebra = { workspace = true }
 mago-codex = { workspace = true }
 mago-guard = { workspace = true, features = ["serde"] }
 mago-orchestrator = { workspace = true }
+mago-server = { workspace = true }
 mago-extension = { workspace = true }
 serde = { workspace = true }
 clap = { workspace = true }

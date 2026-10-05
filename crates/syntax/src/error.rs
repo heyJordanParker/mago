@@ -8,6 +8,7 @@ use mago_span::Span;
 
 use crate::T;
 use crate::cst::LiteralStringKind;
+use crate::parser::MAX_RECURSION_DEPTH;
 use crate::token::TokenKind;
 
 const SYNTAX_ERROR_CODE: &str = "syntax";
@@ -54,10 +55,14 @@ pub enum ParseError {
     QualifiedNameInSharp(Box<str>, Span),
     /// A PHP# parameter written without its type, such as `run(extra)`, at its name.
     UntypedParameterInSharp(Span),
+    /// A PHP# statement, expression or type nested more than [`MAX_RECURSION_DEPTH`] levels deep, at the innermost one.
+    NestingTooDeepInSharp(Span),
     /// TypeScript's `in` written in a PHP# `for … of` loop, at the `in`.
     ForInInSharp(Span),
     /// PHP# syntax the engine cannot run yet, such as `required` or a named constructor, where it starts.
     NotSupportedYetInSharp(&'static str, Span),
+    /// An escape JavaScript refuses in a PHP# template, such as `\1` or `\x4`, at its backslash and next character.
+    InvalidTemplateEscapeInSharp(Span),
 }
 
 impl HasFileId for SyntaxError {
@@ -82,8 +87,10 @@ impl HasFileId for ParseError {
             ParseError::PhpSyntaxInSharp(_, span)
             | ParseError::QualifiedNameInSharp(_, span)
             | ParseError::UntypedParameterInSharp(span)
+            | ParseError::NestingTooDeepInSharp(span)
             | ParseError::ForInInSharp(span)
-            | ParseError::NotSupportedYetInSharp(_, span) => span.file_id,
+            | ParseError::NotSupportedYetInSharp(_, span)
+            | ParseError::InvalidTemplateEscapeInSharp(span) => span.file_id,
         }
     }
 }
@@ -112,8 +119,10 @@ impl HasSpan for ParseError {
             ParseError::PhpSyntaxInSharp(_, span)
             | ParseError::QualifiedNameInSharp(_, span)
             | ParseError::UntypedParameterInSharp(span)
+            | ParseError::NestingTooDeepInSharp(span)
             | ParseError::ForInInSharp(span)
-            | ParseError::NotSupportedYetInSharp(_, span) => *span,
+            | ParseError::NotSupportedYetInSharp(_, span)
+            | ParseError::InvalidTemplateEscapeInSharp(span) => *span,
         }
     }
 }
@@ -189,10 +198,16 @@ impl std::fmt::Display for ParseError {
                 format!("A `\\` name is PHP syntax: add `import {name};` and write `{short_name}`")
             }
             ParseError::UntypedParameterInSharp(_) => "A PHP# parameter needs a type, as in `int extra`.".to_string(),
+            ParseError::NestingTooDeepInSharp(_) => {
+                format!("PHP# nests statements, expressions and types at most {MAX_RECURSION_DEPTH} levels deep.")
+            }
             ParseError::ForInInSharp(_) => {
                 "PHP# loops over a collection with `of`, as in `for (const line of lines)`.".to_string()
             }
             ParseError::NotSupportedYetInSharp(construct, _) => format!("{construct} is not supported yet in PHP#."),
+            ParseError::InvalidTemplateEscapeInSharp(_) => {
+                "A template takes JavaScript's escapes, as in `\\n`, `\\x41` or `\\u{1F600}`.".to_string()
+            }
         };
 
         write!(f, "{message}")
@@ -235,7 +250,8 @@ impl From<&ParseError> for Issue {
             ParseError::PhpSyntaxInSharp(..)
             | ParseError::QualifiedNameInSharp(..)
             | ParseError::UntypedParameterInSharp(..)
-            | ParseError::ForInInSharp(..) => Issue::error(error.to_string())
+            | ParseError::ForInInSharp(..)
+            | ParseError::InvalidTemplateEscapeInSharp(..) => Issue::error(error.to_string())
                 .with_code(PARSE_ERROR_CODE)
                 .with_annotation(Annotation::primary(error.span()).with_message("Written here.")),
             ParseError::NotSupportedYetInSharp(_, span) => Issue::error(error.to_string())

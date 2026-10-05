@@ -7,6 +7,7 @@ use crate::cst::cst::UnionHint;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use mago_allocator::prelude::*;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 
 impl<'arena, A> Parser<'_, 'arena, A>
 where
@@ -37,7 +38,12 @@ where
         if self.is_at_type_hint()? { Ok(Some(self.parse_type_hint()?)) } else { Ok(None) }
     }
 
+    /// A union or intersection nests its right side, so a long one recurses once for each of its types.
     pub(crate) fn parse_type_hint(&mut self) -> Result<Hint<'arena>, ParseError> {
+        ensure_sufficient_stack(|| self.parse_type_hint_inner())
+    }
+
+    fn parse_type_hint_inner(&mut self) -> Result<Hint<'arena>, ParseError> {
         let token = self.stream.lookahead(0)?.ok_or_else(|| self.stream.unexpected(None, &[]))?;
 
         let hint = match &token.kind {

@@ -48,7 +48,7 @@ fn the_slice_fixture_has_no_semantic_issues() {
 
 #[test]
 fn every_construct_outside_the_slice_is_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\nenum Suit\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        switch (extra) {\n            default: return 1;\n        }\n        echo extra;\n        const made = new Report;\n        const arrow = fn() => 1;\n        const closure = function () { return 1; };\n        const partial = this.run(...);\n        const text = \"total {$extra}\";\n        return extra;\n    }\n}\n";
+    let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\nenum Suit\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        switch (extra) {\n            default: return 1;\n        }\n        echo extra;\n        const made = new Report;\n        const arrow = fn() => 1;\n        const closure = function () { return 1; };\n        const partial = this.run(...);\n        const text = <<<TEXT\ntotal\nTEXT;\n        return extra;\n    }\n}\n";
 
     assert_eq!(
         issues(code),
@@ -74,6 +74,73 @@ fn if_else_if_and_else_with_braces_are_in_the_slice() {
     ));
 
     assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_template_is_in_the_slice_with_any_slice_expression_in_its_interpolations() {
+    let code =
+        leak(method("        const label = `Order ${extra}: ${this.run(extra + 1)} items`;\n        return extra;\n"));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn an_interpolation_outside_the_slice_is_not_supported_yet() {
+    let code = leak(method("        const label = `made ${fn() => 1}`;\n        return extra;\n"));
+
+    assert_eq!(issues(code), ["7:31 This expression is not supported yet in PHP#."]);
+}
+
+#[test]
+fn throw_is_an_expression_in_the_slice() {
+    let code = leak(method(
+        "        if (extra < 0) {\n            throw new Failure(extra);\n        }\n        return extra ?? throw new Failure(0);\n",
+    ));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn try_with_catch_and_finally_is_in_the_slice() {
+    let code = leak(method(
+        "        try {\n            extra += 1;\n        } catch (Missing | Broken failure) {\n            throw failure;\n        } catch (Throwable) {\n            extra = 0;\n        } finally {\n            extra -= 1;\n        }\n        return extra;\n",
+    ));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_catch_type_that_is_not_a_class_reports_only_the_php_error() {
+    let code = leak(method(
+        "        try {\n            extra += 1;\n        } catch (int failure) {\n        } catch (Missing | string failure) {\n        }\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        ["9:18 Invalid type hint in `catch` clause.", "10:28 Invalid type hint in `catch` clause."]
+    );
+}
+
+#[test]
+fn a_catch_variable_named_this_or_a_superglobal_is_an_error() {
+    let code = leak(method(
+        "        try {\n        } catch (Missing this) {\n        } catch (Broken _GET) {\n        }\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "8:26 Cannot name a catch variable `this`: `this` is the object the method runs on.",
+            "9:25 `_GET` is the name of a PHP superglobal: rename this catch variable.",
+        ]
+    );
+}
+
+#[test]
+fn a_catch_variable_is_out_of_scope_after_its_catch_block() {
+    let code = leak(method("        try {\n        } catch (Missing failure) {\n        }\n        throw failure;\n"));
+
+    assert_eq!(issues(code), ["10:15 `failure` is used after the block that declares it closes."]);
 }
 
 #[test]
@@ -343,6 +410,34 @@ fn a_dollar_parameter_is_an_error() {
 }
 
 #[test]
+fn a_function_called_by_its_bare_name_is_in_the_slice() {
+    let code = leak(method(
+        "        const name = sprintf(\"%d items\", count(this.items(), mode: 0));\n        return strlen(name) + random_int(1, extra);\n",
+    ));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_construct_outside_the_slice_is_not_supported_yet_in_a_catch_block_or_a_call_argument() {
+    let code = leak(method(
+        "        try {\n        } catch (Missing failure) {\n            extra = extra & 1;\n        }\n        return count(fn() => 1);\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        ["9:27 This operator is not supported yet in PHP#.", "11:22 This expression is not supported yet in PHP#."]
+    );
+}
+
+#[test]
+fn a_function_called_through_an_expression_is_not_supported_yet() {
+    let code = leak(method("        const call = this.callback();\n        return call(extra);\n"));
+
+    assert_eq!(issues(code), ["8:16 This expression is not supported yet in PHP#."]);
+}
+
+#[test]
 fn compact_extract_and_global_are_errors() {
     let code =
         leak(method("        compact(\"extra\");\n        extract([]);\n        global $config;\n        return 1;\n"));
@@ -358,10 +453,10 @@ fn compact_extract_and_global_are_errors() {
 }
 
 #[test]
-fn a_dollar_variable_in_a_string_reports_one_error() {
-    let code = leak(method("        return \"{$extra}\";\n"));
+fn a_dollar_variable_in_a_double_quoted_string_is_text() {
+    let code = leak(method("        return \"{$extra} $extra ${extra}\";\n"));
 
-    assert_eq!(issues(code), ["7:16 This expression is not supported yet in PHP#."]);
+    assert_eq!(issues(code), Vec::<String>::new());
 }
 
 #[test]
@@ -796,9 +891,9 @@ fn a_promoted_member_outside_the_slice_is_not_supported_yet() {
     assert_eq!(
         issues(code),
         [
-            "5:27 This modifier is not supported yet in PHP#.",
             "7:21 Promoted properties are not allowed outside of constructors.",
             "5:51 Parameter `b` cannot have the `static` modifier.",
+            "5:27 This modifier is not supported yet in PHP#.",
         ]
     );
 }
@@ -862,6 +957,13 @@ fn a_field_without_an_access_modifier_is_not_supported_yet() {
 }
 
 #[test]
+fn a_field_ended_by_a_closing_tag_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private int count = 0 ?><?php\n}\n";
+
+    assert_eq!(issues(code), ["5:27 This construct is not supported yet in PHP#."]);
+}
+
+#[test]
 fn fields_outside_the_slice_are_not_supported_yet() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    private readonly int count = 0;\n    private int first, second;\n    private int? maybe;\n}\n";
 
@@ -905,7 +1007,7 @@ fn a_class_constant_has_an_access_modifier_an_optional_type_and_a_constant_value
 
 #[test]
 fn a_class_constant_outside_the_slice_is_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nclass Report\n{\n    const A = 1;\n    public const B = 1, C = 2;\n    final public const D = 1;\n    public const E = 2 ** 3;\n    public const iterable F = [];\n}\n";
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    const A = 1;\n    public const B = 1, C = 2;\n    final public const D = 1;\n    public const E = 2 << 3;\n    public const iterable F = [];\n}\n";
 
     assert_eq!(
         issues(code),
@@ -984,9 +1086,16 @@ fn a_variadic_parameter_is_not_supported_yet() {
 }
 
 #[test]
+fn exponentiation_and_its_compound_assignment_are_in_the_slice() {
+    let code = leak(method("        let a = extra ** 2 ** -1;\n        a **= 2;\n        return a;\n"));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
 fn operators_outside_the_slice_are_not_supported_yet() {
     let code = leak(method(
-        "        let a = extra;\n        a = @extra;\n        a = (int) extra;\n        a = extra ** 2;\n        a = extra & 1;\n        a = extra | 1;\n        a = extra ^ 1;\n        a = extra << 1;\n        a = extra >> 1;\n        a = ~extra;\n        a = extra xor true;\n        a = extra and true;\n        a = extra or true;\n        a = extra <=> 1;\n        a = extra <> 1;\n        a %= 2;\n        a **= 2;\n        a &= 2;\n        return a;\n",
+        "        let a = extra;\n        a = @extra;\n        a = (int) extra;\n        a = extra & 1;\n        a = extra | 1;\n        a = extra ^ 1;\n        a = extra << 1;\n        a = extra >> 1;\n        a = ~extra;\n        a = extra xor true;\n        a = extra and true;\n        a = extra or true;\n        a = extra <=> 1;\n        a = extra <> 1;\n        a %= 2;\n        a &= 2;\n        return a;\n",
     ));
 
     assert_eq!(
@@ -999,16 +1108,14 @@ fn operators_outside_the_slice_are_not_supported_yet() {
             "12:19 This operator is not supported yet in PHP#.",
             "13:19 This operator is not supported yet in PHP#.",
             "14:19 This operator is not supported yet in PHP#.",
-            "15:19 This operator is not supported yet in PHP#.",
-            "16:13 This operator is not supported yet in PHP#.",
+            "15:13 This operator is not supported yet in PHP#.",
+            "16:19 This operator is not supported yet in PHP#.",
             "17:19 This operator is not supported yet in PHP#.",
             "18:19 This operator is not supported yet in PHP#.",
             "19:19 This operator is not supported yet in PHP#.",
             "20:19 This operator is not supported yet in PHP#.",
-            "21:19 This operator is not supported yet in PHP#.",
+            "21:11 This operator is not supported yet in PHP#.",
             "22:11 This operator is not supported yet in PHP#.",
-            "23:11 This operator is not supported yet in PHP#.",
-            "24:11 This operator is not supported yet in PHP#.",
         ]
     );
 }
@@ -1049,8 +1156,8 @@ fn a_typed_local_takes_the_types_of_the_slice_but_not_void() {
         [
             "7:9 A local cannot be `void`: `void` is only a return type.",
             "8:9 This type is not supported yet in PHP#.",
-            "9:9 This type is not supported yet in PHP#.",
             "9:9 Type `mixed` cannot be nullable.",
+            "9:9 This type is not supported yet in PHP#.",
             "11:9 Cannot assign to `kept`: it is declared with `const`.",
         ]
     );

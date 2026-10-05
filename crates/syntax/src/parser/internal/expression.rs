@@ -2,6 +2,7 @@ use mago_allocator::prelude::*;
 use mago_database::file::HasFileId;
 use mago_span::HasSpan;
 use mago_span::Span;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 
 use crate::T;
 use crate::cst::cst::Access;
@@ -126,10 +127,10 @@ where
                     Span::new(file_id, self.stream.current_position(), self.stream.current_position())
                 });
 
-            return Err(ParseError::RecursionLimitExceeded(span));
+            return Err(self.recursion_limit_exceeded(span));
         }
 
-        let result = self.parse_expression_with_precedence_inner(precedence);
+        let result = ensure_sufficient_stack(|| self.parse_expression_with_precedence_inner(precedence));
         self.state.recursion_depth -= 1;
         result
     }

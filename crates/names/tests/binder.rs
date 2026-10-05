@@ -182,6 +182,34 @@ fn for_of_loop_variables_live_until_their_loop_ends() {
 }
 
 #[test]
+fn a_catch_variable_lives_until_its_catch_block_ends() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nclass Report\n{\n    public int run()\n    {\n        try {\n        } catch (Missing | Broken failure) {\n            failure;\n        } finally {\n            failure;\n        }\n        return 0;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "failure", 1), Some(local(CODE, "failure", 0, LocalKind::Let)));
+    assert_eq!(resolved(&names, CODE, "Missing", 0), b"App\\Tenant\\Store\\Missing");
+    assert_eq!(resolved(&names, CODE, "Broken", 0), b"App\\Tenant\\Store\\Broken");
+    assert_eq!(
+        names.binding_errors(),
+        [BindingError::OutOfScope {
+            name: span(CODE, "failure", 2),
+            local: declared(CODE, "failure", 0, LocalKind::Let)
+        }]
+    );
+}
+
+#[test]
+fn a_called_name_binds_as_a_local_when_one_is_declared_and_is_unbound_otherwise() {
+    const CODE: &str = "class Report\n{\n    public int run(int count)\n    {\n        count(count);\n        return strlen(\"total\");\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "count", 1), Some(local(CODE, "count", 0, LocalKind::Parameter)));
+    assert_eq!(binding(&names, CODE, "strlen", 0), None);
+}
+
+#[test]
 fn redeclaring_a_name_an_enclosing_block_declares_is_a_binding_error() {
     const CODE: &str = "class Report\n{\n    public int run(int count)\n    {\n        let total = 1;\n        {\n            let total = 2;\n            let count = 3;\n        }\n        return total;\n    }\n}\n";
     let arena = LocalArena::new();

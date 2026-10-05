@@ -143,7 +143,7 @@ where
         }
     }
 
-    if context.settings.check_throws {
+    if context.check_throws() {
         let thrown_types = context.codebase.get_function_like_thrown_types(
             invoication.target.get_method_context().map(|context| context.class_like_metadata),
             metadata,

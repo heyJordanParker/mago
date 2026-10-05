@@ -1,5 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::hash::Hash;
+use std::hash::Hasher;
 
 use mago_allocator::prelude::*;
 use mago_span::HasSpan;
@@ -44,6 +46,7 @@ use mago_syntax::cst::StaticMethodPartialApplication;
 use mago_syntax::cst::StaticPropertyAccess;
 use mago_syntax::cst::Trait;
 use mago_syntax::cst::TraitUse;
+use mago_syntax::cst::TryCatchClause;
 use mago_syntax::cst::TypeOf;
 use mago_syntax::cst::Use;
 use mago_syntax::cst::UseItems;
@@ -84,8 +87,31 @@ pub struct NameWalker<'arena> {
 /// constant names exactly.
 #[derive(Debug, Default)]
 struct ClassMembers<'arena> {
-    methods: std::vec::Vec<&'arena [u8]>,
-    others: std::vec::Vec<&'arena [u8]>,
+    methods: foldhash::HashSet<IgnoringCase<'arena>>,
+    others: foldhash::HashSet<&'arena [u8]>,
+}
+
+/// A name that hashes and compares ignoring ASCII case, as PHP compares method names.
+#[derive(Debug, Clone, Copy)]
+struct IgnoringCase<'name>(&'name [u8]);
+
+impl PartialEq for IgnoringCase<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq_ignore_ascii_case(other.0)
+    }
+}
+
+impl Eq for IgnoringCase<'_> {}
+
+impl Hash for IgnoringCase<'_> {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: Hasher,
+    {
+        for byte in self.0 {
+            state.write_u8(byte.to_ascii_lowercase());
+        }
+    }
 }
 
 impl<'arena> NameWalker<'arena> {
@@ -112,9 +138,9 @@ impl<'arena> NameWalker<'arena> {
     }
 
     fn is_member(&self, name: &[u8]) -> bool {
-        self.class_members.last().is_some_and(|members| {
-            members.methods.iter().any(|method| method.eq_ignore_ascii_case(name)) || members.others.contains(&name)
-        })
+        self.class_members
+            .last()
+            .is_some_and(|members| members.others.contains(name) || members.methods.contains(&IgnoringCase(name)))
     }
 }
 
@@ -134,7 +160,7 @@ fn class_member_names<'arena>(members: &Sequence<'arena, ClassLikeMember<'arena>
     for member in members {
         match member {
             ClassLikeMember::Method(method) => {
-                names.methods.push(method.name.value);
+                names.methods.insert(IgnoringCase(method.name.value));
                 names.others.extend(
                     method
                         .parameter_list
@@ -339,6 +365,29 @@ where
         self.locals.exit_block();
     }
 
+    /// A PHP# catch clause is a block of its own, whose variable lives until the clause's block ends.
+    fn walk_try_catch_clause(
+        &mut self,
+        try_catch_clause: &'ast TryCatchClause<'arena>,
+        context: &mut NameResolutionContext<'arena, A>,
+    ) {
+        self.walk_hint(&try_catch_clause.hint, context);
+        if self.sharp {
+            self.locals.enter_block();
+        }
+        if let Some(variable) = &try_catch_clause.variable {
+            if self.sharp {
+                self.declare(variable.name, variable.span, LocalKind::Let);
+            }
+            self.walk_direct_variable(variable, context);
+        }
+
+        self.walk_block(&try_catch_clause.block, context);
+        if self.sharp {
+            self.locals.exit_block();
+        }
+    }
+
     fn walk_out_function_like_parameter(
         &mut self,
         parameter: &'ast FunctionLikeParameter<'arena>,
@@ -489,7 +538,13 @@ where
 
             self.resolved_names.insert_at(identifier.span(), name, imported);
 
-            if self.sharp && self.is_member(identifier.value()) {
+            if !self.sharp {
+                return;
+            }
+
+            if let Some(local) = self.locals.lookup(identifier.value()) {
+                self.resolved_names.bind(identifier.span(), Binding::Local(local));
+            } else if self.is_member(identifier.value()) {
                 self.resolved_names.bind(identifier.span(), Binding::Member);
             }
         }

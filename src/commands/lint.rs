@@ -244,12 +244,8 @@ impl LintCommand {
             orchestrator.config.paths.push(substitution.temporary.to_string_lossy().into_owned());
         }
 
-        let stdin_override = stdin_input::resolve_stdin_override(
-            self.stdin_input,
-            &self.path,
-            &configuration.source.workspace,
-            &mut orchestrator,
-        )?;
+        let stdin_override =
+            stdin_input::resolve_stdin_override(self.stdin_input, &self.path, &configuration.source.workspace)?;
 
         if !self.stdin_input && self.staged {
             let mut staged_paths = git::get_staged_file_paths(&configuration.source.workspace)?;
@@ -264,7 +260,7 @@ impl LintCommand {
             }
 
             orchestrator.set_source_paths(staged_paths.iter().map(|p| p.to_string_lossy().to_string()));
-        } else if !self.stdin_input && !self.path.is_empty() {
+        } else if !self.path.is_empty() {
             stdin_input::set_source_paths_from_paths(&mut orchestrator, &self.path);
         }
         let orchestrator_init_duration = orchestrator_init_start.map(|s| s.elapsed());

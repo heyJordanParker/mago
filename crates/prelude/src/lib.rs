@@ -67,6 +67,22 @@ impl Prelude {
         Ok(prelude)
     }
 
+    /// Decodes only the prelude's database from a byte slice, without building its codebase.
+    ///
+    /// bincode decodes fields in order and `database` is the first field of [`Prelude`],
+    /// so decoding stops after the database.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`PreludeError`] if deserialization fails due to corrupted or
+    /// incompatible binary data.
+    #[cfg(feature = "serde")]
+    pub fn decode_database(bytes: &[u8]) -> Result<Database<'static>, PreludeError> {
+        let (database, _) = bincode::serde::decode_from_slice(bytes, standard())?;
+
+        Ok(database)
+    }
+
     /// (Builder-only) Builds the prelude by parsing and analyzing all embedded PHP stub files.
     ///
     /// This is an expensive, one-time operation that should only be run at compile
@@ -103,5 +119,38 @@ impl Default for Prelude {
             metadata: CodebaseMetadata::default(),
             symbol_references: SymbolReferences::default(),
         }
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+#[allow(clippy::expect_used)]
+mod tests {
+    use std::borrow::Cow;
+
+    use mago_database::DatabaseReader;
+    use mago_database::file::File;
+    use mago_database::file::FileType;
+
+    use super::*;
+
+    #[test]
+    fn the_database_decodes_alone_as_it_decodes_with_the_whole_prelude() {
+        let mut prelude = Prelude::default();
+        prelude.database.add(File::new(
+            Cow::Borrowed(b"stubs/core.php"),
+            FileType::Builtin,
+            None,
+            Cow::Borrowed(b"<?php\nfunction strlen(string $string): int {}\n"),
+        ));
+        let bytes = bincode::serde::encode_to_vec(&prelude, standard()).expect("the prelude encodes");
+
+        let files = |database: &Database<'static>| {
+            database.files().map(|file| (file.name.clone(), file.contents.clone())).collect::<Vec<_>>()
+        };
+        let whole = Prelude::decode(&bytes).expect("the whole prelude decodes");
+        let alone = Prelude::decode_database(&bytes).expect("the database decodes alone");
+
+        assert_eq!(files(&alone), files(&whole.database));
+        assert_eq!(files(&alone).len(), 1);
     }
 }

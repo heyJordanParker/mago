@@ -5,6 +5,7 @@ use mago_database::file::HasFileId;
 use mago_span::Span;
 use mago_syntax_core::utils::parse_literal_integer;
 use mago_syntax_core::utils::parse_literal_string_in;
+use mago_syntax_core::utils::parse_template_literal_in;
 
 use crate::T;
 use crate::cst::cst::Access;
@@ -38,6 +39,8 @@ pub(crate) enum LiteralPartDecoding {
     DoubleQuoted,
     /// Keep the bytes verbatim, with no escape decoding (nowdoc).
     Verbatim,
+    /// Apply JavaScript's template-literal escape rules (PHP# templates).
+    Template,
 }
 
 impl<'arena, A> Parser<'_, 'arena, A>
@@ -49,6 +52,7 @@ where
 
         Ok(match token.kind {
             T!["\""] => CompositeString::Interpolated(self.parse_interpolated_string()?),
+            T!["`"] if self.dialect.is_sharp() => CompositeString::Interpolated(self.parse_template()?),
             T!["`"] => CompositeString::ShellExecute(self.parse_shell_execute_string()?),
             T!["<<<"] => CompositeString::Document(self.parse_document_string()?),
             _ => {
@@ -98,6 +102,20 @@ where
         let right_backtick = self.stream.eat_span(T!["`"])?;
 
         Ok(ShellExecuteString { left_backtick, parts: Sequence::new(parts), right_backtick })
+    }
+
+    /// Parses a PHP# template, `` `Order ${number}` ``, into the interpolated string PHP writes `"Order {$number}"`,
+    /// with its backticks as the quotes.
+    fn parse_template(&mut self) -> Result<InterpolatedString<'arena>, ParseError> {
+        let left_double_quote = self.stream.eat_span(T!["`"])?;
+        let mut parts = self.new_vec();
+        while let Some(part) = self.parse_optional_string_part(T!["`"], LiteralPartDecoding::Template)? {
+            parts.push(part);
+        }
+
+        let right_double_quote = self.stream.eat_span(T!["`"])?;
+
+        Ok(InterpolatedString { prefix: None, left_double_quote, parts: Sequence::new(parts), right_double_quote })
     }
 
     pub(crate) fn parse_document_string(&mut self) -> Result<DocumentString<'arena>, ParseError> {
@@ -181,20 +199,33 @@ where
         let token = self.stream.lookahead(0)?.ok_or_else(|| self.stream.unexpected(None, &[]))?;
         Ok(match token.kind {
             T!["{"] => Some(StringPart::BracedExpression(self.parse_braced_expression_string_part()?)),
+            T!["${"] if matches!(decoding, LiteralPartDecoding::Template) => {
+                Some(StringPart::BracedExpression(self.parse_template_interpolation()?))
+            }
             T![StringPart] => {
                 let token = self.stream.consume()?;
+                let span = token.span_for(self.stream.file_id());
                 let value = match decoding {
                     LiteralPartDecoding::DoubleQuoted => {
                         parse_literal_string_in(self.arena, token.value, Some(b'"'), false)
                     }
                     LiteralPartDecoding::Verbatim => Some(token.value),
+                    LiteralPartDecoding::Template => match parse_template_literal_in(self.arena, token.value) {
+                        Ok(value) => Some(value),
+                        Err(offset) => {
+                            let start = span.start.forward(offset as u32);
+                            self.errors.push(ParseError::InvalidTemplateEscapeInSharp(Span {
+                                start,
+                                end: start.forward(2),
+                                ..span
+                            }));
+
+                            None
+                        }
+                    },
                 };
 
-                Some(StringPart::Literal(LiteralStringPart {
-                    span: token.span_for(self.stream.file_id()),
-                    raw: token.value,
-                    value,
-                }))
+                Some(StringPart::Literal(LiteralStringPart { span, raw: token.value, value }))
             }
             kind if kind == closing_kind => None,
             _ => {
@@ -227,6 +258,16 @@ where
         let right_brace = self.stream.eat_span(T!["}"])?;
 
         Ok(BracedExpressionStringPart { left_brace, expression: expr, right_brace })
+    }
+
+    /// Parses `${expression}` in a PHP# template, which takes any expression, as a braced part whose left brace is
+    /// the `${`.
+    fn parse_template_interpolation(&mut self) -> Result<BracedExpressionStringPart<'arena>, ParseError> {
+        let left_brace = self.stream.eat_span(T!["${"])?;
+        let expression = self.parse_expression()?;
+        let right_brace = self.stream.eat_span(T!["}"])?;
+
+        Ok(BracedExpressionStringPart { left_brace, expression, right_brace })
     }
 
     fn parse_string_part_expression(&mut self) -> Result<&'arena Expression<'arena>, ParseError> {

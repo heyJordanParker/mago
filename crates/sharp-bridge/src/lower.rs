@@ -24,12 +24,14 @@ use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeConstant;
 use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::ClassLikeMemberSelector;
+use mago_syntax::cst::CompositeString;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::DirectVariable;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::For;
 use mago_syntax::cst::ForBody;
 use mago_syntax::cst::ForOfTarget;
+use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::Hint;
 use mago_syntax::cst::If;
@@ -37,7 +39,9 @@ use mago_syntax::cst::IfBody;
 use mago_syntax::cst::Inheritance;
 use mago_syntax::cst::Instantiation;
 use mago_syntax::cst::Interface;
+use mago_syntax::cst::InterpolatedString;
 use mago_syntax::cst::Literal;
+use mago_syntax::cst::LiteralStringPart;
 use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::MethodBody;
@@ -54,12 +58,16 @@ use mago_syntax::cst::Property;
 use mago_syntax::cst::PropertyHookList;
 use mago_syntax::cst::Sequence;
 use mago_syntax::cst::Statement;
+use mago_syntax::cst::StringPart;
+use mago_syntax::cst::Try;
+use mago_syntax::cst::TryCatchClause;
 use mago_syntax::cst::UnaryPostfixOperator;
 use mago_syntax::cst::UnaryPrefixOperator;
 use mago_syntax::cst::WhileBody;
 use mago_syntax::dialect::Dialect;
 use mago_syntax::parser::parse_file_with_dialect;
 use mago_syntax::settings::ParserSettings;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_syntax_core::utils::parse_literal_integer_as_float;
 
 use crate::Diagnostic;
@@ -75,6 +83,9 @@ use crate::sharp_kind::SHARP_AST_ATTRIBUTE_GROUP;
 use crate::sharp_kind::SHARP_AST_ATTRIBUTE_LIST;
 use crate::sharp_kind::SHARP_AST_BINARY_OP;
 use crate::sharp_kind::SHARP_AST_BREAK;
+use crate::sharp_kind::SHARP_AST_CALL;
+use crate::sharp_kind::SHARP_AST_CATCH;
+use crate::sharp_kind::SHARP_AST_CATCH_LIST;
 use crate::sharp_kind::SHARP_AST_CLASS;
 use crate::sharp_kind::SHARP_AST_CLASS_CONST;
 use crate::sharp_kind::SHARP_AST_CLASS_CONST_DECL;
@@ -87,6 +98,7 @@ use crate::sharp_kind::SHARP_AST_CONST_ELEM;
 use crate::sharp_kind::SHARP_AST_CONTINUE;
 use crate::sharp_kind::SHARP_AST_DECLARE;
 use crate::sharp_kind::SHARP_AST_DO_WHILE;
+use crate::sharp_kind::SHARP_AST_ENCAPS_LIST;
 use crate::sharp_kind::SHARP_AST_EXPR_LIST;
 use crate::sharp_kind::SHARP_AST_FOR;
 use crate::sharp_kind::SHARP_AST_FOREACH;
@@ -117,6 +129,8 @@ use crate::sharp_kind::SHARP_AST_RETURN;
 use crate::sharp_kind::SHARP_AST_STATIC_CALL;
 use crate::sharp_kind::SHARP_AST_STATIC_PROP;
 use crate::sharp_kind::SHARP_AST_STMT_LIST;
+use crate::sharp_kind::SHARP_AST_THROW;
+use crate::sharp_kind::SHARP_AST_TRY;
 use crate::sharp_kind::SHARP_AST_UNARY_MINUS;
 use crate::sharp_kind::SHARP_AST_UNARY_OP;
 use crate::sharp_kind::SHARP_AST_UNARY_PLUS;
@@ -149,6 +163,7 @@ const ZEND_SUB: u32 = 2;
 const ZEND_MUL: u32 = 3;
 const ZEND_DIV: u32 = 4;
 const ZEND_MOD: u32 = 5;
+const ZEND_POW: u32 = 12;
 const ZEND_BOOL_NOT: u32 = 14;
 const ZEND_IS_IDENTICAL: u32 = 16;
 const ZEND_IS_NOT_IDENTICAL: u32 = 17;
@@ -240,14 +255,21 @@ struct Lowering<'lowering, 'arena> {
     names: &'lowering ResolvedNames<'arena>,
     nodes: Vec<sharp_node>,
     children: Vec<u32>,
-    texts: Vec<Box<[u8]>>,
+    texts: LocalArena,
     /// Whether the lowering is inside a constant expression, which PHP evaluates without opcodes.
     in_constant_expression: bool,
 }
 
 impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     fn new(lines: &'lowering Lines, names: &'lowering ResolvedNames<'arena>) -> Self {
-        Self { lines, names, nodes: Vec::new(), children: Vec::new(), texts: Vec::new(), in_constant_expression: false }
+        Self {
+            lines,
+            names,
+            nodes: Vec::new(),
+            children: Vec::new(),
+            texts: LocalArena::new(),
+            in_constant_expression: false,
+        }
     }
 
     /// Lowers a constant expression: a constant's value, a default or an attribute's arguments.
@@ -587,7 +609,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     fn statement(&mut self, statement: &Statement) -> u32 {
-        match statement {
+        ensure_sufficient_stack(|| match statement {
             Statement::Block(block) => self.block(block),
             Statement::Expression(statement) => self.expression(statement.expression),
             Statement::Return(r#return) => {
@@ -625,10 +647,11 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 self.node(SHARP_AST_DO_WHILE, 0, self.line(do_while), &[body, condition])
             }
+            Statement::Try(r#try) => self.r#try(r#try),
             Statement::Break(r#break) => self.node(SHARP_AST_BREAK, 0, self.line(r#break), &[NULL]),
             Statement::Continue(r#continue) => self.node(SHARP_AST_CONTINUE, 0, self.line(r#continue), &[NULL]),
             _ => unreachable!("check_slice refuses the statement `{statement}`"),
-        }
+        })
     }
 
     /// A `let` or `const` local is the assignment of its value to its variable.
@@ -693,10 +716,50 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_IF, 0, self.line(r#if), &branches)
     }
 
+    /// A `TRY` takes the try block, a `CATCH_LIST` and the finally block or null. php-src's grammar takes a node's
+    /// line from its first child, so a `TRY` is on the line of its block and a `CATCH` on the line of its first class.
+    fn r#try(&mut self, r#try: &Try) -> u32 {
+        let block = self.block(&r#try.block);
+        let mut catches = Vec::new();
+        for clause in &r#try.catch_clauses {
+            catches.push(self.catch(clause));
+        }
+
+        let catches = self.node(SHARP_AST_CATCH_LIST, 0, self.line(r#try.block.right_brace), &catches);
+        let finally = r#try.finally_clause.as_ref().map_or(NULL, |finally| self.block(&finally.block));
+        let line = self.nodes[block as usize].line;
+
+        self.node(SHARP_AST_TRY, 0, line, &[block, catches, finally])
+    }
+
+    fn catch(&mut self, clause: &TryCatchClause) -> u32 {
+        let mut classes = Vec::new();
+        self.catch_classes(&clause.hint, &mut classes);
+        let line = self.nodes[classes[0] as usize].line;
+        let classes = self.node(SHARP_AST_NAME_LIST, 0, line, &classes);
+        let variable =
+            clause.variable.as_ref().map_or(NULL, |variable| self.string(0, self.line(variable.span), variable.name));
+        let block = self.block(&clause.block);
+
+        self.node(SHARP_AST_CATCH, 0, line, &[classes, variable, block])
+    }
+
+    /// The classes a catch clause names, each by its full name, in the order they are written.
+    fn catch_classes(&mut self, hint: &Hint, classes: &mut Vec<u32>) {
+        match hint {
+            Hint::Identifier(class) => classes.push(self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class))),
+            Hint::Union(union) => {
+                self.catch_classes(union.left, classes);
+                self.catch_classes(union.right, classes);
+            }
+            _ => unreachable!("semantics refuses the catch type `{hint}`"),
+        }
+    }
+
     fn expression(&mut self, expression: &Expression) -> u32 {
         let line = self.line(expression);
 
-        match expression {
+        ensure_sufficient_stack(|| match expression {
             Expression::Literal(literal) => self.literal(literal),
             Expression::Parenthesized(parenthesized) => self.expression(parenthesized.expression),
             Expression::ConstantAccess(name) => self.name(name),
@@ -734,6 +797,15 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.node(kind, attr, line, &[lhs, rhs])
             }
             Expression::Call(Call::Method(call)) => self.method_call(call),
+            Expression::Call(Call::Function(FunctionCall {
+                function: Expression::Identifier(function),
+                argument_list,
+            })) => {
+                let function = self.string(ZEND_NAME_FQ, self.line(function), function.value());
+                let arguments = self.arguments(argument_list);
+
+                self.node(SHARP_AST_CALL, 0, line, &[function, arguments])
+            }
             Expression::Instantiation(Instantiation {
                 class: Expression::Identifier(class),
                 argument_list: Some(arguments),
@@ -780,8 +852,48 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 self.node(SHARP_AST_CLASS_NAME, 0, line, &[class])
             }
+            Expression::Throw(throw) => {
+                let exception = self.expression(throw.exception);
+
+                self.node(SHARP_AST_THROW, 0, line, &[exception])
+            }
+            Expression::CompositeString(CompositeString::Interpolated(template)) => self.template(template),
             _ => unreachable!("check_slice refuses the expression `{expression}`"),
+        })
+    }
+
+    /// A template without `${…}` is its text, as php-src's grammar builds a string without interpolation. Any other
+    /// is an `ENCAPS_LIST` of its text that is not empty and its expressions, on the line of its first part.
+    fn template(&mut self, template: &InterpolatedString) -> u32 {
+        match template.parts.as_slice() {
+            [] => self.string(0, self.line(template), b""),
+            [StringPart::Literal(text)] => self.template_text(text),
+            parts => {
+                let mut children = Vec::new();
+                for part in parts {
+                    match part {
+                        StringPart::Literal(text) if text.value == Some(b"") => {}
+                        StringPart::Literal(text) => children.push(self.template_text(text)),
+                        StringPart::BracedExpression(interpolation) => {
+                            children.push(self.expression(interpolation.expression));
+                        }
+                        StringPart::Expression(_) => unreachable!("the parser reads only `${{…}}` in a template"),
+                    }
+                }
+
+                let line = self.nodes[children[0] as usize].line;
+
+                self.node(SHARP_AST_ENCAPS_LIST, 0, line, &children)
+            }
         }
+    }
+
+    fn template_text(&mut self, text: &LiteralStringPart) -> u32 {
+        let Some(value) = text.value else {
+            unreachable!("the parser refuses an escape JavaScript refuses");
+        };
+
+        self.string(0, self.line(text), value)
     }
 
     /// What an assignment, a compound assignment, `++` or `--` writes: a local or parameter, `object.name`, or
@@ -943,7 +1055,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     ) -> u32 {
         let index = self.node(kind, flags, self.line(start), children);
         let end_line = self.lines.line(end.span().end.offset);
-        let name = store_text(&mut self.texts, name.to_vec());
+        let name = store_text(&self.texts, name);
 
         let node = &mut self.nodes[index as usize];
         node.end_line = end_line;
@@ -953,7 +1065,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     fn string(&mut self, attr: u32, line: u32, text: &[u8]) -> u32 {
-        let text = store_text(&mut self.texts, text.to_vec());
+        let text = store_text(&self.texts, text);
 
         self.zval(line, sharp_value::SHARP_STRING, |node| {
             node.attr = attr;
@@ -1076,6 +1188,7 @@ fn binary_kind(operator: BinaryOperator) -> (sharp_kind, u32) {
         BinaryOperator::Multiplication(_) => (SHARP_AST_BINARY_OP, ZEND_MUL),
         BinaryOperator::Division(_) => (SHARP_AST_BINARY_OP, ZEND_DIV),
         BinaryOperator::Modulo(_) => (SHARP_AST_BINARY_OP, ZEND_MOD),
+        BinaryOperator::Exponentiation(_) => (SHARP_AST_BINARY_OP, ZEND_POW),
         BinaryOperator::Equal(_) => (SHARP_AST_BINARY_OP, ZEND_IS_EQUAL),
         BinaryOperator::NotEqual(_) => (SHARP_AST_BINARY_OP, ZEND_IS_NOT_EQUAL),
         BinaryOperator::Identical(_) => (SHARP_AST_BINARY_OP, ZEND_IS_IDENTICAL),
@@ -1087,8 +1200,7 @@ fn binary_kind(operator: BinaryOperator) -> (sharp_kind, u32) {
         BinaryOperator::And(_) => (SHARP_AST_AND, 0),
         BinaryOperator::Or(_) => (SHARP_AST_OR, 0),
         BinaryOperator::NullCoalesce(_) => (SHARP_AST_COALESCE, 0),
-        BinaryOperator::Exponentiation(_)
-        | BinaryOperator::BitwiseAnd(_)
+        BinaryOperator::BitwiseAnd(_)
         | BinaryOperator::BitwiseOr(_)
         | BinaryOperator::BitwiseXor(_)
         | BinaryOperator::LeftShift(_)
@@ -1140,9 +1252,9 @@ fn assignment_kind(operator: &AssignmentOperator) -> (sharp_kind, u32) {
         AssignmentOperator::Subtraction(_) => (SHARP_AST_ASSIGN_OP, ZEND_SUB),
         AssignmentOperator::Multiplication(_) => (SHARP_AST_ASSIGN_OP, ZEND_MUL),
         AssignmentOperator::Division(_) => (SHARP_AST_ASSIGN_OP, ZEND_DIV),
+        AssignmentOperator::Exponentiation(_) => (SHARP_AST_ASSIGN_OP, ZEND_POW),
         AssignmentOperator::Coalesce(_) => (SHARP_AST_ASSIGN_COALESCE, 0),
         AssignmentOperator::Modulo(_)
-        | AssignmentOperator::Exponentiation(_)
         | AssignmentOperator::Concat(_)
         | AssignmentOperator::BitwiseAnd(_)
         | AssignmentOperator::BitwiseOr(_)
@@ -1173,7 +1285,7 @@ mod tests {
 
         assert_eq!(unit.abi.node_count, 0, "{method}");
         assert_eq!(unit.diagnostics.len(), 1, "{method}");
-        assert!(unit.texts[0].starts_with(b"internal error in the PHP# front end: "), "{method}");
+        assert!(unit.diagnostics[0].message.bytes().starts_with(b"internal error in the PHP# front end: "), "{method}");
     }
 
     #[test]

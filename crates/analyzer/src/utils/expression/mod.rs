@@ -30,6 +30,7 @@ use mago_syntax::cst::UnaryPostfixOperator;
 use mago_syntax::cst::UnaryPrefix;
 use mago_syntax::cst::UnaryPrefixOperator;
 use mago_syntax::cst::Variable;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_word::Word;
 use mago_word::concat_word;
 use mago_word::empty_word;
@@ -307,118 +308,120 @@ fn get_extended_expression_id<'ast, 'arena>(
     codebase: Option<&CodebaseMetadata>,
     solve_identifiers: bool,
 ) -> Option<Word> {
-    let expression = unwrap_expression(expression);
+    ensure_sufficient_stack(|| {
+        let expression = unwrap_expression(expression);
 
-    if let Expression::Assignment(assignment) = expression {
-        return get_expression_id(assignment.lhs, this_class_name, resolved_names, codebase);
-    }
+        if let Expression::Assignment(assignment) = expression {
+            return get_expression_id(assignment.lhs, this_class_name, resolved_names, codebase);
+        }
 
-    Some(match expression {
-        Expression::UnaryPrefix(UnaryPrefix { operator: UnaryPrefixOperator::Reference(_), operand }) => {
-            return get_expression_id(operand, this_class_name, resolved_names, codebase);
-        }
-        Expression::Variable(variable) => word(get_variable_id(variable)?),
-        Expression::ConstantAccess(access)
-            if solve_identifiers && resolved_names.binding(&access.name) == Some(Binding::Class) =>
-        {
-            word(resolved_names.get(&access.name))
-        }
-        Expression::ConstantAccess(access) => get_bare_name_variable_id(&access.name, resolved_names)?,
-        Expression::Access(access) => match access {
-            Access::Property(property_access) => {
-                match StaticProperty::from_property_access(property_access, resolved_names) {
-                    Some(static_property) => get_static_property_access_expression_id(
-                        static_property,
+        Some(match expression {
+            Expression::UnaryPrefix(UnaryPrefix { operator: UnaryPrefixOperator::Reference(_), operand }) => {
+                return get_expression_id(operand, this_class_name, resolved_names, codebase);
+            }
+            Expression::Variable(variable) => word(get_variable_id(variable)?),
+            Expression::ConstantAccess(access)
+                if solve_identifiers && resolved_names.binding(&access.name) == Some(Binding::Class) =>
+            {
+                word(resolved_names.get(&access.name))
+            }
+            Expression::ConstantAccess(access) => get_bare_name_variable_id(&access.name, resolved_names)?,
+            Expression::Access(access) => match access {
+                Access::Property(property_access) => {
+                    match StaticProperty::from_property_access(property_access, resolved_names) {
+                        Some(static_property) => get_static_property_access_expression_id(
+                            static_property,
+                            this_class_name,
+                            resolved_names,
+                            codebase,
+                        )?,
+                        None => get_property_access_expression_id(
+                            property_access.object,
+                            &property_access.property,
+                            false,
+                            this_class_name,
+                            resolved_names,
+                            codebase,
+                        )?,
+                    }
+                }
+                Access::NullSafeProperty(null_safe_property_access) => get_property_access_expression_id(
+                    null_safe_property_access.object,
+                    &null_safe_property_access.property,
+                    true,
+                    this_class_name,
+                    resolved_names,
+                    codebase,
+                )?,
+                Access::StaticProperty(static_property_access) => get_static_property_access_expression_id(
+                    StaticProperty::from_static_property_access(static_property_access),
+                    this_class_name,
+                    resolved_names,
+                    codebase,
+                )?,
+                Access::ClassConstant(class_constant_access) => {
+                    let class = get_extended_expression_id(
+                        class_constant_access.class,
                         this_class_name,
                         resolved_names,
                         codebase,
-                    )?,
-                    None => get_property_access_expression_id(
-                        property_access.object,
-                        &property_access.property,
-                        false,
+                        true,
+                    )?;
+
+                    let constant = get_constant_selector_id(
+                        &class_constant_access.constant,
                         this_class_name,
                         resolved_names,
                         codebase,
-                    )?,
+                    )?;
+
+                    concat_word!(class.as_bytes(), b"::", constant.as_bytes())
+                }
+            },
+            Expression::ArrayAccess(array_access) => {
+                get_array_access_id(array_access, this_class_name, resolved_names, codebase)?
+            }
+            Expression::Call(Call::Method(MethodCall {
+                object,
+                method: ClassLikeMemberSelector::Identifier(method),
+                argument_list,
+                ..
+            })) if argument_list.arguments.is_empty() => {
+                let object = get_expression_id(object, this_class_name, resolved_names, codebase)?;
+                if object.as_bytes().ends_with(b"()") {
+                    return None;
+                }
+
+                concat_word!(object.as_bytes(), b"->", method.value, b"()")
+            }
+            Expression::Self_(_) => {
+                if let Some(class_name) = this_class_name {
+                    class_name
+                } else {
+                    word(b"self")
                 }
             }
-            Access::NullSafeProperty(null_safe_property_access) => get_property_access_expression_id(
-                null_safe_property_access.object,
-                &null_safe_property_access.property,
-                true,
-                this_class_name,
-                resolved_names,
-                codebase,
-            )?,
-            Access::StaticProperty(static_property_access) => get_static_property_access_expression_id(
-                StaticProperty::from_static_property_access(static_property_access),
-                this_class_name,
-                resolved_names,
-                codebase,
-            )?,
-            Access::ClassConstant(class_constant_access) => {
-                let class = get_extended_expression_id(
-                    class_constant_access.class,
-                    this_class_name,
-                    resolved_names,
-                    codebase,
-                    true,
-                )?;
+            Expression::Parent(_) if solve_identifiers => {
+                if let Some(class_name) = this_class_name {
+                    class_name
+                } else {
+                    word(b"parent")
+                }
+            }
+            Expression::Static(_) if solve_identifiers => {
+                if let Some(class_name) = this_class_name {
+                    class_name
+                } else {
+                    word(b"static")
+                }
+            }
+            Expression::Identifier(identifier) if solve_identifiers => {
+                let identifier_id = resolved_names.get(&identifier);
 
-                let constant = get_constant_selector_id(
-                    &class_constant_access.constant,
-                    this_class_name,
-                    resolved_names,
-                    codebase,
-                )?;
-
-                concat_word!(class.as_bytes(), b"::", constant.as_bytes())
+                word(identifier_id)
             }
-        },
-        Expression::ArrayAccess(array_access) => {
-            get_array_access_id(array_access, this_class_name, resolved_names, codebase)?
-        }
-        Expression::Call(Call::Method(MethodCall {
-            object,
-            method: ClassLikeMemberSelector::Identifier(method),
-            argument_list,
-            ..
-        })) if argument_list.arguments.is_empty() => {
-            let object = get_expression_id(object, this_class_name, resolved_names, codebase)?;
-            if object.as_bytes().ends_with(b"()") {
-                return None;
-            }
-
-            concat_word!(object.as_bytes(), b"->", method.value, b"()")
-        }
-        Expression::Self_(_) => {
-            if let Some(class_name) = this_class_name {
-                class_name
-            } else {
-                word(b"self")
-            }
-        }
-        Expression::Parent(_) if solve_identifiers => {
-            if let Some(class_name) = this_class_name {
-                class_name
-            } else {
-                word(b"parent")
-            }
-        }
-        Expression::Static(_) if solve_identifiers => {
-            if let Some(class_name) = this_class_name {
-                class_name
-            } else {
-                word(b"static")
-            }
-        }
-        Expression::Identifier(identifier) if solve_identifiers => {
-            let identifier_id = resolved_names.get(&identifier);
-
-            word(identifier_id)
-        }
-        _ => return None,
+            _ => return None,
+        })
     })
 }
 

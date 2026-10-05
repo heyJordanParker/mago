@@ -209,16 +209,9 @@ impl GuardCommand {
             orchestrator.config.paths.push(substitution.temporary.to_string_lossy().into_owned());
         }
 
-        let stdin_override = stdin_input::resolve_stdin_override(
-            self.stdin_input,
-            &self.path,
-            &configuration.source.workspace,
-            &mut orchestrator,
-        )?;
-
-        if !self.stdin_input && !self.path.is_empty() {
-            stdin_input::set_source_paths_from_paths(&mut orchestrator, &self.path);
-        }
+        let stdin_override =
+            stdin_input::resolve_stdin_override(self.stdin_input, &self.path, &configuration.source.workspace)?;
+        stdin_input::set_source_paths_from_paths(&mut orchestrator, &self.path);
         let orchestrator_init_duration = orchestrator_init_start.map(|s| s.elapsed());
 
         let load_database_start = trace_enabled.then(Instant::now);

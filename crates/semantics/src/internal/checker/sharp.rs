@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use mago_bytes::BytesDisplay;
 use mago_names::binding::Binding;
 use mago_names::binding::BindingError;
@@ -21,6 +19,7 @@ use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeConstant;
 use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::ClassLikeMemberSelector;
+use mago_syntax::cst::CompositeString;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Continue;
 use mago_syntax::cst::Expression;
@@ -52,7 +51,9 @@ use mago_syntax::cst::PropertyHookList;
 use mago_syntax::cst::PropertyItem;
 use mago_syntax::cst::Sequence;
 use mago_syntax::cst::Statement;
+use mago_syntax::cst::StringPart;
 use mago_syntax::cst::Terminator;
+use mago_syntax::cst::TryCatchClause;
 use mago_syntax::cst::UnaryPostfix;
 use mago_syntax::cst::UnaryPostfixOperator;
 use mago_syntax::cst::UnaryPrefix;
@@ -63,6 +64,7 @@ use mago_syntax::cst::UseItems;
 use mago_syntax::cst::Variable;
 use mago_syntax::cst::While;
 use mago_syntax::cst::WhileBody;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 
 use crate::internal::consts::RESERVED_CLASS_NAMES;
 use crate::internal::consts::RESERVED_KEYWORDS;
@@ -117,8 +119,9 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   `int?`, and PHP's own check reports `void?`.
 /// - In a method body: blocks, expression statements, `return`, `let` and `const` declarations, `if` with `else if`
 ///   and `else`, `while`, `do … while`, `for` with a `let` or `const` counter or with expressions, `for … of` over a
-///   value or a key and value, and `break` and `continue` without a level. The body of `if`, `else` and each loop is a
-///   block in braces. A local statement can have its type written, as in `Money? total = null;` or
+///   value or a key and value, `break` and `continue` without a level, and `try` with `catch` clauses and `finally`.
+///   The body of `if`, `else` and each loop is a block in braces. A catch clause names one or more classes separated
+///   by `|`, and an optional variable written without `$`, which lives until the clause's block ends. A local statement can have its type written, as in `Money? total = null;` or
 ///   `const int base = 2;`, from the types above but `void`.
 /// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter, or a member written
 ///   `object.name` or, when static, `Class.name`.
@@ -127,30 +130,42 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   class. A constant expression, which is a parameter default, an attribute argument, a constant's value or a
 ///   constant initial value, reads only a constant or an enum case this way, as PHP does: a static field or property
 ///   there is an error when this file declares it, and the analyzer reports it otherwise.
-/// - In expressions: literals, parentheses, bare names, assignment, the operators below, and method calls and
-///   property reads written with `.` or `?.` and a member name, and `new Class(...)` on a class written by its short
-///   name, with positional and named arguments, `typeof(X)` on a class written by its short name, without a member
-///   read or called on it, and `super.method(...)`, which calls the parent's method. `?.` never follows a class. A
-///   string literal's `\u{...}` escapes are valid codepoints, as PHP requires.
-/// - Operators: `+ - * / %`, `== != === !== < > <= >=`, `&& || !`, `??`, unary `-` and `+`, `++` and `--`, and
-///   `= += -= *= /= ??=`.
+/// - In expressions: literals, templates, parentheses, bare names, assignment, the operators below, and method calls
+///   and property reads written with `.` or `?.` and a member name, `new Class(...)` on a class written by its short
+///   name, calls of a function by its bare name, each with positional and named arguments, `throw`, which is an
+///   expression as in PHP, `typeof(X)` on a class written by its short name, without a member read or called on it,
+///   and `super.method(...)`, which calls the parent's method. `?.` never follows a class. A function is PHP's built-in
+///   function of that name, which spec section 8 keeps, and the engine calls the global one. A string literal's
+///   `\u{...}` escapes are valid codepoints, as PHP requires. A `"…"` string never interpolates, and a template,
+///   `` `Order ${number}` ``, interpolates any expression of this list in each `${…}` and takes JavaScript's escapes,
+///   as spec section 18 writes them.
+/// - Operators: `+ - * / % **`, `== != === !== < > <= >=`, `&& || !`, `??`, unary `-` and `+`, `++` and `--`, and
+///   `= += -= *= /= **= ??=`.
 ///
-/// The check visits every node and refuses any node, or any position of a node, that this list does not name. It
-/// reports each refusal once, at its outermost node. It does not run on a file with a parse error, which is the one
-/// error to fix first. The constructs PHP# never has, such as `$` variables, `global` and top-level functions, keep
-/// their own errors.
+/// The check runs on every node the checking walk enters, and refuses any node, or any position of a node, that this
+/// list does not name. It reports each refusal once, at its outermost node, and skips the nodes inside it. It does not
+/// run on a file with a parse error, which is the one error to fix first. The constructs PHP# never has, such as `$`
+/// variables, `global` and top-level functions, keep their own errors.
 ///
-/// Two more refusals need inferred types, so the analyzer makes them as its part of this contract:
-/// - `+` with an operand that may be a string, in `analyze_arithmetic_operation`.
+/// Three more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
+/// - `+` that may join a string with any other value, which spec section 18 makes an error, in
+///   `analyze_arithmetic_operation`. `+` on two strings joins them.
 /// - an instance method used as a value, such as `order.total` without a call, in `report_non_existent_property`.
+/// - a call of a function a library or the app declares, in `report_declared_function_call`.
 #[inline]
-pub fn check_slice(program: &Program, context: &mut Context<'_, '_, '_>) {
-    check_node(Node::Program(program), Place::File, &mut HashSet::new(), context);
+pub fn check_slice(node: Node<'_, '_>, context: &mut Context<'_, '_, '_>) {
+    let place = match context.slice_places.last() {
+        None => enter(node, Place::File, context),
+        Some(Some(place)) => enter(node, *place, context),
+        Some(None) => None,
+    };
+
+    context.slice_places.push(place);
 }
 
 /// Where a node of a PHP# file sits, for the parts of the slice that depend on it.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Place {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Place {
     /// The file's statements, its namespace and its imports.
     File,
     /// A class and its members.
@@ -169,30 +184,23 @@ enum Place {
     Parameter,
     /// A method body.
     Body,
+    /// `new` and the class it creates, whose arguments are the method body's.
+    Instantiation,
+    /// A call of PHP's built-in function and the function's name, whose arguments are the method body's.
+    FunctionCall,
+    /// A catch clause, whose block is the method body's.
+    TryCatchClause,
+    /// `super.method(...)`, whose method and arguments are the method body's.
+    SuperCall,
     /// An attribute list: its attributes' names and arguments.
     Attribute,
     /// A constant expression: a parameter default, an attribute argument or a class constant's value.
     Constant,
 }
 
-/// Walks `node` at `place`. `checked` holds the spans of the member accesses already checked, so the walk checks
-/// each access once.
-fn check_node(node: Node<'_, '_>, place: Place, checked: &mut HashSet<Span>, context: &mut Context<'_, '_, '_>) {
-    if let Some(place) = enter(node, place, checked, context) {
-        for child in node.children() {
-            check_node(child, place, checked, context);
-        }
-    }
-}
-
 /// Decides one node at its place. Returns the place of its children when the slice has the node, and `None` when
 /// the node is reported.
-fn enter(
-    node: Node<'_, '_>,
-    place: Place,
-    checked: &mut HashSet<Span>,
-    context: &mut Context<'_, '_, '_>,
-) -> Option<Place> {
+fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) -> Option<Place> {
     use Place::Attribute;
     use Place::Body;
     use Place::Class;
@@ -200,10 +208,14 @@ fn enter(
     use Place::Constant;
     use Place::FieldOrProperty;
     use Place::File;
+    use Place::FunctionCall;
+    use Place::Instantiation;
     use Place::Interface;
     use Place::Method;
     use Place::Parameter;
     use Place::Signature;
+    use Place::SuperCall;
+    use Place::TryCatchClause;
 
     if let Some(target) = write_target(node) {
         // PHP# never has `$` variables, and `check_variable` reports a write to one.
@@ -216,6 +228,10 @@ fn enter(
             );
 
             return None;
+        }
+
+        if let Expression::Access(Access::Property(property)) = target {
+            check_member_access(property.object, &property.property, context);
         }
     }
 
@@ -346,9 +362,8 @@ fn enter(
         (Node::Expression(value), FieldOrProperty) => {
             let uses_this = report_this_in_initial_value(node, context);
             let place = if !uses_this && value.is_constant(&context.version, false) { Constant } else { Body };
-            check_node(node, place, checked, context);
 
-            None
+            enter(node, place, context)
         }
         (
             Node::Property(_)
@@ -453,6 +468,10 @@ fn enter(
         (Node::PropertyHookList(_), Parameter) => None,
         (Node::FunctionLikeParameterDefaultValue(_), Parameter) => Some(Constant),
         (Node::Block(_), Method | Body) => Some(Body),
+        (Node::TryCatchClause(_), Body) => Some(TryCatchClause),
+        // `check_try` reports a catch type that is not a class, and `check_try_catch_clause` the variable's name.
+        (Node::Hint(_) | Node::DirectVariable(_), TryCatchClause) => None,
+        (Node::Block(_), TryCatchClause) => Some(Body),
 
         (Node::Statement(statement), Body) if !has_braces(statement) => {
             report_not_supported(
@@ -475,9 +494,12 @@ fn enter(
                 | Statement::DoWhile(_)
                 | Statement::For(_)
                 | Statement::ForOf(_)
+                | Statement::Try(_)
                 | Statement::Break(Break { level: None, .. })
                 | Statement::Continue(Continue { level: None, .. }),
             )
+            | Node::Try(_)
+            | Node::TryFinallyClause(_)
             | Node::Break(_)
             | Node::Continue(_)
             | Node::ExpressionStatement(_)
@@ -553,8 +575,17 @@ fn enter(
                 Expression::Assignment(_)
                 | Expression::UnaryPostfix(_)
                 | Expression::Call(Call::Method(_) | Call::NullSafeMethod(_))
-                | Expression::Access(Access::Property(_) | Access::NullSafeProperty(_)),
+                | Expression::Access(Access::Property(_) | Access::NullSafeProperty(_))
+                | Expression::Throw(_)
+                // The parser reads a template, and only a template, into an interpolated string.
+                | Expression::CompositeString(CompositeString::Interpolated(_)),
             )
+            | Node::Throw(_)
+            | Node::CompositeString(CompositeString::Interpolated(_))
+            | Node::InterpolatedString(_)
+            | Node::StringPart(StringPart::Literal(_) | StringPart::BracedExpression(_))
+            | Node::LiteralStringPart(_)
+            | Node::BracedExpressionStringPart(_)
             | Node::Assignment(_)
             | Node::UnaryPostfix(_)
             | Node::UnaryPostfixOperator(UnaryPostfixOperator::PostIncrement(_) | UnaryPostfixOperator::PostDecrement(_))
@@ -569,10 +600,8 @@ fn enter(
         (Node::Expression(Expression::Instantiation(instantiation)), Body)
             if matches!(instantiation.class, Expression::Identifier(Identifier::Local(_))) =>
         {
-            if let Some(arguments) = &instantiation.argument_list {
-                check_node(Node::ArgumentList(arguments), Body, checked, context);
-
-                return None;
+            if instantiation.argument_list.is_some() {
+                return Some(Instantiation);
             }
 
             report_not_supported(
@@ -584,23 +613,23 @@ fn enter(
 
             None
         }
+        (Node::Instantiation(_) | Node::Expression(Expression::Identifier(Identifier::Local(_))), Instantiation) => {
+            Some(Instantiation)
+        }
+        (Node::ArgumentList(_), Instantiation) => Some(Body),
         (Node::AssignmentOperator(operator), Body) if is_slice_assignment_operator(operator) => Some(Body),
         (Node::PositionalArgument(argument), Body) if argument.ellipsis.is_none() => Some(Body),
-        // `super.label()` calls the parent's method, spec section 22. `super` is no value of its own, so the walk
-        // enters only the call's method and arguments.
-        (Node::MethodCall(call), Body) if matches!(call.object, Expression::Parent(_)) => {
-            check_node(Node::ClassLikeMemberSelector(&call.method), Body, checked, context);
-            check_node(Node::ArgumentList(&call.argument_list), Body, checked, context);
-
-            None
-        }
+        // `super.label()` calls the parent's method, spec section 22. `super` is no value of its own.
+        (Node::MethodCall(call), Body) if matches!(call.object, Expression::Parent(_)) => Some(SuperCall),
+        (Node::Expression(Expression::Parent(_)), SuperCall) => None,
+        (Node::ClassLikeMemberSelector(_) | Node::ArgumentList(_), SuperCall) => enter(node, Body, context),
         (Node::MethodCall(call), Body) => {
-            check_member_access(call.span(), call.object, checked, context);
+            check_member_access(call.object, &call.method, context);
 
             Some(Body)
         }
         (Node::PropertyAccess(access), Body) => {
-            check_member_access(access.span(), access.object, checked, context);
+            check_member_access(access.object, &access.property, context);
 
             Some(Body)
         }
@@ -623,6 +652,21 @@ fn enter(
         {
             None
         }
+        // Spec section 8: PHP's built-in functions are called by their bare names. The analyzer refuses a function
+        // that is not built in.
+        (Node::Expression(Expression::Call(Call::Function(function_call))), Body)
+            if let Expression::Identifier(name @ Identifier::Local(_)) = function_call.function
+                && context.names.binding(name).is_none() =>
+        {
+            Some(FunctionCall)
+        }
+        (
+            Node::Call(Call::Function(_))
+            | Node::FunctionCall(_)
+            | Node::Expression(Expression::Identifier(Identifier::Local(_))),
+            FunctionCall,
+        ) => Some(FunctionCall),
+        (Node::ArgumentList(_), FunctionCall) => Some(Body),
 
         _ => {
             report_unsupported(node, place, context);
@@ -890,8 +934,7 @@ fn check_accessors(
 
 /// Reports each `this` in an initial value. A constant initial value is the member's default, and any other runs at
 /// the start of the constructor in declaration order, before the members declared after it are set, so it cannot read
-/// the object, as in C#.
-/// Reports each `this` in an initial value, and returns whether it reported one.
+/// the object, as in C#. Returns whether it reported one.
 fn report_this_in_initial_value(node: Node<'_, '_>, context: &mut Context<'_, '_, '_>) -> bool {
     let mut reported = false;
     if let Node::ConstantAccess(access) = node
@@ -907,9 +950,7 @@ fn report_this_in_initial_value(node: Node<'_, '_>, context: &mut Context<'_, '_
         reported = true;
     }
 
-    for child in node.children() {
-        reported |= report_this_in_initial_value(child, context);
-    }
+    ensure_sufficient_stack(|| node.visit_children(|child| reported |= report_this_in_initial_value(child, context)));
 
     reported
 }
@@ -1006,6 +1047,7 @@ const fn is_slice_binary_operator(operator: &BinaryOperator) -> bool {
         | BinaryOperator::Multiplication(_)
         | BinaryOperator::Division(_)
         | BinaryOperator::Modulo(_)
+        | BinaryOperator::Exponentiation(_)
         | BinaryOperator::Equal(_)
         | BinaryOperator::NotEqual(_)
         | BinaryOperator::Identical(_)
@@ -1017,8 +1059,7 @@ const fn is_slice_binary_operator(operator: &BinaryOperator) -> bool {
         | BinaryOperator::And(_)
         | BinaryOperator::Or(_)
         | BinaryOperator::NullCoalesce(_) => true,
-        BinaryOperator::Exponentiation(_)
-        | BinaryOperator::BitwiseAnd(_)
+        BinaryOperator::BitwiseAnd(_)
         | BinaryOperator::BitwiseOr(_)
         | BinaryOperator::BitwiseXor(_)
         | BinaryOperator::LeftShift(_)
@@ -1067,9 +1108,9 @@ const fn is_slice_assignment_operator(operator: &AssignmentOperator) -> bool {
         | AssignmentOperator::Subtraction(_)
         | AssignmentOperator::Multiplication(_)
         | AssignmentOperator::Division(_)
+        | AssignmentOperator::Exponentiation(_)
         | AssignmentOperator::Coalesce(_) => true,
         AssignmentOperator::Modulo(_)
-        | AssignmentOperator::Exponentiation(_)
         | AssignmentOperator::Concat(_)
         | AssignmentOperator::BitwiseAnd(_)
         | AssignmentOperator::BitwiseOr(_)
@@ -1125,8 +1166,8 @@ const fn supported(place: Place) -> &'static str {
         Place::Parameter => {
             "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, a name, and an optional default."
         }
-        Place::Body => {
-            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, and `break` and `continue` without a level, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, `++` and `--`, method calls and property reads written with `.` or `?.`, `new Class(...)`, `typeof(Class)` and `super.method(...)`."
+        Place::Body | Place::Instantiation | Place::FunctionCall | Place::TryCatchClause | Place::SuperCall => {
+            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, `break` and `continue` without a level, and `try` with `catch` and `finally`, with literals, templates, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, `++` and `--`, method calls and property reads written with `.` or `?.`, `new Class(...)`, calls of PHP's built-in functions, `throw`, `typeof(Class)` and `super.method(...)`."
         }
         Place::Attribute => {
             "A PHP# attribute is a class name with optional positional and named arguments, as in `[Field(\"Name\", searchable: true)]`."
@@ -1206,6 +1247,15 @@ pub fn check_local_declaration(local_declaration: &LocalDeclaration, context: &m
 pub fn check_for_of(for_of: &ForOf, context: &mut Context<'_, '_, '_>) {
     for name in for_of.target.names() {
         check_local_name(name.value, name.span, "loop variable", context);
+    }
+}
+
+#[inline]
+pub fn check_try_catch_clause(try_catch_clause: &TryCatchClause, context: &mut Context<'_, '_, '_>) {
+    if let Some(variable) = &try_catch_clause.variable
+        && !variable.name.starts_with(b"$")
+    {
+        check_local_name(variable.name, variable.span, "catch variable", context);
     }
 }
 
@@ -1398,17 +1448,13 @@ fn check_variable(variable: &Variable, context: &mut Context<'_, '_, '_>) {
 }
 
 /// Checks `object.member` and `object.member()` once per chain of property reads, from its outermost access. The
-/// spans of the accesses it checks go into `checked`.
+/// member name spans of the accesses it checks go into the context's `slice_members`, because each access has its own
+/// member name and an access's own span grows with the chain before it.
 ///
 /// A chain rooted at a class reaches its constants, enum cases and static members, and a chain of capitalized names
 /// is a full name, which belongs in an `import` line.
-fn check_member_access(
-    access: Span,
-    object: &Expression,
-    checked: &mut HashSet<Span>,
-    context: &mut Context<'_, '_, '_>,
-) {
-    if !checked.insert(access) {
+fn check_member_access(object: &Expression, member: &ClassLikeMemberSelector, context: &mut Context<'_, '_, '_>) {
+    if !context.slice_members.insert(member.span()) {
         return;
     }
 
@@ -1417,7 +1463,7 @@ fn check_member_access(
     while let Expression::Access(Access::Property(property)) = root
         && let ClassLikeMemberSelector::Identifier(name) = &property.property
     {
-        checked.insert(property.span());
+        context.slice_members.insert(name.span);
         properties.push(name);
         root = property.object;
     }
@@ -1428,7 +1474,9 @@ fn check_member_access(
                 "Reading a member of `typeof({})` is not supported yet.",
                 BytesDisplay(type_of.class.value())
             ))
-            .with_annotation(Annotation::primary(access).with_message("Read here."))
+            .with_annotation(
+                Annotation::primary(Span::between(object.span(), member.span())).with_message("Read here."),
+            )
             .with_note("The engine runs `typeof(X)` as the class name `X::class`, which has no members yet."),
         );
 

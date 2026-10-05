@@ -6,7 +6,9 @@
 //!
 //! # Available Services
 //!
-//! - [`analysis::AnalysisService`]: Static analysis with type checking and control flow
+//! - [`incremental_analysis::IncrementalAnalysisService`]: Static analysis with type checking and control flow,
+//!   kept warm across edits
+//! - [`analysis::AnalysisService`]: Single-file static analysis for hosts without threads, such as WebAssembly
 //! - [`format::FormatService`]: Code formatting to ensure consistent style
 //! - [`guard::GuardService`]: Architectural rule enforcement
 //! - [`lint::LintService`]: Linting for code quality and best practices

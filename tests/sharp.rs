@@ -103,6 +103,39 @@ fn analyze_reports_only_the_parse_error_for_php_syntax() {
     assert!(errors[0].starts_with("src/Demo/Report.sharp:7:20:error - parse:"), "{stdout}");
 }
 
+/// A PHP sum and call chain 1,000 levels deep overflowed the stack of a debug `mago analyze`, and a PHP# sum 100,000
+/// levels deep overflowed any build. Now the PHP file analyzes, and the PHP# file gets its nesting error.
+#[test]
+fn analyze_finishes_on_deeply_nested_files() {
+    let directory = workspace(REPORT);
+    let sum = |terms: usize| vec!["value"; terms];
+    std::fs::write(
+        directory.path().join("src/Lib/Deep.php"),
+        format!(
+            "<?php\n\nnamespace Lib;\n\nfinal class Deep\n{{\n    public function sum(int $value): int\n    {{\n        return ${};\n    }}\n\n    public function chain(): self\n    {{\n        return $this{};\n    }}\n}}\n",
+            sum(1_000).join(" + $"),
+            "->chain()".repeat(1_000)
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        directory.path().join("src/Demo/Deep.sharp"),
+        format!(
+            "namespace Demo;\n\nclass Deep\n{{\n    public int sum(int value)\n    {{\n        return {};\n    }}\n}}\n",
+            sum(100_000).join(" + ")
+        ),
+    )
+    .unwrap();
+
+    let output = run(directory.path(), "analyze", &["--reporting-format", "emacs"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(output.status.code(), Some(1), "{stdout}{stderr}");
+    assert!(stdout.lines().any(|line| line.starts_with("src/Demo/Deep.sharp:7:16:error - parse:")), "{stdout}{stderr}");
+    assert!(!stdout.lines().any(|line| line.starts_with("src/Lib/Deep.php:")), "{stdout}{stderr}");
+}
+
 #[test]
 fn analyze_fix_runs_on_php_files_beside_a_valid_sharp_file() {
     let directory = workspace(&valid_report());

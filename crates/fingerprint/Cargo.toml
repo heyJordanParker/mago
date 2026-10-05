@@ -11,6 +11,7 @@ rust-version.workspace = true
 
 [dependencies]
 mago-syntax = { workspace = true }
+mago-syntax-core = { workspace = true }
 mago-names = { workspace = true }
 mago-span = { workspace = true }
 foldhash = { workspace = true }
