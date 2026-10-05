@@ -16,6 +16,7 @@ use mago_database::file::FileId;
 use mago_database::file::FileType;
 use mago_database::membership::WorkspaceMatcher;
 use mago_orchestrator::service::incremental_analysis::IncrementalAnalysisService;
+use mago_reporting::Issue;
 use mago_reporting::IssueCollection;
 
 use crate::error::ServerError;
@@ -120,8 +121,9 @@ impl Server {
         result.inspect_err(|_| self.service.reset()).map_err(ServerError::from)
     }
 
-    /// The issues of the most recent analysis pass whose primary annotation lies in a file
-    /// `scope` contains, plus the issues that name no file.
+    /// The issues of the most recent analysis pass reported in a file `scope` contains, plus the
+    /// issues that name no file. An issue is reported in its primary annotation's file, else in its
+    /// first annotation's.
     #[must_use]
     pub fn issues_in(&self, scope: &WorkspaceMatcher) -> IssueCollection {
         let mut in_scope = HashMap::<FileId, bool>::default();
@@ -131,13 +133,7 @@ impl Server {
             .unwrap_or_default()
             .into_iter()
             .filter(|issue| {
-                let Some(file_id) = issue
-                    .annotations
-                    .iter()
-                    .find(|annotation| annotation.kind.is_primary())
-                    .map(|annotation| annotation.span.file_id)
-                    .filter(|file_id| !file_id.is_zero())
-                else {
+                let Some(file_id) = reported_file(issue) else {
                     return true;
                 };
 
@@ -199,6 +195,18 @@ impl Server {
     pub fn lint_issues(&self) -> impl Iterator<Item = &IssueCollection> + '_ {
         self.file_analyses.values().map(|(_, analysis)| &analysis.lint_issues)
     }
+}
+
+/// The file `issue` is reported in: its primary annotation's file, else its first annotation's, or
+/// `None` when it names no file.
+fn reported_file(issue: &Issue) -> Option<FileId> {
+    issue
+        .annotations
+        .iter()
+        .find(|annotation| annotation.kind.is_primary())
+        .or_else(|| issue.annotations.first())
+        .map(|annotation| annotation.span.file_id)
+        .filter(|file_id| !file_id.is_zero())
 }
 
 #[cfg(test)]
@@ -265,6 +273,41 @@ mod tests {
             scoped.iter().collect::<Vec<_>>(),
             all.iter().filter(|issue| primary_file(issue) == Some(b)).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn an_issue_is_reported_in_its_primary_file_else_its_first_annotated_file() {
+        use mago_reporting::Annotation;
+
+        let mut database =
+            Database::new(DatabaseConfiguration::new(Path::new("/scope"), vec![], vec![], vec![], vec![]));
+        let a = database.add(host("src/a.php", "<?php\nfunction a(): int { return 'a'; }\n"));
+        let b = database.add(host("src/b.php", "<?php\nfunction b(): int { return 'b'; }\n"));
+        let settings = Settings {
+            parser: ParserSettings::default(),
+            analyzer: AnalyzerSettings::default(),
+            linter: LinterSettings::default(),
+            plugin_registry: Arc::new(PluginRegistry::with_library_providers()),
+            use_progress_bars: false,
+        };
+        let issues = Server::new(database, Default::default, settings).analyze().expect("analysis").issues;
+        let span_in = |file_id: FileId| {
+            issues
+                .iter()
+                .flat_map(|issue| &issue.annotations)
+                .find(|annotation| annotation.span.file_id == file_id)
+                .expect("an issue in the file")
+                .span
+        };
+
+        let primary =
+            Issue::error("x").with_annotations([Annotation::secondary(span_in(a)), Annotation::primary(span_in(b))]);
+        let secondary_only =
+            Issue::error("x").with_annotations([Annotation::secondary(span_in(a)), Annotation::secondary(span_in(b))]);
+
+        assert_eq!(reported_file(&primary), Some(b));
+        assert_eq!(reported_file(&secondary_only), Some(a));
+        assert_eq!(reported_file(&Issue::error("x")), None);
     }
 
     fn server(name: &'static str, contents: &'static str) -> (Server, FileId) {
