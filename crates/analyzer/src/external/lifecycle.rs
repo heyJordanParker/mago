@@ -165,6 +165,7 @@ struct NodeAnalysisTarget<'ast, 'arena> {
     node: Node<'ast, 'arena>,
     requirements: u8,
     targeted_hook_routes: Vec<u32>,
+    is_sharp_static_call: bool,
 }
 
 struct NodeAnalysisPlan<'ast, 'arena> {
@@ -246,7 +247,12 @@ fn build_node_analysis_plan<'ast, 'arena>(
         {
             let index = targets.len();
             by_node.insert((kind as u8, span.start.offset, span.end.offset), index);
-            targets.push(NodeAnalysisTarget { node, requirements: requested, targeted_hook_routes });
+            targets.push(NodeAnalysisTarget {
+                node,
+                requirements: requested,
+                targeted_hook_routes,
+                is_sharp_static_call,
+            });
         }
 
         let start = stack.len();
@@ -526,6 +532,7 @@ fn write_target_analysis(
         for route in &target.targeted_hook_routes {
             writer.write_u32(*route);
         }
+        writer.write_bool(target.is_sharp_static_call);
     }
 
     Ok(())
