@@ -22,18 +22,22 @@ use mago_syntax::cst::Call;
 use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::ClassLikeMemberSelector;
+use mago_syntax::cst::CompositeString;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::DirectVariable;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::For;
 use mago_syntax::cst::ForBody;
 use mago_syntax::cst::ForOfTarget;
+use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::Hint;
 use mago_syntax::cst::If;
 use mago_syntax::cst::IfBody;
 use mago_syntax::cst::Instantiation;
+use mago_syntax::cst::InterpolatedString;
 use mago_syntax::cst::Literal;
+use mago_syntax::cst::LiteralStringPart;
 use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::MethodBody;
@@ -48,6 +52,9 @@ use mago_syntax::cst::PropertyHookList;
 use mago_syntax::cst::PropertyItem;
 use mago_syntax::cst::Sequence;
 use mago_syntax::cst::Statement;
+use mago_syntax::cst::StringPart;
+use mago_syntax::cst::Try;
+use mago_syntax::cst::TryCatchClause;
 use mago_syntax::cst::UnaryPostfixOperator;
 use mago_syntax::cst::UnaryPrefixOperator;
 use mago_syntax::cst::WhileBody;
@@ -66,6 +73,9 @@ use crate::sharp_kind::SHARP_AST_ASSIGN_COALESCE;
 use crate::sharp_kind::SHARP_AST_ASSIGN_OP;
 use crate::sharp_kind::SHARP_AST_BINARY_OP;
 use crate::sharp_kind::SHARP_AST_BREAK;
+use crate::sharp_kind::SHARP_AST_CALL;
+use crate::sharp_kind::SHARP_AST_CATCH;
+use crate::sharp_kind::SHARP_AST_CATCH_LIST;
 use crate::sharp_kind::SHARP_AST_CLASS;
 use crate::sharp_kind::SHARP_AST_COALESCE;
 use crate::sharp_kind::SHARP_AST_CONST;
@@ -74,6 +84,7 @@ use crate::sharp_kind::SHARP_AST_CONST_ELEM;
 use crate::sharp_kind::SHARP_AST_CONTINUE;
 use crate::sharp_kind::SHARP_AST_DECLARE;
 use crate::sharp_kind::SHARP_AST_DO_WHILE;
+use crate::sharp_kind::SHARP_AST_ENCAPS_LIST;
 use crate::sharp_kind::SHARP_AST_EXPR_LIST;
 use crate::sharp_kind::SHARP_AST_FOR;
 use crate::sharp_kind::SHARP_AST_FOREACH;
@@ -83,6 +94,7 @@ use crate::sharp_kind::SHARP_AST_IF;
 use crate::sharp_kind::SHARP_AST_IF_ELEM;
 use crate::sharp_kind::SHARP_AST_METHOD;
 use crate::sharp_kind::SHARP_AST_METHOD_CALL;
+use crate::sharp_kind::SHARP_AST_NAME_LIST;
 use crate::sharp_kind::SHARP_AST_NAMED_ARG;
 use crate::sharp_kind::SHARP_AST_NAMESPACE;
 use crate::sharp_kind::SHARP_AST_NEW;
@@ -102,6 +114,8 @@ use crate::sharp_kind::SHARP_AST_PROP_GROUP;
 use crate::sharp_kind::SHARP_AST_RETURN;
 use crate::sharp_kind::SHARP_AST_STATIC_CALL;
 use crate::sharp_kind::SHARP_AST_STMT_LIST;
+use crate::sharp_kind::SHARP_AST_THROW;
+use crate::sharp_kind::SHARP_AST_TRY;
 use crate::sharp_kind::SHARP_AST_UNARY_MINUS;
 use crate::sharp_kind::SHARP_AST_UNARY_OP;
 use crate::sharp_kind::SHARP_AST_UNARY_PLUS;
@@ -478,6 +492,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 self.node(SHARP_AST_DO_WHILE, 0, self.line(do_while), &[body, condition])
             }
+            Statement::Try(r#try) => self.r#try(r#try),
             Statement::Break(r#break) => self.node(SHARP_AST_BREAK, 0, self.line(r#break), &[NULL]),
             Statement::Continue(r#continue) => self.node(SHARP_AST_CONTINUE, 0, self.line(r#continue), &[NULL]),
             _ => unreachable!("check_slice refuses the statement `{statement}`"),
@@ -546,6 +561,46 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_IF, 0, self.line(r#if), &branches)
     }
 
+    /// A `TRY` takes the try block, a `CATCH_LIST` and the finally block or null. php-src's grammar takes a node's
+    /// line from its first child, so a `TRY` is on the line of its block and a `CATCH` on the line of its first class.
+    fn r#try(&mut self, r#try: &Try) -> u32 {
+        let block = self.block(&r#try.block);
+        let mut catches = Vec::new();
+        for clause in &r#try.catch_clauses {
+            catches.push(self.catch(clause));
+        }
+
+        let catches = self.node(SHARP_AST_CATCH_LIST, 0, self.line(r#try.block.right_brace), &catches);
+        let finally = r#try.finally_clause.as_ref().map_or(NULL, |finally| self.block(&finally.block));
+        let line = self.nodes[block as usize].line;
+
+        self.node(SHARP_AST_TRY, 0, line, &[block, catches, finally])
+    }
+
+    fn catch(&mut self, clause: &TryCatchClause) -> u32 {
+        let mut classes = Vec::new();
+        self.catch_classes(&clause.hint, &mut classes);
+        let line = self.nodes[classes[0] as usize].line;
+        let classes = self.node(SHARP_AST_NAME_LIST, 0, line, &classes);
+        let variable =
+            clause.variable.as_ref().map_or(NULL, |variable| self.string(0, self.line(variable.span), variable.name));
+        let block = self.block(&clause.block);
+
+        self.node(SHARP_AST_CATCH, 0, line, &[classes, variable, block])
+    }
+
+    /// The classes a catch clause names, each by its full name, in the order they are written.
+    fn catch_classes(&mut self, hint: &Hint, classes: &mut Vec<u32>) {
+        match hint {
+            Hint::Identifier(class) => classes.push(self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class))),
+            Hint::Union(union) => {
+                self.catch_classes(union.left, classes);
+                self.catch_classes(union.right, classes);
+            }
+            _ => unreachable!("semantics refuses the catch type `{hint}`"),
+        }
+    }
+
     fn expression(&mut self, expression: &Expression) -> u32 {
         let line = self.line(expression);
 
@@ -587,6 +642,15 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.node(kind, attr, line, &[lhs, rhs])
             }
             Expression::Call(Call::Method(call)) => self.method_call(call),
+            Expression::Call(Call::Function(FunctionCall {
+                function: Expression::Identifier(function),
+                argument_list,
+            })) => {
+                let function = self.string(ZEND_NAME_FQ, self.line(function), function.value());
+                let arguments = self.arguments(argument_list);
+
+                self.node(SHARP_AST_CALL, 0, line, &[function, arguments])
+            }
             Expression::Instantiation(Instantiation {
                 class: Expression::Identifier(class),
                 argument_list: Some(arguments),
@@ -616,8 +680,48 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 self.node(SHARP_AST_NULLSAFE_PROP, 0, line, &[object, property])
             }
+            Expression::Throw(throw) => {
+                let exception = self.expression(throw.exception);
+
+                self.node(SHARP_AST_THROW, 0, line, &[exception])
+            }
+            Expression::CompositeString(CompositeString::Interpolated(template)) => self.template(template),
             _ => unreachable!("check_slice refuses the expression `{expression}`"),
         }
+    }
+
+    /// A template without `${…}` is its text, as php-src's grammar builds a string without interpolation. Any other
+    /// is an `ENCAPS_LIST` of its text that is not empty and its expressions, on the line of its first part.
+    fn template(&mut self, template: &InterpolatedString) -> u32 {
+        match template.parts.as_slice() {
+            [] => self.string(0, self.line(template), b""),
+            [StringPart::Literal(text)] => self.template_text(text),
+            parts => {
+                let mut children = Vec::new();
+                for part in parts {
+                    match part {
+                        StringPart::Literal(text) if text.value == Some(b"") => {}
+                        StringPart::Literal(text) => children.push(self.template_text(text)),
+                        StringPart::BracedExpression(interpolation) => {
+                            children.push(self.expression(interpolation.expression));
+                        }
+                        StringPart::Expression(_) => unreachable!("the parser reads only `${{…}}` in a template"),
+                    }
+                }
+
+                let line = self.nodes[children[0] as usize].line;
+
+                self.node(SHARP_AST_ENCAPS_LIST, 0, line, &children)
+            }
+        }
+    }
+
+    fn template_text(&mut self, text: &LiteralStringPart) -> u32 {
+        let Some(value) = text.value else {
+            unreachable!("the parser refuses an escape JavaScript refuses");
+        };
+
+        self.string(0, self.line(text), value)
     }
 
     /// What an assignment, a compound assignment, `++` or `--` writes: a local or parameter, or `object.name`, as

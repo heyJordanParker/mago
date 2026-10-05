@@ -58,6 +58,8 @@ pub enum ParseError {
     ForInInSharp(Span),
     /// PHP# syntax the engine cannot run yet, such as `required` or a named constructor, where it starts.
     NotSupportedYetInSharp(&'static str, Span),
+    /// An escape JavaScript refuses in a PHP# template, such as `\1` or `\x4`, at its backslash and next character.
+    InvalidTemplateEscapeInSharp(Span),
 }
 
 impl HasFileId for SyntaxError {
@@ -83,7 +85,8 @@ impl HasFileId for ParseError {
             | ParseError::QualifiedNameInSharp(_, span)
             | ParseError::UntypedParameterInSharp(span)
             | ParseError::ForInInSharp(span)
-            | ParseError::NotSupportedYetInSharp(_, span) => span.file_id,
+            | ParseError::NotSupportedYetInSharp(_, span)
+            | ParseError::InvalidTemplateEscapeInSharp(span) => span.file_id,
         }
     }
 }
@@ -113,7 +116,8 @@ impl HasSpan for ParseError {
             | ParseError::QualifiedNameInSharp(_, span)
             | ParseError::UntypedParameterInSharp(span)
             | ParseError::ForInInSharp(span)
-            | ParseError::NotSupportedYetInSharp(_, span) => *span,
+            | ParseError::NotSupportedYetInSharp(_, span)
+            | ParseError::InvalidTemplateEscapeInSharp(span) => *span,
         }
     }
 }
@@ -190,6 +194,9 @@ impl std::fmt::Display for ParseError {
                 "PHP# loops over a collection with `of`, as in `for (const line of lines)`.".to_string()
             }
             ParseError::NotSupportedYetInSharp(construct, _) => format!("{construct} is not supported yet in PHP#."),
+            ParseError::InvalidTemplateEscapeInSharp(_) => {
+                "A template takes JavaScript's escapes, as in `\\n`, `\\x41` or `\\u{1F600}`.".to_string()
+            }
         };
 
         write!(f, "{message}")
@@ -232,7 +239,8 @@ impl From<&ParseError> for Issue {
             ParseError::PhpSyntaxInSharp(..)
             | ParseError::QualifiedNameInSharp(..)
             | ParseError::UntypedParameterInSharp(..)
-            | ParseError::ForInInSharp(..) => Issue::error(error.to_string())
+            | ParseError::ForInInSharp(..)
+            | ParseError::InvalidTemplateEscapeInSharp(..) => Issue::error(error.to_string())
                 .with_code(PARSE_ERROR_CODE)
                 .with_annotation(Annotation::primary(error.span()).with_message("Written here.")),
             ParseError::NotSupportedYetInSharp(_, span) => Issue::error(error.to_string())

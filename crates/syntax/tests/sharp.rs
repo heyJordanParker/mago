@@ -577,6 +577,39 @@ fn for_of_declares_its_loop_variable_or_key_and_value() {
 }
 
 #[test]
+fn a_catch_clause_names_its_variable_without_a_dollar() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        try {\n        } catch (Missing | Broken failure) {\n        } catch (Throwable) {\n        } finally {\n        }\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::Try(r#try)] = method_body(program) else {
+        panic!("expected a try, got {:#?}", method_body(program));
+    };
+    let [named, unnamed] = r#try.catch_clauses.as_slice() else {
+        panic!("expected two catch clauses, got {:#?}", r#try.catch_clauses);
+    };
+
+    assert_eq!(source(CODE, &named.hint), "Missing | Broken");
+    let variable = named.variable.as_ref().expect("a variable");
+    assert_eq!(variable.name, b"failure");
+    assert_eq!(source(CODE, variable), "failure");
+    assert_eq!(source(CODE, &unnamed.hint), "Throwable");
+    assert!(unnamed.variable.is_none());
+    assert!(r#try.finally_clause.is_some());
+}
+
+#[test]
+fn a_dollar_catch_variable_is_a_php_syntax_error() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        try {\n        } catch (Missing $failure) {\n        }\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    let spans: Vec<&str> = program.errors.iter().map(|error| source(CODE, error)).collect();
+    assert_eq!(spans, ["$failure"]);
+}
+
+#[test]
 fn for_in_is_a_parse_error_that_names_of() {
     let arena = LocalArena::new();
     let program = parse(
@@ -762,6 +795,109 @@ fn a_method_written_with_function_is_a_parse_error() {
     assert_eq!(
         messages.first().map(String::as_str),
         Some("`function` is PHP syntax: a PHP# method starts with its return type")
+    );
+}
+
+fn returned_template<'arena>(program: &'arena Program<'arena>) -> &'arena InterpolatedString<'arena> {
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Expression::CompositeString(CompositeString::Interpolated(template)) = expression(&method_body(program)[0])
+    else {
+        panic!("expected a template, got {:#?}", method_body(program));
+    };
+
+    template
+}
+
+#[test]
+fn a_template_is_an_interpolated_string_whose_dollar_braces_take_any_expression() {
+    const CODE: &str = "class Report\n{\n    string run()\n    {\n        return `Order ${order.number}: ${count(items) + 1} items`;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+    let template = returned_template(program);
+
+    assert_eq!(source(CODE, template), "`Order ${order.number}: ${count(items) + 1} items`");
+    let parts: Vec<&str> = template.parts.iter().map(|part| source(CODE, part)).collect();
+    assert_eq!(parts, ["Order ", "${order.number}", ": ", "${count(items) + 1}", " items"]);
+    let [_, StringPart::BracedExpression(number), _, StringPart::BracedExpression(count), _] =
+        template.parts.as_slice()
+    else {
+        panic!("expected two interpolations, got {:#?}", template.parts);
+    };
+    assert!(matches!(number.expression, Expression::Access(Access::Property(_))), "{:#?}", number.expression);
+    assert!(matches!(count.expression, Expression::Binary(_)), "{:#?}", count.expression);
+}
+
+#[test]
+fn a_template_has_no_empty_text_around_its_interpolations() {
+    const CODE: &str = "class Report\n{\n    string run()\n    {\n        return `${first}${last}`;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+    let template = returned_template(program);
+
+    let parts: Vec<&str> = template.parts.iter().map(|part| source(CODE, part)).collect();
+    assert_eq!(parts, ["${first}", "${last}"]);
+}
+
+#[test]
+fn a_template_reads_dollar_names_and_braces_as_text_and_decodes_javascript_escapes() {
+    const CODE: &str = "class Report\n{\n    string run()\n    {\n        return `$price {$tax} \\${total} \\x41\\u{42} \\`a\\\nb`;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+    let template = returned_template(program);
+
+    let [StringPart::Literal(text)] = template.parts.as_slice() else {
+        panic!("expected one literal part, got {:#?}", template.parts);
+    };
+    assert_eq!(text.value, Some(&b"$price {$tax} ${total} AB `ab"[..]));
+}
+
+#[test]
+fn an_escape_javascript_refuses_is_a_parse_error_at_the_escape() {
+    for escape in ["\\1", "\\01", "\\x4", "\\u12", "\\u{110000}"] {
+        let code = format!("class Report\n{{\n    string run()\n    {{\n        return `a{escape}`;\n    }}\n}}\n");
+        let code: &'static str = Box::leak(code.into_boxed_str());
+        let arena = LocalArena::new();
+        let program = parse(&arena, "src/Report.sharp", code);
+
+        let messages: Vec<String> = program.errors.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            messages,
+            ["A template takes JavaScript's escapes, as in `\\n`, `\\x41` or `\\u{1F600}`."],
+            "{escape}"
+        );
+        assert_eq!(source(code, &program.errors[0]), &escape[..2], "{escape}");
+    }
+}
+
+#[test]
+fn a_double_quoted_string_never_interpolates() {
+    const CODE: &str =
+        "class Report\n{\n    string run()\n    {\n        return \"$price {$tax} ${total}\";\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Expression::Literal(Literal::String(string)) = expression(&method_body(program)[0]) else {
+        panic!("expected a literal string, got {:#?}", method_body(program));
+    };
+    assert_eq!(string.value, Some(&b"$price {$tax} ${total}"[..]));
+}
+
+#[test]
+fn backticks_keep_executing_a_shell_command_in_php() {
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.php", "<?php `ls $dir`;");
+
+    let Some(Statement::Expression(statement)) = program.statements.get(1) else {
+        panic!("expected an expression statement, got {:#?}", program.statements);
+    };
+    let Expression::CompositeString(CompositeString::ShellExecute(command)) = statement.expression else {
+        panic!("expected a shell command, got {:#?}", statement.expression);
+    };
+    assert!(
+        matches!(command.parts.as_slice(), [StringPart::Literal(_), StringPart::Expression(_)]),
+        "{:#?}",
+        command.parts
     );
 }
 

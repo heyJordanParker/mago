@@ -19,6 +19,7 @@ use mago_syntax::cst::Call;
 use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::ClassLikeMemberSelector;
+use mago_syntax::cst::CompositeString;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Continue;
 use mago_syntax::cst::Expression;
@@ -48,7 +49,9 @@ use mago_syntax::cst::PropertyHookList;
 use mago_syntax::cst::PropertyItem;
 use mago_syntax::cst::Sequence;
 use mago_syntax::cst::Statement;
+use mago_syntax::cst::StringPart;
 use mago_syntax::cst::Terminator;
+use mago_syntax::cst::TryCatchClause;
 use mago_syntax::cst::UnaryPostfix;
 use mago_syntax::cst::UnaryPostfixOperator;
 use mago_syntax::cst::UnaryPrefix;
@@ -98,15 +101,19 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   `int?`, and PHP's own check reports `void?`.
 /// - In a method body: blocks, expression statements, `return`, `let` and `const` declarations, `if` with `else if`
 ///   and `else`, `while`, `do … while`, `for` with a `let` or `const` counter or with expressions, `for … of` over a
-///   value or a key and value, and `break` and `continue` without a level. The body of `if`, `else` and each loop is a
-///   block in braces. A local statement can have its type written, as in `Money? total = null;` or
+///   value or a key and value, `break` and `continue` without a level, and `try` with `catch` clauses and `finally`.
+///   The body of `if`, `else` and each loop is a block in braces. A catch clause names one or more classes separated
+///   by `|`, and an optional variable written without `$`, which lives until the clause's block ends. A local statement can have its type written, as in `Money? total = null;` or
 ///   `const int base = 2;`, from the types above but `void`.
 /// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter or a member written
 ///   `object.name`.
-/// - In expressions: literals, parentheses, bare names, assignment, the operators below, and method calls and
-///   property reads written with `.` or `?.` and a member name, and `new Class(...)` on a class written by its short
-///   name, with positional and named arguments. `?.` never follows a class. A string literal's `\u{...}` escapes are
-///   valid codepoints, as PHP requires.
+/// - In expressions: literals, templates, parentheses, bare names, assignment, the operators below, and method calls
+///   and property reads written with `.` or `?.` and a member name, `new Class(...)` on a class written by its short
+///   name, calls of a function by its bare name, each with positional and named arguments, and `throw`, which is an
+///   expression as in PHP. `?.` never follows a class. A function is PHP's built-in function of that name, which spec
+///   section 8 keeps, and the engine calls the global one. A string literal's `\u{...}` escapes are valid codepoints,
+///   as PHP requires. A `"…"` string never interpolates, and a template, `` `Order ${number}` ``, interpolates any
+///   expression of this list in each `${…}` and takes JavaScript's escapes, as spec section 18 writes them.
 /// - Operators: `+ - * / %`, `== != === !== < > <= >=`, `&& || !`, `??`, unary `-` and `+`, `++` and `--`, and
 ///   `= += -= *= /= ??=`.
 ///
@@ -115,9 +122,11 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// error to fix first. The constructs PHP# never has, such as `$` variables, `global` and top-level functions, keep
 /// their own errors.
 ///
-/// Two more refusals need inferred types, so the analyzer makes them as its part of this contract:
-/// - `+` with an operand that may be a string, in `analyze_arithmetic_operation`.
+/// Three more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
+/// - `+` that may join a string with any other value, which spec section 18 makes an error, in
+///   `analyze_arithmetic_operation`. `+` on two strings joins them.
 /// - an instance method used as a value, such as `order.total` without a call, in `report_non_existent_property`.
+/// - a call of a function a library or the app declares, in `report_declared_function_call`.
 #[inline]
 pub fn check_slice(program: &Program, context: &mut Context<'_, '_, '_>) {
     check_node(Node::Program(program), Place::File, &mut HashSet::new(), context);
@@ -348,6 +357,12 @@ fn enter(
         (Node::PropertyHookList(_), Parameter) => None,
         (Node::FunctionLikeParameterDefaultValue(_), Parameter) => Some(Default),
         (Node::Block(_), Method | Body) => Some(Body),
+        // `check_try` reports a catch type that is not a class, and `check_try_catch_clause` the variable's name.
+        (Node::TryCatchClause(clause), Body) => {
+            check_node(Node::Block(&clause.block), Body, checked, context);
+
+            None
+        }
 
         (Node::Statement(statement), Body) if !has_braces(statement) => {
             report_not_supported(
@@ -370,9 +385,12 @@ fn enter(
                 | Statement::DoWhile(_)
                 | Statement::For(_)
                 | Statement::ForOf(_)
+                | Statement::Try(_)
                 | Statement::Break(Break { level: None, .. })
                 | Statement::Continue(Continue { level: None, .. }),
             )
+            | Node::Try(_)
+            | Node::TryFinallyClause(_)
             | Node::Break(_)
             | Node::Continue(_)
             | Node::ExpressionStatement(_)
@@ -434,8 +452,17 @@ fn enter(
                 Expression::Assignment(_)
                 | Expression::UnaryPostfix(_)
                 | Expression::Call(Call::Method(_) | Call::NullSafeMethod(_))
-                | Expression::Access(Access::Property(_) | Access::NullSafeProperty(_)),
+                | Expression::Access(Access::Property(_) | Access::NullSafeProperty(_))
+                | Expression::Throw(_)
+                // The parser reads a template, and only a template, into an interpolated string.
+                | Expression::CompositeString(CompositeString::Interpolated(_)),
             )
+            | Node::Throw(_)
+            | Node::CompositeString(CompositeString::Interpolated(_))
+            | Node::InterpolatedString(_)
+            | Node::StringPart(StringPart::Literal(_) | StringPart::BracedExpression(_))
+            | Node::LiteralStringPart(_)
+            | Node::BracedExpressionStringPart(_)
             | Node::Assignment(_)
             | Node::UnaryPostfix(_)
             | Node::UnaryPostfixOperator(UnaryPostfixOperator::PostIncrement(_) | UnaryPostfixOperator::PostDecrement(_))
@@ -494,6 +521,16 @@ fn enter(
         (Node::Expression(Expression::Call(Call::Function(function_call))), Body)
             if is_checked_function_call(function_call, context) =>
         {
+            None
+        }
+        // Spec section 8: PHP's built-in functions are called by their bare names. The analyzer refuses a function
+        // that is not built in.
+        (Node::Expression(Expression::Call(Call::Function(function_call))), Body)
+            if let Expression::Identifier(name @ Identifier::Local(_)) = function_call.function
+                && context.names.binding(name).is_none() =>
+        {
+            check_node(Node::ArgumentList(&function_call.argument_list), Body, checked, context);
+
             None
         }
 
@@ -893,7 +930,7 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, a name, and an optional default."
         }
         Place::Body => {
-            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, and `break` and `continue` without a level, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, `++` and `--`, method calls and property reads written with `.` or `?.`, and `new Class(...)`."
+            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, `break` and `continue` without a level, and `try` with `catch` and `finally`, with literals, templates, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, `++` and `--`, method calls and property reads written with `.` or `?.`, `new Class(...)`, calls of PHP's built-in functions and `throw`."
         }
         Place::Default => {
             "A parameter default is a literal, a constant, or arithmetic, comparison, logical and `??` operators on them."
@@ -970,6 +1007,15 @@ pub fn check_local_declaration(local_declaration: &LocalDeclaration, context: &m
 pub fn check_for_of(for_of: &ForOf, context: &mut Context<'_, '_, '_>) {
     for name in for_of.target.names() {
         check_local_name(name.value, name.span, "loop variable", context);
+    }
+}
+
+#[inline]
+pub fn check_try_catch_clause(try_catch_clause: &TryCatchClause, context: &mut Context<'_, '_, '_>) {
+    if let Some(variable) = &try_catch_clause.variable
+        && !variable.name.starts_with(b"$")
+    {
+        check_local_name(variable.name, variable.span, "catch variable", context);
     }
 }
 

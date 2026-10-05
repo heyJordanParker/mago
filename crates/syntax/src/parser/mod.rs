@@ -75,7 +75,7 @@ where
         let input = Input::new(file_id, content);
         let lexer = match dialect {
             Dialect::Php => Lexer::new(input, settings.lexer),
-            Dialect::Sharp => Lexer::scripting(input, settings.lexer),
+            Dialect::Sharp => Lexer::sharp(input, settings.lexer),
         };
         let stream = TokenStream::new(arena, lexer);
 

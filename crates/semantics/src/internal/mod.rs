@@ -37,6 +37,7 @@ use mago_syntax::cst::Switch;
 use mago_syntax::cst::Trait;
 use mago_syntax::cst::TraitUseAliasAdaptation;
 use mago_syntax::cst::Try;
+use mago_syntax::cst::TryCatchClause;
 use mago_syntax::cst::UnaryPostfix;
 use mago_syntax::cst::UnaryPrefix;
 use mago_syntax::cst::UnaryPrefixOperator;
@@ -122,6 +123,17 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingW
     #[inline]
     fn walk_in_try(&self, r#try: &Try<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
         checker::r#try::check_try(r#try, context);
+    }
+
+    #[inline]
+    fn walk_in_try_catch_clause(
+        &self,
+        try_catch_clause: &'ast TryCatchClause<'arena>,
+        context: &mut Context<'_, 'ast, 'arena>,
+    ) {
+        if context.program.dialect.is_sharp() {
+            checker::sharp::check_try_catch_clause(try_catch_clause, context);
+        }
     }
 
     #[inline]

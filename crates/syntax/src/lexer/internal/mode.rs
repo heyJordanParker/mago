@@ -62,6 +62,8 @@ pub enum LexerMode<'src> {
     ///
     /// Similar to double-quoted strings, this mode handles interpolation and escape sequences within backticks.
     /// It executes the content as a shell command when evaluated.
+    ///
+    /// In a PHP# file the backticks hold a template, which interpolates only `${…}`.
     ShellExecuteString(Interpolation),
 
     /// **Document String Mode**

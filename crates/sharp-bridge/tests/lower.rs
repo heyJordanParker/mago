@@ -1573,6 +1573,201 @@ fn for_of_loops_are_foreach_nodes_with_the_value_before_the_key() {
     );
 }
 
+/// ```php
+/// throw new \App\Tenant\Failure($extra);
+/// return $extra ?? throw new \App\Tenant\Failure(0);
+/// ```
+///
+/// `throw` is an expression, and a `throw` statement is that expression alone.
+#[test]
+fn throw_is_a_throw_expression() {
+    assert_eq!(
+        body("        throw new Failure(extra);\n        return extra ?? throw new Failure(0);\n"),
+        indoc! {r#"
+            STMT_LIST
+              THROW
+                NEW
+                  ZVAL "App\\Tenant\\Failure"
+                  ARG_LIST
+                    VAR
+                      ZVAL "extra"
+              RETURN
+                COALESCE
+                  VAR
+                    ZVAL "extra"
+                  THROW
+                    NEW
+                      ZVAL "App\\Tenant\\Failure"
+                      ARG_LIST
+                        ZVAL 0
+        "#}
+    );
+}
+
+/// ```php
+/// try {
+///     $extra += 1;
+/// } catch (\Lib\Calc | \App\Tenant\Missing $failure) {
+///     throw $failure;
+/// } catch (\App\Tenant\Broken) {
+/// } finally {
+///     $extra -= 1;
+/// }
+/// ```
+///
+/// `TRY` takes the try block, a `CATCH_LIST` and the finally block or null. Each `CATCH` takes a `NAME_LIST` of
+/// classes, the variable's name or null, and its block.
+#[test]
+fn try_is_a_try_node_with_a_catch_list_and_a_finally_block() {
+    assert_eq!(
+        body(
+            "        try {\n            extra += 1;\n        } catch (Calc | Missing failure) {\n            throw failure;\n        } catch (Broken) {\n        } finally {\n            extra -= 1;\n        }\n        return extra;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              TRY
+                STMT_LIST
+                  ASSIGN_OP [1]
+                    VAR
+                      ZVAL "extra"
+                    ZVAL 1
+                CATCH_LIST
+                  CATCH
+                    NAME_LIST
+                      ZVAL "Lib\\Calc"
+                      ZVAL "App\\Tenant\\Missing"
+                    ZVAL "failure"
+                    STMT_LIST
+                      THROW
+                        VAR
+                          ZVAL "failure"
+                  CATCH
+                    NAME_LIST
+                      ZVAL "App\\Tenant\\Broken"
+                    null
+                    STMT_LIST
+                STMT_LIST
+                  ASSIGN_OP [2]
+                    VAR
+                      ZVAL "extra"
+                    ZVAL 1
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
+/// try {
+/// } finally {
+/// }
+/// ```
+#[test]
+fn try_without_a_catch_has_an_empty_catch_list() {
+    assert_eq!(
+        body("        try {\n        } finally {\n        }\n        return extra;\n"),
+        indoc! {r#"
+            STMT_LIST
+              TRY
+                STMT_LIST
+                CATCH_LIST
+                STMT_LIST
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
+/// return \strlen(\sprintf("%d", \count($extra, mode: 0)));
+/// ```
+///
+/// PHP# calls only PHP's built-in functions, so a call names the global function with `ZEND_NAME_FQ`, which is 0.
+#[test]
+fn a_function_call_is_a_call_of_the_global_function() {
+    assert_eq!(
+        body("        return strlen(sprintf(\"%d\", count(extra, mode: 0)));\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CALL
+                  ZVAL "strlen"
+                  ARG_LIST
+                    CALL
+                      ZVAL "sprintf"
+                      ARG_LIST
+                        ZVAL "%d"
+                        CALL
+                          ZVAL "count"
+                          ARG_LIST
+                            VAR
+                              ZVAL "extra"
+                            NAMED_ARG
+                              ZVAL "mode"
+                              ZVAL 0
+        "#}
+    );
+}
+
+/// ```php
+/// $label = "Order {$extra}: " . \strlen("x") . "!"; $alone = "{$extra}"; $plain = "plain A"; return $extra;
+/// ```
+///
+/// php-src's grammar builds an interpolated string as an `ENCAPS_LIST` of its text and its expressions, and a
+/// string without one as a `ZVAL`. A template's `${…}` takes any expression, which `ENCAPS_LIST` compiles as PHP's
+/// `{$…}` does.
+#[test]
+fn a_template_is_an_encaps_list_of_its_text_and_interpolations() {
+    assert_eq!(
+        body(
+            "        const label = `Order ${extra}: ${strlen(\"x\")}!`;\n        const alone = `${extra}`;\n        const plain = `plain \\x41`;\n        return extra;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "label"
+                ENCAPS_LIST
+                  ZVAL "Order "
+                  VAR
+                    ZVAL "extra"
+                  ZVAL ": "
+                  CALL
+                    ZVAL "strlen"
+                    ARG_LIST
+                      ZVAL "x"
+                  ZVAL "!"
+              ASSIGN
+                VAR
+                  ZVAL "alone"
+                ENCAPS_LIST
+                  VAR
+                    ZVAL "extra"
+              ASSIGN
+                VAR
+                  ZVAL "plain"
+                ZVAL "plain A"
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
+/// php-src takes a list's line from its first child, and each piece of text's from where it starts.
+#[test]
+fn a_template_over_several_lines_keeps_the_line_of_each_part() {
+    let lowered = Lowered::new(&method("        return `total:\n${extra} more`;\n"));
+    let list = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_ENCAPS_LIST).expect("a list");
+    let lines: Vec<u32> =
+        (0..3).map(|index| lowered.nodes()[lowered.child(list as u32, index) as usize].line).collect();
+
+    assert_eq!(lowered.nodes()[list].line, 9);
+    assert_eq!(lines, [9, 10, 10]);
+}
+
 /// The child count `zend_ast_get_num_children` gives a fixed-size kind, or 5 for a declaration. `None` for a list.
 fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
     match kind {
@@ -1582,7 +1777,10 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_CONST_DECL
         | sharp_kind::SHARP_AST_IF
         | sharp_kind::SHARP_AST_EXPR_LIST
-        | sharp_kind::SHARP_AST_PROP_DECL => None,
+        | sharp_kind::SHARP_AST_PROP_DECL
+        | sharp_kind::SHARP_AST_CATCH_LIST
+        | sharp_kind::SHARP_AST_NAME_LIST
+        | sharp_kind::SHARP_AST_ENCAPS_LIST => None,
         sharp_kind::SHARP_AST_ZVAL => Some(0),
         sharp_kind::SHARP_AST_VAR
         | sharp_kind::SHARP_AST_CONST
@@ -1595,7 +1793,8 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_POST_DEC
         | sharp_kind::SHARP_AST_RETURN
         | sharp_kind::SHARP_AST_BREAK
-        | sharp_kind::SHARP_AST_CONTINUE => Some(1),
+        | sharp_kind::SHARP_AST_CONTINUE
+        | sharp_kind::SHARP_AST_THROW => Some(1),
         sharp_kind::SHARP_AST_PROP
         | sharp_kind::SHARP_AST_ASSIGN
         | sharp_kind::SHARP_AST_ASSIGN_OP
@@ -1613,12 +1812,15 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_IF_ELEM
         | sharp_kind::SHARP_AST_WHILE
         | sharp_kind::SHARP_AST_DO_WHILE
-        | sharp_kind::SHARP_AST_NEW => Some(2),
+        | sharp_kind::SHARP_AST_NEW
+        | sharp_kind::SHARP_AST_CALL => Some(2),
         sharp_kind::SHARP_AST_METHOD_CALL
         | sharp_kind::SHARP_AST_STATIC_CALL
         | sharp_kind::SHARP_AST_CONST_ELEM
         | sharp_kind::SHARP_AST_NULLSAFE_METHOD_CALL
-        | sharp_kind::SHARP_AST_PROP_GROUP => Some(3),
+        | sharp_kind::SHARP_AST_PROP_GROUP
+        | sharp_kind::SHARP_AST_TRY
+        | sharp_kind::SHARP_AST_CATCH => Some(3),
         sharp_kind::SHARP_AST_FOR | sharp_kind::SHARP_AST_FOREACH | sharp_kind::SHARP_AST_PROP_ELEM => Some(4),
         sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_CLASS => Some(5),
         sharp_kind::SHARP_AST_PARAM => Some(6),

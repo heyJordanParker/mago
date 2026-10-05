@@ -142,24 +142,8 @@ where
                 }
 
                 if hex_len > 0 && !overflowed && content.get(j) == Some(&b'}') && code_point <= 0x10_FFFF {
-                    match code_point {
-                        0x0000..=0x007F => result.push(code_point as u8),
-                        0x0080..=0x07FF => {
-                            result.push(0xC0 | (code_point >> 6) as u8);
-                            result.push(0x80 | (code_point & 0x3F) as u8);
-                        }
-                        0x0800..=0xFFFF => {
-                            result.push(0xE0 | (code_point >> 12) as u8);
-                            result.push(0x80 | ((code_point >> 6) & 0x3F) as u8);
-                            result.push(0x80 | (code_point & 0x3F) as u8);
-                        }
-                        _ => {
-                            result.push(0xF0 | (code_point >> 18) as u8);
-                            result.push(0x80 | ((code_point >> 12) & 0x3F) as u8);
-                            result.push(0x80 | ((code_point >> 6) & 0x3F) as u8);
-                            result.push(0x80 | (code_point & 0x3F) as u8);
-                        }
-                    }
+                    let (bytes, length) = utf8(code_point);
+                    result.extend_from_slice(&bytes[..length]);
 
                     consumed = (j + 1) - i;
                 } else {
@@ -201,6 +185,154 @@ where
     }
 
     Some(result.leak())
+}
+
+/// Decodes the text of a PHP# template with JavaScript's template-literal rules, and allocates the result in an
+/// arena.
+///
+/// `\n \r \t \v \b \f \0 \xHH \uHHHH \u{…}` are escapes, `\xHH` and `\uHHHH` name a character as `\u{…}` does, and
+/// an escaped surrogate pair is one character. Any other character escaped is itself, a backslash before a line
+/// ending drops both, and `\r\n` or a lone `\r` reads as `\n`.
+///
+/// # Errors
+///
+/// Returns the offset of the backslash of an escape JavaScript refuses: `\0` before a digit, `\1` to `\9`, and a
+/// malformed `\x` or `\u`.
+pub fn parse_template_literal_in<'arena, A>(arena: &'arena A, s: &'arena [u8]) -> Result<&'arena [u8], usize>
+where
+    A: Arena,
+{
+    if !s.contains(&b'\\') && !s.contains(&b'\r') {
+        return Ok(s);
+    }
+
+    let mut result = Vec::with_capacity_in(s.len(), arena);
+    let mut i = 0;
+    while i < s.len() {
+        let b = s[i];
+        if b == b'\r' {
+            result.push(b'\n');
+            i += if s.get(i + 1) == Some(&b'\n') { 2 } else { 1 };
+            continue;
+        }
+
+        if b != b'\\' {
+            result.push(b);
+            i += 1;
+            continue;
+        }
+
+        let escape = i;
+        let Some(&next) = s.get(i + 1) else {
+            return Err(escape);
+        };
+
+        i += 2;
+        let code_point = match next {
+            b'n' => 0x0A,
+            b'r' => 0x0D,
+            b't' => 0x09,
+            b'v' => 0x0B,
+            b'b' => 0x08,
+            b'f' => 0x0C,
+            b'0' if !s.get(i).is_some_and(u8::is_ascii_digit) => 0,
+            b'0'..=b'9' => return Err(escape),
+            b'x' => {
+                let code_point = s.get(i..i + 2).and_then(hex_value).ok_or(escape)?;
+                i += 2;
+
+                code_point
+            }
+            b'u' => {
+                let (code_point, length) = unicode_escape(&s[i..]).ok_or(escape)?;
+                i += length;
+
+                match s.get(i..i + 2) {
+                    Some(b"\\u") if (0xD800..=0xDBFF).contains(&code_point) => match unicode_escape(&s[i + 2..]) {
+                        Some((low, length)) if (0xDC00..=0xDFFF).contains(&low) => {
+                            i += 2 + length;
+
+                            0x10000 + ((code_point - 0xD800) << 10) + (low - 0xDC00)
+                        }
+                        _ => code_point,
+                    },
+                    _ => code_point,
+                }
+            }
+            b'\n' => continue,
+            b'\r' => {
+                if s.get(i) == Some(&b'\n') {
+                    i += 1;
+                }
+
+                continue;
+            }
+            // U+2028 and U+2029, the line endings JavaScript adds.
+            0xE2 if matches!(s.get(i..i + 2), Some([0x80, 0xA8 | 0xA9])) => {
+                i += 2;
+
+                continue;
+            }
+            other => {
+                result.push(other);
+
+                continue;
+            }
+        };
+
+        let (bytes, length) = utf8(code_point);
+        result.extend_from_slice(&bytes[..length]);
+    }
+
+    Ok(result.leak())
+}
+
+/// The character a `\u` escape names, from the text after the `u`, and how many bytes of that text it takes: four
+/// hex digits, or any number in braces up to U+10FFFF.
+fn unicode_escape(s: &[u8]) -> Option<(u32, usize)> {
+    if s.first() == Some(&b'{') {
+        let end = s.iter().position(|&b| b == b'}')?;
+        let code_point = hex_value(&s[1..end]).filter(|&code_point| code_point <= 0x10_FFFF)?;
+
+        Some((code_point, end + 1))
+    } else {
+        Some((hex_value(s.get(..4)?)?, 4))
+    }
+}
+
+/// The value of one or more hex digits, or `None` when one is not a hex digit or the value overflows.
+fn hex_value(digits: &[u8]) -> Option<u32> {
+    if digits.is_empty() {
+        return None;
+    }
+
+    digits.iter().try_fold(0u32, |value, &digit| value.checked_mul(16)?.checked_add(char::from(digit).to_digit(16)?))
+}
+
+/// The UTF-8 bytes of a code point and how many there are, surrogates included, as PHP's `\u{…}` writes them.
+fn utf8(code_point: u32) -> ([u8; 4], usize) {
+    match code_point {
+        0x0000..=0x007F => ([code_point as u8, 0, 0, 0], 1),
+        0x0080..=0x07FF => ([0xC0 | (code_point >> 6) as u8, 0x80 | (code_point & 0x3F) as u8, 0, 0], 2),
+        0x0800..=0xFFFF => (
+            [
+                0xE0 | (code_point >> 12) as u8,
+                0x80 | ((code_point >> 6) & 0x3F) as u8,
+                0x80 | (code_point & 0x3F) as u8,
+                0,
+            ],
+            3,
+        ),
+        _ => (
+            [
+                0xF0 | (code_point >> 18) as u8,
+                0x80 | ((code_point >> 12) & 0x3F) as u8,
+                0x80 | ((code_point >> 6) & 0x3F) as u8,
+                0x80 | (code_point & 0x3F) as u8,
+            ],
+            4,
+        ),
+    }
 }
 
 /// Parses a PHP literal float, handling underscore separators.
@@ -506,6 +638,30 @@ mod tests {
         assert_eq!(parse_literal_string_in(&arena, b"\\u{41}", Some(b'\''), false), Some(&b"\\u{41}"[..]));
         assert_eq!(parse_literal_string_in(&arena, b"\\x", Some(b'"'), false), Some(&b"\\x"[..]));
         assert_eq!(parse_literal_string_in(&arena, b"\\q", Some(b'"'), false), Some(&b"\\q"[..]));
+    }
+
+    #[test]
+    fn test_template_literal_takes_javascript_escapes() {
+        let arena = LocalArena::new();
+        let decode = |s: &'static [u8]| parse_template_literal_in(&arena, s);
+
+        assert_eq!(decode(b"plain $name {$name}"), Ok(&b"plain $name {$name}"[..]));
+        assert_eq!(decode(b"\\n\\r\\t\\v\\b\\f\\0"), Ok(&b"\n\r\t\x0B\x08\x0C\0"[..]));
+        assert_eq!(decode(b"\\\\\\'\\\"\\`\\$\\{\\q"), Ok(&b"\\'\"`${q"[..]));
+        assert_eq!(decode(b"\\x41\\xe9"), Ok(&b"A\xC3\xA9"[..]));
+        assert_eq!(decode(b"\\u0041\\u{1F600}\\u{0000043}"), Ok(&b"A\xF0\x9F\x98\x80C"[..]));
+        assert_eq!(decode(b"\\uD83D\\uDE00"), Ok(&b"\xF0\x9F\x98\x80"[..]));
+        assert_eq!(decode(b"\\uD800\\u0041"), Ok(&b"\xED\xA0\x80A"[..]));
+        assert_eq!(decode(b"a\\\nb\\\r\nc\\\rd\\\xE2\x80\xA8e"), Ok(&b"abcde"[..]));
+        assert_eq!(decode(b"a\r\nb\rc"), Ok(&b"a\nb\nc"[..]));
+        assert_eq!(decode(b"\\00"), Err(0));
+        assert_eq!(decode(b"ab\\1"), Err(2));
+        assert_eq!(decode(b"\\x4"), Err(0));
+        assert_eq!(decode(b"\\xG0"), Err(0));
+        assert_eq!(decode(b"\\u12"), Err(0));
+        assert_eq!(decode(b"\\u{}"), Err(0));
+        assert_eq!(decode(b"\\u{12"), Err(0));
+        assert_eq!(decode(b"\\u{110000}"), Err(0));
     }
 
     #[test]

@@ -37,6 +37,7 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::expression::binary::concat::fold_concat_operands;
 
 #[inline]
 pub fn analyze_arithmetic_operation<'ctx, 'arena, A>(
@@ -63,8 +64,9 @@ where
         return Ok(());
     }
 
-    // In PHP# `+` joins strings, which the engine cannot run yet. A `mixed` operand keeps its
-    // `mixed-operand` report, because a value of unknown type must be checked before use.
+    // In PHP# `+` joins two strings, as PHP's `.` does, and adds two numbers, as spec section 18 decides. A string
+    // with any other value is an error, so `"1" + 1` never runs. A `mixed` operand keeps its `mixed-operand` report,
+    // because a value of unknown type must be checked before use.
     if let BinaryOperator::Addition(operator) = binary.operator
         && context.dialect.is_sharp()
         && [&left_type, &right_type].into_iter().any(|operand| {
@@ -79,15 +81,32 @@ where
                 )
         })
     {
+        if left_type.is_any_string() && right_type.is_any_string() {
+            let joined = fold_concat_operands(
+                &[binary.lhs, binary.rhs],
+                artifacts,
+                context.settings.string_combination_threshold,
+            );
+            assign_arithmetic_type(artifacts, joined, binary);
+
+            return Ok(());
+        }
+
         context.collector.report_with_code(
-            IssueCode::NotSupportedYet,
-            Issue::error("`+` with an operand that may be a string is not supported yet.")
-                .with_annotation(Annotation::primary(binary.span()).with_message("This may join strings."))
-                .with_annotation(Annotation::secondary(operator).with_message("`+` used here."))
-                .with_note("In PHP#, `+` joins strings, which the engine does not run yet."),
+            IssueCode::InvalidOperand,
+            Issue::error(format!(
+                "`+` cannot join `{}` and `{}`: it joins two strings or adds two numbers.",
+                left_type.get_id(),
+                right_type.get_id()
+            ))
+            .with_annotation(Annotation::primary(binary.span()).with_message("A string may meet another value here."))
+            .with_annotation(Annotation::secondary(operator).with_message("`+` used here."))
+            .with_note("Spec section 18 makes joining a string with any other value an error, so `\"1\" + 1` cannot produce `\"11\"`.")
+            .with_help("Put the value in a template written between backticks, as in `Total: ${count}`."),
         );
 
-        assign_arithmetic_type(artifacts, get_mixed(), binary);
+        // The code meant to join, so the rest of it is checked as if the join gave a string.
+        assign_arithmetic_type(artifacts, get_string(), binary);
         return Ok(());
     }
 

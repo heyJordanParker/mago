@@ -48,7 +48,7 @@ fn the_slice_fixture_has_no_semantic_issues() {
 
 #[test]
 fn every_construct_outside_the_slice_is_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\nenum Suit\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        switch (extra) {\n            default: return 1;\n        }\n        echo extra;\n        const made = new Report;\n        const arrow = fn() => 1;\n        const closure = function () { return 1; };\n        const partial = this.run(...);\n        const text = \"total {$extra}\";\n        return extra;\n    }\n}\n";
+    let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\nenum Suit\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        switch (extra) {\n            default: return 1;\n        }\n        echo extra;\n        const made = new Report;\n        const arrow = fn() => 1;\n        const closure = function () { return 1; };\n        const partial = this.run(...);\n        const text = <<<TEXT\ntotal\nTEXT;\n        return extra;\n    }\n}\n";
 
     assert_eq!(
         issues(code),
@@ -75,6 +75,73 @@ fn if_else_if_and_else_with_braces_are_in_the_slice() {
     ));
 
     assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_template_is_in_the_slice_with_any_slice_expression_in_its_interpolations() {
+    let code =
+        leak(method("        const label = `Order ${extra}: ${this.run(extra + 1)} items`;\n        return extra;\n"));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn an_interpolation_outside_the_slice_is_not_supported_yet() {
+    let code = leak(method("        const label = `made ${fn() => 1}`;\n        return extra;\n"));
+
+    assert_eq!(issues(code), ["7:31 This expression is not supported yet in PHP#."]);
+}
+
+#[test]
+fn throw_is_an_expression_in_the_slice() {
+    let code = leak(method(
+        "        if (extra < 0) {\n            throw new Failure(extra);\n        }\n        return extra ?? throw new Failure(0);\n",
+    ));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn try_with_catch_and_finally_is_in_the_slice() {
+    let code = leak(method(
+        "        try {\n            extra += 1;\n        } catch (Missing | Broken failure) {\n            throw failure;\n        } catch (Throwable) {\n            extra = 0;\n        } finally {\n            extra -= 1;\n        }\n        return extra;\n",
+    ));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_catch_type_that_is_not_a_class_reports_only_the_php_error() {
+    let code = leak(method(
+        "        try {\n            extra += 1;\n        } catch (int failure) {\n        } catch (Missing | string failure) {\n        }\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        ["9:18 Invalid type hint in `catch` clause.", "10:28 Invalid type hint in `catch` clause."]
+    );
+}
+
+#[test]
+fn a_catch_variable_named_this_or_a_superglobal_is_an_error() {
+    let code = leak(method(
+        "        try {\n        } catch (Missing this) {\n        } catch (Broken _GET) {\n        }\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "8:26 Cannot name a catch variable `this`: `this` is the object the method runs on.",
+            "9:25 `_GET` is the name of a PHP superglobal: rename this catch variable.",
+        ]
+    );
+}
+
+#[test]
+fn a_catch_variable_is_out_of_scope_after_its_catch_block() {
+    let code = leak(method("        try {\n        } catch (Missing failure) {\n        }\n        throw failure;\n"));
+
+    assert_eq!(issues(code), ["10:15 `failure` is used after the block that declares it closes."]);
 }
 
 #[test]
@@ -344,6 +411,22 @@ fn a_dollar_parameter_is_an_error() {
 }
 
 #[test]
+fn a_function_called_by_its_bare_name_is_in_the_slice() {
+    let code = leak(method(
+        "        const name = sprintf(\"%d items\", count(this.items(), mode: 0));\n        return strlen(name) + random_int(1, extra);\n",
+    ));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_function_called_through_an_expression_is_not_supported_yet() {
+    let code = leak(method("        const call = this.callback();\n        return call(extra);\n"));
+
+    assert_eq!(issues(code), ["8:16 This expression is not supported yet in PHP#."]);
+}
+
+#[test]
 fn compact_extract_and_global_are_errors() {
     let code =
         leak(method("        compact(\"extra\");\n        extract([]);\n        global $config;\n        return 1;\n"));
@@ -359,10 +442,10 @@ fn compact_extract_and_global_are_errors() {
 }
 
 #[test]
-fn a_dollar_variable_in_a_string_reports_one_error() {
-    let code = leak(method("        return \"{$extra}\";\n"));
+fn a_dollar_variable_in_a_double_quoted_string_is_text() {
+    let code = leak(method("        return \"{$extra} $extra ${extra}\";\n"));
 
-    assert_eq!(issues(code), ["7:16 This expression is not supported yet in PHP#."]);
+    assert_eq!(issues(code), Vec::<String>::new());
 }
 
 #[test]

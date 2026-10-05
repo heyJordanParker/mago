@@ -90,6 +90,9 @@ pub struct Lexer<'input> {
     interpolation_depth: u16,
     /// Buffer for tokens during string interpolation.
     buffer: VecDeque<Token<'input>>,
+    /// Whether the input is a PHP# file, whose `"…"` strings never interpolate and whose backtick strings are
+    /// templates.
+    sharp: bool,
 }
 
 impl<'input> Lexer<'input> {
@@ -118,6 +121,7 @@ impl<'input> Lexer<'input> {
             expect_string_varname: false,
             interpolation_depth: 0,
             buffer: VecDeque::new(),
+            sharp: false,
         }
     }
 
@@ -143,7 +147,15 @@ impl<'input> Lexer<'input> {
             expect_string_varname: false,
             interpolation_depth: 0,
             buffer: VecDeque::new(),
+            sharp: false,
         }
+    }
+
+    /// Creates a new `Lexer` instance for a PHP# file, which starts in code. Its `"…"` strings never interpolate,
+    /// and its backtick strings are templates that interpolate only `${…}`.
+    #[must_use]
+    pub(crate) fn sharp(input: Input<'input>, settings: LexerSettings) -> Lexer<'input> {
+        Lexer { sharp: true, ..Self::scripting(input, settings) }
     }
 
     /// Check if the lexer has reached the end of the input.
@@ -555,7 +567,7 @@ impl<'input> Lexer<'input> {
                     }
                     // Regular string literals
                     [quote @ b'\'', ..] => read_literal_string(&self.input, *quote, 0),
-                    [quote @ b'"', ..] if matches_literal_double_quote_string(&self.input, 0) => {
+                    [quote @ b'"', ..] if self.sharp || matches_literal_double_quote_string(&self.input, 0) => {
                         read_literal_string(&self.input, *quote, 0)
                     }
                     [b'"', ..] => (TokenKind::DoubleQuote, 1),
@@ -802,7 +814,7 @@ impl<'input> Lexer<'input> {
                     let mut token_kind = TokenKind::StringPart;
                     loop {
                         match self.input.peek(length, 2) {
-                            [b'$', start_of_identifier!(), ..] if !last_was_slash => {
+                            [b'$', start_of_identifier!(), ..] if !last_was_slash && !self.sharp => {
                                 let until_offset = read_until_end_of_variable_interpolation(&self.input, length + 2);
 
                                 self.mode =
@@ -810,7 +822,12 @@ impl<'input> Lexer<'input> {
 
                                 break;
                             }
-                            [b'{', b'$', ..] | [b'$', b'{', ..] if !last_was_slash => {
+                            [b'{', b'$', ..] if !last_was_slash && !self.sharp => {
+                                self.mode = LexerMode::ShellExecuteString(Interpolation::Brace);
+
+                                break;
+                            }
+                            [b'$', b'{', ..] if !last_was_slash => {
                                 self.mode = LexerMode::ShellExecuteString(Interpolation::Brace);
 
                                 break;
@@ -844,6 +861,11 @@ impl<'input> Lexer<'input> {
 
                     if TokenKind::Backtick == token_kind {
                         self.mode = LexerMode::Script;
+                    }
+
+                    // A PHP# template has no empty text before an interpolation.
+                    if self.sharp && buffer.is_empty() {
+                        return self.advance();
                     }
 
                     Some(Ok(self.token(token_kind, buffer, start, end)))
@@ -1293,7 +1315,8 @@ impl<'input> Lexer<'input> {
                     };
 
                     if brace {
-                        if token.kind == TokenKind::DollarLeftBrace && self.peek_string_varname_label() {
+                        // A PHP# template reads `${name}` as the expression `name`, not as the variable `$name`.
+                        if token.kind == TokenKind::DollarLeftBrace && !self.sharp && self.peek_string_varname_label() {
                             self.expect_string_varname = true;
                         }
                     } else {

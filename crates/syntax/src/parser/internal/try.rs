@@ -34,7 +34,16 @@ where
                 let left_parenthesis = self.stream.eat_span(T!["("])?;
                 let hint = self.parse_type_hint()?;
                 let var = match self.stream.peek_kind(0)? {
-                    Some(T!["$variable"]) => Some(self.parse_direct_variable()?),
+                    Some(T![Identifier]) if self.dialect.is_sharp() => Some(self.parse_bare_variable()?),
+                    Some(T!["$variable"]) => {
+                        let variable = self.parse_direct_variable()?;
+                        if self.dialect.is_sharp() {
+                            // The error stands, and the PHP clause still parses so the rest of the method does.
+                            self.errors.push(ParseError::PhpSyntaxInSharp(T!["$variable"], variable.span));
+                        }
+
+                        Some(variable)
+                    }
                     _ => None,
                 };
                 let right_parenthesis = self.stream.eat_span(T![")"])?;

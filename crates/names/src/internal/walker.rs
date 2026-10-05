@@ -43,6 +43,7 @@ use mago_syntax::cst::StaticMethodPartialApplication;
 use mago_syntax::cst::StaticPropertyAccess;
 use mago_syntax::cst::Trait;
 use mago_syntax::cst::TraitUse;
+use mago_syntax::cst::TryCatchClause;
 use mago_syntax::cst::Use;
 use mago_syntax::cst::UseItems;
 use mago_syntax::walker::MutWalker;
@@ -337,6 +338,29 @@ where
         self.locals.exit_block();
     }
 
+    /// A PHP# catch clause is a block of its own, whose variable lives until the clause's block ends.
+    fn walk_try_catch_clause(
+        &mut self,
+        try_catch_clause: &'ast TryCatchClause<'arena>,
+        context: &mut NameResolutionContext<'arena, A>,
+    ) {
+        self.walk_hint(&try_catch_clause.hint, context);
+        if self.sharp {
+            self.locals.enter_block();
+        }
+        if let Some(variable) = &try_catch_clause.variable {
+            if self.sharp {
+                self.declare(variable.name, variable.span, LocalKind::Let);
+            }
+            self.walk_direct_variable(variable, context);
+        }
+
+        self.walk_block(&try_catch_clause.block, context);
+        if self.sharp {
+            self.locals.exit_block();
+        }
+    }
+
     fn walk_out_function_like_parameter(
         &mut self,
         parameter: &'ast FunctionLikeParameter<'arena>,
@@ -475,7 +499,13 @@ where
 
             self.resolved_names.insert_at(identifier.span(), name, imported);
 
-            if self.sharp && self.is_member(identifier.value()) {
+            if !self.sharp {
+                return;
+            }
+
+            if let Some(local) = self.locals.lookup(identifier.value()) {
+                self.resolved_names.bind(identifier.span(), Binding::Local(local));
+            } else if self.is_member(identifier.value()) {
                 self.resolved_names.bind(identifier.span(), Binding::Member);
             }
         }

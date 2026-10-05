@@ -9,8 +9,10 @@ use mago_codex::ttype::template::TemplateResult;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
+use mago_span::Span;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::FunctionCall;
+use mago_word::Word;
 use mago_word::ascii_lowercase_word;
 use mago_word::word;
 
@@ -119,6 +121,10 @@ where
             && let Some(metadata) = t.get_function_like_metadata()
         {
             let span = function_name.span();
+            if context.dialect.is_sharp() && !metadata.flags.is_built_in() {
+                report_declared_function_call(context, metadata.original_name, span);
+            }
+
             crate::utils::casing::check_function_casing_with_metadata(context, metadata, name, span);
             crate::utils::experimental::check_experimental_function_with_metadata(
                 context,
@@ -216,6 +222,20 @@ where
     }
 
     Ok((targets, encountered_invalid_targets))
+}
+
+/// Spec section 8 lets PHP# call PHP's built-in functions. A function a library or the app declares waits on spec
+/// section 29, so calling one is not supported yet.
+fn report_declared_function_call<A>(context: &mut Context<'_, '_, A>, name: Word, span: Span)
+where
+    A: Arena,
+{
+    context.collector.report_with_code(
+        IssueCode::NotSupportedYet,
+        Issue::error(format!("Calling the function `{name}` is not supported yet in PHP#."))
+            .with_annotation(Annotation::primary(span).with_message("Declared outside PHP's built-in functions."))
+            .with_note("PHP# calls PHP's built-in functions, such as `count` and `sprintf`, by their bare names."),
+    );
 }
 
 #[cfg(test)]

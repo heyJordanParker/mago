@@ -152,11 +152,7 @@ fn the_analyzer_reads_the_dialect_from_the_program_not_the_file_name() {
         .analyze(program, &mut result)
         .expect("analysis succeeds");
 
-    assert!(
-        result.issues.iter().any(|issue| issue.code.as_deref() == Some("not-supported-yet")),
-        "{:#?}",
-        result.issues
-    );
+    assert!(result.issues.iter().any(|issue| issue.code.as_deref() == Some("invalid-operand")), "{:#?}", result.issues);
 }
 
 /// The issue codes alone, in order.
@@ -644,12 +640,73 @@ fn returning_a_value_that_failed_to_parse_adds_no_issue() {
 }
 
 #[test]
-fn adding_a_string_is_not_supported_yet() {
-    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(int extra)\n    {\n        let label = \"one\";\n        return extra + label;\n    }\n}\n";
+fn a_catch_variable_has_the_caught_classes_as_its_type_as_in_php() {
+    let sharp = "namespace Demo;\n\nimport RuntimeException;\nimport LogicException;\n\nclass Report\n{\n    public static int total(int extra)\n    {\n        try {\n            if (extra < 0) {\n                throw new RuntimeException(\"negative\");\n            }\n        } catch (RuntimeException | LogicException failure) {\n            return failure.getLine();\n        } finally {\n            extra += 1;\n        }\n        return extra;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse RuntimeException;\nuse LogicException;\n\nclass Report\n{\n    public static function total(int $extra): int\n    {\n        try {\n            if ($extra < 0) {\n                throw new RuntimeException(\"negative\");\n            }\n        } catch (RuntimeException | LogicException $failure) {\n            return $failure->getLine();\n        } finally {\n            $extra += 1;\n        }\n        return $extra;\n    }\n}\n";
 
     let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[]);
 
-    assert!(sharp_issues.contains(&"8:16 not-supported-yet".to_string()), "{sharp_issues:?}");
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn calling_php_built_in_functions_has_no_issues() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(int extra)\n    {\n        const name = sprintf(\"%d items\", count([extra, 2], mode: 0));\n        return strlen(name) + strlen(random_bytes(extra + 1));\n    }\n}\n";
+
+    // `random_bytes` may throw `RandomException`, which `check_throws` reports in PHP and PHP# alike.
+    let settings = Settings { check_throws: false, ..settings() };
+
+    assert_eq!(issues_with(settings, ("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn a_template_is_a_string_as_php_interpolation_is() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static string label(int count, string name)\n    {\n        return `${name} has ${count + 1} items`;\n    }\n\n    public static int size(string name)\n    {\n        return `${name}`;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function label(int $count, string $name): string\n    {\n        return \"{$name} has \" . ($count + 1) . \" items\";\n    }\n\n    public static function size(string $name): int\n    {\n        return \"{$name}\";\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), ["12:16 invalid-return-statement"]);
+    assert_eq!(issues(("src/Demo/Report.php", php), &[]), ["14:16 invalid-return-statement"]);
+}
+
+#[test]
+fn calling_a_function_the_app_declares_is_not_supported_yet() {
+    let helpers = "<?php\n\nnamespace Demo;\n\nfunction helper(int $value): int\n{\n    return $value;\n}\n";
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(int extra)\n    {\n        return helper(extra);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function total(int $extra): int\n    {\n        return helper($extra);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[("src/Demo/helpers.php", helpers)]),
+        ["7:16 not-supported-yet"]
+    );
+    assert_eq!(issues(("src/Demo/Report.php", php), &[("src/Demo/helpers.php", helpers)]), Vec::<String>::new());
+}
+
+#[test]
+fn plus_joins_two_strings_into_the_string_dot_gives_in_php() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(string name)\n    {\n        const label = \"Order \" + name + `!`;\n        let line = label;\n        line += \"\\n\";\n        return line;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function total(string $name): int\n    {\n        $label = \"Order \" . $name . \"!\";\n        $line = $label;\n        $line .= \"\\n\";\n        return $line;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), ["10:16 invalid-return-statement"]);
+    assert_eq!(issues(("src/Demo/Report.php", php), &[]), ["12:16 invalid-return-statement"]);
+}
+
+#[test]
+fn plus_on_a_string_and_a_value_that_may_not_be_one_is_an_invalid_operand() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static string total(int count, float rate, string name, string? maybe)\n    {\n        const a = name + count;\n        const b = rate + name;\n        const c = maybe + name;\n        const d = count + rate;\n        return name;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[]),
+        ["7:19 invalid-operand", "8:19 invalid-operand", "9:19 invalid-operand"]
+    );
+}
+
+#[test]
+fn plus_keeps_adding_numbers_and_rejecting_nothing_new_in_php() {
+    let php = "<?php\n\nnamespace Demo;\n\nfunction total(int $count, string $name): int|float\n{\n    return $count + \"1\";\n}\n";
+
+    assert_eq!(issues(("src/Demo/report.php", php), &[]), Vec::<String>::new());
 }
 
 /// Each hook event, with the spans of the call's class, method, arguments and whole call.

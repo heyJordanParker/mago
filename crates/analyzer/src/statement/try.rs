@@ -14,6 +14,7 @@ use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::atomic::object::named::TNamedObject;
 use mago_codex::ttype::combiner::CombinerOptions;
 use mago_codex::ttype::union::TUnion;
+use mago_names::binding::php_variable_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -280,7 +281,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Try<'arena> {
                         .collect(),
                 );
 
-                let catch_var_name = Word::from(catch_variable.name);
+                let catch_var_name = php_variable_name(catch_variable.name);
                 catch_block_context.locals.insert(catch_var_name, Rc::new(exception_type));
                 catch_block_context.remove_variable_from_conflicting_clauses(context, catch_var_name, None);
                 catch_block_context.variables_possibly_in_scope.insert(catch_var_name);

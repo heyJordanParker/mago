@@ -436,8 +436,12 @@ fn analyze_string_concat_operand<'arena, A>(
 /// Folds multiple operands into a single result type by concatenating left-to-right.
 ///
 /// This is used by the iterative concat analysis to compute the final type from
-/// a flattened list of operands.
-fn fold_concat_operands(operands: &[&Expression<'_>], artifacts: &AnalysisArtifacts, threshold: u16) -> TUnion {
+/// a flattened list of operands, and by PHP#'s `+` on two strings.
+pub(super) fn fold_concat_operands(
+    operands: &[&Expression<'_>],
+    artifacts: &AnalysisArtifacts,
+    threshold: u16,
+) -> TUnion {
     if operands.is_empty() {
         return get_string();
     }
