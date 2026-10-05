@@ -53,6 +53,7 @@ use mago_syntax::cst::PartialArgumentList;
 use mago_syntax::cst::PositionalArgument;
 use mago_syntax::cst::Program;
 use mago_syntax::cst::Property;
+use mago_syntax::cst::PropertyHookConcreteExpressionBody;
 use mago_syntax::cst::PropertyHookList;
 use mago_syntax::cst::PropertyItem;
 use mago_syntax::cst::Sequence;
@@ -122,6 +123,8 @@ use crate::sharp_kind::SHARP_AST_PROP;
 use crate::sharp_kind::SHARP_AST_PROP_DECL;
 use crate::sharp_kind::SHARP_AST_PROP_ELEM;
 use crate::sharp_kind::SHARP_AST_PROP_GROUP;
+use crate::sharp_kind::SHARP_AST_PROPERTY_HOOK;
+use crate::sharp_kind::SHARP_AST_PROPERTY_HOOK_SHORT_BODY;
 use crate::sharp_kind::SHARP_AST_RETURN;
 use crate::sharp_kind::SHARP_AST_STATIC_CALL;
 use crate::sharp_kind::SHARP_AST_STMT_LIST;
@@ -369,14 +372,28 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         }
 
         let parameters = self.node(SHARP_AST_PARAM_LIST, 0, self.line(&method.parameter_list), &parameters);
-        let MethodBody::Concrete(body) = &method.body else {
-            unreachable!("semantics refuses a method without a body");
-        };
         let mut statements = initial_values.to_vec();
-        for statement in &body.statements {
-            statements.push(self.statement(statement));
-        }
-        let body = self.node(SHARP_AST_STMT_LIST, 0, self.line(body), &statements);
+        let body = match &method.body {
+            MethodBody::Concrete(block) => {
+                for statement in &block.statements {
+                    statements.push(self.statement(statement));
+                }
+
+                self.node(SHARP_AST_STMT_LIST, 0, self.line(block), &statements)
+            }
+            MethodBody::Expression(body) => {
+                let line = self.line(body);
+                let expression = self.expression(body.expression);
+                statements.push(if method.returns_value() {
+                    self.node(SHARP_AST_RETURN, 0, line, &[expression])
+                } else {
+                    expression
+                });
+
+                self.node(SHARP_AST_STMT_LIST, 0, line, &statements)
+            }
+            MethodBody::Abstract(_) => unreachable!("semantics refuses a method without a body"),
+        };
         let (start, return_type) = match &method.return_type_hint {
             Some(return_type_hint) => (return_type_hint.span(), self.hint(&return_type_hint.hint)),
             None => (method.name.span, NULL),
@@ -408,15 +425,19 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_PARAM, flags, self.line(parameter), &[hint, name, default, attributes, NULL, NULL])
     }
 
-    /// A field or an auto-property is a property group of one property, as php-src's grammar builds
-    /// `private int $count = 0;`, `public private(set) int $views = 0;` and `public readonly int $id;`. A constant
-    /// initial value is its default, unless the property is `readonly`.
+    /// A field, an auto-property or a computed property is a property group of one property, as php-src's grammar
+    /// builds `private int $count = 0;`, `public private(set) int $views = 0;`, `public readonly int $id;` and
+    /// `public string $slug { get => expr; }`. A constant initial value is its default, unless the property is
+    /// `readonly`.
     fn property(&mut self, property: &Property) -> u32 {
-        let (accessor_flags, attribute_lists) = match property {
-            Property::Plain(field) => (0, &field.attribute_lists),
-            Property::Hooked(auto_property) => {
-                (accessor_flags(&auto_property.modifiers, &auto_property.hook_list), &auto_property.attribute_lists)
-            }
+        let (accessor_flags, attribute_lists, hooks) = match property {
+            Property::Plain(field) => (0, &field.attribute_lists, NULL),
+            Property::Hooked(auto_property) => (
+                accessor_flags(&auto_property.modifiers, &auto_property.hook_list),
+                &auto_property.attribute_lists,
+                NULL,
+            ),
+            Property::Computed(computed) => (0, &computed.attribute_lists, self.get_hook(&computed.body)),
         };
         let Some(hint) = property.hint() else {
             unreachable!("the PHP# parser gives every field and property its type");
@@ -429,12 +450,30 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             Some(value) if is_default(property, value) => self.expression(value),
             _ => NULL,
         };
-        let element = self.node(SHARP_AST_PROP_ELEM, 0, line, &[name, default, NULL, NULL]);
+        let element = self.node(SHARP_AST_PROP_ELEM, 0, line, &[name, default, NULL, hooks]);
         let declaration = self.node(SHARP_AST_PROP_DECL, 0, line, &[element]);
         let flags = modifier_flags(property.modifiers()) | accessor_flags;
         let attributes = self.attributes(attribute_lists);
 
         self.node(SHARP_AST_PROP_GROUP, flags, self.line(property), &[hint, declaration, attributes])
+    }
+
+    /// A computed property's `=> expr;` is a hook list of one `get` hook whose body is the short body php-src's
+    /// grammar builds for `get => expr;`, on the arrow's lines.
+    fn get_hook(&mut self, body: &PropertyHookConcreteExpressionBody) -> u32 {
+        let line = self.line(body.arrow);
+        let expression = self.expression(body.expression);
+        let short_body = self.node(SHARP_AST_PROPERTY_HOOK_SHORT_BODY, 0, line, &[expression]);
+        let hook = self.declaration(
+            SHARP_AST_PROPERTY_HOOK,
+            0,
+            body.arrow,
+            body,
+            b"get",
+            &[NULL, NULL, short_body, NULL, NULL],
+        );
+
+        self.node(SHARP_AST_STMT_LIST, 0, line, &[hook])
     }
 
     /// A declaration's attributes are one `ATTRIBUTE_LIST` with an `ATTRIBUTE_GROUP` per `[...]`, as php-src's grammar
@@ -1003,7 +1042,7 @@ fn modifier_flags(modifiers: &Sequence<Modifier>) -> u32 {
     flags
 }
 
-/// The initial value of a field or an auto-property.
+/// The initial value of a field or an auto-property. A computed property has none.
 fn initial_value<'arena>(property: &Property<'arena>) -> Option<&'arena Expression<'arena>> {
     match property {
         Property::Plain(field) => match field.items.first() {
@@ -1013,6 +1052,7 @@ fn initial_value<'arena>(property: &Property<'arena>) -> Option<&'arena Expressi
         Property::Hooked(auto_property) => {
             auto_property.initial_value.as_ref().map(|initial_value| initial_value.value)
         }
+        Property::Computed(_) => None,
     }
 }
 

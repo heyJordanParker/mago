@@ -109,6 +109,7 @@ impl<'arena> FunctionLikeParts<'arena> {
             body: match &method.body {
                 MethodBody::Abstract(body) => FunctionLikeBody::Abstract(body.terminator),
                 MethodBody::Concrete(block) => FunctionLikeBody::Block(block),
+                MethodBody::Expression(_) => unreachable!("`mago format` skips PHP# files, the only ones with it"),
             },
         }
     }
@@ -478,6 +479,7 @@ where
             match self {
                 MethodBody::Abstract(b) => b.format(f),
                 MethodBody::Concrete(b) => b.format(f),
+                MethodBody::Expression(_) => unreachable!("`mago format` skips PHP# files, the only ones with it"),
             }
         })
     }

@@ -201,7 +201,66 @@ fn a_by_reference_parameter_is_a_parse_error() {
     assert!(!program.errors.is_empty());
 }
 
-/// `required`, `via`, a named constructor and a computed property are spec syntax outside the slice. Each one is a
+#[test]
+fn an_expression_bodied_method_is_its_arrow_its_expression_and_a_semicolon() {
+    const CODE: &str = "class Report\n{\n    public int total() => this.count + 1;\n\n    public void touch() => this.save();\n\n    public Report(int count) => this.count = count;\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let bodies: Vec<_> = class_members(program)
+        .iter()
+        .map(|member| {
+            let ClassLikeMember::Method(method) = member else {
+                panic!("expected a method, got {member:#?}");
+            };
+            let MethodBody::Expression(body) = &method.body else {
+                panic!("expected an expression body, got {:#?}", method.body);
+            };
+
+            (source(CODE, method), source(CODE, &method.body), source(CODE, body.expression))
+        })
+        .collect();
+
+    assert_eq!(
+        bodies,
+        [
+            ("public int total() => this.count + 1;", "=> this.count + 1;", "this.count + 1"),
+            ("public void touch() => this.save();", "=> this.save();", "this.save()"),
+            ("public Report(int count) => this.count = count;", "=> this.count = count;", "this.count = count"),
+        ]
+    );
+}
+
+#[test]
+fn a_computed_property_is_its_type_its_name_and_an_expression_body() {
+    const CODE: &str = "class Report\n{\n    [Shown] public string slug => Str.slug(this.name);\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(ClassLikeMember::Property(Property::Computed(property))) = class_members(program).first() else {
+        panic!("expected a computed property, got {:#?}", class_members(program));
+    };
+    assert_eq!(property.variable.name, b"slug");
+    assert_eq!(source(CODE, property.hint.as_ref().expect("a type")), "string");
+    assert_eq!(source(CODE, &property.body), "=> Str.slug(this.name);");
+    assert_eq!(source(CODE, property.body.expression), "Str.slug(this.name)");
+    assert_eq!(source(CODE, property), "[Shown] public string slug => Str.slug(this.name);");
+}
+
+#[test]
+fn php_keeps_refusing_an_arrow_after_a_method_or_a_property() {
+    for member in ["public function total(): int => 1;", "public int $total => 1;"] {
+        let arena = LocalArena::new();
+        let code: &'static str = Box::leak(format!("<?php class Report {{ {member} }}").into_boxed_str());
+        let program = parse(&arena, "src/Report.php", code);
+
+        assert!(!program.errors.is_empty(), "{member}");
+    }
+}
+
+/// `required`, `via` and a named constructor are spec syntax outside the slice. Each one is a
 /// single error where it starts, and the class around it still parses.
 #[test]
 fn spec_syntax_outside_the_slice_is_one_not_supported_error_where_it_starts() {
@@ -223,7 +282,6 @@ fn spec_syntax_outside_the_slice_is_one_not_supported_error_where_it_starts() {
             "A named constructor is not supported yet in PHP#.",
             "Report.fromJson",
         ),
-        ("public string slug => this.name;", "A computed property is not supported yet in PHP#.", "=>"),
     ] {
         let arena = LocalArena::new();
         let code: &'static str = Box::leak(

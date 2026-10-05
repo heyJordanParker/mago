@@ -1082,7 +1082,7 @@ where
                 if context.settings.diff {
                     let first_var_name = match property {
                         Property::Plain(plain) => plain.items.first().map(|item| word(item.variable().name)),
-                        Property::Hooked(hooked) => Some(word(hooked.item.variable().name)),
+                        Property::Hooked(_) | Property::Computed(_) => Some(word(property.first_variable().name)),
                     };
 
                     if let Some(var_name) = first_var_name
@@ -1097,7 +1097,7 @@ where
                 // Check for imprecise type hints (bare `array` or `iterable`)
                 let first_property_name = match property {
                     Property::Plain(plain) => plain.items.first().map(|item| word(item.variable().name)),
-                    Property::Hooked(hooked) => Some(word(hooked.item.variable().name)),
+                    Property::Hooked(_) | Property::Computed(_) => Some(word(property.first_variable().name)),
                 };
 
                 let prop_meta = first_property_name.and_then(|name| class_like_metadata.properties.get(&name));
@@ -1105,8 +1105,8 @@ where
 
                 let property_names: Vec<Word> = match property {
                     Property::Plain(plain) => plain.items.iter().map(|item| word(item.variable().name)).collect(),
-                    Property::Hooked(hooked) => {
-                        vec![word(hooked.item.variable().name)]
+                    Property::Hooked(_) | Property::Computed(_) => {
+                        vec![word(property.first_variable().name)]
                     }
                 };
 
@@ -2497,8 +2497,8 @@ fn check_trait_property_conflicts<'ctx, 'ast, 'arena, A>(
                                         }
                                     }
                                 }
-                                Property::Hooked(hooked_prop) => {
-                                    let var_name = Word::from(hooked_prop.item.variable().name);
+                                Property::Hooked(_) | Property::Computed(_) => {
+                                    let var_name = Word::from(prop.first_variable().name);
                                     if var_name == *property_name {
                                         return Some(prop.span());
                                     }

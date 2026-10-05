@@ -898,6 +898,46 @@ fn an_auto_property_breaking_the_accessor_rules_is_an_error() {
 }
 
 #[test]
+fn a_method_with_an_expression_body_is_in_the_slice() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private int count = 0;\n\n    public Report(int count) => this.count = count;\n\n    public int total() => this.count > 0 ? this.count : 0;\n\n    protected void touch() => this.count++;\n\n    public static string name(string text) => strtolower(text);\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_computed_property_is_in_the_slice_with_any_access_modifier() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private string name = \"\";\n\n    public string slug => strtolower(this.name);\n    protected bool named => this.name != \"\";\n    private int size => strlen(this.name) > 3 ? 1 : 0;\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn an_expression_body_is_checked_as_a_method_body() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private int count = 0;\n\n    public int total() => this.count ?: 1;\n    public int size => this.count ?: 1;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:38 PHP# has no `?:`: write `a ?? b` to replace null, or `c ? a : b` with a `bool` condition.",
+            "8:35 PHP# has no `?:`: write `a ?? b` to replace null, or `c ? a : b` with a `bool` condition.",
+        ]
+    );
+}
+
+#[test]
+fn a_static_computed_property_or_one_without_an_access_modifier_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public static int count => 1;\n    int size => 2;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:12 A static computed property is not supported yet in PHP#.",
+            "6:9 A property without `public`, `protected` or `private` is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
 fn properties_outside_the_slice_are_not_supported_yet() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    int a { get; set; }\n    public static int b { get; }\n    public int c { private get; set; }\n    public int d { get => 1; }\n    public int e { get; set { } }\n    public int f { get; init; }\n    public int g = 0 { get; }\n    public int h { get; set(int value); }\n}\n";
 

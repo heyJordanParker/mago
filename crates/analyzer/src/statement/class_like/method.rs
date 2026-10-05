@@ -81,7 +81,16 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
             return Ok(());
         }
 
-        if let MethodBody::Concrete(concrete_body) = &self.body {
+        let body = match &self.body {
+            MethodBody::Abstract(_) => None,
+            MethodBody::Concrete(block) => {
+                Some(FunctionLikeBody::Statements(block.statements.as_slice(), block.span()))
+            }
+            MethodBody::Expression(body) if self.returns_value() => Some(FunctionLikeBody::Expression(body.expression)),
+            MethodBody::Expression(body) => Some(FunctionLikeBody::ExpressionStatement(body.expression)),
+        };
+
+        if let Some(body) = body {
             let mut scope =
                 ScopeContext::new(ReferenceOrigin::Symbol((class_like_metadata.name, method_metadata.name)));
             scope.set_class_like(Some(class_like_metadata));
@@ -98,7 +107,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
                 &mut method_block_context,
                 method_metadata,
                 &self.parameter_list,
-                FunctionLikeBody::Statements(concrete_body.statements.as_slice(), concrete_body.span()),
+                body,
                 None,
             )?;
 
@@ -137,7 +146,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
                 unused_parameter::check_unused_params(
                     method_metadata,
                     self.parameter_list.parameters.as_slice(),
-                    FunctionLikeBody::Statements(concrete_body.statements.as_slice(), concrete_body.span()),
+                    body,
                     context,
                 );
             }

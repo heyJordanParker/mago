@@ -15,6 +15,7 @@ class Report
     public string name { get; set; }
     public int id { get; }
     private Calc calc = new Calc(Calc.make(), rate: 2);
+    public string slug => strtolower(this.name);
 
     [Entity(true)]
     public Report(int start, private Calc helper, [Field(-1.5)] public int total { get; private set; })
@@ -148,6 +149,10 @@ class Report
         const cents = (int)(price * 100);
         return (string)cents + (string)(float)count;
     }
+
+    private int doubled() => this.count * 2;
+
+    private void reset() => this.count = 0;
 
     private float parse(string quantity, string? price)
     {

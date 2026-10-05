@@ -92,6 +92,9 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   accessors, which is a field's. A property without `get`, an accessor declared twice, or a `set` access modifier
 ///   as wide as the property's is an error, as in C#. A get-only property runs as `readonly`, and the analyzer
 ///   reports every write to it that `readonly` refuses.
+/// - A computed property: `public`, `protected` or `private`, a type, one name and an expression body, as in
+///   `public string slug => Str.slug(name);`. Its expression is a method body's expression and runs on each read. A
+///   `static` computed property is not supported yet, because PHP has no hooks on a static property.
 /// - A method: `public`, `protected` or `private`, an optional `static`, parameters, a return type and a body. Its name
 ///   does not start with `__`, which PHP reserves for magic methods, and is not its class's name, compared ignoring
 ///   case, which PHP# gives to the constructor.
@@ -104,6 +107,8 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - Types: `int`, `float`, `bool`, `string` and a class written by its short name, and `void` as a return type.
 ///   PHP's own check reports a `void` parameter. Each of them is nullable when written with `?` after it, as in
 ///   `int?`, and PHP's own check reports `void?`.
+/// - A method body: a block, or an expression body, `=> expr;`, which returns the expression, or runs it as a
+///   statement in a `void` method and the constructor, as in C#.
 /// - In a method body: blocks, expression statements, `return`, `let` and `const` declarations, `if` with `else if`
 ///   and `else`, `while`, `do … while`, `for` with a `let` or `const` counter or with expressions, `for … of` over a
 ///   value or a key and value, `break` and `continue` without a level, and `try` with `catch` clauses and `finally`.
@@ -277,6 +282,9 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         }
         // `check_accessors` checked the accessors. An initial value is a method body's expression without `this`.
         (Node::PropertyHookList(_), FieldOrProperty) => None,
+        // A computed property's expression runs on each read, as a method body does.
+        (Node::ComputedProperty(_), FieldOrProperty) => Some(FieldOrProperty),
+        (Node::PropertyHookConcreteExpressionBody(_), FieldOrProperty) => Some(Body),
         (Node::Expression(_), FieldOrProperty) => {
             report_this_in_initial_value(node, context);
 
@@ -376,6 +384,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         (Node::PropertyHookList(_), Parameter) => None,
         (Node::FunctionLikeParameterDefaultValue(_), Parameter) => Some(Constant),
         (Node::Block(_), Method | Body) => Some(Body),
+        (Node::MethodExpressionBody(_), Method) => Some(Body),
         (Node::TryCatchClause(_), Body) => Some(TryCatchClause),
         // `check_try` reports a catch type that is not a class, and `check_try_catch_clause` the variable's name.
         (Node::Hint(_) | Node::DirectVariable(_), TryCatchClause) => None,
@@ -676,6 +685,23 @@ fn is_slice_property(property: &Property) -> Result<(), Box<Issue>> {
                     item.span(),
                     "An initial value before the accessors is not supported yet in PHP#.",
                     "A PHP# property writes its initial value after its accessors: `public int views { get; set; } = 0;`.",
+                )))
+            } else {
+                Ok(())
+            }
+        }
+        Property::Computed(computed) => {
+            if !computed.modifiers.contains_visibility() {
+                Err(Box::new(not_supported(
+                    computed.variable.span,
+                    "A property without `public`, `protected` or `private` is not supported yet in PHP#.",
+                    no_access_modifier,
+                )))
+            } else if let Some(r#static) = computed.modifiers.get_static() {
+                Err(Box::new(not_supported(
+                    r#static.span(),
+                    "A static computed property is not supported yet in PHP#.",
+                    "PHP has no hooks on a static property, so a computed property is an instance property.",
                 )))
             } else {
                 Ok(())

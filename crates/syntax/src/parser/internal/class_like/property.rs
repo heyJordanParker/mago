@@ -1,5 +1,6 @@
 use crate::T;
 use crate::cst::cst::AttributeList;
+use crate::cst::cst::ComputedProperty;
 use crate::cst::cst::DirectVariable;
 use crate::cst::cst::Hint;
 use crate::cst::cst::HookedProperty;
@@ -46,6 +47,17 @@ where
         var: Option<Keyword<'arena>>,
         hint: Option<Hint<'arena>>,
     ) -> Result<Property<'arena>, ParseError> {
+        // A computed property, `public string slug => expr;` in spec section 6.1.
+        if self.dialect.is_sharp() && self.stream.peek_kind(1)? == Some(T!["=>"]) {
+            return Ok(Property::Computed(ComputedProperty {
+                attribute_lists: attributes,
+                modifiers,
+                hint,
+                variable: self.parse_property_variable()?,
+                body: self.parse_property_hook_concrete_expression_body()?,
+            }));
+        }
+
         let item = self.parse_property_item()?;
 
         let next = self.stream.peek_kind(0)?;
@@ -108,16 +120,6 @@ where
     fn parse_property_item(&mut self) -> Result<PropertyItem<'arena>, ParseError> {
         Ok(match self.stream.peek_kind(1)? {
             Some(T!["="]) => PropertyItem::Concrete(self.parse_property_concrete_item()?),
-            // A computed property, `public string slug => expr;` in spec section 6.1, parses whole and stays a property
-            // without its expression, which reads `this` outside a method.
-            Some(T!["=>"]) if self.dialect.is_sharp() => {
-                let variable = self.parse_property_variable()?;
-                let arrow = self.stream.eat_span(T!["=>"])?;
-                self.errors.push(ParseError::NotSupportedYetInSharp("A computed property", arrow));
-                self.parse_expression()?;
-
-                PropertyItem::Abstract(PropertyAbstractItem { variable })
-            }
             _ => PropertyItem::Abstract(self.parse_property_abstract_item()?),
         })
     }

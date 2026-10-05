@@ -122,7 +122,7 @@ impl Lowered {
                     sharp_value::SHARP_STRING => write!(tree, " {:?}", text(node.text)),
                 };
             }
-            sharp_kind::SHARP_AST_CLASS | sharp_kind::SHARP_AST_METHOD => {
+            sharp_kind::SHARP_AST_CLASS | sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_PROPERTY_HOOK => {
                 let _ = write!(tree, " {:?} @{}-{}", text(node.text), node.line, node.end_line);
             }
             _ => {}
@@ -558,6 +558,103 @@ fn the_constructor_is_a_public_function_named_construct() {
                   VAR
                     ZVAL "start"
               null
+              null
+        "#}
+    );
+}
+
+/// ```php
+/// public function total(): int { return $this->count + 1; }
+/// public function touch(): void { $this->save(); }
+/// public function __construct(int $count) { $this->count = $count; }
+/// ```
+///
+/// An expression body returns its expression, and runs it as a statement in a `void` method and the constructor.
+#[test]
+fn an_expression_body_is_the_body_that_returns_its_expression() {
+    let lowered = Lowered::new(
+        "class Report\n{\n    private int count = 0;\n\n    public int total() => this.count + 1;\n\n    public void touch() => this.save();\n\n    public Report(int count) => this.count = count;\n}\n",
+    );
+    let bodies: Vec<String> = lowered
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.kind == sharp_kind::SHARP_AST_METHOD)
+        .map(|(index, _)| lowered.render(lowered.child(index as u32, 2)))
+        .collect();
+
+    assert_eq!(
+        bodies,
+        [
+            indoc! {r#"
+                STMT_LIST
+                  RETURN
+                    BINARY_OP [1]
+                      PROP
+                        VAR
+                          ZVAL "this"
+                        ZVAL "count"
+                      ZVAL 1
+            "#},
+            indoc! {r#"
+                STMT_LIST
+                  METHOD_CALL
+                    VAR
+                      ZVAL "this"
+                    ZVAL "save"
+                    ARG_LIST
+            "#},
+            indoc! {r#"
+                STMT_LIST
+                  ASSIGN
+                    PROP
+                      VAR
+                        ZVAL "this"
+                      ZVAL "count"
+                    VAR
+                      ZVAL "count"
+            "#},
+        ]
+    );
+}
+
+/// ```php
+/// public string $slug { get => strtolower($this->name); }
+/// ```
+///
+/// A computed property is a property with one `get` hook whose body is the short body php-src's grammar builds for
+/// `get => expr;`. The hook's lines are the arrow's.
+#[test]
+fn a_computed_property_is_a_property_with_a_short_get_hook() {
+    let lowered = Lowered::new(
+        "class Report\n{\n    private string name = \"\";\n\n    public string slug => strtolower(this.name);\n}\n",
+    );
+    let class = lowered.child(lowered.unit().root, 1);
+
+    assert_eq!(
+        lowered.render(lowered.child(lowered.child(class, 2), 1)),
+        indoc! {r#"
+            PROP_GROUP [1]
+              ZVAL [1] "string"
+              PROP_DECL
+                PROP_ELEM
+                  ZVAL "slug"
+                  null
+                  null
+                  STMT_LIST
+                    PROPERTY_HOOK "get" @5-5
+                      null
+                      null
+                      PROPERTY_HOOK_SHORT_BODY
+                        CALL
+                          ZVAL "strtolower"
+                          ARG_LIST
+                            PROP
+                              VAR
+                                ZVAL "this"
+                              ZVAL "name"
+                      null
+                      null
               null
         "#}
     );
@@ -2105,7 +2202,8 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_BREAK
         | sharp_kind::SHARP_AST_CONTINUE
         | sharp_kind::SHARP_AST_THROW
-        | sharp_kind::SHARP_AST_CAST => Some(1),
+        | sharp_kind::SHARP_AST_CAST
+        | sharp_kind::SHARP_AST_PROPERTY_HOOK_SHORT_BODY => Some(1),
         sharp_kind::SHARP_AST_PROP
         | sharp_kind::SHARP_AST_ASSIGN
         | sharp_kind::SHARP_AST_ASSIGN_OP
@@ -2135,7 +2233,7 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_CATCH
         | sharp_kind::SHARP_AST_CONDITIONAL => Some(3),
         sharp_kind::SHARP_AST_FOR | sharp_kind::SHARP_AST_FOREACH | sharp_kind::SHARP_AST_PROP_ELEM => Some(4),
-        sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_CLASS => Some(5),
+        sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_CLASS | sharp_kind::SHARP_AST_PROPERTY_HOOK => Some(5),
         sharp_kind::SHARP_AST_PARAM => Some(6),
     }
 }

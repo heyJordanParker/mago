@@ -8,6 +8,9 @@ use crate::ir::item::annotation::generics::TypeParameterDefiningEntity;
 use crate::ir::item::member::method::Method;
 use crate::ir::item::member::method::MethodFlag;
 use crate::ir::item::modifier::ModifierKind;
+use crate::ir::statement::Block;
+use crate::ir::statement::Statement;
+use crate::ir::statement::StatementKind;
 use crate::lower::Lowering;
 
 impl<'scratch, 'arena, S, A> Lowering<'_, 'scratch, 'arena, S, A>
@@ -36,12 +39,29 @@ where
         let body = match &method.body {
             cst::MethodBody::Abstract(_) => None,
             cst::MethodBody::Concrete(block) => Some(&*self.arena.alloc(self.lower_block(block))),
+            // A PHP# expression body is the block that returns its expression, or runs it as a statement.
+            cst::MethodBody::Expression(body) => {
+                let expression = &*self.arena.alloc(self.lower_expression(body.expression));
+                let kind = if method.returns_value() {
+                    StatementKind::Return(Some(expression))
+                } else {
+                    StatementKind::Expression(expression)
+                };
+                let statement = Statement { meta: (), span: body.span(), kind, terminator: None };
+
+                Some(
+                    &*self
+                        .arena
+                        .alloc(Block { span: body.span(), statements: self.arena.alloc_slice_copy(&[statement]) }),
+                )
+            }
         };
         let effects = self.leave_function_like_body(outer_effects);
 
         let return_expression = match &method.body {
             cst::MethodBody::Concrete(block) => self.single_return_expression(block),
-            cst::MethodBody::Abstract(_) => None,
+            cst::MethodBody::Expression(body) if method.returns_value() => Some(body.expression),
+            cst::MethodBody::Expression(_) | cst::MethodBody::Abstract(_) => None,
         };
         let inferred_assertions = self.infer_function_like_assertions(return_expression, parameters.as_slice());
         let (annotation, assertions_inferred) =
