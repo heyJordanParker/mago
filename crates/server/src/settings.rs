@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use mago_analyzer::plugin::PluginRegistry;
 use mago_analyzer::settings::Settings as AnalyzerSettings;
-use mago_linter::settings::Settings as LinterSettings;
 use mago_syntax::settings::ParserSettings;
 
 /// The resolved settings a [`Server`](crate::Server) runs against.
@@ -23,8 +22,6 @@ pub struct Settings {
     pub parser: ParserSettings,
     /// Settings for the static analyzer.
     pub analyzer: AnalyzerSettings,
-    /// Settings for the linter.
-    pub linter: LinterSettings,
     /// The analyzer plugin registry, built once by the caller. Shared so it can
     /// be reused across workspaces.
     pub plugin_registry: Arc<PluginRegistry>,

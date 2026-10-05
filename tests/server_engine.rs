@@ -17,7 +17,6 @@ use mago_database::file::FileType;
 use mago_extension::WorkerCommand;
 use mago_extension::WorkerPool;
 use mago_extension::WorkerPoolOptions;
-use mago_linter::settings::Settings as LinterSettings;
 use mago_php_version::PHPVersion;
 use mago_reporting::IssueCollection;
 use mago_server::Server;
@@ -58,7 +57,6 @@ fn server(repository: &Path, database: Database<'static>) -> Server {
     let settings = Settings {
         parser: ParserSettings::default(),
         analyzer: AnalyzerSettings::new(PHPVersion::PHP85),
-        linter: LinterSettings::default(),
         plugin_registry: Arc::new(registry),
         use_progress_bars: false,
     };

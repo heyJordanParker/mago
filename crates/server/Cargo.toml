@@ -13,14 +13,10 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-mago-allocator = { workspace = true }
 mago-analyzer = { workspace = true }
 mago-codex = { workspace = true }
 mago-database = { workspace = true, features = ["loader"] }
-mago-linter = { workspace = true }
-mago-names = { workspace = true }
 mago-orchestrator = { workspace = true }
 mago-reporting = { workspace = true }
 mago-syntax = { workspace = true }
 foldhash = { workspace = true }
-xxhash-rust = { workspace = true }

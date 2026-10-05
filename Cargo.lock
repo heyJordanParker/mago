@@ -1865,16 +1865,12 @@ name = "mago-server"
 version = "1.53.0"
 dependencies = [
  "foldhash",
- "mago-allocator",
  "mago-analyzer",
  "mago-codex",
  "mago-database",
- "mago-linter",
- "mago-names",
  "mago-orchestrator",
  "mago-reporting",
  "mago-syntax",
- "xxhash-rust",
 ]
 
 [[package]]

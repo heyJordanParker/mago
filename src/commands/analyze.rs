@@ -594,7 +594,6 @@ fn server_settings(orchestrator: &Orchestrator<'_>) -> ServerSettings {
     ServerSettings {
         parser: orchestrator.config.parser_settings,
         analyzer: orchestrator.config.analyzer_settings.clone(),
-        linter: orchestrator.config.linter_settings.clone(),
         plugin_registry: orchestrator.get_analyzer_plugin_registry(),
         use_progress_bars: orchestrator.config.use_progress_bars,
     }
