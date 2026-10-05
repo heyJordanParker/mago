@@ -85,7 +85,7 @@ where
                         },
                         terminator: self.parse_terminator()?,
                     }),
-                    kind if kind.is_modifier() => Statement::Class(self.parse_class_with_attributes(attributes)?),
+                    kind if kind.is_modifier() => self.parse_class_or_interface_with_attributes(attributes)?,
                     _ => {
                         return Err(self.stream.unexpected(
                             Some(next),
@@ -120,7 +120,7 @@ where
                     Some(T!["::" | "(" | "->" | "?->" | "[" | "fn" | "function"])
                 ) =>
             {
-                Statement::Class(self.parse_class_with_attributes(Sequence::empty())?)
+                self.parse_class_or_interface_with_attributes(Sequence::empty())?
             }
             T!["__halt_compiler"] => Statement::HaltCompiler(self.parse_halt_compiler()?),
             T![";"] => Statement::Noop(self.stream.consume_span()?),

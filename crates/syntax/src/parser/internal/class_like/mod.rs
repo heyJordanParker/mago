@@ -6,6 +6,7 @@ use crate::cst::cst::Enum;
 use crate::cst::cst::EnumBackingTypeHint;
 use crate::cst::cst::Interface;
 use crate::cst::cst::Modifier;
+use crate::cst::cst::Statement;
 use crate::cst::cst::Trait;
 use crate::cst::sequence::Sequence;
 use crate::error::ParseError;
@@ -28,11 +29,36 @@ where
         &mut self,
         attributes: Sequence<'arena, AttributeList<'arena>>,
     ) -> Result<Interface<'arena>, ParseError> {
+        self.parse_interface_with_attributes_and_modifiers(attributes, Sequence::empty())
+    }
+
+    /// A class, or in PHP# an interface, whose declaration starts with modifiers, as in `public interface Foo {}`.
+    pub(crate) fn parse_class_or_interface_with_attributes(
+        &mut self,
+        attributes: Sequence<'arena, AttributeList<'arena>>,
+    ) -> Result<Statement<'arena>, ParseError> {
+        let modifiers = self.parse_modifier_sequence()?;
+        if self.dialect.is_sharp() && matches!(self.stream.peek_kind(0)?, Some(T!["interface"])) {
+            return Ok(Statement::Interface(
+                self.parse_interface_with_attributes_and_modifiers(attributes, modifiers)?,
+            ));
+        }
+
+        Ok(Statement::Class(self.parse_class_with_attributes_and_modifiers(attributes, modifiers)?))
+    }
+
+    fn parse_interface_with_attributes_and_modifiers(
+        &mut self,
+        attributes: Sequence<'arena, AttributeList<'arena>>,
+        modifiers: Sequence<'arena, Modifier<'arena>>,
+    ) -> Result<Interface<'arena>, ParseError> {
         Ok(Interface {
             attribute_lists: attributes,
+            modifiers,
             interface: self.expect_keyword(T!["interface"])?,
             name: self.parse_local_identifier()?,
             extends: self.parse_optional_extends()?,
+            inheritance: self.parse_optional_inheritance()?,
             left_brace: self.stream.eat_span(T!["{"])?,
             members: {
                 let mut members = self.new_vec();
@@ -86,6 +112,7 @@ where
             name: self.parse_local_identifier()?,
             extends: self.parse_optional_extends()?,
             implements: self.parse_optional_implements()?,
+            inheritance: self.parse_optional_inheritance()?,
             left_brace: self.stream.eat_span(T!["{"])?,
             members: {
                 let mut members = self.new_vec();

@@ -390,23 +390,65 @@ fn an_abstract_class_with_an_abstract_method_and_a_final_class_are_in_the_slice(
 
 #[test]
 fn an_interface_declares_methods_without_an_access_modifier_or_a_body() {
-    let code =
-        "namespace App.Tenant;\n\ninterface Measured\n{\n    float area();\n\n    string label(int digits);\n}\n";
+    let code = "namespace App.Tenant;\n\npublic interface Measured\n{\n    float area();\n\n    string label(int digits);\n}\n\ninterface Sized\n{\n}\n";
 
     assert_eq!(issues(code), Vec::<String>::new());
 }
 
 #[test]
-fn an_interface_member_outside_the_slice_is_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\ninterface Measured\n{\n    public float area();\n\n    const int SIDES = 4;\n\n    static float unit();\n}\n";
+fn a_class_or_an_interface_names_its_base_class_and_interfaces_after_a_colon() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Entity;\n\npublic interface Linkable : Named\n{\n    string link();\n}\n\npublic class Page : Entity, Linkable\n{\n    public string link()\n    {\n        return \"page\";\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_method_opens_with_virtual_and_replaces_with_override() {
+    let code = "namespace App.Tenant;\n\npublic class Image\n{\n    public virtual int size()\n    {\n        return 1;\n    }\n}\n\npublic class Thumbnail : Image\n{\n    public override int size()\n    {\n        return 2;\n    }\n\n    private virtual int cached;\n}\n";
+
+    assert_eq!(issues(code), ["18:13 This modifier is not supported yet in PHP#."]);
+}
+
+#[test]
+fn super_calls_the_parent_method() {
+    let code = "namespace App.Tenant;\n\npublic class Thumbnail : Image\n{\n    public override int size()\n    {\n        let base = super.count;\n        return super.size() + base;\n    }\n}\n";
+
+    assert_eq!(issues(code), ["7:20 This expression is not supported yet in PHP#."]);
+}
+
+#[test]
+fn an_optional_parameter_before_a_required_one_is_an_error() {
+    let code = leak(method("        return extra;\n").replace("int extra", "int first = 1, int extra, int last = 2"));
 
     assert_eq!(
         issues(code),
         [
-            "5:5 This modifier is not supported yet in PHP#.",
-            "7:5 This class member is not supported yet in PHP#.",
-            "9:5 This modifier is not supported yet in PHP#."
+            "5:20 The optional parameter `first` comes before the required parameter `extra`: PHP would make it required."
         ]
+    );
+}
+
+#[test]
+fn a_modifier_on_an_interface_member_is_an_error() {
+    let code =
+        "namespace App.Tenant;\n\ninterface Measured\n{\n    public float area();\n\n    static float unit();\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:5 An interface method takes no modifier: every interface method is public.",
+            "7:5 An interface method takes no modifier: every interface method is public."
+        ]
+    );
+}
+
+#[test]
+fn an_interface_constant_or_another_interface_modifier_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nabstract interface Measured\n{\n    const int SIDES = 4;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["3:1 This modifier is not supported yet in PHP#.", "5:5 This class member is not supported yet in PHP#."]
     );
 }
 
@@ -709,7 +751,7 @@ fn the_constructor_is_named_after_its_class_without_a_return_type() {
 
 #[test]
 fn a_constructor_parameter_with_an_access_modifier_declares_a_field_or_a_property() {
-    let code = "namespace App.Tenant;\n\nimport Lib.Planner;\n\nclass Report\n{\n    public Report(\n        private Planner planner,\n        protected int count = 0,\n        public int id { get; },\n        public string name { get; private set; },\n        private int hidden { get; set; },\n        int extra,\n    ) {\n        this.id = extra + count;\n    }\n}\n";
+    let code = "namespace App.Tenant;\n\nimport Lib.Planner;\n\nclass Report\n{\n    public Report(\n        private Planner planner,\n        public int id { get; },\n        public string name { get; private set; },\n        private int hidden { get; set; },\n        int extra,\n        protected int count = 0,\n    ) {\n        this.id = extra + count;\n    }\n}\n";
 
     assert_eq!(issues(code), Vec::<String>::new());
 }

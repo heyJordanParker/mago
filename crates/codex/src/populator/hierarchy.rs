@@ -130,6 +130,20 @@ pub fn populate_class_like_metadata_iterative(
         merge_metadata_from_trait(&mut metadata, codebase, trait_name, symbol_references);
     }
 
+    // A PHP# header lists the base class among the interfaces, so the one class there is the parent, as PHP links it.
+    // A PHP class lists one only in invalid code, which the analyzer reports from its `implements`.
+    if metadata.kind.is_class()
+        && metadata.direct_parent_class.is_none()
+        && let Some(parent_classname) = sorted_atoms(metadata.direct_parent_interfaces.iter().copied())
+            .into_iter()
+            .find(|name| codebase.get_class_like_by_word(*name).is_some_and(|parent| parent.kind.is_class()))
+    {
+        metadata.direct_parent_interfaces.remove(&parent_classname);
+        metadata.all_parent_interfaces.remove(&parent_classname);
+        metadata.direct_parent_class = Some(parent_classname);
+        metadata.all_parent_classes.insert(parent_classname);
+    }
+
     if let Some(parent_classname) = metadata.direct_parent_class {
         merge_metadata_from_parent_class_like(&mut metadata, codebase, parent_classname, symbol_references);
     }

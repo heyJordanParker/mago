@@ -102,6 +102,7 @@ use crate::cst::cst::Implements;
 use crate::cst::cst::IncludeConstruct;
 use crate::cst::cst::IncludeOnceConstruct;
 use crate::cst::cst::IndirectVariable;
+use crate::cst::cst::Inheritance;
 use crate::cst::cst::Inline;
 use crate::cst::cst::Instantiation;
 use crate::cst::cst::Interface;
@@ -671,6 +672,12 @@ generate_ast_walker! {
         }
     }
 
+    'arena Inheritance as inheritance => {
+        for ty in &inheritance.types {
+            walker.walk_identifier(ty, context);
+        }
+    }
+
     'arena Class as class => {
         for attribute_list in &class.attribute_lists {
             walker.walk_attribute_list(attribute_list, context);
@@ -690,6 +697,10 @@ generate_ast_walker! {
             walker.walk_implements(implements, context);
         }
 
+        if let Some(inheritance) = &class.inheritance {
+            walker.walk_inheritance(inheritance, context);
+        }
+
         for class_member in &class.members {
             walker.walk_class_like_member(class_member, context);
         }
@@ -700,11 +711,19 @@ generate_ast_walker! {
             walker.walk_attribute_list(attribute_list, context);
         }
 
+        for modifier in &interface.modifiers {
+            walker.walk_modifier(modifier, context);
+        }
+
         walker.walk_keyword(&interface.interface, context);
         walker.walk_local_identifier(&interface.name, context);
 
         if let Some(extends) = &interface.extends {
             walker.walk_extends(extends, context);
+        }
+
+        if let Some(inheritance) = &interface.inheritance {
+            walker.walk_inheritance(inheritance, context);
         }
 
         for class_member in &interface.members {

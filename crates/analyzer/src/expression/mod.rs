@@ -143,17 +143,16 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
                     anonymous_class.span(),
                     anonymous_class.extends.as_ref(),
                     anonymous_class.implements.as_ref(),
+                    None,
                     class_like_metadata,
                     anonymous_class.members.as_slice(),
                 )?;
 
-                if context.settings.check_missing_override {
-                    override_attribute::check_override_attribute(
-                        class_like_metadata,
-                        anonymous_class.members.as_slice(),
-                        context,
-                    );
-                }
+                override_attribute::check_override_attribute(
+                    class_like_metadata,
+                    anonymous_class.members.as_slice(),
+                    context,
+                );
 
                 artifacts.set_expression_type(&self, get_named_object(class_like_metadata.name, None));
 

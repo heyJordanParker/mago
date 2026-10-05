@@ -30,6 +30,7 @@ use mago_syntax::cst::ForOf;
 use mago_syntax::cst::Function;
 use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::FunctionLikeParameter;
+use mago_syntax::cst::FunctionLikeParameterList;
 use mago_syntax::cst::Global;
 use mago_syntax::cst::Hint;
 use mago_syntax::cst::Identifier;
@@ -77,10 +78,12 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///
 /// - At file level: `namespace`, `import`, `class` and `interface`. A file has at most one namespace, named and
 ///   written without braces.
-/// - A class: attributes, an optional `public`, `abstract` or `final`, a name, constants, fields, properties and
-///   methods, with no other modifiers, `extends` or `implements`.
-/// - An interface: a name and methods, with no attributes, modifiers or `extends`. An interface method has no modifier,
-///   parameters, a return type and no body, as spec section 29 writes `Money quote(Cart cart);`.
+/// - A class: attributes, an optional `public`, `abstract` or `final`, a name, an optional `: Base, Interface` header,
+///   constants, fields, properties and methods, with no other modifiers, `extends` or `implements`. The engine tells
+///   the base class from the interfaces when it links the class.
+/// - An interface: an optional `public`, a name, an optional `: Interface` header and methods, with no attributes,
+///   other modifiers or `extends`. An interface method has parameters, a return type and no body, as spec section 29
+///   writes `Money quote(Cart cart);`. A modifier on it is an error, because every interface method is public.
 /// - Attributes: on a class, a method, a field, a property and a parameter, written `[Name]` or `[Name(arguments)]`,
 ///   several in one list, as in `[Field("Name"), Searchable]`, or in several lists. An argument is positional or
 ///   named, and is a constant expression as a parameter default is. An attribute target, as in `[return: NotNull]`,
@@ -98,16 +101,17 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   initial value after the accessors, which is a field's. A property without `get`, an accessor declared twice, or
 ///   a `set` access modifier as wide as the property's is an error, as in C#. A get-only property runs as `readonly`,
 ///   and the analyzer reports every write to it that `readonly` refuses.
-/// - A method: `public`, `protected` or `private`, an optional `static`, parameters, a return type and a body, or
-///   `abstract` and no body. Its name
-///   does not start with `__`, which PHP reserves for magic methods, and is not its class's name, compared ignoring
-///   case, which PHP# gives to the constructor.
+/// - A method: `public`, `protected` or `private`, an optional `static`, `virtual` or `override`, parameters, a return
+///   type and a body, or `abstract` and no body. The analyzer decides `virtual` and `override`, as spec section 22
+///   writes them. Its name does not start with `__`, which PHP reserves for magic methods, and is not its class's name,
+///   compared ignoring case, which PHP# gives to the constructor.
 /// - The constructor: a method named exactly after its class, without a return type and not `static`. A method
 ///   without a return type named otherwise is an error. A constructor parameter with an access modifier declares a
 ///   member: a field when `private` or `protected` without accessors, and a property with accessors, which follow the
 ///   auto-property rules. A `public` parameter without accessors is an error, as spec section 9 says.
 /// - A parameter: always a type, a name and an optional default, and neither variadic nor by reference. A default is
-///   a constant expression: a literal, a constant, or the operators below on them, without `++` and `--`.
+///   a constant expression: a literal, a constant, or the operators below on them, without `++` and `--`. An optional
+///   parameter before a required one is an error, because PHP would make it required.
 /// - Types: `int`, `float`, `bool`, `string` and a class written by its short name, and `void` as a return type.
 ///   PHP's own check reports a `void` parameter. Each of them is nullable when written with `?` after it, as in
 ///   `int?`, and PHP's own check reports `void?`.
@@ -125,9 +129,9 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   there is an error when this file declares it, and the analyzer reports it otherwise.
 /// - In expressions: literals, parentheses, bare names, assignment, the operators below, and method calls and
 ///   property reads written with `.` or `?.` and a member name, and `new Class(...)` on a class written by its short
-///   name, with positional and named arguments, and `typeof(X)` on a class written by its short name, without a member
-///   read or called on it. `?.` never follows a class. A string literal's `\u{...}` escapes are valid codepoints, as
-///   PHP requires.
+///   name, with positional and named arguments, `typeof(X)` on a class written by its short name, without a member
+///   read or called on it, and `super.method(...)`, which calls the parent's method. `?.` never follows a class. A
+///   string literal's `\u{...}` escapes are valid codepoints, as PHP requires.
 /// - Operators: `+ - * / %`, `== != === !== < > <= >=`, `&& || !`, `??`, unary `-` and `+`, `++` and `--`, and
 ///   `= += -= *= /= ??=`.
 ///
@@ -248,6 +252,11 @@ fn enter(
         ) => Some(File),
         (Node::Class(_), File) => Some(Class),
         (Node::Interface(_), File) => Some(Interface),
+        (Node::FunctionLikeParameterList(parameters), Method | Signature) => {
+            report_optional_before_required(parameters, context);
+
+            Some(place)
+        }
         // `check_class` reports `protected` and `private` on a class, and PHP's own check `abstract` with `final`.
         (
             Node::Modifier(
@@ -259,7 +268,17 @@ fn enter(
             ),
             Class,
         ) => Some(Class),
+        (Node::Inheritance(_), Class | Interface) => Some(place),
+        (Node::Modifier(Modifier::Public(_)), Interface) => Some(Interface),
         (Node::ClassLikeMember(ClassLikeMember::Method(_)), Interface) => Some(Interface),
+        (Node::Modifier(modifier), Signature) => {
+            context.report(
+                Issue::error("An interface method takes no modifier: every interface method is public.")
+                    .with_annotation(Annotation::primary(modifier.span()).with_message("Remove this modifier.")),
+            );
+
+            None
+        }
         (Node::Method(method), Interface) => match is_slice_signature(method) {
             Ok(()) => Some(Signature),
             Err((message, help)) => {
@@ -274,10 +293,7 @@ fn enter(
         },
         // A body's block is not in the place, so `MethodBody` admits only `MethodAbstractBody`.
         (
-            Node::FunctionLikeParameterList(_)
-            | Node::FunctionLikeReturnTypeHint(_)
-            | Node::MethodBody(_)
-            | Node::MethodAbstractBody(_),
+            Node::FunctionLikeReturnTypeHint(_) | Node::MethodBody(_) | Node::MethodAbstractBody(_),
             Signature,
         ) => Some(Signature),
         (Node::AttributeList(_), Class | Method | FieldOrProperty | Parameter) => Some(Attribute),
@@ -366,9 +382,10 @@ fn enter(
                 | Modifier::Protected(_)
                 | Modifier::Private(_)
                 | Modifier::Static(_)
-                | Modifier::Abstract(_),
+                | Modifier::Abstract(_)
+                | Modifier::Virtual(_)
+                | Modifier::Override(_),
             )
-            | Node::FunctionLikeParameterList(_)
             | Node::FunctionLikeReturnTypeHint(_)
             | Node::MethodBody(_)
             // PHP's own check reports a method without a body that is not `abstract`, and one with a body that is.
@@ -569,6 +586,14 @@ fn enter(
         }
         (Node::AssignmentOperator(operator), Body) if is_slice_assignment_operator(operator) => Some(Body),
         (Node::PositionalArgument(argument), Body) if argument.ellipsis.is_none() => Some(Body),
+        // `super.label()` calls the parent's method, spec section 22. `super` is no value of its own, so the walk
+        // enters only the call's method and arguments.
+        (Node::MethodCall(call), Body) if matches!(call.object, Expression::Parent(_)) => {
+            check_node(Node::ClassLikeMemberSelector(&call.method), Body, checked, context);
+            check_node(Node::ArgumentList(&call.argument_list), Body, checked, context);
+
+            None
+        }
         (Node::MethodCall(call), Body) => {
             check_member_access(call.span(), call.object, checked, context);
 
@@ -662,6 +687,28 @@ fn is_slice_signature(method: &Method) -> Result<(), (&'static str, &'static str
         ))
     } else {
         Ok(())
+    }
+}
+
+/// Reports each optional parameter before the last required one, which PHP makes required with a deprecation.
+fn report_optional_before_required(parameters: &FunctionLikeParameterList, context: &mut Context<'_, '_, '_>) {
+    let Some(last_required) = parameters.parameters.iter().rev().find(|parameter| parameter.default_value.is_none())
+    else {
+        return;
+    };
+
+    for parameter in parameters.parameters.iter().take_while(|parameter| parameter.span() != last_required.span()) {
+        if parameter.default_value.is_some() {
+            context.report(
+                Issue::error(format!(
+                    "The optional parameter `{}` comes before the required parameter `{}`: PHP would make it required.",
+                    BytesDisplay(parameter.variable.name),
+                    BytesDisplay(last_required.variable.name)
+                ))
+                .with_annotation(Annotation::primary(parameter.span()).with_message("Optional here."))
+                .with_help("Move the optional parameter after the required ones, or give the required one a default."),
+            );
+        }
     }
 }
 
@@ -1058,10 +1105,10 @@ const fn supported(place: Place) -> &'static str {
     match place {
         Place::File => "At file level, PHP# supports `namespace`, `import`, `class` and `interface`.",
         Place::Class => {
-            "A PHP# class has attributes, an optional `public`, `abstract` or `final`, a name, constants, fields, properties and methods, with no other modifiers, `extends` or `implements`."
+            "A PHP# class has attributes, an optional `public`, `abstract` or `final`, a name, an optional `: Base, Interface` header, constants, fields, properties and methods, with no other modifiers, `extends` or `implements`."
         }
         Place::Interface => {
-            "A PHP# interface has a name and methods, with no attributes, modifiers, `extends`, constants or properties."
+            "A PHP# interface has an optional `public`, a name, an optional `: Interface` header and methods, with no attributes, other modifiers, `extends`, constants or properties."
         }
         Place::Signature => {
             "A PHP# interface method has no modifier, parameters, a return type of `int`, `float`, `bool`, `string`, `void` or a class, and no body."
@@ -1073,13 +1120,13 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# constant has `public`, `protected` or `private`, an optional type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, one name, and a constant value."
         }
         Place::Method => {
-            "A PHP# method takes `public`, `protected`, `private`, `static` and `abstract`, parameters, and a return type of `int`, `float`, `bool`, `string`, `void` or a class, each but `void` nullable as in `int?`."
+            "A PHP# method takes `public`, `protected`, `private`, `static`, `abstract`, `virtual` and `override`, parameters, and a return type of `int`, `float`, `bool`, `string`, `void` or a class, each but `void` nullable as in `int?`."
         }
         Place::Parameter => {
             "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, a name, and an optional default."
         }
         Place::Body => {
-            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, and `break` and `continue` without a level, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, `++` and `--`, method calls and property reads written with `.` or `?.`, `new Class(...)` and `typeof(Class)`."
+            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, and `break` and `continue` without a level, with literals, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, `++` and `--`, method calls and property reads written with `.` or `?.`, `new Class(...)`, `typeof(Class)` and `super.method(...)`."
         }
         Place::Attribute => {
             "A PHP# attribute is a class name with optional positional and named arguments, as in `[Field(\"Name\", searchable: true)]`."

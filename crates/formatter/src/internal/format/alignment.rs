@@ -166,6 +166,8 @@ fn calculate_modifier_signature(modifiers: &Sequence<'_, Modifier<'_>>) -> u32 {
             Modifier::PublicSet(_) => 1 << 7,
             Modifier::ProtectedSet(_) => 1 << 8,
             Modifier::PrivateSet(_) => 1 << 9,
+            Modifier::Virtual(_) => 1 << 10,
+            Modifier::Override(_) => 1 << 11,
         };
     }
     sig

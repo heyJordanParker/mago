@@ -1732,6 +1732,8 @@ where
                 Modifier::PrivateSet(keyword) => keyword.format(f),
                 Modifier::ProtectedSet(keyword) => keyword.format(f),
                 Modifier::PublicSet(keyword) => keyword.format(f),
+                Modifier::Virtual(keyword) => keyword.format(f),
+                Modifier::Override(keyword) => keyword.format(f),
             }
         })
     }

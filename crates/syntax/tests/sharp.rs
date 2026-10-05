@@ -884,6 +884,81 @@ fn typeof_names_a_class_by_its_short_name() {
 }
 
 #[test]
+fn a_class_or_an_interface_names_its_base_class_and_interfaces_after_a_colon() {
+    const CODE: &str = "public class Page : Entity, Linkable\n{\n}\n\npublic interface Linkable : Named\n{\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Page.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::Class(class), Statement::Interface(interface)] = program.statements.as_slice() else {
+        panic!("expected a class and an interface, got {:#?}", program.statements);
+    };
+    let headers: Vec<(&str, Vec<&[u8]>)> = [&class.inheritance, &interface.inheritance]
+        .into_iter()
+        .map(|inheritance| {
+            let inheritance = inheritance.as_ref().expect("a header");
+            (source(CODE, inheritance), inheritance.types.iter().map(Identifier::value).collect())
+        })
+        .collect();
+    assert_eq!(headers, [(": Entity, Linkable", vec![&b"Entity"[..], b"Linkable"]), (": Named", vec![&b"Named"[..]])]);
+    assert_eq!(source(CODE, class), "public class Page : Entity, Linkable\n{\n}");
+}
+
+#[test]
+fn virtual_and_override_are_method_modifiers_and_stay_names_elsewhere() {
+    const CODE: &str = "class Shape\n{\n    public virtual string name()\n    {\n        return override(virtual);\n    }\n\n    protected override int size()\n    {\n        return 1;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Shape.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let modifiers: Vec<Vec<String>> = class_members(program)
+        .iter()
+        .map(|member| {
+            let ClassLikeMember::Method(method) = member else {
+                panic!("expected a method, got {member:#?}");
+            };
+
+            method.modifiers.iter().map(ToString::to_string).collect()
+        })
+        .collect();
+    assert_eq!(modifiers, [vec!["Public", "Virtual"], vec!["Protected", "Override"]]);
+}
+
+#[test]
+fn super_before_a_dot_is_the_parent_class() {
+    const CODE: &str =
+        "class Page\n{\n    public override string label()\n    {\n        return super.label();\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Page.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [statement] = method_body(program) else {
+        panic!("expected one statement, got {:#?}", method_body(program));
+    };
+    let Expression::Call(Call::Method(label)) = expression(statement) else {
+        panic!("expected a method call, got {statement:#?}");
+    };
+    let Expression::Parent(keyword) = label.object else {
+        panic!("expected `super`, got {:#?}", label.object);
+    };
+    assert_eq!(source(CODE, keyword), "super");
+    assert_eq!(source(CODE, label), "super.label()");
+}
+
+#[test]
+fn super_without_a_dot_is_a_name() {
+    const CODE: &str = "class Page\n{\n    public int label()\n    {\n        return super;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Page.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [statement] = method_body(program) else {
+        panic!("expected one statement, got {:#?}", method_body(program));
+    };
+    assert_eq!(bare_name(expression(statement)), b"super");
+}
+
+#[test]
 fn typeof_in_php_is_a_function_call() {
     let arena = LocalArena::new();
     let program = parse(&arena, "src/Report.php", "<?php typeof(Order);");

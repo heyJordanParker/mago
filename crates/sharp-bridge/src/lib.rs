@@ -84,6 +84,7 @@ pub enum sharp_kind {
     SHARP_AST_CLASS_CONST_DECL,
     SHARP_AST_STATIC_PROP,
     SHARP_AST_CLASS_CONST,
+    SHARP_AST_NAME_LIST,
 }
 
 #[repr(u8)]

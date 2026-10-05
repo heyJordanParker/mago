@@ -46,6 +46,10 @@ pub enum ModifierKind {
     ProtectedSet,
     Private,
     PrivateSet,
+    /// PHP#'s `virtual`.
+    Virtual,
+    /// PHP#'s `override`.
+    Override,
 }
 
 impl CopyInto for Visibility {

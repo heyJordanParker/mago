@@ -27,6 +27,7 @@ use mago_syntax::cst::FunctionPartialApplication;
 use mago_syntax::cst::Hint;
 use mago_syntax::cst::Identifier;
 use mago_syntax::cst::Implements;
+use mago_syntax::cst::Inheritance;
 use mago_syntax::cst::Instantiation;
 use mago_syntax::cst::Interface;
 use mago_syntax::cst::LocalDeclaration;
@@ -442,6 +443,18 @@ where
         context: &mut NameResolutionContext<'arena, A>,
     ) {
         for parent in &implements.types {
+            let (parent_classlike, imported) = context.resolve(NameKind::Default, parent.value());
+
+            self.resolved_names.insert_at(parent.span(), parent_classlike, imported);
+        }
+    }
+
+    fn walk_in_inheritance(
+        &mut self,
+        inheritance: &'ast Inheritance<'arena>,
+        context: &mut NameResolutionContext<'arena, A>,
+    ) {
+        for parent in &inheritance.types {
             let (parent_classlike, imported) = context.resolve(NameKind::Default, parent.value());
 
             self.resolved_names.insert_at(parent.span(), parent_classlike, imported);

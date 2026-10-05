@@ -21,6 +21,7 @@ use mago_syntax::cst::Function;
 use mago_syntax::cst::IfBody;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::MethodBody;
+use mago_syntax::cst::Modifier;
 use mago_syntax::cst::ModifierSequenceExt;
 use mago_syntax::cst::Statement;
 use mago_syntax::cst::SwitchBody;
@@ -140,6 +141,17 @@ where
         collect_globals_into(block, &mut metadata.globals_accessed);
     } else {
         method_metadata.is_abstract = true;
+    }
+
+    // A PHP# method is closed unless it is `virtual`, abstract or an `override`, spec section 22, so the analyzer
+    // reads it as final. The engine still runs it as an open PHP method.
+    if context.program.dialect.is_sharp()
+        && !method_metadata.is_abstract
+        && !method_metadata.is_constructor
+        && method_metadata.visibility != Visibility::Private
+        && !method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Virtual(_) | Modifier::Override(_)))
+    {
+        method_metadata.is_final = true;
     }
 
     metadata.method_metadata = Some(method_metadata);

@@ -96,11 +96,14 @@ pub struct StaticCall<'ast, 'arena> {
 }
 
 impl<'ast, 'arena> StaticCall<'ast, 'arena> {
-    /// Returns the static call a PHP# method call writes, `Class.method()`, when
-    /// [`ResolvedNames::static_call_class`] finds its class, and `None` for an instance call.
+    /// Returns the static call a PHP# method call writes, `Class.method()` when
+    /// [`ResolvedNames::static_call_class`] finds its class, or `super.method()`, which PHP writes `parent::method()`.
+    /// Returns `None` for an instance call.
     #[must_use]
     pub fn from_method_call(call: &'ast MethodCall<'arena>, resolved_names: &ResolvedNames<'_>) -> Option<Self> {
-        resolved_names.static_call_class(call).map(|_| Self {
+        let is_super = matches!(call.object, Expression::Parent(keyword) if keyword.value == b"super");
+
+        (is_super || resolved_names.static_call_class(call).is_some()).then(|| Self {
             class: call.object,
             method: &call.method,
             argument_list: &call.argument_list,

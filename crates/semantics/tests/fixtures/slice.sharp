@@ -182,11 +182,37 @@ abstract class Shape
     protected abstract string name(int digits);
 }
 
-final class Unit
+class Square : Shape, Measured
 {
+    public override float area()
+    {
+        return 1.0;
+    }
+
+    protected override string name(int digits)
+    {
+        return "square";
+    }
+
+    public virtual int sides()
+    {
+        return 4;
+    }
 }
 
-interface Measured
+final class Unit : Square
+{
+    public override int sides()
+    {
+        return super.sides();
+    }
+}
+
+public interface Measured : Sized
 {
     float area();
+}
+
+interface Sized
+{
 }

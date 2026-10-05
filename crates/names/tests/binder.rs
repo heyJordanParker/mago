@@ -57,6 +57,17 @@ fn dotted_namespace_and_import_resolve_to_php_names() {
 }
 
 #[test]
+fn the_names_in_a_class_or_interface_header_resolve_as_class_names() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nimport App.Shared.Entity;\n\nclass Page : Entity, Linkable\n{\n}\n\ninterface Linkable : Named\n{\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(resolved(&names, CODE, "Entity,", 0), b"App\\Shared\\Entity");
+    assert_eq!(resolved(&names, CODE, "Linkable\n", 0), b"App\\Tenant\\Store\\Linkable");
+    assert_eq!(resolved(&names, CODE, "Named", 0), b"App\\Tenant\\Store\\Named");
+}
+
+#[test]
 fn bare_names_bind_to_locals_this_classes_and_constants() {
     const CODE: &str = "namespace App.Tenant.Store;\n\nimport App.Shared.Money;\n\nclass Report\n{\n    public int total(int extra)\n    {\n        let label = extra;\n        const base = Money.of(label);\n        Calc.make(this, base, PHP_EOL);\n        return extra;\n    }\n}\n";
     let arena = LocalArena::new();

@@ -1028,6 +1028,135 @@ fn abstract_and_final_classes_and_interfaces_are_class_declarations_with_their_f
 }
 
 /// ```php
+/// interface Linkable extends \Lib\Named { }
+/// class Page implements \Lib\Entity, \App\Tenant\Linkable { }
+/// ```
+///
+/// The header names are a name list in the interface list, with `ZEND_NAME_FQ`, which is 0. A class's header can
+/// hold its parent class, which only `zend_do_link_class` can tell from the interfaces, so the class carries
+/// php-sharp's `ZEND_ACC_PARENT_IN_INTERFACES`, `[2147483648]`, `1 << 31`. An interface's header holds only
+/// interfaces, as PHP's `extends` list does.
+#[test]
+fn a_header_is_the_interface_name_list_and_marks_a_class_to_find_its_parent_there() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Entity;\nimport Lib.Named;\n\ninterface Linkable : Named\n{\n}\n\nclass Page : Entity, Linkable\n{\n}\n",
+    );
+
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              NAMESPACE
+                ZVAL "App\\Tenant"
+                null
+              CLASS [1] "Linkable" @6-8
+                null
+                NAME_LIST
+                  ZVAL "Lib\\Named"
+                STMT_LIST
+                null
+                null
+              CLASS [2147483648] "Page" @10-12
+                null
+                NAME_LIST
+                  ZVAL "Lib\\Entity"
+                  ZVAL "App\\Tenant\\Linkable"
+                STMT_LIST
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// public function size(): int { return 1; }
+/// #[\Override] public function name(): string { return 'thumbnail'; }
+/// ```
+///
+/// `virtual` lowers to nothing, because PHP methods are open to overriding, and `override` lowers to `#[\Override]`,
+/// so PHP checks at link time that a parent method exists. Its attribute group follows the method's own.
+#[test]
+fn virtual_lowers_to_nothing_and_override_to_the_override_attribute() {
+    let lowered = Lowered::new(
+        "class Thumbnail : Image\n{\n    public virtual int size()\n    {\n        return 1;\n    }\n\n    [Deprecated]\n    public override string name()\n    {\n        return \"thumbnail\";\n    }\n}\n",
+    );
+
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              CLASS [2147483648] "Thumbnail" @1-13
+                null
+                NAME_LIST
+                  ZVAL "Image"
+                STMT_LIST
+                  METHOD [1] "size" @3-6
+                    PARAM_LIST
+                    null
+                    STMT_LIST
+                      RETURN
+                        ZVAL 1
+                    ZVAL [1] "int"
+                    null
+                  METHOD [1] "name" @9-12
+                    PARAM_LIST
+                    null
+                    STMT_LIST
+                      RETURN
+                        ZVAL "thumbnail"
+                    ZVAL [1] "string"
+                    ATTRIBUTE_LIST
+                      ATTRIBUTE_GROUP
+                        ATTRIBUTE
+                          ZVAL "Deprecated"
+                          null
+                      ATTRIBUTE_GROUP
+                        ATTRIBUTE
+                          ZVAL "Override"
+                          null
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// return parent::size(2);
+/// ```
+///
+/// `super` is `parent`, a name php-src writes with `ZEND_NAME_NOT_FQ`, which is 1, so the call is a static call that
+/// runs on the parent class.
+#[test]
+fn super_calls_are_static_calls_on_parent() {
+    assert_eq!(
+        body("        return super.size(2);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                STATIC_CALL
+                  ZVAL [1] "parent"
+                  ZVAL "size"
+                  ARG_LIST
+                    ZVAL 2
+        "#}
+    );
+}
+
+/// ```php
 /// return \Lib\Calc::class;
 /// ```
 ///
@@ -1949,7 +2078,8 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_PROP_DECL
         | sharp_kind::SHARP_AST_ATTRIBUTE_LIST
         | sharp_kind::SHARP_AST_ATTRIBUTE_GROUP
-        | sharp_kind::SHARP_AST_CLASS_CONST_DECL => None,
+        | sharp_kind::SHARP_AST_CLASS_CONST_DECL
+        | sharp_kind::SHARP_AST_NAME_LIST => None,
         sharp_kind::SHARP_AST_ZVAL => Some(0),
         sharp_kind::SHARP_AST_VAR
         | sharp_kind::SHARP_AST_CONST

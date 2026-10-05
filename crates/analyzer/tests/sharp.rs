@@ -709,6 +709,98 @@ fn abstract_and_final_classes_and_interfaces_are_checked_as_in_php() {
     assert_eq!(issues(("src/Demo/Shape.sharp", sharp), &[]), issues(("src/Demo/Shape.php", php), &[]));
 }
 
+/// A header names a PHP base class and a PHP interface, so the class calls the base's methods and passes where the
+/// interface is expected. `super.size()` calls the PHP# base's method, as `parent::size()` does in PHP.
+#[test]
+fn a_header_names_the_base_class_and_the_interfaces_as_in_php() {
+    let library = "<?php\n\nnamespace Lib;\n\ninterface Named\n{\n    public function name(): string;\n}\n\nabstract class Entity\n{\n    public function id(): int\n    {\n        return 7;\n    }\n}\n\nfinal class Shelf\n{\n    public static function show(Named $named, Entity $entity): string\n    {\n        return $named->name() . $entity->id();\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Entity;\nimport Lib.Named;\nimport Lib.Shelf;\n\npublic class Page : Entity, Named\n{\n    public string name()\n    {\n        return \"page\";\n    }\n\n    public int number()\n    {\n        return this.id();\n    }\n\n    public string shown()\n    {\n        return Shelf.show(this, this);\n    }\n}\n\npublic class Image\n{\n    public virtual int size()\n    {\n        return 10;\n    }\n}\n\npublic class Thumbnail : Image\n{\n    public override int size()\n    {\n        return super.size() + 1;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Entity;\nuse Lib\\Named;\nuse Lib\\Shelf;\n\nclass Page extends Entity implements Named\n{\n    public function name(): string\n    {\n        return \"page\";\n    }\n\n    public function number(): int\n    {\n        return $this->id();\n    }\n\n    public function shown(): string\n    {\n        return Shelf::show($this, $this);\n    }\n}\n\nclass Image\n{\n    public function size(): int\n    {\n        return 10;\n    }\n}\n\nclass Thumbnail extends Image\n{\n    #[\\Override]\n    public function size(): int\n    {\n        return parent::size() + 1;\n    }\n}\n";
+    let others = [("src/Lib/Entity.php", library)];
+
+    assert_eq!(issues(("src/Demo/Page.php", php), &others), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Page.sharp", sharp), &others), Vec::<String>::new());
+}
+
+/// A header with two classes, a trait, a missing name, a final class or an interface whose method the class lacks
+/// reports what its PHP twin's `extends` and `implements` report.
+#[test]
+fn a_header_reports_what_extends_and_implements_report_in_php() {
+    let library = "<?php\n\nnamespace Lib;\n\ninterface Named\n{\n    public function name(): string;\n}\n\nclass Entity\n{\n}\n\nclass Other\n{\n}\n\ntrait Mixin\n{\n}\n\nfinal class Sealed\n{\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Entity;\nimport Lib.Mixin;\nimport Lib.Named;\nimport Lib.Other;\nimport Lib.Sealed;\n\npublic class Twice : Entity, Other\n{\n}\n\npublic class Blend : Mixin\n{\n}\n\npublic class Lost : Missing\n{\n}\n\npublic class Closed : Sealed\n{\n}\n\npublic class Partial : Named\n{\n}\n\npublic interface Wide : Entity\n{\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Entity;\nuse Lib\\Mixin;\nuse Lib\\Named;\nuse Lib\\Other;\nuse Lib\\Sealed;\n\nclass Twice extends Entity implements Other\n{\n}\n\nclass Blend implements Mixin\n{\n}\n\nclass Lost implements Missing\n{\n}\n\nclass Closed extends Sealed\n{\n}\n\nclass Partial implements Named\n{\n}\n\ninterface Wide extends Entity\n{\n}\n";
+    let others = [("src/Lib/Named.php", library)];
+
+    let sharp_issues = issues(("src/Demo/Twice.sharp", sharp), &others);
+    let php_issues = issues(("src/Demo/Twice.php", php), &others);
+
+    assert_eq!(
+        codes(&php_issues),
+        [
+            "invalid-implement",
+            "invalid-implement",
+            "non-existent-class-like",
+            "extend-final-class",
+            "unimplemented-abstract-method",
+            "invalid-extend"
+        ]
+    );
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+/// A method is closed unless it is `virtual`, and `override` is required to replace one, spec section 22. So PHP#
+/// reports what PHP reports for a `final` method and a missing or stray `#[\Override]`, without the
+/// `check-missing-override` setting. Implementing an interface method takes no `override`.
+#[test]
+fn virtual_and_override_are_checked_as_final_and_the_override_attribute_in_php() {
+    let library = "<?php\n\nnamespace Lib;\n\ninterface Named\n{\n    public function name(): string;\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Named;\n\npublic class Base\n{\n    public virtual int size()\n    {\n        return 1;\n    }\n\n    public string label()\n    {\n        return \"base\";\n    }\n\n    public virtual int depth()\n    {\n        return 0;\n    }\n}\n\npublic class Child : Base, Named\n{\n    public int size()\n    {\n        return 2;\n    }\n\n    public override string label()\n    {\n        return \"child\";\n    }\n\n    public override int width()\n    {\n        return 3;\n    }\n\n    public final override int depth()\n    {\n        return 1;\n    }\n\n    public string name()\n    {\n        return \"child\";\n    }\n}\n\npublic class GrandChild : Child\n{\n    public override int depth()\n    {\n        return 2;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Named;\n\nclass Base\n{\n    public function size(): int\n    {\n        return 1;\n    }\n\n    final public function label(): string\n    {\n        return \"base\";\n    }\n\n    public function depth(): int\n    {\n        return 0;\n    }\n}\n\nclass Child extends Base implements Named\n{\n    public function size(): int\n    {\n        return 2;\n    }\n\n    #[\\Override]\n    public function label(): string\n    {\n        return \"child\";\n    }\n\n    #[\\Override]\n    public function width(): int\n    {\n        return 3;\n    }\n\n    #[\\Override]\n    final public function depth(): int\n    {\n        return 1;\n    }\n\n    #[\\Override]\n    public function name(): string\n    {\n        return \"child\";\n    }\n}\n\nclass GrandChild extends Child\n{\n    #[\\Override]\n    public function depth(): int\n    {\n        return 2;\n    }\n}\n";
+    let others = [("src/Lib/Named.php", library)];
+
+    let sharp_issues = issues(("src/Demo/Base.sharp", sharp), &others);
+    let php_issues =
+        issues_with(Settings { check_missing_override: true, ..settings() }, ("src/Demo/Base.php", php), &others);
+
+    assert_eq!(
+        codes(&php_issues),
+        ["override-final-method", "missing-override-attribute", "invalid-override-attribute", "override-final-method"],
+        "{php_issues:?}"
+    );
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{sharp_issues:?}");
+
+    let missing = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Base.sharp", sharp), &others).remove(1);
+    assert_eq!(missing.message, "Missing `override` modifier on overriding method `Demo\\Child::size`.");
+}
+
+/// Every PHP# field has a type, so a field cannot replace an untyped PHP property yet: PHP refuses the added type.
+#[test]
+fn a_field_that_replaces_an_untyped_php_property_is_not_supported_yet() {
+    let library = "<?php\n\nnamespace Lib;\n\nclass Entity\n{\n    protected $label = 'entity';\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Entity;\n\npublic class Post : Entity\n{\n    protected string label = \"post\";\n}\n";
+
+    let issues =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Post.sharp", sharp), &[("src/Lib/Entity.php", library)]);
+
+    assert_eq!(
+        issues.iter().map(|issue| issue.code.as_deref().unwrap_or("none")).collect::<Vec<_>>(),
+        ["not-supported-yet"]
+    );
+    assert_eq!(
+        issues[0].message,
+        "A field that replaces the untyped PHP property `Lib\\Entity::$label` is not supported yet."
+    );
+}
+
+/// A PHP class that implements a class still reports it, though the populator links that class as its parent for a
+/// PHP# header.
+#[test]
+fn a_php_class_that_implements_a_class_is_still_an_error() {
+    let php = "<?php\n\nnamespace Demo;\n\nclass Entity\n{\n}\n\nclass Page implements Entity\n{\n}\n";
+
+    assert_eq!(codes(&issues(("src/Demo/Page.php", php), &[])), ["invalid-implement"]);
+}
+
 /// A parse error reports its spot once, so returning what failed to parse adds no `never-return`, in PHP# and PHP.
 #[test]
 fn returning_a_value_that_failed_to_parse_adds_no_issue() {

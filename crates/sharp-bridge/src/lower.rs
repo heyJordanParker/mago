@@ -34,6 +34,7 @@ use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::Hint;
 use mago_syntax::cst::If;
 use mago_syntax::cst::IfBody;
+use mago_syntax::cst::Inheritance;
 use mago_syntax::cst::Instantiation;
 use mago_syntax::cst::Interface;
 use mago_syntax::cst::Literal;
@@ -95,6 +96,7 @@ use crate::sharp_kind::SHARP_AST_IF;
 use crate::sharp_kind::SHARP_AST_IF_ELEM;
 use crate::sharp_kind::SHARP_AST_METHOD;
 use crate::sharp_kind::SHARP_AST_METHOD_CALL;
+use crate::sharp_kind::SHARP_AST_NAME_LIST;
 use crate::sharp_kind::SHARP_AST_NAMED_ARG;
 use crate::sharp_kind::SHARP_AST_NAMESPACE;
 use crate::sharp_kind::SHARP_AST_NEW;
@@ -156,6 +158,8 @@ const ZEND_IS_SMALLER: u32 = 20;
 const ZEND_IS_SMALLER_OR_EQUAL: u32 = 21;
 /// php-sharp's own attr from `zend_compile.h`: a class constant fetch that falls back to the static property.
 const ZEND_FETCH_CLASS_MEMBER: u32 = 1 << 0;
+/// php-sharp's own class flag from `zend_compile.h`: the class's parent, if any, is in its interface list.
+const ZEND_ACC_PARENT_IN_INTERFACES: u32 = 1 << 31;
 
 /// A null child.
 const NULL: u32 = u32::MAX;
@@ -344,16 +348,31 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         }
 
         let members = self.node(SHARP_AST_STMT_LIST, 0, self.line(class.left_brace), &members);
-        let attributes = self.attributes(&class.attribute_lists);
+        let attributes = self.attributes(&class.attribute_lists, None);
+        let (header, parent_in_interfaces) = match &class.inheritance {
+            Some(inheritance) => (self.name_list(inheritance), ZEND_ACC_PARENT_IN_INTERFACES),
+            None => (NULL, 0),
+        };
 
         self.declaration(
             SHARP_AST_CLASS,
-            class_flags(&class.modifiers),
+            class_flags(&class.modifiers) | parent_in_interfaces,
             class.class.span,
             class.right_brace,
             class.name.value,
-            &[NULL, NULL, members, attributes, NULL],
+            &[NULL, header, members, attributes, NULL],
         )
+    }
+
+    /// A header's names, which PHP compiles as the interface list.
+    fn name_list(&mut self, inheritance: &Inheritance) -> u32 {
+        let names: Vec<u32> = inheritance
+            .types
+            .iter()
+            .map(|name| self.string(ZEND_NAME_FQ, self.line(name), self.names.get(name)))
+            .collect();
+
+        self.node(SHARP_AST_NAME_LIST, 0, self.line(inheritance), &names)
     }
 
     /// An interface is a class declaration with `ZEND_ACC_INTERFACE`, and its methods are `public`, as php-src's
@@ -369,6 +388,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         }
 
         let members = self.node(SHARP_AST_STMT_LIST, 0, self.line(interface.left_brace), &members);
+        let header = interface.inheritance.as_ref().map_or(NULL, |inheritance| self.name_list(inheritance));
 
         self.declaration(
             SHARP_AST_CLASS,
@@ -376,7 +396,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             interface.interface.span,
             interface.right_brace,
             interface.name.value,
-            &[NULL, NULL, members, NULL, NULL],
+            &[NULL, header, members, NULL, NULL],
         )
     }
 
@@ -410,7 +430,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             Some(return_type_hint) => (return_type_hint.span(), self.hint(&return_type_hint.hint)),
             None => (method.name.span, NULL),
         };
-        let attributes = self.attributes(&method.attribute_lists);
+        let r#override = method.modifiers.iter().find(|modifier| matches!(modifier, Modifier::Override(_)));
+        let attributes = self.attributes(&method.attribute_lists, r#override);
 
         self.declaration(
             SHARP_AST_METHOD,
@@ -435,7 +456,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let accessor_flags =
             parameter.hooks.as_ref().map_or(0, |accessors| accessor_flags(&parameter.modifiers, accessors));
         let flags = modifier_flags(&parameter.modifiers) | accessor_flags;
-        let attributes = self.attributes(&parameter.attribute_lists);
+        let attributes = self.attributes(&parameter.attribute_lists, None);
 
         self.node(SHARP_AST_PARAM, flags, self.line(parameter), &[hint, name, default, attributes, NULL, NULL])
     }
@@ -466,16 +487,19 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let element = self.node(SHARP_AST_PROP_ELEM, 0, line, &[name, default, NULL, NULL]);
         let declaration = self.node(SHARP_AST_PROP_DECL, 0, line, &[element]);
         let flags = modifier_flags(property.modifiers()) | accessor_flags;
-        let attributes = self.attributes(attribute_lists);
+        let attributes = self.attributes(attribute_lists, None);
 
         self.node(SHARP_AST_PROP_GROUP, flags, self.line(property), &[hint, declaration, attributes])
     }
 
     /// A declaration's attributes are one `ATTRIBUTE_LIST` with an `ATTRIBUTE_GROUP` per `[...]`, as php-src's grammar
-    /// builds `#[...]`, or null without attributes. Each attribute names its class by its full name.
-    fn attributes(&mut self, lists: &Sequence<AttributeList>) -> u32 {
-        let Some(first) = lists.first() else {
-            return NULL;
+    /// builds `#[...]`, or null without attributes. Each attribute names its class by its full name. A method's
+    /// `override` adds a last group of `#[\Override]`.
+    fn attributes(&mut self, lists: &Sequence<AttributeList>, r#override: Option<&Modifier>) -> u32 {
+        let line = match (lists.first(), r#override) {
+            (Some(first), _) => self.line(first),
+            (None, Some(r#override)) => self.line(r#override),
+            (None, None) => return NULL,
         };
 
         let mut groups = Vec::new();
@@ -495,7 +519,14 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             groups.push(self.node(SHARP_AST_ATTRIBUTE_GROUP, 0, self.line(list), &attributes));
         }
 
-        self.node(SHARP_AST_ATTRIBUTE_LIST, 0, self.line(first), &groups)
+        if let Some(r#override) = r#override {
+            let line = self.line(r#override);
+            let name = self.string(ZEND_NAME_FQ, line, b"Override");
+            let attribute = self.node(SHARP_AST_ATTRIBUTE, 0, line, &[name, NULL]);
+            groups.push(self.node(SHARP_AST_ATTRIBUTE_GROUP, 0, line, &[attribute]));
+        }
+
+        self.node(SHARP_AST_ATTRIBUTE_LIST, 0, line, &groups)
     }
 
     /// A constant is a class constant group of one constant, as php-src's grammar builds `public const int MAX = 3;`:
@@ -797,16 +828,20 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_VAR, 0, line, &[name])
     }
 
-    /// `Class.m()` is a static call on the class's full name. Any other `object.m()` is an instance call.
+    /// `Class.m()` is a static call on the class's full name, and `super.m()` one on `parent`. Any other `object.m()`
+    /// is an instance call.
     fn method_call(&mut self, call: &MethodCall) -> u32 {
         let line = self.line(call);
-        let (kind, object) = match self.names.static_call_class(call) {
-            Some(class) => {
+        let (kind, object) = match (self.names.static_call_class(call), call.object) {
+            (Some(class), _) => {
                 let class = self.string(ZEND_NAME_FQ, self.line(class), self.names.get(&class.name));
 
                 (SHARP_AST_STATIC_CALL, class)
             }
-            None => (SHARP_AST_METHOD_CALL, self.expression(call.object)),
+            (None, Expression::Parent(keyword)) => {
+                (SHARP_AST_STATIC_CALL, self.string(ZEND_NAME_NOT_FQ, self.line(keyword), b"parent"))
+            }
+            (None, object) => (SHARP_AST_METHOD_CALL, self.expression(object)),
         };
         let method = self.member(&call.method);
         let arguments = self.arguments(&call.argument_list);
@@ -970,6 +1005,8 @@ fn modifier_flags(modifiers: &Sequence<Modifier>) -> u32 {
             Modifier::Private(_) => ZEND_ACC_PRIVATE,
             Modifier::Static(_) => ZEND_ACC_STATIC,
             Modifier::Abstract(_) => ZEND_ACC_ABSTRACT,
+            // PHP methods are open to overriding, and `method` lowers `override` to `#[\Override]`.
+            Modifier::Virtual(_) | Modifier::Override(_) => 0,
             Modifier::Final(_)
             | Modifier::Readonly(_)
             | Modifier::PublicSet(_)
@@ -995,7 +1032,9 @@ fn class_flags(modifiers: &Sequence<Modifier>) -> u32 {
             | Modifier::Readonly(_)
             | Modifier::PublicSet(_)
             | Modifier::ProtectedSet(_)
-            | Modifier::PrivateSet(_) => unreachable!("check_slice refuses the class modifier `{modifier}`"),
+            | Modifier::PrivateSet(_)
+            | Modifier::Virtual(_)
+            | Modifier::Override(_) => unreachable!("check_slice refuses the class modifier `{modifier}`"),
         };
     }
 
