@@ -9,6 +9,7 @@ use Mago\Sdk\Analyzer\VariableDefinedness;
 
 /**
  * @internal
+ * @mago-expect lint:excessive-parameter-list
  */
 final class NodeAnalysisData
 {
@@ -23,5 +24,6 @@ final class NodeAnalysisData
         public readonly array $argumentTypes,
         public readonly ?array $variableDefinedness,
         public readonly array $targetedHookIndices,
+        public readonly bool $isSharpStaticCall,
     ) {}
 }

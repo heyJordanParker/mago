@@ -117,6 +117,7 @@ pub struct IncrementalAnalysisService {
     codebase_scan_files: HashMap<FileId, CodebaseScanFile>,
     use_progress_bars: bool,
     scan_only: bool,
+    node_analysis_files: Option<HashSet<FileId>>,
 }
 
 impl std::fmt::Debug for IncrementalAnalysisService {
@@ -141,6 +142,7 @@ impl std::fmt::Debug for IncrementalAnalysisService {
             .field("codebase_scan_files", &self.codebase_scan_files.len())
             .field("use_progress_bars", &self.use_progress_bars)
             .field("scan_only", &self.scan_only)
+            .field("node_analysis_files", &self.node_analysis_files.as_ref().map(HashSet::len))
             .finish()
     }
 }
@@ -187,6 +189,7 @@ impl IncrementalAnalysisService {
             codebase_scan_files: HashMap::default(),
             use_progress_bars: false,
             scan_only: false,
+            node_analysis_files: None,
         }
     }
 
@@ -230,6 +233,13 @@ impl IncrementalAnalysisService {
     /// updated database that reflects file changes.
     pub fn update_database(&mut self, database: ReadDatabase) {
         self.database = database;
+    }
+
+    /// Runs the external node-analysis hooks only in `files` from the next analysis on, or in every
+    /// file with `None`. A node-analysis hook reports issues in the file it inspects, so a caller that
+    /// reports only some files' issues skips the hooks everywhere else.
+    pub fn set_node_analysis_files(&mut self, files: Option<HashSet<FileId>>) {
+        self.node_analysis_files = files;
     }
 
     /// Returns whether the service has been initialized (initial full analysis completed).
@@ -1474,6 +1484,7 @@ impl IncrementalAnalysisService {
                             &artifacts,
                             codebase,
                             node_analysis_requirements.as_ref(),
+                            self.node_analysis_files.as_ref().is_none_or(|files| files.contains(&file_id)),
                         )
                         .map_err(|error| {
                             OrchestratorError::General(format!("Failed to retain external analysis data: {error}"))

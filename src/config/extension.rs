@@ -55,7 +55,7 @@ pub struct ExtensionHostConfiguration {
     /// Maximum bytes accepted in one extension protocol frame.
     pub maximum_payload_size: usize,
 
-    /// Maximum duration of one request, in milliseconds.
+    /// Maximum duration of one request from when the worker starts it, in milliseconds.
     pub request_timeout_ms: u64,
 
     /// Grace period for worker shutdown, in milliseconds.
