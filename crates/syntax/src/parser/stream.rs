@@ -8,6 +8,7 @@ use mago_span::Position;
 use mago_span::Span;
 use mago_syntax_core::parser::LookaheadBuf;
 
+use crate::T;
 use crate::cst::sequence::Sequence;
 use crate::cst::trivia::Trivia;
 use crate::cst::trivia::TriviaKind;
@@ -224,6 +225,45 @@ where
             Ok(None) => Ok(None),
             Err(error) => Err(error.into()),
         }
+    }
+
+    /// Peeks past the `(` at the head of the stream to the `)` that closes it, and returns the kind of the token after
+    /// that `)`, or `None` at the end of the file. It reads ahead with a copy of the lexer, so it consumes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ParseError`] if the lexer fails to produce a token.
+    pub fn peek_kind_after_parentheses(&mut self) -> Result<Option<TokenKind>, ParseError> {
+        let mut lexer = self.lexer.clone();
+        let mut index = 0;
+        let mut next_kind = || -> Result<Option<TokenKind>, SyntaxError> {
+            if index < self.buffer.len() {
+                index += 1;
+
+                return Ok(self.buffer.get(index - 1).map(|token| token.kind));
+            }
+
+            while let Some(token) = lexer.advance() {
+                let token = token?;
+                if !token.kind.is_trivia() {
+                    return Ok(Some(token.kind));
+                }
+            }
+
+            Ok(None)
+        };
+
+        let mut depth = 0usize;
+        while let Some(kind) = next_kind()? {
+            match kind {
+                T!["("] => depth += 1,
+                T![")"] if depth == 1 => return Ok(next_kind()?),
+                T![")"] => depth -= 1,
+                _ => {}
+            }
+        }
+
+        Ok(None)
     }
 
     /// Creates a `ParseError` for an unexpected token or EOF, given one or more expected kinds.

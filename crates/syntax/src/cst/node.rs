@@ -1904,7 +1904,9 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 if let Some(r#static) = &node.r#static {
                     f(Node::Keyword(r#static));
                 }
-                f(Node::Keyword(&node.r#fn));
+                if let Some(r#fn) = &node.r#fn {
+                    f(Node::Keyword(r#fn));
+                }
                 f(Node::FunctionLikeParameterList(&node.parameter_list));
                 if let Some(return_type_hint) = &node.return_type_hint {
                     f(Node::FunctionLikeReturnTypeHint(return_type_hint));
@@ -1915,7 +1917,9 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 for item in node.attribute_lists.iter() {
                     f(Node::AttributeList(item));
                 }
-                f(Node::Keyword(&node.function));
+                if let Some(function) = &node.function {
+                    f(Node::Keyword(function));
+                }
                 f(Node::FunctionLikeParameterList(&node.parameter_list));
                 if let Some(use_clause) = &node.use_clause {
                     f(Node::ClosureUseClause(use_clause));

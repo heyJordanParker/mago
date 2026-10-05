@@ -771,6 +771,164 @@ fn question_mark_dot_reads_as_null_safe_member_access() {
     assert_eq!(source(CODE, total), "this?.total");
 }
 
+/// The expression the `n`th statement of the first method evaluates: a local's value, or the statement's expression.
+fn statement_expression<'arena>(program: &'arena Program<'arena>, n: usize) -> &'arena Expression<'arena> {
+    match &method_body(program)[n] {
+        Statement::LocalDeclaration(local) => local.value,
+        statement => expression(statement),
+    }
+}
+
+#[test]
+fn a_lambda_with_an_expression_body_is_an_arrow_function_without_fn() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        lines.filter(l => !l.refunded);\n        const add = (a, b) => a + b;\n        const check = (Order order, int minimum = 1) => order.total >= minimum;\n        const one = () => 1;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Expression::Call(Call::Method(filter)) = statement_expression(program, 0) else {
+        panic!("expected `lines.filter(…)`, got {:#?}", method_body(program));
+    };
+    let mut lambdas = vec![filter.argument_list.arguments.first().expect("one argument").value()];
+    lambdas.extend((1..4).map(|n| statement_expression(program, n)));
+
+    /// A parameter's name and type.
+    type Parameter<'a> = (&'a str, Option<&'a str>);
+
+    let lambdas: Vec<(&str, Vec<Parameter>, &str, &str)> = lambdas
+        .into_iter()
+        .map(|lambda| {
+            let Expression::ArrowFunction(lambda) = lambda else {
+                panic!("expected a lambda, got {lambda:#?}");
+            };
+            assert!(lambda.r#fn.is_none());
+            let parameters = lambda
+                .parameter_list
+                .parameters
+                .iter()
+                .map(|parameter| {
+                    (source(CODE, &parameter.variable), parameter.hint.as_ref().map(|hint| source(CODE, hint)))
+                })
+                .collect();
+
+            (source(CODE, lambda), parameters, source(CODE, &lambda.arrow), source(CODE, lambda.expression))
+        })
+        .collect();
+
+    assert_eq!(
+        lambdas,
+        [
+            ("l => !l.refunded", vec![("l", None)], "=>", "!l.refunded"),
+            ("(a, b) => a + b", vec![("a", None), ("b", None)], "=>", "a + b"),
+            (
+                "(Order order, int minimum = 1) => order.total >= minimum",
+                vec![("order", Some("Order")), ("minimum", Some("int"))],
+                "=>",
+                "order.total >= minimum"
+            ),
+            ("() => 1", vec![], "=>", "1"),
+        ]
+    );
+}
+
+#[test]
+fn a_lambda_with_a_block_body_is_a_closure_without_function_or_use() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        const increment = () => { count += 1; };\n        const price = (Line line, string currency) => {\n            return line.priceIn(currency);\n        };\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let lambdas: Vec<(&str, &str, &str, usize)> = (0..2)
+        .map(|n| {
+            let Expression::Closure(lambda) = statement_expression(program, n) else {
+                panic!("expected a block lambda, got {:#?}", method_body(program));
+            };
+            assert!(lambda.function.is_none());
+            assert!(lambda.use_clause.is_none());
+
+            (
+                source(CODE, lambda),
+                source(CODE, &lambda.parameter_list),
+                source(CODE, &lambda.arrow.expect("an arrow")),
+                lambda.body.statements.len(),
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        lambdas,
+        [
+            ("() => { count += 1; }", "()", "=>", 1),
+            (
+                "(Line line, string currency) => {\n            return line.priceIn(currency);\n        }",
+                "(Line line, string currency)",
+                "=>",
+                1
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_lambda_body_takes_the_whole_expression_and_stops_at_a_comma() {
+    const CODE: &str =
+        "class Report\n{\n    void run()\n    {\n        retry(3, () => client.send(a ?? b), 100);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Expression::Call(Call::Function(retry)) = statement_expression(program, 0) else {
+        panic!("expected `retry(…)`, got {:#?}", method_body(program));
+    };
+    let arguments: Vec<&str> =
+        retry.argument_list.arguments.iter().map(|argument| source(CODE, argument.value())).collect();
+    assert_eq!(arguments, ["3", "() => client.send(a ?? b)", "100"]);
+}
+
+#[test]
+fn a_parenthesized_expression_is_not_a_lambda() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        return (a + b) * (c);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Expression::Binary(product) = statement_expression(program, 0) else {
+        panic!("expected a product, got {:#?}", method_body(program));
+    };
+    assert!(matches!(product.lhs, Expression::Parenthesized(_)), "{:#?}", product.lhs);
+    assert!(matches!(product.rhs, Expression::Parenthesized(_)), "{:#?}", product.rhs);
+}
+
+#[test]
+fn a_php_closure_or_arrow_function_is_php_syntax_that_names_the_lambda() {
+    for (lambda, start) in [("fn (int x) => x", "fn"), ("function (int x) { return x; }", "function")] {
+        let arena = LocalArena::new();
+        let code: &'static str = Box::leak(
+            format!("class Report\n{{\n    void run()\n    {{\n        const f = {lambda};\n    }}\n}}\n")
+                .into_boxed_str(),
+        );
+        let program = parse(&arena, "src/Report.sharp", code);
+
+        let [error] = program.errors else {
+            panic!("expected one error for `{lambda}`, got {:#?}", program.errors);
+        };
+        assert_eq!(
+            Issue::from(error).message,
+            "PHP# writes a lambda as a bare arrow without `fn` or `function`, as in `x => x.id` or `(a, b) => { … }`",
+            "{lambda}"
+        );
+        assert_eq!(source(code, error), start, "{lambda}");
+    }
+}
+
+#[test]
+fn php_keeps_its_arrow_functions_and_closures() {
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.php", "<?php $f = fn($x) => $x; $g = function () use ($f) { return 1; };");
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+}
+
 #[test]
 fn a_question_mark_apart_from_the_dot_is_not_null_safe_access() {
     let arena = LocalArena::new();
@@ -819,7 +977,6 @@ fn the_use_keyword_is_a_parse_error_in_every_form() {
         "use function Lib\\{make, total};\n",
         "class Report\n{\n    use Shared;\n}\n",
         "class Report\n{\n    use Lib\\Shared { Lib\\Shared::run as start; }\n}\n",
-        "class Report\n{\n    void run()\n    {\n        const total = function () use ($count) { return 1; };\n    }\n}\n",
     ] {
         let arena = LocalArena::new();
         let program = parse(&arena, "src/Report.sharp", code);
@@ -827,6 +984,25 @@ fn the_use_keyword_is_a_parse_error_in_every_form() {
         let messages: Vec<String> = program.errors.iter().map(ToString::to_string).collect();
         assert_eq!(messages, ["`use` is PHP syntax: PHP# imports a class with `import`"], "{code}");
     }
+}
+
+#[test]
+fn a_php_closure_reports_its_function_and_its_use_clause() {
+    let arena = LocalArena::new();
+    let program = parse(
+        &arena,
+        "src/Report.sharp",
+        "class Report\n{\n    void run()\n    {\n        const total = function () use ($count) { return 1; };\n    }\n}\n",
+    );
+
+    let messages: Vec<String> = program.errors.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        messages,
+        [
+            "PHP# writes a lambda as a bare arrow without `fn` or `function`, as in `x => x.id` or `(a, b) => { … }`",
+            "`use` is PHP syntax: PHP# imports a class with `import`",
+        ]
+    );
 }
 
 #[test]

@@ -1985,7 +1985,10 @@ generate_ast_walker! {
             walker.walk_keyword(keyword, context);
         }
 
-        walker.walk_keyword(&closure.function, context);
+        if let Some(keyword) = &closure.function {
+            walker.walk_keyword(keyword, context);
+        }
+
         walker.walk_function_like_parameter_list(&closure.parameter_list, context);
         if let Some(use_clause) = &closure.use_clause {
             walker.walk_closure_use_clause(use_clause, context);
@@ -2017,7 +2020,10 @@ generate_ast_walker! {
             walker.walk_keyword(keyword, context);
         }
 
-        walker.walk_keyword(&arrow_function.r#fn, context);
+        if let Some(keyword) = &arrow_function.r#fn {
+            walker.walk_keyword(keyword, context);
+        }
+
         walker.walk_function_like_parameter_list(&arrow_function.parameter_list, context);
 
         if let Some(return_type_hint) = &arrow_function.return_type_hint {

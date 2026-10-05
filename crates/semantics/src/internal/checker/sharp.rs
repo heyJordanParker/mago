@@ -124,6 +124,10 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   section 8 keeps, and the engine calls the global one. A string literal's `\u{...}` escapes are valid codepoints,
 ///   as PHP requires. A `"…"` string never interpolates, and a template, `` `Order ${number}` ``, interpolates any
 ///   expression of this list in each `${…}` and takes JavaScript's escapes, as spec section 18 writes them.
+/// - Lambdas, as spec section 3 writes them: `x => x.id`, `(a, b) => a + b` and `() => { … }`, whose body is an
+///   expression or a block of a method body. A parameter is a method's, with its type optional. A lambda captures the
+///   variable itself, except a loop variable that code changes, whose capture is not supported yet. A call of a local
+///   by its bare name, `f(x)`, calls the lambda the local holds.
 /// - Operators: `+ - * / % **`, `== != === !== < > <= >=`, `&& || !`, `??`, unary `-` and `+`, `++` and `--`, and
 ///   `= += -= *= /= **= ??=`.
 /// - The ternary `c ? a : b` in a method body, as spec section 21 writes it. PHP's `a ?: b` is an error, and a ternary as the condition
@@ -174,6 +178,8 @@ pub enum Place {
     Parameter,
     /// A method body.
     Body,
+    /// A lambda's parameters, whose body is the method body's.
+    Lambda,
     /// `new` and the class it creates, whose arguments are the method body's.
     Instantiation,
     /// A call of PHP's built-in function and the function's name, whose arguments are the method body's.
@@ -205,6 +211,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
     use Place::File;
     use Place::FunctionCall;
     use Place::Instantiation;
+    use Place::Lambda;
     use Place::Method;
     use Place::Parameter;
     use Place::TryCatchClause;
@@ -338,7 +345,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
             None
         }
-        (Node::FunctionLikeParameter(parameter), Method) => match is_slice_parameter(parameter) {
+        (Node::FunctionLikeParameter(parameter), Method | Lambda) => match is_slice_parameter(parameter) {
             Ok(()) => {
                 if let Some(accessors) = &parameter.hooks
                     && parameter.modifiers.contains_visibility()
@@ -474,6 +481,17 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         (Node::Expression(Expression::Conditional(conditional)), Body) => {
             check_conditional(conditional, context).then_some(Body)
         }
+        // Spec section 14.2: a lambda is a bare arrow, after one name or a parenthesized parameter list, and its body
+        // is an expression or a block. The parser reads it into an arrow function or a closure without a keyword.
+        (Node::Expression(Expression::ArrowFunction(_) | Expression::Closure(_)), Body) => Some(Body),
+        (Node::ArrowFunction(_) | Node::Closure(_), Body) => {
+            check_lambda_captures(node, context);
+
+            Some(Lambda)
+        }
+        (Node::FunctionLikeParameterList(_), Lambda) => Some(Lambda),
+        (Node::Block(_), Lambda) => Some(Body),
+        (Node::Expression(_), Lambda) => enter(node, Body, context),
         (Node::Conditional(_), Body) => Some(Body),
         (Node::BinaryOperator(operator), Body | Constant) if is_slice_binary_operator(operator) => Some(place),
         (Node::UnaryPrefixOperator(operator), Body | Constant) if operator.is_cast() => {
@@ -562,10 +580,10 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             None
         }
         // Spec section 8: PHP's built-in functions are called by their bare names. The analyzer refuses a function
-        // that is not built in.
+        // that is not built in. Spec section 14: a local holding a function is called the same way.
         (Node::Expression(Expression::Call(Call::Function(function_call))), Body)
             if let Expression::Identifier(name @ Identifier::Local(_)) = function_call.function
-                && context.names.binding(name).is_none() =>
+                && matches!(context.names.binding(name), None | Some(Binding::Local(_))) =>
         {
             Some(FunctionCall)
         }
@@ -1061,6 +1079,9 @@ const fn supported(place: Place) -> &'static str {
         }
         Place::Parameter => {
             "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, a name, and an optional default."
+        }
+        Place::Lambda => {
+            "A PHP# lambda is a bare arrow after one name or parenthesized parameters, each with an optional type, and its body is an expression or a block, as in `(a, b) => a + b`."
         }
         Place::Body | Place::Instantiation | Place::FunctionCall | Place::TryCatchClause => {
             "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, `break` and `continue` without a level, and `try` with `catch` and `finally`, with literals, templates, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, the ternary `c ? a : b`, `(int)`, `(float)` and `(string)`, `++` and `--`, method calls and property reads written with `.` or `?.`, `new Class(...)`, calls of PHP's built-in functions and `throw`."
@@ -1592,6 +1613,44 @@ fn enclosing_class_method<'ast, 'arena>(
         ClassLikeMember::Method(method) if method.name.value.eq_ignore_ascii_case(name) => Some(method),
         _ => None,
     })
+}
+
+/// Refuses a lambda that captures a loop variable that code changes. Spec section 3 gives each loop pass its own
+/// variable, and a lambda captures the variable itself, so the engine would capture a changing one by reference, and
+/// every pass's lambda would share the one PHP variable the loop reuses.
+fn check_lambda_captures(lambda: Node<'_, '_>, context: &mut Context<'_, '_, '_>) {
+    let captures = context.names.captures(&lambda.span()).to_vec();
+    for (_, local) in captures {
+        if !context.names.is_written(&local) || !is_loop_variable(context.program, &local) {
+            continue;
+        }
+
+        let uses = lambda.filter_map(|node| match node {
+            Node::ConstantAccess(access) if context.names.binding(&access.name) == Some(Binding::Local(local)) => {
+                Some(access.span())
+            }
+            _ => None,
+        });
+        report_not_supported(
+            uses.first().copied().unwrap_or_else(|| lambda.span()),
+            "capture of a loop variable that changes",
+            "Each loop pass has its own loop variable, which the engine cannot give a lambda yet when code changes it. Copy it into a `const` in the loop body, and capture that.",
+            context,
+        );
+    }
+}
+
+/// Whether `local` is the counter a `for` declares or a variable a `for … of` declares.
+fn is_loop_variable(program: &Program, local: &Local) -> bool {
+    let declares = |node: &Node<'_, '_>| match node {
+        Node::For(r#for) => {
+            r#for.declaration.as_ref().is_some_and(|declaration| declaration.name.span == local.declaration)
+        }
+        Node::ForOf(for_of) => for_of.target.names().into_iter().any(|name| name.span == local.declaration),
+        _ => false,
+    };
+
+    !Node::Program(program).filter_map(|node| declares(node).then_some(())).is_empty()
 }
 
 /// The class of a PHP# file whose body holds `span`.

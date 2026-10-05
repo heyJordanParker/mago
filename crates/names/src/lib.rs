@@ -11,6 +11,7 @@ use mago_syntax::cst::MethodCall;
 
 use crate::binding::Binding;
 use crate::binding::BindingError;
+use crate::binding::Local;
 
 pub mod binding;
 pub mod kind;
@@ -42,6 +43,14 @@ pub struct ResolvedNames<'arena> {
     /// The PHP# scope rules the bare names break, in source order. Empty for PHP.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
     binding_errors: Vec<BindingError>,
+
+    /// Start offset of every PHP# lambda -> the names and locals declared outside it that it uses, in first-use order.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "HashMap::is_empty"))]
+    captures: HashMap<u32, Vec<(&'arena [u8], Local)>>,
+
+    /// Declaration start offset of every PHP# local that code writes after its declaration.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "foldhash::HashSet::is_empty"))]
+    written_locals: foldhash::HashSet<u32>,
 }
 
 impl<'arena> ResolvedNames<'arena> {
@@ -161,8 +170,35 @@ impl<'arena> ResolvedNames<'arena> {
         &self.binding_errors
     }
 
+    /// Returns the name and local of each local declared outside the PHP# lambda starting at the given position that
+    /// the lambda uses, in the order it first uses them. A lambda inside another captures what it uses for both.
+    pub fn captures<T>(&self, lambda: &T) -> &[(&'arena [u8], Local)]
+    where
+        T: HasPosition,
+    {
+        self.captures.get(&lambda.offset()).map_or(&[], Vec::as_slice)
+    }
+
+    /// Returns whether code writes the PHP# local after its declaration, with `=`, a compound assignment, `++` or
+    /// `--`.
+    #[must_use]
+    pub fn is_written(&self, local: &Local) -> bool {
+        self.written_locals.contains(&local.declaration.start.offset)
+    }
+
     pub(crate) fn bind(&mut self, span: Span, binding: Binding) {
         self.bindings.insert(span.start.offset, binding);
+    }
+
+    pub(crate) fn capture(&mut self, lambda: u32, name: &'arena [u8], local: Local) {
+        let captures = self.captures.entry(lambda).or_default();
+        if !captures.iter().any(|(_, captured)| *captured == local) {
+            captures.push((name, local));
+        }
+    }
+
+    pub(crate) fn write(&mut self, local: Local) {
+        self.written_locals.insert(local.declaration.start.offset);
     }
 
     pub(crate) fn report_binding_error(&mut self, error: BindingError) {

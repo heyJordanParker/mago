@@ -17,6 +17,7 @@ use mago_codex::misc::GenericParent;
 use mago_codex::ttype::TType;
 use mago_codex::ttype::TypeRef;
 use mago_codex::ttype::add_optional_union_type;
+use mago_codex::ttype::add_union_type;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::callable::TCallable;
 use mago_codex::ttype::atomic::generic::TGenericParameter;
@@ -41,6 +42,7 @@ use mago_codex::ttype::get_never;
 use mago_codex::ttype::get_void;
 use mago_codex::ttype::union::TUnion;
 use mago_codex::ttype::wrap_atomic;
+use mago_names::binding::php_variable_name;
 use mago_php_version::feature::Feature;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -159,6 +161,60 @@ where
     }
 
     TUnion::from_atomic(TAtomic::Callable(TCallable::Signature(signature)))
+}
+
+/// Brings each local a PHP# lambda captures into the lambda's block, as a closure's `use` clause does. Spec section 3
+/// captures the variable itself, so a captured local that code writes is captured by reference, as the engine runs
+/// it, and [`merge_captured_references`] carries the lambda's writes back.
+pub fn capture_lambda_locals<A>(
+    context: &Context<'_, '_, A>,
+    lambda: Span,
+    block_context: &mut BlockContext<'_>,
+    lambda_block_context: &mut BlockContext<'_>,
+) where
+    A: Arena,
+{
+    for (name, local) in context.resolved_names.captures(&lambda) {
+        let variable = php_variable_name(name);
+        block_context.add_conditionally_referenced_variable(variable.as_bytes());
+
+        let mut variable_type = block_context.locals.get(&variable).cloned().unwrap_or_else(|| Rc::new(get_mixed()));
+        if context.resolved_names.is_written(local) {
+            Rc::make_mut(&mut variable_type).set_by_reference(true);
+            lambda_block_context.references_to_external_scope.insert(variable);
+        }
+
+        lambda_block_context.locals.insert(variable, variable_type);
+        lambda_block_context.variables_possibly_in_scope.insert(variable);
+    }
+}
+
+/// Joins the type each variable a closure captured by reference has at the end of the closure into its type in the
+/// enclosing block, because the closure may have run.
+pub fn merge_captured_references<A>(
+    context: &Context<'_, '_, A>,
+    block_context: &mut BlockContext<'_>,
+    mut closure_block_context: BlockContext<'_>,
+) where
+    A: Arena,
+{
+    for referenced_variable in closure_block_context.references_to_external_scope {
+        let Some(inner_type) = closure_block_context.locals.remove(&referenced_variable) else {
+            continue;
+        };
+
+        let variable_type = match block_context.locals.remove(&referenced_variable) {
+            Some(existing_type) => Rc::new(add_union_type(
+                Rc::unwrap_or_clone(inner_type),
+                &existing_type,
+                context.codebase,
+                context.settings.combiner_options(),
+            )),
+            None => inner_type,
+        };
+
+        block_context.locals.insert(referenced_variable, variable_type);
+    }
 }
 
 pub fn analyze_function_like<'ctx, 'ast, 'arena, A>(

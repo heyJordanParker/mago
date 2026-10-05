@@ -25,10 +25,12 @@ use crate::error::AnalysisError;
 use crate::expression::call::analyze_invocation_targets;
 use crate::expression::call::get_function_like_target;
 use crate::expression::call::get_function_like_target_with_skip;
+use crate::expression::variable::read_variable;
 use crate::invocation::InvocationArgumentsSource;
 use crate::invocation::InvocationTarget;
 use crate::plugin::ExpressionHookResult;
 use crate::plugin::context::HookContext;
+use crate::utils::expression::get_bare_name_variable_id;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for FunctionCall<'arena> {
     fn analyze<'ctx, A>(
@@ -100,7 +102,13 @@ pub(super) fn resolve_targets<'ctx, 'arena, A>(
 where
     A: Arena,
 {
-    if let Expression::Identifier(function_name) = expression {
+    if let Expression::Identifier(function_name) = expression
+        && let Some(variable_id) = get_bare_name_variable_id(function_name, context.resolved_names)
+    {
+        // A PHP# call of a local, `f(x)`, calls the closure the local holds, as PHP's `$f($x)` does.
+        let local_type = read_variable(context, block_context, artifacts, variable_id.as_bytes(), function_name.span());
+        artifacts.set_rc_expression_type(expression, local_type);
+    } else if let Expression::Identifier(function_name) = expression {
         let name = word(context.resolved_names.get(function_name));
         let unqualified_name = word(function_name.value());
 
@@ -135,12 +143,13 @@ where
         }
 
         return Ok(if let Some(t) = target { (vec![t], false) } else { (vec![], false) });
+    } else {
+        let was_inside_call = block_context.flags.inside_call();
+        block_context.flags.set_inside_call(true);
+        expression.analyze(context, block_context, artifacts)?;
+        block_context.flags.set_inside_call(was_inside_call);
     }
 
-    let was_inside_call = block_context.flags.inside_call();
-    block_context.flags.set_inside_call(true);
-    expression.analyze(context, block_context, artifacts)?;
-    block_context.flags.set_inside_call(was_inside_call);
     let Some(expression_type) = artifacts.get_expression_type(expression) else {
         return Ok((vec![], false));
     };
