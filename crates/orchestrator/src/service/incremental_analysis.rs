@@ -87,7 +87,7 @@ struct SelectiveAnalysisOutput {
 ///
 /// This service manages all the state needed for incremental analysis:
 ///
-/// - Base codebase (prelude/builtins only)
+/// - The prelude (builtins only), decoded afresh for each analysis from scratch
 /// - Current fully-populated codebase
 /// - File content hashes and cached per-file scan results
 /// - Symbol reference graph
@@ -104,8 +104,7 @@ pub struct IncrementalAnalysisService {
     native_symbol_references: SymbolReferences,
     external_symbol_references: SymbolReferences,
     late_symbol_references: SymbolReferences,
-    base_codebase: Arc<CodebaseMetadata>,
-    base_symbol_references: Arc<SymbolReferences>,
+    prelude: fn() -> (CodebaseMetadata, SymbolReferences),
     settings: Settings,
     parser_settings: ParserSettings,
     file_states: HashMap<FileId, FileState>,
@@ -129,8 +128,7 @@ impl std::fmt::Debug for IncrementalAnalysisService {
             .field("native_symbol_references", &"<SymbolReferences>")
             .field("external_symbol_references", &"<SymbolReferences>")
             .field("late_symbol_references", &"<SymbolReferences>")
-            .field("base_codebase", &"<Arc<CodebaseMetadata>>")
-            .field("base_symbol_references", &"<Arc<SymbolReferences>>")
+            .field("prelude", &"<fn() -> (CodebaseMetadata, SymbolReferences)>")
             .field("settings", &self.settings)
             .field("parser_settings", &self.parser_settings)
             .field("file_states", &format_args!("{} tracked files", self.file_states.len()))
@@ -148,41 +146,35 @@ impl std::fmt::Debug for IncrementalAnalysisService {
 }
 
 impl IncrementalAnalysisService {
-    /// Creates a new incremental analysis service with the given database, base codebase, and settings.
+    /// Creates a new incremental analysis service with the given database, prelude, and settings.
     ///
-    /// The provided `codebase` and `symbol_references` should contain only prelude/builtin
-    /// data (no user symbols). They will be used as the base for every analysis run.
+    /// `prelude` returns the codebase and symbol references of the builtins only (no user
+    /// symbols). Each analysis from scratch calls it for a fresh base, so the service never
+    /// keeps a copy of the prelude besides the codebase it analyzes.
     ///
     /// # Arguments
     ///
     /// * `database` - Read-only file database
-    /// * `codebase` - Base codebase metadata (prelude only)
-    /// * `symbol_references` - Base symbol references (prelude only)
+    /// * `prelude` - Decodes the prelude's codebase metadata and symbol references
     /// * `settings` - Analyzer settings
     /// * `parser_settings` - Parser settings
     /// * `plugin_registry` - Analyzer plugin registry
     #[must_use]
     pub fn new(
         database: ReadDatabase,
-        codebase: CodebaseMetadata,
-        symbol_references: SymbolReferences,
+        prelude: fn() -> (CodebaseMetadata, SymbolReferences),
         settings: Settings,
         parser_settings: ParserSettings,
         plugin_registry: Arc<PluginRegistry>,
     ) -> Self {
-        let base_codebase = Arc::new(codebase.clone());
-        let base_symbol_references = Arc::new(symbol_references.clone());
-        let native_symbol_references = symbol_references.clone();
-
         Self {
             database,
-            codebase,
-            symbol_references,
-            native_symbol_references,
+            codebase: CodebaseMetadata::new(),
+            symbol_references: SymbolReferences::new(),
+            native_symbol_references: SymbolReferences::new(),
             external_symbol_references: SymbolReferences::new(),
             late_symbol_references: SymbolReferences::new(),
-            base_codebase,
-            base_symbol_references,
+            prelude,
             settings,
             parser_settings,
             file_states: HashMap::default(),
@@ -218,9 +210,9 @@ impl IncrementalAnalysisService {
     ///
     /// Call this after an analysis fails: a failed analysis leaves its state half updated.
     pub fn reset(&mut self) {
-        self.codebase = (*self.base_codebase).clone();
-        self.symbol_references = (*self.base_symbol_references).clone();
-        self.native_symbol_references = (*self.base_symbol_references).clone();
+        self.codebase = CodebaseMetadata::new();
+        self.symbol_references = SymbolReferences::new();
+        self.native_symbol_references = SymbolReferences::new();
         self.external_symbol_references = SymbolReferences::new();
         self.late_symbol_references = SymbolReferences::new();
         self.file_states.clear();
@@ -246,7 +238,7 @@ impl IncrementalAnalysisService {
         self.initialized
     }
 
-    /// Returns a reference to the current codebase metadata.
+    /// Returns a reference to the current codebase metadata, which stays empty until the first analysis.
     #[must_use]
     pub fn codebase(&self) -> &CodebaseMetadata {
         &self.codebase
@@ -408,6 +400,8 @@ impl IncrementalAnalysisService {
             self.plugin_registry
                 .run_external_codebase_scan(Vec::new())
                 .map_err(mago_analyzer::error::AnalysisError::from)?;
+            (self.codebase, self.symbol_references) = (self.prelude)();
+            self.native_symbol_references = self.symbol_references.clone();
             self.initialized = true;
             return Ok(AnalysisResult::new(SymbolReferences::new()));
         }
@@ -418,46 +412,46 @@ impl IncrementalAnalysisService {
         let compiling_bar = self
             .use_progress_bars
             .then(|| create_progress_bar(source_files.len(), "📚 Compiling", ProgressBarTheme::Blue));
-        let mut per_file_results: Vec<(FileId, u64, CodebaseMetadata, Option<CodebaseScanFile>)> = source_files
-            .into_par_iter()
-            .map_init(LocalArena::new, |arena, file| {
-                let content_hash = xxhash_rust::xxh3::xxh3_64(file.contents.as_ref());
+        // The prelude decodes while the files scan, so no copy of it outlives an analysis.
+        let ((mut merged_codebase, mut symbol_references), per_file_results) = rayon::join(self.prelude, || {
+            source_files
+                .into_par_iter()
+                .map_init(LocalArena::new, |arena, file| {
+                    let content_hash = xxhash_rust::xxh3::xxh3_64(file.contents.as_ref());
 
-                let program = parse_file_with_settings(arena, &file, parser_settings);
-                if program.has_errors() {
-                    tracing::warn!(
-                        "Encountered {} parsing error(s) in '{}'. Codebase analysis may be incomplete.",
-                        program.errors.len(),
-                        mago_bytes::BytesDisplay(&file.name),
-                    );
-                }
+                    let program = parse_file_with_settings(arena, &file, parser_settings);
+                    if program.has_errors() {
+                        tracing::warn!(
+                            "Encountered {} parsing error(s) in '{}'. Codebase analysis may be incomplete.",
+                            program.errors.len(),
+                            mago_bytes::BytesDisplay(&file.name),
+                        );
+                    }
 
-                let resolver = NameResolver::new(arena);
-                let resolved_names = resolver.resolve(program);
-                let file_signature = signature_builder::build_file_signature(program, &resolved_names);
-                let mut metadata = scan_program(arena, &file, program, &resolved_names, php_version);
-                metadata.set_file_signature(file.id, file_signature);
-                if file.file_type.is_patch() {
-                    metadata.convert_partial_to_patch();
-                }
-                let codebase_scan =
-                    codebase_scan_plan.as_deref().map(|plan| plan.capture(&file, &metadata)).transpose()?.flatten();
+                    let resolver = NameResolver::new(arena);
+                    let resolved_names = resolver.resolve(program);
+                    let file_signature = signature_builder::build_file_signature(program, &resolved_names);
+                    let mut metadata = scan_program(arena, &file, program, &resolved_names, php_version);
+                    metadata.set_file_signature(file.id, file_signature);
+                    if file.file_type.is_patch() {
+                        metadata.convert_partial_to_patch();
+                    }
+                    let codebase_scan =
+                        codebase_scan_plan.as_deref().map(|plan| plan.capture(&file, &metadata)).transpose()?.flatten();
 
-                arena.reset();
-                if let Some(compiling_bar) = &compiling_bar {
-                    compiling_bar.inc(1);
-                }
+                    arena.reset();
+                    if let Some(compiling_bar) = &compiling_bar {
+                        compiling_bar.inc(1);
+                    }
 
-                Ok((file.id, content_hash, metadata, codebase_scan))
-            })
-            .collect::<Result<Vec<_>, mago_analyzer::external::ExternalAnalyzerError>>()?;
+                    Ok((file.id, content_hash, metadata, codebase_scan))
+                })
+                .collect::<Result<Vec<_>, mago_analyzer::external::ExternalAnalyzerError>>()
+        });
+        let mut per_file_results: Vec<(FileId, u64, CodebaseMetadata, Option<CodebaseScanFile>)> = per_file_results?;
         if let Some(compiling_bar) = compiling_bar {
             remove_progress_bar(&compiling_bar);
         }
-
-        // Until the first analysis, the working codebase is still the base, so it moves instead of cloning.
-        let mut merged_codebase =
-            if self.initialized { (*self.base_codebase).clone() } else { std::mem::take(&mut self.codebase) };
 
         self.codebase_scan_files = per_file_results
             .iter_mut()
@@ -483,7 +477,6 @@ impl IncrementalAnalysisService {
             .collect();
         merged_codebase.apply_patches_pass();
 
-        let mut symbol_references = (*self.base_symbol_references).clone();
         populate_codebase(&mut merged_codebase, &mut symbol_references, WordSet::default(), HashSet::default());
         let merged_aliases =
             merged_codebase.class_like_alias_declarations().map(|(alias, _, span)| (alias, span.file_id)).collect();
@@ -1782,12 +1775,53 @@ mod tests {
     fn make_service(db: &Database<'_>) -> IncrementalAnalysisService {
         IncrementalAnalysisService::new(
             db.read_only(),
-            CodebaseMetadata::new(),
-            SymbolReferences::new(),
+            Default::default,
             Settings::default(),
             ParserSettings::default(),
             Arc::clone(&PLUGIN_REGISTRY),
         )
+    }
+
+    static PRELUDE_DECODES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn counted_prelude() -> (CodebaseMetadata, SymbolReferences) {
+        PRELUDE_DECODES.fetch_add(1, Relaxed);
+        let file = File::new(
+            Cow::Borrowed(b"prelude.php"),
+            FileType::Builtin,
+            None,
+            Cow::Borrowed(b"<?php\nfunction from_prelude(): int { return 1; }\n"),
+        );
+        let arena = LocalArena::new();
+        let program = parse_file_with_settings(&arena, &file, ParserSettings::default());
+        let resolved_names = NameResolver::new(&arena).resolve(program);
+        let mut codebase = scan_program(&arena, &file, program, &resolved_names, Settings::default().version);
+        let mut symbol_references = SymbolReferences::new();
+        populate_codebase(&mut codebase, &mut symbol_references, WordSet::default(), HashSet::default());
+
+        (codebase, symbol_references)
+    }
+
+    #[test]
+    fn the_prelude_is_decoded_for_each_analysis_from_scratch_and_never_kept() {
+        let db = make_database(vec![("src/main.php", "<?php\nfunction main(): int { return from_prelude(); }\n")]);
+        let mut service = IncrementalAnalysisService::new(
+            db.read_only(),
+            counted_prelude,
+            Settings::default(),
+            ParserSettings::default(),
+            Arc::clone(&PLUGIN_REGISTRY),
+        );
+        assert_eq!(PRELUDE_DECODES.load(Relaxed), 0);
+
+        let first = service.analyze().expect("Full analysis failed.");
+        assert!(first.issues.is_empty(), "{:#?}", first.issues);
+        assert_eq!(PRELUDE_DECODES.load(Relaxed), 1);
+
+        service.reset();
+        let again = service.analyze().expect("Full analysis after a reset failed.");
+        assert!(again.issues.is_empty(), "{:#?}", again.issues);
+        assert_eq!(PRELUDE_DECODES.load(Relaxed), 2);
     }
 
     fn diff_issues(a: &IssueCollection, b: &IssueCollection) -> (Vec<String>, Vec<String>) {
@@ -2807,8 +2841,7 @@ mod tests {
     fn make_service_with_settings(db: &Database<'_>, settings: Settings) -> IncrementalAnalysisService {
         IncrementalAnalysisService::new(
             db.read_only(),
-            CodebaseMetadata::new(),
-            SymbolReferences::new(),
+            Default::default,
             settings,
             ParserSettings::default(),
             Arc::clone(&PLUGIN_REGISTRY),

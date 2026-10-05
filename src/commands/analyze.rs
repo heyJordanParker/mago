@@ -331,16 +331,12 @@ impl AnalyzeCommand {
             orchestrator.set_external_analyzer_handle(external_analyzer);
         }
 
-        let (prelude, database) = rayon::join(
+        let (prelude_database, database) = rayon::join(
             || {
                 let start = trace_enabled.then(Instant::now);
-                let prelude = if self.no_stubs {
-                    Prelude::default()
-                } else {
-                    Prelude::decode(PRELUDE_BYTES).expect("Failed to decode embedded prelude")
-                };
+                let prelude_database = self.prelude_database();
                 prelude_duration = start.map(|s| s.elapsed());
-                prelude
+                prelude_database
             },
             || {
                 let start = trace_enabled.then(Instant::now);
@@ -350,7 +346,6 @@ impl AnalyzeCommand {
             },
         );
 
-        let Prelude { database: prelude_database, metadata, symbol_references } = prelude;
         let mut database = database?;
         database.merge_base(prelude_database);
         let load_inputs_duration = load_inputs_start.map(|s| s.elapsed());
@@ -362,8 +357,7 @@ impl AnalyzeCommand {
         }
 
         let service_run_start = trace_enabled.then(Instant::now);
-        let mut server =
-            Server::new(database.into_static(), metadata, symbol_references, server_settings(&orchestrator));
+        let mut server = Server::new(database.into_static(), self.prelude(), server_settings(&orchestrator));
         if self.scan_only {
             server = server.scan_only();
         }
@@ -432,17 +426,29 @@ impl AnalyzeCommand {
         CompiledIgnoreSet::compile(&configuration.analyzer.ignore, configuration.source.glob.to_database_settings())
     }
 
+    /// Decodes the prelude's stub files, which join the workspace database, or none with `--no-stubs`.
+    ///
+    /// The prelude's codebase is dropped here: the server decodes its own through [`Self::prelude`].
+    fn prelude_database(&self) -> Database<'static> {
+        if self.no_stubs {
+            Prelude::default().database
+        } else {
+            Prelude::decode(PRELUDE_BYTES).expect("Failed to decode embedded prelude").database
+        }
+    }
+
+    /// The function the server calls to decode the prelude's codebase for each analysis from scratch.
+    fn prelude(&self) -> fn() -> (CodebaseMetadata, SymbolReferences) {
+        if self.no_stubs { Default::default } else { decode_prelude }
+    }
+
     /// Wraps watch mode in a restart loop.
     ///
     /// When configuration files, baseline files, or Composer files change,
     /// the watch session restarts with the reloaded configuration.
     fn run_watch_loop(&self, mut configuration: Configuration, color_choice: ColorChoice) -> Result<ExitCode, Error> {
         loop {
-            let Prelude { database, metadata, symbol_references } = if self.no_stubs {
-                Prelude::default()
-            } else {
-                Prelude::decode(PRELUDE_BYTES).expect("Failed to decode embedded prelude")
-            };
+            let database = self.prelude_database();
 
             let mut orchestrator = create_orchestrator(&configuration, color_choice, false, false, true);
             orchestrator.add_exclude_patterns(configuration.analyzer.excludes.iter());
@@ -463,14 +469,7 @@ impl AnalyzeCommand {
                 orchestrator.set_source_paths(self.path.iter().map(|p| p.to_string_lossy().to_string()));
             }
 
-            match self.run_watch_mode(
-                orchestrator,
-                &configuration,
-                color_choice,
-                database,
-                metadata,
-                symbol_references,
-            )? {
+            match self.run_watch_mode(orchestrator, &configuration, color_choice, database)? {
                 WatchOutcome::Restart(reason) => {
                     tracing::info!("Restarting analysis: {reason}");
 
@@ -512,15 +511,12 @@ impl AnalyzeCommand {
         configuration: &Configuration,
         color_choice: ColorChoice,
         prelude_database: Database<'static>,
-        metadata: CodebaseMetadata,
-        symbol_references: SymbolReferences,
     ) -> Result<WatchOutcome, Error> {
         tracing::info!("Starting watch mode. Press Ctrl+C to stop.");
 
         let database =
             orchestrator.load_database(&configuration.source.workspace, true, Some(prelude_database), None)?;
-        let mut server =
-            Server::new(database.clone().into_static(), metadata, symbol_references, server_settings(&orchestrator));
+        let mut server = Server::new(database.clone().into_static(), self.prelude(), server_settings(&orchestrator));
 
         let mut watcher = DatabaseWatcher::new(database);
 
@@ -608,6 +604,14 @@ fn server_settings(orchestrator: &Orchestrator<'_>) -> ServerSettings {
         plugin_registry: orchestrator.get_analyzer_plugin_registry(),
         use_progress_bars: orchestrator.config.use_progress_bars,
     }
+}
+
+/// Decodes the embedded prelude's codebase and symbol references.
+fn decode_prelude() -> (CodebaseMetadata, SymbolReferences) {
+    let Prelude { metadata, symbol_references, .. } =
+        Prelude::decode(PRELUDE_BYTES).expect("Failed to decode embedded prelude");
+
+    (metadata, symbol_references)
 }
 
 /// Sets up a file system watcher for non-PHP files that should trigger a full restart.

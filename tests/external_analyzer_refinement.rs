@@ -10,8 +10,6 @@ use mago_analyzer::external::ExternalAnalyzer;
 use mago_analyzer::external::ExternalAnalyzerHandle;
 use mago_analyzer::plugin::PluginRegistry;
 use mago_analyzer::settings::Settings;
-use mago_codex::metadata::CodebaseMetadata;
-use mago_codex::reference::SymbolReferences;
 use mago_database::Database;
 use mago_database::file::File;
 use mago_database::file::FileId;
@@ -169,8 +167,7 @@ fn service(database: &Database<'_>, registry: Arc<PluginRegistry>) -> Incrementa
     settings.find_unused_expressions = false;
     IncrementalAnalysisService::new(
         database.read_only(),
-        CodebaseMetadata::new(),
-        SymbolReferences::new(),
+        Default::default,
         settings,
         ParserSettings::default(),
         registry,

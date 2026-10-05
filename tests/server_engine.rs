@@ -10,8 +10,6 @@ use mago_analyzer::external::ExternalAnalyzer;
 use mago_analyzer::external::ExternalAnalyzerHandle;
 use mago_analyzer::plugin::PluginRegistry;
 use mago_analyzer::settings::Settings as AnalyzerSettings;
-use mago_codex::metadata::CodebaseMetadata;
-use mago_codex::reference::SymbolReferences;
 use mago_database::Database;
 use mago_database::file::File;
 use mago_database::file::FileId;
@@ -65,7 +63,7 @@ fn server(repository: &Path, database: Database<'static>) -> Server {
         use_progress_bars: false,
     };
 
-    Server::new(database, CodebaseMetadata::new(), SymbolReferences::new(), settings)
+    Server::new(database, Default::default, settings)
 }
 
 fn codes(issues: &IssueCollection) -> BTreeMap<String, Vec<String>> {

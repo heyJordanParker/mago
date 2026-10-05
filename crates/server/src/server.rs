@@ -40,28 +40,20 @@ pub struct Server {
 
 impl Server {
     /// Build a server for one workspace from an already-loaded file database,
-    /// decoded codebase metadata, and resolved [`Settings`].
+    /// the function that decodes the prelude, and resolved [`Settings`].
     ///
     /// Construction performs no analysis; call [`Server::analyze`] for the
-    /// initial pass.
+    /// initial pass. Each analysis from scratch decodes the prelude afresh.
     #[must_use]
     pub fn new(
         database: Database<'static>,
-        metadata: CodebaseMetadata,
-        symbol_references: SymbolReferences,
+        prelude: fn() -> (CodebaseMetadata, SymbolReferences),
         settings: Settings,
     ) -> Self {
         let Settings { parser, analyzer, linter, plugin_registry, use_progress_bars } = settings;
 
-        let service = IncrementalAnalysisService::new(
-            database.read_only(),
-            metadata,
-            symbol_references,
-            analyzer,
-            parser,
-            plugin_registry,
-        )
-        .with_progress_bars(use_progress_bars);
+        let service = IncrementalAnalysisService::new(database.read_only(), prelude, analyzer, parser, plugin_registry)
+            .with_progress_bars(use_progress_bars);
 
         let linter = LinterContext::new(linter, parser);
 
@@ -88,7 +80,7 @@ impl Server {
         &mut self.database
     }
 
-    /// Borrow the populated codebase metadata (symbol table).
+    /// Borrow the populated codebase metadata (symbol table), empty until the first analysis.
     #[must_use]
     pub fn codebase(&self) -> &CodebaseMetadata {
         self.service.codebase()
@@ -246,7 +238,7 @@ mod tests {
             plugin_registry: Arc::new(PluginRegistry::with_library_providers()),
             use_progress_bars: false,
         };
-        let mut server = Server::new(database, CodebaseMetadata::new(), SymbolReferences::new(), settings);
+        let mut server = Server::new(database, Default::default, settings);
         let all = server.analyze().expect("analysis").issues;
 
         let scope = WorkspaceMatcher::from_configuration(&DatabaseConfiguration::new(
@@ -292,7 +284,7 @@ mod tests {
             use_progress_bars: false,
         };
 
-        (Server::new(database.into_static(), CodebaseMetadata::new(), SymbolReferences::new(), settings), id)
+        (Server::new(database.into_static(), Default::default, settings), id)
     }
 
     #[test]

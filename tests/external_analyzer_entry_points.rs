@@ -9,8 +9,6 @@ use mago_analyzer::external::ExternalAnalyzer;
 use mago_analyzer::external::ExternalAnalyzerHandle;
 use mago_analyzer::plugin::PluginRegistry;
 use mago_analyzer::settings::Settings;
-use mago_codex::metadata::CodebaseMetadata;
-use mago_codex::reference::SymbolReferences;
 use mago_database::Database;
 use mago_database::file::File;
 use mago_database::file::FileType;
@@ -85,8 +83,7 @@ fn declarative_entry_points_reference_inherited_trait_and_attributed_methods_wit
     settings.find_unused_parameters = false;
     let mut service = IncrementalAnalysisService::new(
         database.read_only(),
-        CodebaseMetadata::new(),
-        SymbolReferences::new(),
+        Default::default,
         settings,
         ParserSettings::default(),
         Arc::new(registry),
