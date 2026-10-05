@@ -754,7 +754,7 @@ fn attributes_on_a_class_its_members_and_their_parameters_are_in_the_slice() {
 
 #[test]
 fn attribute_arguments_outside_the_slice_are_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nclass Report\n{\n    [Field(typeof(Report))]\n    [Field(Mode.Write)]\n    [Field([\"a\"])]\n    [Field(label: new Report())]\n    public int run(int extra)\n    {\n        return extra;\n    }\n}\n";
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    [Field(typeof(Report).name)]\n    [Field(Mode.Write)]\n    [Field([\"a\"])]\n    [Field(label: new Report())]\n    public int run(int extra)\n    {\n        return extra;\n    }\n}\n";
 
     assert_eq!(
         issues(code),
@@ -764,6 +764,14 @@ fn attribute_arguments_outside_the_slice_are_not_supported_yet() {
             "8:19 This expression is not supported yet in PHP#.",
         ]
     );
+}
+
+/// `typeof(X)` is `X::class`, which PHP takes as a constant expression, so an attribute argument may name a class.
+#[test]
+fn typeof_is_an_attribute_argument() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Access;\nimport Lib.Authenticated;\n\n[Access(typeof(Authenticated))]\nclass Report\n{\n    [Access(role: typeof(Report))]\n    public int run(int extra)\n    {\n        return extra;\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
 }
 
 #[test]

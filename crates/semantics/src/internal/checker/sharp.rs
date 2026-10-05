@@ -112,7 +112,7 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   member: a field when `private` or `protected` without accessors, and a property with accessors, which follow the
 ///   auto-property rules. A `public` parameter without accessors is an error, as spec section 9 says.
 /// - A parameter: always a type, a name and an optional default, and neither variadic nor by reference. A default is
-///   a constant expression: a literal, a constant, or the operators below on them, without `++` and `--`. An optional
+///   a constant expression: a literal, a constant, `typeof(X)`, or the operators below on them, without `++` and `--`. An optional
 ///   parameter before a required one is an error, because PHP would make it required.
 /// - Types: `int`, `float`, `bool`, `string` and a class written by its short name, and `void` as a return type.
 ///   PHP's own check reports a `void` parameter. Each of them is nullable when written with `?` after it, as in
@@ -548,7 +548,8 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             Body | Constant,
         ) => Some(place),
         (Node::ConstantAccess(_), Body) => Some(Body),
-        (Node::Expression(Expression::TypeOf(_)) | Node::TypeOf(_), Body) => Some(Body),
+        // `typeof(X)` is `X::class`, which PHP takes as a constant expression too.
+        (Node::Expression(Expression::TypeOf(_)) | Node::TypeOf(_), Body | Constant) => Some(place),
         (Node::ConstantAccess(constant), Constant)
             if context.names.binding(&constant.name) == Some(Binding::Constant) =>
         {
@@ -1173,7 +1174,7 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# attribute is a class name with optional positional and named arguments, as in `[Field(\"Name\", searchable: true)]`."
         }
         Place::Constant => {
-            "A parameter default, an attribute argument or a constant's value is a literal, a constant, or arithmetic, comparison, logical and `??` operators on them."
+            "A parameter default, an attribute argument or a constant's value is a literal, a constant, `typeof(Class)`, or arithmetic, comparison, logical and `??` operators on them."
         }
     }
 }

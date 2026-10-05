@@ -27,6 +27,7 @@ use mago_database::file::File;
 use mago_names::resolver::NameResolver;
 use mago_prelude::Prelude;
 use mago_reporting::Issue;
+use mago_reporting::Level;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::Call;
@@ -800,23 +801,42 @@ fn a_php_class_that_implements_a_class_is_still_an_error() {
     );
 }
 
-/// A PHP method is open, and replacing one from PHP# is outside the classes slice, with or without `override`.
+/// A plain PHP method is open unless PHP marks it `final`, and replacing one needs `override`, spec section 22. So
+/// PHP# reports what PHP reports for its `#[\Override]` twin: a missing `override`, `override` with no parent method,
+/// replacing a `final` method, and, as errors, renamed parameters.
 #[test]
-fn replacing_a_method_of_a_php_class_is_not_supported_yet() {
-    let library = "<?php\n\nnamespace Lib;\n\nclass Entity\n{\n    public function id(): int\n    {\n        return 7;\n    }\n\n    public function name(): string\n    {\n        return 'entity';\n    }\n}\n";
-    let sharp = "namespace Demo;\n\nimport Lib.Entity;\n\npublic class Post : Entity\n{\n    public override int id()\n    {\n        return 8;\n    }\n\n    public string name()\n    {\n        return \"post\";\n    }\n}\n";
+fn replacing_a_php_method_follows_php_rules_with_override_required() {
+    let library = "<?php\n\nnamespace Lib;\n\nabstract class Report\n{\n    abstract protected function render(): string;\n\n    public function title(): string\n    {\n        return 'Report';\n    }\n\n    final public function id(): string\n    {\n        return 'report';\n    }\n\n    public function resize(int $width, int $height): void\n    {\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Report;\n\npublic class SalesReport : Report\n{\n    protected override string render()\n    {\n        return \"sales\";\n    }\n\n    public override string title()\n    {\n        return \"Sales\";\n    }\n}\n\npublic class PlainReport : Report\n{\n    protected override string render()\n    {\n        return \"plain\";\n    }\n\n    public string title()\n    {\n        return \"Plain\";\n    }\n}\n\npublic class FinalReport : Report\n{\n    protected override string render()\n    {\n        return \"final\";\n    }\n\n    public override string id()\n    {\n        return \"final\";\n    }\n}\n\npublic class StrayReport : Report\n{\n    protected override string render()\n    {\n        return \"stray\";\n    }\n\n    public override string footer()\n    {\n        return \"\";\n    }\n}\n\npublic class RenamedReport : Report\n{\n    protected override string render()\n    {\n        return \"renamed\";\n    }\n\n    public override void resize(int w, int h)\n    {\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Report;\n\nclass SalesReport extends Report\n{\n    #[\\Override]\n    protected function render(): string\n    {\n        return \"sales\";\n    }\n\n    #[\\Override]\n    public function title(): string\n    {\n        return \"Sales\";\n    }\n}\n\nclass PlainReport extends Report\n{\n    #[\\Override]\n    protected function render(): string\n    {\n        return \"plain\";\n    }\n\n    public function title(): string\n    {\n        return \"Plain\";\n    }\n}\n\nclass FinalReport extends Report\n{\n    #[\\Override]\n    protected function render(): string\n    {\n        return \"final\";\n    }\n\n    #[\\Override]\n    public function id(): string\n    {\n        return \"final\";\n    }\n}\n\nclass StrayReport extends Report\n{\n    #[\\Override]\n    protected function render(): string\n    {\n        return \"stray\";\n    }\n\n    #[\\Override]\n    public function footer(): string\n    {\n        return \"\";\n    }\n}\n\nclass RenamedReport extends Report\n{\n    #[\\Override]\n    protected function render(): string\n    {\n        return \"renamed\";\n    }\n\n    #[\\Override]\n    public function resize(int $w, int $h): void\n    {\n    }\n}\n";
+    let others = [("src/Lib/Report.php", library)];
 
-    let issues =
-        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Post.sharp", sharp), &[("src/Lib/Entity.php", library)]);
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &others);
+    let php_issues =
+        issues_with(Settings { check_missing_override: true, ..settings() }, ("src/Demo/Report.php", php), &others);
 
     assert_eq!(
-        issues.iter().map(|issue| issue.message.as_str()).collect::<Vec<_>>(),
+        codes(&php_issues),
         [
-            "Replacing the PHP method `Lib\\Entity::id` is not supported yet.",
-            "Replacing the PHP method `Lib\\Entity::name` is not supported yet."
-        ]
+            "missing-override-attribute",
+            "override-final-method",
+            "invalid-override-attribute",
+            "incompatible-parameter-name",
+            "incompatible-parameter-name"
+        ],
+        "{php_issues:?}"
     );
-    assert!(issues.iter().all(|issue| issue.code.as_deref() == Some("not-supported-yet")));
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{sharp_issues:?}");
+
+    let renamed: Vec<_> = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &others)
+        .into_iter()
+        .filter(|issue| issue.code.as_deref() == Some("incompatible-parameter-name"))
+        .collect();
+    assert!(renamed.iter().all(|issue| issue.level == Level::Error), "{renamed:?}");
+    assert_eq!(
+        renamed[0].message,
+        "Parameter #1 of `Demo\\RenamedReport::resize()` is named `w` but parent `Lib\\Report::resize()` names it `width`"
+    );
 }
 
 /// A parse error reports its spot once, so returning what failed to parse adds no `never-return`, in PHP# and PHP.

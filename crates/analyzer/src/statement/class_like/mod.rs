@@ -38,6 +38,7 @@ use mago_codex::visibility::Visibility;
 use mago_names::kind::NameKind;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
+use mago_reporting::Level;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::comments::docblock::PrecedingDocblocks;
@@ -2990,18 +2991,33 @@ fn report_signature_compatibility_issue<'ctx, A>(
             child_name: child_param_name,
             parent_name: parent_param_name,
         } => {
+            // PHP# keeps every parameter name of the method it overrides, spec section 22, so a rename is an error, and
+            // PHP# writes the names without `$`.
+            let (level, child_param_name, parent_param_name) = if context.dialect.is_sharp() {
+                (
+                    Level::Error,
+                    word(mago_bytes::trim_start_byte(child_param_name.as_bytes(), b'$')),
+                    word(mago_bytes::trim_start_byte(parent_param_name.as_bytes(), b'$')),
+                )
+            } else {
+                (Level::Warning, child_param_name, parent_param_name)
+            };
+
             context.collector.report_with_code(
                 IssueCode::IncompatibleParameterName,
-                Issue::warning(format!(
-                    "Parameter #{} of `{}::{}()` is named `{}` but parent `{}::{}()` names it `{}`",
-                    parameter_index + 1,
-                    child_name,
-                    method_name,
-                    child_param_name,
-                    parent_name,
-                    method_name,
-                    parent_param_name
-                ))
+                Issue::new(
+                    level,
+                    format!(
+                        "Parameter #{} of `{}::{}()` is named `{}` but parent `{}::{}()` names it `{}`",
+                        parameter_index + 1,
+                        child_name,
+                        method_name,
+                        child_param_name,
+                        parent_name,
+                        method_name,
+                        parent_param_name
+                    ),
+                )
                 .with_annotation(Annotation::primary(primary_span).with_message(format!(
                     "Parameter named `{child_param_name}` but parent uses `{parent_param_name}`",
                 )))

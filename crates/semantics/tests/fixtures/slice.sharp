@@ -5,7 +5,7 @@ import Lib.Field;
 import Lib.Entity;
 
 [Entity(label: "Reports", order: 2 * 3), Searchable]
-[Entity(null)]
+[Entity(null), Access(typeof(Report))]
 public class Report
 {
     public const int MAX = 3;

@@ -1249,6 +1249,36 @@ fn typeof_is_the_class_name_of_the_imported_class() {
 }
 
 /// ```php
+/// #[\Lib\Access(\Lib\Calc::class, role: \App\Tenant\Report::class)]
+/// class Report
+/// ```
+///
+/// `typeof(X)` in an attribute argument is the class name, which PHP takes as a constant expression.
+#[test]
+fn typeof_in_an_attribute_argument_is_the_class_name() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Access;\nimport Lib.Calc;\n\n[Access(typeof(Calc), role: typeof(Report))]\nclass Report\n{\n}\n",
+    );
+
+    assert_eq!(
+        lowered.render(lowered.child(lowered.child(lowered.unit().root, 2), 3)),
+        indoc! {r#"
+            ATTRIBUTE_LIST
+              ATTRIBUTE_GROUP
+                ATTRIBUTE
+                  ZVAL "Lib\\Access"
+                  ARG_LIST
+                    CLASS_NAME
+                      ZVAL "Lib\\Calc"
+                    NAMED_ARG
+                      ZVAL "role"
+                      CLASS_NAME
+                        ZVAL "App\\Tenant\\Report"
+        "#}
+    );
+}
+
+/// ```php
 /// public const int MAX = 3;
 /// protected const LIMIT = PHP_INT_MAX - 1;
 /// ```
