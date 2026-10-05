@@ -43,20 +43,25 @@ where
 /// names the type the code wrote instead.
 #[must_use]
 pub(crate) fn display_sharp_collection(object: &TObject) -> Option<String> {
-    let TObject::Named(named) = object else {
-        return None;
-    };
-    let parameters = named.type_parameters.as_deref().unwrap_or_default();
-    let collection = if named.name.as_bytes().eq_ignore_ascii_case(b"Sharp\\ListMethods") {
-        "List"
-    } else if named.name.as_bytes().eq_ignore_ascii_case(b"Sharp\\MapMethods") {
-        "Map"
-    } else {
-        return None;
-    };
+    let collection = sharp_collection_name(object)?;
+    let parameters = object.get_type_parameters().unwrap_or_default();
     let parameters = parameters.iter().map(|parameter| parameter.get_id().to_string()).collect::<Vec<_>>();
 
     Some(format!("{collection}<{}>", parameters.join(", ")))
+}
+
+/// Returns `List` or `Map` when `object` is `Sharp\ListMethods` or `Sharp\MapMethods`.
+#[must_use]
+pub(crate) fn sharp_collection_name(object: &TObject) -> Option<&'static str> {
+    let name = object.get_name()?;
+
+    if name.as_bytes().eq_ignore_ascii_case(b"Sharp\\ListMethods") {
+        Some("List")
+    } else if name.as_bytes().eq_ignore_ascii_case(b"Sharp\\MapMethods") {
+        Some("Map")
+    } else {
+        None
+    }
 }
 
 /// Produces a user-facing display string for a `FunctionLikeIdentifier`.

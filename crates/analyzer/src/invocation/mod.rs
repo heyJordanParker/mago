@@ -10,6 +10,7 @@ use mago_codex::metadata::parameter::FunctionLikeParameterMetadata;
 use mago_codex::misc::VariableIdentifier;
 use mago_codex::ttype::atomic::callable::TCallableSignature;
 use mago_codex::ttype::atomic::callable::parameter::TCallableParameter;
+use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::atomic::object::named::TNamedObject;
 use mago_codex::ttype::expander::StaticClassType;
 use mago_codex::ttype::union::TUnion;
@@ -220,12 +221,9 @@ impl<'ctx> InvocationTarget<'ctx> {
             return display_name.to_string();
         }
 
-        if let InvocationTarget::FunctionLike {
-            identifier: FunctionLikeIdentifier::Method(_, method_name),
-            method_context: Some(MethodTargetContext { class_type: StaticClassType::Object(object), .. }),
-            ..
-        } = self
-            && let Some(collection) = crate::utils::names::display_sharp_collection(object)
+        if let Some(receiver) = self.get_sharp_collection_receiver()
+            && let Some(FunctionLikeIdentifier::Method(_, method_name)) = self.get_function_like_identifier()
+            && let Some(collection) = crate::utils::names::display_sharp_collection(receiver)
         {
             return format!("{collection}.{method_name}");
         }
@@ -237,6 +235,18 @@ impl<'ctx> InvocationTarget<'ctx> {
                     if self.is_non_closure_callable() { "callable".to_string() } else { "Closure".to_string() }
                 },
             )
+    }
+
+    /// Returns the `Sharp\ListMethods` or `Sharp\MapMethods` object a PHP# `List` or `Map` method is called on, typed
+    /// by the elements of the collection.
+    pub fn get_sharp_collection_receiver(&self) -> Option<&TObject> {
+        match self {
+            InvocationTarget::FunctionLike {
+                method_context: Some(MethodTargetContext { class_type: StaticClassType::Object(object), .. }),
+                ..
+            } if crate::utils::names::sharp_collection_name(object).is_some() => Some(object),
+            _ => None,
+        }
     }
 
     /// Guesses the kind of the callable target (e.g., "function", "method", "closure", "callable").

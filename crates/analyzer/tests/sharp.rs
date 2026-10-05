@@ -1110,16 +1110,21 @@ fn collection_methods_take_and_give_the_types_of_their_elements() {
 /// the PHP# type the code wrote instead, as in "`add` doesn't exist on `Map<string, int>`".
 #[test]
 fn a_collection_method_message_names_the_sharp_type() {
-    let sharp = "namespace Demo;\n\nclass Order\n{\n    public void wrong(List<int> sizes, Map<string, int> counts)\n    {\n        sizes.add(\"a\");\n        sizes.set(\"a\", 1);\n        counts.add(1);\n        sizes.delete(0);\n        counts.get(1.5);\n        sizes.get();\n        sizes.get(0, 1);\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public void wrong(List<Line> lines, List<int> sizes, Map<string, int> counts)\n    {\n        lines.add(1);\n        sizes.set(\"a\", 1);\n        counts.add(1);\n        sizes.delete(0);\n        counts.get(1.5);\n        sizes.get();\n        sizes.get(0, 1);\n    }\n}\n\nclass Line\n{\n}\n";
     let issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Order.sharp", sharp), &[]);
 
     let messages: Vec<&str> = issues.iter().map(|issue| issue.message.as_str()).collect();
-    assert!(messages.contains(&"Method `add` does not exist on `Map<string, int>`."), "{messages:#?}");
-    assert!(
-        messages.contains(
-            &"Invalid argument type for argument #1 of `List<int>.add`: expected `int`, but found `string('a')`."
-        ),
-        "{messages:#?}"
+    assert_eq!(
+        messages,
+        [
+            "Invalid argument type for argument #1 of `List<Demo\\Line>.add`: expected `Demo\\Line`, but found `int(1)`.",
+            "Invalid argument type for argument #1 of `List<int>.set`: expected `int`, but found `string('a')`.",
+            "Method `add` does not exist on `Map<string, int>`.",
+            "Method `delete` does not exist on `List<int>`.",
+            "Invalid argument type for argument #1 of `Map<string, int>.get`: expected `string`, but found `float(1.5)`.",
+            "Too few arguments provided for method `List<int>.get`.",
+            "Too many arguments provided for method `List<int>.get`.",
+        ]
     );
     for issue in &issues {
         let text = format!("{issue:?}");
