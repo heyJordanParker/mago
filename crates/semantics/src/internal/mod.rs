@@ -53,6 +53,19 @@ pub struct CheckingWalker;
 
 impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingWalker {
     #[inline]
+    fn walk_in_node(&self, node: Node<'ast, 'arena>, context: &mut Context<'_, 'ast, 'arena>) {
+        // A parse error already stops the file, so it is the one error to fix first.
+        if context.program.dialect.is_sharp() && context.program.errors.is_empty() {
+            checker::sharp::check_slice(node, context);
+        }
+    }
+
+    #[inline]
+    fn walk_out_node(&self, _node: Node<'ast, 'arena>, context: &mut Context<'_, 'ast, 'arena>) {
+        context.slice_places.pop();
+    }
+
+    #[inline]
     fn walk_in_statement(&self, statement: &'ast Statement<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
         context.ancestors.push(Node::Statement(statement));
     }
@@ -88,11 +101,6 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingW
         checker::statement::check_top_level_statements(program, context);
 
         if program.dialect.is_sharp() {
-            // A parse error already stops the file, so it is the one error to fix first.
-            if program.errors.is_empty() {
-                checker::sharp::check_slice(program, context);
-            }
-
             checker::sharp::check_declarations(program, context);
             checker::sharp::check_binding_errors(context);
         }
@@ -359,7 +367,11 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingW
     }
 
     #[inline]
-    fn walk_literal_expression(&self, literal_expression: &'ast Literal, context: &mut Context<'_, 'ast, 'arena>) {
+    fn walk_in_literal_expression(
+        &self,
+        literal_expression: &'ast Literal<'arena>,
+        context: &mut Context<'_, 'ast, 'arena>,
+    ) {
         checker::literal::check_literal(literal_expression, context);
     }
 
