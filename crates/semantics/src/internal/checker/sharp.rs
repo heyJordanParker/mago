@@ -126,10 +126,11 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   `value[key]`, templates, parentheses, bare names, assignment, the operators below, and method calls
 ///   and property reads written with `.` or `?.` and a member name, `new Class(...)` on a class written by its short
 ///   name, calls of a function by its bare name, each with positional and named arguments, and `throw`, which is an
-///   expression as in PHP. `?.` never follows a class. A function is PHP's built-in function of that name, which spec
-///   section 8 keeps, and the engine calls the global one. A string literal's `\u{...}` escapes are valid codepoints,
-///   as PHP requires. A `"…"` string never interpolates, and a template, `` `Order ${number}` ``, interpolates any
-///   expression of this list in each `${…}` and takes JavaScript's escapes, as spec section 18 writes them.
+///   expression as in PHP. `?.` never follows a class. A function is the global function of that name, PHP's own
+///   or one a library or the app declares, as spec sections 8 and 29 keep them, and the engine calls the global
+///   one. A string literal's `\u{...}` escapes are valid codepoints, as PHP requires. A `"…"` string never
+///   interpolates, and a template, `` `Order ${number}` ``, interpolates any expression of this list in each `${…}`
+///   and takes JavaScript's escapes, as spec section 18 writes them.
 /// - Lambdas, as spec section 3 writes them: `x => x.id`, `(a, b) => a + b` and `() => { … }`, whose body is an
 ///   expression or a block of a method body. A parameter is a method's, with its type optional. A lambda captures the
 ///   variable itself, except a loop variable that code changes, whose capture is not supported yet. A call of a local
@@ -157,7 +158,7 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - a cast of a value that is not an `int` or a `float`, which spec section 24 makes an error, in `UnaryPrefix`'s
 ///   `analyze`.
 /// - an instance method used as a value, such as `order.total` without a call, in `report_non_existent_property`.
-/// - a call of a function a library or the app declares, in `report_declared_function_call`.
+/// - a call that resolves to a namespaced function, in `report_namespaced_function_call`.
 #[inline]
 pub fn check_slice(node: Node<'_, '_>, context: &mut Context<'_, '_, '_>) {
     let place = match context.slice_places.last() {
@@ -188,7 +189,7 @@ pub enum Place {
     Lambda,
     /// `new` and the class it creates, whose arguments are the method body's.
     Instantiation,
-    /// A call of PHP's built-in function and the function's name, whose arguments are the method body's.
+    /// A call of a global function and the function's name, whose arguments are the method body's.
     FunctionCall,
     /// A catch clause, whose block is the method body's.
     TryCatchClause,
@@ -608,8 +609,8 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         {
             None
         }
-        // Spec section 8: PHP's built-in functions are called by their bare names. The analyzer refuses a function
-        // that is not built in. Spec section 14: a local holding a function is called the same way.
+        // Spec sections 8 and 29: plain PHP functions are called by their bare names. The analyzer refuses a call
+        // that resolves to a namespaced function. Spec section 14: a local holding a function is called the same way.
         (Node::Expression(Expression::Call(Call::Function(function_call))), Body)
             if let Expression::Identifier(name @ Identifier::Local(_)) = function_call.function
                 && matches!(context.names.binding(name), None | Some(Binding::Local(_))) =>
@@ -1121,7 +1122,7 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# lambda is a bare arrow after one name or parenthesized parameters, each with an optional type, and its body is an expression or a block, as in `(a, b) => a + b`."
         }
         Place::Body | Place::Instantiation | Place::FunctionCall | Place::TryCatchClause => {
-            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, `break` and `continue` without a level, and `try` with `catch` and `finally`, with literals, list and map literals, index reads, templates, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, the ternary `c ? a : b`, `(int)`, `(float)` and `(string)`, `++` and `--`, method calls and property reads written with `.` or `?.`, `new Class(...)`, calls of PHP's built-in functions and `throw`."
+            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, `break` and `continue` without a level, and `try` with `catch` and `finally`, with literals, list and map literals, index reads, templates, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, the ternary `c ? a : b`, `(int)`, `(float)` and `(string)`, `++` and `--`, method calls and property reads written with `.` or `?.`, `new Class(...)`, calls of global functions and `throw`."
         }
         Place::Attribute => {
             "A PHP# attribute is a class name with optional positional and named arguments, as in `[Field(\"Name\", searchable: true)]`."
