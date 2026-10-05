@@ -765,6 +765,104 @@ fn a_method_written_with_function_is_a_parse_error() {
     );
 }
 
+/// The source of every attribute list under `node`, in source order.
+fn attribute_lists<'a>(code: &'a str, node: Node<'_, '_>) -> Vec<&'a str> {
+    let mut lists = Vec::new();
+    if let Node::AttributeList(list) = node {
+        lists.push(source(code, list));
+    }
+    for child in node.children() {
+        lists.extend(attribute_lists(code, child));
+    }
+
+    lists
+}
+
+#[test]
+fn attributes_are_written_in_square_brackets_on_every_declaration() {
+    const CODE: &str = "[Entity(label: \"Order Items\"), Searchable]\n[Table(\"orders\")]\nclass Order\n{\n    [Field] private int count = 0;\n    [Field(label: \"Name\")] public string name { get; set; }\n\n    public Order([Field(label: \"Tenant\")] public string tenant { get; }) {}\n\n    [Action(Mode.Write)]\n    [Retry(3, null)]\n    public void run([Field] int page = 1) {}\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Order.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    assert_eq!(
+        attribute_lists(CODE, Node::Program(program)),
+        [
+            "[Entity(label: \"Order Items\"), Searchable]",
+            "[Table(\"orders\")]",
+            "[Field]",
+            "[Field(label: \"Name\")]",
+            "[Field(label: \"Tenant\")]",
+            "[Action(Mode.Write)]",
+            "[Retry(3, null)]",
+            "[Field]",
+        ]
+    );
+
+    let Some(Statement::Class(class)) = program.statements.first() else {
+        panic!("expected a class, got {:#?}", program.statements);
+    };
+    let [entity, table] = class.attribute_lists.as_slice() else {
+        panic!("expected two attribute lists on the class, got {:#?}", class.attribute_lists);
+    };
+    assert_eq!(source(CODE, &entity.hash_left_bracket), "[");
+    let names: Vec<&[u8]> = entity.attributes.iter().map(|attribute| attribute.name.value()).collect();
+    assert_eq!(names, [&b"Entity"[..], &b"Searchable"[..]]);
+    let arguments = entity.attributes.first().and_then(|entity| entity.argument_list.as_ref()).expect("arguments");
+    assert_eq!(source(CODE, arguments), "(label: \"Order Items\")");
+    assert_eq!(table.attributes.len(), 1);
+}
+
+#[test]
+fn a_statement_starting_with_a_list_is_not_an_attribute() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        [1, 2];\n        [a][0] = 1;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [list, write] = method_body(program) else {
+        panic!("expected two statements, got {:#?}", method_body(program));
+    };
+    assert!(matches!(expression(list), Expression::Array(_)), "{list:#?}");
+    assert!(matches!(expression(write), Expression::Assignment(_)), "{write:#?}");
+}
+
+#[test]
+fn php_attribute_syntax_is_a_parse_error_that_names_the_brackets() {
+    const CODE: &str = "#[Marker]\nclass Report\n{\n    #[Marker]\n    public void run(#[Marker] int page) {}\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    let messages: Vec<String> = program.errors.iter().map(ToString::to_string).collect();
+    assert_eq!(messages, ["`#[` is PHP syntax: PHP# writes attributes in square brackets, as in `[Searchable]`"; 3]);
+    let spans: Vec<&str> = program.errors.iter().map(|error| source(CODE, error)).collect();
+    assert_eq!(spans, ["#["; 3]);
+    assert_eq!(attribute_lists(CODE, Node::Program(program)), ["#[Marker]"; 3]);
+}
+
+#[test]
+fn an_attribute_target_is_not_supported_yet() {
+    const CODE: &str = "class Report\n{\n    [return: NotNull]\n    public string run() { return \"\"; }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    let [error] = program.errors else {
+        panic!("expected one error, got {:#?}", program.errors);
+    };
+    assert_eq!(error.to_string(), "An attribute target is not supported yet in PHP#.");
+    assert_eq!(source(CODE, error), "return:");
+    let Some(ClassLikeMember::Method(run)) = class_members(program).first() else {
+        panic!("expected a method, got {:#?}", class_members(program));
+    };
+    let names: Vec<&[u8]> = run
+        .attribute_lists
+        .iter()
+        .flat_map(|list| list.attributes.iter())
+        .map(|attribute| attribute.name.value())
+        .collect();
+    assert_eq!(names, [&b"NotNull"[..]]);
+}
+
 #[test]
 fn dot_keeps_concatenating_in_php() {
     let arena = LocalArena::new();
