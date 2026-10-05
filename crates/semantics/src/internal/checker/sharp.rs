@@ -125,6 +125,9 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   of another needs parentheses, as in PHP 8.
 /// - Casts: `(int)`, `(float)` and `(string)` in a method body, as spec section 24 writes them. PHP's other casts and
 ///   its cast aliases, such as `(bool)` and `(integer)`, are errors.
+/// - A bare `Int` or `Float` before `.` is the class `Sharp\Int` or `Sharp\Float` of the engine's standard library,
+///   unless the file imports the name, so `Int.parse(text)` and `Float.tryParse(text)` call it. PHP reserves both
+///   names, so no file declares a class of either.
 ///
 /// The check runs on every node the checking walk enters, and refuses any node, or any position of a node, that this
 /// list does not name. It reports each refusal once, at its outermost node, and skips the nodes inside it. It does not

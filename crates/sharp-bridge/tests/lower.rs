@@ -1041,6 +1041,33 @@ fn a_class_of_the_same_namespace_is_called_by_its_full_name() {
 }
 
 /// ```php
+/// return \Sharp\Int::parse($extra) + \Sharp\Float::tryParse($extra);
+/// ```
+#[test]
+fn int_and_float_are_the_classes_of_the_sharp_namespace() {
+    assert_eq!(
+        body("        return Int.parse(extra) + Float.tryParse(extra);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                BINARY_OP [1]
+                  STATIC_CALL
+                    ZVAL "Sharp\\Int"
+                    ZVAL "parse"
+                    ARG_LIST
+                      VAR
+                        ZVAL "extra"
+                  STATIC_CALL
+                    ZVAL "Sharp\\Float"
+                    ZVAL "tryParse"
+                    ARG_LIST
+                      VAR
+                        ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
 /// return $this->total($extra, rate: 2)->value;
 /// ```
 #[test]

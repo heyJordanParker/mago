@@ -149,6 +149,11 @@ class Report
         return (string)cents + (string)(float)count;
     }
 
+    private float parse(string quantity, string? price)
+    {
+        return Int.parse(quantity) * (Float.tryParse(price) ?? Float.parse("0.5")) + (Int.tryParse(price) ?? 0);
+    }
+
     public int attempt(int value)
     {
         try {
