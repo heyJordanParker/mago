@@ -17,6 +17,7 @@ use mago_syntax::cst::Argument;
 use mago_syntax::cst::ArgumentList;
 use mago_syntax::cst::AssignmentOperator;
 use mago_syntax::cst::AttributeList;
+use mago_syntax::cst::Binary;
 use mago_syntax::cst::BinaryOperator;
 use mago_syntax::cst::Block;
 use mago_syntax::cst::Call;
@@ -648,7 +649,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             Expression::Parenthesized(parenthesized) => self.expression(parenthesized.expression),
             Expression::ConstantAccess(name) => self.name(name),
             Expression::Binary(binary) => {
-                let (kind, attr) = binary_kind(binary.operator);
+                let (kind, attr) = binary_kind(binary);
                 let lhs = self.expression(binary.lhs);
                 let rhs = self.expression(binary.rhs);
 
@@ -1028,9 +1029,11 @@ fn accessor_flags(modifiers: &Sequence<Modifier>, accessors: &PropertyHookList) 
 }
 
 /// The binary operators of the slice, as php-src's grammar builds them. Every operator is named, so a new one does
-/// not compile until it is decided.
-fn binary_kind(operator: BinaryOperator) -> (sharp_kind, u32) {
-    match operator {
+/// not compile until it is decided. `== null` and `!= null` test for null alone, as `=== null` and `!== null`.
+fn binary_kind(binary: &Binary) -> (sharp_kind, u32) {
+    match binary.operator {
+        BinaryOperator::Equal(_) if binary.is_equality_with_null() => (SHARP_AST_BINARY_OP, ZEND_IS_IDENTICAL),
+        BinaryOperator::NotEqual(_) if binary.is_equality_with_null() => (SHARP_AST_BINARY_OP, ZEND_IS_NOT_IDENTICAL),
         BinaryOperator::Addition(_) => (SHARP_AST_BINARY_OP, ZEND_ADD),
         BinaryOperator::Subtraction(_) => (SHARP_AST_BINARY_OP, ZEND_SUB),
         BinaryOperator::Multiplication(_) => (SHARP_AST_BINARY_OP, ZEND_MUL),
@@ -1059,7 +1062,7 @@ fn binary_kind(operator: BinaryOperator) -> (sharp_kind, u32) {
         | BinaryOperator::Instanceof(_)
         | BinaryOperator::LowAnd(_)
         | BinaryOperator::LowOr(_)
-        | BinaryOperator::LowXor(_) => unreachable!("check_slice refuses the operator `{operator}`"),
+        | BinaryOperator::LowXor(_) => unreachable!("check_slice refuses the operator `{}`", binary.operator),
     }
 }
 
