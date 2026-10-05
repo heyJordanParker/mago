@@ -38,6 +38,9 @@ pub struct State {
     /// attribute list.
     pub within_block: bool,
     pub recursion_depth: u16,
+    /// The second `>` of a `>>` that closed two PHP# type argument lists at once, as in `Map<int, List<int>>`, which
+    /// the outer list takes as its own `>`.
+    pub closing_angle: Option<Span>,
 }
 
 /// The main parser for PHP source code.

@@ -13,6 +13,7 @@ use crate::cst::cst::UnaryPrefix;
 use crate::cst::cst::UnaryPrefixOperator;
 use crate::cst::cst::ValueArrayElement;
 use crate::cst::cst::VariadicArrayElement;
+use crate::cst::sequence::TokenSeparatedSequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use crate::token::Precedence;
@@ -22,9 +23,18 @@ where
     A: Arena,
 {
     pub(crate) fn parse_array(&mut self) -> Result<Array<'arena>, ParseError> {
+        if self.dialect.is_sharp() && self.stream.peek_kind(1)? == Some(T![":"]) {
+            return Ok(Array {
+                left_bracket: self.stream.eat_span(T!["["])?,
+                elements: TokenSeparatedSequence::empty(),
+                colon: Some(self.stream.eat_span(T![":"])?),
+                right_bracket: self.stream.eat_span(T!["]"])?,
+            });
+        }
+
         let result = self.parse_comma_separated_sequence(T!["["], T!["]"], |p| p.parse_array_element())?;
 
-        Ok(Array { left_bracket: result.open, elements: result.sequence, right_bracket: result.close })
+        Ok(Array { left_bracket: result.open, elements: result.sequence, colon: None, right_bracket: result.close })
     }
 
     pub(crate) fn parse_list(&mut self) -> Result<List<'arena>, ParseError> {
@@ -73,8 +83,17 @@ where
                 let expr = self.arena.alloc(self.parse_expression()?);
 
                 match self.stream.peek_kind(0)? {
+                    Some(T![":"]) if self.dialect.is_sharp() => ArrayElement::KeyValue(KeyValueArrayElement {
+                        key: expr,
+                        double_arrow: self.stream.consume_span()?,
+                        value: self.parse_expression()?,
+                    }),
                     Some(T!["=>"]) => {
                         let double_arrow = self.stream.consume_span()?;
+                        if self.dialect.is_sharp() {
+                            self.errors.push(ParseError::PhpSyntaxInSharp(T!["=>"], double_arrow));
+                        }
+
                         ArrayElement::KeyValue(KeyValueArrayElement {
                             key: expr,
                             double_arrow,

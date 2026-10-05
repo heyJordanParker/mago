@@ -999,3 +999,43 @@ fn attribute_arguments_are_checked_against_the_attribute_constructor_as_in_php()
     );
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
 }
+
+const TOTALS: &str = "<?php\n\nnamespace Lib;\n\nfinal class Totals\n{\n    /** @param list<int> $values */\n    public static function sum(array $values): int\n    {\n        return array_sum($values);\n    }\n\n    /** @return list<int> */\n    public static function sizes(): array\n    {\n        return [1, 2];\n    }\n}\n";
+
+#[test]
+fn lists_and_maps_type_their_literals_indexes_and_loops_as_php_arrays() {
+    let sharp = "namespace Demo;\n\nimport Lib.Totals;\n\nclass Order\n{\n    public List<Line> lines { get; private set; } = [];\n    private Map<string, int> counts = [:];\n\n    public int total(List<Line> extra)\n    {\n        List<Line> all = [new Line(1), new Line(2)];\n        all[0] = extra[0];\n        this.lines = all;\n        this.counts[\"lines\"] = count(this.lines);\n        this.counts[\"lines\"] += 1;\n        const named = [\"a\": 1, \"b\": 2];\n        let sum = named[\"a\"] + Totals.sum(Totals.sizes());\n        for (const line of all) {\n            sum += line.cents;\n        }\n        for (const [name, size] of this.counts) {\n            sum += strlen(name) + size;\n        }\n        for (const [index, line] of this.lines) {\n            sum += index * line.cents;\n        }\n        if (in_array(2, Totals.sizes(), true)) {\n            sum += 1;\n        }\n        return sum + this.counts[\"lines\"];\n    }\n}\n\nclass Line\n{\n    public Line(public int cents { get; })\n    {\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Order.sharp", sharp), &[("src/Lib/Totals.php", TOTALS)]), Vec::<String>::new());
+}
+
+#[test]
+fn a_wrong_element_type_is_reported_where_it_enters_the_collection() {
+    let sharp = "namespace Demo;\n\nimport Lib.Totals;\n\nclass Order\n{\n    public List<Line> lines { get; private set; } = [];\n    private Map<string, int> counts = [:];\n\n    public List<int> wrong(List<Line> extra)\n    {\n        List<Line> all = [1];\n        Map<string, int> sizes = [\"a\": \"one\"];\n        this.counts[\"lines\"] = \"many\";\n        this.lines = [2];\n        Totals.sum(extra);\n        return extra;\n    }\n}\n\nclass Line\n{\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Order.sharp", sharp), &[("src/Lib/Totals.php", TOTALS)]),
+        [
+            "12:26 invalid-local-assignment-value",
+            "13:34 invalid-local-assignment-value",
+            "14:9 invalid-property-assignment-value",
+            "15:22 invalid-property-assignment-value",
+            "16:20 invalid-argument",
+            "17:16 invalid-return-statement",
+        ]
+    );
+}
+
+/// Spec section 12 writes a change to a collection in a property back through the property's `set`, so code that
+/// cannot reach the `set` cannot change the collection, as PHP refuses the same write when it runs.
+#[test]
+fn an_index_write_to_a_property_needs_its_set() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public List<int> lines { get; private set; } = [];\n    public Map<string, int> codes { get; }\n\n    public Order()\n    {\n        this.codes = [:];\n    }\n\n    public void change(Order other)\n    {\n        this.lines[0] = 1;\n        other.lines[0] = 1;\n        this.codes[\"a\"] = 1;\n    }\n}\n\nclass Shop\n{\n    public void change(Order order)\n    {\n        order.lines[0] = 1;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    public private(set) array $lines = [];\n    public readonly array $codes;\n\n    public function __construct()\n    {\n        $this->codes = [];\n    }\n\n    public function change(Order $other): void\n    {\n        $this->lines[0] = 1;\n        $other->lines[0] = 1;\n        $this->codes['a'] = 1;\n    }\n}\n\nclass Shop\n{\n    public function change(Order $order): void\n    {\n        $order->lines[0] = 1;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Order.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Order.php", php), &[]);
+
+    assert_eq!(sharp_issues, ["17:14 invalid-property-write", "25:15 invalid-property-write"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
