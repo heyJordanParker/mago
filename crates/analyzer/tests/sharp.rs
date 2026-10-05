@@ -761,10 +761,37 @@ fn a_ternary_whose_condition_is_not_bool_is_an_invalid_operand() {
 }
 
 #[test]
-fn a_ternary_keeps_testing_truthiness_in_php() {
-    let php = "<?php\n\nnamespace Demo;\n\nfunction pick(int $count): int\n{\n    return $count ? 1 : 2;\n}\n";
+fn every_condition_keeps_testing_truthiness_in_php() {
+    let php = "<?php\n\nnamespace Demo;\n\nfunction pick(int $count, string $name, int $a, string $b): int\n{\n    if ($count) {\n        $count++;\n    } elseif ($name) {\n        $count--;\n    }\n    while ($count) {\n        $count--;\n    }\n    do {\n        $count++;\n    } while ($count < 3 && $name);\n    for ($i = 3; $i; $i--) {\n        $count++;\n    }\n    return $a || !$b ? $count : 2;\n}\n";
 
     assert_eq!(issues(("src/Demo/report.php", php), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn every_condition_that_is_bool_has_no_issue() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int pick(int count, string name, bool on)\n    {\n        if (count > 0) {\n            count++;\n        } else if (name != \"\") {\n            count--;\n        }\n        while (count > 10 && on) {\n            count--;\n        }\n        do {\n            count++;\n        } while (count < 3 || !on);\n        for (let i = 3; i > 0; i--) {\n            count++;\n        }\n        while (true) {\n            break;\n        }\n        return on ? count : 0;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn a_condition_that_is_not_bool_is_an_invalid_operand_everywhere() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int pick(int count, string name, bool on, int n, string s)\n    {\n        if (count) {\n            count++;\n        } else if (name) {\n            count--;\n        }\n        while (count) {\n            count--;\n        }\n        do {\n            count++;\n        } while (count % 3);\n        for (let i = 3; i; i--) {\n            count += s ? 1 : 2;\n        }\n        const a = n && on;\n        const b = on || s;\n        const c = !n;\n        return a && b && c ? 1 : 0;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[]),
+        [
+            "7:13 invalid-operand",
+            "9:20 invalid-operand",
+            "12:16 invalid-operand",
+            "17:18 invalid-operand",
+            "19:22 invalid-operand",
+            "18:25 invalid-operand",
+            "21:19 invalid-operand",
+            "22:25 invalid-operand",
+            "23:20 invalid-operand",
+        ]
+    );
 }
 
 #[test]

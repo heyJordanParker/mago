@@ -142,7 +142,8 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// Five more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
 /// - `+` that may join a string with any other value, which spec section 18 makes an error, in
 ///   `analyze_arithmetic_operation`. `+` on two strings joins them.
-/// - a ternary whose condition is not `bool`, which spec section 21 makes an error, in `analyze_conditional`.
+/// - a condition of `if`, `while`, `do … while`, `for` or `? :`, or an operand of `&&`, `||` or `!`, that is not
+///   `bool`, which spec section 21 makes an error, in `Context::report_non_bool_condition`.
 /// - a cast of a value that is not an `int` or a `float`, which spec section 24 makes an error, in `UnaryPrefix`'s
 ///   `analyze`.
 /// - an instance method used as a value, such as `order.total` without a call, in `report_non_existent_property`.

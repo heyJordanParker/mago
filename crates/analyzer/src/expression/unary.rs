@@ -151,6 +151,8 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for UnaryPrefix<'arena> {
                 }
             }
             UnaryPrefixOperator::Not(_) => {
+                context.report_non_bool_condition(self.operand, operand_type.as_deref(), "!");
+
                 let resulting_type = match operand_type {
                     Some(t) if t.is_always_truthy() => get_false(),
                     Some(t) if t.is_always_falsy() => get_true(),

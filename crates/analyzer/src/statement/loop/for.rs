@@ -39,7 +39,14 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for For<'arena> {
             self.body.statements(),
             self.span(),
             infinite_loop,
-        )
+        )?;
+
+        // The last condition decides whether the loop runs again, and any before it runs only for its effect.
+        if let Some(condition) = self.conditions.last() {
+            context.report_non_bool_condition(condition, artifacts.get_expression_type(condition), "for");
+        }
+
+        Ok(())
     }
 }
 
