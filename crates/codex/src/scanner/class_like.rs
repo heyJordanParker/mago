@@ -308,7 +308,8 @@ where
 
     let verdict = evaluate_version_attributes(attribute_lists, context, context.php_version);
 
-    let flags = MetadataFlags::origin_flags(context.file.file_type);
+    let mut flags = MetadataFlags::origin_flags(context.file.file_type);
+    flags.set(MetadataFlags::SHARP, context.program.dialect.is_sharp());
 
     let mut class_like_metadata = ClassLikeMetadata::new(name, original_name, span, name_span, flags);
     class_like_metadata.version_constraint = verdict.constraint;

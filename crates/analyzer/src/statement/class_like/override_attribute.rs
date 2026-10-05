@@ -121,6 +121,31 @@ pub fn check_override_attribute<'ctx, 'arena, A>(
             continue;
         };
 
+        // A PHP method is open and its parameters may be renamed, so replacing one from PHP# is outside the slice.
+        if is_sharp
+            && let Some(php_class) = parent_class_names.values().find_map(|parent_method_id| {
+                context
+                    .codebase
+                    .get_class_like(parent_method_id.get_class_name().as_bytes())
+                    .filter(|parent_metadata| parent_metadata.kind.is_class() && !parent_metadata.flags.is_sharp())
+            })
+        {
+            let php_class = php_class.original_name;
+            let method_name = mago_bytes::BytesDisplay(method.name.value);
+
+            context.collector.report(
+                Issue::error(format!("Replacing the PHP method `{php_class}::{method_name}` is not supported yet."))
+                    .with_code(IssueCode::NotSupportedYet)
+                    .with_annotation(
+                        Annotation::primary(method.name.span)
+                            .with_message(format!("Replaces `{php_class}::{method_name}`.")),
+                    )
+                    .with_help("Rename the method, or extend a PHP# class instead."),
+            );
+
+            continue;
+        }
+
         if override_span.is_some() || metadata.kind.is_trait() {
             continue;
         }

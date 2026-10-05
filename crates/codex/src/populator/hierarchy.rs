@@ -131,8 +131,8 @@ pub fn populate_class_like_metadata_iterative(
     }
 
     // A PHP# header lists the base class among the interfaces, so the one class there is the parent, as PHP links it.
-    // A PHP class lists one only in invalid code, which the analyzer reports from its `implements`.
-    if metadata.kind.is_class()
+    if metadata.flags.is_sharp()
+        && metadata.kind.is_class()
         && metadata.direct_parent_class.is_none()
         && let Some(parent_classname) = sorted_atoms(metadata.direct_parent_interfaces.iter().copied())
             .into_iter()

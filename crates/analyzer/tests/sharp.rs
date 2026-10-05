@@ -788,13 +788,35 @@ fn a_field_that_replaces_an_untyped_php_property_is_not_supported_yet() {
     );
 }
 
-/// A PHP class that implements a class still reports it, though the populator links that class as its parent for a
-/// PHP# header.
+/// A PHP class that implements a class reports it, and keeps the metadata upstream Mago builds: only a PHP# header
+/// links its class as the parent.
 #[test]
 fn a_php_class_that_implements_a_class_is_still_an_error() {
-    let php = "<?php\n\nnamespace Demo;\n\nclass Entity\n{\n}\n\nclass Page implements Entity\n{\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Entity\n{\n    public function id(): int\n    {\n        return 7;\n    }\n}\n\nclass Page implements Entity\n{\n    public function number(): int\n    {\n        return parent::id();\n    }\n}\n";
 
-    assert_eq!(codes(&issues(("src/Demo/Page.php", php), &[])), ["invalid-implement"]);
+    assert_eq!(
+        codes(&issues(("src/Demo/Page.php", php), &[])),
+        ["invalid-implement", "invalid-parent-type", "mixed-return-statement"]
+    );
+}
+
+/// A PHP method is open, and replacing one from PHP# is outside the classes slice, with or without `override`.
+#[test]
+fn replacing_a_method_of_a_php_class_is_not_supported_yet() {
+    let library = "<?php\n\nnamespace Lib;\n\nclass Entity\n{\n    public function id(): int\n    {\n        return 7;\n    }\n\n    public function name(): string\n    {\n        return 'entity';\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Entity;\n\npublic class Post : Entity\n{\n    public override int id()\n    {\n        return 8;\n    }\n\n    public string name()\n    {\n        return \"post\";\n    }\n}\n";
+
+    let issues =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Post.sharp", sharp), &[("src/Lib/Entity.php", library)]);
+
+    assert_eq!(
+        issues.iter().map(|issue| issue.message.as_str()).collect::<Vec<_>>(),
+        [
+            "Replacing the PHP method `Lib\\Entity::id` is not supported yet.",
+            "Replacing the PHP method `Lib\\Entity::name` is not supported yet."
+        ]
+    );
+    assert!(issues.iter().all(|issue| issue.code.as_deref() == Some("not-supported-yet")));
 }
 
 /// A parse error reports its spot once, so returning what failed to parse adds no `never-return`, in PHP# and PHP.
