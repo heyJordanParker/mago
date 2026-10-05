@@ -5,6 +5,7 @@ use mago_reporting::Issue;
 use mago_reporting::IssueCollection;
 use mago_span::HasSpan;
 use mago_span::Position;
+use mago_span::Span;
 use mago_syntax::cst::Label;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::Program;
@@ -22,6 +23,10 @@ pub struct Context<'ctx, 'ast, 'arena> {
     pub hint_depth: usize,
     /// Every `goto` label of the file, collected at its first `goto`.
     pub labels: Option<Vec<&'ast Label<'arena>>>,
+    /// The name and body of the last namespace without braces the walk left.
+    pub last_unbraced_namespace: Option<(Span, Span)>,
+    /// The name and body of the last namespace in braces the walk left.
+    pub last_braced_namespace: Option<(Span, Span)>,
 
     issues: IssueCollection,
 }
@@ -42,6 +47,8 @@ impl<'ctx, 'ast, 'arena> Context<'ctx, 'ast, 'arena> {
             ancestors: vec![],
             hint_depth: 0,
             labels: None,
+            last_unbraced_namespace: None,
+            last_braced_namespace: None,
         }
     }
 

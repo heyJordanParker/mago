@@ -109,6 +109,11 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingW
     }
 
     #[inline]
+    fn walk_out_namespace(&self, namespace: &Namespace<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
+        checker::statement::check_namespace_body(namespace, context);
+    }
+
+    #[inline]
     fn walk_in_hint(&self, hint: &Hint<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
         context.hint_depth += 1;
         checker::hint::check_hint(hint, context);

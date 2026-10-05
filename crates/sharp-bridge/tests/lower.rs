@@ -258,7 +258,10 @@ fn the_deepest_file_the_checker_accepts_lowers_on_a_small_stack() {
         method(&format!("        return {};\n", vec!["extra"; 509].join(" + "))),
         method(&format!("        return {};\n", vec!["extra"; 509].join(" ?? "))),
         method(&format!("        this{};\n        return extra;\n", "?.total(extra)".repeat(508))),
-        format!("namespace App.Tenant;\n\nclass Report\n{{\n    private int total = {};\n}}\n", vec!["1"; 510].join(" + ")),
+        format!(
+            "namespace App.Tenant;\n\nclass Report\n{{\n    private int total = {};\n}}\n",
+            vec!["1"; 510].join(" + ")
+        ),
     ];
 
     for code in codes {
