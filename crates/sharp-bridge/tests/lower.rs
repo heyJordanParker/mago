@@ -1324,6 +1324,68 @@ fn null_coalescing_is_coalesce() {
 }
 
 /// ```php
+/// return ($extra > 1 ? true : false) ? $extra : ($extra < 0 ? 0 : 1);
+/// ```
+///
+/// A ternary in parentheses carries `ZEND_PARENTHESIZED_CONDITIONAL`, as php-src's grammar marks `'(' expr ')'`, so
+/// the engine accepts it as the condition of another ternary.
+#[test]
+fn the_ternary_is_a_conditional_marked_when_parenthesized() {
+    assert_eq!(
+        body("        return (extra > 1 ? true : false) ? extra : (extra < 0 ? 0 : 1);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CONDITIONAL
+                  CONDITIONAL [1]
+                    GREATER
+                      VAR
+                        ZVAL "extra"
+                      ZVAL 1
+                    ZVAL true
+                    ZVAL false
+                  VAR
+                    ZVAL "extra"
+                  CONDITIONAL [1]
+                    BINARY_OP [20]
+                      VAR
+                        ZVAL "extra"
+                      ZVAL 0
+                    ZVAL 0
+                    ZVAL 1
+        "#}
+    );
+}
+
+/// ```php
+/// $cents = (int)($extra * 1.5); return (string)(float)$cents;
+/// ```
+///
+/// A cast's attr is the type it converts to, `IS_LONG`, `IS_DOUBLE` or `IS_STRING`, as php-src's grammar builds it.
+#[test]
+fn casts_between_numbers_are_casts_to_their_types() {
+    assert_eq!(
+        body("        const cents = (int)(extra * 1.5);\n        return (string)(float)cents;\n"),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "cents"
+                CAST [4]
+                  BINARY_OP [3]
+                    VAR
+                      ZVAL "extra"
+                    ZVAL 1.5
+              RETURN
+                CAST [6]
+                  CAST [5]
+                    VAR
+                      ZVAL "cents"
+        "#}
+    );
+}
+
+/// ```php
 /// $extra ??= 1; $this->count ??= $extra;
 /// ```
 #[test]
@@ -2015,7 +2077,8 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_RETURN
         | sharp_kind::SHARP_AST_BREAK
         | sharp_kind::SHARP_AST_CONTINUE
-        | sharp_kind::SHARP_AST_THROW => Some(1),
+        | sharp_kind::SHARP_AST_THROW
+        | sharp_kind::SHARP_AST_CAST => Some(1),
         sharp_kind::SHARP_AST_PROP
         | sharp_kind::SHARP_AST_ASSIGN
         | sharp_kind::SHARP_AST_ASSIGN_OP
@@ -2042,7 +2105,8 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_NULLSAFE_METHOD_CALL
         | sharp_kind::SHARP_AST_PROP_GROUP
         | sharp_kind::SHARP_AST_TRY
-        | sharp_kind::SHARP_AST_CATCH => Some(3),
+        | sharp_kind::SHARP_AST_CATCH
+        | sharp_kind::SHARP_AST_CONDITIONAL => Some(3),
         sharp_kind::SHARP_AST_FOR | sharp_kind::SHARP_AST_FOREACH | sharp_kind::SHARP_AST_PROP_ELEM => Some(4),
         sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_CLASS => Some(5),
         sharp_kind::SHARP_AST_PARAM => Some(6),

@@ -24,6 +24,7 @@ use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::CompositeString;
+use mago_syntax::cst::Conditional;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::DirectVariable;
 use mago_syntax::cst::Expression;
@@ -82,10 +83,12 @@ use crate::sharp_kind::SHARP_AST_ATTRIBUTE_LIST;
 use crate::sharp_kind::SHARP_AST_BINARY_OP;
 use crate::sharp_kind::SHARP_AST_BREAK;
 use crate::sharp_kind::SHARP_AST_CALL;
+use crate::sharp_kind::SHARP_AST_CAST;
 use crate::sharp_kind::SHARP_AST_CATCH;
 use crate::sharp_kind::SHARP_AST_CATCH_LIST;
 use crate::sharp_kind::SHARP_AST_CLASS;
 use crate::sharp_kind::SHARP_AST_COALESCE;
+use crate::sharp_kind::SHARP_AST_CONDITIONAL;
 use crate::sharp_kind::SHARP_AST_CONST;
 use crate::sharp_kind::SHARP_AST_CONST_DECL;
 use crate::sharp_kind::SHARP_AST_CONST_ELEM;
@@ -147,6 +150,10 @@ const ZEND_ACC_READONLY: u32 = 1 << 7;
 const ZEND_ACC_PROTECTED_SET: u32 = 1 << 11;
 const ZEND_ACC_PRIVATE_SET: u32 = 1 << 12;
 const ZEND_TYPE_NULLABLE: u32 = 1 << 8;
+const ZEND_PARENTHESIZED_CONDITIONAL: u32 = 1;
+const IS_LONG: u32 = 4;
+const IS_DOUBLE: u32 = 5;
+const IS_STRING: u32 = 6;
 const ZEND_ADD: u32 = 1;
 const ZEND_SUB: u32 = 2;
 const ZEND_MUL: u32 = 3;
@@ -645,7 +652,21 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
         ensure_sufficient_stack(|| match expression {
             Expression::Literal(literal) => self.literal(literal),
-            Expression::Parenthesized(parenthesized) => self.expression(parenthesized.expression),
+            Expression::Parenthesized(parenthesized) => {
+                let index = self.expression(parenthesized.expression);
+                if let Expression::Conditional(_) = parenthesized.expression {
+                    self.nodes[index as usize].attr = ZEND_PARENTHESIZED_CONDITIONAL;
+                }
+
+                index
+            }
+            Expression::Conditional(Conditional { condition, then: Some(then), r#else, .. }) => {
+                let condition = self.expression(condition);
+                let then = self.expression(then);
+                let r#else = self.expression(r#else);
+
+                self.node(SHARP_AST_CONDITIONAL, 0, line, &[condition, then, r#else])
+            }
             Expression::ConstantAccess(name) => self.name(name),
             Expression::Binary(binary) => {
                 let (kind, attr) = binary_kind(binary.operator);
@@ -1072,6 +1093,9 @@ fn prefix_kind(operator: &UnaryPrefixOperator) -> (sharp_kind, u32) {
         UnaryPrefixOperator::Not(_) => (SHARP_AST_UNARY_OP, ZEND_BOOL_NOT),
         UnaryPrefixOperator::PreIncrement(_) => (SHARP_AST_PRE_INC, 0),
         UnaryPrefixOperator::PreDecrement(_) => (SHARP_AST_PRE_DEC, 0),
+        UnaryPrefixOperator::IntCast(..) => (SHARP_AST_CAST, IS_LONG),
+        UnaryPrefixOperator::FloatCast(..) => (SHARP_AST_CAST, IS_DOUBLE),
+        UnaryPrefixOperator::StringCast(..) => (SHARP_AST_CAST, IS_STRING),
         UnaryPrefixOperator::ErrorControl(_)
         | UnaryPrefixOperator::Reference(_)
         | UnaryPrefixOperator::ArrayCast(..)
@@ -1079,12 +1103,9 @@ fn prefix_kind(operator: &UnaryPrefixOperator) -> (sharp_kind, u32) {
         | UnaryPrefixOperator::BooleanCast(..)
         | UnaryPrefixOperator::DoubleCast(..)
         | UnaryPrefixOperator::RealCast(..)
-        | UnaryPrefixOperator::FloatCast(..)
-        | UnaryPrefixOperator::IntCast(..)
         | UnaryPrefixOperator::IntegerCast(..)
         | UnaryPrefixOperator::ObjectCast(..)
         | UnaryPrefixOperator::UnsetCast(..)
-        | UnaryPrefixOperator::StringCast(..)
         | UnaryPrefixOperator::BinaryCast(..)
         | UnaryPrefixOperator::VoidCast(..)
         | UnaryPrefixOperator::BitwiseNot(_) => unreachable!("check_slice refuses the operator `{operator}`"),

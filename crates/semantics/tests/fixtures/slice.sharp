@@ -137,6 +137,18 @@ class Report
         return value;
     }
 
+    private string choose(int value, bool on)
+    {
+        const sign = value > 0 ? 1 : (value < 0 ? -1 : 0);
+        return (on ? sign > 0 : false) ? "positive" : "other";
+    }
+
+    private string convert(float price, int count)
+    {
+        const cents = (int)(price * 100);
+        return (string)cents + (string)(float)count;
+    }
+
     public int attempt(int value)
     {
         try {

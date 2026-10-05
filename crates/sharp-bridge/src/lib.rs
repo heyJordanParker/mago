@@ -89,6 +89,8 @@ pub enum sharp_kind {
     SHARP_AST_NAME_LIST,
     SHARP_AST_CALL,
     SHARP_AST_ENCAPS_LIST,
+    SHARP_AST_CONDITIONAL,
+    SHARP_AST_CAST,
 }
 
 #[repr(u8)]

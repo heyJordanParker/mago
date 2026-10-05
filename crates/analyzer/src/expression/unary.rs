@@ -100,6 +100,30 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for UnaryPrefix<'arena> {
         block_context.flags.set_inside_variable_reference(was_in_variable_reference);
 
         let operand_type = artifacts.get_rc_expression_type(&self.operand).cloned();
+        if context.dialect.is_sharp()
+            && let Some(cast_type) = sharp_number_cast_type(&self.operator)
+            && let Some(operand_type) = &operand_type
+            && !operand_type.is_int_or_float()
+            && !operand_type.is_never()
+        {
+            context.collector.report_with_code(
+                IssueCode::InvalidOperand,
+                Issue::error(format!(
+                    "`{}` converts only a number, but this is `{}`.",
+                    BytesDisplay(self.operator.as_bytes()),
+                    operand_type.get_id()
+                ))
+                .with_annotation(
+                    Annotation::primary(self.span()).with_message("This value is not an `int` or a `float`."),
+                )
+                .with_note("Spec section 24 makes `(int)`, `(float)` and `(string)` convert between numbers only.")
+                .with_help("Parse a string with `Int.parse` or `Float.parse`, and compare a value to get a `bool`."),
+            );
+
+            artifacts.set_expression_type(self, cast_type);
+            return Ok(());
+        }
+
         match self.operator {
             // operators that always retain the type of the operand
             UnaryPrefixOperator::Reference(_) => {
@@ -465,6 +489,17 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for UnaryPostfix<'arena> {
         }
 
         Ok(())
+    }
+}
+
+/// The type a PHP# cast between numbers gives, or `None` for any other prefix operator. The checker refuses every
+/// other cast in a `.sharp` file.
+fn sharp_number_cast_type(operator: &UnaryPrefixOperator<'_>) -> Option<TUnion> {
+    match operator {
+        UnaryPrefixOperator::IntCast(..) => Some(get_int()),
+        UnaryPrefixOperator::FloatCast(..) => Some(get_float()),
+        UnaryPrefixOperator::StringCast(..) => Some(get_string()),
+        _ => None,
     }
 }
 

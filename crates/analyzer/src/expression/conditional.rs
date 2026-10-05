@@ -70,6 +70,21 @@ where
 
     *block_context = applied_block_context;
 
+    if context.dialect.is_sharp()
+        && then.is_some()
+        && let Some(condition_type) = artifacts.get_expression_type(condition)
+        && !condition_type.is_bool()
+        && !condition_type.is_never()
+    {
+        context.collector.report_with_code(
+            IssueCode::InvalidOperand,
+            Issue::error(format!("The condition of `? :` must be `bool`, but it is `{}`.", condition_type.get_id()))
+                .with_annotation(Annotation::primary(condition.span()).with_message("This condition is not `bool`."))
+                .with_note("Spec section 21 makes every PHP# condition a `bool`, so PHP's truthiness never applies.")
+                .with_help("Compare the value, as in `count > 0 ? a : b` or `name != \"\" ? a : b`."),
+        );
+    }
+
     let mut if_block_context = if_conditional_scope.if_body_context;
     let mut conditionally_referenced_variable_ids = if_conditional_scope.conditionally_referenced_variable_ids;
 

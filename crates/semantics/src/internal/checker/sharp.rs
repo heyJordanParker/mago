@@ -18,6 +18,7 @@ use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::CompositeString;
+use mago_syntax::cst::Conditional;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Continue;
 use mago_syntax::cst::Expression;
@@ -120,15 +121,22 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   expression of this list in each `${…}` and takes JavaScript's escapes, as spec section 18 writes them.
 /// - Operators: `+ - * / % **`, `== != === !== < > <= >=`, `&& || !`, `??`, unary `-` and `+`, `++` and `--`, and
 ///   `= += -= *= /= **= ??=`.
+/// - The ternary `c ? a : b` in a method body, as spec section 21 writes it. PHP's `a ?: b` is an error, and a ternary as the condition
+///   of another needs parentheses, as in PHP 8.
+/// - Casts: `(int)`, `(float)` and `(string)` in a method body, as spec section 24 writes them. PHP's other casts and
+///   its cast aliases, such as `(bool)` and `(integer)`, are errors.
 ///
 /// The check runs on every node the checking walk enters, and refuses any node, or any position of a node, that this
 /// list does not name. It reports each refusal once, at its outermost node, and skips the nodes inside it. It does not
 /// run on a file with a parse error, which is the one error to fix first. The constructs PHP# never has, such as `$`
 /// variables, `global` and top-level functions, keep their own errors.
 ///
-/// Three more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
+/// Five more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
 /// - `+` that may join a string with any other value, which spec section 18 makes an error, in
 ///   `analyze_arithmetic_operation`. `+` on two strings joins them.
+/// - a ternary whose condition is not `bool`, which spec section 21 makes an error, in `analyze_conditional`.
+/// - a cast of a value that is not an `int` or a `float`, which spec section 24 makes an error, in `UnaryPrefix`'s
+///   `analyze`.
 /// - an instance method used as a value, such as `order.total` without a call, in `report_non_existent_property`.
 /// - a call of a function a library or the app declares, in `report_declared_function_call`.
 #[inline]
@@ -450,7 +458,14 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         {
             Some(Constant)
         }
+        (Node::Expression(Expression::Conditional(conditional)), Body) => {
+            check_conditional(conditional, context).then_some(Body)
+        }
+        (Node::Conditional(_), Body) => Some(Body),
         (Node::BinaryOperator(operator), Body | Constant) if is_slice_binary_operator(operator) => Some(place),
+        (Node::UnaryPrefixOperator(operator), Body | Constant) if operator.is_cast() => {
+            check_cast(operator, place, context)
+        }
         (Node::UnaryPrefixOperator(operator), Body | Constant) if is_slice_prefix_operator(operator, place) => {
             Some(place)
         }
@@ -764,6 +779,36 @@ fn first_namespace<'ast, 'arena>(program: &'ast Program<'arena>) -> Option<&'ast
     })
 }
 
+/// Whether the slice has a ternary, reporting it when it does not. PHP#'s ternary is `c ? a : b`, and PHP's `a ?: b`
+/// does not exist, as spec section 21 says. A ternary as the condition of another needs parentheses, as in PHP 8.
+fn check_conditional(conditional: &Conditional, context: &mut Context<'_, '_, '_>) -> bool {
+    if conditional.then.is_none() {
+        context.report(
+            Issue::error("PHP# has no `?:`: write `a ?? b` to replace null, or `c ? a : b` with a `bool` condition.")
+                .with_annotation(
+                    Annotation::primary(Span::between(conditional.question_mark, conditional.colon))
+                        .with_message("Written here."),
+                )
+                .with_note("`?:` tests truthiness, so it replaces `\"\"` and `\"0\"` along with null."),
+        );
+
+        return false;
+    }
+
+    if let Expression::Conditional(nested @ Conditional { then: Some(_), .. }) = conditional.condition {
+        context.report(
+            Issue::error(
+                "Unparenthesized `a ? b : c ? d : e` is not supported. Use either `(a ? b : c) ? d : e` or `a ? b : (c ? d : e)`.",
+            )
+            .with_annotation(Annotation::primary(nested.span()).with_message("Nested here.")),
+        );
+
+        return false;
+    }
+
+    true
+}
+
 /// The expression a node writes: the left side of an assignment, or the operand of `++` or `--`.
 fn write_target<'ast, 'arena>(node: Node<'ast, 'arena>) -> Option<&'ast Expression<'arena>> {
     match node {
@@ -881,6 +926,54 @@ fn is_slice_prefix_operator(operator: &UnaryPrefixOperator, place: Place) -> boo
     }
 }
 
+/// Decides a cast at a place, reporting it when the slice does not have it. Spec section 24 keeps `(int)`, `(float)`
+/// and `(string)`, which the slice has in a method body, and removes PHP's other casts and its cast aliases. Every
+/// cast is named, so a new one does not compile until it is decided.
+fn check_cast(operator: &UnaryPrefixOperator, place: Place, context: &mut Context<'_, '_, '_>) -> Option<Place> {
+    let compare = "compare the value instead, as in `count > 0` or `flag == \"1\"`.";
+    let numbers_only = "`(int)`, `(float)` and `(string)` convert between numbers only.";
+    let (cast, instead) = match operator {
+        UnaryPrefixOperator::IntCast(..) | UnaryPrefixOperator::FloatCast(..) | UnaryPrefixOperator::StringCast(..)
+            if place == Place::Body =>
+        {
+            return Some(Place::Body);
+        }
+        UnaryPrefixOperator::IntCast(..)
+        | UnaryPrefixOperator::FloatCast(..)
+        | UnaryPrefixOperator::StringCast(..)
+        | UnaryPrefixOperator::UnsetCast(..)
+        | UnaryPrefixOperator::VoidCast(..) => {
+            report_not_supported(operator.span(), "operator", supported(place), context);
+
+            return None;
+        }
+        UnaryPrefixOperator::BoolCast(..) => ("(bool)", compare),
+        UnaryPrefixOperator::BooleanCast(..) => ("(boolean)", compare),
+        UnaryPrefixOperator::ArrayCast(..) => ("(array)", numbers_only),
+        UnaryPrefixOperator::ObjectCast(..) => ("(object)", numbers_only),
+        UnaryPrefixOperator::IntegerCast(..) => ("(integer)", "write `(int)`."),
+        UnaryPrefixOperator::DoubleCast(..) => ("(double)", "write `(float)`."),
+        UnaryPrefixOperator::RealCast(..) => ("(real)", "write `(float)`."),
+        UnaryPrefixOperator::BinaryCast(..) => ("(binary)", "write `(string)`."),
+        UnaryPrefixOperator::ErrorControl(_)
+        | UnaryPrefixOperator::Reference(_)
+        | UnaryPrefixOperator::BitwiseNot(_)
+        | UnaryPrefixOperator::Not(_)
+        | UnaryPrefixOperator::PreIncrement(_)
+        | UnaryPrefixOperator::PreDecrement(_)
+        | UnaryPrefixOperator::Plus(_)
+        | UnaryPrefixOperator::Negation(_) => unreachable!("`enter` calls `check_cast` only for a cast"),
+    };
+
+    context.report(
+        Issue::error(format!("PHP# has no `{cast}`: {instead}"))
+            .with_annotation(Annotation::primary(operator.span()).with_message("Written here."))
+            .with_note("Spec section 24 keeps `(int)`, `(float)` and `(string)` between numbers, and removes PHP's other casts and its cast aliases."),
+    );
+
+    None
+}
+
 /// Whether the slice has an assignment operator. Every operator is named, so a new one does not compile until it
 /// is decided.
 const fn is_slice_assignment_operator(operator: &AssignmentOperator) -> bool {
@@ -940,7 +1033,7 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, a name, and an optional default."
         }
         Place::Body | Place::Instantiation | Place::FunctionCall | Place::TryCatchClause => {
-            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, `break` and `continue` without a level, and `try` with `catch` and `finally`, with literals, templates, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, `++` and `--`, method calls and property reads written with `.` or `?.`, `new Class(...)`, calls of PHP's built-in functions and `throw`."
+            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, `break` and `continue` without a level, and `try` with `catch` and `finally`, with literals, templates, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, the ternary `c ? a : b`, `(int)`, `(float)` and `(string)`, `++` and `--`, method calls and property reads written with `.` or `?.`, `new Class(...)`, calls of PHP's built-in functions and `throw`."
         }
         Place::Attribute => {
             "A PHP# attribute is a class name with optional positional and named arguments, as in `[Field(\"Name\", searchable: true)]`."

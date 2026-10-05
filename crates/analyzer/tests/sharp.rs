@@ -722,6 +722,65 @@ fn plus_on_a_string_and_a_value_that_may_not_be_one_is_an_invalid_operand() {
 }
 
 #[test]
+fn a_ternary_with_a_bool_condition_has_the_type_it_has_in_php() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static string? host(string host, bool secure)\n    {\n        const scheme = secure ? \"https\" : \"http\";\n        return host != \"\" ? scheme + host : (secure ? 1 : null);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function host(string $host, bool $secure): ?string\n    {\n        $scheme = $secure ? \"https\" : \"http\";\n        return $host != \"\" ? $scheme . $host : ($secure ? 1 : null);\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[]);
+
+    assert!(!php_issues.is_empty(), "{php_issues:?}");
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn a_ternary_whose_condition_is_not_bool_is_an_invalid_operand() {
+    let any = "<?php\n\nnamespace Lib;\n\nfinal class Any\n{\n    public static function value(): mixed\n    {\n        return 1;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Any;\n\nclass Report\n{\n    public static int pick(int count, string name, bool? maybe)\n    {\n        const a = count ? 1 : 2;\n        const b = name ? 1 : 2;\n        const c = maybe ? 1 : 2;\n        const d = Any.value() ? 1 : 2;\n        const e = count ?: 2;\n        return a + b + c + d + e;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Any.php", any)]),
+        ["9:19 invalid-operand", "10:19 invalid-operand", "11:19 invalid-operand", "12:19 invalid-operand"]
+    );
+}
+
+#[test]
+fn a_ternary_keeps_testing_truthiness_in_php() {
+    let php = "<?php\n\nnamespace Demo;\n\nfunction pick(int $count): int\n{\n    return $count ? 1 : 2;\n}\n";
+
+    assert_eq!(issues(("src/Demo/report.php", php), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn casts_between_numbers_have_the_types_they_have_in_php() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static string cents(float price, int count)\n    {\n        const cents = (int)(price * 100);\n        const share = (float)count / 3;\n        return (string)cents + (string)share + (string)(int)share;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function cents(float $price, int $count): string\n    {\n        $cents = (int)($price * 100);\n        $share = (float)$count / 3;\n        return (string)$cents . (string)$share . (string)(int)$share;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[]);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn a_cast_of_a_value_that_is_not_a_number_is_an_invalid_operand() {
+    let any = "<?php\n\nnamespace Lib;\n\nfinal class Any\n{\n    public static function value(): mixed\n    {\n        return 1;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Any;\n\nclass Report\n{\n    public static string pick(string name, bool flag, int? maybe)\n    {\n        const a = (int)name;\n        const b = (float)flag;\n        const c = (string)name;\n        const d = (int)maybe;\n        const e = (string)Any.value();\n        return `${a}${b}${c}${d}${e}`;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Any.php", any)]),
+        [
+            "9:19 invalid-operand",
+            "10:19 invalid-operand",
+            "11:19 invalid-operand",
+            "12:19 invalid-operand",
+            "13:19 invalid-operand",
+        ]
+    );
+}
+
+#[test]
 fn plus_keeps_adding_numbers_and_rejecting_nothing_new_in_php() {
     let php = "<?php\n\nnamespace Demo;\n\nfunction total(int $count, string $name): int|float\n{\n    return $count + \"1\";\n}\n";
 
