@@ -4,6 +4,7 @@ use std::borrow::Cow;
 
 use mago_allocator::LocalArena;
 use mago_database::file::File;
+use mago_php_version::PHPVersion;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_syntax::cst::*;
@@ -1001,6 +1002,46 @@ fn a_php_file_keeps_nesting_deeper_than_512_levels() {
 
     let terms = Node::Program(program).filter_map(|node| matches!(node, Node::DirectVariable(_)).then_some(()));
     assert_eq!(terms.len(), 100_001);
+}
+
+/// The span of a PHP sum or call chain of 10,000 terms reaches its first term, and whether it is constant reaches its
+/// last, on a thread whose stack is far smaller than one frame per term, as a rayon worker's or a PHP fiber's stack is
+/// for a deep enough chain.
+#[test]
+fn a_php_chain_of_10_000_terms_has_a_span_and_a_constness_on_a_small_stack() {
+    let sum = vec!["1"; 10_000].join(" + ");
+    let chain = format!("$this{}", "->run(1)".repeat(10_000));
+    let code = format!(
+        "<?php\nnamespace App;\n\nclass Report\n{{\n    public function run(int $extra): int\n    {{\n        return {sum};\n    }}\n\n    public function chain(): self\n    {{\n        return {chain};\n    }}\n}}\n"
+    );
+    let [sum_span, chain_span] = [&sum, &chain].map(|terms| {
+        let start = code.find(terms.as_str()).expect("the chain is written");
+        (start, start + terms.len())
+    });
+
+    let values = std::thread::Builder::new()
+        .stack_size(128 * 1024)
+        .spawn(move || {
+            let arena = LocalArena::new();
+            let program = parse(&arena, "src/Report.php", Box::leak(code.into_boxed_str()));
+            assert!(program.errors.is_empty(), "{:#?}", program.errors);
+
+            Node::Program(program).filter_map(|node| match node {
+                Node::Return(statement) => statement.value.map(|value| {
+                    let span = value.span();
+                    (
+                        (span.start.offset as usize, span.end.offset as usize),
+                        value.is_constant(&PHPVersion::LATEST, false),
+                    )
+                }),
+                _ => None,
+            })
+        })
+        .expect("the thread starts")
+        .join()
+        .expect("the spans and constness are computed");
+
+    assert_eq!(values, [(sum_span, true), (chain_span, false)]);
 }
 
 /// The source of every attribute list under `node`, in source order.

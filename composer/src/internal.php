@@ -141,7 +141,7 @@ function detect_architecture(): string
         'armv6l', 'armv5tel', 'armv5l' => 'arm',
         default => throw new RuntimeException(
             "Unsupported architecture: {$raw}. Pre-built binaries are available for x86_64, aarch64, armv7, and arm. "
-            . 'For other architectures, compile mago from source: https://github.com/carthage-software/mago',
+            . 'For other architectures, compile mago from source: https://github.com/heyJordanParker/mago-sharp',
         ),
     };
 }
@@ -298,7 +298,7 @@ function detect_platform(string $architecture): array
         },
         default => throw new RuntimeException(
             "Unsupported operating system: {$os}. Pre-built binaries are available for Windows, macOS, Linux, and FreeBSD. "
-            . 'For other platforms, compile mago from source: https://github.com/carthage-software/mago',
+            . 'For other platforms, compile mago from source: https://github.com/heyJordanParker/mago-sharp',
         ),
     };
 }

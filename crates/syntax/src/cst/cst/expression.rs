@@ -4,6 +4,7 @@ use mago_php_version::PHPVersion;
 use mago_php_version::feature::Feature;
 use mago_span::HasSpan;
 use mago_span::Span;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 
 use crate::cst::UnaryPrefixOperator;
 use crate::cst::cst::access::Access;
@@ -100,7 +101,7 @@ pub enum Expression<'arena> {
 impl<'arena> Expression<'arena> {
     #[must_use]
     pub fn is_constant(&self, version: &PHPVersion, initialization: bool) -> bool {
-        match &self {
+        ensure_sufficient_stack(|| match &self {
             Self::Binary(operation) => {
                 operation.operator.is_constant()
                     && operation.lhs.is_constant(version, initialization)
@@ -230,7 +231,7 @@ impl<'arena> Expression<'arena> {
                 }
             }
             _ => false,
-        }
+        })
     }
 
     #[inline]
@@ -466,7 +467,7 @@ impl HasSpan for Parenthesized<'_> {
 
 impl HasSpan for Expression<'_> {
     fn span(&self) -> Span {
-        match &self {
+        ensure_sufficient_stack(|| match &self {
             Expression::Binary(expression) => expression.span(),
             Expression::ConstantAccess(expression) => expression.span(),
             Expression::UnaryPrefix(expression) => expression.span(),
@@ -502,6 +503,6 @@ impl HasSpan for Expression<'_> {
             Expression::Pipe(expression) => expression.span(),
             Expression::TypeOf(expression) => expression.span(),
             Expression::Error(span) => *span,
-        }
+        })
     }
 }
