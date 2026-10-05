@@ -1106,6 +1106,15 @@ fn collection_methods_take_and_give_the_types_of_their_elements() {
     );
 }
 
+/// A PHP# collection holds any value of its element type, as a `List<int>` holds any int, so a method takes one
+/// even where the analyzer knows the elements are literals, as TypeScript's `let a = [5]` is a `number[]`.
+#[test]
+fn collection_methods_take_any_value_of_a_type_the_elements_are_literals_of() {
+    let sharp = "namespace Demo;\n\nclass Tray\n{\n    public List<int> items { get; private set; } = [];\n\n    public void fill()\n    {\n        let sizes = [5];\n        sizes.add(6);\n        this.items = [5];\n        this.items.add(6);\n        this.items.set(0, 7);\n        let names = [\"tea\": true];\n        names.delete(\"pie\");\n        let found = names.get(\"pie\") ?? false;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tray.sharp", sharp), &[]), Vec::<String>::new());
+}
+
 /// A method that changes a collection writes it back where it lives, so spec section 12 allows it only on a place
 /// the caller can write: a local, a parameter, or a property whose `set` the caller reaches. The runtime never meets
 /// a write the checker accepts and it refuses.
