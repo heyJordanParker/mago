@@ -4,7 +4,8 @@
 # class through `php -l`. Each count is the "instructions retired" of `/usr/bin/time -l` on macOS, three runs each.
 # The first lines count each process on an empty file, the startup every later count includes. The `.sharp` class is
 # also counted stopped after parsing, after binding names and after the semantic checks, so each difference is one
-# pass, and `sharp_lower` adds the lowering.
+# pass, and `sharp_lower` adds the lowering. A third class, whose methods each read a constant, counts the lookup of
+# a bare name among the class's members.
 #
 # A folder argument, such as Laravel's `src`, counts the checker and `php -l` on every `.php` file in it, each in one
 # process. Each command first runs once on its own, so a failing file stops the bench before any count.
@@ -70,4 +71,14 @@ for argument in "$@"; do
     count "sharp_lower .sharp:" "$front_end" "$classes/Big$methods.sharp"
     count "front end .php:" "$front_end" "$classes/Big$methods.php"
     count "php -l .php:" php -l "$classes/Big$methods.php"
+
+    # A bare name that is not a local is looked up among the class's members, once per read.
+    awk -v methods="$methods" 'BEGIN {
+        print "namespace App;\n\nclass Big\n{"
+        for (i = 0; i < methods; i++) printf "    public int m%d(int value)\n    {\n        return value + PHP_INT_SIZE;\n    }\n\n", i
+        print "}"
+    }' > "$classes/Constants$methods.sharp"
+
+    echo "$methods methods that each read a constant:"
+    count "sharp_lower .sharp:" "$front_end" "$classes/Constants$methods.sharp"
 done
