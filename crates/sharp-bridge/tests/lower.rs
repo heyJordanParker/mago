@@ -2176,66 +2176,18 @@ fn attributes_are_attribute_lists_of_attribute_groups_on_their_declarations() {
 
 /// The child count `zend_ast_get_num_children` gives a fixed-size kind, or 5 for a declaration. `None` for a list.
 fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
-    match kind {
-        sharp_kind::SHARP_AST_ARG_LIST
-        | sharp_kind::SHARP_AST_STMT_LIST
-        | sharp_kind::SHARP_AST_PARAM_LIST
-        | sharp_kind::SHARP_AST_CONST_DECL
-        | sharp_kind::SHARP_AST_IF
-        | sharp_kind::SHARP_AST_EXPR_LIST
-        | sharp_kind::SHARP_AST_PROP_DECL
-        | sharp_kind::SHARP_AST_ATTRIBUTE_LIST
-        | sharp_kind::SHARP_AST_ATTRIBUTE_GROUP
-        | sharp_kind::SHARP_AST_CATCH_LIST
-        | sharp_kind::SHARP_AST_NAME_LIST
-        | sharp_kind::SHARP_AST_ENCAPS_LIST => None,
-        sharp_kind::SHARP_AST_ZVAL => Some(0),
-        sharp_kind::SHARP_AST_VAR
-        | sharp_kind::SHARP_AST_CONST
-        | sharp_kind::SHARP_AST_UNARY_PLUS
-        | sharp_kind::SHARP_AST_UNARY_MINUS
-        | sharp_kind::SHARP_AST_UNARY_OP
-        | sharp_kind::SHARP_AST_PRE_INC
-        | sharp_kind::SHARP_AST_PRE_DEC
-        | sharp_kind::SHARP_AST_POST_INC
-        | sharp_kind::SHARP_AST_POST_DEC
-        | sharp_kind::SHARP_AST_RETURN
-        | sharp_kind::SHARP_AST_BREAK
-        | sharp_kind::SHARP_AST_CONTINUE
-        | sharp_kind::SHARP_AST_THROW
-        | sharp_kind::SHARP_AST_CAST
-        | sharp_kind::SHARP_AST_PROPERTY_HOOK_SHORT_BODY => Some(1),
-        sharp_kind::SHARP_AST_PROP
-        | sharp_kind::SHARP_AST_ASSIGN
-        | sharp_kind::SHARP_AST_ASSIGN_OP
-        | sharp_kind::SHARP_AST_BINARY_OP
-        | sharp_kind::SHARP_AST_GREATER
-        | sharp_kind::SHARP_AST_GREATER_EQUAL
-        | sharp_kind::SHARP_AST_AND
-        | sharp_kind::SHARP_AST_OR
-        | sharp_kind::SHARP_AST_DECLARE
-        | sharp_kind::SHARP_AST_NAMESPACE
-        | sharp_kind::SHARP_AST_NAMED_ARG
-        | sharp_kind::SHARP_AST_COALESCE
-        | sharp_kind::SHARP_AST_ASSIGN_COALESCE
-        | sharp_kind::SHARP_AST_NULLSAFE_PROP
-        | sharp_kind::SHARP_AST_IF_ELEM
-        | sharp_kind::SHARP_AST_WHILE
-        | sharp_kind::SHARP_AST_DO_WHILE
-        | sharp_kind::SHARP_AST_NEW
-        | sharp_kind::SHARP_AST_ATTRIBUTE
-        | sharp_kind::SHARP_AST_CALL => Some(2),
-        sharp_kind::SHARP_AST_METHOD_CALL
-        | sharp_kind::SHARP_AST_STATIC_CALL
-        | sharp_kind::SHARP_AST_CONST_ELEM
-        | sharp_kind::SHARP_AST_NULLSAFE_METHOD_CALL
-        | sharp_kind::SHARP_AST_PROP_GROUP
-        | sharp_kind::SHARP_AST_TRY
-        | sharp_kind::SHARP_AST_CATCH
-        | sharp_kind::SHARP_AST_CONDITIONAL => Some(3),
-        sharp_kind::SHARP_AST_FOR | sharp_kind::SHARP_AST_FOREACH | sharp_kind::SHARP_AST_PROP_ELEM => Some(4),
-        sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_CLASS | sharp_kind::SHARP_AST_PROPERTY_HOOK => Some(5),
-        sharp_kind::SHARP_AST_PARAM => Some(6),
+    const IS_LIST: u32 = 1 << 7;
+    const NUM_CHILDREN_SHIFT: u32 = 8;
+
+    let value = kind as u32;
+    if value & IS_LIST != 0 {
+        None
+    } else if kind == sharp_kind::SHARP_AST_ZVAL {
+        Some(0)
+    } else if (sharp_kind::SHARP_AST_FUNC_DECL as u32..=sharp_kind::SHARP_AST_PROPERTY_HOOK as u32).contains(&value) {
+        Some(5)
+    } else {
+        Some(value >> NUM_CHILDREN_SHIFT)
     }
 }
 

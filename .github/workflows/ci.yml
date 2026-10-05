@@ -91,6 +91,12 @@ jobs:
           fi
           echo "$output" | grep -q "did not match any packages"
 
+      - name: Verify the PHP SDK's NodeKind is generated from the syntax tree
+        if: matrix.os == 'macos-latest'
+        run: |
+          php scripts/regen-sdk-node-kinds.php
+          git diff --exit-code composer/src/Sdk/Syntax/NodeKind.php
+
       - name: cargo fmt
         if: matrix.os == 'macos-latest'
         run: cargo fmt --all -- --check
