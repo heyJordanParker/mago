@@ -40,9 +40,18 @@ where
             }
 
             let position_before = self.stream.current_position();
+            let errors_before = self.errors.len();
             match self.parse_statement() {
-                Ok(statement) => statements.push(statement),
-                Err(err) => self.errors.push(err),
+                Ok(statement) => {
+                    // The namespace is the first level of each of its statements.
+                    if self.accepts_nesting(&statement, 1, errors_before) {
+                        statements.push(statement);
+                    }
+                }
+                Err(err) => {
+                    self.errors.push(err);
+                    self.accepts_nesting_errors(errors_before);
+                }
             }
             // Forward-progress guard: prevent an infinite loop.
             if self.stream.current_position() == position_before {

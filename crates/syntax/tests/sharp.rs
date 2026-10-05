@@ -765,6 +765,108 @@ fn a_method_written_with_function_is_a_parse_error() {
     );
 }
 
+/// A PHP# method returning a sum of `terms` terms.
+fn sum(terms: usize) -> &'static str {
+    let code = format!(
+        "namespace App;\n\nclass Report\n{{\n    public int run(int extra)\n    {{\n        return {};\n    }}\n}}\n",
+        vec!["extra"; terms].join(" + ")
+    );
+
+    Box::leak(code.into_boxed_str())
+}
+
+/// The statements of the file's namespace, which declares it.
+fn namespace_statements<'program>(program: &'program Program<'program>) -> &'program [Statement<'program>] {
+    let Some(Statement::Namespace(namespace)) = program.statements.first() else {
+        panic!("expected a namespace, got {:#?}", program.statements);
+    };
+
+    namespace.statements().as_slice()
+}
+
+/// The namespace, the class and the `return` are three levels, so a sum of 509 terms nests its innermost term 512
+/// levels deep, and a sum of 510 terms nests it 513 levels deep. The parser leaves out the class it refuses, at its
+/// innermost term.
+#[test]
+fn nesting_deeper_than_512_levels_is_a_parse_error_that_leaves_out_its_statement() {
+    let arena = LocalArena::new();
+    let accepted = parse(&arena, "src/Report.sharp", sum(509));
+    assert!(accepted.errors.is_empty(), "{:#?}", accepted.errors);
+
+    let code = sum(510);
+    let refused = parse(&arena, "src/Report.sharp", code);
+    let [error @ ParseError::NestingTooDeepInSharp(span)] = refused.errors else {
+        panic!("expected one nesting error, got {:#?}", refused.errors);
+    };
+    assert_eq!(error.to_string(), "PHP# nests statements, expressions and types at most 512 levels deep.");
+    assert_eq!(&code[span.start.offset as usize..span.end.offset as usize], "extra");
+    assert_eq!(span.start.offset as usize, code.find("extra + ").expect("the sum is written"));
+    assert!(namespace_statements(refused).is_empty(), "{:#?}", refused.statements);
+}
+
+/// The parser refuses one statement of the namespace, and keeps the next.
+#[test]
+fn a_statement_nested_too_deep_leaves_the_next_statement_in_the_file() {
+    let code = format!("{}\nclass Total\n{{\n}}\n", sum(510));
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", Box::leak(code.into_boxed_str()));
+
+    assert!(matches!(program.errors, [ParseError::NestingTooDeepInSharp(_)]), "{:#?}", program.errors);
+    let [Statement::Class(class)] = namespace_statements(program) else {
+        panic!("expected the second class, got {:#?}", program.statements);
+    };
+    assert_eq!(class.name.value, b"Total");
+}
+
+/// A type counts as a level as a statement or expression does, so a union of 100,000 members is refused.
+#[test]
+fn a_union_of_100_000_types_is_a_parse_error() {
+    let union = (0..100_000).map(|index| format!("A{index}")).collect::<Vec<_>>().join("|");
+    let code = format!(
+        "namespace App;\n\nclass Report\n{{\n    public {union} run()\n    {{\n        return null;\n    }}\n}}\n"
+    );
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", Box::leak(code.into_boxed_str()));
+
+    assert!(matches!(program.errors, [ParseError::NestingTooDeepInSharp(_)]), "{:#?}", program.errors);
+    assert!(namespace_statements(program).is_empty(), "{:#?}", program.statements);
+}
+
+/// `??` nests to its right, so the parser's recursion reaches the limit every 512 terms of a long chain. The
+/// statement still gets one error.
+#[test]
+fn a_coalescing_chain_of_100_000_terms_is_one_parse_error() {
+    let code = sum(100_000).replace(" + ", " ?? ");
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", Box::leak(code.into_boxed_str()));
+
+    assert!(
+        matches!(
+            program.errors.iter().filter(|error| matches!(error, ParseError::NestingTooDeepInSharp(_))).count(),
+            1
+        ),
+        "{:#?}",
+        program.errors
+    );
+    assert!(namespace_statements(program).is_empty(), "{:#?}", program.statements);
+}
+
+/// PHP itself compiles a sum of tens of thousands of terms, so a PHP file keeps every nesting the parser builds, and
+/// a search of the whole tree reaches its innermost term.
+#[test]
+fn a_php_file_keeps_nesting_deeper_than_512_levels() {
+    let code = format!(
+        "<?php\nnamespace App;\n\nclass Report\n{{\n    public function run(int $extra): int\n    {{\n        return {};\n    }}\n}}\n",
+        vec!["$extra"; 100_000].join(" + ")
+    );
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.php", Box::leak(code.into_boxed_str()));
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+
+    let terms = Node::Program(program).filter_map(|node| matches!(node, Node::DirectVariable(_)).then_some(()));
+    assert_eq!(terms.len(), 100_001);
+}
+
 /// The source of every attribute list under `node`, in source order.
 fn attribute_lists<'a>(code: &'a str, node: Node<'_, '_>) -> Vec<&'a str> {
     let mut lists = Vec::new();

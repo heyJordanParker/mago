@@ -1,5 +1,6 @@
 use mago_span::HasSpan;
 use mago_span::Span;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 
 use crate::cst::Access;
 use crate::cst::Array;
@@ -55,10 +56,7 @@ impl HasSpan for ControlFlow<'_> {
 #[must_use]
 pub fn find_control_flows_in_block<'arena>(block: &'arena Block<'arena>) -> Vec<ControlFlow<'arena>> {
     let mut controls = vec![];
-
-    for statement in &block.statements {
-        controls.extend(find_control_flows_in_statement(statement));
-    }
+    block_control_flows(block, &mut controls);
 
     controls
 }
@@ -67,102 +65,122 @@ pub fn find_control_flows_in_block<'arena>(block: &'arena Block<'arena>) -> Vec<
 #[must_use]
 pub fn find_control_flows_in_statement<'arena>(statement: &'arena Statement<'arena>) -> Vec<ControlFlow<'arena>> {
     let mut controls = vec![];
+    statement_control_flows(statement, &mut controls);
 
-    match statement {
+    controls
+}
+
+#[inline]
+#[must_use]
+pub fn find_control_flows_in_expression<'arena>(expression: &'arena Expression<'arena>) -> Vec<ControlFlow<'arena>> {
+    let mut controls = vec![];
+    expression_control_flows(expression, &mut controls);
+
+    controls
+}
+
+fn block_control_flows<'arena>(block: &'arena Block<'arena>, controls: &mut Vec<ControlFlow<'arena>>) {
+    for statement in &block.statements {
+        statement_control_flows(statement, controls);
+    }
+}
+
+fn statement_control_flows<'arena>(statement: &'arena Statement<'arena>, controls: &mut Vec<ControlFlow<'arena>>) {
+    ensure_sufficient_stack(|| match statement {
         Statement::Namespace(namespace) => {
             for statement in namespace.statements() {
-                controls.extend(find_control_flows_in_statement(statement));
+                statement_control_flows(statement, controls);
             }
         }
         Statement::Block(block) => {
-            controls.extend(find_control_flows_in_block(block));
+            block_control_flows(block, controls);
         }
         Statement::Try(r#try) => {
-            controls.extend(find_control_flows_in_block(&r#try.block));
+            block_control_flows(&r#try.block, controls);
 
             for catch in &r#try.catch_clauses {
-                controls.extend(find_control_flows_in_block(&catch.block));
+                block_control_flows(&catch.block, controls);
             }
 
             if let Some(finally) = &r#try.finally_clause {
-                controls.extend(find_control_flows_in_block(&finally.block));
+                block_control_flows(&finally.block, controls);
             }
         }
         Statement::Foreach(foreach) => {
-            controls.extend(find_control_flows_in_expression(foreach.expression));
+            expression_control_flows(foreach.expression, controls);
             match &foreach.target {
                 ForeachTarget::Value(foreach_value_target) => {
-                    controls.extend(find_control_flows_in_expression(foreach_value_target.value));
+                    expression_control_flows(foreach_value_target.value, controls);
                 }
                 ForeachTarget::KeyValue(foreach_key_value_target) => {
-                    controls.extend(find_control_flows_in_expression(foreach_key_value_target.key));
-                    controls.extend(find_control_flows_in_expression(foreach_key_value_target.value));
+                    expression_control_flows(foreach_key_value_target.key, controls);
+                    expression_control_flows(foreach_key_value_target.value, controls);
                 }
             }
 
             match &foreach.body {
                 ForeachBody::Statement(statement) => {
-                    controls.extend(find_control_flows_in_statement(statement));
+                    statement_control_flows(statement, controls);
                 }
                 ForeachBody::ColonDelimited(foreach_colon_delimited_body) => {
                     for statement in &foreach_colon_delimited_body.statements {
-                        controls.extend(find_control_flows_in_statement(statement));
+                        statement_control_flows(statement, controls);
                     }
                 }
             }
         }
         Statement::For(r#for) => {
             if let Some(declaration) = &r#for.declaration {
-                controls.extend(find_control_flows_in_expression(declaration.value));
+                expression_control_flows(declaration.value, controls);
             }
 
             for initialization in &r#for.initializations {
-                controls.extend(find_control_flows_in_expression(initialization));
+                expression_control_flows(initialization, controls);
             }
 
             for condition in &r#for.conditions {
-                controls.extend(find_control_flows_in_expression(condition));
+                expression_control_flows(condition, controls);
             }
 
             for increment in &r#for.increments {
-                controls.extend(find_control_flows_in_expression(increment));
+                expression_control_flows(increment, controls);
             }
 
             match &r#for.body {
                 ForBody::Statement(statement) => {
-                    controls.extend(find_control_flows_in_statement(statement));
+                    statement_control_flows(statement, controls);
                 }
                 ForBody::ColonDelimited(foreach_colon_delimited_body) => {
                     for statement in &foreach_colon_delimited_body.statements {
-                        controls.extend(find_control_flows_in_statement(statement));
+                        statement_control_flows(statement, controls);
                     }
                 }
             }
         }
         Statement::ForOf(for_of) => {
-            controls.extend(find_control_flows_in_expression(for_of.expression));
-            controls.extend(find_control_flows_in_statement(for_of.body));
+            expression_control_flows(for_of.expression, controls);
+            statement_control_flows(for_of.body, controls);
         }
         Statement::While(r#while) => {
-            controls.extend(find_control_flows_in_expression(r#while.condition));
+            expression_control_flows(r#while.condition, controls);
 
             match &r#while.body {
                 WhileBody::Statement(statement) => {
-                    controls.extend(find_control_flows_in_statement(statement));
+                    statement_control_flows(statement, controls);
                 }
                 WhileBody::ColonDelimited(foreach_colon_delimited_body) => {
                     for statement in &foreach_colon_delimited_body.statements {
-                        controls.extend(find_control_flows_in_statement(statement));
+                        statement_control_flows(statement, controls);
                     }
                 }
             }
         }
         Statement::DoWhile(do_while) => {
-            controls.extend(find_control_flows_in_expression(do_while.condition));
-            controls.extend(find_control_flows_in_statement(do_while.statement));
+            expression_control_flows(do_while.condition, controls);
+            statement_control_flows(do_while.statement, controls);
         }
         Statement::Switch(switch) => {
-            controls.extend(find_control_flows_in_expression(switch.expression));
+            expression_control_flows(switch.expression, controls);
 
             let cases = match &switch.body {
                 SwitchBody::BraceDelimited(switch_brace_delimited_body) => &switch_brace_delimited_body.cases,
@@ -173,15 +191,15 @@ pub fn find_control_flows_in_statement<'arena>(statement: &'arena Statement<'are
             for case in cases {
                 match &case {
                     SwitchCase::Expression(switch_expression_case) => {
-                        switch_controls.extend(find_control_flows_in_expression(switch_expression_case.expression));
+                        expression_control_flows(switch_expression_case.expression, &mut switch_controls);
 
                         for statement in &switch_expression_case.statements {
-                            switch_controls.extend(find_control_flows_in_statement(statement));
+                            statement_control_flows(statement, &mut switch_controls);
                         }
                     }
                     SwitchCase::Default(switch_default_case) => {
                         for statement in &switch_default_case.statements {
-                            switch_controls.extend(find_control_flows_in_statement(statement));
+                            statement_control_flows(statement, &mut switch_controls);
                         }
                     }
                 }
@@ -202,36 +220,36 @@ pub fn find_control_flows_in_statement<'arena>(statement: &'arena Statement<'are
             }
         }
         Statement::If(r#if) => {
-            controls.extend(find_control_flows_in_expression(r#if.condition));
+            expression_control_flows(r#if.condition, controls);
 
             match &r#if.body {
                 IfBody::Statement(if_statement_body) => {
-                    controls.extend(find_control_flows_in_statement(if_statement_body.statement));
+                    statement_control_flows(if_statement_body.statement, controls);
 
                     for else_if in &if_statement_body.else_if_clauses {
-                        controls.extend(find_control_flows_in_expression(else_if.condition));
-                        controls.extend(find_control_flows_in_statement(else_if.statement));
+                        expression_control_flows(else_if.condition, controls);
+                        statement_control_flows(else_if.statement, controls);
                     }
 
                     if let Some(else_clause) = &if_statement_body.else_clause {
-                        controls.extend(find_control_flows_in_statement(else_clause.statement));
+                        statement_control_flows(else_clause.statement, controls);
                     }
                 }
                 IfBody::ColonDelimited(if_colon_delimited_body) => {
                     for statement in &if_colon_delimited_body.statements {
-                        controls.extend(find_control_flows_in_statement(statement));
+                        statement_control_flows(statement, controls);
                     }
 
                     for else_if in &if_colon_delimited_body.else_if_clauses {
-                        controls.extend(find_control_flows_in_expression(else_if.condition));
+                        expression_control_flows(else_if.condition, controls);
                         for statement in &else_if.statements {
-                            controls.extend(find_control_flows_in_statement(statement));
+                            statement_control_flows(statement, controls);
                         }
                     }
 
                     if let Some(else_clause) = &if_colon_delimited_body.else_clause {
                         for statement in &else_clause.statements {
-                            controls.extend(find_control_flows_in_statement(statement));
+                            statement_control_flows(statement, controls);
                         }
                     }
                 }
@@ -240,83 +258,77 @@ pub fn find_control_flows_in_statement<'arena>(statement: &'arena Statement<'are
         Statement::Return(r#return) => {
             controls.push(ControlFlow::Return(r#return));
             if let Some(value) = &r#return.value {
-                controls.extend(find_control_flows_in_expression(value));
+                expression_control_flows(value, controls);
             }
         }
         Statement::Continue(r#continue) => {
             controls.push(ControlFlow::Continue(r#continue));
             if let Some(level) = &r#continue.level {
-                controls.extend(find_control_flows_in_expression(level));
+                expression_control_flows(level, controls);
             }
         }
         Statement::Break(r#break) => {
             controls.push(ControlFlow::Break(r#break));
             if let Some(level) = &r#break.level {
-                controls.extend(find_control_flows_in_expression(level));
+                expression_control_flows(level, controls);
             }
         }
         Statement::Expression(expression_statement) => {
-            controls.extend(find_control_flows_in_expression(expression_statement.expression));
+            expression_control_flows(expression_statement.expression, controls);
         }
         Statement::Echo(echo) => {
             for expression in &echo.values {
-                controls.extend(find_control_flows_in_expression(expression));
+                expression_control_flows(expression, controls);
             }
         }
         Statement::Unset(unset) => {
             for value in &unset.values {
-                controls.extend(find_control_flows_in_expression(value));
+                expression_control_flows(value, controls);
             }
         }
         _ => {}
-    }
-
-    controls
+    });
 }
 
-#[inline]
-#[must_use]
-pub fn find_control_flows_in_expression<'arena>(expression: &'arena Expression<'arena>) -> Vec<ControlFlow<'arena>> {
-    let mut controls = vec![];
-
-    match expression {
+fn expression_control_flows<'arena>(expression: &'arena Expression<'arena>, controls: &mut Vec<ControlFlow<'arena>>) {
+    ensure_sufficient_stack(|| match expression {
         Expression::Binary(binary) => {
-            controls.extend(find_control_flows_in_expression(binary.lhs));
-            controls.extend(find_control_flows_in_expression(binary.rhs));
+            expression_control_flows(binary.lhs, controls);
+            expression_control_flows(binary.rhs, controls);
         }
         Expression::UnaryPrefix(unary_prefix) => {
-            controls.extend(find_control_flows_in_expression(unary_prefix.operand));
+            expression_control_flows(unary_prefix.operand, controls);
         }
         Expression::UnaryPostfix(unary_postfix) => {
-            controls.extend(find_control_flows_in_expression(unary_postfix.operand));
+            expression_control_flows(unary_postfix.operand, controls);
         }
         Expression::Parenthesized(parenthesized) => {
-            controls.extend(find_control_flows_in_expression(parenthesized.expression));
+            expression_control_flows(parenthesized.expression, controls);
         }
         Expression::CompositeString(composite_string) => {
             for part in composite_string.parts() {
                 match part {
                     StringPart::Expression(expression) => {
-                        controls.extend(find_control_flows_in_expression(expression));
+                        expression_control_flows(expression, controls);
                     }
                     StringPart::BracedExpression(braced_expression_string_part) => {
-                        controls.extend(find_control_flows_in_expression(braced_expression_string_part.expression));
+                        expression_control_flows(braced_expression_string_part.expression, controls);
                     }
                     StringPart::Literal(_) => {}
                 }
             }
         }
         Expression::Assignment(assignment) => {
-            controls.extend(find_control_flows_in_expression(assignment.lhs));
-            controls.extend(find_control_flows_in_expression(assignment.rhs));
+            expression_control_flows(assignment.lhs, controls);
+            expression_control_flows(assignment.rhs, controls);
         }
         Expression::Conditional(conditional) => {
-            controls.extend(find_control_flows_in_expression(conditional.condition));
+            expression_control_flows(conditional.condition, controls);
             if let Some(then) = &conditional.then {
-                controls.extend(find_control_flows_in_expression(then));
+                expression_control_flows(then, controls);
             }
 
-            controls.extend(find_control_flows_in_expression(conditional.r#else));
+            expression_control_flows(conditional.r#else, controls);
         }
         Expression::Array(Array { elements, .. })
         | Expression::LegacyArray(LegacyArray { elements, .. })
@@ -324,25 +336,25 @@ pub fn find_control_flows_in_expression<'arena>(expression: &'arena Expression<'
             for element in elements {
                 match element {
                     ArrayElement::KeyValue(key_value_array_element) => {
-                        controls.extend(find_control_flows_in_expression(key_value_array_element.key));
-                        controls.extend(find_control_flows_in_expression(key_value_array_element.value));
+                        expression_control_flows(key_value_array_element.key, controls);
+                        expression_control_flows(key_value_array_element.value, controls);
                     }
                     ArrayElement::Value(value_array_element) => {
-                        controls.extend(find_control_flows_in_expression(value_array_element.value));
+                        expression_control_flows(value_array_element.value, controls);
                     }
                     ArrayElement::Variadic(variadic_array_element) => {
-                        controls.extend(find_control_flows_in_expression(variadic_array_element.value));
+                        expression_control_flows(variadic_array_element.value, controls);
                     }
                     ArrayElement::Missing(_) => {}
                 }
             }
         }
         Expression::ArrayAccess(array_access) => {
-            controls.extend(find_control_flows_in_expression(array_access.array));
-            controls.extend(find_control_flows_in_expression(array_access.index));
+            expression_control_flows(array_access.array, controls);
+            expression_control_flows(array_access.index, controls);
         }
         Expression::ArrayAppend(array_append) => {
-            controls.extend(find_control_flows_in_expression(array_append.array));
+            expression_control_flows(array_append.array, controls);
         }
         Expression::AnonymousClass(anonymous_class) => {
             if let Some(arguments) = &anonymous_class.argument_list {
@@ -351,23 +363,23 @@ pub fn find_control_flows_in_expression<'arena>(expression: &'arena Expression<'
                         continue;
                     };
 
-                    controls.extend(find_control_flows_in_expression(value));
+                    expression_control_flows(value, controls);
                 }
             }
         }
         Expression::Match(r#match) => {
-            controls.extend(find_control_flows_in_expression(r#match.expression));
+            expression_control_flows(r#match.expression, controls);
             for arm in &r#match.arms {
                 match arm {
                     MatchArm::Expression(match_expression_arm) => {
                         for condition in &match_expression_arm.conditions {
-                            controls.extend(find_control_flows_in_expression(condition));
+                            expression_control_flows(condition, controls);
                         }
 
-                        controls.extend(find_control_flows_in_expression(match_expression_arm.expression));
+                        expression_control_flows(match_expression_arm.expression, controls);
                     }
                     MatchArm::Default(match_default_arm) => {
-                        controls.extend(find_control_flows_in_expression(match_default_arm.expression));
+                        expression_control_flows(match_default_arm.expression, controls);
                     }
                 }
             }
@@ -375,55 +387,55 @@ pub fn find_control_flows_in_expression<'arena>(expression: &'arena Expression<'
         Expression::Yield(r#yield) => match r#yield {
             Yield::Value(yield_value) => {
                 if let Some(value) = &yield_value.value {
-                    controls.extend(find_control_flows_in_expression(value));
+                    expression_control_flows(value, controls);
                 }
             }
             Yield::Pair(yield_pair) => {
-                controls.extend(find_control_flows_in_expression(yield_pair.key));
-                controls.extend(find_control_flows_in_expression(yield_pair.value));
+                expression_control_flows(yield_pair.key, controls);
+                expression_control_flows(yield_pair.value, controls);
             }
             Yield::From(yield_from) => {
-                controls.extend(find_control_flows_in_expression(yield_from.iterator));
+                expression_control_flows(yield_from.iterator, controls);
             }
         },
         Expression::Construct(construct) => match construct {
             Construct::Isset(isset_construct) => {
                 for expression in &isset_construct.values {
-                    controls.extend(find_control_flows_in_expression(expression));
+                    expression_control_flows(expression, controls);
                 }
             }
             Construct::Empty(empty_construct) => {
-                controls.extend(find_control_flows_in_expression(empty_construct.value));
+                expression_control_flows(empty_construct.value, controls);
             }
             Construct::Eval(eval_construct) => {
-                controls.extend(find_control_flows_in_expression(eval_construct.value));
+                expression_control_flows(eval_construct.value, controls);
             }
             Construct::Include(include_construct) => {
-                controls.extend(find_control_flows_in_expression(include_construct.value));
+                expression_control_flows(include_construct.value, controls);
             }
             Construct::IncludeOnce(include_once_construct) => {
-                controls.extend(find_control_flows_in_expression(include_once_construct.value));
+                expression_control_flows(include_once_construct.value, controls);
             }
             Construct::Require(require_construct) => {
-                controls.extend(find_control_flows_in_expression(require_construct.value));
+                expression_control_flows(require_construct.value, controls);
             }
             Construct::RequireOnce(require_once_construct) => {
-                controls.extend(find_control_flows_in_expression(require_once_construct.value));
+                expression_control_flows(require_once_construct.value, controls);
             }
             Construct::Print(print_construct) => {
-                controls.extend(find_control_flows_in_expression(print_construct.value));
+                expression_control_flows(print_construct.value, controls);
             }
             Construct::Exit(exit_construct) => {
                 if let Some(arguments) = &exit_construct.arguments {
                     for argument in &arguments.arguments {
-                        controls.extend(find_control_flows_in_expression(argument.value()));
+                        expression_control_flows(argument.value(), controls);
                     }
                 }
             }
             Construct::Die(die_construct) => {
                 if let Some(arguments) = &die_construct.arguments {
                     for argument in &arguments.arguments {
-                        controls.extend(find_control_flows_in_expression(argument.value()));
+                        expression_control_flows(argument.value(), controls);
                     }
                 }
             }
@@ -432,161 +444,150 @@ pub fn find_control_flows_in_expression<'arena>(expression: &'arena Expression<'
             controls.push(ControlFlow::Throw(throw));
         }
         Expression::Clone(clone) => {
-            controls.extend(find_control_flows_in_expression(clone.object));
+            expression_control_flows(clone.object, controls);
         }
         Expression::Call(call) => match call {
             Call::Function(function_call) => {
-                controls.extend(find_control_flows_in_expression(function_call.function));
+                expression_control_flows(function_call.function, controls);
                 for argument in &function_call.argument_list.arguments {
-                    controls.extend(find_control_flows_in_expression(argument.value()));
+                    expression_control_flows(argument.value(), controls);
                 }
             }
             Call::Method(method_call) => {
-                controls.extend(find_control_flows_in_expression(method_call.object));
+                expression_control_flows(method_call.object, controls);
                 match &method_call.method {
                     ClassLikeMemberSelector::Variable(variable) => {
-                        controls.extend(find_control_flows_in_variable(variable));
+                        variable_control_flows(variable, controls);
                     }
                     ClassLikeMemberSelector::Expression(class_like_member_expression_selector) => {
-                        controls
-                            .extend(find_control_flows_in_expression(class_like_member_expression_selector.expression));
+                        expression_control_flows(class_like_member_expression_selector.expression, controls);
                     }
                     _ => {}
                 }
 
                 for argument in &method_call.argument_list.arguments {
-                    controls.extend(find_control_flows_in_expression(argument.value()));
+                    expression_control_flows(argument.value(), controls);
                 }
             }
             Call::NullSafeMethod(null_safe_method_call) => {
-                controls.extend(find_control_flows_in_expression(null_safe_method_call.object));
+                expression_control_flows(null_safe_method_call.object, controls);
                 match &null_safe_method_call.method {
                     ClassLikeMemberSelector::Variable(variable) => {
-                        controls.extend(find_control_flows_in_variable(variable));
+                        variable_control_flows(variable, controls);
                     }
                     ClassLikeMemberSelector::Expression(class_like_member_expression_selector) => {
-                        controls
-                            .extend(find_control_flows_in_expression(class_like_member_expression_selector.expression));
+                        expression_control_flows(class_like_member_expression_selector.expression, controls);
                     }
                     _ => {}
                 }
 
                 for argument in &null_safe_method_call.argument_list.arguments {
-                    controls.extend(find_control_flows_in_expression(argument.value()));
+                    expression_control_flows(argument.value(), controls);
                 }
             }
             Call::StaticMethod(static_method_call) => {
-                controls.extend(find_control_flows_in_expression(static_method_call.class));
+                expression_control_flows(static_method_call.class, controls);
                 match &static_method_call.method {
                     ClassLikeMemberSelector::Variable(variable) => {
-                        controls.extend(find_control_flows_in_variable(variable));
+                        variable_control_flows(variable, controls);
                     }
                     ClassLikeMemberSelector::Expression(class_like_member_expression_selector) => {
-                        controls
-                            .extend(find_control_flows_in_expression(class_like_member_expression_selector.expression));
+                        expression_control_flows(class_like_member_expression_selector.expression, controls);
                     }
                     _ => {}
                 }
 
                 for argument in &static_method_call.argument_list.arguments {
-                    controls.extend(find_control_flows_in_expression(argument.value()));
+                    expression_control_flows(argument.value(), controls);
                 }
             }
         },
         Expression::Access(access) => match access {
             Access::Property(property_access) => {
-                controls.extend(find_control_flows_in_expression(property_access.object));
+                expression_control_flows(property_access.object, controls);
                 match &property_access.property {
                     ClassLikeMemberSelector::Variable(variable) => {
-                        controls.extend(find_control_flows_in_variable(variable));
+                        variable_control_flows(variable, controls);
                     }
                     ClassLikeMemberSelector::Expression(class_like_member_expression_selector) => {
-                        controls
-                            .extend(find_control_flows_in_expression(class_like_member_expression_selector.expression));
+                        expression_control_flows(class_like_member_expression_selector.expression, controls);
                     }
                     _ => {}
                 }
             }
             Access::NullSafeProperty(null_safe_property_access) => {
-                controls.extend(find_control_flows_in_expression(null_safe_property_access.object));
+                expression_control_flows(null_safe_property_access.object, controls);
                 match &null_safe_property_access.property {
                     ClassLikeMemberSelector::Variable(variable) => {
-                        controls.extend(find_control_flows_in_variable(variable));
+                        variable_control_flows(variable, controls);
                     }
                     ClassLikeMemberSelector::Expression(class_like_member_expression_selector) => {
-                        controls
-                            .extend(find_control_flows_in_expression(class_like_member_expression_selector.expression));
+                        expression_control_flows(class_like_member_expression_selector.expression, controls);
                     }
                     _ => {}
                 }
             }
             Access::StaticProperty(static_property_access) => {
-                controls.extend(find_control_flows_in_expression(static_property_access.class));
-                controls.extend(find_control_flows_in_variable(&static_property_access.property));
+                expression_control_flows(static_property_access.class, controls);
+                variable_control_flows(&static_property_access.property, controls);
             }
             Access::ClassConstant(class_constant_access) => {
-                controls.extend(find_control_flows_in_expression(class_constant_access.class));
+                expression_control_flows(class_constant_access.class, controls);
                 if let ClassLikeConstantSelector::Expression(class_like_member_expression_selector) =
                     &class_constant_access.constant
                 {
-                    controls.extend(find_control_flows_in_expression(class_like_member_expression_selector.expression));
+                    expression_control_flows(class_like_member_expression_selector.expression, controls);
                 }
             }
         },
         Expression::Variable(variable) => {
-            controls.extend(find_control_flows_in_variable(variable));
+            variable_control_flows(variable, controls);
         }
         Expression::PartialApplication(partial_application) => match partial_application {
             PartialApplication::Function(function_partial_application) => {
-                controls.extend(find_control_flows_in_expression(function_partial_application.function));
+                expression_control_flows(function_partial_application.function, controls);
             }
             PartialApplication::Method(method_partial_application) => {
-                controls.extend(find_control_flows_in_expression(method_partial_application.object));
+                expression_control_flows(method_partial_application.object, controls);
                 match &method_partial_application.method {
                     ClassLikeMemberSelector::Variable(variable) => {
-                        controls.extend(find_control_flows_in_variable(variable));
+                        variable_control_flows(variable, controls);
                     }
                     ClassLikeMemberSelector::Expression(class_like_member_expression_selector) => {
-                        controls
-                            .extend(find_control_flows_in_expression(class_like_member_expression_selector.expression));
+                        expression_control_flows(class_like_member_expression_selector.expression, controls);
                     }
                     _ => {}
                 }
             }
             PartialApplication::StaticMethod(static_method_partial_application) => {
-                controls.extend(find_control_flows_in_expression(static_method_partial_application.class));
+                expression_control_flows(static_method_partial_application.class, controls);
                 match &static_method_partial_application.method {
                     ClassLikeMemberSelector::Variable(variable) => {
-                        controls.extend(find_control_flows_in_variable(variable));
+                        variable_control_flows(variable, controls);
                     }
                     ClassLikeMemberSelector::Expression(class_like_member_expression_selector) => {
-                        controls
-                            .extend(find_control_flows_in_expression(class_like_member_expression_selector.expression));
+                        expression_control_flows(class_like_member_expression_selector.expression, controls);
                     }
                     _ => {}
                 }
             }
         },
         Expression::Instantiation(instantiation) => {
-            controls.extend(find_control_flows_in_expression(instantiation.class));
+            expression_control_flows(instantiation.class, controls);
             if let Some(argument_list) = &instantiation.argument_list {
                 for argument in &argument_list.arguments {
-                    controls.extend(find_control_flows_in_expression(argument.value()));
+                    expression_control_flows(argument.value(), controls);
                 }
             }
         }
         _ => {}
-    }
-
-    controls
+    });
 }
 
-fn find_control_flows_in_variable<'arena>(variable: &'arena Variable<'arena>) -> Vec<ControlFlow<'arena>> {
+fn variable_control_flows<'arena>(variable: &'arena Variable<'arena>, controls: &mut Vec<ControlFlow<'arena>>) {
     match variable {
-        Variable::Indirect(indirect_variable) => find_control_flows_in_expression(indirect_variable.expression),
-        Variable::Nested(nested_variable) => find_control_flows_in_variable(nested_variable.variable),
-        Variable::Direct(_) => {
-            vec![]
-        }
+        Variable::Indirect(indirect_variable) => expression_control_flows(indirect_variable.expression, controls),
+        Variable::Nested(nested_variable) => variable_control_flows(nested_variable.variable, controls),
+        Variable::Direct(_) => {}
     }
 }

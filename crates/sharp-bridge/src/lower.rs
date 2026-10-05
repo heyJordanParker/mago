@@ -58,6 +58,7 @@ use mago_syntax::cst::WhileBody;
 use mago_syntax::dialect::Dialect;
 use mago_syntax::parser::parse_file_with_dialect;
 use mago_syntax::settings::ParserSettings;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_syntax_core::utils::parse_literal_integer_as_float;
 
 use crate::Diagnostic;
@@ -224,12 +225,12 @@ struct Lowering<'lowering, 'arena> {
     names: &'lowering ResolvedNames<'arena>,
     nodes: Vec<sharp_node>,
     children: Vec<u32>,
-    texts: Vec<Box<[u8]>>,
+    texts: LocalArena,
 }
 
 impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     fn new(lines: &'lowering Lines, names: &'lowering ResolvedNames<'arena>) -> Self {
-        Self { lines, names, nodes: Vec::new(), children: Vec::new(), texts: Vec::new() }
+        Self { lines, names, nodes: Vec::new(), children: Vec::new(), texts: LocalArena::new() }
     }
 
     /// `declare(strict_types=1);` first, then the namespaces and classes. Imports are not lowered: every class name
@@ -477,7 +478,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     fn statement(&mut self, statement: &Statement) -> u32 {
-        match statement {
+        ensure_sufficient_stack(|| match statement {
             Statement::Block(block) => self.block(block),
             Statement::Expression(statement) => self.expression(statement.expression),
             Statement::Return(r#return) => {
@@ -518,7 +519,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             Statement::Break(r#break) => self.node(SHARP_AST_BREAK, 0, self.line(r#break), &[NULL]),
             Statement::Continue(r#continue) => self.node(SHARP_AST_CONTINUE, 0, self.line(r#continue), &[NULL]),
             _ => unreachable!("check_slice refuses the statement `{statement}`"),
-        }
+        })
     }
 
     /// A `let` or `const` local is the assignment of its value to its variable.
@@ -586,7 +587,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     fn expression(&mut self, expression: &Expression) -> u32 {
         let line = self.line(expression);
 
-        match expression {
+        ensure_sufficient_stack(|| match expression {
             Expression::Literal(literal) => self.literal(literal),
             Expression::Parenthesized(parenthesized) => self.expression(parenthesized.expression),
             Expression::ConstantAccess(name) => self.name(name),
@@ -654,7 +655,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.node(SHARP_AST_NULLSAFE_PROP, 0, line, &[object, property])
             }
             _ => unreachable!("check_slice refuses the expression `{expression}`"),
-        }
+        })
     }
 
     /// What an assignment, a compound assignment, `++` or `--` writes: a local or parameter, or `object.name`, as
@@ -803,7 +804,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     ) -> u32 {
         let index = self.node(kind, flags, self.line(start), children);
         let end_line = self.lines.line(end.span().end.offset);
-        let name = store_text(&mut self.texts, name.to_vec());
+        let name = store_text(&self.texts, name);
 
         let node = &mut self.nodes[index as usize];
         node.end_line = end_line;
@@ -813,7 +814,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     fn string(&mut self, attr: u32, line: u32, text: &[u8]) -> u32 {
-        let text = store_text(&mut self.texts, text.to_vec());
+        let text = store_text(&self.texts, text);
 
         self.zval(line, sharp_value::SHARP_STRING, |node| {
             node.attr = attr;
@@ -1027,7 +1028,7 @@ mod tests {
 
         assert_eq!(unit.abi.node_count, 0, "{method}");
         assert_eq!(unit.diagnostics.len(), 1, "{method}");
-        assert!(unit.texts[0].starts_with(b"internal error in the PHP# front end: "), "{method}");
+        assert!(unit.diagnostics[0].message.bytes().starts_with(b"internal error in the PHP# front end: "), "{method}");
     }
 
     #[test]

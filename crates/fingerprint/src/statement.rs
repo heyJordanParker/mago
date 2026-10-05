@@ -1,6 +1,7 @@
 use mago_names::ResolvedNames;
 use mago_syntax::cst::ExpressionStatement;
 use mago_syntax::cst::Statement;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 
 use crate::FingerprintOptions;
 use crate::Fingerprintable;
@@ -15,7 +16,7 @@ impl Fingerprintable for Statement<'_> {
     ) where
         H: std::hash::Hasher,
     {
-        match self {
+        ensure_sufficient_stack(|| match self {
             Statement::OpeningTag(tag) => tag.fingerprint_with_hasher(hasher, resolved_names, options),
             Statement::ClosingTag(tag) => tag.fingerprint_with_hasher(hasher, resolved_names, options),
             Statement::Inline(inline) => inline.fingerprint_with_hasher(hasher, resolved_names, options),
@@ -56,7 +57,7 @@ impl Fingerprintable for Statement<'_> {
                 // fingerprint stays deterministic if the CST gains a new shape we haven't covered.
                 hasher.write(b"__unhandled_statement__");
             }
-        }
+        });
     }
 }
 

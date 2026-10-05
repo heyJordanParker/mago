@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use mago_database::file::File;
 use mago_names::ResolvedNames;
 use mago_php_version::PHPVersion;
@@ -6,7 +8,11 @@ use mago_reporting::IssueCollection;
 use mago_span::HasSpan;
 use mago_span::Position;
 use mago_span::Span;
+use mago_syntax::cst::Label;
+use mago_syntax::cst::Node;
 use mago_syntax::cst::Program;
+
+use crate::internal::checker::sharp::Place;
 
 const ISSUE_CODE: &str = "semantics";
 
@@ -16,8 +22,20 @@ pub struct Context<'ctx, 'ast, 'arena> {
     pub program: &'ast Program<'arena>,
     pub names: &'ast ResolvedNames<'arena>,
     pub source_file: &'ctx File,
-    pub ancestors: Vec<Span>,
+    /// The statements and expressions the walk is inside, innermost last.
+    pub ancestors: Vec<Node<'ast, 'arena>>,
     pub hint_depth: usize,
+    /// Every `goto` label of the file, collected at its first `goto`.
+    pub labels: Option<Vec<&'ast Label<'arena>>>,
+    /// The name and body of the last namespace without braces the walk left.
+    pub last_unbraced_namespace: Option<(Span, Span)>,
+    /// The name and body of the last namespace in braces the walk left.
+    pub last_braced_namespace: Option<(Span, Span)>,
+    /// The slice's place for the children of each node the walk is inside, innermost last, or `None` inside a node
+    /// the slice refused.
+    pub slice_places: Vec<Option<Place>>,
+    /// The member name spans of the member accesses the slice checked.
+    pub slice_members: HashSet<Span>,
 
     issues: IssueCollection,
 }
@@ -37,6 +55,11 @@ impl<'ctx, 'ast, 'arena> Context<'ctx, 'ast, 'arena> {
             issues: IssueCollection::default(),
             ancestors: vec![],
             hint_depth: 0,
+            labels: None,
+            last_unbraced_namespace: None,
+            last_braced_namespace: None,
+            slice_places: vec![],
+            slice_members: HashSet::new(),
         }
     }
 

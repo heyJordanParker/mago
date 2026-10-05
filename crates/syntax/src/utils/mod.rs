@@ -1,3 +1,5 @@
+use mago_syntax_core::stack::ensure_sufficient_stack;
+
 use crate::cst::Access;
 use crate::cst::Argument;
 use crate::cst::ArrayElement;
@@ -100,8 +102,9 @@ pub fn block_has_yield(block: &Block) -> bool {
 }
 
 #[inline]
+#[must_use]
 pub fn statement_has_yield(statement: &Statement) -> bool {
-    match statement {
+    ensure_sufficient_stack(|| match statement {
         Statement::Namespace(namespace) => {
             for statement in namespace.statements() {
                 if statement_has_yield(statement) {
@@ -222,13 +225,13 @@ pub fn statement_has_yield(statement: &Statement) -> bool {
         Statement::Expression(expression) => expression_has_yield(expression.expression),
         Statement::Return(r#return) => r#return.value.is_some_and(|v| expression_has_yield(v)),
         _ => false,
-    }
+    })
 }
 
 #[inline]
 #[must_use]
 pub fn expression_has_yield(expression: &Expression) -> bool {
-    match &expression {
+    ensure_sufficient_stack(|| match &expression {
         Expression::Parenthesized(parenthesized) => expression_has_yield(parenthesized.expression),
         Expression::Literal(_) => false,
         Expression::CompositeString(_) => false,
@@ -377,5 +380,5 @@ pub fn expression_has_yield(expression: &Expression) -> bool {
         }
         Expression::Yield(_) => true,
         _ => false,
-    }
+    })
 }
