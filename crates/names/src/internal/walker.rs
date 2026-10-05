@@ -1,5 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::hash::Hash;
+use std::hash::Hasher;
 
 use mago_allocator::prelude::*;
 use mago_span::HasSpan;
@@ -82,9 +84,31 @@ pub struct NameWalker<'arena> {
 /// constant names exactly.
 #[derive(Debug, Default)]
 struct ClassMembers<'arena> {
-    /// The method names, lowercased.
-    methods: foldhash::HashSet<Cow<'arena, [u8]>>,
+    methods: foldhash::HashSet<IgnoringCase<'arena>>,
     others: foldhash::HashSet<&'arena [u8]>,
+}
+
+/// A name that hashes and compares ignoring ASCII case, as PHP compares method names.
+#[derive(Debug, Clone, Copy)]
+struct IgnoringCase<'name>(&'name [u8]);
+
+impl PartialEq for IgnoringCase<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq_ignore_ascii_case(other.0)
+    }
+}
+
+impl Eq for IgnoringCase<'_> {}
+
+impl Hash for IgnoringCase<'_> {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: Hasher,
+    {
+        for byte in self.0 {
+            state.write_u8(byte.to_ascii_lowercase());
+        }
+    }
 }
 
 impl<'arena> NameWalker<'arena> {
@@ -113,7 +137,7 @@ impl<'arena> NameWalker<'arena> {
     fn is_member(&self, name: &[u8]) -> bool {
         self.class_members
             .last()
-            .is_some_and(|members| members.others.contains(name) || members.methods.contains(&*lowercase(name)))
+            .is_some_and(|members| members.others.contains(name) || members.methods.contains(&IgnoringCase(name)))
     }
 }
 
@@ -128,17 +152,12 @@ where
     }
 }
 
-/// `name` in ASCII lowercase, copied only when it holds an uppercase letter.
-fn lowercase(name: &[u8]) -> Cow<'_, [u8]> {
-    if name.iter().any(u8::is_ascii_uppercase) { Cow::Owned(name.to_ascii_lowercase()) } else { Cow::Borrowed(name) }
-}
-
 fn class_member_names<'arena>(members: &Sequence<'arena, ClassLikeMember<'arena>>) -> ClassMembers<'arena> {
     let mut names = ClassMembers::default();
     for member in members {
         match member {
             ClassLikeMember::Method(method) => {
-                names.methods.insert(lowercase(method.name.value));
+                names.methods.insert(IgnoringCase(method.name.value));
                 names.others.extend(
                     method
                         .parameter_list
