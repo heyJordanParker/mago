@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashSet;
 
 use mago_allocator::LocalArena;
 use mago_database::file::File;
@@ -17,6 +18,7 @@ use mago_syntax::cst::Argument;
 use mago_syntax::cst::ArgumentList;
 use mago_syntax::cst::Array;
 use mago_syntax::cst::ArrayElement;
+use mago_syntax::cst::ArrowFunction;
 use mago_syntax::cst::AssignmentOperator;
 use mago_syntax::cst::AttributeList;
 use mago_syntax::cst::BinaryOperator;
@@ -25,6 +27,7 @@ use mago_syntax::cst::Call;
 use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::ClassLikeMemberSelector;
+use mago_syntax::cst::Closure;
 use mago_syntax::cst::CompositeString;
 use mago_syntax::cst::Conditional;
 use mago_syntax::cst::ConstantAccess;
@@ -35,6 +38,7 @@ use mago_syntax::cst::ForBody;
 use mago_syntax::cst::ForOfTarget;
 use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::FunctionLikeParameter;
+use mago_syntax::cst::FunctionLikeParameterList;
 use mago_syntax::cst::Hint;
 use mago_syntax::cst::If;
 use mago_syntax::cst::IfBody;
@@ -50,6 +54,7 @@ use mago_syntax::cst::Modifier;
 use mago_syntax::cst::ModifierSequenceExt;
 use mago_syntax::cst::NamedArgument;
 use mago_syntax::cst::NamespaceBody;
+use mago_syntax::cst::Node;
 use mago_syntax::cst::PartialArgument;
 use mago_syntax::cst::PartialArgumentList;
 use mago_syntax::cst::PositionalArgument;
@@ -79,6 +84,7 @@ use crate::sharp_kind::SHARP_AST_AND;
 use crate::sharp_kind::SHARP_AST_ARG_LIST;
 use crate::sharp_kind::SHARP_AST_ARRAY;
 use crate::sharp_kind::SHARP_AST_ARRAY_ELEM;
+use crate::sharp_kind::SHARP_AST_ARROW_FUNC;
 use crate::sharp_kind::SHARP_AST_ASSIGN;
 use crate::sharp_kind::SHARP_AST_ASSIGN_COALESCE;
 use crate::sharp_kind::SHARP_AST_ASSIGN_OP;
@@ -92,6 +98,8 @@ use crate::sharp_kind::SHARP_AST_CAST;
 use crate::sharp_kind::SHARP_AST_CATCH;
 use crate::sharp_kind::SHARP_AST_CATCH_LIST;
 use crate::sharp_kind::SHARP_AST_CLASS;
+use crate::sharp_kind::SHARP_AST_CLOSURE;
+use crate::sharp_kind::SHARP_AST_CLOSURE_USES;
 use crate::sharp_kind::SHARP_AST_COALESCE;
 use crate::sharp_kind::SHARP_AST_CONDITIONAL;
 use crate::sharp_kind::SHARP_AST_CONST;
@@ -139,6 +147,7 @@ use crate::sharp_kind::SHARP_AST_TYPE;
 use crate::sharp_kind::SHARP_AST_UNARY_MINUS;
 use crate::sharp_kind::SHARP_AST_UNARY_OP;
 use crate::sharp_kind::SHARP_AST_UNARY_PLUS;
+use crate::sharp_kind::SHARP_AST_UNSET;
 use crate::sharp_kind::SHARP_AST_VAR;
 use crate::sharp_kind::SHARP_AST_WHILE;
 use crate::sharp_kind::SHARP_AST_ZVAL;
@@ -160,6 +169,7 @@ const ZEND_ACC_PROTECTED_SET: u32 = 1 << 11;
 const ZEND_ACC_PRIVATE_SET: u32 = 1 << 12;
 const ZEND_TYPE_NULLABLE: u32 = 1 << 8;
 const ZEND_PARENTHESIZED_CONDITIONAL: u32 = 1;
+const ZEND_BIND_REF: u32 = 1;
 const IS_LONG: u32 = 4;
 const IS_DOUBLE: u32 = 5;
 const IS_STRING: u32 = 6;
@@ -259,16 +269,40 @@ struct Lowering<'lowering, 'arena> {
     nodes: Vec<sharp_node>,
     children: Vec<u32>,
     texts: LocalArena,
+    /// The declaration offsets of the locals a lambda captures by reference: those code writes.
+    by_reference: HashSet<u32>,
+    /// How many loop bodies hold the statement being lowered, inside the innermost method or lambda.
+    loop_depth: u32,
 }
 
 impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     fn new(lines: &'lowering Lines, names: &'lowering ResolvedNames<'arena>) -> Self {
-        Self { lines, names, nodes: Vec::new(), children: Vec::new(), texts: LocalArena::new() }
+        Self {
+            lines,
+            names,
+            nodes: Vec::new(),
+            children: Vec::new(),
+            texts: LocalArena::new(),
+            by_reference: HashSet::default(),
+            loop_depth: 0,
+        }
     }
 
     /// `declare(strict_types=1);` first, then the namespaces and classes. Imports are not lowered: every class name
     /// in the tree is fully qualified.
     fn program(mut self, program: &Program) -> Box<Unit> {
+        for lambda in Node::Program(program).filter_map(|node| match node {
+            Node::ArrowFunction(arrow_function) => Some(arrow_function.span()),
+            Node::Closure(closure) => Some(closure.span()),
+            _ => None,
+        }) {
+            for (_, local) in self.names.captures(&lambda) {
+                if self.names.is_written(local) {
+                    self.by_reference.insert(local.declaration.start.offset);
+                }
+            }
+        }
+
         let mut statements = vec![self.strict_types()];
         for statement in &program.statements {
             self.file_statement(statement, &mut statements);
@@ -420,9 +454,15 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
     fn parameter(&mut self, parameter: &FunctionLikeParameter) -> u32 {
         let Some(hint) = &parameter.hint else {
-            unreachable!("semantics refuses a parameter without a type");
+            unreachable!("semantics refuses a method parameter without a type");
         };
         let hint = self.hint(hint);
+
+        self.parameter_of_type(parameter, hint)
+    }
+
+    /// A parameter with its lowered type, or with a null type, as a lambda's parameter can be.
+    fn parameter_of_type(&mut self, parameter: &FunctionLikeParameter, hint: u32) -> u32 {
         let name = self.string(0, self.line(parameter.variable.span), parameter.variable.name);
         let default = parameter.default_value.as_ref().map_or(NULL, |default| self.expression(default.value));
         let accessor_flags =
@@ -568,7 +608,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                         (self.variable(pair.key.span, pair.key.value), self.variable(pair.value.span, pair.value.value))
                     }
                 };
-                let body = self.statement(for_of.body);
+                let body = self.loop_body(for_of.body);
 
                 self.node(SHARP_AST_FOREACH, 0, self.line(for_of), &[collection, value, key, body])
             }
@@ -577,12 +617,12 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                     unreachable!("check_slice refuses a colon-delimited `while`");
                 };
                 let condition = self.expression(r#while.condition);
-                let body = self.statement(body);
+                let body = self.loop_body(body);
 
                 self.node(SHARP_AST_WHILE, 0, self.line(r#while), &[condition, body])
             }
             Statement::DoWhile(do_while) => {
-                let body = self.statement(do_while.statement);
+                let body = self.loop_body(do_while.statement);
                 let condition = self.expression(do_while.condition);
 
                 self.node(SHARP_AST_DO_WHILE, 0, self.line(do_while), &[body, condition])
@@ -594,12 +634,31 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         })
     }
 
-    /// A `let` or `const` local is the assignment of its value to its variable.
+    fn loop_body(&mut self, body: &Statement) -> u32 {
+        self.loop_depth += 1;
+        let body = self.statement(body);
+        self.loop_depth -= 1;
+
+        body
+    }
+
+    /// A `let` or `const` local is the assignment of its value to its variable. Spec section 3 gives each loop pass
+    /// its own local, and PHP reuses one variable, so a local in a loop body that a lambda captures by reference is
+    /// `{ unset($local); $local = value; }`, and the lambda of each pass keeps its own.
     fn local(&mut self, local: &LocalDeclaration) -> u32 {
+        let line = self.line(local);
         let variable = self.variable(local.name.span, local.name.value);
         let value = self.expression(local.value);
+        let assignment = self.node(SHARP_AST_ASSIGN, 0, line, &[variable, value]);
+        if self.loop_depth == 0 || !self.by_reference.contains(&local.name.span.start.offset) {
+            return assignment;
+        }
 
-        self.node(SHARP_AST_ASSIGN, 0, self.line(local), &[variable, value])
+        let variable = self.variable(local.name.span, local.name.value);
+        let unset = self.node(SHARP_AST_UNSET, 0, line, &[variable]);
+        let unset = self.node(SHARP_AST_STMT_LIST, 0, line, &[unset]);
+
+        self.node(SHARP_AST_STMT_LIST, 0, line, &[unset, assignment])
     }
 
     /// Each part of the header is an `EXPR_LIST`, or null when it is empty. A `let` or `const` counter is the
@@ -622,7 +681,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let conditions = self.expression_list(&conditions);
         let increments: Vec<u32> = r#for.increments.iter().map(|increment| self.expression(increment)).collect();
         let increments = self.expression_list(&increments);
-        let body = self.statement(body);
+        let body = self.loop_body(body);
 
         self.node(SHARP_AST_FOR, 0, self.line(r#for), &[initializations, conditions, increments, body])
     }
@@ -755,7 +814,12 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 function: Expression::Identifier(function),
                 argument_list,
             })) => {
-                let function = self.string(ZEND_NAME_FQ, self.line(function), function.value());
+                // A local holds a function, so `f(x)` calls it as PHP's `$f($x)`, and any other name is the global
+                // function's.
+                let function = match self.names.binding(function) {
+                    Some(Binding::Local(_)) => self.variable(function.span(), function.value()),
+                    _ => self.string(ZEND_NAME_FQ, self.line(function), function.value()),
+                };
                 let arguments = self.arguments(argument_list);
 
                 self.node(SHARP_AST_CALL, 0, line, &[function, arguments])
@@ -795,6 +859,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.node(SHARP_AST_THROW, 0, line, &[exception])
             }
             Expression::CompositeString(CompositeString::Interpolated(template)) => self.template(template),
+            Expression::ArrowFunction(arrow_function) => self.arrow_function(arrow_function),
+            Expression::Closure(closure) => self.closure(closure),
             Expression::Array(array) => self.array(array),
             Expression::ArrayAccess(access) => {
                 let value = self.expression(access.array);
@@ -818,6 +884,82 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let null = self.zval(line, sharp_value::SHARP_NULL, |_| {});
 
         self.node(SHARP_AST_COALESCE, 0, line, &[value, null])
+    }
+
+    /// Spec section 3: a lambda captures the variable itself. PHP's `fn` captures by value what its body reads, which
+    /// is the variable itself when nothing writes it, so a lambda with an expression body that captures no written
+    /// local is an `ARROW_FUNC`, as php-src's grammar builds `fn`, with its expression as its body. Any other is a
+    /// `CLOSURE` whose body returns the expression.
+    fn arrow_function(&mut self, arrow_function: &ArrowFunction) -> u32 {
+        let lambda = arrow_function.span();
+        if !self.names.captures(&lambda).iter().any(|(_, local)| self.names.is_written(local)) {
+            let parameters = self.lambda_parameters(&arrow_function.parameter_list);
+            let body = self.lambda_body(|lowering| lowering.expression(arrow_function.expression));
+
+            return self.declaration(
+                SHARP_AST_ARROW_FUNC,
+                0,
+                lambda,
+                arrow_function.expression,
+                b"",
+                &[parameters, NULL, body, NULL, NULL],
+            );
+        }
+
+        let parameters = self.lambda_parameters(&arrow_function.parameter_list);
+        let uses = self.closure_uses(lambda);
+        let body = self.lambda_body(|lowering| {
+            let line = lowering.line(arrow_function.expression);
+            let value = lowering.expression(arrow_function.expression);
+            let r#return = lowering.node(SHARP_AST_RETURN, 0, line, &[value]);
+
+            lowering.node(SHARP_AST_STMT_LIST, 0, line, &[r#return])
+        });
+
+        self.declaration(SHARP_AST_CLOSURE, 0, lambda, lambda, b"", &[parameters, uses, body, NULL, NULL])
+    }
+
+    /// A lambda with a block body is a `CLOSURE`, as php-src's grammar builds `function () use (…) { … }`.
+    fn closure(&mut self, closure: &Closure) -> u32 {
+        let lambda = closure.span();
+        let parameters = self.lambda_parameters(&closure.parameter_list);
+        let uses = self.closure_uses(lambda);
+        let body = self.lambda_body(|lowering| lowering.block(&closure.body));
+
+        self.declaration(SHARP_AST_CLOSURE, 0, lambda, lambda, b"", &[parameters, uses, body, NULL, NULL])
+    }
+
+    /// A lambda's parameters, each with its type or a null type, as PHP writes a parameter without one.
+    fn lambda_parameters(&mut self, list: &FunctionLikeParameterList) -> u32 {
+        let mut parameters = Vec::new();
+        for parameter in &list.parameters {
+            let hint = parameter.hint.as_ref().map_or(NULL, |hint| self.hint(hint));
+            parameters.push(self.parameter_of_type(parameter, hint));
+        }
+
+        self.node(SHARP_AST_PARAM_LIST, 0, self.line(list), &parameters)
+    }
+
+    /// The `use` list of a `CLOSURE`: each local the lambda captures, in first-use order, by reference with
+    /// `ZEND_BIND_REF` when code writes it and by value otherwise, or null when it captures none.
+    fn closure_uses(&mut self, lambda: Span) -> u32 {
+        let line = self.line(lambda);
+        let mut uses = Vec::new();
+        for &(name, local) in self.names.captures(&lambda) {
+            let attr = if self.names.is_written(&local) { ZEND_BIND_REF } else { 0 };
+            uses.push(self.string(attr, line, name));
+        }
+
+        if uses.is_empty() { NULL } else { self.node(SHARP_AST_CLOSURE_USES, 0, line, &uses) }
+    }
+
+    /// Lowers a lambda's body, which runs in a frame of its own, outside any loop of the method around it.
+    fn lambda_body(&mut self, lower: impl FnOnce(&mut Self) -> u32) -> u32 {
+        let loop_depth = std::mem::replace(&mut self.loop_depth, 0);
+        let body = lower(self);
+        self.loop_depth = loop_depth;
+
+        body
     }
 
     /// A list or map literal is an `ARRAY` with `ZEND_ARRAY_SYNTAX_SHORT`, as php-src's grammar builds `[…]`. Each

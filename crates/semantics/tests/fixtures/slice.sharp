@@ -227,4 +227,26 @@ class Report
         }
         return ["all": numbers];
     }
+
+    public int lambdas(int extra)
+    {
+        let count = 0;
+        const twice = (int a) => a * extra;
+        const half = b => b / 2;
+        const add = (int step, int by = 1) => {
+            count += step * by;
+            const inner = () => count + extra;
+            return inner();
+        };
+        const bump = () => count++;
+        while (extra > 0) {
+            let seen = extra;
+            const mark = () => {
+                seen += 1;
+            };
+            mark();
+            extra -= 1;
+        }
+        return twice(half(4)) + add(1, by: 2) + bump() + count + array_sum(array_map(x => x * 2, [1, 2]));
+    }
 }

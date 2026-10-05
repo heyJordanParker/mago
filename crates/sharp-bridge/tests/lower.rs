@@ -122,7 +122,11 @@ impl Lowered {
                     sharp_value::SHARP_STRING => write!(tree, " {:?}", text(node.text)),
                 };
             }
-            sharp_kind::SHARP_AST_CLASS | sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_PROPERTY_HOOK => {
+            sharp_kind::SHARP_AST_CLASS
+            | sharp_kind::SHARP_AST_METHOD
+            | sharp_kind::SHARP_AST_PROPERTY_HOOK
+            | sharp_kind::SHARP_AST_CLOSURE
+            | sharp_kind::SHARP_AST_ARROW_FUNC => {
                 let _ = write!(tree, " {:?} @{}-{}", text(node.text), node.line, node.end_line);
             }
             _ => {}
@@ -2197,6 +2201,229 @@ fn a_template_is_an_encaps_list_of_its_text_and_interpolations() {
     );
 }
 
+/// ```php
+/// $twice = fn (int $a) => $a * $extra; $half = fn ($b) => $b / 2; return $twice($half(4));
+/// ```
+///
+/// A lambda that writes none of the locals it captures is PHP's `fn`, which captures by value what its body reads.
+/// php-src's grammar gives an arrow function no name, no `use` list and its expression as its body. A call of a local
+/// calls the closure the local holds.
+#[test]
+fn a_lambda_that_writes_no_capture_is_an_arrow_function() {
+    assert_eq!(
+        body(
+            "        const twice = (int a) => a * extra;\n        const half = b => b / 2;\n        return twice(half(4));\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "twice"
+                ARROW_FUNC "" @9-9
+                  PARAM_LIST
+                    PARAM
+                      ZVAL [1] "int"
+                      ZVAL "a"
+                      null
+                      null
+                      null
+                      null
+                  null
+                  BINARY_OP [3]
+                    VAR
+                      ZVAL "a"
+                    VAR
+                      ZVAL "extra"
+                  null
+                  null
+              ASSIGN
+                VAR
+                  ZVAL "half"
+                ARROW_FUNC "" @10-10
+                  PARAM_LIST
+                    PARAM
+                      null
+                      ZVAL "b"
+                      null
+                      null
+                      null
+                      null
+                  null
+                  BINARY_OP [4]
+                    VAR
+                      ZVAL "b"
+                    ZVAL 2
+                  null
+                  null
+              RETURN
+                CALL
+                  VAR
+                    ZVAL "twice"
+                  ARG_LIST
+                    CALL
+                      VAR
+                        ZVAL "half"
+                      ARG_LIST
+                        ZVAL 4
+        "#}
+    );
+}
+
+/// ```php
+/// $count = 0;
+/// $add = function (int $step) use (&$count, $extra) {
+///     $count += $step + $extra;
+/// };
+/// $bump = function () use (&$count) { return $count += 1; };
+/// $add(1);
+/// return $count;
+/// ```
+///
+/// Spec section 3: a lambda captures the variable itself. A lambda with a block body, or one that writes a local it
+/// captures, is PHP's `function` with a `use` list in first-use order, which captures a local that code writes by
+/// reference, `ZEND_BIND_REF`, which is 1, and any other by value. An expression body is the `return` of it.
+#[test]
+fn a_lambda_with_a_block_or_a_written_capture_is_a_closure_with_a_use_list() {
+    assert_eq!(
+        body(
+            "        let count = 0;\n        const add = (int step) => {\n            count += step + extra;\n        };\n        const bump = () => count += 1;\n        add(1);\n        return count;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "count"
+                ZVAL 0
+              ASSIGN
+                VAR
+                  ZVAL "add"
+                CLOSURE "" @10-12
+                  PARAM_LIST
+                    PARAM
+                      ZVAL [1] "int"
+                      ZVAL "step"
+                      null
+                      null
+                      null
+                      null
+                  CLOSURE_USES
+                    ZVAL [1] "count"
+                    ZVAL "extra"
+                  STMT_LIST
+                    ASSIGN_OP [1]
+                      VAR
+                        ZVAL "count"
+                      BINARY_OP [1]
+                        VAR
+                          ZVAL "step"
+                        VAR
+                          ZVAL "extra"
+                  null
+                  null
+              ASSIGN
+                VAR
+                  ZVAL "bump"
+                CLOSURE "" @13-13
+                  PARAM_LIST
+                  CLOSURE_USES
+                    ZVAL [1] "count"
+                  STMT_LIST
+                    RETURN
+                      ASSIGN_OP [1]
+                        VAR
+                          ZVAL "count"
+                        ZVAL 1
+                  null
+                  null
+              CALL
+                VAR
+                  ZVAL "add"
+                ARG_LIST
+                  ZVAL 1
+              RETURN
+                VAR
+                  ZVAL "count"
+        "#}
+    );
+}
+
+/// ```php
+/// while ($extra > 0) {
+///     { unset($seen); $seen = $extra; }
+///     $mark = function () use (&$seen) { $seen += 1; };
+///     $mark();
+///     $extra -= 1;
+/// }
+/// return $extra;
+/// ```
+///
+/// Spec section 3 gives each loop pass its own `let`. PHP reuses one variable across passes, so a `let` declared in a
+/// loop body that a lambda captures by reference is unset before its assignment, and the lambda of each pass keeps
+/// its own. php-src's grammar builds `unset($seen);` as a statement list of one `UNSET`.
+#[test]
+fn a_let_in_a_loop_captured_by_reference_is_unset_before_its_assignment() {
+    assert_eq!(
+        body(
+            "        while (extra > 0) {\n            let seen = extra;\n            const mark = () => {\n                seen += 1;\n            };\n            mark();\n            extra -= 1;\n        }\n        return extra;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              WHILE
+                GREATER
+                  VAR
+                    ZVAL "extra"
+                  ZVAL 0
+                STMT_LIST
+                  STMT_LIST
+                    STMT_LIST
+                      UNSET
+                        VAR
+                          ZVAL "seen"
+                    ASSIGN
+                      VAR
+                        ZVAL "seen"
+                      VAR
+                        ZVAL "extra"
+                  ASSIGN
+                    VAR
+                      ZVAL "mark"
+                    CLOSURE "" @11-13
+                      PARAM_LIST
+                      CLOSURE_USES
+                        ZVAL [1] "seen"
+                      STMT_LIST
+                        ASSIGN_OP [1]
+                          VAR
+                            ZVAL "seen"
+                          ZVAL 1
+                      null
+                      null
+                  CALL
+                    VAR
+                      ZVAL "mark"
+                    ARG_LIST
+                  ASSIGN_OP [2]
+                    VAR
+                      ZVAL "extra"
+                    ZVAL 1
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
+/// A `let` the lambda declares in its own body lives in each call's own frame, so it is never unset, even when the
+/// lambda sits in a loop.
+#[test]
+fn a_let_declared_inside_a_lambda_in_a_loop_is_not_unset() {
+    let tree = body(
+        "        while (extra > 0) {\n            const step = () => {\n                let inner = 1;\n                const again = () => {\n                    inner += 1;\n                };\n                again();\n            };\n            step();\n            extra -= 1;\n        }\n        return extra;\n",
+    );
+
+    assert!(!tree.contains("UNSET"), "{tree}");
+}
+
 /// php-src takes a list's line from its first child, and each piece of text's from where it starts.
 #[test]
 fn a_template_over_several_lines_keeps_the_line_of_each_part() {
@@ -2340,8 +2567,9 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_CATCH_LIST
         | sharp_kind::SHARP_AST_NAME_LIST
         | sharp_kind::SHARP_AST_ENCAPS_LIST
-        | sharp_kind::SHARP_AST_ARRAY => None,
-        sharp_kind::SHARP_AST_ZVAL | sharp_kind::SHARP_AST_TYPE => Some(0),
+        | sharp_kind::SHARP_AST_ARRAY
+        | sharp_kind::SHARP_AST_CLOSURE_USES => None,
+        sharp_kind::SHARP_AST_ZVAL | sharp_kind::SHARP_AST_TYPE | sharp_kind::SHARP_AST_CALLABLE_CONVERT => Some(0),
         sharp_kind::SHARP_AST_VAR
         | sharp_kind::SHARP_AST_CONST
         | sharp_kind::SHARP_AST_UNARY_PLUS
@@ -2356,7 +2584,8 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_CONTINUE
         | sharp_kind::SHARP_AST_THROW
         | sharp_kind::SHARP_AST_CAST
-        | sharp_kind::SHARP_AST_PROPERTY_HOOK_SHORT_BODY => Some(1),
+        | sharp_kind::SHARP_AST_PROPERTY_HOOK_SHORT_BODY
+        | sharp_kind::SHARP_AST_UNSET => Some(1),
         sharp_kind::SHARP_AST_PROP
         | sharp_kind::SHARP_AST_ASSIGN
         | sharp_kind::SHARP_AST_ASSIGN_OP
@@ -2388,7 +2617,11 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_CATCH
         | sharp_kind::SHARP_AST_CONDITIONAL => Some(3),
         sharp_kind::SHARP_AST_FOR | sharp_kind::SHARP_AST_FOREACH | sharp_kind::SHARP_AST_PROP_ELEM => Some(4),
-        sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_CLASS | sharp_kind::SHARP_AST_PROPERTY_HOOK => Some(5),
+        sharp_kind::SHARP_AST_METHOD
+        | sharp_kind::SHARP_AST_CLASS
+        | sharp_kind::SHARP_AST_PROPERTY_HOOK
+        | sharp_kind::SHARP_AST_CLOSURE
+        | sharp_kind::SHARP_AST_ARROW_FUNC => Some(5),
         sharp_kind::SHARP_AST_PARAM => Some(6),
     }
 }
