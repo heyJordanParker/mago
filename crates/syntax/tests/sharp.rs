@@ -766,6 +766,37 @@ fn a_method_written_with_function_is_a_parse_error() {
 }
 
 #[test]
+fn typeof_names_a_class_by_its_short_name() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        Store.keep(typeof(Order));\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [statement] = method_body(program) else {
+        panic!("expected one statement, got {:#?}", method_body(program));
+    };
+    let Expression::Call(Call::Method(keep)) = expression(statement) else {
+        panic!("expected a method call, got {statement:#?}");
+    };
+    let Some(Expression::TypeOf(type_of)) = keep.argument_list.arguments.first().map(Argument::value) else {
+        panic!("expected `typeof(Order)`, got {:#?}", keep.argument_list.arguments);
+    };
+    assert_eq!(type_of.class.value(), b"Order");
+    assert_eq!(source(CODE, type_of), "typeof(Order)");
+}
+
+#[test]
+fn typeof_in_php_is_a_function_call() {
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.php", "<?php typeof(Order);");
+
+    let Some(Statement::Expression(statement)) = program.statements.get(1) else {
+        panic!("expected an expression statement, got {:#?}", program.statements);
+    };
+    assert!(matches!(statement.expression, Expression::Call(Call::Function(_))), "{statement:#?}");
+}
+
+#[test]
 fn dot_keeps_concatenating_in_php() {
     let arena = LocalArena::new();
     let program = parse(&arena, "src/Report.php", "<?php $a . $b;");

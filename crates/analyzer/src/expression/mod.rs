@@ -53,6 +53,7 @@ pub mod magic_constant;
 pub mod r#match;
 pub mod partial_application;
 pub mod throw;
+pub mod type_of;
 pub mod unary;
 pub mod variable;
 pub mod r#yield;
@@ -173,6 +174,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
             Expression::Instantiation(expr) => expr.analyze(context, block_context, artifacts),
             Expression::MagicConstant(expr) => expr.analyze(context, block_context, artifacts),
             Expression::Pipe(expr) => expr.analyze(context, block_context, artifacts),
+            Expression::TypeOf(expr) => expr.analyze(context, block_context, artifacts),
             Expression::List(list_expr) => {
                 context.collector.report_with_code(
                     IssueCode::ListUsedInReadContext,

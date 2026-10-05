@@ -210,6 +210,7 @@ use crate::cst::cst::TraitUseSpecification;
 use crate::cst::cst::Try;
 use crate::cst::cst::TryCatchClause;
 use crate::cst::cst::TryFinallyClause;
+use crate::cst::cst::TypeOf;
 use crate::cst::cst::TypedUseItemList;
 use crate::cst::cst::TypedUseItemSequence;
 use crate::cst::cst::UnaryPostfix;
@@ -393,6 +394,7 @@ pub enum NodeKind {
     Keyword,
     Literal,
     Pipe,
+    TypeOf,
     LiteralFloat,
     LiteralInteger,
     LiteralString,
@@ -710,6 +712,7 @@ pub enum Node<'ast, 'arena> {
     NestedVariable(&'ast NestedVariable<'arena>),
     Variable(&'ast Variable<'arena>),
     Pipe(&'ast Pipe<'arena>),
+    TypeOf(&'ast TypeOf<'arena>),
     Error(Span),
     MissingTerminator(Span),
     ClassLikeMemberMissingSelector(Span),
@@ -1027,6 +1030,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Self::NestedVariable(_) => NodeKind::NestedVariable,
             Self::Variable(_) => NodeKind::Variable,
             Self::Pipe(_) => NodeKind::Pipe,
+            Self::TypeOf(_) => NodeKind::TypeOf,
             Self::Error(_) => NodeKind::Error,
             Self::MissingTerminator(_) => NodeKind::MissingTerminator,
             Self::ClassLikeMemberMissingSelector(_) => NodeKind::ClassLikeMemberMissingSelector,
@@ -1823,6 +1827,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                     Expression::Instantiation(node) => Node::Instantiation(node),
                     Expression::MagicConstant(node) => Node::MagicConstant(node),
                     Expression::Pipe(node) => Node::Pipe(node),
+                    Expression::TypeOf(node) => Node::TypeOf(node),
                     Expression::Error(span) => Node::Error(*span),
                 };
                 f(child);
@@ -2453,6 +2458,10 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 f(Node::Expression(pipe.input));
                 f(Node::Expression(pipe.callable));
             }
+            Node::TypeOf(type_of) => {
+                f(Node::Keyword(&type_of.r#typeof));
+                f(Node::Identifier(&type_of.class));
+            }
             Node::Error(_)
             | Node::MissingTerminator(_)
             | Node::ClassLikeMemberMissingSelector(_)
@@ -2704,6 +2713,7 @@ impl HasSpan for Node<'_, '_> {
             Self::NestedVariable(node) => node.span(),
             Self::Variable(node) => node.span(),
             Self::Pipe(node) => node.span(),
+            Self::TypeOf(node) => node.span(),
             Self::Error(span)
             | Self::MissingTerminator(span)
             | Self::ClassLikeMemberMissingSelector(span)

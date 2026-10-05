@@ -43,6 +43,7 @@ use mago_syntax::cst::StaticMethodPartialApplication;
 use mago_syntax::cst::StaticPropertyAccess;
 use mago_syntax::cst::Trait;
 use mago_syntax::cst::TraitUse;
+use mago_syntax::cst::TypeOf;
 use mago_syntax::cst::Use;
 use mago_syntax::cst::UseItems;
 use mago_syntax::walker::MutWalker;
@@ -503,6 +504,12 @@ where
 
             self.resolved_names.insert_at(identifier.span(), name, imported);
         }
+    }
+
+    fn walk_in_type_of(&mut self, type_of: &'ast TypeOf<'arena>, context: &mut NameResolutionContext<'arena, A>) {
+        let (name, imported) = context.resolve(NameKind::Default, type_of.class.value());
+
+        self.resolved_names.insert_at(type_of.class.span(), name, imported);
     }
 
     fn walk_in_static_method_call(

@@ -62,7 +62,8 @@ where
     }
 
     let is_sharp = context.program.dialect.is_sharp();
-    if parameter.modifiers.contains_readonly() || (is_sharp && parameter.hooks.as_ref().is_some_and(is_sharp_get_only))
+    if parameter.modifiers.contains_readonly()
+        || (is_sharp && parameter.hooks.as_ref().is_some_and(PropertyHookList::is_get_only))
     {
         flags |= MetadataFlags::READONLY;
     }
@@ -317,8 +318,12 @@ where
                 flags |= MetadataFlags::HAS_DEFAULT;
             }
 
-            if is_sharp && is_sharp_get_only(&hooked_property.hook_list) {
+            if is_sharp && hooked_property.hook_list.is_get_only() {
                 flags |= MetadataFlags::READONLY;
+            }
+
+            if hooked_property.modifiers.contains_static() {
+                flags |= MetadataFlags::STATIC;
             }
 
             if hooked_property.modifiers.contains_abstract() {
@@ -391,11 +396,6 @@ fn sharp_write_visibility(accessors: &PropertyHookList, read_visibility: Visibil
         None if read_visibility == Visibility::Public => Visibility::Protected,
         None => read_visibility,
     }
-}
-
-/// Whether a PHP# accessor list declares a get-only property, which runs as `readonly`.
-fn is_sharp_get_only(accessors: &PropertyHookList) -> bool {
-    !accessors.hooks.iter().any(|accessor| accessor.name.value == b"set")
 }
 
 fn scan_property_hook<'arena, A>(

@@ -203,6 +203,7 @@ use crate::cst::cst::TraitUseSpecification;
 use crate::cst::cst::Try;
 use crate::cst::cst::TryCatchClause;
 use crate::cst::cst::TryFinallyClause;
+use crate::cst::cst::TypeOf;
 use crate::cst::cst::TypedUseItemList;
 use crate::cst::cst::TypedUseItemSequence;
 use crate::cst::cst::UnaryPostfix;
@@ -1690,6 +1691,7 @@ generate_ast_walker! {
             Expression::Instantiation(instantiation) => walker.walk_instantiation(instantiation, context),
             Expression::MagicConstant(magic_constant) => walker.walk_magic_constant(magic_constant, context),
             Expression::Pipe(pipe) => walker.walk_pipe(pipe, context),
+            Expression::TypeOf(type_of) => walker.walk_type_of(type_of, context),
             Expression::Error(_) => {
                 // Nothing to walk for error expressions
             }
@@ -2376,6 +2378,11 @@ generate_ast_walker! {
     'arena Pipe as pipe => {
         walker.walk_expression(pipe.input, context);
         walker.walk_expression(pipe.callable, context);
+    }
+
+    'arena TypeOf as type_of => {
+        walker.walk_keyword(&type_of.r#typeof, context);
+        walker.walk_identifier(&type_of.class, context);
     }
 
     'arena Hint as hint => {

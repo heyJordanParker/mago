@@ -262,6 +262,10 @@ where
             return Ok(self.arena.alloc(Expression::Error(new.join(end))));
         }
 
+        if self.is_at_type_of()? {
+            return Ok(self.arena.alloc(Expression::TypeOf(self.parse_type_of()?)));
+        }
+
         Ok(self.arena.alloc(match (token.kind, next) {
             (T!["static"], _) => Expression::Static(self.expect_any_keyword()?),
             (T!["self"], _) if !is_call => Expression::Self_(self.expect_any_keyword()?),

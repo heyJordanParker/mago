@@ -2,8 +2,13 @@ namespace App.Tenant;
 
 import Lib.Calc;
 
-class Report
+public class Report
 {
+    public const int MAX = 3;
+    protected const LIMIT = PHP_INT_MAX - 1;
+    private const string? NAME = "report";
+    private static int made = 0;
+    public static string last { get; private set; } = "none";
     private int count = 0;
     protected float rate = 2.5 * -PHP_INT_MAX;
     private string label;
@@ -77,6 +82,14 @@ class Report
         const chained = Calc.make().add(1).rate;
         const sum = Calc.make().add(1, 2);
         const big = 0xFFFFFFFFFFFFFFFF;
+        const kind = typeof(Calc);
+        Report.made = 1;
+        Report.made++;
+        --Report.made;
+        Report.made += 2;
+        Report.last ??= "touched";
+        const limit = Report.MAX;
+        const rate = Calc.rate.cents;
         return;
     }
 
@@ -154,4 +167,20 @@ class Report
         }
         return total;
     }
+}
+
+abstract class Shape
+{
+    public abstract float area();
+
+    protected abstract string name(int digits);
+}
+
+final class Unit
+{
+}
+
+interface Measured
+{
+    float area();
 }

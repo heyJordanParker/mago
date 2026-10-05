@@ -633,6 +633,66 @@ fn a_get_only_property_is_readonly_and_set_once_in_the_constructor() {
     );
 }
 
+#[test]
+fn typeof_is_the_class_name_as_in_php() {
+    let registry = "<?php\n\nnamespace Lib;\n\nfinal class Registry\n{\n    /** @param class-string<Calc> $class */\n    public static function keep(string $class): string\n    {\n        return $class;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Calc;\nimport Lib.Registry;\n\nclass Report\n{\n    public static string total()\n    {\n        Registry.keep(typeof(Report));\n        Registry.keep(typeof(Missing));\n        return Registry.keep(typeof(Calc));\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Calc;\nuse Lib\\Registry;\n\nclass Report\n{\n    public static function total(): string\n    {\n        Registry::keep(Report::class);\n        Registry::keep(Missing::class);\n        return Registry::keep(Calc::class);\n    }\n}\n";
+    let others = [("src/Lib/Calc.php", CALC), ("src/Lib/Registry.php", registry)];
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &others);
+    let php_issues = issues(("src/Demo/Report.php", php), &others);
+
+    assert_eq!(sharp_issues, ["10:23 invalid-argument", "11:30 non-existent-class-like", "11:23 invalid-argument"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+/// A static member written through its class name is checked as PHP checks `Class::$name`.
+#[test]
+fn a_static_member_write_is_checked_as_in_php() {
+    let sharp = "namespace Demo;\n\nclass Counter\n{\n    public const int START = 10;\n    private static int count = 0;\n    public static string last { get; private set; } = \"none\";\n\n    public static void touch()\n    {\n        Counter.count = 5;\n        Counter.count++;\n        Counter.count += 2;\n        Counter.last ??= \"never\";\n        Counter.count = \"many\";\n        Counter.missing = 1;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Counter\n{\n    public const int START = 10;\n    private static int $count = 0;\n    public private(set) static string $last = \"none\";\n\n    public static function touch(): void\n    {\n        Counter::$count = 5;\n        Counter::$count++;\n        Counter::$count += 2;\n        Counter::$last ??= \"never\";\n        Counter::$count = \"many\";\n        Counter::$missing = 1;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Counter.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Counter.php", php), &[]);
+
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{sharp_issues:?} {php_issues:?}");
+    assert_eq!(php_issues.len(), 3, "{php_issues:?}");
+}
+
+/// `Class.y` reads a constant or an enum case when the class has one by that name, and the static property otherwise,
+/// so each read is checked as the PHP twin's `::` read of that member.
+#[test]
+fn a_class_member_read_is_checked_as_its_constant_enum_case_or_static_property_in_php() {
+    let registry = "<?php\n\nnamespace Lib;\n\nenum Order: string\n{\n    case Ascending = 'asc';\n}\n\nfinal class Registry\n{\n    public const int VERSION = 2;\n    public static string $label = 'registry';\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Order;\nimport Lib.Registry;\n\nclass Members\n{\n    public static int version()\n    {\n        return Registry.VERSION;\n    }\n\n    public static Order order()\n    {\n        return Order.Ascending;\n    }\n\n    public static int label()\n    {\n        return Registry.label;\n    }\n\n    public static int missing()\n    {\n        return Registry.missing;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Order;\nuse Lib\\Registry;\n\nclass Members\n{\n    public static function version(): int\n    {\n        return Registry::VERSION;\n    }\n\n    public static function order(): Order\n    {\n        return Order::Ascending;\n    }\n\n    public static function label(): int\n    {\n        return Registry::$label;\n    }\n\n    public static function missing(): int\n    {\n        return Registry::$missing;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Members.sharp", sharp), &[("src/Lib/Registry.php", registry)]);
+    let php_issues = issues(("src/Demo/Members.php", php), &[("src/Lib/Registry.php", registry)]);
+
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{sharp_issues:?} {php_issues:?}");
+    assert_eq!(
+        sharp_issues,
+        ["20:16 invalid-return-statement", "25:25 non-existent-property", "25:16 invalid-return-statement"]
+    );
+}
+
+/// A PHP class extends a PHP# abstract class and implements a PHP# interface, whose method has no access modifier
+/// and is public, as their PHP twins are.
+#[test]
+fn abstract_and_final_classes_and_interfaces_are_checked_as_in_php() {
+    let square = "<?php\n\nnamespace Demo;\n\nfinal class Square extends Shape implements Measured\n{\n    public function area(): float\n    {\n        return 4.0;\n    }\n\n    protected function name(): string\n    {\n        return 'square';\n    }\n}\n\nfunction measure(Measured $shape): float\n{\n    return $shape->area() + (new Square())->area();\n}\n";
+    let sharp = "namespace Demo;\n\nabstract class Shape\n{\n    public abstract float area();\n\n    protected abstract string name();\n}\n\nfinal class Unit\n{\n}\n\ninterface Measured\n{\n    float area();\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nabstract class Shape\n{\n    abstract public function area(): float;\n\n    abstract protected function name(): string;\n}\n\nfinal class Unit\n{\n}\n\ninterface Measured\n{\n    public function area(): float;\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Square.php", square), &[("src/Demo/Shape.sharp", sharp)]);
+    let php_issues = issues(("src/Demo/Square.php", square), &[("src/Demo/Shape.php", php)]);
+
+    assert_eq!(sharp_issues, php_issues);
+    assert_eq!(issues(("src/Demo/Shape.sharp", sharp), &[]), issues(("src/Demo/Shape.php", php), &[]));
+}
+
 /// A parse error reports its spot once, so returning what failed to parse adds no `never-return`, in PHP# and PHP.
 #[test]
 fn returning_a_value_that_failed_to_parse_adds_no_issue() {

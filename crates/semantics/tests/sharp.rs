@@ -55,7 +55,6 @@ fn every_construct_outside_the_slice_is_not_supported_yet() {
         [
             "3:1 This statement is not supported yet in PHP#.",
             "4:1 This statement is not supported yet in PHP#.",
-            "6:1 This statement is not supported yet in PHP#.",
             "10:1 This statement is not supported yet in PHP#.",
             "18:9 This statement is not supported yet in PHP#.",
             "21:9 This statement is not supported yet in PHP#.",
@@ -379,30 +378,59 @@ fn a_full_name_inside_code_names_the_import_to_add() {
 fn a_class_declared_in_the_file_is_never_the_root_of_a_full_name() {
     let code = leak(method("        return Report.Totals.of(extra);\n"));
 
-    assert_eq!(issues(code), ["7:16 Reading `Report.Totals` without a call is not supported yet."]);
+    assert_eq!(issues(code), Vec::<String>::new());
 }
 
 #[test]
-fn reading_a_static_member_without_a_call_is_not_supported_yet() {
-    let code = leak(method("        return Calc.rate;\n"));
+fn an_abstract_class_with_an_abstract_method_and_a_final_class_are_in_the_slice() {
+    let code = "namespace App.Tenant;\n\npublic abstract class Shape\n{\n    public abstract float area();\n\n    protected abstract string name();\n}\n\nfinal class Unit\n{\n    public int one()\n    {\n        return 1;\n    }\n}\n";
 
-    assert_eq!(issues(code), ["7:16 Reading `Calc.rate` without a call is not supported yet."]);
+    assert_eq!(issues(code), Vec::<String>::new());
 }
 
 #[test]
-fn writing_a_static_member_is_not_supported_yet() {
-    let code = leak(method(
-        "        Calc.rate = 2;\n        Calc.count++;\n        Calc.rate.cents = 3;\n        return 1;\n",
-    ));
+fn an_interface_declares_methods_without_an_access_modifier_or_a_body() {
+    let code =
+        "namespace App.Tenant;\n\ninterface Measured\n{\n    float area();\n\n    string label(int digits);\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn an_interface_member_outside_the_slice_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\ninterface Measured\n{\n    public float area();\n\n    const int SIDES = 4;\n\n    static float unit();\n}\n";
 
     assert_eq!(
         issues(code),
         [
-            "7:9 Writing `Calc.rate` is not supported yet.",
-            "8:9 Writing `Calc.count` is not supported yet.",
-            "9:9 Reading `Calc.rate` without a call is not supported yet.",
+            "5:5 This modifier is not supported yet in PHP#.",
+            "7:5 This class member is not supported yet in PHP#.",
+            "9:5 This modifier is not supported yet in PHP#."
         ]
     );
+}
+
+#[test]
+fn a_class_member_read_in_a_default_is_not_supported_yet() {
+    let code = leak(method("        return extra;\n").replace("int extra", "Order extra = Order.Descending"));
+
+    assert_eq!(issues(code), ["5:34 This expression is not supported yet in PHP#."]);
+}
+
+#[test]
+fn a_constant_an_enum_case_or_a_static_member_is_read_through_its_class_name() {
+    let code = leak(method("        Store.keep(Calc.rate, Order.Descending);\n        return Calc.MAX;\n"));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_static_member_is_written_through_its_class_name() {
+    let code = leak(method(
+        "        Calc.rate = 2;\n        Calc.count++;\n        --Calc.count;\n        Calc.rate += 1;\n        Calc.rate ??= 1;\n        Calc.rate.cents = 3;\n        return 1;\n",
+    ));
+
+    assert_eq!(issues(code), Vec::<String>::new());
 }
 
 #[test]
@@ -575,18 +603,32 @@ fn attributes_are_not_supported_yet() {
 }
 
 #[test]
-fn final_abstract_and_readonly_are_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nfinal class Report\n{\n    final public int run()\n    {\n        return 1;\n    }\n}\n\nabstract class Shape\n{\n    abstract public int area();\n}\n\nreadonly class Point\n{\n}\n";
+fn a_class_may_be_public() {
+    let code = "namespace App.Tenant;\n\npublic class Report\n{\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_protected_or_private_class_reports_only_the_php_error() {
+    let code = "namespace App.Tenant;\n\nprotected class Report\n{\n}\n\nprivate class Calc\n{\n}\n";
 
     assert_eq!(
         issues(code),
         [
-            "3:1 This modifier is not supported yet in PHP#.",
-            "5:5 This modifier is not supported yet in PHP#.",
-            "11:1 This modifier is not supported yet in PHP#.",
-            "13:5 This modifier is not supported yet in PHP#.",
-            "16:1 This modifier is not supported yet in PHP#.",
+            "3:1 Class `Report` cannot have the `protected` visibility modifier.",
+            "7:1 Class `Calc` cannot have the `private` visibility modifier.",
         ]
+    );
+}
+
+#[test]
+fn a_final_method_and_a_readonly_class_are_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nfinal class Report\n{\n    final public int run()\n    {\n        return 1;\n    }\n}\n\nabstract class Shape\n{\n    abstract public int area();\n}\n\nreadonly class Point\n{\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["5:5 This modifier is not supported yet in PHP#.", "16:1 This modifier is not supported yet in PHP#."]
     );
 }
 
@@ -752,7 +794,7 @@ fn a_field_without_an_access_modifier_is_not_supported_yet() {
 
 #[test]
 fn fields_outside_the_slice_are_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private static int count = 0;\n    private int first, second;\n    private int? maybe;\n}\n";
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private readonly int count = 0;\n    private int first, second;\n    private int? maybe;\n}\n";
 
     assert_eq!(
         issues(code),
@@ -760,6 +802,65 @@ fn fields_outside_the_slice_are_not_supported_yet() {
             "5:13 This modifier is not supported yet in PHP#.",
             "6:5 A field declaring several names is not supported yet in PHP#.",
             "7:13 This type is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn a_field_or_a_property_may_be_static_with_a_constant_initial_value() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private static int count = 0;\n    protected static string label = \"none\";\n    public static int views { get; private set; } = 0;\n    public static string last { get; set; } = \"\";\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_static_member_outside_the_slice_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public static int id { get; }\n    private static Calc calc = new Calc();\n    public static int views { get; set; } = Calc.make();\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:23 A get-only static property is not supported yet in PHP#.",
+            "8:32 A static member's initial value that is not constant is not supported yet in PHP#.",
+            "9:45 A static member's initial value that is not constant is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn a_class_constant_has_an_access_modifier_an_optional_type_and_a_constant_value() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public const int MAX = 3;\n    protected const LIMIT = PHP_INT_MAX - 1;\n    private const string NAME = \"report\";\n    public const float? RATE = null;\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_class_constant_outside_the_slice_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    const A = 1;\n    public const B = 1, C = 2;\n    final public const D = 1;\n    public const E = 2 ** 3;\n    public const iterable F = [];\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:11 A constant without `public`, `protected` or `private` is not supported yet in PHP#.",
+            "6:5 A constant declaring several names is not supported yet in PHP#.",
+            "7:5 This modifier is not supported yet in PHP#.",
+            "8:24 This operator is not supported yet in PHP#.",
+            "9:18 This type is not supported yet in PHP#.",
+            "9:31 This expression is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn a_constant_or_static_member_named_without_its_class_is_an_error_that_names_the_class() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public const int MAX = 3;\n    private static int count = 0;\n\n    public int run()\n    {\n        count = MAX;\n        return count;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "10:9 Write `Report.count`: a static member is reached through its class name.",
+            "10:17 Write `Report.MAX`: a static member is reached through its class name.",
+            "11:16 Write `Report.count`: a static member is reached through its class name.",
         ]
     );
 }
@@ -795,7 +896,7 @@ fn properties_outside_the_slice_are_not_supported_yet() {
         issues(code),
         [
             "5:9 A property without `public`, `protected` or `private` is not supported yet in PHP#.",
-            "6:12 This modifier is not supported yet in PHP#.",
+            "6:23 A get-only static property is not supported yet in PHP#.",
             "7:20 This accessor is not supported yet in PHP#.",
             "8:20 This accessor is not supported yet in PHP#.",
             "9:25 This accessor is not supported yet in PHP#.",
@@ -1005,6 +1106,28 @@ fn new_outside_the_slice_is_not_supported_yet() {
             "7:22 This expression is not supported yet in PHP#.",
             "8:23 This expression is not supported yet in PHP#.",
             "9:35 This spread argument is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn typeof_names_a_class_in_a_method_body() {
+    let code = leak(method("        Store.keep(typeof(Order));\n        return extra;\n"));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_member_of_typeof_is_not_supported_yet() {
+    let code = leak(method(
+        "        const name = typeof(Order).name;\n        typeof(Order).attributes();\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:22 Reading a member of `typeof(Order)` is not supported yet.",
+            "8:9 Reading a member of `typeof(Order)` is not supported yet.",
         ]
     );
 }

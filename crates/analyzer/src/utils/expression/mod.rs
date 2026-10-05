@@ -38,6 +38,7 @@ use mago_word::word;
 use crate::artifacts::AnalysisArtifacts;
 use crate::context::Context;
 use crate::context::block::BlockContext;
+use crate::resolver::static_property::StaticProperty;
 use crate::utils::misc::unwrap_expression;
 
 pub mod array;
@@ -317,16 +318,31 @@ fn get_extended_expression_id<'ast, 'arena>(
             return get_expression_id(operand, this_class_name, resolved_names, codebase);
         }
         Expression::Variable(variable) => word(get_variable_id(variable)?),
+        Expression::ConstantAccess(access)
+            if solve_identifiers && resolved_names.binding(&access.name) == Some(Binding::Class) =>
+        {
+            word(resolved_names.get(&access.name))
+        }
         Expression::ConstantAccess(access) => get_bare_name_variable_id(&access.name, resolved_names)?,
         Expression::Access(access) => match access {
-            Access::Property(property_access) => get_property_access_expression_id(
-                property_access.object,
-                &property_access.property,
-                false,
-                this_class_name,
-                resolved_names,
-                codebase,
-            )?,
+            Access::Property(property_access) => {
+                match StaticProperty::from_property_access(property_access, resolved_names) {
+                    Some(static_property) => get_static_property_access_expression_id(
+                        static_property,
+                        this_class_name,
+                        resolved_names,
+                        codebase,
+                    )?,
+                    None => get_property_access_expression_id(
+                        property_access.object,
+                        &property_access.property,
+                        false,
+                        this_class_name,
+                        resolved_names,
+                        codebase,
+                    )?,
+                }
+            }
             Access::NullSafeProperty(null_safe_property_access) => get_property_access_expression_id(
                 null_safe_property_access.object,
                 &null_safe_property_access.property,
@@ -336,8 +352,7 @@ fn get_extended_expression_id<'ast, 'arena>(
                 codebase,
             )?,
             Access::StaticProperty(static_property_access) => get_static_property_access_expression_id(
-                static_property_access.class,
-                &static_property_access.property,
+                StaticProperty::from_static_property_access(static_property_access),
                 this_class_name,
                 resolved_names,
                 codebase,
@@ -430,16 +445,15 @@ pub fn get_property_access_expression_id<'ast, 'arena>(
 }
 
 pub fn get_static_property_access_expression_id<'ast, 'arena>(
-    class_expr: &'ast Expression<'arena>,
-    property: &'ast Variable<'arena>,
+    access: StaticProperty<'ast, 'arena>,
     this_class_name: Option<Word>,
     resolved_names: &'ast ResolvedNames<'arena>,
     codebase: Option<&CodebaseMetadata>,
 ) -> Option<Word> {
-    let class = get_extended_expression_id(class_expr, this_class_name, resolved_names, codebase, true)?;
-    let property = get_variable_id(property)?;
+    let class = get_extended_expression_id(access.class, this_class_name, resolved_names, codebase, true)?;
+    let property = access.name.direct_name()?;
 
-    Some(concat_word!(class.as_bytes(), b"::", property))
+    Some(concat_word!(class.as_bytes(), b"::", property.as_bytes()))
 }
 
 #[inline]
