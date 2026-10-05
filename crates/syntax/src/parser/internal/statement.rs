@@ -51,7 +51,7 @@ where
                 Statement::LocalDeclaration(self.parse_local_declaration()?)
             }
             T!["return"] => Statement::Return(self.parse_return()?),
-            T!["#["] => {
+            T!["#["] | T!["["] if token.kind == T!["#["] || self.is_at_sharp_attribute_list() => {
                 let attributes = self.parse_attribute_list_sequence()?;
                 let next = self.stream.lookahead(0)?.ok_or_else(|| self.stream.unexpected(None, &[]))?;
                 let maybe_after = self.stream.peek_kind(1)?;

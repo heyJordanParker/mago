@@ -16,6 +16,7 @@ use mago_syntax::cst::Access;
 use mago_syntax::cst::Argument;
 use mago_syntax::cst::ArgumentList;
 use mago_syntax::cst::AssignmentOperator;
+use mago_syntax::cst::AttributeList;
 use mago_syntax::cst::BinaryOperator;
 use mago_syntax::cst::Block;
 use mago_syntax::cst::Call;
@@ -44,7 +45,10 @@ use mago_syntax::cst::MethodBody;
 use mago_syntax::cst::MethodCall;
 use mago_syntax::cst::Modifier;
 use mago_syntax::cst::ModifierSequenceExt;
+use mago_syntax::cst::NamedArgument;
 use mago_syntax::cst::NamespaceBody;
+use mago_syntax::cst::PartialArgument;
+use mago_syntax::cst::PartialArgumentList;
 use mago_syntax::cst::PositionalArgument;
 use mago_syntax::cst::Program;
 use mago_syntax::cst::Property;
@@ -71,6 +75,9 @@ use crate::sharp_kind::SHARP_AST_ARG_LIST;
 use crate::sharp_kind::SHARP_AST_ASSIGN;
 use crate::sharp_kind::SHARP_AST_ASSIGN_COALESCE;
 use crate::sharp_kind::SHARP_AST_ASSIGN_OP;
+use crate::sharp_kind::SHARP_AST_ATTRIBUTE;
+use crate::sharp_kind::SHARP_AST_ATTRIBUTE_GROUP;
+use crate::sharp_kind::SHARP_AST_ATTRIBUTE_LIST;
 use crate::sharp_kind::SHARP_AST_BINARY_OP;
 use crate::sharp_kind::SHARP_AST_BREAK;
 use crate::sharp_kind::SHARP_AST_CALL;
@@ -326,6 +333,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         }
 
         let members = self.node(SHARP_AST_STMT_LIST, 0, self.line(class.left_brace), &members);
+        let attributes = self.attributes(&class.attribute_lists);
 
         self.declaration(
             SHARP_AST_CLASS,
@@ -333,7 +341,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             class.class.span,
             class.right_brace,
             class.name.value,
-            &[NULL, NULL, members, NULL, NULL],
+            &[NULL, NULL, members, attributes, NULL],
         )
     }
 
@@ -364,6 +372,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             Some(return_type_hint) => (return_type_hint.span(), self.hint(&return_type_hint.hint)),
             None => (method.name.span, NULL),
         };
+        let attributes = self.attributes(&method.attribute_lists);
 
         self.declaration(
             SHARP_AST_METHOD,
@@ -371,7 +380,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             start,
             method.body.span(),
             php_method_name(method),
-            &[parameters, NULL, body, return_type, NULL],
+            &[parameters, NULL, body, return_type, attributes],
         )
     }
 
@@ -385,17 +394,20 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let accessor_flags =
             parameter.hooks.as_ref().map_or(0, |accessors| accessor_flags(&parameter.modifiers, accessors));
         let flags = modifier_flags(&parameter.modifiers) | accessor_flags;
+        let attributes = self.attributes(&parameter.attribute_lists);
 
-        self.node(SHARP_AST_PARAM, flags, self.line(parameter), &[hint, name, default, NULL, NULL, NULL])
+        self.node(SHARP_AST_PARAM, flags, self.line(parameter), &[hint, name, default, attributes, NULL, NULL])
     }
 
     /// A field or an auto-property is a property group of one property, as php-src's grammar builds
     /// `private int $count = 0;`, `public private(set) int $views = 0;` and `public readonly int $id;`. A constant
     /// initial value is its default, unless the property is `readonly`.
     fn property(&mut self, property: &Property) -> u32 {
-        let accessor_flags = match property {
-            Property::Plain(_) => 0,
-            Property::Hooked(auto_property) => accessor_flags(&auto_property.modifiers, &auto_property.hook_list),
+        let (accessor_flags, attribute_lists) = match property {
+            Property::Plain(field) => (0, &field.attribute_lists),
+            Property::Hooked(auto_property) => {
+                (accessor_flags(&auto_property.modifiers, &auto_property.hook_list), &auto_property.attribute_lists)
+            }
         };
         let Some(hint) = property.hint() else {
             unreachable!("the PHP# parser gives every field and property its type");
@@ -411,8 +423,33 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let element = self.node(SHARP_AST_PROP_ELEM, 0, line, &[name, default, NULL, NULL]);
         let declaration = self.node(SHARP_AST_PROP_DECL, 0, line, &[element]);
         let flags = modifier_flags(property.modifiers()) | accessor_flags;
+        let attributes = self.attributes(attribute_lists);
 
-        self.node(SHARP_AST_PROP_GROUP, flags, self.line(property), &[hint, declaration, NULL])
+        self.node(SHARP_AST_PROP_GROUP, flags, self.line(property), &[hint, declaration, attributes])
+    }
+
+    /// A declaration's attributes are one `ATTRIBUTE_LIST` with an `ATTRIBUTE_GROUP` per `[...]`, as php-src's grammar
+    /// builds `#[...]`, or null without attributes. Each attribute names its class by its full name.
+    fn attributes(&mut self, lists: &Sequence<AttributeList>) -> u32 {
+        let Some(first) = lists.first() else {
+            return NULL;
+        };
+
+        let mut groups = Vec::new();
+        for list in lists {
+            let mut attributes = Vec::new();
+            for attribute in &list.attributes {
+                let line = self.line(attribute.name);
+                let name = self.string(ZEND_NAME_FQ, line, self.names.get(&attribute.name));
+                let arguments = attribute.argument_list.as_ref().map_or(NULL, |list| self.attribute_arguments(list));
+
+                attributes.push(self.node(SHARP_AST_ATTRIBUTE, 0, line, &[name, arguments]));
+            }
+
+            groups.push(self.node(SHARP_AST_ATTRIBUTE_GROUP, 0, self.line(list), &attributes));
+        }
+
+        self.node(SHARP_AST_ATTRIBUTE_LIST, 0, self.line(first), &groups)
     }
 
     /// `$this->name = value;` on the line of the member's name.
@@ -787,22 +824,43 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     fn arguments(&mut self, list: &ArgumentList) -> u32 {
         let mut arguments = Vec::new();
         for argument in &list.arguments {
-            let argument = match argument {
-                Argument::Positional(PositionalArgument { ellipsis: None, value }) => self.expression(value),
-                Argument::Named(named) => {
-                    let line = self.line(named.name.span);
-                    let name = self.string(0, line, named.name.value);
-                    let value = self.expression(named.value);
-
-                    self.node(SHARP_AST_NAMED_ARG, 0, line, &[name, value])
-                }
-                Argument::Positional(_) => unreachable!("check_slice refuses a spread argument"),
-            };
-
-            arguments.push(argument);
+            arguments.push(match argument {
+                Argument::Positional(positional) => self.positional_argument(positional),
+                Argument::Named(named) => self.named_argument(named),
+            });
         }
 
         self.node(SHARP_AST_ARG_LIST, 0, self.line(list), &arguments)
+    }
+
+    /// An attribute's arguments, which the parser reads as a partial argument list without placeholders.
+    fn attribute_arguments(&mut self, list: &PartialArgumentList) -> u32 {
+        let mut arguments = Vec::new();
+        for argument in &list.arguments {
+            arguments.push(match argument {
+                PartialArgument::Positional(positional) => self.positional_argument(positional),
+                PartialArgument::Named(named) => self.named_argument(named),
+                _ => unreachable!("check_slice refuses a placeholder argument"),
+            });
+        }
+
+        self.node(SHARP_AST_ARG_LIST, 0, self.line(list), &arguments)
+    }
+
+    fn positional_argument(&mut self, argument: &PositionalArgument) -> u32 {
+        if argument.ellipsis.is_some() {
+            unreachable!("check_slice refuses a spread argument");
+        }
+
+        self.expression(argument.value)
+    }
+
+    fn named_argument(&mut self, argument: &NamedArgument) -> u32 {
+        let line = self.line(argument.name.span);
+        let name = self.string(0, line, argument.name.value);
+        let value = self.expression(argument.value);
+
+        self.node(SHARP_AST_NAMED_ARG, 0, line, &[name, value])
     }
 
     /// An integer literal too large for `int` is a float, as PHP reads it.

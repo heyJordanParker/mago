@@ -42,6 +42,7 @@ use mago_syntax::cst::ModifierSequenceExt;
 use mago_syntax::cst::Namespace;
 use mago_syntax::cst::NamespaceBody;
 use mago_syntax::cst::Node;
+use mago_syntax::cst::PartialArgument;
 use mago_syntax::cst::Program;
 use mago_syntax::cst::Property;
 use mago_syntax::cst::PropertyHookBody;
@@ -77,7 +78,11 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///
 /// - At file level: `namespace`, `import` and `class`. A file has at most one namespace, named and written without
 ///   braces.
-/// - A class: a name, fields and methods, with no attributes, modifiers, `extends` or `implements`.
+/// - A class: attributes, a name, fields and methods, with no modifiers, `extends` or `implements`.
+/// - Attributes: on a class, a method, a field, a property and a parameter, written `[Name]` or `[Name(arguments)]`,
+///   several in one list, as in `[Field("Name"), Searchable]`, or in several lists. An argument is positional or
+///   named, and is a constant expression as a parameter default is. An attribute target, as in `[return: NotNull]`,
+///   is a parse error.
 /// - A field: `private` or `protected`, a type, one name and an optional initial value. A `public` field is an error,
 ///   because spec section 6 has no public fields.
 /// - An initial value: any expression a method body has, without `this`, which is an error. A constant initial value,
@@ -95,7 +100,7 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   member: a field when `private` or `protected` without accessors, and a property with accessors, which follow the
 ///   auto-property rules. A `public` parameter without accessors is an error, as spec section 9 says.
 /// - A parameter: always a type, a name and an optional default, and neither variadic nor by reference. A default is
-///   a literal, a constant, or the operators below on them, without `++` and `--`.
+///   a constant expression: a literal, a constant, or the operators below on them, without `++` and `--`.
 /// - Types: `int`, `float`, `bool`, `string` and a class written by its short name, and `void` as a return type.
 ///   PHP's own check reports a `void` parameter. Each of them is nullable when written with `?` after it, as in
 ///   `int?`, and PHP's own check reports `void?`.
@@ -147,8 +152,10 @@ enum Place {
     Parameter,
     /// A method body.
     Body,
-    /// A parameter default.
-    Default,
+    /// An attribute list: its attributes' names and arguments.
+    Attribute,
+    /// A constant expression: a parameter default or an attribute argument.
+    Constant,
 }
 
 /// How code uses a member access, which decides how the slice reports it.
@@ -177,9 +184,10 @@ fn enter(
     checked: &mut HashSet<Span>,
     context: &mut Context<'_, '_, '_>,
 ) -> Option<Place> {
+    use Place::Attribute;
     use Place::Body;
     use Place::Class;
-    use Place::Default;
+    use Place::Constant;
     use Place::FieldOrProperty;
     use Place::File;
     use Place::Method;
@@ -240,6 +248,15 @@ fn enter(
             File,
         ) => Some(File),
         (Node::Class(_), File) => Some(Class),
+        (Node::AttributeList(_), Class | Method | FieldOrProperty | Parameter) => Some(Attribute),
+        (
+            Node::Attribute(_)
+            | Node::PartialArgumentList(_)
+            | Node::PartialArgument(PartialArgument::Positional(_) | PartialArgument::Named(_)),
+            Attribute,
+        ) => Some(Attribute),
+        (Node::PositionalArgument(argument), Attribute) if argument.ellipsis.is_none() => Some(Constant),
+        (Node::NamedArgument(_), Attribute) => Some(Constant),
 
         (Node::ClassLikeMember(ClassLikeMember::Method(_)), Class) => Some(Class),
         (Node::ClassLikeMember(ClassLikeMember::Property(property)), Class) => match is_slice_property(property) {
@@ -355,7 +372,7 @@ fn enter(
             Parameter,
         ) => Some(Parameter),
         (Node::PropertyHookList(_), Parameter) => None,
-        (Node::FunctionLikeParameterDefaultValue(_), Parameter) => Some(Default),
+        (Node::FunctionLikeParameterDefaultValue(_), Parameter) => Some(Constant),
         (Node::Block(_), Method | Body) => Some(Body),
         // `check_try` reports a catch type that is not a class, and `check_try_catch_clause` the variable's name.
         (Node::TryCatchClause(clause), Body) => {
@@ -412,7 +429,7 @@ fn enter(
         ) => Some(Body),
 
         // PHP refuses the file at compile time, so the engine would too.
-        (Node::LiteralString(string), Body | Default) if string.value.is_none() => {
+        (Node::LiteralString(string), Body | Constant) if string.value.is_none() => {
             context.report(
                 Issue::error("Invalid UTF-8 codepoint escape sequence.")
                     .with_annotation(Annotation::primary(string.span).with_message("Escape written here."))
@@ -436,14 +453,16 @@ fn enter(
             | Node::Parenthesized(_)
             | Node::Binary(_)
             | Node::UnaryPrefix(_),
-            Body | Default,
+            Body | Constant,
         ) => Some(place),
         (Node::ConstantAccess(_), Body) => Some(Body),
-        (Node::ConstantAccess(constant), Default) if context.names.binding(&constant.name) == Some(Binding::Constant) => {
-            Some(Default)
+        (Node::ConstantAccess(constant), Constant)
+            if context.names.binding(&constant.name) == Some(Binding::Constant) =>
+        {
+            Some(Constant)
         }
-        (Node::BinaryOperator(operator), Body | Default) if is_slice_binary_operator(operator) => Some(place),
-        (Node::UnaryPrefixOperator(operator), Body | Default) if is_slice_prefix_operator(operator, place) => {
+        (Node::BinaryOperator(operator), Body | Constant) if is_slice_binary_operator(operator) => Some(place),
+        (Node::UnaryPrefixOperator(operator), Body | Constant) if is_slice_prefix_operator(operator, place) => {
             Some(place)
         }
 
@@ -510,7 +529,7 @@ fn enter(
         }
 
         // PHP# never has `$` variables. A `$` variable inside a construct the walk refuses adds no second error.
-        (Node::Expression(Expression::Variable(variable)), Body | Default) => {
+        (Node::Expression(Expression::Variable(variable)), Body | Constant) => {
             check_variable(variable, context);
 
             None
@@ -896,9 +915,6 @@ fn report_unsupported(node: Node<'_, '_>, place: Place, context: &mut Context<'_
         Node::BinaryOperator(_) | Node::UnaryPrefixOperator(_) | Node::AssignmentOperator(_) => "operator",
         Node::Hint(_) | Node::NullableHint(_) => "type",
         Node::Modifier(_) => "modifier",
-        Node::AttributeList(_) => {
-            return report_not_supported(node.span(), "attribute", "PHP# writes attributes as `[...]`.", context);
-        }
         Node::IfStatementBodyElseIfClause(_) => {
             return report_not_supported(node.span(), "`elseif`", "PHP# writes `else if`.", context);
         }
@@ -918,7 +934,7 @@ const fn supported(place: Place) -> &'static str {
     match place {
         Place::File => "At file level, PHP# supports `namespace`, `import` and `class`.",
         Place::Class => {
-            "A PHP# class has a name, fields and methods, with no attributes, modifiers, `extends` or `implements`."
+            "A PHP# class has attributes, a name, fields and methods, with no modifiers, `extends` or `implements`."
         }
         Place::FieldOrProperty => {
             "A PHP# field is `private` or `protected`, and a property has the accessors `get;` and an optional `set;`. Both have a type of `int`, `float`, `bool`, `string` or a class, a name, and an optional initial value."
@@ -932,8 +948,11 @@ const fn supported(place: Place) -> &'static str {
         Place::Body => {
             "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, `break` and `continue` without a level, and `try` with `catch` and `finally`, with literals, templates, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, `++` and `--`, method calls and property reads written with `.` or `?.`, `new Class(...)`, calls of PHP's built-in functions and `throw`."
         }
-        Place::Default => {
-            "A parameter default is a literal, a constant, or arithmetic, comparison, logical and `??` operators on them."
+        Place::Attribute => {
+            "A PHP# attribute is a class name with optional positional and named arguments, as in `[Field(\"Name\", searchable: true)]`."
+        }
+        Place::Constant => {
+            "A parameter default or an attribute argument is a literal, a constant, or arithmetic, comparison, logical and `??` operators on them."
         }
     }
 }

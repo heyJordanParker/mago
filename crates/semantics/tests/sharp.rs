@@ -644,15 +644,23 @@ fn implements_is_not_supported_yet() {
 }
 
 #[test]
-fn attributes_are_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\n#[Marker]\nclass Report\n{\n    #[Marker]\n    public int run(#[Marker] int extra)\n    {\n        return extra;\n    }\n}\n";
+fn attributes_on_a_class_its_members_and_their_parameters_are_in_the_slice() {
+    let code = "namespace App.Tenant;\n\n[Entity(label: \"Order Items\"), Searchable]\n[Table(\"orders\")]\nclass Report\n{\n    [Field] private int count = 0;\n    [Field(label: \"Name\", width: 2 * 3, limit: PHP_INT_MAX)] public string name { get; set; }\n\n    public Report([Field(label: null)] public string tenant { get; }, [Field] private int page = 1)\n    {\n    }\n\n    [Action(true, -1.5)]\n    [Retry(3)]\n    public int run([Field(\"extra\")] int extra)\n    {\n        return extra;\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn attribute_arguments_outside_the_slice_are_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    [Field(typeof(Report))]\n    [Field(Mode.Write)]\n    [Field([\"a\"])]\n    [Field(label: new Report())]\n    public int run(int extra)\n    {\n        return extra;\n    }\n}\n";
 
     assert_eq!(
         issues(code),
         [
-            "3:1 This attribute is not supported yet in PHP#.",
-            "6:5 This attribute is not supported yet in PHP#.",
-            "7:20 This attribute is not supported yet in PHP#.",
+            "5:12 This expression is not supported yet in PHP#.",
+            "6:12 This expression is not supported yet in PHP#.",
+            "7:12 This expression is not supported yet in PHP#.",
+            "8:19 This expression is not supported yet in PHP#.",
         ]
     );
 }
