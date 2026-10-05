@@ -65,7 +65,13 @@ class Report
         const plain = "${text} {$text} $text";
         const line = `${text}: ${strlen(text) + 1} \u{41}\`
 `;
-        return `${sprintf("%s: %d", text, strlen(text))}${plain}${line}`;
+        const constant = `v${1}${""}${`x`}`;
+        return `${sprintf("%s: %d", text, strlen(text))}${plain}${line}${constant}`;
+    }
+
+    private string constantTemplate()
+    {
+        return `v${1}`;
     }
 
     private bool flag(bool on = true)
