@@ -1,8 +1,8 @@
 //! An identifier for the build that produced this binary.
 //!
-//! [`BUILD_ID`] is a hash of every workspace Rust source, every `Cargo.toml`, `Cargo.lock`, and the
-//! rustc version, profile, target, and enabled features. Two binaries built from the same inputs
-//! carry the same ID, and any change to one of them changes it.
+//! [`BUILD_ID`] is a hash of every workspace Rust source, every `Cargo.toml`, `Cargo.lock`, the root
+//! `build.rs`, the prelude stubs it embeds, and the rustc version, profile, and target. Two binaries
+//! built from the same inputs carry the same ID, and any change to one of them changes it.
 
 /// The identifier of the build that produced this binary.
 #[allow(clippy::unreadable_literal)]
@@ -28,8 +28,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         write(root.path(), "Cargo.toml", "[workspace]\n");
         write(root.path(), "Cargo.lock", "version = 4\n");
+        write(root.path(), "build.rs", "fn main() {}\n");
         write(root.path(), "crates/a/Cargo.toml", "[package]\n");
         write(root.path(), "crates/a/src/lib.rs", "pub fn a() {}\n");
+        write(root.path(), "crates/prelude/assets/core.php", "<?php function strlen(string $s): int {}\n");
         write(root.path(), "src/main.rs", "fn main() {}\n");
         root
     }
@@ -52,6 +54,8 @@ mod tests {
             ("crates/a/Cargo.toml", "[package]\nname = \"a\"\n"),
             ("Cargo.lock", "version = 3\n"),
             ("Cargo.toml", "[workspace]\nmembers = []\n"),
+            ("build.rs", "fn main() { }\n"),
+            ("crates/prelude/assets/core.php", "<?php function strlen(string $string): int {}\n"),
         ] {
             let root = workspace();
             write(root.path(), name, contents);
@@ -67,7 +71,18 @@ mod tests {
         write(root.path(), "crates/a/README.md", "notes\n");
         write(root.path(), "crates/a/target/debug/build.rs", "fn main() {}\n");
         write(root.path(), "docs/guide.rs", "fn guide() {}\n");
+        write(root.path(), "crates/a/tests/cases/fixture.php", "<?php\n");
 
         assert_eq!(base, digest::digest(root.path(), "rustc 1.97.0"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[should_panic(expected = "broken.rs")]
+    fn the_digest_names_a_source_it_cannot_read() {
+        let root = workspace();
+        std::os::unix::fs::symlink(root.path().join("missing.rs"), root.path().join("crates/a/src/broken.rs")).unwrap();
+
+        let _ = digest::digest(root.path(), "rustc 1.97.0");
     }
 }
