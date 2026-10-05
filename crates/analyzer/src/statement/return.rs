@@ -35,6 +35,7 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::context::scope::control_action::ControlAction;
 use crate::error::AnalysisError;
+use crate::expression::is_refused;
 use crate::utils::docblock::check_docblock_type_incompatibility;
 use crate::utils::docblock::get_type_from_var_docblock;
 use crate::utils::expression::get_direct_variable_id;
@@ -60,10 +61,10 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Return<'arena> {
 
             let inferred_return_type = artifacts.get_rc_expression_type(&return_value).cloned();
 
-            // A value that failed to parse is `never`, and its parse error already reports it.
+            // A refused value is `never`, and its error already reports it.
             if let Some(inferred_return_type) = &inferred_return_type
                 && inferred_return_type.is_never()
-                && !matches!(return_value, Expression::Error(_))
+                && !is_refused(return_value)
             {
                 context.collector.report_with_code(
                     IssueCode::NeverReturn,

@@ -122,6 +122,8 @@ pub struct AnonymousClass<'arena> {
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Trait<'arena> {
     pub attribute_lists: Sequence<'arena, AttributeList<'arena>>,
+    /// PHP#'s `public`, as in `public trait Foo {}`. Always empty in PHP.
+    pub modifiers: Sequence<'arena, Modifier<'arena>>,
     pub r#trait: Keyword<'arena>,
     pub name: LocalIdentifier<'arena>,
     pub left_brace: Span,
@@ -147,6 +149,8 @@ pub struct Trait<'arena> {
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Enum<'arena> {
     pub attribute_lists: Sequence<'arena, AttributeList<'arena>>,
+    /// PHP#'s `public`, as in `public enum Foo {}`. Always empty in PHP.
+    pub modifiers: Sequence<'arena, Modifier<'arena>>,
     pub r#enum: Keyword<'arena>,
     pub name: LocalIdentifier<'arena>,
     pub backing_type_hint: Option<EnumBackingTypeHint<'arena>>,
@@ -222,6 +226,10 @@ impl HasSpan for Trait<'_> {
             return attribute_list.span().join(self.right_brace);
         }
 
+        if let Some(modifier) = self.modifiers.first() {
+            return modifier.span().join(self.right_brace);
+        }
+
         self.r#trait.span().join(self.right_brace)
     }
 }
@@ -230,6 +238,10 @@ impl HasSpan for Enum<'_> {
     fn span(&self) -> Span {
         if let Some(attribute_list) = self.attribute_lists.first() {
             return attribute_list.span().join(self.right_brace);
+        }
+
+        if let Some(modifier) = self.modifiers.first() {
+            return modifier.span().join(self.right_brace);
         }
 
         self.r#enum.span().join(self.right_brace)

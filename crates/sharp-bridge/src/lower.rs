@@ -171,8 +171,9 @@ const ZEND_IS_EQUAL: u32 = 18;
 const ZEND_IS_NOT_EQUAL: u32 = 19;
 const ZEND_IS_SMALLER: u32 = 20;
 const ZEND_IS_SMALLER_OR_EQUAL: u32 = 21;
-/// php-sharp's own attr from `zend_compile.h`: a class constant fetch that falls back to the static property.
-const ZEND_FETCH_CLASS_MEMBER: u32 = 1 << 0;
+/// php-sharp's own attr from `zend_compile.h`: a class constant fetch that falls back to the static property. It sits
+/// above the fetch flags a constant expression passes in the same attr.
+const ZEND_FETCH_CLASS_MEMBER_SYNTAX: u32 = 1 << 15;
 /// php-sharp's own class flag from `zend_compile.h`: the class's parent, if any, is in its interface list.
 const ZEND_ACC_PARENT_IN_INTERFACES: u32 = 1 << 31;
 
@@ -823,7 +824,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 Some(class) => {
                     let class = self.string(ZEND_NAME_FQ, self.line(class), self.names.get(&class.name));
                     let member = self.member(&access.property);
-                    let attr = if self.in_constant_expression { 0 } else { ZEND_FETCH_CLASS_MEMBER };
+                    let attr = if self.in_constant_expression { 0 } else { ZEND_FETCH_CLASS_MEMBER_SYNTAX };
 
                     self.node(SHARP_AST_CLASS_CONST, attr, line, &[class, member])
                 }

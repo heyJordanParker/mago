@@ -757,6 +757,10 @@ generate_ast_walker! {
             walker.walk_attribute_list(attribute_list, context);
         }
 
+        for modifier in &r#trait.modifiers {
+            walker.walk_modifier(modifier, context);
+        }
+
         walker.walk_keyword(&r#trait.r#trait, context);
         walker.walk_local_identifier(&r#trait.name, context);
 
@@ -768,6 +772,10 @@ generate_ast_walker! {
     'arena Enum as r#enum => {
         for attribute_list in &r#enum.attribute_lists {
             walker.walk_attribute_list(attribute_list, context);
+        }
+
+        for modifier in &r#enum.modifiers {
+            walker.walk_modifier(modifier, context);
         }
 
         walker.walk_keyword(&r#enum.r#enum, context);

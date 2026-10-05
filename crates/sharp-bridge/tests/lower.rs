@@ -1412,7 +1412,8 @@ fn a_class_member_read_in_a_constant_expression_is_an_unmarked_class_constant() 
 /// ```
 ///
 /// A class member read is a class constant fetch that the engine falls back from to the static property of the same
-/// name, as spec section 4 decides. `[1]` is php-sharp's `ZEND_FETCH_CLASS_MEMBER`, which marks the fallback.
+/// name, as spec section 4 decides. `[32768]` is php-sharp's `ZEND_FETCH_CLASS_MEMBER_SYNTAX`, `1 << 15`, which marks
+/// the fallback above the fetch flags a constant expression passes in the same attr.
 #[test]
 fn a_class_member_read_is_a_class_constant_marked_to_fall_back_to_the_static_property() {
     assert_eq!(
@@ -1421,7 +1422,7 @@ fn a_class_member_read_is_a_class_constant_marked_to_fall_back_to_the_static_pro
             STMT_LIST
               RETURN
                 PROP
-                  CLASS_CONST [1]
+                  CLASS_CONST [32768]
                     ZVAL "Lib\\Calc"
                     ZVAL "rate"
                   ZVAL "cents"

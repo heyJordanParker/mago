@@ -67,6 +67,32 @@ fn every_construct_outside_the_slice_is_not_supported_yet() {
     );
 }
 
+/// The bridge writes every class type by its full name, so the engine never sees a `self` or `parent` type in a class
+/// whose parent its header names.
+#[test]
+fn self_and_parent_types_are_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Entity;\n\nclass Report : Entity\n{\n    public parent copy(self other)\n    {\n        return other;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["7:12 This type is not supported yet in PHP#.", "7:24 This type is not supported yet in PHP#."]
+    );
+}
+
+#[test]
+fn a_public_enum_or_trait_is_not_supported_yet_where_it_starts() {
+    let code = "namespace App.Tenant;\n\npublic enum Suit\n{\n}\n\npublic trait Tagged\n{\n}\n\ntrait Bare\n{\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "3:1 This statement is not supported yet in PHP#.",
+            "7:1 This statement is not supported yet in PHP#.",
+            "11:1 This statement is not supported yet in PHP#.",
+        ]
+    );
+}
+
 #[test]
 fn if_else_if_and_else_with_braces_are_in_the_slice() {
     let code = leak(method(

@@ -849,6 +849,33 @@ fn returning_a_value_that_failed_to_parse_adds_no_issue() {
     assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), ["7:20 parse"]);
 }
 
+/// `super` names the base class, so a class whose header names only interfaces has none, as `parent::` in a PHP
+/// class without `extends` has none.
+#[test]
+fn super_in_a_class_without_a_base_class_is_an_error_as_in_php() {
+    let sharp = "namespace Demo;\n\npublic interface Named\n{\n    string name();\n}\n\npublic class Tag : Named\n{\n    public string name()\n    {\n        return super.name();\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\ninterface Named\n{\n    public function name(): string;\n}\n\nclass Tag implements Named\n{\n    public function name(): string\n    {\n        return parent::name();\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Tag.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Tag.php", php), &[]);
+
+    assert_eq!(codes(&php_issues), ["invalid-parent-type", "mixed-return-statement"], "{php_issues:?}");
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{sharp_issues:?}");
+
+    let invalid = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Tag.sharp", sharp), &[]).remove(0);
+    assert_eq!(invalid.level, Level::Error);
+    assert_eq!(invalid.message, "Cannot use `super` as the current type (`Demo\\Tag`) does not have a parent class.");
+}
+
+/// The checker refuses a member of `typeof(X)` once, so the analyzer adds no issue on the refused read, its chain, or
+/// the value it gives.
+#[test]
+fn reading_a_member_of_typeof_adds_no_issue() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public string label()\n    {\n        return typeof(Report).name;\n    }\n\n    public string first()\n    {\n        return typeof(Report).name.first;\n    }\n\n    public string called()\n    {\n        return typeof(Report).name();\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
+}
+
 #[test]
 fn a_catch_variable_has_the_caught_classes_as_its_type_as_in_php() {
     let sharp = "namespace Demo;\n\nimport RuntimeException;\nimport LogicException;\n\nclass Report\n{\n    public static int total(int extra)\n    {\n        try {\n            if (extra < 0) {\n                throw new RuntimeException(\"negative\");\n            }\n        } catch (RuntimeException | LogicException failure) {\n            return failure.getLine();\n        } finally {\n            extra += 1;\n        }\n        return extra;\n    }\n}\n";

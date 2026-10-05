@@ -32,16 +32,30 @@ where
         self.parse_interface_with_attributes_and_modifiers(attributes, Sequence::empty())
     }
 
-    /// A class, or in PHP# an interface, whose declaration starts with modifiers, as in `public interface Foo {}`.
-    pub(crate) fn parse_class_or_interface_with_attributes(
+    /// A class, or in PHP# an interface, an enum or a trait, whose declaration starts with modifiers, as in
+    /// `public interface Foo {}`.
+    pub(crate) fn parse_modified_class_like_with_attributes(
         &mut self,
         attributes: Sequence<'arena, AttributeList<'arena>>,
     ) -> Result<Statement<'arena>, ParseError> {
         let modifiers = self.parse_modifier_sequence()?;
-        if self.dialect.is_sharp() && matches!(self.stream.peek_kind(0)?, Some(T!["interface"])) {
-            return Ok(Statement::Interface(
-                self.parse_interface_with_attributes_and_modifiers(attributes, modifiers)?,
-            ));
+        if self.dialect.is_sharp() {
+            match self.stream.peek_kind(0)? {
+                Some(T!["interface"]) => {
+                    return Ok(Statement::Interface(
+                        self.parse_interface_with_attributes_and_modifiers(attributes, modifiers)?,
+                    ));
+                }
+                Some(T!["enum"]) => {
+                    return Ok(Statement::Enum(self.parse_enum_with_attributes_and_modifiers(attributes, modifiers)?));
+                }
+                Some(T!["trait"]) => {
+                    return Ok(Statement::Trait(
+                        self.parse_trait_with_attributes_and_modifiers(attributes, modifiers)?,
+                    ));
+                }
+                _ => {}
+            }
         }
 
         Ok(Statement::Class(self.parse_class_with_attributes_and_modifiers(attributes, modifiers)?))
@@ -190,8 +204,17 @@ where
         &mut self,
         attributes: Sequence<'arena, AttributeList<'arena>>,
     ) -> Result<Trait<'arena>, ParseError> {
+        self.parse_trait_with_attributes_and_modifiers(attributes, Sequence::empty())
+    }
+
+    fn parse_trait_with_attributes_and_modifiers(
+        &mut self,
+        attributes: Sequence<'arena, AttributeList<'arena>>,
+        modifiers: Sequence<'arena, Modifier<'arena>>,
+    ) -> Result<Trait<'arena>, ParseError> {
         Ok(Trait {
             attribute_lists: attributes,
+            modifiers,
             r#trait: self.expect_keyword(T!["trait"])?,
             name: self.parse_local_identifier()?,
             left_brace: self.stream.eat_span(T!["{"])?,
@@ -229,8 +252,17 @@ where
         &mut self,
         attributes: Sequence<'arena, AttributeList<'arena>>,
     ) -> Result<Enum<'arena>, ParseError> {
+        self.parse_enum_with_attributes_and_modifiers(attributes, Sequence::empty())
+    }
+
+    fn parse_enum_with_attributes_and_modifiers(
+        &mut self,
+        attributes: Sequence<'arena, AttributeList<'arena>>,
+        modifiers: Sequence<'arena, Modifier<'arena>>,
+    ) -> Result<Enum<'arena>, ParseError> {
         Ok(Enum {
             attribute_lists: attributes,
+            modifiers,
             r#enum: self.expect_keyword(T!["enum"])?,
             name: self.parse_local_identifier()?,
             backing_type_hint: self.parse_optional_enum_backing_type_hint()?,

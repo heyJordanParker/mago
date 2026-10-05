@@ -1142,6 +1142,21 @@ fn a_class_or_an_interface_names_its_base_class_and_interfaces_after_a_colon() {
     assert_eq!(source(CODE, class), "public class Page : Entity, Linkable\n{\n}");
 }
 
+/// An enum or a trait takes `public` as a class does, so the checker refuses the whole declaration where it starts.
+#[test]
+fn an_enum_or_a_trait_starts_with_its_modifiers() {
+    const CODE: &str = "public enum Suit\n{\n}\n\npublic trait Tagged\n{\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Suit.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::Enum(r#enum), Statement::Trait(r#trait)] = program.statements.as_slice() else {
+        panic!("expected an enum and a trait, got {:#?}", program.statements);
+    };
+    assert_eq!(source(CODE, r#enum), "public enum Suit\n{\n}");
+    assert_eq!(source(CODE, r#trait), "public trait Tagged\n{\n}");
+}
+
 #[test]
 fn virtual_and_override_are_method_modifiers_and_stay_names_elsewhere() {
     const CODE: &str = "class Shape\n{\n    public virtual string name()\n    {\n        return override(virtual);\n    }\n\n    protected override int size()\n    {\n        return 1;\n    }\n}\n";

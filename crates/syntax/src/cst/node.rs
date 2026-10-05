@@ -1522,6 +1522,9 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 for item in node.attribute_lists.iter() {
                     f(Node::AttributeList(item));
                 }
+                for item in node.modifiers.iter() {
+                    f(Node::Modifier(item));
+                }
                 f(Node::Keyword(&node.r#enum));
                 f(Node::LocalIdentifier(&node.name));
                 for item in node.backing_type_hint.iter() {
@@ -1559,6 +1562,9 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Node::Trait(node) => {
                 for item in node.attribute_lists.iter() {
                     f(Node::AttributeList(item));
+                }
+                for item in node.modifiers.iter() {
+                    f(Node::Modifier(item));
                 }
                 f(Node::Keyword(&node.r#trait));
                 f(Node::LocalIdentifier(&node.name));
