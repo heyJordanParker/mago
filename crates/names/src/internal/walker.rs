@@ -82,8 +82,9 @@ pub struct NameWalker<'arena> {
 /// constant names exactly.
 #[derive(Debug, Default)]
 struct ClassMembers<'arena> {
-    methods: std::vec::Vec<&'arena [u8]>,
-    others: std::vec::Vec<&'arena [u8]>,
+    /// The method names, lowercased.
+    methods: foldhash::HashSet<Cow<'arena, [u8]>>,
+    others: foldhash::HashSet<&'arena [u8]>,
 }
 
 impl<'arena> NameWalker<'arena> {
@@ -110,9 +111,9 @@ impl<'arena> NameWalker<'arena> {
     }
 
     fn is_member(&self, name: &[u8]) -> bool {
-        self.class_members.last().is_some_and(|members| {
-            members.methods.iter().any(|method| method.eq_ignore_ascii_case(name)) || members.others.contains(&name)
-        })
+        self.class_members
+            .last()
+            .is_some_and(|members| members.others.contains(name) || members.methods.contains(&*lowercase(name)))
     }
 }
 
@@ -127,12 +128,17 @@ where
     }
 }
 
+/// `name` in ASCII lowercase, copied only when it holds an uppercase letter.
+fn lowercase(name: &[u8]) -> Cow<'_, [u8]> {
+    if name.iter().any(u8::is_ascii_uppercase) { Cow::Owned(name.to_ascii_lowercase()) } else { Cow::Borrowed(name) }
+}
+
 fn class_member_names<'arena>(members: &Sequence<'arena, ClassLikeMember<'arena>>) -> ClassMembers<'arena> {
     let mut names = ClassMembers::default();
     for member in members {
         match member {
             ClassLikeMember::Method(method) => {
-                names.methods.push(method.name.value);
+                names.methods.insert(lowercase(method.name.value));
                 names.others.extend(
                     method
                         .parameter_list
