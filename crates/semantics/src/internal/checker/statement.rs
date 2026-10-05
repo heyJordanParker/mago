@@ -102,76 +102,68 @@ pub fn check_top_level_statements<'ast, 'arena>(
             );
         }
     }
+}
 
-    let namespaces =
-        Node::Program(program).filter_map(|node| if let Node::Namespace(ns) = node { Some(*ns) } else { None });
+/// Checks the body of a namespace the walk leaves, against the namespaces it left before: each namespace after the
+/// namespaces nested in it, as they appear in the file.
+#[inline]
+pub fn check_namespace_body(namespace: &Namespace, context: &mut Context<'_, '_, '_>) {
+    let mut namespace_span = namespace.namespace.span();
+    if let Some(name) = &namespace.name {
+        namespace_span = namespace_span.join(name.span());
+    }
 
-    let mut last_unbraced = None;
-    let mut last_braced = None;
-
-    for namespace in namespaces {
-        let mut namespace_span = namespace.namespace.span();
-        if let Some(name) = &namespace.name {
-            namespace_span = namespace_span.join(name.span());
-        }
-
-        match &namespace.body {
-            NamespaceBody::Implicit(body) => {
-                if namespace.name.is_none() {
-                    context.report(
-                        Issue::error("Unbraced namespace must be named.")
-                            .with_annotation(
-                                Annotation::primary(namespace.span().join(body.terminator.span()))
-                                    .with_message("Unnamed unbraced namespace."),
-                            )
-                            .with_annotation(
-                                Annotation::secondary(body.span()).with_message("Namespace body without a name."),
-                            )
-                            .with_help("Add a name to the unbraced namespace."),
-                    );
-                }
-
-                last_unbraced = Some((namespace_span, body.span()));
-                if let Some((last_namespace_span, last_body_span)) = last_braced {
-                    context.report(
-                        Issue::error("Cannot mix unbraced namespace declarations with braced namespace declarations.")
-                            .with_annotation(
-                                Annotation::primary(namespace_span)
-                                    .with_message("This is an unbraced namespace declaration."),
-                            )
-                            .with_annotations([
-                                Annotation::primary(last_namespace_span)
-                                    .with_message("Previous braced namespace declaration."),
-                                Annotation::secondary(last_body_span).with_message("Braced namespace body."),
-                                Annotation::secondary(body.span()).with_message("Unbraced namespace body."),
-                            ])
-                            .with_help(
-                                "Use consistent namespace declaration styles: either all braced or all unbraced.",
-                            ),
-                    );
-                }
+    match &namespace.body {
+        NamespaceBody::Implicit(body) => {
+            if namespace.name.is_none() {
+                context.report(
+                    Issue::error("Unbraced namespace must be named.")
+                        .with_annotation(
+                            Annotation::primary(namespace.span().join(body.terminator.span()))
+                                .with_message("Unnamed unbraced namespace."),
+                        )
+                        .with_annotation(
+                            Annotation::secondary(body.span()).with_message("Namespace body without a name."),
+                        )
+                        .with_help("Add a name to the unbraced namespace."),
+                );
             }
-            NamespaceBody::BraceDelimited(body) => {
-                last_braced = Some((namespace_span, body.span()));
 
-                if let Some((last_namespace_span, last_body_span)) = last_unbraced {
-                    context.report(
-                        Issue::error("Cannot mix braced namespace declarations with unbraced namespace declarations.")
-                            .with_annotation(
-                                Annotation::primary(namespace_span)
-                                    .with_message("This is a braced namespace declaration."),
-                            )
-                            .with_annotations([
-                                Annotation::primary(last_namespace_span)
-                                    .with_message("Previous unbraced namespace declaration."),
-                                Annotation::secondary(last_body_span).with_message("Unbraced namespace body."),
-                                Annotation::secondary(body.span()).with_message("Braced namespace body."),
-                            ])
-                            .with_help(
-                                "Use consistent namespace declaration styles: either all braced or all unbraced.",
-                            ),
-                    );
-                }
+            context.last_unbraced_namespace = Some((namespace_span, body.span()));
+            if let Some((last_namespace_span, last_body_span)) = context.last_braced_namespace {
+                context.report(
+                    Issue::error("Cannot mix unbraced namespace declarations with braced namespace declarations.")
+                        .with_annotation(
+                            Annotation::primary(namespace_span)
+                                .with_message("This is an unbraced namespace declaration."),
+                        )
+                        .with_annotations([
+                            Annotation::primary(last_namespace_span)
+                                .with_message("Previous braced namespace declaration."),
+                            Annotation::secondary(last_body_span).with_message("Braced namespace body."),
+                            Annotation::secondary(body.span()).with_message("Unbraced namespace body."),
+                        ])
+                        .with_help("Use consistent namespace declaration styles: either all braced or all unbraced."),
+                );
+            }
+        }
+        NamespaceBody::BraceDelimited(body) => {
+            context.last_braced_namespace = Some((namespace_span, body.span()));
+
+            if let Some((last_namespace_span, last_body_span)) = context.last_unbraced_namespace {
+                context.report(
+                    Issue::error("Cannot mix braced namespace declarations with unbraced namespace declarations.")
+                        .with_annotation(
+                            Annotation::primary(namespace_span).with_message("This is a braced namespace declaration."),
+                        )
+                        .with_annotations([
+                            Annotation::primary(last_namespace_span)
+                                .with_message("Previous unbraced namespace declaration."),
+                            Annotation::secondary(last_body_span).with_message("Unbraced namespace body."),
+                            Annotation::secondary(body.span()).with_message("Braced namespace body."),
+                        ])
+                        .with_help("Use consistent namespace declaration styles: either all braced or all unbraced."),
+                );
             }
         }
     }
@@ -204,7 +196,7 @@ pub fn check_declare(declare: &Declare, context: &mut Context<'_, '_, '_>) {
 
                 if context.ancestors.len() > 2 {
                     // get the span of the parent, and label it.
-                    let parent = context.ancestors[context.ancestors.len() - 2];
+                    let parent = context.ancestors[context.ancestors.len() - 2].span();
 
                     context.report(
                         Issue::error("The `strict_types` directive must be declared at the top level.")
@@ -277,7 +269,7 @@ pub fn check_declare(declare: &Declare, context: &mut Context<'_, '_, '_>) {
 pub fn check_namespace(namespace: &Namespace, context: &mut Context<'_, '_, '_>) {
     if context.ancestors.len() > 2 {
         // get the span of the parent, and label it.
-        let parent = context.ancestors[context.ancestors.len() - 2];
+        let parent = context.ancestors[context.ancestors.len() - 2].span();
 
         context.report(
             Issue::error("Namespace declaration must be at the top level.")
@@ -296,8 +288,10 @@ pub fn check_namespace(namespace: &Namespace, context: &mut Context<'_, '_, '_>)
 
 #[inline]
 pub fn check_goto<'ast, 'arena>(goto: &'ast Goto<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
-    let all_labels = Node::Program(context.program)
-        .filter_map(|node| if let Node::Label(label) = node { Some(*label) } else { None });
+    let program = context.program;
+    let all_labels = context.labels.get_or_insert_with(|| {
+        Node::Program(program).filter_map(|node| if let Node::Label(label) = node { Some(*label) } else { None })
+    });
 
     if all_labels.iter().any(|l| l.name.value == goto.label.value) {
         return;
@@ -309,7 +303,7 @@ pub fn check_goto<'ast, 'arena>(goto: &'ast Goto<'arena>, context: &mut Context<
     let going_to = goto.label.value;
     let mut suggestions = vec![];
 
-    for label in all_labels {
+    for label in all_labels.iter() {
         let label_name = label.name.value;
         if label.name.value.eq_ignore_ascii_case(going_to) {
             suggestions.push((label_name, label.name.span));

@@ -13,6 +13,7 @@ use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::*;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_word::Word;
 use mago_word::WordMap;
 
@@ -162,228 +163,230 @@ fn get_base_formula<A>(
 where
     A: Arena,
 {
-    let expression = unwrap_expression(conditional);
+    ensure_sufficient_stack(|| {
+        let expression = unwrap_expression(conditional);
 
-    if let Expression::Binary(binary) = expression {
-        if matches!(binary.operator, BinaryOperator::And(_) | BinaryOperator::LowAnd(_)) {
-            return handle_binary_and_operation(
-                conditional_object_id,
-                binary.lhs,
-                binary.rhs,
-                assertion_context,
-                artifacts,
-                algebra_thresholds,
-                formula_size_threshold,
-            );
-        }
-
-        if matches!(binary.operator, BinaryOperator::Or(_) | BinaryOperator::LowOr(_)) {
-            return handle_binary_or_operation(
-                conditional_object_id,
-                binary.lhs,
-                binary.rhs,
-                assertion_context,
-                artifacts,
-                algebra_thresholds,
-                formula_size_threshold,
-            );
-        }
-
-        if let BinaryOperator::Identical(_) | BinaryOperator::NotIdentical(_) = binary.operator {
-            let check_boolean = |expr: &Expression| -> (bool, bool) {
-                if expr.is_true() {
-                    return (true, false);
-                }
-
-                if expr.is_false() {
-                    return (false, true);
-                }
-
-                artifacts.get_expression_type(expr).map_or((false, false), |t| {
-                    if t.is_true() {
-                        (true, false)
-                    } else if t.is_false() {
-                        (false, true)
-                    } else {
-                        (false, false)
-                    }
-                })
-            };
-
-            let is_identical = matches!(binary.operator, BinaryOperator::Identical(_));
-            let (left_is_true, left_is_false) = check_boolean(binary.lhs);
-            let (right_is_true, right_is_false) = check_boolean(binary.rhs);
-
-            let boolean_comparison = match (left_is_true || left_is_false, right_is_true || right_is_false) {
-                (true, _) => Some((binary.rhs, left_is_true)),
-                (_, true) => Some((binary.lhs, right_is_true)),
-                _ => None,
-            };
-
-            if let Some((other_side, literal_is_true)) = boolean_comparison {
-                let mut formula = get_boolean_literal_comparison_formula(
+        if let Expression::Binary(binary) = expression {
+            if matches!(binary.operator, BinaryOperator::And(_) | BinaryOperator::LowAnd(_)) {
+                return handle_binary_and_operation(
                     conditional_object_id,
-                    creating_object_id,
-                    other_side,
-                    literal_is_true,
-                    is_identical,
+                    binary.lhs,
+                    binary.rhs,
                     assertion_context,
                     artifacts,
                     algebra_thresholds,
                     formula_size_threshold,
-                )?;
+                );
+            }
 
-                add_nullsafe_condition_clauses(
-                    expression,
-                    &mut formula,
+            if matches!(binary.operator, BinaryOperator::Or(_) | BinaryOperator::LowOr(_)) {
+                return handle_binary_or_operation(
                     conditional_object_id,
-                    creating_object_id,
+                    binary.lhs,
+                    binary.rhs,
                     assertion_context,
                     artifacts,
+                    algebra_thresholds,
+                    formula_size_threshold,
                 );
+            }
 
-                return Some(formula);
+            if let BinaryOperator::Identical(_) | BinaryOperator::NotIdentical(_) = binary.operator {
+                let check_boolean = |expr: &Expression| -> (bool, bool) {
+                    if expr.is_true() {
+                        return (true, false);
+                    }
+
+                    if expr.is_false() {
+                        return (false, true);
+                    }
+
+                    artifacts.get_expression_type(expr).map_or((false, false), |t| {
+                        if t.is_true() {
+                            (true, false)
+                        } else if t.is_false() {
+                            (false, true)
+                        } else {
+                            (false, false)
+                        }
+                    })
+                };
+
+                let is_identical = matches!(binary.operator, BinaryOperator::Identical(_));
+                let (left_is_true, left_is_false) = check_boolean(binary.lhs);
+                let (right_is_true, right_is_false) = check_boolean(binary.rhs);
+
+                let boolean_comparison = match (left_is_true || left_is_false, right_is_true || right_is_false) {
+                    (true, _) => Some((binary.rhs, left_is_true)),
+                    (_, true) => Some((binary.lhs, right_is_true)),
+                    _ => None,
+                };
+
+                if let Some((other_side, literal_is_true)) = boolean_comparison {
+                    let mut formula = get_boolean_literal_comparison_formula(
+                        conditional_object_id,
+                        creating_object_id,
+                        other_side,
+                        literal_is_true,
+                        is_identical,
+                        assertion_context,
+                        artifacts,
+                        algebra_thresholds,
+                        formula_size_threshold,
+                    )?;
+
+                    add_nullsafe_condition_clauses(
+                        expression,
+                        &mut formula,
+                        conditional_object_id,
+                        creating_object_id,
+                        assertion_context,
+                        artifacts,
+                    );
+
+                    return Some(formula);
+                }
             }
         }
-    }
 
-    if let Expression::UnaryPrefix(unary_prefix) = expression
-        && unary_prefix.operator.is_not()
-    {
-        if let Expression::Construct(Construct::Isset(isset_construct)) = unary_prefix.operand
-            && isset_construct.values.len() > 1
+        if let Expression::UnaryPrefix(unary_prefix) = expression
+            && unary_prefix.operator.is_not()
         {
-            let scraped_assertions = scrape_assertions(unary_prefix.operand, artifacts, assertion_context);
+            if let Expression::Construct(Construct::Isset(isset_construct)) = unary_prefix.operand
+                && isset_construct.values.len() > 1
+            {
+                let scraped_assertions = scrape_assertions(unary_prefix.operand, artifacts, assertion_context);
 
-            let mut clauses = Vec::new();
+                let mut clauses = Vec::new();
 
-            for assertions in scraped_assertions {
-                for (var, anded_types) in assertions {
-                    let var = if let Some(stripped) = var.as_bytes().strip_prefix(b"=") {
-                        mago_word::word(stripped)
-                    } else {
-                        var
-                    };
+                for assertions in scraped_assertions {
+                    for (var, anded_types) in assertions {
+                        let var = if let Some(stripped) = var.as_bytes().strip_prefix(b"=") {
+                            mago_word::word(stripped)
+                        } else {
+                            var
+                        };
 
-                    for orred_types in anded_types {
-                        let has_equality =
-                            orred_types.first().is_some_and(mago_codex::assertion::Assertion::has_equality);
-                        let mapped_orred_types = orred_types
-                            .into_iter()
-                            .map(|orred_type| (orred_type.to_hash(), orred_type))
-                            .collect::<IndexMap<_, _>>();
+                        for orred_types in anded_types {
+                            let has_equality =
+                                orred_types.first().is_some_and(mago_codex::assertion::Assertion::has_equality);
+                            let mapped_orred_types = orred_types
+                                .into_iter()
+                                .map(|orred_type| (orred_type.to_hash(), orred_type))
+                                .collect::<IndexMap<_, _>>();
 
-                        clauses.push(Clause::new(
-                            {
-                                let mut map = IndexMap::new();
-                                map.insert(var, mapped_orred_types);
-                                map
-                            },
-                            conditional_object_id,
-                            creating_object_id,
-                            Some(false),
-                            Some(true),
-                            Some(has_equality),
-                        ));
+                            clauses.push(Clause::new(
+                                {
+                                    let mut map = IndexMap::new();
+                                    map.insert(var, mapped_orred_types);
+                                    map
+                                },
+                                conditional_object_id,
+                                creating_object_id,
+                                Some(false),
+                                Some(true),
+                                Some(has_equality),
+                            ));
 
-                        if clauses.len() > usize::from(formula_size_threshold) {
-                            return None;
+                            if clauses.len() > usize::from(formula_size_threshold) {
+                                return None;
+                            }
                         }
                     }
                 }
+
+                return negate_formula(clauses, algebra_thresholds);
             }
 
-            return negate_formula(clauses, algebra_thresholds);
-        }
+            if let Expression::Binary(binary_expression) = unwrap_expression(unary_prefix.operand) {
+                if matches!(binary_expression.operator, BinaryOperator::Or(_) | BinaryOperator::LowOr(_)) {
+                    return handle_binary_and_operation(
+                        conditional_object_id,
+                        &Expression::UnaryPrefix(UnaryPrefix {
+                            operator: unary_prefix.operator.clone(),
+                            operand: assertion_context.arena.alloc(binary_expression.lhs.clone()),
+                        }),
+                        &Expression::UnaryPrefix(UnaryPrefix {
+                            operator: unary_prefix.operator.clone(),
+                            operand: assertion_context.arena.alloc(binary_expression.rhs.clone()),
+                        }),
+                        assertion_context,
+                        artifacts,
+                        algebra_thresholds,
+                        formula_size_threshold,
+                    );
+                }
 
-        if let Expression::Binary(binary_expression) = unwrap_expression(unary_prefix.operand) {
-            if matches!(binary_expression.operator, BinaryOperator::Or(_) | BinaryOperator::LowOr(_)) {
-                return handle_binary_and_operation(
+                if matches!(binary_expression.operator, BinaryOperator::And(_) | BinaryOperator::LowAnd(_)) {
+                    return handle_binary_or_operation(
+                        conditional_object_id,
+                        &Expression::UnaryPrefix(UnaryPrefix {
+                            operator: unary_prefix.operator.clone(),
+                            operand: assertion_context.arena.alloc(binary_expression.lhs.clone()),
+                        }),
+                        &Expression::UnaryPrefix(UnaryPrefix {
+                            operator: unary_prefix.operator.clone(),
+                            operand: assertion_context.arena.alloc(binary_expression.rhs.clone()),
+                        }),
+                        assertion_context,
+                        artifacts,
+                        algebra_thresholds,
+                        formula_size_threshold,
+                    );
+                }
+            }
+
+            let unary_operand_span = unary_prefix.operand.span();
+            let negated = negate_formula(
+                get_base_formula(
                     conditional_object_id,
-                    &Expression::UnaryPrefix(UnaryPrefix {
-                        operator: unary_prefix.operator.clone(),
-                        operand: assertion_context.arena.alloc(binary_expression.lhs.clone()),
-                    }),
-                    &Expression::UnaryPrefix(UnaryPrefix {
-                        operator: unary_prefix.operator.clone(),
-                        operand: assertion_context.arena.alloc(binary_expression.rhs.clone()),
-                    }),
+                    unary_operand_span,
+                    unary_prefix.operand,
                     assertion_context,
                     artifacts,
                     algebra_thresholds,
                     formula_size_threshold,
-                );
-            }
+                )?,
+                algebra_thresholds,
+            )?;
 
-            if matches!(binary_expression.operator, BinaryOperator::And(_) | BinaryOperator::LowAnd(_)) {
-                return handle_binary_or_operation(
-                    conditional_object_id,
-                    &Expression::UnaryPrefix(UnaryPrefix {
-                        operator: unary_prefix.operator.clone(),
-                        operand: assertion_context.arena.alloc(binary_expression.lhs.clone()),
-                    }),
-                    &Expression::UnaryPrefix(UnaryPrefix {
-                        operator: unary_prefix.operator.clone(),
-                        operand: assertion_context.arena.alloc(binary_expression.rhs.clone()),
-                    }),
-                    assertion_context,
-                    artifacts,
-                    algebra_thresholds,
-                    formula_size_threshold,
-                );
-            }
+            return if negated.len() > usize::from(formula_size_threshold) { None } else { Some(negated) };
         }
 
-        let unary_operand_span = unary_prefix.operand.span();
-        let negated = negate_formula(
-            get_base_formula(
+        if let Expression::Conditional(conditional_expr) = expression
+            && let Some(then) = conditional_expr.then
+            && artifacts.get_expression_type(conditional_expr.r#else).is_some_and(|t| t.is_always_falsy())
+        {
+            return handle_binary_and_operation(
                 conditional_object_id,
-                unary_operand_span,
-                unary_prefix.operand,
+                conditional_expr.condition,
+                then,
                 assertion_context,
                 artifacts,
                 algebra_thresholds,
                 formula_size_threshold,
-            )?,
-            algebra_thresholds,
+            );
+        }
+
+        let mut formula = get_formula_from_assertions(
+            conditional_object_id,
+            creating_object_id,
+            expression,
+            scrape_assertions(expression, artifacts, assertion_context),
+            formula_size_threshold,
         )?;
 
-        return if negated.len() > usize::from(formula_size_threshold) { None } else { Some(negated) };
-    }
-
-    if let Expression::Conditional(conditional_expr) = expression
-        && let Some(then) = conditional_expr.then
-        && artifacts.get_expression_type(conditional_expr.r#else).is_some_and(|t| t.is_always_falsy())
-    {
-        return handle_binary_and_operation(
+        add_nullsafe_condition_clauses(
+            expression,
+            &mut formula,
             conditional_object_id,
-            conditional_expr.condition,
-            then,
+            creating_object_id,
             assertion_context,
             artifacts,
-            algebra_thresholds,
-            formula_size_threshold,
         );
-    }
 
-    let mut formula = get_formula_from_assertions(
-        conditional_object_id,
-        creating_object_id,
-        expression,
-        scrape_assertions(expression, artifacts, assertion_context),
-        formula_size_threshold,
-    )?;
-
-    add_nullsafe_condition_clauses(
-        expression,
-        &mut formula,
-        conditional_object_id,
-        creating_object_id,
-        assertion_context,
-        artifacts,
-    );
-
-    if formula.len() > usize::from(formula_size_threshold) { None } else { Some(formula) }
+        if formula.len() > usize::from(formula_size_threshold) { None } else { Some(formula) }
+    })
 }
 
 fn add_nullsafe_condition_clauses<A>(
@@ -516,8 +519,7 @@ fn collect_conditional_assertions_inner(
     include_non_equality: bool,
     formula_size_threshold: u16,
 ) -> WordMap<AssertionSet> {
-    let expression = unwrap_expression(expression);
-    match expression {
+    ensure_sufficient_stack(|| match unwrap_expression(expression) {
         Expression::Call(call) => {
             let range = (call.span().start.offset, call.span().end.offset);
             if when_true {
@@ -636,7 +638,7 @@ fn collect_conditional_assertions_inner(
             )
         }
         _ => WordMap::default(),
-    }
+    })
 }
 
 fn extend_conditional_assertions(target: &mut WordMap<AssertionSet>, assertions: WordMap<AssertionSet>) {

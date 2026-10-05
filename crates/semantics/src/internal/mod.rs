@@ -1,4 +1,3 @@
-use mago_span::HasSpan;
 use mago_syntax::cst::Access;
 use mago_syntax::cst::AnonymousClass;
 use mago_syntax::cst::ArgumentList;
@@ -29,6 +28,7 @@ use mago_syntax::cst::Literal;
 use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::Match;
 use mago_syntax::cst::Namespace;
+use mago_syntax::cst::Node;
 use mago_syntax::cst::PartialApplication;
 use mago_syntax::cst::Pipe;
 use mago_syntax::cst::Program;
@@ -54,13 +54,27 @@ pub struct CheckingWalker;
 
 impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingWalker {
     #[inline]
+    fn walk_in_node(&self, node: Node<'ast, 'arena>, context: &mut Context<'_, 'ast, 'arena>) {
+        if checks_slice(context) {
+            checker::sharp::check_slice(node, context);
+        }
+    }
+
+    #[inline]
+    fn walk_out_node(&self, _node: Node<'ast, 'arena>, context: &mut Context<'_, 'ast, 'arena>) {
+        if checks_slice(context) {
+            context.slice_places.pop();
+        }
+    }
+
+    #[inline]
     fn walk_in_statement(&self, statement: &'ast Statement<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
-        context.ancestors.push(statement.span());
+        context.ancestors.push(Node::Statement(statement));
     }
 
     #[inline]
     fn walk_in_expression(&self, expression: &'ast Expression<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
-        context.ancestors.push(expression.span());
+        context.ancestors.push(Node::Expression(expression));
 
         checker::expression::check_for_clone_with(expression, context);
     }
@@ -89,11 +103,6 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingW
         checker::statement::check_top_level_statements(program, context);
 
         if program.dialect.is_sharp() {
-            // A parse error already stops the file, so it is the one error to fix first.
-            if program.errors.is_empty() {
-                checker::sharp::check_slice(program, context);
-            }
-
             checker::sharp::check_declarations(program, context);
             checker::sharp::check_binding_errors(context);
         }
@@ -107,6 +116,11 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingW
     #[inline]
     fn walk_in_namespace(&self, namespace: &Namespace<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
         checker::statement::check_namespace(namespace, context);
+    }
+
+    #[inline]
+    fn walk_out_namespace(&self, namespace: &Namespace<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
+        checker::statement::check_namespace_body(namespace, context);
     }
 
     #[inline]
@@ -366,7 +380,11 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingW
     }
 
     #[inline]
-    fn walk_literal_expression(&self, literal_expression: &'ast Literal, context: &mut Context<'_, 'ast, 'arena>) {
+    fn walk_in_literal_expression(
+        &self,
+        literal_expression: &'ast Literal<'arena>,
+        context: &mut Context<'_, 'ast, 'arena>,
+    ) {
         checker::literal::check_literal(literal_expression, context);
     }
 
@@ -378,4 +396,11 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingW
     fn walk_in_pipe(&self, pipe: &'ast Pipe<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
         checker::pipe::check_pipe(pipe, context);
     }
+}
+
+/// Whether the walk checks the PHP# slice, so the place stack pops only what it pushed. A parse error already stops
+/// the file, so it is the one error to fix first.
+#[inline]
+fn checks_slice(context: &Context<'_, '_, '_>) -> bool {
+    context.program.dialect.is_sharp() && context.program.errors.is_empty()
 }

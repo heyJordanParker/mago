@@ -13,6 +13,7 @@ use mago_span::HasSpan;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::Parenthesized;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_word::WordSet;
 use mago_word::word;
 
@@ -67,41 +68,42 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
     where
         A: Arena,
     {
-        artifacts.record_variable_definedness(Node::Expression(self), block_context);
+        ensure_sufficient_stack(|| {
+            artifacts.record_variable_definedness(Node::Expression(self), block_context);
 
-        if context.plugin_registry.has_expression_hooks() {
-            let mut hook_context = HookContext::new(context, block_context, artifacts);
-            let expression_hook_result = context.plugin_registry.before_expression(self, &mut hook_context)?;
-            for reported in hook_context.take_issues() {
-                context.collector.report_with_code(reported.code, reported.issue);
+            if context.plugin_registry.has_expression_hooks() {
+                let mut hook_context = HookContext::new(context, block_context, artifacts);
+                let expression_hook_result = context.plugin_registry.before_expression(self, &mut hook_context)?;
+                for reported in hook_context.take_issues() {
+                    context.collector.report_with_code(reported.code, reported.issue);
+                }
+
+                match expression_hook_result {
+                    ExpressionHookResult::Continue => {}
+                    ExpressionHookResult::Skip => {
+                        return Ok(());
+                    }
+                    ExpressionHookResult::SkipWithType(ty) => {
+                        artifacts.set_expression_type(self, ty);
+                        return Ok(());
+                    }
+                }
             }
 
-            match expression_hook_result {
-                ExpressionHookResult::Continue => {}
-                ExpressionHookResult::Skip => {
-                    return Ok(());
-                }
-                ExpressionHookResult::SkipWithType(ty) => {
-                    artifacts.set_expression_type(self, ty);
-                    return Ok(());
-                }
-            }
-        }
-
-        let result = match self {
-            Expression::Parenthesized(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::Literal(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::Binary(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::UnaryPrefix(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::UnaryPostfix(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::CompositeString(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::Assignment(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::Conditional(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::Array(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::LegacyArray(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::ArrayAccess(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::ArrayAppend(_) => {
-                context.collector.report_with_code(
+            let result = match self {
+                Expression::Parenthesized(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::Literal(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::Binary(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::UnaryPrefix(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::UnaryPostfix(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::CompositeString(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::Assignment(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::Conditional(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::Array(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::LegacyArray(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::ArrayAccess(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::ArrayAppend(_) => {
+                    context.collector.report_with_code(
                     IssueCode::ArrayAppendInReadContext,
                     Issue::error("Array append syntax `[]` cannot be used in a read context.")
                     .with_annotation(
@@ -111,70 +113,71 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
                     .with_help("If you intended to access an array element, provide an index (e.g., `$array[0]`, `$array['key']`). If you intended to append, use this syntax on the left side of an assignment."),
                 );
 
-                Ok(())
-            }
-            Expression::AnonymousClass(anonymous_class) => {
-                let Some(class_like_metadata) = context.codebase.get_anonymous_class(context.source_file, self.span())
-                else {
-                    return Ok(());
-                };
+                    Ok(())
+                }
+                Expression::AnonymousClass(anonymous_class) => {
+                    let Some(class_like_metadata) =
+                        context.codebase.get_anonymous_class(context.source_file, self.span())
+                    else {
+                        return Ok(());
+                    };
 
-                analyze_class_like_attributes(
-                    context,
-                    artifacts,
-                    anonymous_class.attribute_lists.as_slice(),
-                    class_like_metadata,
-                )?;
+                    analyze_class_like_attributes(
+                        context,
+                        artifacts,
+                        anonymous_class.attribute_lists.as_slice(),
+                        class_like_metadata,
+                    )?;
 
-                analyze_anonymous_class_constructor(
-                    context,
-                    block_context,
-                    artifacts,
-                    class_like_metadata,
-                    anonymous_class.argument_list.as_ref(),
-                    anonymous_class.span(),
-                )?;
+                    analyze_anonymous_class_constructor(
+                        context,
+                        block_context,
+                        artifacts,
+                        class_like_metadata,
+                        anonymous_class.argument_list.as_ref(),
+                        anonymous_class.span(),
+                    )?;
 
-                analyze_class_like(
-                    context,
-                    artifacts,
-                    None,
-                    anonymous_class.span(),
-                    anonymous_class.extends.as_ref(),
-                    anonymous_class.implements.as_ref(),
-                    class_like_metadata,
-                    anonymous_class.members.as_slice(),
-                )?;
-
-                if context.settings.check_missing_override {
-                    override_attribute::check_override_attribute(
+                    analyze_class_like(
+                        context,
+                        artifacts,
+                        None,
+                        anonymous_class.span(),
+                        anonymous_class.extends.as_ref(),
+                        anonymous_class.implements.as_ref(),
                         class_like_metadata,
                         anonymous_class.members.as_slice(),
-                        context,
-                    );
+                    )?;
+
+                    if context.settings.check_missing_override {
+                        override_attribute::check_override_attribute(
+                            class_like_metadata,
+                            anonymous_class.members.as_slice(),
+                            context,
+                        );
+                    }
+
+                    artifacts.set_expression_type(&self, get_named_object(class_like_metadata.name, None));
+
+                    Ok(())
                 }
-
-                artifacts.set_expression_type(&self, get_named_object(class_like_metadata.name, None));
-
-                Ok(())
-            }
-            Expression::Closure(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::ArrowFunction(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::Variable(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::ConstantAccess(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::Match(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::Yield(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::Construct(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::Throw(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::Clone(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::Call(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::Access(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::PartialApplication(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::Instantiation(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::MagicConstant(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::Pipe(expr) => expr.analyze(context, block_context, artifacts),
-            Expression::List(list_expr) => {
-                context.collector.report_with_code(
+                Expression::Closure(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::ArrowFunction(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::Variable(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::ConstantAccess(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::Match(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::Yield(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::Construct(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::Throw(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::Clone(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::Call(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::Access(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::PartialApplication(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::Instantiation(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::MagicConstant(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::Pipe(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::List(list_expr) => {
+                    context.collector.report_with_code(
                     IssueCode::ListUsedInReadContext,
                     Issue::error("`list()` construct cannot be used as a value.")
                         .with_annotation(
@@ -189,14 +192,14 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
                         ),
                 );
 
-                artifacts.set_expression_type(&list_expr, get_never());
+                    artifacts.set_expression_type(&list_expr, get_never());
 
-                Ok(())
-            }
-            Expression::Self_(keyword) | Expression::Static(keyword) | Expression::Parent(keyword) => {
-                let keyword_str = mago_bytes::BytesDisplay(keyword.value);
+                    Ok(())
+                }
+                Expression::Self_(keyword) | Expression::Static(keyword) | Expression::Parent(keyword) => {
+                    let keyword_str = mago_bytes::BytesDisplay(keyword.value);
 
-                context.collector.report_with_code(
+                    context.collector.report_with_code(
                     IssueCode::InvalidScopeKeywordContext,
                     Issue::error(format!("The `{keyword_str}` keyword cannot be used as a standalone value."))
                         .with_annotation(
@@ -211,60 +214,61 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
                         ),
                 );
 
-                artifacts.set_expression_type(&self, get_never());
+                    artifacts.set_expression_type(&self, get_never());
 
-                Ok(())
-            }
-            Expression::Identifier(identifier) => {
-                if !identifier.is_local() {
-                    unreachable!(
-                        "Parser should not produce a bare `Identifier` as a standalone expression in this context. \nIf you see this, it indicates a bug in the parser or the analysis logic. \nPlease report this issue with the following identifier: `{}` line `{}`, column `{}`.",
-                        mago_bytes::BytesDisplay(&context.source_file.name),
-                        context.source_file.line_number(self.offset()),
-                        context.source_file.column_number(self.offset()),
-                    );
+                    Ok(())
                 }
+                Expression::Identifier(identifier) => {
+                    if !identifier.is_local() {
+                        unreachable!(
+                            "Parser should not produce a bare `Identifier` as a standalone expression in this context. \nIf you see this, it indicates a bug in the parser or the analysis logic. \nPlease report this issue with the following identifier: `{}` line `{}`, column `{}`.",
+                            mago_bytes::BytesDisplay(&context.source_file.name),
+                            context.source_file.line_number(self.offset()),
+                            context.source_file.column_number(self.offset()),
+                        );
+                    }
 
-                artifacts.set_expression_type(&self, get_literal_string(word(identifier.value())));
+                    artifacts.set_expression_type(&self, get_literal_string(word(identifier.value())));
 
-                Ok(())
+                    Ok(())
+                }
+                Expression::Error(_) => {
+                    artifacts.set_expression_type(&self, get_never());
+
+                    Ok(())
+                }
+                #[allow(clippy::unreachable)]
+                _ => unreachable!("An expression variant was not handled in analyzer: {self:?}"),
+            };
+
+            result?;
+
+            if context.plugin_registry.has_expression_hooks() {
+                let mut hook_context = HookContext::new(context, block_context, artifacts);
+                context.plugin_registry.after_expression(self, &mut hook_context)?;
+                for reported in hook_context.take_issues() {
+                    context.collector.report_with_code(reported.code, reported.issue);
+                }
             }
-            Expression::Error(_) => {
-                artifacts.set_expression_type(&self, get_never());
 
-                Ok(())
+            if context.check_throws() && context.plugin_registry.has_expression_throw_providers() {
+                let exceptions = context.plugin_registry.get_expression_thrown_exceptions(
+                    context.codebase,
+                    context.source_file,
+                    block_context,
+                    artifacts,
+                    self,
+                );
+
+                for exception in exceptions {
+                    block_context.possibly_thrown_exceptions.entry(exception).or_default().insert(self.span());
+                }
             }
-            #[allow(clippy::unreachable)]
-            _ => unreachable!("An expression variant was not handled in analyzer: {self:?}"),
-        };
 
-        result?;
+            artifacts.record_static_local_types(block_context, context.codebase, context.settings.combiner_options());
 
-        if context.plugin_registry.has_expression_hooks() {
-            let mut hook_context = HookContext::new(context, block_context, artifacts);
-            context.plugin_registry.after_expression(self, &mut hook_context)?;
-            for reported in hook_context.take_issues() {
-                context.collector.report_with_code(reported.code, reported.issue);
-            }
-        }
-
-        if context.check_throws() && context.plugin_registry.has_expression_throw_providers() {
-            let exceptions = context.plugin_registry.get_expression_thrown_exceptions(
-                context.codebase,
-                context.source_file,
-                block_context,
-                artifacts,
-                self,
-            );
-
-            for exception in exceptions {
-                block_context.possibly_thrown_exceptions.entry(exception).or_default().insert(self.span());
-            }
-        }
-
-        artifacts.record_static_local_types(block_context, context.codebase, context.settings.combiner_options());
-
-        Ok(())
+            Ok(())
+        })
     }
 }
 

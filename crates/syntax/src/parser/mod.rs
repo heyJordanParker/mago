@@ -3,23 +3,33 @@ use mago_allocator::prelude::*;
 use mago_database::file::File;
 use mago_database::file::FileId;
 use mago_database::file::HasFileId;
+use mago_span::HasSpan;
+use mago_span::Span;
 use mago_syntax_core::input::Input;
 
+use crate::cst::Expression;
+use crate::cst::Hint;
+use crate::cst::Namespace;
+use crate::cst::NamespaceBody;
 use crate::cst::Program;
+use crate::cst::Statement;
 use crate::cst::sequence::Sequence;
 use crate::dialect::Dialect;
 use crate::error::ParseError;
 use crate::lexer::Lexer;
 use crate::parser::stream::TokenStream;
 use crate::settings::ParserSettings;
+use crate::walker::MutWalker;
 
 mod internal;
 
 pub mod stream;
 
-/// Maximum recursion depth for expression parsing.
-/// This prevents stack overflow on deeply nested expressions and statements.
-const MAX_RECURSION_DEPTH: u16 = 512;
+/// Maximum recursion depth of statement and expression parsing, which bounds the parser's work on deeply nested input.
+///
+/// A PHP# file nests no statement or expression deeper, however the parser built it, so the engine compiles every
+/// PHP# file the parser accepts.
+pub(crate) const MAX_RECURSION_DEPTH: u16 = 512;
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -119,10 +129,18 @@ where
 
             // Record position before parsing to detect infinite loops
             let position_before = self.stream.current_position();
+            let errors_before = self.errors.len();
 
             match self.parse_statement() {
-                Ok(statement) => statements.push(statement),
-                Err(err) => self.errors.push(err),
+                Ok(statement) => {
+                    if self.accepts_nesting(&statement, 0, errors_before) {
+                        statements.push(statement);
+                    }
+                }
+                Err(err) => {
+                    self.errors.push(err);
+                    self.accepts_nesting_errors(errors_before);
+                }
             }
 
             // Safety check: if we didn't advance at all, skip a token to prevent infinite loop.
@@ -145,6 +163,108 @@ where
             trivia: self.stream.get_trivia(),
             errors: self.errors.leak(),
         })
+    }
+
+    /// The error for a statement or expression that recursed past [`MAX_RECURSION_DEPTH`] while parsing.
+    pub(crate) fn recursion_limit_exceeded(&self, span: Span) -> ParseError {
+        match self.dialect {
+            Dialect::Php => ParseError::RecursionLimitExceeded(span),
+            Dialect::Sharp => ParseError::NestingTooDeepInSharp(span),
+        }
+    }
+
+    /// Whether a PHP# statement parsed `depth` levels deep, whose parse added the errors from `errors_before` on, nests
+    /// its statements, expressions and types at most [`MAX_RECURSION_DEPTH`] levels deep. The parser builds a chain
+    /// such as `a + b + c` or `a.f().g()` in a loop, so only the finished statement shows how deep the chain nests.
+    /// The parser leaves out a statement it refuses, with one error, so no later pass walks a tree deeper than the
+    /// engine compiles. A namespace without braces checks each of its statements as it parses them.
+    fn accepts_nesting(&mut self, statement: &Statement<'arena>, depth: usize, errors_before: usize) -> bool {
+        if self.dialect == Dialect::Php
+            || matches!(statement, Statement::Namespace(Namespace { body: NamespaceBody::Implicit(_), .. }))
+        {
+            return true;
+        }
+
+        if !self.accepts_nesting_errors(errors_before) {
+            return false;
+        }
+
+        let mut nesting = Nesting { depth, too_deep: None };
+        nesting.walk_statement(statement, &mut ());
+        match nesting.too_deep {
+            Some(span) => {
+                self.errors.push(ParseError::NestingTooDeepInSharp(span));
+
+                false
+            }
+            None => true,
+        }
+    }
+
+    /// Keeps the first PHP# nesting error among the errors from `errors_before` on, which parsing one statement
+    /// added. Each recursion past [`MAX_RECURSION_DEPTH`] reports one, and the parser recovers and recurses again, so
+    /// one deep chain would report one for every 512 levels. Returns whether the statement had none.
+    fn accepts_nesting_errors(&mut self, errors_before: usize) -> bool {
+        let mut first = true;
+        let mut index = errors_before;
+        while index < self.errors.len() {
+            if matches!(self.errors[index], ParseError::NestingTooDeepInSharp(_)) {
+                if first {
+                    first = false;
+                } else {
+                    self.errors.remove(index);
+                    continue;
+                }
+            }
+
+            index += 1;
+        }
+
+        first
+    }
+}
+
+/// Finds a statement, expression or type nested deeper than [`MAX_RECURSION_DEPTH`], counting the statements,
+/// expressions and types around it. It records the first one it leaves past the limit, which has nothing nested
+/// deeper, so its span takes no recursion to compute.
+struct Nesting {
+    depth: usize,
+    too_deep: Option<Span>,
+}
+
+impl Nesting {
+    fn leave(&mut self, node: &impl HasSpan) {
+        if self.depth > usize::from(MAX_RECURSION_DEPTH) && self.too_deep.is_none() {
+            self.too_deep = Some(node.span());
+        }
+
+        self.depth -= 1;
+    }
+}
+
+impl<'ast, 'arena> MutWalker<'ast, 'arena, ()> for Nesting {
+    fn walk_in_statement(&mut self, _: &'ast Statement<'arena>, _: &mut ()) {
+        self.depth += 1;
+    }
+
+    fn walk_out_statement(&mut self, statement: &'ast Statement<'arena>, _: &mut ()) {
+        self.leave(statement);
+    }
+
+    fn walk_in_expression(&mut self, _: &'ast Expression<'arena>, _: &mut ()) {
+        self.depth += 1;
+    }
+
+    fn walk_out_expression(&mut self, expression: &'ast Expression<'arena>, _: &mut ()) {
+        self.leave(expression);
+    }
+
+    fn walk_in_hint(&mut self, _: &'ast Hint<'arena>, _: &mut ()) {
+        self.depth += 1;
+    }
+
+    fn walk_out_hint(&mut self, hint: &'ast Hint<'arena>, _: &mut ()) {
+        self.leave(hint);
     }
 }
 

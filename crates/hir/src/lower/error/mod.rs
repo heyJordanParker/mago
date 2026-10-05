@@ -23,7 +23,9 @@ pub(crate) fn lower_parse_error(error: &ParseError) -> Error {
         | ParseError::NotSupportedYetInSharp(..)
         | ParseError::InvalidTemplateEscapeInSharp(..) => ErrorKind::UnexpectedToken,
         ParseError::UnclosedLiteralString(..) => ErrorKind::UnclosedLiteralString,
-        ParseError::RecursionLimitExceeded(..) => ErrorKind::RecursionLimitExceeded,
+        ParseError::RecursionLimitExceeded(..) | ParseError::NestingTooDeepInSharp(..) => {
+            ErrorKind::RecursionLimitExceeded
+        }
     };
 
     Error { span, kind }

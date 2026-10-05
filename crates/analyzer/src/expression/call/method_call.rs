@@ -22,6 +22,7 @@ use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::MethodCall;
 use mago_syntax::cst::NullSafeMethodCall;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
@@ -602,7 +603,7 @@ fn is_this_or_self_returning_chain<'ctx, 'arena, A>(
 where
     A: Arena,
 {
-    match expr {
+    ensure_sufficient_stack(|| match expr {
         _ if is_this(expr, context.resolved_names) => true,
         Expression::Call(Call::Method(method_call)) => {
             if !is_this_or_self_returning_chain(method_call.object, context, block_context) {
@@ -638,7 +639,7 @@ where
         }
         Expression::Parenthesized(paren) => is_this_or_self_returning_chain(paren.expression, context, block_context),
         _ => false,
-    }
+    })
 }
 
 /// Checks if a method returns `self`, `static`, or the same class type.

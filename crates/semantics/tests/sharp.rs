@@ -420,6 +420,18 @@ fn a_function_called_by_its_bare_name_is_in_the_slice() {
 }
 
 #[test]
+fn a_construct_outside_the_slice_is_not_supported_yet_in_a_catch_block_or_a_call_argument() {
+    let code = leak(method(
+        "        try {\n        } catch (Missing failure) {\n            extra = extra & 1;\n        }\n        return count(fn() => 1);\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        ["9:27 This operator is not supported yet in PHP#.", "11:22 This expression is not supported yet in PHP#."]
+    );
+}
+
+#[test]
 fn a_function_called_through_an_expression_is_not_supported_yet() {
     let code = leak(method("        const call = this.callback();\n        return call(extra);\n"));
 
@@ -776,9 +788,9 @@ fn a_promoted_member_outside_the_slice_is_not_supported_yet() {
     assert_eq!(
         issues(code),
         [
-            "5:27 This modifier is not supported yet in PHP#.",
             "7:21 Promoted properties are not allowed outside of constructors.",
             "5:51 Parameter `b` cannot have the `static` modifier.",
+            "5:27 This modifier is not supported yet in PHP#.",
         ]
     );
 }
@@ -839,6 +851,13 @@ fn a_field_without_an_access_modifier_is_not_supported_yet() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    int count = 0;\n}\n";
 
     assert_eq!(issues(code), ["5:9 A field without `private` or `protected` is not supported yet in PHP#."]);
+}
+
+#[test]
+fn a_field_ended_by_a_closing_tag_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private int count = 0 ?><?php\n}\n";
+
+    assert_eq!(issues(code), ["5:27 This construct is not supported yet in PHP#."]);
 }
 
 #[test]
@@ -975,8 +994,8 @@ fn a_typed_local_takes_the_types_of_the_slice_but_not_void() {
         [
             "7:9 A local cannot be `void`: `void` is only a return type.",
             "8:9 This type is not supported yet in PHP#.",
-            "9:9 This type is not supported yet in PHP#.",
             "9:9 Type `mixed` cannot be nullable.",
+            "9:9 This type is not supported yet in PHP#.",
             "11:9 Cannot assign to `kept`: it is declared with `const`.",
         ]
     );

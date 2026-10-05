@@ -1,39 +1,53 @@
 use crate::binding::Local;
 
-/// The locals of one PHP# method, block by block.
-#[derive(Debug)]
-struct Frame<'arena> {
-    /// The open blocks, innermost last. The first block holds the parameters.
-    blocks: Vec<Vec<(&'arena [u8], Local)>>,
-    /// The locals of blocks that have already closed.
-    closed: Vec<(&'arena [u8], Local)>,
+/// Where one PHP# method's locals start in each stack of `LocalScopes`.
+#[derive(Debug, Clone, Copy)]
+struct Frame {
+    open: usize,
+    blocks: usize,
+    closed: usize,
 }
 
 /// The locals the binder can see, one frame per method being walked.
 ///
-/// A method never sees the locals of the method or file around it.
+/// A method never sees the locals of the method or file around it. The frames share the stacks, so a method allocates
+/// nothing once the stacks have grown to fit one.
 #[derive(Debug)]
 pub struct LocalScopes<'arena> {
-    frames: Vec<Frame<'arena>>,
+    /// The locals of the open blocks, innermost last.
+    open: Vec<(&'arena [u8], Local)>,
+    /// Where each open block starts in `open`, innermost last. A frame's first block holds the parameters.
+    blocks: Vec<usize>,
+    /// The locals of blocks that have already closed.
+    closed: Vec<(&'arena [u8], Local)>,
+    frames: Vec<Frame>,
 }
 
 impl<'arena> LocalScopes<'arena> {
     pub fn enter_method(&mut self) {
-        self.frames.push(Frame { blocks: vec![Vec::new()], closed: Vec::new() });
+        self.frames.push(Frame { open: self.open.len(), blocks: self.blocks.len(), closed: self.closed.len() });
+        self.blocks.push(self.open.len());
     }
 
     pub fn exit_method(&mut self) {
-        self.frames.pop();
+        if let Some(frame) = self.frames.pop() {
+            self.open.truncate(frame.open);
+            self.blocks.truncate(frame.blocks);
+            self.closed.truncate(frame.closed);
+        }
     }
 
     pub fn enter_block(&mut self) {
-        self.frame().blocks.push(Vec::new());
+        self.frame();
+        self.blocks.push(self.open.len());
     }
 
     pub fn exit_block(&mut self) {
         let frame = self.frame();
-        if let Some(block) = frame.blocks.pop() {
-            frame.closed.extend(block);
+        if self.blocks.len() > frame.blocks
+            && let Some(start) = self.blocks.pop()
+        {
+            self.closed.extend(self.open.drain(start..));
         }
     }
 
@@ -42,8 +56,8 @@ impl<'arena> LocalScopes<'arena> {
     /// Returns the local an open block already declares under the same name, if any.
     pub fn declare(&mut self, name: &'arena [u8], local: Local) -> Option<Local> {
         let earlier = self.lookup(name);
-        if let Some(block) = self.frame().blocks.last_mut() {
-            block.push((name, local));
+        if self.blocks.len() > self.frame().blocks {
+            self.open.push((name, local));
         }
 
         earlier
@@ -51,38 +65,36 @@ impl<'arena> LocalScopes<'arena> {
 
     /// Returns the local an open block declares under `name`, innermost first.
     pub fn lookup(&self, name: &[u8]) -> Option<Local> {
-        self.frames
-            .last()?
-            .blocks
+        let frame = self.frames.last()?;
+
+        self.open[frame.open..]
             .iter()
             .rev()
-            .flat_map(|block| block.iter().rev())
             .find_map(|(declared, local)| if *declared == name { Some(*local) } else { None })
     }
 
     /// Returns the latest local of this method declared under `name` whose block has closed.
     pub fn lookup_closed(&self, name: &[u8]) -> Option<Local> {
-        self.frames
-            .last()?
-            .closed
+        let frame = self.frames.last()?;
+
+        self.closed[frame.closed..]
             .iter()
             .rev()
             .find_map(|(declared, local)| if *declared == name { Some(*local) } else { None })
     }
 
-    fn frame(&mut self) -> &mut Frame<'arena> {
+    fn frame(&mut self) -> Frame {
         if self.frames.is_empty() {
             self.enter_method();
         }
 
-        let last = self.frames.len() - 1;
-        &mut self.frames[last]
+        self.frames[self.frames.len() - 1]
     }
 }
 
 impl Default for LocalScopes<'_> {
     fn default() -> Self {
-        let mut scopes = Self { frames: Vec::new() };
+        let mut scopes = Self { open: Vec::new(), blocks: Vec::new(), closed: Vec::new(), frames: Vec::new() };
         scopes.enter_method();
         scopes
     }

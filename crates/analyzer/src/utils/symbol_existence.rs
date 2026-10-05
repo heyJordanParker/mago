@@ -7,6 +7,7 @@ use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::Parenthesized;
 use mago_syntax::cst::UnaryPrefix;
 use mago_syntax::cst::UnaryPrefixOperator;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_word::Word;
 use mago_word::ascii_lowercase_constant_name_word;
 use mago_word::ascii_lowercase_word;
@@ -21,7 +22,7 @@ pub fn extract_function_constant_existence(
     block_context: &mut BlockContext<'_>,
     negated: bool,
 ) {
-    match expression {
+    ensure_sufficient_stack(|| match expression {
         Expression::UnaryPrefix(UnaryPrefix { operator: UnaryPrefixOperator::Not(_), operand }) => {
             extract_function_constant_existence(operand, artifacts, block_context, !negated);
         }
@@ -59,7 +60,7 @@ pub fn extract_function_constant_existence(
             extract_function_constant_existence(expression, artifacts, block_context, negated);
         }
         _ => {}
-    }
+    });
 }
 
 fn get_first_literal_string_arg(

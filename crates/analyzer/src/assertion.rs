@@ -39,6 +39,7 @@ use mago_syntax::cst::Literal;
 use mago_syntax::cst::LocalIdentifier;
 use mago_syntax::cst::UnaryPrefix;
 use mago_syntax::cst::UnaryPrefixOperator;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_word::Word;
 use mago_word::WordMap;
 use mago_word::ascii_lowercase_word;
@@ -991,66 +992,68 @@ pub(crate) fn get_class_type_relations<A>(
 where
     A: Arena,
 {
-    let expression = unwrap_expression(expression);
-    if let Expression::Binary(binary) = expression {
-        if matches!(binary.operator, BinaryOperator::And(_) | BinaryOperator::LowAnd(_)) {
-            let mut relations = get_class_type_relations(binary.lhs, assertion_context);
-            relations.extend(get_class_type_relations(binary.rhs, assertion_context));
+    ensure_sufficient_stack(|| {
+        let expression = unwrap_expression(expression);
+        if let Expression::Binary(binary) = expression {
+            if matches!(binary.operator, BinaryOperator::And(_) | BinaryOperator::LowAnd(_)) {
+                let mut relations = get_class_type_relations(binary.lhs, assertion_context);
+                relations.extend(get_class_type_relations(binary.rhs, assertion_context));
 
-            return relations;
+                return relations;
+            }
+
+            if matches!(binary.operator, BinaryOperator::Identical(_))
+                && let (Some(left), Some(right)) =
+                    (is_class_constant_access(binary.lhs), is_class_constant_access(binary.rhs))
+                && !is_static_class_reference(left)
+                && !is_static_class_reference(right)
+                && let (Some(left), Some(right)) =
+                    (assertion_context.get_expression_id(left), assertion_context.get_expression_id(right))
+            {
+                return vec![(left, right), (right, left)];
+            }
+
+            return vec![];
         }
 
-        if matches!(binary.operator, BinaryOperator::Identical(_))
-            && let (Some(left), Some(right)) =
-                (is_class_constant_access(binary.lhs), is_class_constant_access(binary.rhs))
-            && !is_static_class_reference(left)
-            && !is_static_class_reference(right)
-            && let (Some(left), Some(right)) =
-                (assertion_context.get_expression_id(left), assertion_context.get_expression_id(right))
+        let Expression::Call(Call::Function(function_call)) = expression else {
+            return vec![];
+        };
+        let Expression::Identifier(identifier) = function_call.function else {
+            return vec![];
+        };
+
+        let name = identifier.value();
+        let resolved_name = assertion_context.resolved_names.get(identifier);
+        if !name.eq_ignore_ascii_case(b"is_a")
+            && !name.eq_ignore_ascii_case(b"is_subclass_of")
+            && !resolved_name.eq_ignore_ascii_case(b"is_a")
+            && !resolved_name.eq_ignore_ascii_case(b"is_subclass_of")
         {
-            return vec![(left, right), (right, left)];
+            return vec![];
         }
 
-        return vec![];
-    }
+        let Some(source) = function_call.argument_list.arguments.first().map(mago_syntax::cst::Argument::value) else {
+            return vec![];
+        };
+        let Some(target) = function_call
+            .argument_list
+            .arguments
+            .get(1)
+            .map(mago_syntax::cst::Argument::value)
+            .and_then(is_class_constant_access)
+        else {
+            return vec![];
+        };
 
-    let Expression::Call(Call::Function(function_call)) = expression else {
-        return vec![];
-    };
-    let Expression::Identifier(identifier) = function_call.function else {
-        return vec![];
-    };
+        let (Some(source), Some(target)) =
+            (assertion_context.get_expression_id(source), assertion_context.get_expression_id(target))
+        else {
+            return vec![];
+        };
 
-    let name = identifier.value();
-    let resolved_name = assertion_context.resolved_names.get(identifier);
-    if !name.eq_ignore_ascii_case(b"is_a")
-        && !name.eq_ignore_ascii_case(b"is_subclass_of")
-        && !resolved_name.eq_ignore_ascii_case(b"is_a")
-        && !resolved_name.eq_ignore_ascii_case(b"is_subclass_of")
-    {
-        return vec![];
-    }
-
-    let Some(source) = function_call.argument_list.arguments.first().map(mago_syntax::cst::Argument::value) else {
-        return vec![];
-    };
-    let Some(target) = function_call
-        .argument_list
-        .arguments
-        .get(1)
-        .map(mago_syntax::cst::Argument::value)
-        .and_then(is_class_constant_access)
-    else {
-        return vec![];
-    };
-
-    let (Some(source), Some(target)) =
-        (assertion_context.get_expression_id(source), assertion_context.get_expression_id(target))
-    else {
-        return vec![];
-    };
-
-    vec![(source, target)]
+        vec![(source, target)]
+    })
 }
 
 fn get_empty_array_equality_assertions<A>(

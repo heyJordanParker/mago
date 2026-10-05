@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use mago_bytes::BytesDisplay;
 use mago_names::binding::Binding;
 use mago_names::binding::BindingError;
@@ -63,6 +61,7 @@ use mago_syntax::cst::UseItems;
 use mago_syntax::cst::Variable;
 use mago_syntax::cst::While;
 use mago_syntax::cst::WhileBody;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 
 use crate::internal::consts::RESERVED_CLASS_NAMES;
 use crate::internal::consts::RESERVED_KEYWORDS;
@@ -122,10 +121,10 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - Operators: `+ - * / % **`, `== != === !== < > <= >=`, `&& || !`, `??`, unary `-` and `+`, `++` and `--`, and
 ///   `= += -= *= /= **= ??=`.
 ///
-/// The check visits every node and refuses any node, or any position of a node, that this list does not name. It
-/// reports each refusal once, at its outermost node. It does not run on a file with a parse error, which is the one
-/// error to fix first. The constructs PHP# never has, such as `$` variables, `global` and top-level functions, keep
-/// their own errors.
+/// The check runs on every node the checking walk enters, and refuses any node, or any position of a node, that this
+/// list does not name. It reports each refusal once, at its outermost node, and skips the nodes inside it. It does not
+/// run on a file with a parse error, which is the one error to fix first. The constructs PHP# never has, such as `$`
+/// variables, `global` and top-level functions, keep their own errors.
 ///
 /// Three more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
 /// - `+` that may join a string with any other value, which spec section 18 makes an error, in
@@ -133,13 +132,19 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - an instance method used as a value, such as `order.total` without a call, in `report_non_existent_property`.
 /// - a call of a function a library or the app declares, in `report_declared_function_call`.
 #[inline]
-pub fn check_slice(program: &Program, context: &mut Context<'_, '_, '_>) {
-    check_node(Node::Program(program), Place::File, &mut HashSet::new(), context);
+pub fn check_slice(node: Node<'_, '_>, context: &mut Context<'_, '_, '_>) {
+    let place = match context.slice_places.last() {
+        None => enter(node, Place::File, context),
+        Some(Some(place)) => enter(node, *place, context),
+        Some(None) => None,
+    };
+
+    context.slice_places.push(place);
 }
 
 /// Where a node of a PHP# file sits, for the parts of the slice that depend on it.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Place {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Place {
     /// The file's statements, its namespace and its imports.
     File,
     /// A class and its members.
@@ -152,6 +157,12 @@ enum Place {
     Parameter,
     /// A method body.
     Body,
+    /// `new` and the class it creates, whose arguments are the method body's.
+    Instantiation,
+    /// A call of PHP's built-in function and the function's name, whose arguments are the method body's.
+    FunctionCall,
+    /// A catch clause, whose block is the method body's.
+    TryCatchClause,
     /// An attribute list: its attributes' names and arguments.
     Attribute,
     /// A constant expression: a parameter default or an attribute argument.
@@ -166,32 +177,20 @@ enum MemberUse {
     Write,
 }
 
-/// Walks `node` at `place`. `checked` holds the spans of the member accesses already checked, so the walk checks
-/// each access once.
-fn check_node(node: Node<'_, '_>, place: Place, checked: &mut HashSet<Span>, context: &mut Context<'_, '_, '_>) {
-    if let Some(place) = enter(node, place, checked, context) {
-        for child in node.children() {
-            check_node(child, place, checked, context);
-        }
-    }
-}
-
 /// Decides one node at its place. Returns the place of its children when the slice has the node, and `None` when
 /// the node is reported.
-fn enter(
-    node: Node<'_, '_>,
-    place: Place,
-    checked: &mut HashSet<Span>,
-    context: &mut Context<'_, '_, '_>,
-) -> Option<Place> {
+fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) -> Option<Place> {
     use Place::Attribute;
     use Place::Body;
     use Place::Class;
     use Place::Constant;
     use Place::FieldOrProperty;
     use Place::File;
+    use Place::FunctionCall;
+    use Place::Instantiation;
     use Place::Method;
     use Place::Parameter;
+    use Place::TryCatchClause;
 
     if let Some(target) = write_target(node) {
         // PHP# never has `$` variables, and `check_variable` reports a write to one.
@@ -207,14 +206,7 @@ fn enter(
         }
 
         if let Expression::Access(Access::Property(property)) = target {
-            check_member_access(
-                property.span(),
-                property.object,
-                &property.property,
-                MemberUse::Write,
-                checked,
-                context,
-            );
+            check_member_access(property.object, &property.property, MemberUse::Write, context);
         }
     }
 
@@ -276,9 +268,8 @@ fn enter(
         (Node::PropertyHookList(_), FieldOrProperty) => None,
         (Node::Expression(_), FieldOrProperty) => {
             report_this_in_initial_value(node, context);
-            check_node(node, Body, checked, context);
 
-            None
+            enter(node, Body, context)
         }
         (
             Node::Property(_)
@@ -374,12 +365,10 @@ fn enter(
         (Node::PropertyHookList(_), Parameter) => None,
         (Node::FunctionLikeParameterDefaultValue(_), Parameter) => Some(Constant),
         (Node::Block(_), Method | Body) => Some(Body),
+        (Node::TryCatchClause(_), Body) => Some(TryCatchClause),
         // `check_try` reports a catch type that is not a class, and `check_try_catch_clause` the variable's name.
-        (Node::TryCatchClause(clause), Body) => {
-            check_node(Node::Block(&clause.block), Body, checked, context);
-
-            None
-        }
+        (Node::Hint(_) | Node::DirectVariable(_), TryCatchClause) => None,
+        (Node::Block(_), TryCatchClause) => Some(Body),
 
         (Node::Statement(statement), Body) if !has_braces(statement) => {
             report_not_supported(
@@ -496,10 +485,8 @@ fn enter(
         (Node::Expression(Expression::Instantiation(instantiation)), Body)
             if matches!(instantiation.class, Expression::Identifier(Identifier::Local(_))) =>
         {
-            if let Some(arguments) = &instantiation.argument_list {
-                check_node(Node::ArgumentList(arguments), Body, checked, context);
-
-                return None;
+            if instantiation.argument_list.is_some() {
+                return Some(Instantiation);
             }
 
             report_not_supported(
@@ -511,15 +498,19 @@ fn enter(
 
             None
         }
+        (Node::Instantiation(_) | Node::Expression(Expression::Identifier(Identifier::Local(_))), Instantiation) => {
+            Some(Instantiation)
+        }
+        (Node::ArgumentList(_), Instantiation) => Some(Body),
         (Node::AssignmentOperator(operator), Body) if is_slice_assignment_operator(operator) => Some(Body),
         (Node::PositionalArgument(argument), Body) if argument.ellipsis.is_none() => Some(Body),
         (Node::MethodCall(call), Body) => {
-            check_member_access(call.span(), call.object, &call.method, MemberUse::Call, checked, context);
+            check_member_access(call.object, &call.method, MemberUse::Call, context);
 
             Some(Body)
         }
         (Node::PropertyAccess(access), Body) => {
-            check_member_access(access.span(), access.object, &access.property, MemberUse::Read, checked, context);
+            check_member_access(access.object, &access.property, MemberUse::Read, context);
 
             Some(Body)
         }
@@ -548,10 +539,15 @@ fn enter(
             if let Expression::Identifier(name @ Identifier::Local(_)) = function_call.function
                 && context.names.binding(name).is_none() =>
         {
-            check_node(Node::ArgumentList(&function_call.argument_list), Body, checked, context);
-
-            None
+            Some(FunctionCall)
         }
+        (
+            Node::Call(Call::Function(_))
+            | Node::FunctionCall(_)
+            | Node::Expression(Expression::Identifier(Identifier::Local(_))),
+            FunctionCall,
+        ) => Some(FunctionCall),
+        (Node::ArgumentList(_), FunctionCall) => Some(Body),
 
         _ => {
             report_unsupported(node, place, context);
@@ -741,9 +737,7 @@ fn report_this_in_initial_value(node: Node<'_, '_>, context: &mut Context<'_, '_
         );
     }
 
-    for child in node.children() {
-        report_this_in_initial_value(child, context);
-    }
+    ensure_sufficient_stack(|| node.visit_children(|child| report_this_in_initial_value(child, context)));
 }
 
 /// How far a visibility modifier reaches: `private` least, then `protected`, then `public`.
@@ -945,7 +939,7 @@ const fn supported(place: Place) -> &'static str {
         Place::Parameter => {
             "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, a name, and an optional default."
         }
-        Place::Body => {
+        Place::Body | Place::Instantiation | Place::FunctionCall | Place::TryCatchClause => {
             "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, `break` and `continue` without a level, and `try` with `catch` and `finally`, with literals, templates, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, `++` and `--`, method calls and property reads written with `.` or `?.`, `new Class(...)`, calls of PHP's built-in functions and `throw`."
         }
         Place::Attribute => {
@@ -1227,19 +1221,18 @@ fn check_variable(variable: &Variable, context: &mut Context<'_, '_, '_>) {
 }
 
 /// Checks `object.member` and `object.member()` once per chain of property reads, from its outermost access. The
-/// spans of the accesses it checks go into `checked`.
+/// member name spans of the accesses it checks go into the context's `slice_members`, because each access has its own
+/// member name and an access's own span grows with the chain before it.
 ///
 /// A chain rooted at a class reaches static members. Reading one without a call or writing one is not supported yet,
 /// and a chain of capitalized names is a full name, which belongs in an `import` line.
 fn check_member_access(
-    access: Span,
     object: &Expression,
     member: &ClassLikeMemberSelector,
     member_use: MemberUse,
-    checked: &mut HashSet<Span>,
     context: &mut Context<'_, '_, '_>,
 ) {
-    if !checked.insert(access) {
+    if !context.slice_members.insert(member.span()) {
         return;
     }
 
@@ -1248,7 +1241,7 @@ fn check_member_access(
     while let Expression::Access(Access::Property(property)) = root
         && let ClassLikeMemberSelector::Identifier(name) = &property.property
     {
-        checked.insert(property.span());
+        context.slice_members.insert(name.span);
         properties.push(name);
         root = property.object;
     }
@@ -1266,7 +1259,7 @@ fn check_member_access(
         if member_use != MemberUse::Call
             && let ClassLikeMemberSelector::Identifier(member) = member
         {
-            report_static_access(root, member, access, member_use, context);
+            report_static_access(root, member, Span::between(root.span(), member.span), member_use, context);
         }
 
         return;
