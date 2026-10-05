@@ -78,6 +78,7 @@ use function count;
 use function defined;
 use function fclose;
 use function fwrite;
+use function get_included_files;
 use function in_array;
 use function is_array;
 use function ob_end_flush;
@@ -612,6 +613,12 @@ final class Worker
     private function handleWorkerRequest(string $payload, CancellationTokenInterface $cancellation): string
     {
         [$kind, $reader] = WorkerProtocol::readRequest($payload);
+        if ($kind === WorkerProtocol::LOADED_FILES_REQUEST) {
+            $reader->finish();
+
+            return WorkerProtocol::writeLoadedFilesResponse(get_included_files());
+        }
+
         if ($kind === WorkerProtocol::COLLECT_REQUEST) {
             $reader->finish();
             $payloads = [];

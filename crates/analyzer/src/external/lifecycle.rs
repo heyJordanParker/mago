@@ -133,6 +133,7 @@ impl<'analysis> SymbolReferenceStore<'analysis> {
 }
 
 #[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FileAnalysisSnapshot {
     file_id: mago_database::file::FileId,
     name: Arc<[u8]>,
@@ -150,6 +151,7 @@ pub struct FileAnalysisSnapshot {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 struct ReferenceSummary {
     body: u64,
     signature: u64,

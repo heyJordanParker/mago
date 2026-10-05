@@ -21,11 +21,13 @@ final class Protocol
 {
     public const COLLECT_REQUEST = 1;
     public const REDUCE_REQUEST = 2;
+    public const LOADED_FILES_REQUEST = 3;
 
     private const MAGIC_U32 = 0x4D45_5854;
-    private const VERSION_U32 = 0x0001_0000;
+    private const VERSION_U32 = 0x0001_0001;
     private const COLLECT_RESPONSE = 0x8001;
     private const REDUCE_RESPONSE = 0x8002;
+    private const LOADED_FILES_RESPONSE = 0x8003;
     private const MAXIMUM_WORKERS = 0x0001_0000;
     private const MAXIMUM_REDUCERS = 0x0000_4000;
 
@@ -35,7 +37,7 @@ final class Protocol
     public static function readRequest(string $payload): array
     {
         [$kind, $reader] = self::readMessage($payload);
-        if ($kind !== self::COLLECT_REQUEST && $kind !== self::REDUCE_REQUEST) {
+        if ($kind !== self::COLLECT_REQUEST && $kind !== self::REDUCE_REQUEST && $kind !== self::LOADED_FILES_REQUEST) {
             throw new ProtocolException("Unknown worker management request kind {$kind}.");
         }
 
@@ -85,6 +87,20 @@ final class Protocol
     public static function writeReduceResponse(): string
     {
         return self::createMessage(self::REDUCE_RESPONSE)->finish();
+    }
+
+    /**
+     * @param list<string> $files
+     */
+    public static function writeLoadedFilesResponse(array $files): string
+    {
+        $writer = self::createMessage(self::LOADED_FILES_RESPONSE);
+        $writer->writeCount($files);
+        foreach ($files as $file) {
+            $writer->writeBytes($file);
+        }
+
+        return $writer->finish();
     }
 
     /**

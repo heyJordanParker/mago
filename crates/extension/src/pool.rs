@@ -1,4 +1,5 @@
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
@@ -29,6 +30,17 @@ const STATE_RUNNING: u8 = 0;
 const STATE_FINALIZING: u8 = 1;
 const STATE_STOPPING: u8 = 2;
 const STATE_STOPPED: u8 = 3;
+
+/// What a broadcast leaves behind for workers started later to replay.
+#[derive(Debug, Clone, Copy)]
+enum Replay {
+    /// Every worker replays the exchange after the ones recorded before it.
+    Append,
+    /// Every worker replays the exchange in place of the group's earlier one.
+    Replace(u64),
+    /// The exchange reads worker state, so nothing replays it.
+    Nothing,
+}
 
 #[derive(Debug, Default)]
 struct PoolTelemetry {
@@ -393,8 +405,27 @@ impl WorkerPool {
     /// restarted after failure. All coordinator threads are joined before the
     /// error is returned.
     pub fn broadcast(&self, payload: &[u8]) -> Result<Vec<Vec<u8>>, WorkerError> {
-        let mut responses = self.broadcast_inner(None, &[payload.to_vec()])?;
+        let mut responses = self.broadcast_inner(Replay::Append, &[payload.to_vec()])?;
         Ok(responses.pop().unwrap_or_default())
+    }
+
+    /// Returns every PHP file the running workers have loaded, sorted and without duplicates, as
+    /// each worker's `get_included_files()` reports them. Workers started later do not replay the
+    /// question, because each worker's answer differs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any worker cannot answer.
+    pub fn loaded_files(&self) -> Result<Vec<PathBuf>, WorkerError> {
+        let responses = self.broadcast_inner(Replay::Nothing, &[reduction::loaded_files_request()])?;
+        let mut files = Vec::new();
+        for (worker, response) in responses.iter().flatten().enumerate() {
+            files.extend(reduction::decode_loaded_files_response(worker, response)?);
+        }
+        files.sort_unstable();
+        files.dedup();
+
+        Ok(files)
     }
 
     /// Returns the maximum payload accepted by a worker frame.
@@ -415,10 +446,10 @@ impl WorkerPool {
     ///
     /// Returns an error if any worker cannot process the complete sequence.
     pub fn broadcast_sequence(&self, group: u64, payloads: &[Vec<u8>]) -> Result<Vec<Vec<Vec<u8>>>, WorkerError> {
-        self.broadcast_inner(Some(group), payloads)
+        self.broadcast_inner(Replay::Replace(group), payloads)
     }
 
-    fn broadcast_inner(&self, group: Option<u64>, payloads: &[Vec<u8>]) -> Result<Vec<Vec<Vec<u8>>>, WorkerError> {
+    fn broadcast_inner(&self, replay: Replay, payloads: &[Vec<u8>]) -> Result<Vec<Vec<Vec<u8>>>, WorkerError> {
         let trace_start = self.trace_enabled.then(Instant::now);
         if self.state.load(Ordering::Acquire) != STATE_RUNNING {
             return Err(WorkerError::Unavailable);
@@ -493,7 +524,7 @@ impl WorkerPool {
         if let Some(error) = first_error {
             self.record_broadcast(payloads.len(), active_workers, trace_start);
             tracing::trace!(
-                ?group,
+                ?replay,
                 workers = active_workers,
                 requests = payloads.len(),
                 request_bytes = payloads.iter().map(Vec::len).sum::<usize>(),
@@ -507,28 +538,12 @@ impl WorkerPool {
             .into_iter()
             .map(|responses| responses.into_iter().flatten().collect::<Vec<_>>())
             .collect::<Vec<_>>();
-        let replacements = payloads
-            .iter()
-            .zip(&responses)
-            .filter_map(|(request, responses)| {
-                responses.first().map(|response| Bootstrap {
-                    group,
-                    request: request.clone(),
-                    response: response.clone(),
-                })
-            })
-            .collect::<Vec<_>>();
-        let mut bootstraps = lock(&self.bootstraps);
-        if group.is_some() {
-            bootstraps.retain(|bootstrap| bootstrap.group != group);
-        }
-        bootstraps.extend(replacements);
-        drop(bootstraps);
+        self.record_replay(replay, payloads, &responses);
 
         if let Some(start) = trace_start {
             self.record_broadcast(payloads.len(), active_workers, Some(start));
             tracing::trace!(
-                ?group,
+                ?replay,
                 workers = active_workers,
                 requests = payloads.len(),
                 request_bytes = payloads.iter().map(Vec::len).sum::<usize>(),
@@ -539,6 +554,24 @@ impl WorkerPool {
         }
 
         Ok(responses)
+    }
+
+    /// Records a successful broadcast for workers started later to replay, as `replay` asks.
+    fn record_replay(&self, replay: Replay, payloads: &[Vec<u8>], responses: &[Vec<Vec<u8>>]) {
+        let group = match replay {
+            Replay::Nothing => return,
+            Replay::Append => None,
+            Replay::Replace(group) => Some(group),
+        };
+        let replacements = payloads.iter().zip(responses).filter_map(|(request, responses)| {
+            responses.first().map(|response| Bootstrap { group, request: request.clone(), response: response.clone() })
+        });
+
+        let mut bootstraps = lock(&self.bootstraps);
+        if group.is_some() {
+            bootstraps.retain(|bootstrap| bootstrap.group != group);
+        }
+        bootstraps.extend(replacements);
     }
 
     fn record_broadcast(&self, requests: usize, workers: usize, started_at: Option<Instant>) {

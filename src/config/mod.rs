@@ -699,7 +699,7 @@ impl Configuration {
     ///
     /// This method logs warnings and informational messages when values are adjusted,
     /// helping users understand how their configuration was interpreted.
-    fn normalize(&mut self) -> Result<(), Error> {
+    pub(crate) fn normalize(&mut self) -> Result<(), Error> {
         match self.threads {
             0 => {
                 tracing::info!("Thread configuration is zero, using the number of logical CPUs: {}.", *LOGICAL_CPUS);

@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 use std::path::PathBuf;
 use std::process::Command;
+use std::process::Output;
 
 use mago_database::DatabaseConfiguration;
 use mago_database::GlobSettings;
@@ -15,6 +16,14 @@ pub fn php_sdk_is_available(repository: &std::path::Path, test: &str) -> bool {
         "PHP and vendor dependencies are required for {test}"
     );
     available
+}
+
+/// Runs `command` against an analysis server of its own, which stops once its runtime folder is
+/// removed after the command returns. The folder lies under `/tmp`, so the socket path stays within
+/// the Unix limit, and the cache folder cannot be created, so the server leaves no overlay behind.
+pub fn output_with_own_server(command: &mut Command) -> std::io::Result<Output> {
+    let runtime = tempfile::Builder::new().prefix("mago").tempdir_in("/tmp")?;
+    command.env("XDG_RUNTIME_DIR", runtime.path()).env("XDG_CACHE_HOME", "/dev/null").output()
 }
 
 pub fn database_configuration(

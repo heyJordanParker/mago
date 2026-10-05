@@ -40,7 +40,7 @@ fn workspace(repository: &Path, source: &str) -> tempfile::TempDir {
 fn command(workspace: &Path, arguments: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_mago"));
     command
-        .args(["--no-version-check", "--colors", "never", "analyze", "--reporting-format", "json"])
+        .args(["--no-version-check", "--colors", "never", "analyze", "--no-server", "--reporting-format", "json"])
         .args(arguments)
         .current_dir(workspace);
     command

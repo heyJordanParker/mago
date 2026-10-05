@@ -61,6 +61,7 @@ use crate::service::telemetry::SlowestFiles;
 
 /// Per-file cached state for incremental analysis.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 struct FileState {
     content_hash: u64,
     entry_keys: CodebaseEntryKeys,
@@ -292,6 +293,100 @@ impl IncrementalAnalysisService {
     #[must_use]
     pub fn tracked_file_count(&self) -> usize {
         self.file_states.len()
+    }
+
+    /// Encodes the state the last analysis left, so [`restore`](Self::restore) resumes from it in
+    /// another process.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OrchestratorError::General`] before the first analysis, or when encoding fails.
+    #[cfg(feature = "serde")]
+    pub fn encode(&self) -> Result<Vec<u8>, OrchestratorError> {
+        if !self.initialized {
+            return Err(OrchestratorError::General("no analysis has run, so there is no state to encode".to_string()));
+        }
+
+        bincode::serde::encode_to_vec(
+            (
+                &self.codebase,
+                &self.symbol_references,
+                &self.native_symbol_references,
+                &self.external_symbol_references,
+                &self.late_symbol_references,
+                &self.file_states,
+                &self.codebase_issues,
+                &self.lifecycle_issues,
+                &self.analysis_snapshots,
+                &self.codebase_scan_files,
+            ),
+            bincode::config::standard(),
+        )
+        .map_err(|error| OrchestratorError::General(format!("failed to encode the analysis state: {error}")))
+    }
+
+    /// Resumes from [`encode`](Self::encode)d state, so the next analysis is incremental.
+    ///
+    /// Replays the codebase scan, because the extension workers that read it started after the
+    /// state was encoded. The refinements they return are already part of the restored codebase.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OrchestratorError`] when the bytes do not decode or the codebase scan fails.
+    #[cfg(feature = "serde")]
+    pub fn restore(&mut self, bytes: &[u8]) -> Result<(), OrchestratorError> {
+        type Encoded = (
+            CodebaseMetadata,
+            SymbolReferences,
+            SymbolReferences,
+            SymbolReferences,
+            SymbolReferences,
+            HashMap<FileId, FileState>,
+            IssueCollection,
+            IssueCollection,
+            HashMap<FileId, Arc<FileAnalysisSnapshot>>,
+            HashMap<FileId, CodebaseScanFile>,
+        );
+
+        let (
+            (
+                codebase,
+                symbol_references,
+                native_symbol_references,
+                external_symbol_references,
+                late_symbol_references,
+                file_states,
+                codebase_issues,
+                lifecycle_issues,
+                analysis_snapshots,
+                codebase_scan_files,
+            ),
+            _,
+        ): (Encoded, usize) = bincode::serde::decode_from_slice(bytes, bincode::config::standard())
+            .map_err(|error| OrchestratorError::General(format!("failed to decode the analysis state: {error}")))?;
+
+        self.codebase_scan_plan = self
+            .plugin_registry
+            .external_codebase_scan_plan()
+            .map_err(mago_analyzer::error::AnalysisError::from)?
+            .map(Arc::new);
+        self.plugin_registry
+            .run_external_codebase_scan(codebase_scan_files.values().cloned().collect())
+            .map_err(mago_analyzer::error::AnalysisError::from)?;
+
+        self.codebase = codebase;
+        self.symbol_references = symbol_references;
+        self.native_symbol_references = native_symbol_references;
+        self.external_symbol_references = external_symbol_references;
+        self.late_symbol_references = late_symbol_references;
+        self.file_states = file_states;
+        self.codebase_issues = codebase_issues;
+        self.lifecycle_issues = lifecycle_issues;
+        self.analysis_snapshots = analysis_snapshots;
+        self.codebase_scan_files = codebase_scan_files;
+        self.initialized = true;
+
+        Ok(())
     }
 
     /// Merges `new_file_scans` into `merged_codebase` and re-applies patches so member

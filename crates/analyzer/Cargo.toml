@@ -38,6 +38,10 @@ diffy = { workspace = true }
 itoa = { workspace = true }
 ryu = { workspace = true }
 memchr = { workspace = true }
+serde = { workspace = true, features = ["rc"], optional = true }
+
+[features]
+serde = ["dep:serde", "mago-codex/serde", "mago-collector/serde", "mago-database/serde", "mago-reporting/serde"]
 
 [dev-dependencies]
 mago-prelude = { workspace = true, features = ["build"] }

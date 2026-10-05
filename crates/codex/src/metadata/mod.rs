@@ -57,6 +57,7 @@ pub mod version_constraint;
 /// merged codebase without keeping a full `CodebaseMetadata` clone per file.
 /// Created via [`CodebaseMetadata::extract_keys()`].
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CodebaseEntryKeys {
     /// Class-like FQCN atoms (also used for symbol removal).
     pub class_like_names: Vec<Word>,

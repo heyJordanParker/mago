@@ -62,6 +62,7 @@ use mago_database::watcher::WatchOptions;
 use mago_orchestrator::Orchestrator;
 use mago_prelude::Prelude;
 use mago_reporting::CompiledIgnoreSet;
+use mago_reporting::IssueCollection;
 use mago_server::Server;
 use mago_server::Settings as ServerSettings;
 
@@ -75,8 +76,16 @@ use crate::consts::PRELUDE_BYTES;
 use crate::error::Error;
 use crate::extensions::initialize_external_analyzer;
 use crate::extensions::start_external_analyzer;
+#[cfg(unix)]
+use crate::server;
+#[cfg(unix)]
+use crate::server::Analyzed;
+#[cfg(unix)]
+use crate::server::Check;
 use crate::utils::create_orchestrator;
 use crate::utils::git;
+#[cfg(unix)]
+use crate::utils::should_use_colors;
 
 /// The outcome of a watch mode session.
 enum WatchOutcome {
@@ -186,6 +195,14 @@ pub struct AnalyzeCommand {
     #[arg(long, conflicts_with_all = ["list_codes", "watch", "staged", "stdin_input"])]
     pub scan_only: bool,
 
+    /// Analyze the whole project in this process instead of asking the analysis server.
+    ///
+    /// On Unix, `mago analyze` asks the analysis server of this Mago build, which starts on first
+    /// use and keeps the project's analysis warm, so a check re-analyzes only what changed. With
+    /// this flag the check analyzes the project from scratch, as it does on Windows.
+    #[arg(long)]
+    pub no_server: bool,
+
     /// Hidden flag to catch `--only` usage and show a helpful error.
     #[arg(long, hide = true, num_args = 1..)]
     pub only: Vec<String>,
@@ -260,6 +277,11 @@ impl AnalyzeCommand {
         // Check if watch mode is enabled early, since it needs a restart loop
         if self.watch {
             return self.run_watch_loop(configuration, color_choice).map(CommandOutcome::from);
+        }
+
+        #[cfg(unix)]
+        if !self.no_server && !self.stdin_input && !self.scan_only && self.substitution.substitutions.is_empty() {
+            return self.execute_through_server(&configuration, color_choice);
         }
 
         let trace_enabled = tracing::enabled!(tracing::Level::TRACE);
@@ -347,34 +369,11 @@ impl AnalyzeCommand {
         if let Some(scope) = scope {
             server = server.scoped_to(scope);
         }
-        let mut issues = server.analyze()?.issues;
+        let issues = server.analyze()?.issues;
         let service_run_duration = service_run_start.map(|s| s.elapsed());
         let report_start = trace_enabled.then(Instant::now);
-        let ignore_set = self.compile_ignore_set(&configuration);
-        let database = server.database_mut();
-
-        issues.filter_out_ignored(&ignore_set, |file_id| {
-            database.get_ref(&file_id).ok().map(|f| String::from_utf8_lossy(&f.name).into_owned())
-        });
-
-        let baseline = if self.scan_only { None } else { configuration.analyzer.baseline.as_deref() };
-        let baseline_variant = configuration.analyzer.baseline_variant;
-        let processor = self.baseline_reporting.get_processor(
-            color_choice,
-            baseline,
-            baseline_variant,
-            configuration.editor_url.clone(),
-            configuration.analyzer.minimum_fail_level,
-            self.staged || !self.path.is_empty() || self.stdin_input,
-        );
-
-        let (exit_code, changed_file_ids) = processor.process_issues(&orchestrator, database, issues)?;
-        let outcome = CommandOutcome::with_changes(exit_code, database, changed_file_ids.iter().copied())?;
+        let outcome = self.report(&configuration, color_choice, &orchestrator, server.database_mut(), issues)?;
         let report_duration = report_start.map(|s| s.elapsed());
-
-        if self.staged && !changed_file_ids.is_empty() {
-            git::stage_files(&configuration.source.workspace, database, changed_file_ids)?;
-        }
 
         let drop_server_start = trace_enabled.then(Instant::now);
         drop(server);
@@ -394,6 +393,94 @@ impl AnalyzeCommand {
             tracing::trace!("Server dropped in {:?}.", drop_server_duration.unwrap_or_default());
             tracing::trace!("Orchestrator dropped in {:?}.", drop_orchestrator_duration.unwrap_or_default());
             tracing::trace!("Analyze command finished in {:?}.", start.elapsed());
+        }
+
+        Ok(outcome)
+    }
+
+    /// Asks the analysis server for the issues and reports them, as [`Self::execute`] reports the
+    /// issues of an analysis in this process.
+    ///
+    /// A named path outside the configured source paths joins them, as a run in this process adds
+    /// it, so the server answers from the worktree that run would analyze.
+    #[cfg(unix)]
+    fn execute_through_server(
+        &self,
+        configuration: &Configuration,
+        color_choice: ColorChoice,
+    ) -> Result<CommandOutcome, Error> {
+        let workspace = configuration.source.workspace.as_path();
+        let named = if self.staged {
+            let staged_paths = git::get_staged_file_paths(workspace)?;
+            if staged_paths.is_empty() {
+                tracing::info!("No staged files to analyze.");
+                return Ok(ExitCode::SUCCESS.into());
+            }
+
+            if self.baseline_reporting.reporting.fix {
+                git::ensure_staged_files_are_clean(workspace, &staged_paths)?;
+            }
+
+            staged_paths
+        } else {
+            self.path.clone()
+        };
+
+        let mut orchestrator = create_orchestrator(configuration, color_choice, false, true, false);
+        analyze_the_whole_workspace_without_paths(&mut orchestrator);
+        orchestrator.add_exclude_patterns(configuration.analyzer.excludes.iter());
+        let sources = WorkspaceMatcher::from_configuration(&orchestrator.database_configuration(workspace, true))?;
+
+        let mut checked = configuration.clone();
+        let outside = named.iter().filter(|path| !sources.covers(&workspace.join(path))).collect::<Vec<_>>();
+        if !outside.is_empty() && checked.source.paths.is_empty() {
+            checked.source.paths.push(".".to_owned());
+        }
+        checked.source.paths.extend(outside.into_iter().map(|path| path.to_string_lossy().into_owned()));
+
+        let colors = should_use_colors(color_choice);
+        let Analyzed { issues, files } = server::analyze(Check::new(checked, colors, !self.no_stubs, named))?;
+
+        let mut database =
+            Database::new(DatabaseConfiguration::new(workspace, vec![], vec![], vec![], vec![]).into_static());
+        for file in files {
+            database.add(file);
+        }
+
+        self.report(configuration, color_choice, &orchestrator, &mut database, issues)
+    }
+
+    /// Filters out ignored issues, reports the rest against the baseline, applies fixes, and stages
+    /// the files they changed for `--staged`.
+    fn report(
+        &self,
+        configuration: &Configuration,
+        color_choice: ColorChoice,
+        orchestrator: &Orchestrator<'_>,
+        database: &mut Database<'static>,
+        mut issues: IssueCollection,
+    ) -> Result<CommandOutcome, Error> {
+        let ignore_set = self.compile_ignore_set(configuration);
+        issues.filter_out_ignored(&ignore_set, |file_id| {
+            database.get_ref(&file_id).ok().map(|f| String::from_utf8_lossy(&f.name).into_owned())
+        });
+
+        let baseline = if self.scan_only { None } else { configuration.analyzer.baseline.as_deref() };
+        let baseline_variant = configuration.analyzer.baseline_variant;
+        let processor = self.baseline_reporting.get_processor(
+            color_choice,
+            baseline,
+            baseline_variant,
+            configuration.editor_url.clone(),
+            configuration.analyzer.minimum_fail_level,
+            self.staged || !self.path.is_empty() || self.stdin_input,
+        );
+
+        let (exit_code, changed_file_ids) = processor.process_issues(orchestrator, database, issues)?;
+        let outcome = CommandOutcome::with_changes(exit_code, database, changed_file_ids.iter().copied())?;
+
+        if self.staged && !changed_file_ids.is_empty() {
+            git::stage_files(&configuration.source.workspace, database, changed_file_ids)?;
         }
 
         Ok(outcome)
@@ -436,7 +523,7 @@ impl AnalyzeCommand {
             analyze_the_whole_workspace_without_paths(&mut orchestrator);
             orchestrator.add_exclude_patterns(configuration.analyzer.excludes.iter());
 
-            if let Some(external_analyzer) = initialize_external_analyzer(
+            if let Some((external_analyzer, _)) = initialize_external_analyzer(
                 &configuration.extension_hosts,
                 configuration.php_version,
                 configuration.threads,
@@ -570,7 +657,7 @@ impl AnalyzeCommand {
 }
 
 /// Projects the orchestrator's resolved configuration down to what an analysis server needs.
-fn server_settings(orchestrator: &Orchestrator<'_>) -> ServerSettings {
+pub(crate) fn server_settings(orchestrator: &Orchestrator<'_>) -> ServerSettings {
     ServerSettings {
         parser: orchestrator.config.parser_settings,
         analyzer: orchestrator.config.analyzer_settings.clone(),
@@ -580,7 +667,7 @@ fn server_settings(orchestrator: &Orchestrator<'_>) -> ServerSettings {
 }
 
 /// Makes an empty `[source] paths` mean the whole workspace, as the configuration documents.
-fn analyze_the_whole_workspace_without_paths(orchestrator: &mut Orchestrator<'_>) {
+pub(crate) fn analyze_the_whole_workspace_without_paths(orchestrator: &mut Orchestrator<'_>) {
     if orchestrator.config.paths.is_empty() {
         orchestrator.config.paths.push(".".to_owned());
     }
@@ -629,7 +716,7 @@ fn scope_to(
 }
 
 /// Decodes the embedded prelude's codebase and symbol references.
-fn decode_prelude() -> (CodebaseMetadata, SymbolReferences) {
+pub(crate) fn decode_prelude() -> (CodebaseMetadata, SymbolReferences) {
     let Prelude { metadata, symbol_references, .. } =
         Prelude::decode(PRELUDE_BYTES).expect("Failed to decode embedded prelude");
 

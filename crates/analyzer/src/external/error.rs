@@ -10,13 +10,33 @@ pub enum ExternalAnalyzerError {
     InconsistentRegistration,
     InconsistentInitialization,
     DuplicateExtension(String),
-    DuplicatePluginSelector { selector: String, first: String, second: String },
+    DuplicatePluginSelector {
+        selector: String,
+        first: String,
+        second: String,
+    },
+    /// The extension host at `index`, in the order its pool was given, failed to register.
+    Host {
+        index: usize,
+        name: Option<String>,
+        source: Box<ExternalAnalyzerError>,
+    },
 }
 
 impl ExternalAnalyzerError {
     #[must_use]
     pub fn protocol(message: impl Into<String>) -> Self {
         Self::Protocol(message.into())
+    }
+
+    /// Names the extension host a registration error came from, given every host's name in the
+    /// order its pool was given.
+    #[must_use]
+    pub fn with_host_names(self, names: &[String]) -> Self {
+        match self {
+            Self::Host { index, source, .. } => Self::Host { index, name: names.get(index).cloned(), source },
+            error => error,
+        }
     }
 }
 
@@ -41,6 +61,8 @@ impl std::fmt::Display for ExternalAnalyzerError {
             Self::DuplicatePluginSelector { selector, first, second } => {
                 write!(formatter, "analyzer plugin selector `{selector}` is shared by plugins `{first}` and `{second}`")
             }
+            Self::Host { name: Some(name), source, .. } => write!(formatter, "extension host \"{name}\": {source}"),
+            Self::Host { index, name: None, source } => write!(formatter, "extension host {index}: {source}"),
         }
     }
 }
@@ -49,6 +71,7 @@ impl std::error::Error for ExternalAnalyzerError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Worker(error) => Some(error),
+            Self::Host { source, .. } => Some(source),
             _ => None,
         }
     }

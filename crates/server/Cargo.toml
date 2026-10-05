@@ -16,7 +16,7 @@ workspace = true
 mago-analyzer = { workspace = true }
 mago-codex = { workspace = true }
 mago-database = { workspace = true, features = ["loader"] }
-mago-orchestrator = { workspace = true }
+mago-orchestrator = { workspace = true, features = ["serde"] }
 mago-reporting = { workspace = true }
 mago-syntax = { workspace = true }
 foldhash = { workspace = true }

@@ -141,7 +141,35 @@ impl WorkspaceMatcher {
         self.classify(path).is_some()
     }
 
-    fn is_excluded(&self, canonical: &Path) -> bool {
+    /// Returns `true` if adding `path` to the configured `paths` leaves the database unchanged:
+    /// `path` lies under a configured path, outside every exclude, and no `includes` or `patches`
+    /// root lies inside it or around it.
+    #[must_use]
+    pub fn covers(&self, path: &Path) -> bool {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+
+        max_specificity(&self.host_bases, &canonical).is_some()
+            && !self.is_excluded(&canonical)
+            && self
+                .include_bases
+                .iter()
+                .chain(self.patch_bases.iter())
+                .all(|(base, _)| !base.starts_with(&canonical) && !canonical.starts_with(base))
+    }
+
+    /// The canonical directories and files every configured `paths`, `includes` and `patches`
+    /// pattern is rooted at. Every file of the database lies under one of them.
+    pub fn roots(&self) -> impl Iterator<Item = &Path> {
+        self.host_bases
+            .iter()
+            .chain(self.include_bases.iter())
+            .chain(self.patch_bases.iter())
+            .map(|(base, _)| base.as_path())
+    }
+
+    /// Returns `true` if an exclude matches the canonical `path`.
+    #[must_use]
+    pub fn is_excluded(&self, canonical: &Path) -> bool {
         if !self.glob_excludes.is_empty() {
             if self.glob_excludes.is_match(canonical) {
                 return true;
@@ -324,5 +352,22 @@ mod tests {
         let matcher = matcher(&config(&dir, &[], &[], vec![]));
 
         assert_eq!(matcher.classify(&dir.path().join("anywhere/Foo.php")), Some(FileType::Host));
+    }
+
+    #[test]
+    fn a_path_inside_the_configured_paths_and_clear_of_includes_is_covered() {
+        let dir = TempDir::new().unwrap();
+        touch(&dir, "src/Foo.php");
+        touch(&dir, "src/lib/Bar.php");
+        touch(&dir, "scripts/build.php");
+        touch(&dir, "src/cache/Baz.php");
+        let excludes = vec![Exclusion::Path(Cow::Owned(dir.path().join("src/cache")))];
+        let matcher = matcher(&config(&dir, &["src"], &["src/lib"], excludes));
+
+        assert!(matcher.covers(&dir.path().join("src/Foo.php")));
+        assert!(!matcher.covers(&dir.path().join("scripts/build.php")), "outside every configured path");
+        assert!(!matcher.covers(&dir.path().join("src/cache/Baz.php")), "excluded");
+        assert!(!matcher.covers(&dir.path().join("src/lib/Bar.php")), "inside an included root");
+        assert!(!matcher.covers(&dir.path().join("src")), "around an included root");
     }
 }

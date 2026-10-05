@@ -71,6 +71,8 @@ mod consts;
 mod error;
 mod extensions;
 mod macros;
+#[cfg(unix)]
+mod server;
 mod service;
 mod updater;
 mod utils;
@@ -285,6 +287,8 @@ pub fn run(main_start: Instant) -> Result<ExitCode, Error> {
         MagoCommand::Cst(cmd) => cmd.execute(configuration, arguments.colors),
         MagoCommand::Analyze(cmd) => cmd.execute(configuration, arguments.colors).map(|outcome| outcome.exit_code),
         MagoCommand::Guard(cmd) => cmd.execute(configuration, arguments.colors).map(|outcome| outcome.exit_code),
+        #[cfg(unix)]
+        MagoCommand::Server(cmd) => cmd.execute(configuration, arguments.colors),
         MagoCommand::InspectBaseline(cmd) => cmd.execute(configuration, arguments.colors),
         MagoCommand::GenerateCompletions(cmd) => cmd.execute(),
         MagoCommand::SelfUpdate(_) => {

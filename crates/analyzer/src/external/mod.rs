@@ -3170,19 +3170,25 @@ where
                 "Describing external analyzer backend."
             );
 
-            let responses = transport.broadcast(&describe)?;
-            let response_bytes = responses.iter().map(Vec::len).sum::<usize>();
-            let mut decoded = responses.iter().map(|response| protocol::decode_registration(response));
-            let Some(first) = decoded.next() else {
-                return Err(error::protocol("worker pool returned no analyzer registration responses"));
-            };
+            let describe_backend = || {
+                let responses = transport.broadcast(&describe)?;
+                let mut decoded = responses.iter().map(|response| protocol::decode_registration(response));
+                let Some(first) = decoded.next() else {
+                    return Err(error::protocol("worker pool returned no analyzer registration responses"));
+                };
 
-            let mut registration = first?;
-            for response in decoded {
-                if response? != registration {
-                    return Err(ExternalAnalyzerError::InconsistentRegistration);
+                let registration = first?;
+                for response in decoded {
+                    if response? != registration {
+                        return Err(ExternalAnalyzerError::InconsistentRegistration);
+                    }
                 }
-            }
+
+                Ok((registration, responses.len(), responses.iter().map(Vec::len).sum::<usize>()))
+            };
+            let (mut registration, workers, response_bytes) = describe_backend().map_err(|source| {
+                ExternalAnalyzerError::Host { index: backend_index, name: None, source: Box::new(source) }
+            })?;
 
             for extension in &registration.extensions {
                 if !extension_identifiers.insert(extension.identifier.to_ascii_lowercase()) {
@@ -3294,7 +3300,7 @@ where
             if let Some(start) = backend_start {
                 tracing::trace!(
                     backend = backend_index,
-                    workers = responses.len(),
+                    workers,
                     response_bytes,
                     extensions = registration.extensions.len(),
                     plugins = registration.plugins.len(),

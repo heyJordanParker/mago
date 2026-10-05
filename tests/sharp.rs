@@ -13,6 +13,8 @@ use mago_orchestrator::service::lint::LintMode;
 use mago_orchestrator::service::lint::LintService;
 use mago_syntax::settings::ParserSettings;
 
+mod common;
+
 const REPORT: &str = include_str!("fixtures/sharp/Report.sharp");
 
 /// A PHP class whose property read on a possibly `null` value gets the analyzer's `?->` fix.
@@ -36,13 +38,14 @@ fn workspace(report: &str) -> tempfile::TempDir {
 }
 
 fn run(workspace: &Path, command: &str, arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_mago"))
-        .args(["--no-version-check", "--colors", "never", command])
-        .args(arguments)
-        .env("MAGO_LOG", "info")
-        .current_dir(workspace)
-        .output()
-        .unwrap()
+    common::output_with_own_server(
+        Command::new(env!("CARGO_BIN_EXE_mago"))
+            .args(["--no-version-check", "--colors", "never", command])
+            .args(arguments)
+            .env("MAGO_LOG", "info")
+            .current_dir(workspace),
+    )
+    .unwrap()
 }
 
 fn report(workspace: &Path) -> String {

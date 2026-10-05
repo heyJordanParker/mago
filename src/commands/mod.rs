@@ -70,6 +70,8 @@ use crate::commands::inspect_baseline::InspectBaselineCommand;
 use crate::commands::lint::LintCommand;
 use crate::commands::list_files::ListFilesCommand;
 use crate::commands::self_update::SelfUpdateCommand;
+#[cfg(unix)]
+use crate::commands::server::ServerCommand;
 use crate::error::Error;
 
 mod args;
@@ -88,6 +90,8 @@ pub mod lint;
 pub mod list_files;
 mod outcome;
 pub mod self_update;
+#[cfg(unix)]
+pub mod server;
 pub mod stdin_input;
 
 /// ANSI color styling configuration for Mago's CLI output.
@@ -218,6 +222,15 @@ pub enum MagoCommand {
     /// **Usage**: `mago guard [OPTIONS]`
     #[command(name = "guard")]
     Guard(GuardCommand),
+
+    /// Manage the analysis server that keeps every worktree's analysis warm.
+    ///
+    /// `mago analyze` starts the server of its build on first use and asks it for each check.
+    ///
+    /// **Usage**: `mago server start|stop|status|verify`
+    #[cfg(unix)]
+    #[command(name = "server")]
+    Server(ServerCommand),
 
     /// Inspect and visualize a baseline file.
     ///
