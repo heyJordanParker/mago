@@ -48,13 +48,13 @@ pub const PHP_EXTENSION: &str = "php";
 pub const SHARP_EXTENSION: &str = "sharp";
 
 /// The name of the repository owner.
-pub const REPO_OWNER: &str = "carthage-software";
+pub const REPO_OWNER: &str = "heyJordanParker";
 
 /// The name of the repository.
-pub const REPO_NAME: &str = "mago";
+pub const REPO_NAME: &str = "mago-sharp";
 
 /// The URL for creating new issues.
-pub const ISSUE_URL: &str = "https://github.com/carthage-software/mago/issues/new";
+pub const ISSUE_URL: &str = "https://github.com/heyJordanParker/mago-sharp/issues/new";
 
 /// The name of the environment variable prefix for mago.
 pub const ENVIRONMENT_PREFIX: &str = "MAGO";
