@@ -7,15 +7,13 @@ use mago_orchestrator::Orchestrator;
 use crate::error::Error;
 
 /// When `--stdin-input` is used: validates exactly one path, reads stdin,
-/// computes workspace-relative logical name (with `./` normalization),
-/// sets the orchestrator source path to that single path, and returns
+/// computes workspace-relative logical name (with `./` normalization), and returns
 /// `Some((logical_name, content))` for `load_database(..., stdin_override)`.
-/// Otherwise returns `None`.
+/// Otherwise returns `None`. The caller decides which source paths the file joins.
 pub fn resolve_stdin_override(
     stdin_input: bool,
     path: &[std::path::PathBuf],
     workspace: &Path,
-    orchestrator: &mut Orchestrator,
 ) -> Result<Option<(String, Vec<u8>)>, Error> {
     if !stdin_input {
         return Ok(None);
@@ -39,13 +37,12 @@ pub fn resolve_stdin_override(
         logical_name = logical_name.split_off(2);
     }
 
-    orchestrator.set_source_paths([path.to_string_lossy().to_string()]);
     Ok(Some((logical_name, content)))
 }
 
 /// Sets the orchestrator source paths from the given path list.
-/// Call when not using stdin and the path list is non-empty (e.g. after
-/// handling a possible `--staged` branch in analyze/lint).
+/// Call when the path list is non-empty (e.g. after handling a possible
+/// `--staged` branch in lint), including the one path `--stdin-input` names.
 pub fn set_source_paths_from_paths(orchestrator: &mut Orchestrator, paths: &[std::path::PathBuf]) {
     if paths.is_empty() {
         return;

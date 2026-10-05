@@ -67,6 +67,7 @@ use mago_server::Server;
 use mago_server::Settings as ServerSettings;
 
 use crate::commands::args::baseline_reporting::BaselineReportingArgs;
+use crate::commands::args::substitution::Substitution;
 use crate::commands::args::substitution::SubstitutionArgs;
 use crate::commands::outcome::CommandOutcome;
 use crate::commands::stdin_input;
@@ -271,49 +272,32 @@ impl AnalyzeCommand {
             substitutions.iter().map(|s| s.original.to_string_lossy().into_owned()).collect();
 
         let mut orchestrator = create_orchestrator(&configuration, color_choice, false, true, false);
+        analyze_the_whole_workspace_without_paths(&mut orchestrator);
         orchestrator.add_exclude_patterns(configuration.analyzer.excludes.iter());
         orchestrator.add_exclude_patterns(substitution_excludes.iter());
         for substitution in &substitutions {
             orchestrator.config.paths.push(substitution.temporary.to_string_lossy().into_owned());
         }
 
-        let stdin_override = stdin_input::resolve_stdin_override(
-            self.stdin_input,
-            &self.path,
-            &configuration.source.workspace,
-            &mut orchestrator,
-        )?;
+        let stdin_override =
+            stdin_input::resolve_stdin_override(self.stdin_input, &self.path, &configuration.source.workspace)?;
 
+        let workspace = configuration.source.workspace.as_path();
         let mut scope = None;
         if !self.stdin_input && self.staged {
-            let staged_paths = git::get_staged_file_paths(&configuration.source.workspace)?;
+            let staged_paths = git::get_staged_file_paths(workspace)?;
             if staged_paths.is_empty() {
                 tracing::info!("No staged files to analyze.");
                 return Ok(ExitCode::SUCCESS.into());
             }
 
             if self.baseline_reporting.reporting.fix {
-                git::ensure_staged_files_are_clean(&configuration.source.workspace, &staged_paths)?;
+                git::ensure_staged_files_are_clean(workspace, &staged_paths)?;
             }
 
-            orchestrator.set_source_paths(staged_paths.iter().map(|p| p.to_string_lossy().to_string()));
-        } else if !self.stdin_input && !self.path.is_empty() {
-            let paths = self.path.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>();
-            scope = Some(WorkspaceMatcher::from_configuration(&DatabaseConfiguration {
-                workspace: Cow::Borrowed(configuration.source.workspace.as_path()),
-                paths: paths.iter().map(|path| Cow::Borrowed(path.as_bytes())).collect(),
-                includes: Vec::new(),
-                patches: Vec::new(),
-                excludes: Vec::new(),
-                extensions: orchestrator
-                    .config
-                    .extensions
-                    .iter()
-                    .map(|extension| Cow::Borrowed(extension.as_bytes()))
-                    .collect(),
-                glob: orchestrator.config.glob,
-            })?);
-            orchestrator.config.paths.extend(paths);
+            scope = Some(scope_to(&mut orchestrator, workspace, &staged_paths, &substitutions)?);
+        } else if !self.path.is_empty() {
+            scope = Some(scope_to(&mut orchestrator, workspace, &self.path, &substitutions)?);
         }
 
         let orchestrator_init_duration = orchestrator_init_start.map(|s| s.elapsed());
@@ -451,6 +435,7 @@ impl AnalyzeCommand {
             let database = self.prelude_database();
 
             let mut orchestrator = create_orchestrator(&configuration, color_choice, false, false, true);
+            analyze_the_whole_workspace_without_paths(&mut orchestrator);
             orchestrator.add_exclude_patterns(configuration.analyzer.excludes.iter());
 
             if let Some(external_analyzer) = initialize_external_analyzer(
@@ -465,11 +450,13 @@ impl AnalyzeCommand {
                 orchestrator.set_external_analyzer(external_analyzer);
             }
 
-            if !self.path.is_empty() {
-                orchestrator.set_source_paths(self.path.iter().map(|p| p.to_string_lossy().to_string()));
-            }
+            let scope = if self.path.is_empty() {
+                None
+            } else {
+                Some(scope_to(&mut orchestrator, &configuration.source.workspace, &self.path, &[])?)
+            };
 
-            match self.run_watch_mode(orchestrator, &configuration, color_choice, database)? {
+            match self.run_watch_mode(orchestrator, &configuration, color_choice, database, scope.as_ref())? {
                 WatchOutcome::Restart(reason) => {
                     tracing::info!("Restarting analysis: {reason}");
 
@@ -511,6 +498,7 @@ impl AnalyzeCommand {
         configuration: &Configuration,
         color_choice: ColorChoice,
         prelude_database: Database<'static>,
+        scope: Option<&WorkspaceMatcher>,
     ) -> Result<WatchOutcome, Error> {
         tracing::info!("Starting watch mode. Press Ctrl+C to stop.");
 
@@ -532,7 +520,10 @@ impl AnalyzeCommand {
 
         let ignore_set = self.compile_ignore_set(configuration);
 
-        let mut issues = analysis_result.issues;
+        let mut issues = match scope {
+            Some(scope) => server.issues_in(scope),
+            None => analysis_result.issues,
+        };
 
         issues.filter_out_ignored(&ignore_set, |file_id| {
             server.database().get_ref(&file_id).ok().map(|f| String::from_utf8_lossy(&f.name).into_owned())
@@ -582,7 +573,10 @@ impl AnalyzeCommand {
 
             let analysis_result = server.analyze_incremental(&changed_file_ids)?;
 
-            let mut issues = analysis_result.issues;
+            let mut issues = match scope {
+                Some(scope) => server.issues_in(scope),
+                None => analysis_result.issues,
+            };
             issues.filter_out_ignored(&ignore_set, |file_id| {
                 server.database().get_ref(&file_id).ok().map(|f| String::from_utf8_lossy(&f.name).into_owned())
             });
@@ -604,6 +598,55 @@ fn server_settings(orchestrator: &Orchestrator<'_>) -> ServerSettings {
         plugin_registry: orchestrator.get_analyzer_plugin_registry(),
         use_progress_bars: orchestrator.config.use_progress_bars,
     }
+}
+
+/// Makes an empty `[source] paths` mean the whole workspace, as the configuration documents.
+fn analyze_the_whole_workspace_without_paths(orchestrator: &mut Orchestrator<'_>) {
+    if orchestrator.config.paths.is_empty() {
+        orchestrator.config.paths.push(".".to_owned());
+    }
+}
+
+/// Adds the `named` files to the host paths and returns the scope that reports only their issues.
+///
+/// The rest of the workspace stays loaded, so rules that judge files against each other still see
+/// it. A named file that `--substitute` replaces is scoped by its replacement.
+fn scope_to(
+    orchestrator: &mut Orchestrator<'_>,
+    workspace: &Path,
+    named: &[PathBuf],
+    substitutions: &[Substitution],
+) -> Result<WorkspaceMatcher, Error> {
+    let paths = named
+        .iter()
+        .map(|path| {
+            let substituted = workspace.join(path).canonicalize().ok().and_then(|named| {
+                substitutions
+                    .iter()
+                    .find(|substitution| substitution.original.canonicalize().is_ok_and(|original| original == named))
+            });
+
+            substituted.map_or(path, |substitution| &substitution.temporary).to_string_lossy().into_owned()
+        })
+        .collect::<Vec<_>>();
+
+    let scope = WorkspaceMatcher::from_configuration(&DatabaseConfiguration {
+        workspace: Cow::Borrowed(workspace),
+        paths: paths.iter().map(|path| Cow::Borrowed(path.as_bytes())).collect(),
+        includes: Vec::new(),
+        patches: Vec::new(),
+        excludes: Vec::new(),
+        extensions: orchestrator
+            .config
+            .extensions
+            .iter()
+            .map(|extension| Cow::Borrowed(extension.as_bytes()))
+            .collect(),
+        glob: orchestrator.config.glob,
+    })?;
+    orchestrator.config.paths.extend(paths);
+
+    Ok(scope)
 }
 
 /// Decodes the embedded prelude's codebase and symbol references.
