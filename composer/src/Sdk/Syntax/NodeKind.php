@@ -236,6 +236,7 @@ enum NodeKind: string
     case Hint = 'Hint';
     case IntersectionHint = 'IntersectionHint';
     case NullableHint = 'NullableHint';
+    case GenericHint = 'GenericHint';
     case ParenthesizedHint = 'ParenthesizedHint';
     case UnionHint = 'UnionHint';
     case Unset = 'Unset';

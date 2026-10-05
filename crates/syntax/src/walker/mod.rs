@@ -88,6 +88,7 @@ use crate::cst::cst::FunctionLikeParameterDefaultValue;
 use crate::cst::cst::FunctionLikeParameterList;
 use crate::cst::cst::FunctionLikeReturnTypeHint;
 use crate::cst::cst::FunctionPartialApplication;
+use crate::cst::cst::GenericHint;
 use crate::cst::cst::Global;
 use crate::cst::cst::Goto;
 use crate::cst::cst::HaltCompiler;
@@ -2472,7 +2473,17 @@ generate_ast_walker! {
             Hint::Iterable(local_identifier) => {
                 walker.walk_local_identifier(local_identifier, context);
             }
+            Hint::Generic(generic_hint) => {
+                walker.walk_generic_hint(generic_hint, context);
+            }
         });
+    }
+
+    'arena GenericHint as generic_hint => {
+        walker.walk_local_identifier(&generic_hint.name, context);
+        for argument in &generic_hint.arguments {
+            walker.walk_hint(argument, context);
+        }
     }
 
     'arena ParenthesizedHint as parenthesized_hint => {

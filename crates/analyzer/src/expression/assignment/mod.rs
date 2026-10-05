@@ -62,7 +62,7 @@ use crate::utils::expression::is_variable;
 use crate::utils::misc::unwrap_expression;
 
 mod array_assignment;
-mod property_assignment;
+pub(crate) mod property_assignment;
 mod static_property_assignment;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

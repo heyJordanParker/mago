@@ -401,6 +401,124 @@ fn a_question_mark_after_a_type_makes_it_nullable() {
     assert_eq!(nullable, [("Calc?", "Calc", "?"), ("int?", "int", "?"), ("string?", "string", "?")]);
 }
 
+/// The name and type arguments of a generic type, as written.
+fn generic_type<'a>(code: &'a str, hint: &Hint) -> (&'a str, Vec<&'a str>) {
+    let Hint::Generic(generic) = hint else {
+        panic!("expected a generic type, got {hint:#?}");
+    };
+
+    (source(code, &generic.name), generic.arguments.iter().map(|argument| source(code, argument)).collect())
+}
+
+#[test]
+fn a_collection_type_takes_its_type_arguments_in_angle_brackets() {
+    const CODE: &str = "class Report\n{\n    public Map<string, List<Line>> group(List<Line> lines, Map<int, List<List<int>>>? depths) { return [:]; }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(ClassLikeMember::Method(method)) = class_members(program).first() else {
+        panic!("expected a method, got {:#?}", class_members(program));
+    };
+    let return_type = &method.return_type_hint.as_ref().expect("a return type").hint;
+    assert_eq!(source(CODE, return_type), "Map<string, List<Line>>");
+    assert_eq!(generic_type(CODE, return_type), ("Map", vec!["string", "List<Line>"]));
+
+    let [lines, depths] = method.parameter_list.parameters.as_slice() else {
+        panic!("expected two parameters, got {:#?}", method.parameter_list.parameters);
+    };
+    assert_eq!(generic_type(CODE, lines.hint.as_ref().expect("a type")), ("List", vec!["Line"]));
+    let Some(Hint::Nullable(depths)) = &depths.hint else {
+        panic!("expected a nullable type, got {:#?}", depths.hint);
+    };
+    assert_eq!(source(CODE, depths.hint), "Map<int, List<List<int>>>");
+    assert_eq!(generic_type(CODE, depths.hint), ("Map", vec!["int", "List<List<int>>"]));
+}
+
+#[test]
+fn a_local_and_a_field_can_have_a_collection_type_written() {
+    const CODE: &str = "class Report\n{\n    private Map<string, int> counts = [:];\n    public void run()\n    {\n        List<Line> lines = [];\n        Map<string, List<int>>? groups = null;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [ClassLikeMember::Property(Property::Plain(field)), ClassLikeMember::Method(run)] =
+        class_members(program).as_slice()
+    else {
+        panic!("expected a field and a method, got {:#?}", class_members(program));
+    };
+    assert_eq!(generic_type(CODE, field.hint.as_ref().expect("a type")), ("Map", vec!["string", "int"]));
+    let MethodBody::Concrete(body) = &run.body else {
+        panic!("expected a method body, got {:#?}", run.body);
+    };
+    let locals: Vec<(&str, &str)> = body
+        .statements
+        .iter()
+        .map(|statement| {
+            let Statement::LocalDeclaration(local) = statement else {
+                panic!("expected a local, got {statement:#?}");
+            };
+
+            (source(CODE, local.hint.expect("a type")), source(CODE, &local.name))
+        })
+        .collect();
+    assert_eq!(locals, [("List<Line>", "lines"), ("Map<string, List<int>>?", "groups")]);
+}
+
+#[test]
+fn a_map_literal_writes_each_entry_as_key_colon_value() {
+    const CODE: &str = "class Report\n{\n    public void run()\n    {\n        [line, other];\n        [\"pro\": pro, 2: team];\n        [:];\n        [];\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let arrays: Vec<&Array> = method_body(program)
+        .iter()
+        .map(|statement| {
+            let Expression::Array(array) = expression(statement) else {
+                panic!("expected a literal, got {statement:#?}");
+            };
+
+            array
+        })
+        .collect();
+    let [list, map, empty_map, empty_list] = arrays.as_slice() else {
+        panic!("expected four literals, got {arrays:#?}");
+    };
+
+    assert!(list.elements.iter().all(|element| matches!(element, ArrayElement::Value(_))), "{list:#?}");
+    let entries: Vec<(&str, &str, &str)> = map
+        .elements
+        .iter()
+        .map(|element| {
+            let ArrayElement::KeyValue(entry) = element else {
+                panic!("expected a map entry, got {element:#?}");
+            };
+
+            (source(CODE, entry.key), source(CODE, &entry.double_arrow), source(CODE, entry.value))
+        })
+        .collect();
+    assert_eq!(entries, [("\"pro\"", ":", "pro"), ("2", ":", "team")]);
+    assert_eq!(empty_map.colon.map(|colon| source(CODE, &colon)), Some(":"));
+    assert_eq!(source(CODE, *empty_map), "[:]");
+    assert!(empty_map.elements.is_empty());
+    assert_eq!(empty_list.colon, None);
+}
+
+#[test]
+fn a_php_double_arrow_in_a_literal_is_a_php_syntax_error() {
+    const CODE: &str = "class Report\n{\n    public void run()\n    {\n        [\"pro\" => pro];\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    let messages: Vec<String> = program.errors.iter().map(ToString::to_string).collect();
+    assert_eq!(messages.len(), 1, "{messages:#?}");
+    let Some(ParseError::PhpSyntaxInSharp(_, span)) = program.errors.first() else {
+        panic!("expected a PHP-syntax error, got {:#?}", program.errors);
+    };
+    assert_eq!(source(CODE, span), "=>");
+}
+
 #[test]
 fn a_question_mark_before_a_type_is_a_php_syntax_error_that_names_the_suffix() {
     const CODE: &str = "class Report\n{\n    public ?int find(?Calc calc) { return null; }\n}\n";

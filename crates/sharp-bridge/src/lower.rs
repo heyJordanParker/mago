@@ -15,6 +15,8 @@ use mago_span::Span;
 use mago_syntax::cst::Access;
 use mago_syntax::cst::Argument;
 use mago_syntax::cst::ArgumentList;
+use mago_syntax::cst::Array;
+use mago_syntax::cst::ArrayElement;
 use mago_syntax::cst::AssignmentOperator;
 use mago_syntax::cst::AttributeList;
 use mago_syntax::cst::BinaryOperator;
@@ -75,6 +77,8 @@ use crate::Unit;
 use crate::sharp_kind;
 use crate::sharp_kind::SHARP_AST_AND;
 use crate::sharp_kind::SHARP_AST_ARG_LIST;
+use crate::sharp_kind::SHARP_AST_ARRAY;
+use crate::sharp_kind::SHARP_AST_ARRAY_ELEM;
 use crate::sharp_kind::SHARP_AST_ASSIGN;
 use crate::sharp_kind::SHARP_AST_ASSIGN_COALESCE;
 use crate::sharp_kind::SHARP_AST_ASSIGN_OP;
@@ -95,6 +99,7 @@ use crate::sharp_kind::SHARP_AST_CONST_DECL;
 use crate::sharp_kind::SHARP_AST_CONST_ELEM;
 use crate::sharp_kind::SHARP_AST_CONTINUE;
 use crate::sharp_kind::SHARP_AST_DECLARE;
+use crate::sharp_kind::SHARP_AST_DIM;
 use crate::sharp_kind::SHARP_AST_DO_WHILE;
 use crate::sharp_kind::SHARP_AST_ENCAPS_LIST;
 use crate::sharp_kind::SHARP_AST_EXPR_LIST;
@@ -130,6 +135,7 @@ use crate::sharp_kind::SHARP_AST_STATIC_CALL;
 use crate::sharp_kind::SHARP_AST_STMT_LIST;
 use crate::sharp_kind::SHARP_AST_THROW;
 use crate::sharp_kind::SHARP_AST_TRY;
+use crate::sharp_kind::SHARP_AST_TYPE;
 use crate::sharp_kind::SHARP_AST_UNARY_MINUS;
 use crate::sharp_kind::SHARP_AST_UNARY_OP;
 use crate::sharp_kind::SHARP_AST_UNARY_PLUS;
@@ -157,6 +163,8 @@ const ZEND_PARENTHESIZED_CONDITIONAL: u32 = 1;
 const IS_LONG: u32 = 4;
 const IS_DOUBLE: u32 = 5;
 const IS_STRING: u32 = 6;
+const IS_ARRAY: u32 = 7;
+const ZEND_ARRAY_SYNTAX_SHORT: u32 = 3;
 const ZEND_ADD: u32 = 1;
 const ZEND_SUB: u32 = 2;
 const ZEND_MUL: u32 = 3;
@@ -511,14 +519,16 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_ASSIGN, 0, line, &[property, value])
     }
 
-    /// A built-in type is written unqualified, and a class by its full name. A nullable type is its type with
-    /// `ZEND_TYPE_NULLABLE`, as php-src's grammar builds `?int`.
+    /// A built-in type is written unqualified, and a class by its full name. A `List` or `Map` is a PHP array, so its
+    /// type is `array`, as php-src's grammar builds it. A nullable type is its type with `ZEND_TYPE_NULLABLE`, as
+    /// php-src's grammar builds `?int`.
     fn hint(&mut self, hint: &Hint) -> u32 {
         match hint {
             Hint::Integer(name) | Hint::Float(name) | Hint::Bool(name) | Hint::String(name) | Hint::Void(name) => {
                 self.string(ZEND_NAME_NOT_FQ, self.line(name.span), name.value)
             }
             Hint::Identifier(class) => self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class)),
+            Hint::Generic(generic) => self.node(SHARP_AST_TYPE, IS_ARRAY, self.line(generic), &[]),
             Hint::Nullable(nullable) => {
                 let index = self.hint(nullable.hint);
                 self.nodes[index as usize].attr |= ZEND_TYPE_NULLABLE;
@@ -767,14 +777,14 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.node(SHARP_AST_PROP, 0, line, &[object, property])
             }
             Expression::Call(Call::NullSafeMethod(call)) => {
-                let object = self.expression(call.object);
+                let object = self.null_safe_object(call.object);
                 let method = self.member(&call.method);
                 let arguments = self.arguments(&call.argument_list);
 
                 self.node(SHARP_AST_NULLSAFE_METHOD_CALL, 0, line, &[object, method, arguments])
             }
             Expression::Access(Access::NullSafeProperty(access)) => {
-                let object = self.expression(access.object);
+                let object = self.null_safe_object(access.object);
                 let property = self.member(&access.property);
 
                 self.node(SHARP_AST_NULLSAFE_PROP, 0, line, &[object, property])
@@ -785,8 +795,48 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.node(SHARP_AST_THROW, 0, line, &[exception])
             }
             Expression::CompositeString(CompositeString::Interpolated(template)) => self.template(template),
+            Expression::Array(array) => self.array(array),
+            Expression::ArrayAccess(access) => {
+                let value = self.expression(access.array);
+                let key = self.expression(access.index);
+
+                self.node(SHARP_AST_DIM, 0, line, &[value, key])
+            }
             _ => unreachable!("check_slice refuses the expression `{expression}`"),
         })
+    }
+
+    /// The object of `?.`. An index there reads a missing key as null, as `??` does, so `x[k]?.name` is
+    /// `($x[$k] ?? null)?->name`, where a bare `x[k]` throws on a missing key (spec section 12).
+    fn null_safe_object(&mut self, object: &Expression) -> u32 {
+        let value = self.expression(object);
+        if !matches!(object.unparenthesized(), Expression::ArrayAccess(_)) {
+            return value;
+        }
+
+        let line = self.line(object);
+        let null = self.zval(line, sharp_value::SHARP_NULL, |_| {});
+
+        self.node(SHARP_AST_COALESCE, 0, line, &[value, null])
+    }
+
+    /// A list or map literal is an `ARRAY` with `ZEND_ARRAY_SYNTAX_SHORT`, as php-src's grammar builds `[…]`. Each
+    /// element is an `ARRAY_ELEM` of its value and its key or null.
+    fn array(&mut self, array: &Array) -> u32 {
+        let mut elements = Vec::new();
+        for element in &array.elements {
+            let value_and_key = match element {
+                ArrayElement::Value(element) => [self.expression(element.value), NULL],
+                ArrayElement::KeyValue(element) => [self.expression(element.value), self.expression(element.key)],
+                ArrayElement::Variadic(_) | ArrayElement::Missing(_) => {
+                    unreachable!("check_slice refuses a spread or missing literal element")
+                }
+            };
+
+            elements.push(self.node(SHARP_AST_ARRAY_ELEM, 0, self.line(element), &value_and_key));
+        }
+
+        self.node(SHARP_AST_ARRAY, ZEND_ARRAY_SYNTAX_SHORT, self.line(array), &elements)
     }
 
     /// A template without `${…}` is its text, as php-src's grammar builds a string without interpolation. Any other
@@ -823,14 +873,20 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.string(0, self.line(text), value)
     }
 
-    /// What an assignment, a compound assignment, `++` or `--` writes: a local or parameter, or `object.name`, as
-    /// php-src's `variable` rule takes them.
+    /// What an assignment, a compound assignment, `++` or `--` writes: a local or parameter, `object.name`, or an
+    /// index of one of them, as php-src's `variable` rule takes them.
     fn target(&mut self, target: &Expression) -> u32 {
         match target {
             Expression::ConstantAccess(name) if matches!(self.names.binding(&name.name), Some(Binding::Local(_))) => {
                 self.variable(name.span(), name.name.value())
             }
             Expression::Access(Access::Property(_)) => self.expression(target),
+            Expression::ArrayAccess(access) => {
+                let value = self.target(access.array);
+                let key = self.expression(access.index);
+
+                self.node(SHARP_AST_DIM, 0, self.line(target), &[value, key])
+            }
             _ => unreachable!("check_slice refuses writing to `{target}`"),
         }
     }

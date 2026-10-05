@@ -101,7 +101,11 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
                 Expression::Conditional(expr) => expr.analyze(context, block_context, artifacts),
                 Expression::Array(expr) => expr.analyze(context, block_context, artifacts),
                 Expression::LegacyArray(expr) => expr.analyze(context, block_context, artifacts),
-                Expression::ArrayAccess(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::ArrayAccess(expr) => expr.analyze(context, block_context, artifacts).map(|()| {
+                    if context.dialect.is_sharp() {
+                        array_access::check_sharp_map_read(expr, context, block_context, artifacts);
+                    }
+                }),
                 Expression::ArrayAppend(_) => {
                     context.collector.report_with_code(
                     IssueCode::ArrayAppendInReadContext,

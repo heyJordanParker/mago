@@ -1031,3 +1031,186 @@ fn attribute_arguments_are_checked_against_the_attribute_constructor_as_in_php()
     );
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
 }
+
+const TOTALS: &str = "<?php\n\nnamespace Lib;\n\nfinal class Totals\n{\n    /** @param list<int> $values */\n    public static function sum(array $values): int\n    {\n        return array_sum($values);\n    }\n\n    /** @return list<int> */\n    public static function sizes(): array\n    {\n        return [1, 2];\n    }\n}\n";
+
+#[test]
+fn lists_and_maps_type_their_literals_indexes_and_loops_as_php_arrays() {
+    let sharp = "namespace Demo;\n\nimport Lib.Totals;\n\nclass Order\n{\n    public List<Line> lines { get; private set; } = [];\n    private Map<string, int> counts = [:];\n\n    public int total(List<Line> extra)\n    {\n        List<Line> all = [new Line(1), extra[0]];\n        this.lines = all;\n        this.counts[\"lines\"] = count(this.lines);\n        const named = [\"a\": 1, \"b\": 2];\n        let sum = (named[\"a\"] ?? 0) + Totals.sum(Totals.sizes()) + all[1].cents;\n        for (const line of all) {\n            sum += line.cents;\n        }\n        for (const [name, size] of this.counts) {\n            if (name == \"lines\") {\n                sum += size;\n            }\n        }\n        for (const line of this.lines) {\n            sum += line.cents;\n        }\n        if (in_array(2, Totals.sizes(), true)) {\n            sum += 1;\n        }\n        return sum + (this.counts[\"lines\"] ?? 0);\n    }\n}\n\nclass Line\n{\n    public Line(public int cents { get; })\n    {\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Order.sharp", sharp), &[("src/Lib/Totals.php", TOTALS)]), Vec::<String>::new());
+}
+
+#[test]
+fn a_wrong_element_type_is_reported_where_it_enters_the_collection() {
+    let sharp = "namespace Demo;\n\nimport Lib.Totals;\n\nclass Order\n{\n    public List<Line> lines { get; private set; } = [];\n    private Map<string, int> counts = [:];\n\n    public List<int> wrong(List<Line> extra)\n    {\n        List<Line> all = [1];\n        Map<string, int> sizes = [\"a\": \"one\"];\n        this.counts[\"lines\"] = \"many\";\n        this.lines = [2];\n        Totals.sum(extra);\n        return extra;\n    }\n}\n\nclass Line\n{\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Order.sharp", sharp), &[("src/Lib/Totals.php", TOTALS)]),
+        [
+            "12:26 invalid-local-assignment-value",
+            "13:34 invalid-local-assignment-value",
+            "14:9 invalid-property-assignment-value",
+            "15:22 invalid-property-assignment-value",
+            "16:20 invalid-argument",
+            "17:16 invalid-return-statement",
+        ]
+    );
+}
+
+/// Spec section 12 writes a change to a collection in a property back through the property's `set`, so code that
+/// cannot reach the `set` cannot change the collection, as PHP refuses the same write when it runs.
+#[test]
+fn an_index_write_to_a_property_needs_its_set() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public Map<int, int> lines { get; private set; } = [:];\n    public Map<string, int> codes { get; }\n\n    public Order()\n    {\n        this.codes = [:];\n    }\n\n    public void change(Order other)\n    {\n        this.lines[0] = 1;\n        other.lines[0] = 1;\n        this.codes[\"a\"] = 1;\n    }\n}\n\nclass Shop\n{\n    public void change(Order order)\n    {\n        order.lines[0] = 1;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    public private(set) array $lines = [];\n    public readonly array $codes;\n\n    public function __construct()\n    {\n        $this->codes = [];\n    }\n\n    public function change(Order $other): void\n    {\n        $this->lines[0] = 1;\n        $other->lines[0] = 1;\n        $this->codes['a'] = 1;\n    }\n}\n\nclass Shop\n{\n    public function change(Order $order): void\n    {\n        $order->lines[0] = 1;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Order.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Order.php", php), &[]);
+
+    assert_eq!(sharp_issues, ["17:14 invalid-property-write", "25:15 invalid-property-write"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+/// A bare `x[i]` throws when the key is missing, which fits a `List`, whose keys run without gaps. A `Map` key is
+/// often missing, so a `Map` is read with `??`, as spec section 12 decides. A compound assignment reads first.
+#[test]
+fn a_bare_index_read_on_a_map_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Prices\n{\n    private Map<string, int> prices = [\"pro\": 5];\n\n    public int read(Map<string, int> plans, List<int> sizes, string plan)\n    {\n        let total = sizes[0] + (plans[plan] ?? 0) + (this.prices[plan] ?? 0);\n        total += plans[plan];\n        this.prices[plan] += 1;\n        const named = [\"a\": 1];\n        return total + named[\"a\"];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Prices.sharp", sharp), &[]),
+        [
+            "10:18 possibly-undefined-array-index",
+            "11:9 possibly-undefined-array-index",
+            "13:24 possibly-undefined-array-index",
+        ]
+    );
+}
+
+/// `?.` reads a missing key as null, as `??` does, because `x[k]?.name` runs as `($x[$k] ?? null)?->name`.
+#[test]
+fn a_null_safe_access_on_an_index_reads_a_missing_key_as_null() {
+    let sharp = "namespace Demo;\n\nclass Shelf\n{\n    public string? first(Map<string, Item> items, string key)\n    {\n        return items[key]?.name ?? items[key]?.label();\n    }\n}\n\nclass Item\n{\n    public Item(public string name { get; })\n    {\n    }\n\n    public string? label()\n    {\n        return null;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Shelf.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// Writing `x[i] = v` to a `List` could leave a gap in its keys, so spec section 12 writes a `List` with `set` and
+/// `add`. Every step of the target that is a `List` is reported.
+#[test]
+fn an_index_write_to_a_list_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Sizes\n{\n    public void change(List<int> sizes, Map<string, List<int>> groups, List<Map<string, int>> rows)\n    {\n        sizes[0] = 1;\n        sizes[0] += 1;\n        groups[\"a\"][0] = 1;\n        rows[0][\"a\"] = 1;\n        groups[\"b\"] = [1];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Sizes.sharp", sharp), &[]),
+        [
+            "7:9 invalid-array-access",
+            "8:9 invalid-array-access",
+            "9:9 invalid-array-access",
+            "10:9 invalid-array-access"
+        ]
+    );
+}
+
+/// `for (const [k, v] of x)` reads the keys of a `Map`. A `List`'s indexes come from `entries()`, as spec section 12
+/// writes. PHP stores an all-digit string key as an `int`, so the key of a `Map<string, V>` reads back as
+/// `int|string`.
+#[test]
+fn a_key_and_value_loop_reads_a_map_and_its_keys_as_php_stores_them() {
+    let sharp = "namespace Demo;\n\nclass Loops\n{\n    public int run(List<int> sizes, Map<string, int> counts)\n    {\n        let total = 0;\n        for (const [index, size] of sizes) {\n            total += index + size;\n        }\n        for (const [name, count] of counts) {\n            total += strlen(name) + count;\n        }\n        return total;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Loops.sharp", sharp), &[]),
+        ["8:37 invalid-iterator", "12:29 possibly-invalid-argument"]
+    );
+}
+
+/// A `List` has `add`, `set`, `get` and `entries()`, and a `Map` has `delete` and `get`, each typed by the elements of
+/// the collection it is called on, as spec section 12 decides.
+#[test]
+fn collection_methods_take_and_give_the_types_of_their_elements() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public List<Line> lines { get; private set; } = [];\n    private Map<string, int> counts = [:];\n\n    public int total(Line line, List<Line> extra)\n    {\n        this.lines.add(line);\n        extra.add(line);\n        extra.set(0, line);\n        this.counts.delete(\"a\");\n        let sum = (this.counts.get(\"b\") ?? 0) + (extra.get(0)?.cents ?? 0);\n        for (const [index, item] of extra.entries()) {\n            sum += index + item.cents;\n        }\n        return sum;\n    }\n\n    public void wrong(List<Line> extra, Map<string, int> counts)\n    {\n        extra.add(1);\n        extra.set(\"a\", new Line(1));\n        counts.add(1);\n        extra.delete(0);\n    }\n}\n\nclass Line\n{\n    public Line(public int cents { get; })\n    {\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Order.sharp", sharp), &[]),
+        ["23:19 invalid-argument", "24:19 invalid-argument", "25:16 non-existent-method", "26:15 non-existent-method"]
+    );
+}
+
+/// The analyzer checks a collection method against `Sharp\ListMethods` or `Sharp\MapMethods`, and every message names
+/// the PHP# type the code wrote instead, as in "`add` doesn't exist on `Map<string, int>`".
+#[test]
+fn a_collection_method_message_names_the_sharp_type() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public void wrong(List<Line> lines, List<int> sizes, Map<string, int> counts)\n    {\n        lines.add(1);\n        sizes.set(\"a\", 1);\n        counts.add(1);\n        sizes.delete(0);\n        counts.get(1.5);\n        sizes.get();\n        sizes.get(0, 1);\n    }\n}\n\nclass Line\n{\n}\n";
+    let issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Order.sharp", sharp), &[]);
+
+    let messages: Vec<&str> = issues.iter().map(|issue| issue.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [
+            "Invalid argument type for argument #1 of `List<Demo\\Line>.add`: expected `Demo\\Line`, but found `int(1)`.",
+            "Invalid argument type for argument #1 of `List<int>.set`: expected `int`, but found `string('a')`.",
+            "Method `add` does not exist on `Map<string, int>`.",
+            "Method `delete` does not exist on `List<int>`.",
+            "Invalid argument type for argument #1 of `Map<string, int>.get`: expected `string`, but found `float(1.5)`.",
+            "Too few arguments provided for method `List<int>.get`.",
+            "Too many arguments provided for method `List<int>.get`.",
+        ]
+    );
+    for issue in &issues {
+        let text = format!("{issue:?}");
+        assert!(!text.contains("ListMethods") && !text.contains("MapMethods"), "{text}");
+    }
+}
+
+/// A PHP# collection holds any value of its element type, as a `List<int>` holds any int, so a method takes one
+/// even where the analyzer knows the elements are literals, as TypeScript's `let a = [5]` is a `number[]`.
+#[test]
+fn collection_methods_take_any_value_of_a_type_the_elements_are_literals_of() {
+    let sharp = "namespace Demo;\n\nclass Tray\n{\n    public List<int> items { get; private set; } = [];\n\n    public void fill()\n    {\n        let sizes = [5];\n        sizes.add(6);\n        this.items = [5];\n        this.items.add(6);\n        this.items.set(0, 7);\n        let names = [\"tea\": true];\n        names.delete(\"pie\");\n        let found = names.get(\"pie\") ?? false;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tray.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// A method that changes a collection writes it back where it lives, so spec section 12 allows it only on a place
+/// the caller can write: a local, a parameter, or a property whose `set` the caller reaches. The runtime never meets
+/// a write the checker accepts and it refuses.
+#[test]
+fn a_changing_collection_method_needs_a_place_the_caller_can_write() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public List<int> lines { get; private set; } = [];\n    public List<int> fixed { get; } = [];\n    public List<int> computed => [1];\n}\n\nclass Shop\n{\n    public int change(Order order, Map<string, List<int>> groups)\n    {\n        order.lines.add(1);\n        order.fixed.add(1);\n        order.computed.add(1);\n        this.make().add(1);\n        return count(order.lines.entries()) + (order.fixed.get(0) ?? 0) + count(groups);\n    }\n\n    public List<int> make()\n    {\n        return [];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Shop.sharp", sharp), &[]),
+        [
+            "14:15 invalid-property-write",
+            "15:15 invalid-property-write",
+            "16:15 invalid-property-write",
+            "17:9 invalid-pass-by-reference"
+        ]
+    );
+}
+
+/// A property with hooks changes through `get` and then `set`, as Swift and decision 014 do, so a changing method
+/// may run on it where its `set` is reachable.
+#[test]
+fn a_changing_collection_method_may_run_on_a_property_with_a_set_hook() {
+    let sharp = "namespace Demo;\n\nimport Lib.Box;\n\nclass Shop\n{\n    public void fill(Box box)\n    {\n        box.items.add(1);\n    }\n}\n";
+    let box_class = "<?php\n\nnamespace Lib;\n\nfinal class Box\n{\n    /** @var list<int> */\n    public array $items = [] {\n        get => $this->items;\n        set(array $value) {\n            $this->items = $value;\n        }\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Shop.sharp", sharp), &[("src/Lib/Box.php", box_class)]), Vec::<String>::new());
+}
+
+/// `+=`, `++` and `--` read an index, then write it. On a `Map` the read is bare, and on a `List` the write is, so
+/// both are refused, as Kotlin refuses `map[k] += 1`, and the help writes the form that compiles.
+#[test]
+fn a_compound_assignment_or_increment_on_an_index_names_the_form_that_compiles() {
+    let sharp = "namespace Demo;\n\nclass Counts\n{\n    public void bump(Map<string, int> counts, List<int> sizes)\n    {\n        counts[\"a\"] += 1;\n        counts[\"b\"]++;\n        sizes[0] += 1;\n        sizes[1]--;\n    }\n}\n";
+
+    let issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counts.sharp", sharp), &[]);
+    let helps: Vec<_> = issues.iter().map(|issue| issue.help.as_deref().unwrap_or("")).collect();
+
+    assert_eq!(issues.len(), 4, "{issues:?}");
+    assert!(helps[..2].iter().all(|help| help.contains("m[k] = (m[k] ?? 0) + 1")), "{helps:?}");
+    assert!(helps[2..].iter().all(|help| help.contains("list.set(i, list[i] + 1)")), "{helps:?}");
+}

@@ -662,14 +662,14 @@ fn attributes_on_a_class_its_members_and_their_parameters_are_in_the_slice() {
 
 #[test]
 fn attribute_arguments_outside_the_slice_are_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nclass Report\n{\n    [Field(typeof(Report))]\n    [Field(Mode.Write)]\n    [Field([\"a\"])]\n    [Field(label: new Report())]\n    public int run(int extra)\n    {\n        return extra;\n    }\n}\n";
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    [Field(typeof(Report))]\n    [Field(Mode.Write)]\n    [Field([this.run(1)])]\n    [Field(label: new Report())]\n    public int run(int extra)\n    {\n        return extra;\n    }\n}\n";
 
     assert_eq!(
         issues(code),
         [
             "5:12 This expression is not supported yet in PHP#.",
             "6:12 This expression is not supported yet in PHP#.",
-            "7:12 This expression is not supported yet in PHP#.",
+            "7:13 This expression is not supported yet in PHP#.",
             "8:19 This expression is not supported yet in PHP#.",
         ]
     );
@@ -1109,6 +1109,61 @@ fn a_write_goes_only_to_a_local_a_parameter_or_a_member() {
             "12:9 This write target is not supported yet in PHP#.",
             "13:11 This write target is not supported yet in PHP#.",
             "14:9 This write target is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn list_and_map_types_literals_and_indexes_are_in_the_slice() {
+    let code = "class Report\n{\n    private Map<string, int> counts = [:];\n    public List<Line> lines { get; private set; } = [];\n\n    public Map<int, List<string>>? group(List<Line> items, Map<string, int> sizes = [\"a\": 1], List<int> none = [])\n    {\n        List<int> numbers = [1, 2];\n        const named = [\"a\": 1, 2: numbers[0]];\n        numbers[0] = items[1].size;\n        this.counts[\"a\"] += sizes[\"a\"];\n        this.lines[0] = items[0];\n        const nested = [[1], [2]];\n        nested[0][0]++;\n        return null;\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_type_with_type_arguments_other_than_list_or_map_is_not_supported_yet() {
+    let code = "class Report\n{\n    public List<void> run(Set<string> a, List<int, int> b, Map<string> c, Paged<Line> d)\n    {\n        return [];\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "3:12 This type is not supported yet in PHP#.",
+            "3:27 This type is not supported yet in PHP#.",
+            "3:42 This type is not supported yet in PHP#.",
+            "3:60 This type is not supported yet in PHP#.",
+            "3:75 This type is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn a_map_key_that_is_not_int_or_string_is_an_error() {
+    let code = "class Report\n{\n    public Map<float, int> run(Map<Line, int> a, Map<int?, int> b, Map<string, Map<bool, int>> c)\n    {\n        return [:];\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "3:16 A `Map`'s keys are `int` or `string`, as a PHP array's keys are.",
+            "3:36 A `Map`'s keys are `int` or `string`, as a PHP array's keys are.",
+            "3:54 A `Map`'s keys are `int` or `string`, as a PHP array's keys are.",
+            "3:84 A `Map`'s keys are `int` or `string`, as a PHP array's keys are.",
+        ]
+    );
+}
+
+#[test]
+fn a_literal_element_outside_the_slice_is_not_supported_yet() {
+    let code = leak(method(
+        "        const spread = [...extra];\n        const reference = [&extra];\n        const missing = [, extra];\n        let list = [1];\n        list[] = 2;\n        return 1;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:25 This construct is not supported yet in PHP#.",
+            "8:28 This operator is not supported yet in PHP#.",
+            "9:26 This construct is not supported yet in PHP#.",
+            "11:9 This write target is not supported yet in PHP#.",
         ]
     );
 }

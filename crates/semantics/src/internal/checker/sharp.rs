@@ -9,6 +9,7 @@ use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::Access;
+use mago_syntax::cst::ArrayElement;
 use mago_syntax::cst::Assignment;
 use mago_syntax::cst::AssignmentOperator;
 use mago_syntax::cst::BinaryOperator;
@@ -81,7 +82,8 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - A class: attributes, a name, fields and methods, with no modifiers, `extends` or `implements`.
 /// - Attributes: on a class, a method, a field, a property and a parameter, written `[Name]` or `[Name(arguments)]`,
 ///   several in one list, as in `[Field("Name"), Searchable]`, or in several lists. An argument is positional or
-///   named, and is a constant expression as a parameter default is. An attribute target, as in `[return: NotNull]`,
+///   named, and is a constant expression as a parameter default is, list and map literals included. An attribute
+///   target, as in `[return: NotNull]`,
 ///   is a parse error.
 /// - A field: `private` or `protected`, a type, one name and an optional initial value. A `public` field is an error,
 ///   because spec section 6 has no public fields.
@@ -103,10 +105,12 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   member: a field when `private` or `protected` without accessors, and a property with accessors, which follow the
 ///   auto-property rules. A `public` parameter without accessors is an error, as spec section 9 says.
 /// - A parameter: always a type, a name and an optional default, and neither variadic nor by reference. A default is
-///   a constant expression: a literal, a constant, or the operators below on them, without `++` and `--`.
-/// - Types: `int`, `float`, `bool`, `string` and a class written by its short name, and `void` as a return type.
-///   PHP's own check reports a `void` parameter. Each of them is nullable when written with `?` after it, as in
-///   `int?`, and PHP's own check reports `void?`.
+///   a constant expression: a literal, a constant, a list or map literal of them, or the operators below on them,
+///   without `++` and `--`.
+/// - Types: `int`, `float`, `bool`, `string`, a class written by its short name, `List<T>` and `Map<TKey, TValue>`
+///   of these, and `void` as a return type. A `Map`'s key is `int` or `string`. PHP's own check reports a `void`
+///   parameter. Each of them is nullable when written with `?` after it, as in `int?`, and PHP's own check reports
+///   `void?`.
 /// - A method body: a block, or an expression body, `=> expr;`, which returns the expression, or runs it as a
 ///   statement in a `void` method and the constructor, as in C#.
 /// - In a method body: blocks, expression statements, `return`, `let` and `const` declarations, `if` with `else if`
@@ -115,9 +119,11 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   The body of `if`, `else` and each loop is a block in braces. A catch clause names one or more classes separated
 ///   by `|`, and an optional variable written without `$`, which lives until the clause's block ends. A local statement can have its type written, as in `Money? total = null;` or
 ///   `const int base = 2;`, from the types above but `void`.
-/// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter or a member written
-///   `object.name`.
-/// - In expressions: literals, templates, parentheses, bare names, assignment, the operators below, and method calls
+/// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter, a member written
+///   `object.name`, or an index of one of them written `target[key]`. The analyzer, which knows the types, allows an
+///   index write only on a `Map`, and a read not under `??` or `?.` only on a `List`, as spec section 12 decides.
+/// - In expressions: literals, list literals `[a, b]`, map literals `["key": value]` and `[:]`, index reads
+///   `value[key]`, templates, parentheses, bare names, assignment, the operators below, and method calls
 ///   and property reads written with `.` or `?.` and a member name, `new Class(...)` on a class written by its short
 ///   name, calls of a function by its bare name, each with positional and named arguments, and `throw`, which is an
 ///   expression as in PHP. `?.` never follows a class. A function is PHP's built-in function of that name, which spec
@@ -309,6 +315,20 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             FieldOrProperty,
         ) => Some(FieldOrProperty),
         (Node::Hint(hint), FieldOrProperty) if is_slice_type(hint) && !matches!(hint, Hint::Void(_)) => Some(FieldOrProperty),
+        (Node::GenericHint(generic), FieldOrProperty | Method | Parameter | Body) => {
+            if let [key, _] = generic.arguments.as_slice()
+                && !matches!(key, Hint::Integer(_) | Hint::String(_))
+            {
+                context.report(
+                    Issue::error("A `Map`'s keys are `int` or `string`, as a PHP array's keys are.")
+                        .with_annotation(Annotation::primary(key.span()).with_message("Key type written here.")),
+                );
+
+                return None;
+            }
+
+            Some(place)
+        }
         (Node::Method(method), Class) => match is_slice_method(method, context.program) {
             Ok(()) => Some(Method),
             Err((message, help)) => {
@@ -472,6 +492,15 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             | Node::UnaryPrefix(_),
             Body | Constant,
         ) => Some(place),
+        (
+            Node::Expression(Expression::Array(_))
+            | Node::Array(_)
+            | Node::ArrayElement(ArrayElement::Value(_) | ArrayElement::KeyValue(_))
+            | Node::ValueArrayElement(_)
+            | Node::KeyValueArrayElement(_),
+            Body | Constant,
+        ) => Some(place),
+        (Node::Expression(Expression::ArrayAccess(_)) | Node::ArrayAccess(_), Body) => Some(Body),
         (Node::ConstantAccess(_), Body) => Some(Body),
         (Node::ConstantAccess(constant), Constant)
             if context.names.binding(&constant.name) == Some(Binding::Constant) =>
@@ -889,28 +918,36 @@ fn has_braces(statement: &Statement) -> bool {
     }
 }
 
-/// Whether the slice can write an expression: a local, a parameter, or a member written `object.name`.
+/// Whether the slice can write an expression: a local, a parameter, a member written `object.name`, or an index of one
+/// of them, as in `counts["a"]`.
 fn is_slice_target(target: &Expression, context: &Context<'_, '_, '_>) -> bool {
     match target {
         Expression::ConstantAccess(access) => matches!(context.names.binding(&access.name), Some(Binding::Local(_))),
         Expression::Access(Access::Property(_)) => true,
+        Expression::ArrayAccess(access) => is_slice_target(access.array, context),
         _ => false,
     }
 }
 
 /// Whether the slice has a type: the built-in types of spec section 24, or a class written by its short name, or a
-/// nullable type, whose inner type the walk checks next.
+/// nullable type, or `List<T>` or `Map<TKey, TValue>` of spec section 12, whose inner types the walk checks next.
 fn is_slice_type(hint: &Hint) -> bool {
-    matches!(
-        hint,
+    match hint {
         Hint::Integer(_)
-            | Hint::Float(_)
-            | Hint::Bool(_)
-            | Hint::String(_)
-            | Hint::Void(_)
-            | Hint::Identifier(Identifier::Local(_))
-            | Hint::Nullable(_)
-    )
+        | Hint::Float(_)
+        | Hint::Bool(_)
+        | Hint::String(_)
+        | Hint::Void(_)
+        | Hint::Identifier(Identifier::Local(_))
+        | Hint::Nullable(_) => true,
+        Hint::Generic(generic) => {
+            let arguments = generic.arguments.len();
+
+            ((generic.name.value == b"List" && arguments == 1) || (generic.name.value == b"Map" && arguments == 2))
+                && !generic.arguments.iter().any(|argument| matches!(argument, Hint::Void(_)))
+        }
+        _ => false,
+    }
 }
 
 /// Whether the slice has a binary operator. Every operator is named, so a new one does not compile until it is
@@ -1072,25 +1109,25 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# class has attributes, a name, fields and methods, with no modifiers, `extends` or `implements`."
         }
         Place::FieldOrProperty => {
-            "A PHP# field is `private` or `protected`, and a property has the accessors `get;` and an optional `set;`. Both have a type of `int`, `float`, `bool`, `string` or a class, a name, and an optional initial value."
+            "A PHP# field is `private` or `protected`, and a property has the accessors `get;` and an optional `set;`. Both have a type of `int`, `float`, `bool`, `string`, a class, `List<T>` or `Map<TKey, TValue>`, a name, and an optional initial value."
         }
         Place::Method => {
-            "A PHP# method takes `public`, `protected`, `private` and `static`, parameters, and a return type of `int`, `float`, `bool`, `string`, `void` or a class, each but `void` nullable as in `int?`."
+            "A PHP# method takes `public`, `protected`, `private` and `static`, parameters, and a return type of `int`, `float`, `bool`, `string`, `void`, a class, `List<T>` or `Map<TKey, TValue>`, each but `void` nullable as in `int?`."
         }
         Place::Parameter => {
-            "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, a name, and an optional default."
+            "A PHP# parameter has a type of `int`, `float`, `bool`, `string`, a class, `List<T>` or `Map<TKey, TValue>`, nullable as in `int?` or not, a name, and an optional default."
         }
         Place::Lambda => {
             "A PHP# lambda is a bare arrow after one name or parenthesized parameters, each with an optional type, and its body is an expression or a block, as in `(a, b) => a + b`."
         }
         Place::Body | Place::Instantiation | Place::FunctionCall | Place::TryCatchClause => {
-            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, `break` and `continue` without a level, and `try` with `catch` and `finally`, with literals, templates, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, the ternary `c ? a : b`, `(int)`, `(float)` and `(string)`, `++` and `--`, method calls and property reads written with `.` or `?.`, `new Class(...)`, calls of PHP's built-in functions and `throw`."
+            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, `break` and `continue` without a level, and `try` with `catch` and `finally`, with literals, list and map literals, index reads, templates, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, the ternary `c ? a : b`, `(int)`, `(float)` and `(string)`, `++` and `--`, method calls and property reads written with `.` or `?.`, `new Class(...)`, calls of PHP's built-in functions and `throw`."
         }
         Place::Attribute => {
             "A PHP# attribute is a class name with optional positional and named arguments, as in `[Field(\"Name\", searchable: true)]`."
         }
         Place::Constant => {
-            "A parameter default or an attribute argument is a literal, a constant, or arithmetic, comparison, logical and `??` operators on them."
+            "A parameter default or an attribute argument is a literal, a constant, a list or map literal, or arithmetic, comparison, logical and `??` operators on them."
         }
     }
 }

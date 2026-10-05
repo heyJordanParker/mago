@@ -36,9 +36,11 @@ use mago_word::concat_word;
 use mago_word::empty_word;
 use mago_word::word;
 
+use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
 use crate::context::Context;
 use crate::context::block::BlockContext;
+use crate::error::AnalysisError;
 use crate::utils::misc::unwrap_expression;
 
 pub mod array;
@@ -118,6 +120,33 @@ pub(crate) const fn expression_is_nullsafe(expr: &'_ Expression<'_>) -> bool {
         Expression::Parenthesized(parenthesized) => expression_is_nullsafe(parenthesized.expression),
         _ => false,
     }
+}
+
+/// Analyzes the object of `->` or `?->`. A PHP# `?.` reads a missing key of an index as null, as `??` does, because
+/// `x[k]?.name` runs as `($x[$k] ?? null)?->name`, so that index is analyzed as the left side of `??` is.
+pub(crate) fn analyze_member_object<'ctx, 'arena, A>(
+    context: &mut Context<'ctx, 'arena, A>,
+    block_context: &mut BlockContext<'ctx>,
+    artifacts: &mut AnalysisArtifacts,
+    object: &Expression<'arena>,
+    is_null_safe: bool,
+) -> Result<(), AnalysisError>
+where
+    A: Arena,
+{
+    let was_inside_general_use = block_context.flags.inside_general_use();
+    let was_inside_isset = block_context.flags.inside_isset();
+    block_context.flags.set_inside_general_use(true);
+    if is_null_safe && context.dialect.is_sharp() && matches!(object.unparenthesized(), Expression::ArrayAccess(_)) {
+        block_context.flags.set_inside_isset(true);
+    }
+
+    object.analyze(context, block_context, artifacts)?;
+
+    block_context.flags.set_inside_general_use(was_inside_general_use);
+    block_context.flags.set_inside_isset(was_inside_isset);
+
+    Ok(())
 }
 
 pub(crate) fn get_nullsafe_base_expressions<'ast, 'arena>(

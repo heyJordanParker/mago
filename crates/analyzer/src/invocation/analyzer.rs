@@ -252,7 +252,9 @@ where
                 method_class_type,
             );
 
-            if parameter_type.has_template_types() {
+            // A PHP# collection's receiver binds every template of its methods, so a wrong argument is the
+            // invalid-argument issue alone.
+            if parameter_type.has_template_types() && invocation.target.get_sharp_collection_receiver().is_none() {
                 infer_parameter_templates_from_argument(
                     context,
                     &parameter_type,
