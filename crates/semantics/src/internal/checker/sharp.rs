@@ -36,6 +36,7 @@ use mago_syntax::cst::Identifier;
 use mago_syntax::cst::If;
 use mago_syntax::cst::IfBody;
 use mago_syntax::cst::LocalDeclaration;
+use mago_syntax::cst::LocalIdentifier;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::Modifier;
 use mago_syntax::cst::ModifierSequenceExt;
@@ -119,7 +120,9 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   `object.name` or, when static, `Class.name`.
 /// - A constant, an enum case or a static member is reached through its class name, as in `Report.count`, and the
 ///   engine looks up which one it is when it runs. A bare constant or static member name is an error that names the
-///   class.
+///   class. A constant expression, which is a parameter default, an attribute argument, a constant's value or a
+///   constant initial value, reads only a constant or an enum case this way, as PHP does: a static field or property
+///   there is an error when this file declares it, and the analyzer reports it otherwise.
 /// - In expressions: literals, parentheses, bare names, assignment, the operators below, and method calls and
 ///   property reads written with `.` or `?.` and a member name, and `new Class(...)` on a class written by its short
 ///   name, with positional and named arguments, and `typeof(X)` on a class written by its short name, without a member
@@ -323,9 +326,11 @@ fn enter(
         }
         // `check_accessors` checked the accessors. An initial value is a method body's expression without `this`.
         (Node::PropertyHookList(_), FieldOrProperty) => None,
-        (Node::Expression(_), FieldOrProperty) => {
-            report_this_in_initial_value(node, context);
-            check_node(node, Body, checked, context);
+        // A constant initial value is the member's default, which PHP evaluates as a constant expression.
+        (Node::Expression(value), FieldOrProperty) => {
+            let uses_this = report_this_in_initial_value(node, context);
+            let place = if !uses_this && value.is_constant(&context.version, false) { Constant } else { Body };
+            check_node(node, place, checked, context);
 
             None
         }
@@ -509,6 +514,17 @@ fn enter(
             if context.names.binding(&constant.name) == Some(Binding::Constant) =>
         {
             Some(Constant)
+        }
+        // The engine reads `Class.name` in a constant expression as the class constant or enum case, since PHP
+        // cannot read a static property there. The analyzer reports a static property of a class this file does
+        // not declare.
+        (Node::Expression(Expression::Access(Access::Property(access))), Constant)
+            if let Some(class) = context.names.static_property_class(access)
+                && let ClassLikeMemberSelector::Identifier(member) = &access.property =>
+        {
+            report_static_member_in_constant(class, member, access.span(), context);
+
+            None
         }
         (Node::BinaryOperator(operator), Body | Constant) if is_slice_binary_operator(operator) => Some(place),
         (Node::UnaryPrefixOperator(operator), Body | Constant) if is_slice_prefix_operator(operator, place) => {
@@ -828,7 +844,9 @@ fn check_accessors(
 /// Reports each `this` in an initial value. A constant initial value is the member's default, and any other runs at
 /// the start of the constructor in declaration order, before the members declared after it are set, so it cannot read
 /// the object, as in C#.
-fn report_this_in_initial_value(node: Node<'_, '_>, context: &mut Context<'_, '_, '_>) {
+/// Reports each `this` in an initial value, and returns whether it reported one.
+fn report_this_in_initial_value(node: Node<'_, '_>, context: &mut Context<'_, '_, '_>) -> bool {
+    let mut reported = false;
     if let Node::ConstantAccess(access) = node
         && context.names.binding(&access.name) == Some(Binding::This)
     {
@@ -839,11 +857,14 @@ fn report_this_in_initial_value(node: Node<'_, '_>, context: &mut Context<'_, '_
             .with_annotation(Annotation::primary(access.span()).with_message("Used here."))
             .with_help("Set the member in the constructor body instead."),
         );
+        reported = true;
     }
 
     for child in node.children() {
-        report_this_in_initial_value(child, context);
+        reported |= report_this_in_initial_value(child, context);
     }
+
+    reported
 }
 
 /// How far a visibility modifier reaches: `private` least, then `protected`, then `public`.
@@ -1578,13 +1599,46 @@ fn enclosing_class_method<'ast, 'arena>(
 
 /// Whether `name` is a constant, or a static field or property, of `class`.
 fn is_static_member(class: &Class, name: &[u8]) -> bool {
-    class.members.iter().any(|member| match member {
-        ClassLikeMember::Constant(constant) => constant.items.iter().any(|item| item.name.value == name),
-        ClassLikeMember::Property(property) => {
-            property.modifiers().contains_static() && property.variables().iter().any(|variable| variable.name == name)
-        }
-        _ => false,
+    is_static_property(class, name)
+        || class.members.iter().any(|member| {
+            matches!(member, ClassLikeMember::Constant(constant)
+                if constant.items.iter().any(|item| item.name.value == name))
+        })
+}
+
+/// Whether `name` is a static field or property of `class`.
+fn is_static_property(class: &Class, name: &[u8]) -> bool {
+    class.members.iter().any(|member| {
+        matches!(member, ClassLikeMember::Property(property)
+            if property.modifiers().contains_static()
+                && property.variables().iter().any(|variable| variable.name == name))
     })
+}
+
+/// Reports `Class.name` in a constant expression when this file declares `name` as a static field or property of
+/// `Class`, because PHP cannot read a static property there.
+fn report_static_member_in_constant(
+    class: &ConstantAccess,
+    member: &LocalIdentifier,
+    span: Span,
+    context: &mut Context<'_, '_, '_>,
+) {
+    let declared = declarations(context.program).0.into_iter().any(|declared| {
+        declared.name.value.eq_ignore_ascii_case(class.name.value()) && is_static_property(declared, member.value)
+    });
+    if !declared {
+        return;
+    }
+
+    context.report(
+        Issue::error(format!(
+            "`{}.{}` is a static member, which a constant value cannot read.",
+            BytesDisplay(class.name.value()),
+            BytesDisplay(member.value)
+        ))
+        .with_annotation(Annotation::primary(span).with_message("Read here."))
+        .with_note("A default, a constant's value and a constant initial value read constants and enum cases only."),
+    );
 }
 
 /// The class of a PHP# file whose body holds `span`.

@@ -10,6 +10,7 @@ public class Report
 {
     public const int MAX = 3;
     protected const LIMIT = PHP_INT_MAX - 1;
+    protected const int NEXT = Calc.MAX + 1;
     private const string? NAME = "report";
     private static int made = 0;
     public static string last { get; private set; } = "none";

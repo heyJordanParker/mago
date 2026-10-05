@@ -411,10 +411,30 @@ fn an_interface_member_outside_the_slice_is_not_supported_yet() {
 }
 
 #[test]
-fn a_class_member_read_in_a_default_is_not_supported_yet() {
-    let code = leak(method("        return extra;\n").replace("int extra", "Order extra = Order.Descending"));
+fn a_constant_or_an_enum_case_is_read_in_a_default_a_constant_value_and_an_initial_value() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public const int MAX = Calc.MAX + 1;\n    private Order sort = Order.Ascending;\n\n    [Field(Mode.Write)]\n    public int run(Order extra = Order.Descending)\n    {\n        return 1;\n    }\n}\n";
 
-    assert_eq!(issues(code), ["5:34 This expression is not supported yet in PHP#."]);
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_static_member_read_in_a_constant_expression_is_an_error() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private static int count = 0;\n    public const int MAX = Report.count;\n\n    public int run(int extra = Report.count)\n    {\n        return 1;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "6:28 `Report.count` is a static member, which a constant value cannot read.",
+            "8:32 `Report.count` is a static member, which a constant value cannot read."
+        ]
+    );
+}
+
+#[test]
+fn a_member_chain_in_a_constant_expression_is_not_supported_yet() {
+    let code = leak(method("        return extra;\n").replace("int extra", "int extra = Calc.rate.cents"));
+
+    assert_eq!(issues(code), ["5:32 This expression is not supported yet in PHP#."]);
 }
 
 #[test]
@@ -603,7 +623,6 @@ fn attribute_arguments_outside_the_slice_are_not_supported_yet() {
         issues(code),
         [
             "5:12 This expression is not supported yet in PHP#.",
-            "6:12 This expression is not supported yet in PHP#.",
             "7:12 This expression is not supported yet in PHP#.",
             "8:19 This expression is not supported yet in PHP#.",
         ]

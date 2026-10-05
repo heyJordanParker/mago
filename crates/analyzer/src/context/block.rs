@@ -255,6 +255,16 @@ impl<'ctx> BlockContext<'ctx> {
         self.scope.is_global()
     }
 
+    /// Runs `analyze` on a constant expression: a constant's value, a default or an attribute's arguments.
+    pub fn in_constant_expression<R>(&mut self, analyze: impl FnOnce(&mut Self) -> R) -> R {
+        let was_inside_constant_expression = self.flags.inside_constant_expression();
+        self.flags.set_inside_constant_expression(true);
+        let result = analyze(self);
+        self.flags.set_inside_constant_expression(was_inside_constant_expression);
+
+        result
+    }
+
     pub fn update_references_possibly_from_confusing_scope(&mut self, confusing_scope_context: &BlockContext<'ctx>) {
         let references = confusing_scope_context
             .references_in_scope

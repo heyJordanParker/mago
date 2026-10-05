@@ -237,11 +237,22 @@ struct Lowering<'lowering, 'arena> {
     nodes: Vec<sharp_node>,
     children: Vec<u32>,
     texts: Vec<Box<[u8]>>,
+    /// Whether the lowering is inside a constant expression, which PHP evaluates without opcodes.
+    in_constant_expression: bool,
 }
 
 impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     fn new(lines: &'lowering Lines, names: &'lowering ResolvedNames<'arena>) -> Self {
-        Self { lines, names, nodes: Vec::new(), children: Vec::new(), texts: Vec::new() }
+        Self { lines, names, nodes: Vec::new(), children: Vec::new(), texts: Vec::new(), in_constant_expression: false }
+    }
+
+    /// Lowers a constant expression: a constant's value, a default or an attribute's arguments.
+    fn constant_expression(&mut self, lower: impl FnOnce(&mut Self) -> u32) -> u32 {
+        self.in_constant_expression = true;
+        let index = lower(self);
+        self.in_constant_expression = false;
+
+        index
     }
 
     /// `declare(strict_types=1);` first, then the namespaces and classes. Imports are not lowered: every class name
@@ -417,7 +428,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         };
         let hint = self.hint(hint);
         let name = self.string(0, self.line(parameter.variable.span), parameter.variable.name);
-        let default = parameter.default_value.as_ref().map_or(NULL, |default| self.expression(default.value));
+        let default = parameter
+            .default_value
+            .as_ref()
+            .map_or(NULL, |default| self.constant_expression(|lowering| lowering.expression(default.value)));
         let accessor_flags =
             parameter.hooks.as_ref().map_or(0, |accessors| accessor_flags(&parameter.modifiers, accessors));
         let flags = modifier_flags(&parameter.modifiers) | accessor_flags;
@@ -444,7 +458,9 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let line = self.line(variable);
         let name = self.string(0, line, variable.name);
         let default = match property.initial_value() {
-            Some(value) if is_default(property, value) => self.expression(value),
+            Some(value) if is_default(property, value) => {
+                self.constant_expression(|lowering| lowering.expression(value))
+            }
             _ => NULL,
         };
         let element = self.node(SHARP_AST_PROP_ELEM, 0, line, &[name, default, NULL, NULL]);
@@ -468,7 +484,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             for attribute in &list.attributes {
                 let line = self.line(attribute.name);
                 let name = self.string(ZEND_NAME_FQ, line, self.names.get(&attribute.name));
-                let arguments = attribute.argument_list.as_ref().map_or(NULL, |list| self.attribute_arguments(list));
+                let arguments = attribute
+                    .argument_list
+                    .as_ref()
+                    .map_or(NULL, |list| self.constant_expression(|lowering| lowering.attribute_arguments(list)));
 
                 attributes.push(self.node(SHARP_AST_ATTRIBUTE, 0, line, &[name, arguments]));
             }
@@ -485,7 +504,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let item = constant.first_item();
         let line = self.line(item.name);
         let name = self.string(0, line, item.name.value);
-        let value = self.expression(item.value);
+        let value = self.constant_expression(|lowering| lowering.expression(item.value));
         let element = self.node(SHARP_AST_CONST_ELEM, 0, line, &[name, value, NULL]);
         let declaration = self.node(SHARP_AST_CLASS_CONST_DECL, 0, line, &[element]);
         let hint = constant.hint.as_ref().map_or(NULL, |hint| self.hint(hint));
@@ -695,13 +714,15 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.node(SHARP_AST_NEW, 0, line, &[class, arguments])
             }
             // Spec section 4 looks up the kind of `Class.y` when it runs, so the read is a class constant fetch
-            // marked to fall back to the static property of the same name.
+            // marked to fall back to the static property of the same name. A constant expression reads only
+            // constants and enum cases, as PHP's does, so its fetch is unmarked.
             Expression::Access(Access::Property(access)) => match self.names.static_property_class(access) {
                 Some(class) => {
                     let class = self.string(ZEND_NAME_FQ, self.line(class), self.names.get(&class.name));
                     let member = self.member(&access.property);
+                    let attr = if self.in_constant_expression { 0 } else { ZEND_FETCH_CLASS_MEMBER };
 
-                    self.node(SHARP_AST_CLASS_CONST, ZEND_FETCH_CLASS_MEMBER, line, &[class, member])
+                    self.node(SHARP_AST_CLASS_CONST, attr, line, &[class, member])
                 }
                 None => {
                     let object = self.expression(access.object);

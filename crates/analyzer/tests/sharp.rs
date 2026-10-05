@@ -678,6 +678,22 @@ fn a_class_member_read_is_checked_as_its_constant_enum_case_or_static_property_i
     );
 }
 
+/// A constant expression reads `Class.y` as the class constant or enum case, as PHP's `Class::y`: a parameter default,
+/// a constant's value and a constant initial value check as their PHP twins, and a static property there is a
+/// constant the class does not have.
+#[test]
+fn a_class_member_read_in_a_constant_expression_is_checked_as_a_class_constant() {
+    let registry = "<?php\n\nnamespace Lib;\n\nenum Order: string\n{\n    case Ascending = 'asc';\n}\n\nfinal class Registry\n{\n    public const int VERSION = 2;\n    public static string $label = 'registry';\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Order;\nimport Lib.Registry;\n\nclass Members\n{\n    public const int NEXT = Registry.VERSION + 1;\n    public const string LABEL = Registry.label;\n    private Order sort = Order.Ascending;\n\n    public string run(Order order = Order.Ascending, int version = Registry.VERSION)\n    {\n        return this.sort.value;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Order;\nuse Lib\\Registry;\n\nclass Members\n{\n    public const int NEXT = Registry::VERSION + 1;\n    public const string LABEL = Registry::label;\n    private Order $sort = Order::Ascending;\n\n    public function run(Order $order = Order::Ascending, int $version = Registry::VERSION): string\n    {\n        return $this->sort->value;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Members.sharp", sharp), &[("src/Lib/Registry.php", registry)]);
+    let php_issues = issues(("src/Demo/Members.php", php), &[("src/Lib/Registry.php", registry)]);
+
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{sharp_issues:?} {php_issues:?}");
+    assert_eq!(sharp_issues, ["9:42 non-existent-class-constant"]);
+}
+
 /// A PHP class extends a PHP# abstract class and implements a PHP# interface, whose method has no access modifier
 /// and is public, as their PHP twins are.
 #[test]

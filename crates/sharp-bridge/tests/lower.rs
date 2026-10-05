@@ -1150,6 +1150,31 @@ fn a_static_member_written_through_its_class_is_a_static_property() {
 }
 
 /// ```php
+/// #[\Lib\Field(\Lib\Mode::Write)] public const int MAX = \Lib\Calc::MAX;
+/// private \Lib\Mode $mode = \Lib\Mode::Read;
+/// public function run(\Lib\Mode $extra = \Lib\Mode::Read)
+/// ```
+///
+/// PHP evaluates a constant expression without the static property fallback, so a class member read in a constant's
+/// value, a constant initial value, a parameter default and an attribute argument is an unmarked class constant.
+#[test]
+fn a_class_member_read_in_a_constant_expression_is_an_unmarked_class_constant() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\nimport Lib.Field;\nimport Lib.Mode;\n\nclass Report\n{\n    public const int MAX = Calc.MAX;\n    private Mode mode = Mode.Read;\n\n    [Field(Mode.Write)]\n    public int run(Mode extra = Mode.Read)\n    {\n        return 1;\n    }\n}\n",
+    );
+
+    let class_constants = lowered
+        .nodes()
+        .iter()
+        .filter(|node| node.kind == sharp_kind::SHARP_AST_CLASS_CONST)
+        .map(|node| node.attr)
+        .collect::<Vec<_>>();
+
+    assert_eq!(lowered.diagnostics(), Vec::<String>::new());
+    assert_eq!(class_constants, [0, 0, 0, 0]);
+}
+
+/// ```php
 /// return \Lib\Calc::rate->cents;
 /// ```
 ///
