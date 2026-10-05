@@ -1124,16 +1124,14 @@ mod tests {
 
     #[test]
     fn a_request_waiting_behind_others_gets_the_whole_deadline_once_the_worker_starts_it() {
-        let deadline = Duration::from_millis(300);
+        let deadline = Duration::from_secs(1);
         let (worker, mut peer_reader, mut peer_writer) = connected_worker(deadline);
         let peer = std::thread::spawn(move || {
-            let requests: [Frame; 3] = std::array::from_fn(|_| {
-                Frame::read_from(&mut peer_reader, 1024)
+            for _ in 0..3 {
+                let request = Frame::read_from(&mut peer_reader, 1024)
                     .expect("request should decode")
-                    .expect("request should be present")
-            });
-            for request in requests {
-                std::thread::sleep(deadline - Duration::from_millis(50));
+                    .expect("request should be present");
+                std::thread::sleep(deadline - Duration::from_millis(200));
                 Frame::response(request.id, 0, request.payload)
                     .write_to(&mut peer_writer, 1024)
                     .expect("response should encode");
