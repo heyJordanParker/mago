@@ -1787,7 +1787,8 @@ fn try_without_a_catch_has_an_empty_catch_list() {
 /// return \strlen(\sprintf("%d", \count($extra, mode: 0)));
 /// ```
 ///
-/// PHP# calls only PHP's built-in functions, so a call names the global function with `ZEND_NAME_FQ`, which is 0.
+/// PHP# calls only global functions, PHP's own and those a library or the app declares, so a call names the global
+/// function with `ZEND_NAME_FQ`, which is 0.
 #[test]
 fn a_function_call_is_a_call_of_the_global_function() {
     assert_eq!(

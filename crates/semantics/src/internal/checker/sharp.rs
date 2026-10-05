@@ -114,10 +114,11 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - In expressions: literals, templates, parentheses, bare names, assignment, the operators below, and method calls
 ///   and property reads written with `.` or `?.` and a member name, `new Class(...)` on a class written by its short
 ///   name, calls of a function by its bare name, each with positional and named arguments, and `throw`, which is an
-///   expression as in PHP. `?.` never follows a class. A function is PHP's built-in function of that name, which spec
-///   section 8 keeps, and the engine calls the global one. A string literal's `\u{...}` escapes are valid codepoints,
-///   as PHP requires. A `"…"` string never interpolates, and a template, `` `Order ${number}` ``, interpolates any
-///   expression of this list in each `${…}` and takes JavaScript's escapes, as spec section 18 writes them.
+///   expression as in PHP. `?.` never follows a class. A function is the global function of that name, PHP's own
+///   or one a library or the app declares, as spec sections 8 and 29 keep them, and the engine calls the global
+///   one. A string literal's `\u{...}` escapes are valid codepoints, as PHP requires. A `"…"` string never
+///   interpolates, and a template, `` `Order ${number}` ``, interpolates any expression of this list in each `${…}`
+///   and takes JavaScript's escapes, as spec section 18 writes them.
 /// - Operators: `+ - * / % **`, `== != === !== < > <= >=`, `&& || !`, `??`, unary `-` and `+`, `++` and `--`, and
 ///   `= += -= *= /= **= ??=`.
 ///
@@ -130,7 +131,7 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - `+` that may join a string with any other value, which spec section 18 makes an error, in
 ///   `analyze_arithmetic_operation`. `+` on two strings joins them.
 /// - an instance method used as a value, such as `order.total` without a call, in `report_non_existent_property`.
-/// - a call of a function a library or the app declares, in `report_declared_function_call`.
+/// - a call that resolves to a namespaced function, in `report_namespaced_function_call`.
 #[inline]
 pub fn check_slice(node: Node<'_, '_>, context: &mut Context<'_, '_, '_>) {
     let place = match context.slice_places.last() {
@@ -159,7 +160,7 @@ pub enum Place {
     Body,
     /// `new` and the class it creates, whose arguments are the method body's.
     Instantiation,
-    /// A call of PHP's built-in function and the function's name, whose arguments are the method body's.
+    /// A call of a global function and the function's name, whose arguments are the method body's.
     FunctionCall,
     /// A catch clause, whose block is the method body's.
     TryCatchClause,
@@ -533,8 +534,8 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         {
             None
         }
-        // Spec section 8: PHP's built-in functions are called by their bare names. The analyzer refuses a function
-        // that is not built in.
+        // Spec sections 8 and 29: plain PHP functions are called by their bare names. The analyzer refuses a call
+        // that resolves to a namespaced function.
         (Node::Expression(Expression::Call(Call::Function(function_call))), Body)
             if let Expression::Identifier(name @ Identifier::Local(_)) = function_call.function
                 && context.names.binding(name).is_none() =>
@@ -940,7 +941,7 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, a name, and an optional default."
         }
         Place::Body | Place::Instantiation | Place::FunctionCall | Place::TryCatchClause => {
-            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, `break` and `continue` without a level, and `try` with `catch` and `finally`, with literals, templates, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, `++` and `--`, method calls and property reads written with `.` or `?.`, `new Class(...)`, calls of PHP's built-in functions and `throw`."
+            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, `break` and `continue` without a level, and `try` with `catch` and `finally`, with literals, templates, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, `++` and `--`, method calls and property reads written with `.` or `?.`, `new Class(...)`, calls of global functions and `throw`."
         }
         Place::Attribute => {
             "A PHP# attribute is a class name with optional positional and named arguments, as in `[Field(\"Name\", searchable: true)]`."
