@@ -4,6 +4,7 @@ on:
   push:
     branches: [master]
   pull_request:
+  workflow_call:
 
 jobs:
   build-and-test:
@@ -24,6 +25,14 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+
+      - name: keep local sources out of Cargo.lock
+        if: matrix.os == 'macos-latest'
+        run: |
+          if git grep -nE '(path|git)\+file://' -- '*Cargo.lock'; then
+            echo "::error::A committed Cargo.lock names a local source. Keep the [patch] in an untracked .cargo/config.toml."
+            exit 1
+          fi
 
       - name: install rust toolchain
         uses: dtolnay/rust-toolchain@master
