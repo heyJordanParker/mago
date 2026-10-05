@@ -335,6 +335,9 @@ pub(super) fn has_node_analysis_target(
 impl FileAnalysisSnapshot {
     /// Builds a compact, thread-safe snapshot of one file's lazy analysis data.
     ///
+    /// Without `node_analysis`, the node-analysis hooks skip the file. Its syntax still marks
+    /// their targets, so an after-analysis hook reads it as when they run.
+    ///
     /// # Errors
     ///
     /// Returns an error when the source snapshot or an inferred type cannot be represented by the extension protocol.
@@ -345,6 +348,7 @@ impl FileAnalysisSnapshot {
         artifacts: &AnalysisArtifacts,
         codebase: &CodebaseMetadata,
         node_analysis_requirements: Option<&NodeAnalysisRequirements>,
+        node_analysis: bool,
     ) -> Result<Self, ExternalAnalyzerError> {
         let node_analysis_plan = node_analysis_requirements
             .map(|requirements| build_node_analysis_plan(program, artifacts, resolved_names, codebase, requirements));
@@ -362,7 +366,7 @@ impl FileAnalysisSnapshot {
         })?;
 
         let (encoded_target_source, encoded_target_analysis, node_analysis_targets) = if let Some(plan) =
-            node_analysis_plan.as_ref().filter(|_| matched_target_count != 0)
+            node_analysis_plan.as_ref().filter(|_| node_analysis && matched_target_count != 0)
         {
             let target_source = SourceSnapshot::targeted_with_filter(
                 program,

@@ -2,9 +2,16 @@ use mago_allocator::Arena;
 use mago_span::HasSpan;
 use mago_syntax::cst;
 
+use mago_flags::U8Flags;
+
+use crate::ir::delimited::Delimited;
 use crate::ir::expression::Expression;
+use crate::ir::item::member::hook::Hook;
+use crate::ir::item::member::hook::HookBody;
+use crate::ir::item::member::hook::HookBodyKind;
 use crate::ir::item::member::property::HookedProperty;
 use crate::ir::item::member::property::Property;
+use crate::ir::name::Name;
 use crate::ir::variable::DirectVariable;
 use crate::lower::Lowering;
 
@@ -71,6 +78,40 @@ where
             variable,
             default_value,
             hooks,
+        }
+    }
+
+    /// Lowers a PHP# computed property as the hooked property it runs as: one `get => expr;` hook, at its arrow.
+    pub(crate) fn lower_computed_property(
+        &mut self,
+        property: &'scratch cst::ComputedProperty<'scratch>,
+    ) -> HookedProperty<'arena, (), (), ()> {
+        let document = self.phpdoc_resolution.get(property.span());
+        let get = Hook {
+            span: property.body.span(),
+            annotation: None,
+            attributes: &[],
+            version_constraint: &[],
+            flags: U8Flags::new(),
+            modifiers: &[],
+            name: Name { span: property.body.arrow, value: self.interner.intern(b"get") },
+            parameters: None,
+            body: Some(HookBody {
+                span: property.body.span(),
+                kind: HookBodyKind::Expression(self.arena.alloc(self.lower_expression(property.body.expression))),
+            }),
+        };
+
+        HookedProperty {
+            span: property.span(),
+            annotation: self.lower_item_annotation(document.as_ref(), None),
+            attributes: self.lower_attribute_lists(&property.attribute_lists),
+            version_constraint: self.lower_version_constraint(&property.attribute_lists),
+            modifiers: self.lower_modifiers(&property.modifiers),
+            r#type: property.hint.as_ref().map(|hint| self.lower_type(hint)),
+            variable: self.lower_direct_variable(&property.variable),
+            default_value: None,
+            hooks: Delimited { span: property.body.span(), items: self.arena.alloc_slice_copy(&[get]) },
         }
     }
 

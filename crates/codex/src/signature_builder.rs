@@ -191,6 +191,7 @@ impl<'ast, 'arena> MutWalker<'ast, 'arena, ()> for SignatureBuilder<'arena> {
                 PropertyItem::Abstract(abstract_item) => Some(&abstract_item.variable),
                 PropertyItem::Concrete(concrete_item) => Some(&concrete_item.variable),
             },
+            Property::Computed(computed) => Some(&computed.variable),
         };
 
         if let Some(var) = name {

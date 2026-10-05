@@ -344,13 +344,12 @@ impl AnalyzeCommand {
         if self.scan_only {
             server = server.scan_only();
         }
-        let analysis_result = server.analyze()?;
+        if let Some(scope) = scope {
+            server = server.scoped_to(scope);
+        }
+        let mut issues = server.analyze()?.issues;
         let service_run_duration = service_run_start.map(|s| s.elapsed());
         let report_start = trace_enabled.then(Instant::now);
-        let mut issues = match &scope {
-            Some(scope) => server.issues_in(scope),
-            None => analysis_result.issues,
-        };
         let ignore_set = self.compile_ignore_set(&configuration);
         let database = server.database_mut();
 
@@ -455,7 +454,7 @@ impl AnalyzeCommand {
                 Some(scope_to(&mut orchestrator, &configuration.source.workspace, &self.path, &[])?)
             };
 
-            match self.run_watch_mode(orchestrator, &configuration, color_choice, database, scope.as_ref())? {
+            match self.run_watch_mode(orchestrator, &configuration, color_choice, database, scope)? {
                 WatchOutcome::Restart(reason) => {
                     tracing::info!("Restarting analysis: {reason}");
 
@@ -497,13 +496,16 @@ impl AnalyzeCommand {
         configuration: &Configuration,
         color_choice: ColorChoice,
         prelude_database: Database<'static>,
-        scope: Option<&WorkspaceMatcher>,
+        scope: Option<WorkspaceMatcher>,
     ) -> Result<WatchOutcome, Error> {
         tracing::info!("Starting watch mode. Press Ctrl+C to stop.");
 
         let database =
             orchestrator.load_database(&configuration.source.workspace, true, Some(prelude_database), None)?;
         let mut server = Server::new(database.clone().into_static(), self.prelude(), server_settings(&orchestrator));
+        if let Some(scope) = scope {
+            server = server.scoped_to(scope);
+        }
 
         let mut watcher = DatabaseWatcher::new(database);
 
@@ -515,14 +517,9 @@ impl AnalyzeCommand {
         tracing::info!("Watching {} for changes...", configuration.source.workspace.display());
         tracing::info!("Running initial analysis...");
 
-        let analysis_result = server.analyze()?;
+        let mut issues = server.analyze()?.issues;
 
         let ignore_set = self.compile_ignore_set(configuration);
-
-        let mut issues = match scope {
-            Some(scope) => server.issues_in(scope),
-            None => analysis_result.issues,
-        };
 
         issues.filter_out_ignored(&ignore_set, |file_id| {
             server.database().get_ref(&file_id).ok().map(|f| String::from_utf8_lossy(&f.name).into_owned())
@@ -559,12 +556,7 @@ impl AnalyzeCommand {
 
             *server.database_mut() = watcher.database().clone().into_static();
 
-            let analysis_result = server.analyze_incremental(&changed_file_ids)?;
-
-            let mut issues = match scope {
-                Some(scope) => server.issues_in(scope),
-                None => analysis_result.issues,
-            };
+            let mut issues = server.analyze_incremental(&changed_file_ids)?.issues;
             issues.filter_out_ignored(&ignore_set, |file_id| {
                 server.database().get_ref(&file_id).ok().map(|f| String::from_utf8_lossy(&f.name).into_owned())
             });

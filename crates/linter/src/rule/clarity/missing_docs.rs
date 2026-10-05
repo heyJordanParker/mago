@@ -351,6 +351,7 @@ fn property_names<'arena>(property: &Property<'arena>) -> Vec<&'arena [u8]> {
     match property {
         Property::Plain(plain) => plain.items.iter().map(|item| variable_name(item.variable())).collect(),
         Property::Hooked(hooked) => vec![variable_name(hooked.item.variable())],
+        Property::Computed(computed) => vec![variable_name(&computed.variable)],
     }
 }
 

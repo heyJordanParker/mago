@@ -391,7 +391,8 @@ pub fn function_like_parts<'ast, 'arena>(node: Node<'ast, 'arena>) -> Option<Fun
                 use_clause: None,
                 binds_this: !m.is_static(),
             }),
-            MethodBody::Abstract(_) => None,
+            // `mago lint` skips PHP# files, the only ones with an expression body.
+            MethodBody::Abstract(_) | MethodBody::Expression(_) => None,
         },
         Node::Closure(c) => Some(FunctionLikeParts {
             parameter_list: &c.parameter_list,
