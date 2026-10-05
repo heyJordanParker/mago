@@ -153,7 +153,7 @@ final class Protocol
     private const TYPE_COMPARISON_BATCH_REQUEST = 16;
     private const MAGIC_U32 = 0x4D41_4E41;
     private const MAJOR = 1;
-    private const MINOR = 6;
+    private const MINOR = 7;
     private const VERSION_U32 = (self::MAJOR << 16) | self::MINOR;
     private const DESCRIBE_RESPONSE = 0x8001;
     private const RETURN_TYPE_RESPONSE = 0x8002;
@@ -1121,6 +1121,7 @@ final class Protocol
                     $argumentTypes,
                     $variableDefinedness,
                     $targetedHookIndices,
+                    $reader->readBoolean(),
                 );
             }
         }

@@ -686,6 +686,48 @@ fn a_method_call_hook_receives_a_sharp_static_call() -> Result<(), Box<dyn std::
     Ok(())
 }
 
+#[test]
+fn hooks_without_the_subtree_split_php_method_and_static_calls() -> Result<(), Box<dyn std::error::Error>> {
+    if !php_sdk_is_available() {
+        return Ok(());
+    }
+
+    const PHP: &str = "<?php\n\nnamespace Demo;\n\nclass Calc\n{\n    public static function make(Calc $calc): Calc\n    {\n        return $calc;\n    }\n\n    public function add(int $value): int\n    {\n        return $value;\n    }\n}\n\nclass Report\n{\n    public static function total(Calc $calc): int\n    {\n        return Calc::make($calc)->add(1);\n    }\n}\n";
+
+    let observation = analyze_with_fixture("src/Report.php", PHP, &["MAGO_INVOCATION_BARE_CALL_HOOKS"])?;
+
+    assert_eq!(observation.issues, []);
+    assert_eq!(
+        observation.invocations,
+        ["MethodCall-hook-Calc::make($calc)->add(1)", "StaticMethodCall-hook-Calc::make($calc)"]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn hooks_without_the_subtree_split_sharp_method_and_static_calls() -> Result<(), Box<dyn std::error::Error>> {
+    if !php_sdk_is_available() {
+        return Ok(());
+    }
+
+    const SHARP: &str = "namespace Demo;\n\nclass Calc\n{\n    public static Calc make(Calc calc)\n    {\n        return calc;\n    }\n\n    public int add(int value)\n    {\n        return value;\n    }\n}\n\nclass Report\n{\n    public static int total(Calc calc)\n    {\n        return Calc.make(calc).add(1);\n    }\n}\n";
+
+    let observation = analyze_with_fixture("src/Report.sharp", SHARP, &["MAGO_INVOCATION_BARE_CALL_HOOKS"])?;
+
+    assert_eq!(observation.issues, []);
+    assert_eq!(
+        observation.invocations,
+        [
+            "MethodCall-hook-Calc.make(calc).add(1)",
+            "MethodCall-hook-Calc.make(calc)",
+            "StaticMethodCall-hook-Calc.make(calc)"
+        ]
+    );
+
+    Ok(())
+}
+
 /// Analyzes `source`, saved as `file`, with the invocation fixture worker. Each name in `switches` is a fixture
 /// environment variable set to `1`.
 fn analyze_with_fixture(

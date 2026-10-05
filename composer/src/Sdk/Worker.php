@@ -67,7 +67,6 @@ use Mago\Sdk\Internal\Protocol\PayloadReader;
 use Mago\Sdk\Internal\SignalCancellationToken;
 use Mago\Sdk\Internal\Worker\Protocol as WorkerProtocol;
 use Mago\Sdk\Linter\LintContext;
-use Mago\Sdk\Syntax\CallExpression;
 use Mago\Sdk\Syntax\NodeKind;
 use Revolt\EventLoop;
 use Throwable;
@@ -1335,22 +1334,12 @@ final class Worker
                 $context->cancellation->throwIfCancelled();
             }
 
-            $hooks = $registered->nodeAnalysisHooksByNodeKind[$node->kind->value] ?? [];
+            $data = $context->analysis->getNodeAnalysisData($targetIndex - 1);
             // A PHP# static call, `Calc.make()`, is a method call whose receiver Mago bound to a class. A hook that
             // targets static calls receives it, as it receives `Calc::make()` in PHP.
-            if (
-                $node->kind === NodeKind::MethodCall
-                && array_key_exists(NodeKind::StaticMethodCall->value, $registered->nodeAnalysisHooksByNodeKind)
-                && CallExpression::fromNode($source, $node)->isStaticMethod()
-            ) {
-                $hooks = self::nodeAnalysisHooksTargeting(
-                    $registered,
-                    NodeKind::MethodCall,
-                    NodeKind::StaticMethodCall,
-                );
-            }
-
-            $data = $context->analysis->getNodeAnalysisData($targetIndex - 1);
+            $hooks = $data->isSharpStaticCall
+                ? self::nodeAnalysisHooksTargeting($registered, NodeKind::MethodCall, NodeKind::StaticMethodCall)
+                : $registered->nodeAnalysisHooksByNodeKind[$node->kind->value] ?? [];
             if ($hooks === [] && $data->targetedHookIndices === []) {
                 continue;
             }
