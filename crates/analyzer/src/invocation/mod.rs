@@ -220,6 +220,16 @@ impl<'ctx> InvocationTarget<'ctx> {
             return display_name.to_string();
         }
 
+        if let InvocationTarget::FunctionLike {
+            identifier: FunctionLikeIdentifier::Method(_, method_name),
+            method_context: Some(MethodTargetContext { class_type: StaticClassType::Object(object), .. }),
+            ..
+        } = self
+            && let Some(collection) = crate::utils::names::display_sharp_collection(object)
+        {
+            return format!("{collection}.{method_name}");
+        }
+
         self.get_function_like_identifier()
             .map(|identifier| crate::utils::names::display_function_like_identifier(context, identifier))
             .unwrap_or_else(

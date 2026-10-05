@@ -1106,6 +1106,27 @@ fn collection_methods_take_and_give_the_types_of_their_elements() {
     );
 }
 
+/// The analyzer checks a collection method against `Sharp\ListMethods` or `Sharp\MapMethods`, and every message names
+/// the PHP# type the code wrote instead, as in "`add` doesn't exist on `Map<string, int>`".
+#[test]
+fn a_collection_method_message_names_the_sharp_type() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public void wrong(List<int> sizes, Map<string, int> counts)\n    {\n        sizes.add(\"a\");\n        sizes.set(\"a\", 1);\n        counts.add(1);\n        sizes.delete(0);\n        counts.get(1.5);\n        sizes.get();\n        sizes.get(0, 1);\n    }\n}\n";
+    let issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Order.sharp", sharp), &[]);
+
+    let messages: Vec<&str> = issues.iter().map(|issue| issue.message.as_str()).collect();
+    assert!(messages.contains(&"Method `add` does not exist on `Map<string, int>`."), "{messages:#?}");
+    assert!(
+        messages.contains(
+            &"Invalid argument type for argument #1 of `List<int>.add`: expected `int`, but found `string('a')`."
+        ),
+        "{messages:#?}"
+    );
+    for issue in &issues {
+        let text = format!("{issue:?}");
+        assert!(!text.contains("ListMethods") && !text.contains("MapMethods"), "{text}");
+    }
+}
+
 /// A PHP# collection holds any value of its element type, as a `List<int>` holds any int, so a method takes one
 /// even where the analyzer knows the elements are literals, as TypeScript's `let a = [5]` is a `number[]`.
 #[test]

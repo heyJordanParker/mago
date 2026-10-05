@@ -47,6 +47,7 @@ use crate::resolver::selector::resolve_member_selector;
 use crate::utils::expression::analyze_member_object;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_method_name;
+use crate::utils::names::display_sharp_collection;
 use crate::visibility::check_method_visibility;
 use crate::visibility::is_method_visible;
 
@@ -317,6 +318,17 @@ where
                                     result.encountered_mixed |= has_incomplete_hierarchy;
                                 } else if has_incomplete_hierarchy {
                                     result.encountered_mixed = true;
+                                } else if let Some(collection) = display_sharp_collection(obj_type) {
+                                    report_non_existent_collection_method(
+                                        context,
+                                        object.span(),
+                                        selector.span(),
+                                        classname,
+                                        &collection,
+                                        method_name,
+                                    );
+
+                                    result.has_invalid_target = true;
                                 } else {
                                     report_non_existent_method(
                                         context,
@@ -1117,6 +1129,36 @@ pub(crate) fn report_non_existent_method<A>(
                 Annotation::secondary(obj_span).with_message(format!("This expression has type `{classname}`")),
             )
             .with_help(format!("Ensure the `{method_name}` method is defined in the `{classname}` class-like.")),
+    );
+}
+
+/// Reports a method a PHP# `List` or `Map` does not have, naming the collection type the code wrote and the methods
+/// `classname`, its `Sharp\ListMethods` or `Sharp\MapMethods`, gives it.
+fn report_non_existent_collection_method<A>(
+    context: &mut Context<'_, '_, A>,
+    obj_span: Span,
+    selector_span: Span,
+    classname: Word,
+    collection: &str,
+    method_name: Word,
+) where
+    A: Arena,
+{
+    let mut methods = context
+        .codebase
+        .get_class_like(classname.as_bytes())
+        .map(|metadata| metadata.methods.iter().map(|method| format!("`{method}`")).collect::<Vec<_>>())
+        .unwrap_or_default();
+    methods.sort();
+
+    context.collector.report_with_code(
+        IssueCode::NonExistentMethod,
+        Issue::error(format!("Method `{method_name}` does not exist on `{collection}`."))
+            .with_annotation(Annotation::primary(selector_span).with_message("This method selection is invalid"))
+            .with_annotation(
+                Annotation::secondary(obj_span).with_message(format!("This expression has type `{collection}`")),
+            )
+            .with_help(format!("A `{collection}` has the methods {}.", methods.join(", "))),
     );
 }
 
