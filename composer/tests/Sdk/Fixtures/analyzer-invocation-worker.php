@@ -880,6 +880,31 @@ final class InvocationCallKindHook implements NodeAnalysisHook
 /**
  * @mago-expect lint:single-class-per-file
  */
+final class InvocationBareCallHook implements NodeAnalysisHook
+{
+    public function __construct(
+        private readonly NodeKind $target,
+    ) {}
+
+    public function getTargets(): array
+    {
+        return [$this->target];
+    }
+
+    public function getRequirements(): array
+    {
+        return [FileAnalysisRequirement::SourceText];
+    }
+
+    public function analyze(NodeAnalysisContext $context): void
+    {
+        InvocationAudit::record($this->target->name . '-hook-' . $context->source->getText($context->node));
+    }
+}
+
+/**
+ * @mago-expect lint:single-class-per-file
+ */
 final class InvocationMethodCallHook implements MethodCallAnalysisHook
 {
     public function getTargets(): array
@@ -913,6 +938,7 @@ final class InvocationPlugin implements IssueFilterHook, Plugin
         private readonly bool $registerIssueFilter,
         private readonly array $callKindTargets,
         private readonly bool $registerMethodCallHook,
+        private readonly bool $registerBareCallHooks,
     ) {}
 
     public function getDefinition(): PluginDefinition
@@ -943,6 +969,10 @@ final class InvocationPlugin implements IssueFilterHook, Plugin
         }
         if ($this->registerMethodCallHook) {
             $registry->registerMethodCallAnalysisHook(new InvocationMethodCallHook());
+        }
+        if ($this->registerBareCallHooks) {
+            $registry->registerNodeAnalysisHook(new InvocationBareCallHook(NodeKind::MethodCall));
+            $registry->registerNodeAnalysisHook(new InvocationBareCallHook(NodeKind::StaticMethodCall));
         }
     }
 
@@ -984,12 +1014,19 @@ $callKindTargets = match (true) {
     default => [],
 };
 $registerMethodCallHook = getenv('MAGO_INVOCATION_METHOD_CALL_HOOK') === '1';
+$registerBareCallHooks = getenv('MAGO_INVOCATION_BARE_CALL_HOOKS') === '1';
 
 (new Worker(new Extension(
     identifier: 'mago/invocation-proof',
     name: 'Mago invocation proof',
     version: '1.0.0',
     analyzerPlugins: [
-        new InvocationPlugin($registerMethodProvider, $registerIssueFilter, $callKindTargets, $registerMethodCallHook),
+        new InvocationPlugin(
+            $registerMethodProvider,
+            $registerIssueFilter,
+            $callKindTargets,
+            $registerMethodCallHook,
+            $registerBareCallHooks,
+        ),
     ],
 )))->run();
