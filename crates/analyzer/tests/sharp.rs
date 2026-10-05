@@ -1093,3 +1093,17 @@ fn a_key_and_value_loop_reads_a_map_and_its_keys_as_php_stores_them() {
         ["8:37 invalid-iterator", "12:29 possibly-invalid-argument"]
     );
 }
+
+/// `+=`, `++` and `--` read an index, then write it. On a `Map` the read is bare, and on a `List` the write is, so
+/// both are refused, as Kotlin refuses `map[k] += 1`, and the help writes the form that compiles.
+#[test]
+fn a_compound_assignment_or_increment_on_an_index_names_the_form_that_compiles() {
+    let sharp = "namespace Demo;\n\nclass Counts\n{\n    public void bump(Map<string, int> counts, List<int> sizes)\n    {\n        counts[\"a\"] += 1;\n        counts[\"b\"]++;\n        sizes[0] += 1;\n        sizes[1]--;\n    }\n}\n";
+
+    let issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counts.sharp", sharp), &[]);
+    let helps: Vec<_> = issues.iter().map(|issue| issue.help.as_deref().unwrap_or("")).collect();
+
+    assert_eq!(issues.len(), 4, "{issues:?}");
+    assert!(helps[..2].iter().all(|help| help.contains("m[k] = (m[k] ?? 0) + 1")), "{helps:?}");
+    assert!(helps[2..].iter().all(|help| help.contains("list.set(i, list[i] + 1)")), "{helps:?}");
+}

@@ -151,7 +151,7 @@ pub(crate) fn check_sharp_map_read<A>(
             IssueCode::PossiblyUndefinedArrayIndex,
             Issue::error("A `Map` is not read by a bare index, because its key may be missing.")
                 .with_annotation(Annotation::primary(access.span()).with_message("This read throws when the key is missing."))
-                .with_help("Read it with `??`, as in `map[key] ?? fallback`, or with `map.get(key)`, which gives null for a missing key."),
+                .with_help("Read it with `??`, as in `map[key] ?? fallback`, or with `map.get(key)`, which gives null for a missing key. `+=`, `++` and `--` read first, so write `m[k] = (m[k] ?? 0) + 1`."),
         );
     } else if let Some(read) = artifacts.get_expression_type(access).cloned() {
         artifacts.set_expression_type(access, read.as_nullable());

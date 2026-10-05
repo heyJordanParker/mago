@@ -724,7 +724,7 @@ where
                 Issue::error("A `List` is not written by index, because a write could leave a gap in its keys.")
                     .with_annotation(Annotation::primary(array_target.span()).with_message("This writes to a `List`."))
                     .with_help(
-                        "Change an element with `list.set(index, value)`, and append one with `list.add(value)`.",
+                        "Change an element with `list.set(index, value)`, as `list.set(i, list[i] + 1)` replaces `+=`, `++` and `--`, and append one with `list.add(value)`.",
                     ),
             );
         }
