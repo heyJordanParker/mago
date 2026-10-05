@@ -151,6 +151,7 @@ const ZEND_SUB: u32 = 2;
 const ZEND_MUL: u32 = 3;
 const ZEND_DIV: u32 = 4;
 const ZEND_MOD: u32 = 5;
+const ZEND_POW: u32 = 12;
 const ZEND_BOOL_NOT: u32 = 14;
 const ZEND_IS_IDENTICAL: u32 = 16;
 const ZEND_IS_NOT_IDENTICAL: u32 = 17;
@@ -1034,6 +1035,7 @@ fn binary_kind(operator: BinaryOperator) -> (sharp_kind, u32) {
         BinaryOperator::Multiplication(_) => (SHARP_AST_BINARY_OP, ZEND_MUL),
         BinaryOperator::Division(_) => (SHARP_AST_BINARY_OP, ZEND_DIV),
         BinaryOperator::Modulo(_) => (SHARP_AST_BINARY_OP, ZEND_MOD),
+        BinaryOperator::Exponentiation(_) => (SHARP_AST_BINARY_OP, ZEND_POW),
         BinaryOperator::Equal(_) => (SHARP_AST_BINARY_OP, ZEND_IS_EQUAL),
         BinaryOperator::NotEqual(_) => (SHARP_AST_BINARY_OP, ZEND_IS_NOT_EQUAL),
         BinaryOperator::Identical(_) => (SHARP_AST_BINARY_OP, ZEND_IS_IDENTICAL),
@@ -1045,8 +1047,7 @@ fn binary_kind(operator: BinaryOperator) -> (sharp_kind, u32) {
         BinaryOperator::And(_) => (SHARP_AST_AND, 0),
         BinaryOperator::Or(_) => (SHARP_AST_OR, 0),
         BinaryOperator::NullCoalesce(_) => (SHARP_AST_COALESCE, 0),
-        BinaryOperator::Exponentiation(_)
-        | BinaryOperator::BitwiseAnd(_)
+        BinaryOperator::BitwiseAnd(_)
         | BinaryOperator::BitwiseOr(_)
         | BinaryOperator::BitwiseXor(_)
         | BinaryOperator::LeftShift(_)
@@ -1098,9 +1099,9 @@ fn assignment_kind(operator: &AssignmentOperator) -> (sharp_kind, u32) {
         AssignmentOperator::Subtraction(_) => (SHARP_AST_ASSIGN_OP, ZEND_SUB),
         AssignmentOperator::Multiplication(_) => (SHARP_AST_ASSIGN_OP, ZEND_MUL),
         AssignmentOperator::Division(_) => (SHARP_AST_ASSIGN_OP, ZEND_DIV),
+        AssignmentOperator::Exponentiation(_) => (SHARP_AST_ASSIGN_OP, ZEND_POW),
         AssignmentOperator::Coalesce(_) => (SHARP_AST_ASSIGN_COALESCE, 0),
         AssignmentOperator::Modulo(_)
-        | AssignmentOperator::Exponentiation(_)
         | AssignmentOperator::Concat(_)
         | AssignmentOperator::BitwiseAnd(_)
         | AssignmentOperator::BitwiseOr(_)

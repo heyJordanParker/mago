@@ -1182,16 +1182,45 @@ fn unary_operators_are_the_kinds_php_gives_them() {
 }
 
 /// ```php
-/// $a -= 1; $a *= 2; $a /= 3;
+/// $a -= 1; $a *= 2; $a /= 3; $a **= 4;
 /// ```
 ///
-/// `[2]`, `[3]` and `[4]` are `ZEND_SUB`, `ZEND_MUL` and `ZEND_DIV`.
+/// `[2]`, `[3]`, `[4]` and `[12]` are `ZEND_SUB`, `ZEND_MUL`, `ZEND_DIV` and `ZEND_POW`.
 #[test]
 fn compound_assignments_are_assign_ops() {
-    let tree = body("        let a = 1;\n        a -= 1;\n        a *= 2;\n        a /= 3;\n        return a;\n");
+    let tree = body(
+        "        let a = 1;\n        a -= 1;\n        a *= 2;\n        a /= 3;\n        a **= 4;\n        return a;\n",
+    );
     let operators: Vec<&str> = tree.lines().filter(|line| line.starts_with("  ") && !line.starts_with("   ")).collect();
 
-    assert_eq!(operators, ["  ASSIGN", "  ASSIGN_OP [2]", "  ASSIGN_OP [3]", "  ASSIGN_OP [4]", "  RETURN"]);
+    assert_eq!(
+        operators,
+        ["  ASSIGN", "  ASSIGN_OP [2]", "  ASSIGN_OP [3]", "  ASSIGN_OP [4]", "  ASSIGN_OP [12]", "  RETURN"]
+    );
+}
+
+/// ```php
+/// return -$a ** $a ** 2;
+/// ```
+///
+/// `[12]` is `ZEND_POW`. `**` groups to the right and binds tighter than unary `-`, as php-src's grammar has it.
+#[test]
+fn exponentiation_is_a_right_grouped_pow_under_unary_minus() {
+    assert_eq!(
+        body("        return -extra ** extra ** 2;\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                UNARY_MINUS
+                  BINARY_OP [12]
+                    VAR
+                      ZVAL "extra"
+                    BINARY_OP [12]
+                      VAR
+                        ZVAL "extra"
+                      ZVAL 2
+        "#}
+    );
 }
 
 /// ```php

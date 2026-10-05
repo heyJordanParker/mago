@@ -905,9 +905,16 @@ fn a_variadic_parameter_is_not_supported_yet() {
 }
 
 #[test]
+fn exponentiation_and_its_compound_assignment_are_in_the_slice() {
+    let code = leak(method("        let a = extra ** 2 ** -1;\n        a **= 2;\n        return a;\n"));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
 fn operators_outside_the_slice_are_not_supported_yet() {
     let code = leak(method(
-        "        let a = extra;\n        a = @extra;\n        a = (int) extra;\n        a = extra ** 2;\n        a = extra & 1;\n        a = extra | 1;\n        a = extra ^ 1;\n        a = extra << 1;\n        a = extra >> 1;\n        a = ~extra;\n        a = extra xor true;\n        a = extra and true;\n        a = extra or true;\n        a = extra <=> 1;\n        a = extra <> 1;\n        a %= 2;\n        a **= 2;\n        a &= 2;\n        return a;\n",
+        "        let a = extra;\n        a = @extra;\n        a = (int) extra;\n        a = extra & 1;\n        a = extra | 1;\n        a = extra ^ 1;\n        a = extra << 1;\n        a = extra >> 1;\n        a = ~extra;\n        a = extra xor true;\n        a = extra and true;\n        a = extra or true;\n        a = extra <=> 1;\n        a = extra <> 1;\n        a %= 2;\n        a &= 2;\n        return a;\n",
     ));
 
     assert_eq!(
@@ -920,16 +927,14 @@ fn operators_outside_the_slice_are_not_supported_yet() {
             "12:19 This operator is not supported yet in PHP#.",
             "13:19 This operator is not supported yet in PHP#.",
             "14:19 This operator is not supported yet in PHP#.",
-            "15:19 This operator is not supported yet in PHP#.",
-            "16:13 This operator is not supported yet in PHP#.",
+            "15:13 This operator is not supported yet in PHP#.",
+            "16:19 This operator is not supported yet in PHP#.",
             "17:19 This operator is not supported yet in PHP#.",
             "18:19 This operator is not supported yet in PHP#.",
             "19:19 This operator is not supported yet in PHP#.",
             "20:19 This operator is not supported yet in PHP#.",
-            "21:19 This operator is not supported yet in PHP#.",
+            "21:11 This operator is not supported yet in PHP#.",
             "22:11 This operator is not supported yet in PHP#.",
-            "23:11 This operator is not supported yet in PHP#.",
-            "24:11 This operator is not supported yet in PHP#.",
         ]
     );
 }

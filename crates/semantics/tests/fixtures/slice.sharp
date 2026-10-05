@@ -32,6 +32,7 @@ class Report
         total -= 1;
         total *= 2;
         total /= 2;
+        total **= base ** 2;
         total++;
         total--;
         ++total;

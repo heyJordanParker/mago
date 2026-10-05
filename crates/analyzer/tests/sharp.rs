@@ -700,6 +700,18 @@ fn plus_joins_two_strings_into_the_string_dot_gives_in_php() {
 }
 
 #[test]
+fn exponentiation_has_the_type_it_has_in_php() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int power(int base, int exponent, float rate)\n    {\n        let result = base ** exponent;\n        result **= 2;\n        return result + rate ** 2;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function power(int $base, int $exponent, float $rate): int\n    {\n        $result = $base ** $exponent;\n        $result **= 2;\n        return $result + $rate ** 2;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[]);
+
+    assert!(!php_issues.is_empty(), "{php_issues:?}");
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
 fn plus_on_a_string_and_a_value_that_may_not_be_one_is_an_invalid_operand() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    public static string total(int count, float rate, string name, string? maybe)\n    {\n        const a = name + count;\n        const b = rate + name;\n        const c = maybe + name;\n        const d = count + rate;\n        return name;\n    }\n}\n";
 

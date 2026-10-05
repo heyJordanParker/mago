@@ -119,8 +119,8 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   section 8 keeps, and the engine calls the global one. A string literal's `\u{...}` escapes are valid codepoints,
 ///   as PHP requires. A `"…"` string never interpolates, and a template, `` `Order ${number}` ``, interpolates any
 ///   expression of this list in each `${…}` and takes JavaScript's escapes, as spec section 18 writes them.
-/// - Operators: `+ - * / %`, `== != === !== < > <= >=`, `&& || !`, `??`, unary `-` and `+`, `++` and `--`, and
-///   `= += -= *= /= ??=`.
+/// - Operators: `+ - * / % **`, `== != === !== < > <= >=`, `&& || !`, `??`, unary `-` and `+`, `++` and `--`, and
+///   `= += -= *= /= **= ??=`.
 ///
 /// The check visits every node and refuses any node, or any position of a node, that this list does not name. It
 /// reports each refusal once, at its outermost node. It does not run on a file with a parse error, which is the one
@@ -835,6 +835,7 @@ const fn is_slice_binary_operator(operator: &BinaryOperator) -> bool {
         | BinaryOperator::Multiplication(_)
         | BinaryOperator::Division(_)
         | BinaryOperator::Modulo(_)
+        | BinaryOperator::Exponentiation(_)
         | BinaryOperator::Equal(_)
         | BinaryOperator::NotEqual(_)
         | BinaryOperator::Identical(_)
@@ -846,8 +847,7 @@ const fn is_slice_binary_operator(operator: &BinaryOperator) -> bool {
         | BinaryOperator::And(_)
         | BinaryOperator::Or(_)
         | BinaryOperator::NullCoalesce(_) => true,
-        BinaryOperator::Exponentiation(_)
-        | BinaryOperator::BitwiseAnd(_)
+        BinaryOperator::BitwiseAnd(_)
         | BinaryOperator::BitwiseOr(_)
         | BinaryOperator::BitwiseXor(_)
         | BinaryOperator::LeftShift(_)
@@ -896,9 +896,9 @@ const fn is_slice_assignment_operator(operator: &AssignmentOperator) -> bool {
         | AssignmentOperator::Subtraction(_)
         | AssignmentOperator::Multiplication(_)
         | AssignmentOperator::Division(_)
+        | AssignmentOperator::Exponentiation(_)
         | AssignmentOperator::Coalesce(_) => true,
         AssignmentOperator::Modulo(_)
-        | AssignmentOperator::Exponentiation(_)
         | AssignmentOperator::Concat(_)
         | AssignmentOperator::BitwiseAnd(_)
         | AssignmentOperator::BitwiseOr(_)
