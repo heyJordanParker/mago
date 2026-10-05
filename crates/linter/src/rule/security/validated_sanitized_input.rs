@@ -218,6 +218,10 @@ impl LintRule for ValidatedSanitizedInputRule {
                     Node::Function(function) => function.body.statements.as_slice(),
                     Node::Method(method) => match &method.body {
                         MethodBody::Concrete(block) => block.statements.as_slice(),
+                        MethodBody::Expression(body) => {
+                            self.collect_unsanitized_accesses(ctx, Node::Expression(body.expression), false);
+                            return;
+                        }
                         MethodBody::Abstract(_) => return,
                     },
                     Node::Closure(closure) => closure.body.statements.as_slice(),

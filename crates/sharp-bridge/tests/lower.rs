@@ -122,7 +122,7 @@ impl Lowered {
                     sharp_value::SHARP_STRING => write!(tree, " {:?}", text(node.text)),
                 };
             }
-            sharp_kind::SHARP_AST_CLASS | sharp_kind::SHARP_AST_METHOD => {
+            sharp_kind::SHARP_AST_CLASS | sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_PROPERTY_HOOK => {
                 let _ = write!(tree, " {:?} @{}-{}", text(node.text), node.line, node.end_line);
             }
             _ => {}
@@ -558,6 +558,103 @@ fn the_constructor_is_a_public_function_named_construct() {
                   VAR
                     ZVAL "start"
               null
+              null
+        "#}
+    );
+}
+
+/// ```php
+/// public function total(): int { return $this->count + 1; }
+/// public function touch(): void { $this->save(); }
+/// public function __construct(int $count) { $this->count = $count; }
+/// ```
+///
+/// An expression body returns its expression, and runs it as a statement in a `void` method and the constructor.
+#[test]
+fn an_expression_body_is_the_body_that_returns_its_expression() {
+    let lowered = Lowered::new(
+        "class Report\n{\n    private int count = 0;\n\n    public int total() => this.count + 1;\n\n    public void touch() => this.save();\n\n    public Report(int count) => this.count = count;\n}\n",
+    );
+    let bodies: Vec<String> = lowered
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.kind == sharp_kind::SHARP_AST_METHOD)
+        .map(|(index, _)| lowered.render(lowered.child(index as u32, 2)))
+        .collect();
+
+    assert_eq!(
+        bodies,
+        [
+            indoc! {r#"
+                STMT_LIST
+                  RETURN
+                    BINARY_OP [1]
+                      PROP
+                        VAR
+                          ZVAL "this"
+                        ZVAL "count"
+                      ZVAL 1
+            "#},
+            indoc! {r#"
+                STMT_LIST
+                  METHOD_CALL
+                    VAR
+                      ZVAL "this"
+                    ZVAL "save"
+                    ARG_LIST
+            "#},
+            indoc! {r#"
+                STMT_LIST
+                  ASSIGN
+                    PROP
+                      VAR
+                        ZVAL "this"
+                      ZVAL "count"
+                    VAR
+                      ZVAL "count"
+            "#},
+        ]
+    );
+}
+
+/// ```php
+/// public string $slug { get => strtolower($this->name); }
+/// ```
+///
+/// A computed property is a property with one `get` hook whose body is the short body php-src's grammar builds for
+/// `get => expr;`. The hook's lines are the arrow's.
+#[test]
+fn a_computed_property_is_a_property_with_a_short_get_hook() {
+    let lowered = Lowered::new(
+        "class Report\n{\n    private string name = \"\";\n\n    public string slug => strtolower(this.name);\n}\n",
+    );
+    let class = lowered.child(lowered.unit().root, 1);
+
+    assert_eq!(
+        lowered.render(lowered.child(lowered.child(class, 2), 1)),
+        indoc! {r#"
+            PROP_GROUP [1]
+              ZVAL [1] "string"
+              PROP_DECL
+                PROP_ELEM
+                  ZVAL "slug"
+                  null
+                  null
+                  STMT_LIST
+                    PROPERTY_HOOK "get" @5-5
+                      null
+                      null
+                      PROPERTY_HOOK_SHORT_BODY
+                        CALL
+                          ZVAL "strtolower"
+                          ARG_LIST
+                            PROP
+                              VAR
+                                ZVAL "this"
+                              ZVAL "name"
+                      null
+                      null
               null
         "#}
     );
@@ -1041,6 +1138,33 @@ fn a_class_of_the_same_namespace_is_called_by_its_full_name() {
 }
 
 /// ```php
+/// return \Sharp\Int::parse($extra) + \Sharp\Float::tryParse($extra);
+/// ```
+#[test]
+fn int_and_float_are_the_classes_of_the_sharp_namespace() {
+    assert_eq!(
+        body("        return Int.parse(extra) + Float.tryParse(extra);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                BINARY_OP [1]
+                  STATIC_CALL
+                    ZVAL "Sharp\\Int"
+                    ZVAL "parse"
+                    ARG_LIST
+                      VAR
+                        ZVAL "extra"
+                  STATIC_CALL
+                    ZVAL "Sharp\\Float"
+                    ZVAL "tryParse"
+                    ARG_LIST
+                      VAR
+                        ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
 /// return $this->total($extra, rate: 2)->value;
 /// ```
 #[test]
@@ -1319,6 +1443,68 @@ fn null_coalescing_is_coalesce() {
                       ZVAL "total"
                       ARG_LIST
                     ZVAL 0
+        "#}
+    );
+}
+
+/// ```php
+/// return ($extra > 1 ? true : false) ? $extra : ($extra < 0 ? 0 : 1);
+/// ```
+///
+/// A ternary in parentheses carries `ZEND_PARENTHESIZED_CONDITIONAL`, as php-src's grammar marks `'(' expr ')'`, so
+/// the engine accepts it as the condition of another ternary.
+#[test]
+fn the_ternary_is_a_conditional_marked_when_parenthesized() {
+    assert_eq!(
+        body("        return (extra > 1 ? true : false) ? extra : (extra < 0 ? 0 : 1);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CONDITIONAL
+                  CONDITIONAL [1]
+                    GREATER
+                      VAR
+                        ZVAL "extra"
+                      ZVAL 1
+                    ZVAL true
+                    ZVAL false
+                  VAR
+                    ZVAL "extra"
+                  CONDITIONAL [1]
+                    BINARY_OP [20]
+                      VAR
+                        ZVAL "extra"
+                      ZVAL 0
+                    ZVAL 0
+                    ZVAL 1
+        "#}
+    );
+}
+
+/// ```php
+/// $cents = (int)($extra * 1.5); return (string)(float)$cents;
+/// ```
+///
+/// A cast's attr is the type it converts to, `IS_LONG`, `IS_DOUBLE` or `IS_STRING`, as php-src's grammar builds it.
+#[test]
+fn casts_between_numbers_are_casts_to_their_types() {
+    assert_eq!(
+        body("        const cents = (int)(extra * 1.5);\n        return (string)(float)cents;\n"),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "cents"
+                CAST [4]
+                  BINARY_OP [3]
+                    VAR
+                      ZVAL "extra"
+                    ZVAL 1.5
+              RETURN
+                CAST [6]
+                  CAST [5]
+                    VAR
+                      ZVAL "cents"
         "#}
     );
 }
@@ -2015,7 +2201,9 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_RETURN
         | sharp_kind::SHARP_AST_BREAK
         | sharp_kind::SHARP_AST_CONTINUE
-        | sharp_kind::SHARP_AST_THROW => Some(1),
+        | sharp_kind::SHARP_AST_THROW
+        | sharp_kind::SHARP_AST_CAST
+        | sharp_kind::SHARP_AST_PROPERTY_HOOK_SHORT_BODY => Some(1),
         sharp_kind::SHARP_AST_PROP
         | sharp_kind::SHARP_AST_ASSIGN
         | sharp_kind::SHARP_AST_ASSIGN_OP
@@ -2042,9 +2230,10 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_NULLSAFE_METHOD_CALL
         | sharp_kind::SHARP_AST_PROP_GROUP
         | sharp_kind::SHARP_AST_TRY
-        | sharp_kind::SHARP_AST_CATCH => Some(3),
+        | sharp_kind::SHARP_AST_CATCH
+        | sharp_kind::SHARP_AST_CONDITIONAL => Some(3),
         sharp_kind::SHARP_AST_FOR | sharp_kind::SHARP_AST_FOREACH | sharp_kind::SHARP_AST_PROP_ELEM => Some(4),
-        sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_CLASS => Some(5),
+        sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_CLASS | sharp_kind::SHARP_AST_PROPERTY_HOOK => Some(5),
         sharp_kind::SHARP_AST_PARAM => Some(6),
     }
 }

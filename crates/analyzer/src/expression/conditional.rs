@@ -70,6 +70,10 @@ where
 
     *block_context = applied_block_context;
 
+    if then.is_some() {
+        context.report_non_bool_condition(condition, artifacts.get_expression_type(condition), "? :");
+    }
+
     let mut if_block_context = if_conditional_scope.if_body_context;
     let mut conditionally_referenced_variable_ids = if_conditional_scope.conditionally_referenced_variable_ids;
 
