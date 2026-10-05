@@ -759,6 +759,13 @@ fn a_field_without_an_access_modifier_is_not_supported_yet() {
 }
 
 #[test]
+fn a_field_ended_by_a_closing_tag_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private int count = 0 ?><?php\n}\n";
+
+    assert_eq!(issues(code), ["5:27 This construct is not supported yet in PHP#."]);
+}
+
+#[test]
 fn fields_outside_the_slice_are_not_supported_yet() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    private static int count = 0;\n    private int first, second;\n    private int? maybe;\n}\n";
 
