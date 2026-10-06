@@ -6,6 +6,7 @@ namespace Mago\Sdk;
 
 use Closure;
 use Mago\Sdk\Analyzer\AfterAnalysisContext;
+use Mago\Sdk\Analyzer\AfterAnalysisHook;
 use Mago\Sdk\Analyzer\AfterFileAnalysisContext;
 use Mago\Sdk\Analyzer\AssertionProviderContext;
 use Mago\Sdk\Analyzer\BeforeAnalysisContext;
@@ -72,6 +73,7 @@ use Revolt\EventLoop;
 use Throwable;
 
 use function array_key_exists;
+use function array_map;
 use function array_values;
 use function count;
 use function defined;
@@ -402,7 +404,11 @@ final class Worker
                     $registeredMethodCallAnalysisHooksByIndex,
                     $registeredClassLikeAnalysisHooks,
                     $registeredClassLikeAnalysisHooksByIndex,
-                    $registry->getAfterAnalysisHooks(),
+                    // Each pass runs a copy of the hook as registered, so no state a pass leaves reaches the next.
+                    array_map(
+                        static fn(AfterAnalysisHook $hook): AfterAnalysisHook => clone $hook,
+                        $registry->getAfterAnalysisHooks(),
+                    ),
                     $registry->shouldMemoizeProviders(),
                     $registeredCallForwardingProviders,
                 );
@@ -1272,7 +1278,7 @@ final class Worker
 
                     if ($context instanceof AfterAnalysisContext) {
                         foreach ($registered->afterAnalysisHooks as $hook) {
-                            $hook->afterAnalysis($context);
+                            (clone $hook)->afterAnalysis($context);
                         }
                     }
                 } catch (Throwable $throwable) {

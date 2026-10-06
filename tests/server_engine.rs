@@ -129,3 +129,53 @@ fn a_failed_analysis_resets_the_server_so_the_next_answers_like_a_fresh_one() {
     );
     assert_eq!(recovered, fresh);
 }
+
+#[test]
+fn every_pass_runs_a_fresh_after_analysis_hook() {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !common::php_sdk_is_available(repository, "the fresh hook test") {
+        return;
+    }
+
+    let mut server = server(
+        repository,
+        database(&[
+            ("src/counted.php", "<?php\nconst PROOF_CALLS = 1;\n"),
+            ("src/body.php", "<?php\nfunction body(): int { return 1; }\n"),
+        ]),
+    );
+    let calls = |issues: &IssueCollection| codes(issues).remove("server-proof/calls").unwrap_or_default();
+    assert_eq!(calls(&server.analyze().expect("initial analysis").issues), ["After-analysis call 1 of this hook."]);
+
+    let body = FileId::new(b"src/body.php");
+    for value in 2..4 {
+        let contents = format!("<?php\nfunction body(): int {{ return {value}; }}\n");
+        server.database_mut().update(body, Cow::Owned(contents.into_bytes()));
+        let warm = server.analyze_incremental(&[body]).expect("warm analysis").issues;
+        assert_eq!(calls(&warm), ["After-analysis call 1 of this hook."], "pass {value}");
+    }
+}
+
+#[test]
+fn findings_an_after_analysis_hook_collects_in_an_array_start_empty_every_pass() {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !common::php_sdk_is_available(repository, "the fresh hook array test") {
+        return;
+    }
+
+    let first = "<?php\n// route: /home\nfunction first(): int { return 1; }\n";
+    let second_contents =
+        |value: i32| format!("<?php\n// route: /home\nfunction second(): int {{ return {value}; }}\n");
+    let mut server = server(repository, database(&[("src/first.php", first), ("src/second.php", &second_contents(1))]));
+    let duplicates =
+        |issues: &IssueCollection| codes(issues).remove("server-proof/duplicate-route").unwrap_or_default();
+    let expected = ["Route `/home` is also declared in `src/first.php`."];
+    assert_eq!(duplicates(&server.analyze().expect("initial analysis").issues), expected);
+
+    let second = FileId::new(b"src/second.php");
+    for value in 2..4 {
+        server.database_mut().update(second, Cow::Owned(second_contents(value).into_bytes()));
+        let warm = server.analyze_incremental(&[second]).expect("warm analysis").issues;
+        assert_eq!(duplicates(&warm), expected, "pass {value}");
+    }
+}

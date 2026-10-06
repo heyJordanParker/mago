@@ -638,6 +638,23 @@ fn checks_with_and_without_colors_share_one_warm_worktree() {
 }
 
 #[test]
+fn a_hook_that_keeps_state_in_its_instance_answers_every_check_like_a_cold_run() {
+    if !available() {
+        return;
+    }
+
+    let server = Server::new();
+    let workspace = project("");
+    let workspace = workspace.path();
+    write(workspace, "src/Counted.php", "<?php\n\nconst PROOF_CALLS = 1;\n");
+    for value in 2..5 {
+        write(workspace, "src/Second.php", &SECOND.replace("return 2;", &format!("return {value};")));
+        let served = server.check(workspace, &[]);
+        assert!(String::from_utf8_lossy(&served.stdout).contains("After-analysis call 1 of this hook."));
+    }
+}
+
+#[test]
 fn verify_finds_the_warm_analysis_equal_to_a_fresh_one() {
     if !available() {
         return;
