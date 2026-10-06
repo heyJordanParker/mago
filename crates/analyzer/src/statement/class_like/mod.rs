@@ -35,6 +35,7 @@ use mago_codex::ttype::template::definition_type_replacer::DefinitionReplacement
 use mago_codex::ttype::template::inferred_type_replacer;
 use mago_codex::ttype::union::TUnion;
 use mago_codex::visibility::Visibility;
+use mago_names::binding::php_variable_name;
 use mago_names::kind::NameKind;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -1067,7 +1068,7 @@ where
     if has_complete_hierarchy {
         check_unused_template_parameters(context, class_like_metadata);
     }
-    check_class_like_properties(context, class_like_metadata);
+    check_class_like_properties(context, class_like_metadata, members);
     check_docblock_declared_members(context, class_like_metadata, declaration_span);
 
     let mut scope = ScopeContext::new(ReferenceOrigin::Symbol((class_like_metadata.name, mago_word::empty_word())));
@@ -3139,10 +3140,30 @@ fn check_docblock_declared_members<A>(
     }
 }
 
+/// Whether the PHP# member named `property`, with its `$`, declares accessors, which make it a property, as a
+/// constructor parameter's can. A member without them is a field.
+fn has_accessors(members: &[ClassLikeMember<'_>], property: Word) -> bool {
+    members.iter().any(|member| match member {
+        ClassLikeMember::Property(Property::Hooked(hooked)) => {
+            php_variable_name(hooked.item.variable().name) == property
+        }
+        ClassLikeMember::Property(Property::Computed(computed)) => {
+            php_variable_name(computed.variable.name) == property
+        }
+        ClassLikeMember::Method(method) => method
+            .parameter_list
+            .parameters
+            .iter()
+            .any(|parameter| parameter.hooks.is_some() && php_variable_name(parameter.variable.name) == property),
+        _ => false,
+    })
+}
+
 #[allow(clippy::similar_names)]
 fn check_class_like_properties<'ctx, A>(
     context: &mut Context<'ctx, '_, A>,
     class_like_metadata: &'ctx ClassLikeMetadata,
+    members: &[ClassLikeMember<'_>],
 ) where
     A: Arena,
 {
@@ -3462,18 +3483,19 @@ fn check_class_like_properties<'ctx, A>(
                     let property_name = property_metadata.name.0;
                     let class_name = class_like_metadata.original_name;
 
-                    // Every PHP# field has a type, so it cannot replace an untyped PHP property yet.
+                    // Every PHP# field and property has a type, so it cannot replace an untyped PHP property yet.
                     if context.dialect.is_sharp() {
+                        let member = if has_accessors(members, property_name) { "property" } else { "field" };
                         context.collector.report_with_code(
                             IssueCode::NotSupportedYet,
                             Issue::error(format!(
-                                "A field that replaces the untyped PHP property `{parent_class_name}::{property_name}` is not supported yet."
+                                "A {member} that replaces the untyped PHP property `{parent_class_name}::{property_name}` is not supported yet."
                             ))
                             .with_annotation(
                                 Annotation::primary(declaring_type.span)
                                     .with_message("PHP refuses a type the parent property does not have."),
                             )
-                            .with_help("Rename the field, or give the PHP property a type."),
+                            .with_help(format!("Rename the {member}, or give the PHP property a type.")),
                         );
 
                         continue;

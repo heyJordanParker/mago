@@ -564,6 +564,20 @@ fn an_interface_constant_or_another_interface_modifier_is_not_supported_yet() {
 }
 
 #[test]
+fn an_interface_property_is_not_supported_yet_with_or_without_accessor_bodies() {
+    let code = "namespace App.Tenant;\n\ninterface Named\n{\n    public string name { get; }\n    public string label { get => \"label\"; }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "6:31 Interface virtual property `Named::label` must be abstract.",
+            "5:5 This class member is not supported yet in PHP#.",
+            "6:5 This class member is not supported yet in PHP#."
+        ]
+    );
+}
+
+#[test]
 fn a_constant_or_an_enum_case_is_read_in_a_default_a_constant_value_and_an_initial_value() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    public const int MAX = Calc.MAX + 1;\n    private Order sort = Order.Ascending;\n\n    [Field(Mode.Write)]\n    public int run(Order extra = Order.Descending)\n    {\n        return 1;\n    }\n}\n";
 
@@ -910,7 +924,7 @@ fn a_promoted_member_follows_the_rules_of_the_same_declaration_in_the_class_body
         [
             "5:30 A PHP# property needs a `get` accessor.",
             "5:63 The `set` accessor of a PHP# property must be narrower than the property.",
-            "5:94 This accessor is not supported yet in PHP#.",
+            "5:90 The property `c` has no storage for the constructor to set: give it an auto accessor, such as `get;`, or use `field` in an accessor body.",
         ]
     );
 }
@@ -1131,21 +1145,134 @@ fn a_static_computed_property_or_one_without_an_access_modifier_is_not_supported
 
 #[test]
 fn properties_outside_the_slice_are_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nclass Report\n{\n    int a { get; set; }\n    public static int b { get; }\n    public int c { private get; set; }\n    public int d { get => 1; }\n    public int e { get; set { } }\n    public int f { get; init; }\n    public int g = 0 { get; }\n    public int h { get; set(int value); }\n}\n";
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    int a { get; set; }\n    public static int b { get; }\n    public int c { private get; set; }\n    public abstract int d { get; }\n    public override int e { get => 1; }\n    public int f { get; init; }\n    public int g = 0 { get; }\n    public int h { get; set(int value); }\n}\n";
 
     assert_eq!(
         issues(code),
         [
+            "8:12 Property `Report::d` cannot be declared abstract",
             "5:9 A property without `public`, `protected` or `private` is not supported yet in PHP#.",
             "6:23 A get-only static property is not supported yet in PHP#.",
             "7:20 This accessor is not supported yet in PHP#.",
-            "8:20 This accessor is not supported yet in PHP#.",
-            "9:25 This accessor is not supported yet in PHP#.",
+            "8:12 This modifier is not supported yet in PHP#.",
+            "9:12 This modifier is not supported yet in PHP#.",
             "10:25 This accessor is not supported yet in PHP#.",
             "11:16 An initial value before the accessors is not supported yet in PHP#.",
             "12:25 This accessor is not supported yet in PHP#.",
         ]
     );
+}
+
+/// Spec section 6.1: `get` and `set` take a body, written `=> expr;` or as a block, which uses `field` for the
+/// property's storage and `value` for the incoming value. Each accessor keeps its own access level, and a
+/// constructor parameter declares the same property.
+#[test]
+fn accessor_bodies_are_in_the_slice() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public string name { get => field; set => field = trim(value); }\n    public int count { get; private set { if (value < 0) { throw new Negative(value); } field = value; } }\n    public int total { get { return this.count + 1; } }\n    public string label { get => this.name; set => this.rename(value); }\n    public List<string> tags { get => field; set { field = value; } } = [];\n    public Map<string, int> hits { get => field; set { field = value; field[\"all\"] = 1; field.set(\"one\", 1); } } = [:];\n    public int seen { get => field; set { field += value; field++; } } = 0;\n\n    public Report(public string title { get => field; set => field = value; })\n    {\n    }\n\n    public void rename(string text)\n    {\n        this.name = text;\n        this.tags.add(text);\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+/// A lambda is a function of its own, so PHP would call the accessor again where it reads `$this->count`.
+#[test]
+fn field_inside_a_lambda_in_an_accessor_is_an_error() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int count { get { const read = () => field; const twice = () => () => field; return read(); } set; }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:49 `field` cannot be used in a lambda: PHP would call the accessor again instead of reading the storage.",
+            "5:82 `field` cannot be used in a lambda: PHP would call the accessor again instead of reading the storage.",
+        ]
+    );
+}
+
+/// PHP reads and writes the storage where a property's own accessor names it, while C# calls the accessor again, so
+/// the accessor writes `field`. A lambda calls the accessor again in both.
+#[test]
+fn the_property_read_through_this_inside_its_own_accessor_is_an_error_that_names_field() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int count { get => this.count + 1; set => this.count = value; }\n    public int other { get { const read = () => this.other; return read(); } }\n    public int size { get => (this).size + (this?.size ?? 0); }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:31 Write `field` instead of `this.count` inside `count`'s own accessor.",
+            "5:54 Write `field` instead of `this.count` inside `count`'s own accessor.",
+            "7:30 Write `field` instead of `this.size` inside `size`'s own accessor.",
+            "7:45 Write `field` instead of `this.size` inside `size`'s own accessor.",
+        ]
+    );
+}
+
+/// PHP gives a `get` hook the property's type and a `set` hook `void`, so `get` returns a value and `set` returns
+/// none. A lambda in an accessor returns for itself.
+#[test]
+fn a_get_returns_a_value_and_a_set_returns_none_as_php_hooks_do() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int a { get { return; } }\n    public int b { get => field; set { return value; } }\n    public int c { get => field; set { const run = () => { return 1; }; return; } }\n    public int d { get { const run = () => { return; }; return 1; } }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["5:26 A `get` accessor must return a value.", "6:47 A `set` accessor must not return a value.",]
+    );
+}
+
+/// A property uses `field` where an accessor body names it outside a lambda, in a nested block too, as php-src finds
+/// `$this->name` in a hook. `field` only in a lambda leaves the property without storage.
+#[test]
+fn field_in_a_nested_block_gives_storage_and_field_only_in_a_lambda_does_not() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int a { get { if (true) { return field; } return 0; } } = 1;\n    public int b { get { const read = () => field; return read(); } } = 2;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "6:45 `field` cannot be used in a lambda: PHP would call the accessor again instead of reading the storage.",
+            "6:73 The property `b` has no storage for its initial value: give it an auto accessor, such as `get;`, or use `field` in an accessor body.",
+        ]
+    );
+}
+
+/// Overriding a parent's property, a plain PHP one included, is outside the slice, with or without accessor bodies.
+#[test]
+fn a_property_with_accessor_bodies_that_overrides_a_parent_property_is_not_supported_yet() {
+    let code = "namespace App.Store;\n\nimport Lib.Model;\n\nclass Order : Model\n{\n    public override string status { get => field; set => field = value; }\n}\n";
+
+    assert_eq!(issues(code), ["7:12 This modifier is not supported yet in PHP#."]);
+}
+
+/// A property whose accessors all have bodies and never use `field` has no storage, as PHP's virtual property, so
+/// neither an initial value nor a constructor can set it.
+#[test]
+fn an_initial_value_or_a_constructor_parameter_needs_storage() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int a { get => 1; } = 2;\n    public int b { get => field; } = 3;\n    public int c { get; set => this.save(value); } = 4;\n\n    public Report(public int d { get => 1; set => this.save(value); }, public int e { get => field; })\n    {\n    }\n\n    public void save(int value)\n    {\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:34 The property `a` has no storage for its initial value: give it an auto accessor, such as `get;`, or use `field` in an accessor body.",
+            "9:30 The property `d` has no storage for the constructor to set: give it an auto accessor, such as `get;`, or use `field` in an accessor body.",
+        ]
+    );
+}
+
+/// A constant initial value is the property's default, but any other would run the `set` body in the constructor.
+#[test]
+fn an_initial_value_that_is_not_constant_on_a_property_whose_set_has_a_body_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int a { get; set => field = value; } = strlen(\"x\");\n    public int b { get => field; set; } = strlen(\"x\");\n    public int c { get; set => field = value; } = 1;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:51 An initial value that is not constant, on a property whose `set` has a body, is not supported yet in PHP#."
+        ]
+    );
+}
+
+#[test]
+fn a_static_property_with_an_accessor_body_is_not_supported_yet() {
+    let code =
+        "namespace App.Tenant;\n\nclass Report\n{\n    public static int a { get; set => field = value; } = 0;\n}\n";
+
+    assert_eq!(issues(code), ["5:12 A static property with an accessor body is not supported yet in PHP#."]);
 }
 
 #[test]
