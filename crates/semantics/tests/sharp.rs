@@ -2294,6 +2294,106 @@ fn an_enum_method_takes_collection_and_function_types_and_holds_lambdas_as_a_cla
 }
 
 #[test]
+fn is_as_and_match_with_their_patterns_are_in_the_slice() {
+    let code = leak(method(
+        "        if (extra is int count && count > 0) {\n            return count;\n        }\n        const small = extra is >= 1 and < 10 or 100 ? 1 : 0;\n        const report = this as Report;\n        const counted = this is { count: int total } && total > 0;\n        match (extra) {\n            0 => {\n                return 0;\n            },\n            int n when n < 0 => this.run(n),\n            default => {},\n        }\n        return match (extra) {\n            < 0 => -1,\n            not (0 or 1) => 2,\n            default => small,\n        };\n",
+    ));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_match_without_a_default_arm_is_an_error() {
+    let code =
+        leak(method("        match (extra) {\n            0 => this.run(1),\n        }\n        return extra;\n"));
+
+    assert_eq!(issues(code), ["7:9 A `match` needs a `default` arm."]);
+}
+
+#[test]
+fn a_match_whose_arms_name_class_values_leaves_its_default_to_the_analyzer() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Status;\n\nclass Report\n{\n    public string label(Status? status)\n    {\n        match (status) {\n            Status.Open when status !== null => {},\n            Status.Closed or null => {},\n        }\n        return match (status) {\n            Status.Open => \"open\",\n            0 => \"zero\",\n        };\n    }\n}\n";
+
+    assert_eq!(issues(code), ["13:16 A `match` needs a `default` arm."]);
+}
+
+#[test]
+fn a_second_default_arm_or_a_block_arm_in_a_match_that_gives_a_value_is_an_error() {
+    let code = leak(method(
+        "        const a = match (extra) {\n            default => 1,\n            default => 2,\n        };\n        return match (extra) {\n            0 => { return 1; },\n            default => 2,\n        };\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "9:13 A `match` has one `default` arm.",
+            "12:18 A block arm is only in a `match` statement: a `match` that gives a value gives an expression in each arm.",
+        ]
+    );
+}
+
+#[test]
+fn a_nullable_type_pattern_or_as_to_a_nullable_type_is_an_error() {
+    let code =
+        leak(method("        const a = extra is int? n;\n        const b = extra as int?;\n        return extra;\n"));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:28 A type pattern is never nullable: null never matches a type.",
+            "8:28 `as` converts to a type that is not nullable or `void`.",
+        ]
+    );
+}
+
+#[test]
+fn a_nullable_type_pattern_names_the_null_check_to_write() {
+    let code = leak(method("        const a = extra is int? n;\n        return extra;\n"));
+
+    let help: Vec<_> = check("src/Report.sharp", code).into_iter().filter_map(|issue| issue.help).collect();
+    assert_eq!(help, ["Test for null with `x == null`, or join both with `or`, as in `x is int or null`."]);
+}
+
+#[test]
+fn a_pattern_variable_under_or_or_not_is_an_error_but_under_the_not_that_starts_is() {
+    let code = leak(method(
+        "        const a = extra is int x or string y;\n        const b = extra is not (int z and > 0);\n        const c = match (extra) {\n            not int w => 1,\n            default => 0,\n        };\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:32 `x` is declared under `or` or `not`, where the pattern can match without a value for it.",
+            "7:44 `y` is declared under `or` or `not`, where the pattern can match without a value for it.",
+            "10:21 `w` is declared under `or` or `not`, where the pattern can match without a value for it.",
+        ]
+    );
+}
+
+#[test]
+fn a_pattern_variable_used_where_its_test_does_not_hold_names_its_test() {
+    let code = leak(method(
+        "        if (extra is int count) {\n        }\n        if (extra is not int other) {\n            return other;\n        }\n        const a = match (extra) {\n            int n => n,\n            default => n,\n        };\n        return count;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "10:20 `other` exists only where `extra is not int other` is false.",
+            "14:24 `n` exists only where `int n` is true.",
+            "16:16 `count` exists only where `extra is int count` is true.",
+        ]
+    );
+}
+
+#[test]
+fn a_pattern_variable_named_this_is_an_error() {
+    let code = leak(method("        if (extra is int this) {\n        }\n        return extra;\n"));
+
+    assert_eq!(issues(code), ["7:26 Cannot name a pattern variable `this`: `this` is the object the method runs on."]);
+}
+
+#[test]
 fn lambdas_with_an_expression_or_a_block_body_and_calls_of_function_locals_are_in_the_slice() {
     let code = leak(method(
         "        let count = 0;\n        const add = (a, b) => a + b;\n        const check = (int value) => value > extra;\n        const increment = () => { count += 1; };\n        increment();\n        return add(count, check(1) ? 1 : 0);\n",
