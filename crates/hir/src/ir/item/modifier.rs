@@ -50,6 +50,8 @@ pub enum ModifierKind {
     Virtual,
     /// PHP#'s `override`.
     Override,
+    /// PHP#'s `required`.
+    Required,
 }
 
 impl CopyInto for Visibility {

@@ -35,6 +35,7 @@ where
                 cst::Modifier::PrivateSet(_) => ModifierKind::PrivateSet,
                 cst::Modifier::Virtual(_) => ModifierKind::Virtual,
                 cst::Modifier::Override(_) => ModifierKind::Override,
+                cst::Modifier::Required(_) => ModifierKind::Required,
             },
         }
     }
