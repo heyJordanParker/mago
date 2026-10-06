@@ -874,6 +874,7 @@ where
         && !template_types.is_empty()
     {
         let type_arguments = template_types.iter().map(|(template_name, template)| {
+            // A template only a callback binds holds the fallback first, then the callback's bound.
             let fallbacks = usize::from(unbound_templates.contains(template_name));
 
             template_result
@@ -884,7 +885,7 @@ where
                 .filter(|bounds| !bounds.is_empty())
                 .map(|bounds| get_most_specific_type_from_bounds(bounds, context.codebase))
         });
-        artifacts.record_type_arguments(invocation.span, type_arguments);
+        artifacts.record_type_arguments(invocation.span, type_arguments, context.codebase);
     }
 
     let max_params = invocation.target.parameter_count();

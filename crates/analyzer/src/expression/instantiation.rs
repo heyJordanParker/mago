@@ -374,7 +374,9 @@ where
         }
 
         let mut resolved_template_types = vec![];
+        let mut recorded_type_arguments = vec![];
         for (offset, (template_name, _)) in metadata.template_types.iter().enumerate() {
+            let mut is_bound = true;
             let mut template_type = if let Some(lower_bounds) =
                 template_result.get_lower_bounds_for_class_like(*template_name, metadata.name)
             {
@@ -405,10 +407,10 @@ where
                     &metadata.template_extended_parameters,
                     &found_generic_parameters,
                 )
-            } else if is_spl_object_storage {
-                get_never()
             } else {
-                wrap_atomic(TAtomic::Placeholder)
+                is_bound = false;
+
+                if is_spl_object_storage { get_never() } else { wrap_atomic(TAtomic::Placeholder) }
             };
 
             let variance = metadata.template_variance.get(offset).copied().unwrap_or(Variance::Invariant);
@@ -416,11 +418,12 @@ where
                 template_type.widen_scalars();
             }
 
+            recorded_type_arguments.push(is_bound.then(|| template_type.clone()));
             resolved_template_types.push(template_type);
         }
 
         if !resolved_template_types.is_empty() {
-            artifacts.record_type_arguments(instantiation_span, resolved_template_types.iter().cloned().map(Some));
+            artifacts.record_type_arguments(instantiation_span, recorded_type_arguments.into_iter(), context.codebase);
             type_parameters = Some(resolved_template_types);
         }
     } else if let Some(argument_list) = &argument_list
@@ -443,13 +446,18 @@ where
 
         argument_list.analyze(context, block_context, artifacts)?;
     } else if !metadata.template_types.is_empty() {
-        let unbound_types: Vec<TUnion> = metadata
-            .template_types
-            .iter()
-            .map(|(_, _)| if is_spl_object_storage { get_never() } else { wrap_atomic(TAtomic::Placeholder) })
-            .collect();
-        artifacts.record_type_arguments(instantiation_span, unbound_types.iter().cloned().map(Some));
-        type_parameters = Some(unbound_types);
+        artifacts.record_type_arguments(
+            instantiation_span,
+            metadata.template_types.iter().map(|_| None),
+            context.codebase,
+        );
+        type_parameters = Some(
+            metadata
+                .template_types
+                .iter()
+                .map(|(_, _)| if is_spl_object_storage { get_never() } else { wrap_atomic(TAtomic::Placeholder) })
+                .collect(),
+        );
     }
 
     let skip_constructor_warning =
