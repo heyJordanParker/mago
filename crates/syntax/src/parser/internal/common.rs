@@ -29,6 +29,17 @@ where
         Ok(keyword)
     }
 
+    /// Expects and consumes the `fn` or `function` that starts a PHP lambda, and reports it in a PHP# file, which
+    /// writes a lambda as a bare arrow. The error stands, and the PHP lambda still parses.
+    pub(crate) fn expect_php_lambda_keyword(&mut self, kind: TokenKind) -> Result<Keyword<'arena>, ParseError> {
+        let keyword = self.expect_keyword(kind)?;
+        if self.dialect.is_sharp() {
+            self.errors.push(ParseError::PhpLambdaInSharp(keyword.span));
+        }
+
+        Ok(keyword)
+    }
+
     /// Optionally consumes a keyword token if present.
     #[inline]
     pub(crate) fn maybe_expect_keyword(&mut self, kind: TokenKind) -> Result<Option<Keyword<'arena>>, ParseError> {

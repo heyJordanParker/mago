@@ -252,6 +252,14 @@ where
                 method_class_type,
             );
 
+            // A PHP# collection's receiver binds the templates of its class, so an argument infers only the method's
+            // own, as `map`'s `R` from `paid.map(this.format)`, and a wrong element is the invalid-argument issue alone.
+            let parameter_type = if invocation.target.get_sharp_collection_receiver().is_some() {
+                inferred_type_replacer::replace(&parameter_type, template_result, context.codebase)
+            } else {
+                parameter_type
+            };
+
             if parameter_type.has_template_types() {
                 infer_parameter_templates_from_argument(
                     context,

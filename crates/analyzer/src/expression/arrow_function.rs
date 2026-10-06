@@ -14,6 +14,8 @@ use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::statement::function_like::FunctionLikeBody;
 use crate::statement::function_like::analyze_function_like;
+use crate::statement::function_like::capture_lambda_locals;
+use crate::statement::function_like::merge_captured_references;
 use crate::statement::function_like::receiver_class;
 use crate::statement::function_like::resolve_closure_like_type;
 use crate::statement::function_like::unused_parameter;
@@ -63,7 +65,13 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ArrowFunction<'arena> {
 
         let mut inner_block_context = BlockContext::new(scope, context.settings.register_super_globals);
 
-        let variables = get_variables_referenced_in_expression(self.expression, true);
+        let variables = if context.dialect.is_sharp() {
+            capture_lambda_locals(context, s, block_context, &mut inner_block_context);
+
+            HashSet::default()
+        } else {
+            get_variables_referenced_in_expression(self.expression, true)
+        };
         let params = self.parameter_list.parameters.iter().map(|param| param.variable.name).collect::<HashSet<_>>();
 
         for (variable, _) in variables {
@@ -129,13 +137,10 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ArrowFunction<'arena> {
             inferred_parameter_types,
         )?;
 
-        let resulting_closure = resolve_closure_like_type(
-            context,
-            s,
-            function_metadata,
-            inner_block_context.flags.has_returned(),
-            inner_artifacts,
-        );
+        let has_returned = inner_block_context.flags.has_returned();
+        merge_captured_references(context, block_context, inner_block_context);
+
+        let resulting_closure = resolve_closure_like_type(context, s, function_metadata, has_returned, inner_artifacts);
 
         artifacts.set_expression_type(self, resulting_closure);
 

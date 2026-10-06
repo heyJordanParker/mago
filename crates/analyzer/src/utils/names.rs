@@ -2,6 +2,8 @@
 
 use mago_allocator::Arena;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
+use mago_codex::ttype::TType;
+use mago_codex::ttype::atomic::object::TObject;
 use mago_word::Word;
 
 use crate::context::Context;
@@ -34,6 +36,32 @@ where
     A: Arena,
 {
     context.codebase.get_function(name.as_bytes()).map_or(name, |m| m.original_name)
+}
+
+/// Returns the PHP# collection type, as in `Map<string, int>`, that `object` stands for when it is `Sharp\ListMethods`
+/// or `Sharp\MapMethods`. The analyzer checks a method call on a `List` or `Map` against those classes, and a message
+/// names the type the code wrote instead.
+#[must_use]
+pub(crate) fn display_sharp_collection(object: &TObject) -> Option<String> {
+    let collection = sharp_collection_name(object)?;
+    let parameters = object.get_type_parameters().unwrap_or_default();
+    let parameters = parameters.iter().map(|parameter| parameter.get_id().to_string()).collect::<Vec<_>>();
+
+    Some(format!("{collection}<{}>", parameters.join(", ")))
+}
+
+/// Returns `List` or `Map` when `object` is `Sharp\ListMethods` or `Sharp\MapMethods`.
+#[must_use]
+pub(crate) fn sharp_collection_name(object: &TObject) -> Option<&'static str> {
+    let name = object.get_name()?;
+
+    if name.as_bytes().eq_ignore_ascii_case(b"Sharp\\ListMethods") {
+        Some("List")
+    } else if name.as_bytes().eq_ignore_ascii_case(b"Sharp\\MapMethods") {
+        Some("Map")
+    } else {
+        None
+    }
 }
 
 /// Produces a user-facing display string for a `FunctionLikeIdentifier`.

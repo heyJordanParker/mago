@@ -1,5 +1,6 @@
 use mago_allocator::Arena;
 use mago_bytes::BytesDisplay;
+use mago_codex::ttype::get_mixed;
 use mago_names::binding::Binding;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -10,6 +11,8 @@ use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::LocalIdentifier;
 use mago_syntax::cst::PropertyAccess;
+use mago_word::concat_word;
+use mago_word::word;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
@@ -17,6 +20,7 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::resolver::property::resolve_method_value;
 use crate::resolver::static_property::StaticProperty;
 use crate::resolver::static_property::StaticPropertyName;
 
@@ -40,8 +44,9 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Access<'arena> {
                 object, property: ClassLikeMemberSelector::Identifier(name), ..
             }) if report_full_name(context, object, Some(name)) => Ok(()),
             // PHP# writes both `Class::NAME` and `Class::$name` as `Class.name`, with a bare name bound to a class.
-            // Like the engine, a read is the constant or enum case when the class has one by that name, and the
-            // static property otherwise. A constant expression reads only the constant or enum case, as PHP's does.
+            // Like the engine, a read is the constant or enum case when the class has one by that name, then the
+            // static property, then the static method as a closure, as `Class::name(...)`. A constant expression
+            // reads only the constant or enum case, as PHP's does.
             Access::Property(access) => match StaticProperty::from_property_access(access, context.resolved_names) {
                 Some(StaticProperty {
                     class: class @ Expression::ConstantAccess(class_name),
@@ -60,6 +65,19 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Access<'arena> {
                         &ClassLikeConstantSelector::Identifier(*name),
                         span,
                     )
+                }
+                Some(StaticProperty {
+                    class: Expression::ConstantAccess(class_name),
+                    name: StaticPropertyName::Identifier(name),
+                    span,
+                }) if is_static_method_value(context, context.resolved_names.get(&class_name.name), name.value) => {
+                    let class_id = word(context.resolved_names.get(&class_name.name));
+                    let method_type =
+                        resolve_method_value(context, block_context, artifacts, class_id, word(name.value), span)
+                            .unwrap_or_else(get_mixed);
+                    artifacts.set_expression_type(self, method_type);
+
+                    Ok(())
                 }
                 Some(static_property) => static_property_access::analyze_static_property_access(
                     context,
@@ -141,4 +159,18 @@ where
     }
 
     false
+}
+
+/// Whether PHP# `Class.name` reads the static method `name`: the class has no static property of that name, which the
+/// engine finds first, and its method of that name is static.
+fn is_static_method_value<A>(context: &Context<'_, '_, A>, class: &[u8], name: &[u8]) -> bool
+where
+    A: Arena,
+{
+    context.codebase.get_declaring_property_class(class, concat_word!("$", name).as_bytes()).is_none()
+        && context
+            .codebase
+            .get_declaring_method(class, name)
+            .and_then(|method| method.method_metadata.as_ref())
+            .is_some_and(|method| method.is_static)
 }
