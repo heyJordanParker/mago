@@ -2247,6 +2247,126 @@ fn match_takes_patterns_when_conditions_and_a_default_arm() {
     assert!(r#match.arms.get(2).is_some_and(PatternMatchArm::is_default));
 }
 
+/// The `when` conditions of a `match` that starts a statement and a `match` that gives a value, each with the arms
+/// `Status.Open when {condition}` and `default`, after checking that both parse whole.
+fn guard_conditions<'arena>(arena: &'arena LocalArena, condition: &str) -> [&'arena Expression<'arena>; 2] {
+    let code: &'static str = Box::leak(
+        format!(
+            "class Report\n{{\n    int run()\n    {{\n        match (status) {{\n            Status.Open when {condition} => {{}},\n            default => {{}},\n        }}\n        return match (status) {{\n            Status.Open when {condition} => 1,\n            default => 0,\n        }};\n    }}\n}}\n"
+        )
+        .into_boxed_str(),
+    );
+    let program = parse(arena, "src/Report.sharp", code);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::PatternMatch(statement), returned] = method_body(program) else {
+        panic!("expected a match statement and a return, got {:#?}", method_body(program));
+    };
+    let Expression::PatternMatch(returned) = expression(returned) else {
+        panic!("expected a returned match, got {returned:#?}");
+    };
+
+    [statement, returned].map(|r#match| {
+        let [PatternMatchArm::Pattern(open), PatternMatchArm::Default(_)] = r#match.arms.as_slice() else {
+            panic!("expected a pattern arm and a default arm, got {:#?}", r#match.arms);
+        };
+        let guard = open.guard.as_ref().expect("a when condition");
+        assert_eq!(source(code, guard), format!("when {condition}"), "the guard ends at the arm's `=>`");
+
+        guard.condition
+    })
+}
+
+#[test]
+fn a_guard_can_be_a_bare_name() {
+    let arena = LocalArena::new();
+
+    for condition in guard_conditions(&arena, "forced") {
+        assert_eq!(bare_name(condition), b"forced");
+    }
+}
+
+#[test]
+fn a_guard_can_negate_a_name() {
+    let arena = LocalArena::new();
+
+    for condition in guard_conditions(&arena, "!forced") {
+        let Expression::UnaryPrefix(UnaryPrefix { operator: UnaryPrefixOperator::Not(_), operand }) = condition else {
+            panic!("expected `!forced`, got {condition:#?}");
+        };
+        assert_eq!(bare_name(operand), b"forced");
+    }
+}
+
+#[test]
+fn a_guard_can_compare_with_a_name() {
+    let arena = LocalArena::new();
+
+    for condition in guard_conditions(&arena, "count > limit") {
+        let Expression::Binary(Binary { lhs, operator: BinaryOperator::GreaterThan(_), rhs }) = condition else {
+            panic!("expected `count > limit`, got {condition:#?}");
+        };
+        assert_eq!([bare_name(lhs), bare_name(rhs)], [b"count".as_slice(), b"limit"]);
+    }
+}
+
+#[test]
+fn a_guard_can_call_a_method() {
+    let arena = LocalArena::new();
+
+    for condition in guard_conditions(&arena, "this.ready()") {
+        assert!(matches!(condition, Expression::Call(Call::Method(_))), "{condition:#?}");
+    }
+}
+
+/// A lambda inside a guard is in parentheses, as an argument or as a value of its own, so the guard's `=>` is never
+/// the lambda's.
+#[test]
+fn a_lambda_in_parentheses_inside_a_guard_stays_a_lambda() {
+    let arena = LocalArena::new();
+
+    for condition in guard_conditions(&arena, "items.any(item => item.ready) && (() => forced)()") {
+        let Expression::Binary(Binary { lhs: Expression::Call(Call::Method(any)), rhs, .. }) = condition else {
+            panic!("expected `items.any(…) && …`, got {condition:#?}");
+        };
+        let argument = any.argument_list.arguments.first().expect("one argument").value();
+        assert!(matches!(argument, Expression::ArrowFunction(_)), "{argument:#?}");
+        let Expression::Call(Call::Function(FunctionCall { function: Expression::Parenthesized(called), .. })) = rhs
+        else {
+            panic!("expected `(() => forced)()`, got {rhs:#?}");
+        };
+        assert!(matches!(called.expression, Expression::ArrowFunction(_)), "{called:#?}");
+    }
+}
+
+/// A lambda binds as loosely as assignment, as in C#: it is a whole value, the value of an assignment, or a branch of
+/// `? :`. After any other operator it needs parentheses.
+#[test]
+fn a_lambda_after_an_operator_needs_parentheses_as_in_csharp() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        const first = handler ?? (item => item.ready);\n        const second = strict ? handler : item => item.ready;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Expression::Binary(Binary { rhs: Expression::Parenthesized(fallback), .. }) = statement_expression(program, 0)
+    else {
+        panic!("expected `handler ?? (…)`, got {:#?}", method_body(program));
+    };
+    assert!(matches!(fallback.expression, Expression::ArrowFunction(_)), "{fallback:#?}");
+    let Expression::Conditional(Conditional { r#else: Expression::ArrowFunction(_), .. }) =
+        statement_expression(program, 1)
+    else {
+        panic!("expected `strict ? handler : item => item.ready`, got {:#?}", method_body(program));
+    };
+
+    let unparenthesized = parse(
+        &arena,
+        "src/Report.sharp",
+        "class Report\n{\n    void run()\n    {\n        const first = handler ?? item => item.ready;\n    }\n}\n",
+    );
+    assert!(!unparenthesized.errors.is_empty(), "{:#?}", unparenthesized.statements);
+}
+
 #[test]
 fn a_match_that_starts_a_statement_takes_block_arms_and_no_semicolon() {
     const CODE: &str = "class Report\n{\n    void run()\n    {\n        match (shape) {\n            Circle circle => {\n                draw(circle);\n            },\n            default => {},\n        }\n        done();\n    }\n}\n";

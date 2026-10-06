@@ -77,6 +77,7 @@ impl Lowered {
 
     /// The statements of the method `run`.
     fn body(&self) -> String {
+        assert_eq!(self.diagnostics(), Vec::<String>::new(), "the source lowers");
         let method = self
             .nodes()
             .iter()
@@ -4806,6 +4807,63 @@ fn each_arm_of_a_match_that_starts_a_statement_is_on_its_pattern_line() {
     lines.sort_unstable();
 
     assert_eq!(lines, [10, 11, 11, 12]);
+}
+
+/// ```php
+/// $forced = $extra > 9;
+/// return match (true) {
+///     $extra === 0 && $forced => 1,
+///     default => 2,
+/// };
+/// ```
+///
+/// A `when` condition that ends in a bare name is the arm's `&&` operand, as `forced == true` is.
+#[test]
+fn a_when_condition_that_is_a_bare_name_is_the_arms_and_operand() {
+    let guarded = |condition: &str| {
+        body(&format!(
+            "        const forced = extra > 9;\n        return match (extra) {{\n            0 when {condition} => 1,\n            default => 2,\n        }};\n"
+        ))
+    };
+    let bare = guarded("forced");
+
+    assert_eq!(
+        bare,
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "forced"
+                GREATER
+                  VAR
+                    ZVAL "extra"
+                  ZVAL 9
+              RETURN
+                MATCH
+                  ZVAL true
+                  MATCH_ARM_LIST
+                    MATCH_ARM
+                      EXPR_LIST
+                        AND
+                          BINARY_OP [16]
+                            VAR
+                              ZVAL "extra"
+                            ZVAL 0
+                          VAR
+                            ZVAL "forced"
+                      ZVAL 1
+                    MATCH_ARM
+                      null
+                      ZVAL 2
+        "#}
+    );
+    assert_eq!(
+        guarded("forced == true"),
+        bare.replace(
+            "              VAR\n                ZVAL \"forced\"\n          ZVAL 1\n",
+            "              BINARY_OP [18]\n                VAR\n                  ZVAL \"forced\"\n                ZVAL true\n          ZVAL 1\n",
+        )
+    );
 }
 
 /// ```php
