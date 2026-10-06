@@ -68,6 +68,9 @@ struct FileState {
     unreconciled_analysis_issues: IssueCollection,
     analysis_issues: IssueCollection,
     codebase_issues: IssueCollection,
+    /// The issues the scanner and refinements reported on the file's declarations, reported again
+    /// by every analysis of the file.
+    scan_issues: IssueCollection,
     deferred_pragmas: Option<DeferredPragmas>,
     late_symbol_references: SymbolReferences,
     /// Whether the node-analysis hooks ran on the file in its last analysis.
@@ -431,14 +434,7 @@ impl IncrementalAnalysisService {
     /// or file not in `file_states`) are stored in `self.codebase_issues` as orphans.
     fn distribute_codebase_issues(&mut self, issues: IssueCollection) {
         for issue in issues {
-            let file_id = issue
-                .annotations
-                .iter()
-                .find(|a| a.kind.is_primary())
-                .map(|a| a.span.file_id)
-                .filter(|fid| !fid.is_zero());
-
-            if let Some(fid) = file_id
+            if let Some(fid) = primary_file(&issue)
                 && let Some(state) = self.file_states.get_mut(&fid)
             {
                 state.codebase_issues.push(issue);
@@ -447,6 +443,23 @@ impl IncrementalAnalysisService {
 
             self.codebase_issues.push(issue);
         }
+    }
+
+    /// The scan issues a pass reports: those of the rescanned files, and those cached for every
+    /// unchanged file outside `skip_files`.
+    fn reported_scan_issues(
+        &self,
+        rescanned: &HashMap<FileId, IssueCollection>,
+        unattributed: IssueCollection,
+        unchanged_file_ids: &[FileId],
+        skip_files: &HashSet<FileId>,
+    ) -> IssueCollection {
+        let unchanged = unchanged_file_ids
+            .iter()
+            .filter(|file_id| !skip_files.contains(file_id))
+            .filter_map(|file_id| Some(&self.file_states.get(file_id)?.scan_issues));
+
+        rescanned.values().chain(unchanged).flat_map(|issues| issues.iter().cloned()).chain(unattributed).collect()
     }
 
     /// Assembles the full issue list from codebase-level issues + all per-file cached issues.
@@ -590,6 +603,8 @@ impl IncrementalAnalysisService {
             })
             .collect();
         merged_codebase.apply_patches_pass();
+        let scanned: HashSet<FileId> = staged.iter().map(|(file_id, _, _)| *file_id).collect();
+        let (mut scan_issues, unattributed_scan_issues) = take_scan_issues(&mut merged_codebase, &scanned);
 
         populate_codebase(&mut merged_codebase, &mut symbol_references, WordSet::default(), HashSet::default());
         let merged_aliases =
@@ -605,6 +620,7 @@ impl IncrementalAnalysisService {
                     unreconciled_analysis_issues: IssueCollection::default(),
                     analysis_issues: IssueCollection::default(),
                     codebase_issues: IssueCollection::default(),
+                    scan_issues: scan_issues.remove(&file_id).unwrap_or_default(),
                     deferred_pragmas: None,
                     late_symbol_references: SymbolReferences::new(),
                     node_analysis: self.runs_node_analysis(file_id),
@@ -622,8 +638,17 @@ impl IncrementalAnalysisService {
             per_file_pragmas,
             snapshots,
             codebase_issues: all_codebase_issues,
-        } =
-            self.run_analyzer_selective(&mut merged_codebase, symbol_references, &self.settings, &HashSet::default())?;
+        } = self.run_analyzer_selective(
+            &mut merged_codebase,
+            symbol_references,
+            &self.settings,
+            &HashSet::default(),
+            file_states
+                .values()
+                .flat_map(|state| state.scan_issues.iter().cloned())
+                .chain(unattributed_scan_issues)
+                .collect(),
+        )?;
         self.external_symbol_references = external_symbol_references;
         self.late_symbol_references = late_symbol_references;
         self.native_symbol_references = native_symbol_references;
@@ -779,8 +804,7 @@ impl IncrementalAnalysisService {
         }
 
         // An unchanged file whose node-analysis hooks did not run is analyzed again, without a
-        // rescan, once a pass runs them in it. Its symbols stay populated, so it keeps its codebase
-        // issues unless the invalidation cascade reaches it.
+        // rescan, once a pass runs them in it, and reports its codebase issues again.
         let newly_covered: HashSet<FileId> = if self.scan_only {
             HashSet::default()
         } else {
@@ -983,6 +1007,8 @@ impl IncrementalAnalysisService {
                 }
             }
             self.apply_scan_results(&mut merged_codebase, &new_file_scans);
+            let (mut scan_issues, unattributed_scan_issues) =
+                take_scan_issues(&mut merged_codebase, &new_file_scans.iter().map(|(file_id, _)| *file_id).collect());
 
             let files_to_skip: HashSet<FileId> =
                 unchanged_file_ids.iter().copied().filter(|file_id| !newly_covered.contains(file_id)).collect();
@@ -1024,13 +1050,20 @@ impl IncrementalAnalysisService {
             // Collect class_like names from changed files so we exclude them from safe_symbols.
             // Changed classes had their old metadata removed and fresh (unpopulated) metadata added,
             // so the populator must repopulate them to rebuild parent resolution, overridden_method_ids, etc.
-            let changed_class_like_names: WordSet =
+            // A newly covered file's classes are populated again so they report their issues again.
+            let mut repopulated_class_like_names: WordSet =
                 new_file_scans.iter().flat_map(|(_, metadata)| metadata.class_likes.keys().copied()).collect();
+            repopulated_class_like_names.extend(
+                newly_covered
+                    .iter()
+                    .filter_map(|file_id| merged_codebase.get_file_signature(file_id))
+                    .flat_map(|signature| signature.ast_nodes.iter().map(|node| node.name)),
+            );
             let safe_symbols: WordSet = merged_codebase
                 .class_likes
                 .keys()
                 .copied()
-                .filter(|name| !changed_class_like_names.contains(name))
+                .filter(|name| !repopulated_class_like_names.contains(name))
                 .collect();
             populate_codebase_targeted(
                 &mut merged_codebase,
@@ -1039,14 +1072,8 @@ impl IncrementalAnalysisService {
                 HashSet::default(),
                 changed_symbols,
             );
-            for file_id in &newly_covered {
-                if let Some(signature) = merged_codebase.get_file_signature(file_id) {
-                    let names: Vec<_> = signature.ast_nodes.iter().map(|node| node.name).collect();
-                    for name in names {
-                        merged_codebase.safe_symbols.remove(&name);
-                    }
-                }
-            }
+            let reported_scan_issues =
+                self.reported_scan_issues(&scan_issues, unattributed_scan_issues, &unchanged_file_ids, &files_to_skip);
             let SelectiveAnalysisOutput {
                 result: mut analysis_result,
                 native_symbol_references,
@@ -1057,7 +1084,13 @@ impl IncrementalAnalysisService {
                 per_file_pragmas,
                 snapshots,
                 codebase_issues: new_codebase_issues,
-            } = self.run_analyzer_selective(&mut merged_codebase, symbol_references, &self.settings, &files_to_skip)?;
+            } = self.run_analyzer_selective(
+                &mut merged_codebase,
+                symbol_references,
+                &self.settings,
+                &files_to_skip,
+                reported_scan_issues,
+            )?;
             self.external_symbol_references = external_symbol_references;
             self.late_symbol_references = late_symbol_references;
             self.native_symbol_references = native_symbol_references;
@@ -1067,8 +1100,8 @@ impl IncrementalAnalysisService {
                 self.analysis_snapshots.insert(snapshot.file_id(), snapshot);
             }
 
-            // Drain codebase issues from metadata and distribute to changed files only.
-            // Unchanged files keep their cached codebase_issues from previous runs.
+            // Drain codebase issues from metadata and distribute to the analyzed files.
+            // Skipped files keep their cached codebase_issues from previous runs.
             let changed_file_ids: HashSet<FileId> = new_file_scans.iter().map(|(fid, _)| *fid).collect();
             let re_analyzed_unchanged: Vec<FileId> = per_file_issues
                 .keys()
@@ -1078,7 +1111,7 @@ impl IncrementalAnalysisService {
 
             // Clear codebase issues for every file analyzed in this generation.
             for (file_id, state) in self.file_states.iter_mut() {
-                if !files_to_skip.contains(file_id) && !newly_covered.contains(file_id) {
+                if !files_to_skip.contains(file_id) {
                     state.codebase_issues = IssueCollection::default();
                 }
             }
@@ -1118,6 +1151,7 @@ impl IncrementalAnalysisService {
                         unreconciled_analysis_issues: analysis_issues.clone(),
                         analysis_issues,
                         codebase_issues,
+                        scan_issues: scan_issues.remove(&file_id).unwrap_or_default(),
                         deferred_pragmas,
                         late_symbol_references,
                         node_analysis: self.runs_node_analysis(file_id),
@@ -1151,6 +1185,8 @@ impl IncrementalAnalysisService {
             }
         }
         self.apply_scan_results(&mut merged_codebase, &new_file_scans);
+        let (mut scan_issues, unattributed_scan_issues) =
+            take_scan_issues(&mut merged_codebase, &new_file_scans.iter().map(|(file_id, _)| *file_id).collect());
 
         merged_codebase.safe_symbols.clear();
         merged_codebase.safe_symbol_members.clear();
@@ -1192,85 +1228,41 @@ impl IncrementalAnalysisService {
             }
         }
 
-        let safe_symbols = std::mem::take(&mut merged_codebase.safe_symbols);
-        let safe_symbol_members = std::mem::take(&mut merged_codebase.safe_symbol_members);
+        let mut safe_symbols = std::mem::take(&mut merged_codebase.safe_symbols);
+        let mut safe_symbol_members = std::mem::take(&mut merged_codebase.safe_symbol_members);
 
-        let mut dirty_symbols: HashSet<(mago_word::Word, mago_word::Word)> = diff.get_changed().clone();
-        for (_file_id, metadata) in &new_file_scans {
-            for &key in metadata.function_likes.keys() {
-                dirty_symbols.insert(key);
-            }
-
-            for &name in metadata.class_likes.keys() {
-                dirty_symbols.insert((name, mago_word::empty_word()));
-            }
-
-            for &name in metadata.constants.keys() {
-                dirty_symbols.insert((name, mago_word::empty_word()));
-            }
-        }
-
-        let mut symbol_references = std::mem::take(&mut self.native_symbol_references);
-        symbol_references.retain_references_from_files(&current_file_names);
-        symbol_references.remove_dirty_symbol_references(&dirty_symbols);
-
-        populate_codebase_targeted(
-            &mut merged_codebase,
-            &mut symbol_references,
-            safe_symbols,
-            safe_symbol_members,
-            dirty_symbols,
-        );
-        let mut files_to_skip: HashSet<FileId> = HashSet::default();
-        let mut covered_only: HashSet<FileId> = HashSet::default();
-        for &file_id in &unchanged_file_ids {
+        // An unchanged file keeps its cached issues when every symbol it declares is safe and no
+        // pass has yet run its node-analysis hooks while they are due.
+        let skippable = |file_id: FileId,
+                         codebase: &CodebaseMetadata,
+                         safe_symbols: &WordSet,
+                         safe_symbol_members: &HashSet<(mago_word::Word, mago_word::Word)>| {
             let file_invalid = self
                 .database
                 .get(&file_id)
                 .is_ok_and(|file| invalid_files.contains(&mago_word::word(file.name.as_ref())));
-            if let Some(sig) = merged_codebase.get_file_signature(&file_id) {
-                let all_safe = if file_invalid {
-                    false
-                } else if sig.ast_nodes.is_empty() {
-                    true
-                } else {
+            !file_invalid
+                && !newly_covered.contains(&file_id)
+                && codebase.get_file_signature(&file_id).is_some_and(|sig| {
                     sig.ast_nodes.iter().all(|node| {
-                        let symbol_safe = node.name.is_empty() || merged_codebase.safe_symbols.contains(&node.name);
+                        let symbol_safe = node.name.is_empty() || safe_symbols.contains(&node.name);
                         let children_safe = node.children.iter().all(|child| {
-                            child.name.is_empty()
-                                || merged_codebase.safe_symbol_members.contains(&(node.name, child.name))
+                            child.name.is_empty() || safe_symbol_members.contains(&(node.name, child.name))
                         });
                         symbol_safe && children_safe
                     })
-                };
+                })
+        };
 
-                if all_safe && newly_covered.contains(&file_id) {
-                    covered_only.insert(file_id);
-                } else if all_safe {
-                    files_to_skip.insert(file_id);
-                }
-            }
-        }
-
-        let reanalyzed_file_names: WordSet = new_file_scans
-            .iter()
-            .map(|(file_id, _)| *file_id)
-            .chain(unchanged_file_ids.iter().copied().filter(|file_id| !files_to_skip.contains(file_id)))
-            .filter_map(|file_id| self.database.get(&file_id).ok())
-            .map(|file| mago_word::word(file.name.as_ref()))
-            .collect();
-        symbol_references.remove_references_from_files(&reanalyzed_file_names);
-
-        // For files that will be re-analyzed (not skipped), remove their symbols from
-        // safe_symbols/safe_symbol_members. When diff=true, the analyzer skips safe classes,
-        // but since we replace per-file issues wholesale, skipped classes would lose their issues.
-        // Only files in files_to_skip keep their cached issues; all others are fully re-analyzed.
+        // Every symbol of a file analyzed again is populated again, so it reports its codebase issues
+        // again. When diff=true, the analyzer skips safe classes, but since we replace per-file issues
+        // wholesale, skipped classes would lose their issues.
         {
             let mut symbols_to_unsafify = Vec::new();
             let mut members_to_unsafify = Vec::new();
 
             for &file_id in &unchanged_file_ids {
-                if !files_to_skip.contains(&file_id)
+                if !skippable(file_id, &merged_codebase, &safe_symbols, &safe_symbol_members)
                     && let Some(sig) = merged_codebase.get_file_signature(&file_id)
                 {
                     for node in &sig.ast_nodes {
@@ -1304,12 +1296,63 @@ impl IncrementalAnalysisService {
             }
 
             for name in symbols_to_unsafify {
-                merged_codebase.safe_symbols.remove(&name);
+                safe_symbols.remove(&name);
             }
             for key in members_to_unsafify {
-                merged_codebase.safe_symbol_members.remove(&key);
+                safe_symbol_members.remove(&key);
             }
         }
+
+        let mut dirty_symbols: HashSet<(mago_word::Word, mago_word::Word)> = diff.get_changed().clone();
+        for (_file_id, metadata) in &new_file_scans {
+            for &key in metadata.function_likes.keys() {
+                dirty_symbols.insert(key);
+            }
+
+            for &name in metadata.class_likes.keys() {
+                dirty_symbols.insert((name, mago_word::empty_word()));
+            }
+
+            for &name in metadata.constants.keys() {
+                dirty_symbols.insert((name, mago_word::empty_word()));
+            }
+        }
+
+        let mut symbol_references = std::mem::take(&mut self.native_symbol_references);
+        symbol_references.retain_references_from_files(&current_file_names);
+        symbol_references.remove_dirty_symbol_references(&dirty_symbols);
+
+        populate_codebase_targeted(
+            &mut merged_codebase,
+            &mut symbol_references,
+            safe_symbols,
+            safe_symbol_members,
+            dirty_symbols,
+        );
+        // Population clears the safe symbols when the class aliases resolve differently.
+        let files_to_skip: HashSet<FileId> = unchanged_file_ids
+            .iter()
+            .copied()
+            .filter(|file_id| {
+                skippable(
+                    *file_id,
+                    &merged_codebase,
+                    &merged_codebase.safe_symbols,
+                    &merged_codebase.safe_symbol_members,
+                )
+            })
+            .collect();
+        let reported_scan_issues =
+            self.reported_scan_issues(&scan_issues, unattributed_scan_issues, &unchanged_file_ids, &files_to_skip);
+
+        let reanalyzed_file_names: WordSet = new_file_scans
+            .iter()
+            .map(|(file_id, _)| *file_id)
+            .chain(unchanged_file_ids.iter().copied().filter(|file_id| !files_to_skip.contains(file_id)))
+            .filter_map(|file_id| self.database.get(&file_id).ok())
+            .map(|file| mago_word::word(file.name.as_ref()))
+            .collect();
+        symbol_references.remove_references_from_files(&reanalyzed_file_names);
 
         let SelectiveAnalysisOutput {
             result: mut analysis_result,
@@ -1321,7 +1364,13 @@ impl IncrementalAnalysisService {
             per_file_pragmas,
             snapshots,
             codebase_issues: new_codebase_issues,
-        } = self.run_analyzer_selective(&mut merged_codebase, symbol_references, &self.settings, &files_to_skip)?;
+        } = self.run_analyzer_selective(
+            &mut merged_codebase,
+            symbol_references,
+            &self.settings,
+            &files_to_skip,
+            reported_scan_issues,
+        )?;
         self.external_symbol_references = external_symbol_references;
         self.late_symbol_references = late_symbol_references;
         self.native_symbol_references = native_symbol_references;
@@ -1343,7 +1392,7 @@ impl IncrementalAnalysisService {
         // Clear codebase issues for files that were NOT skipped (their symbols were re-populated).
         // Files in files_to_skip keep their old codebase_issues intact.
         for (file_id, state) in self.file_states.iter_mut() {
-            if !files_to_skip.contains(file_id) && !covered_only.contains(file_id) {
+            if !files_to_skip.contains(file_id) {
                 state.codebase_issues = IssueCollection::default();
             }
         }
@@ -1382,6 +1431,7 @@ impl IncrementalAnalysisService {
                     unreconciled_analysis_issues: analysis_issues.clone(),
                     analysis_issues,
                     codebase_issues,
+                    scan_issues: scan_issues.remove(&file_id).unwrap_or_default(),
                     deferred_pragmas,
                     late_symbol_references,
                     node_analysis: self.runs_node_analysis(file_id),
@@ -1505,13 +1555,15 @@ impl IncrementalAnalysisService {
     /// Runs the analyzer on host files.
     ///
     /// Returns `(aggregated_result, per_file_issues)` where `per_file_issues` contains
-    /// only the files that were actually analyzed (not skipped).
+    /// only the files that were actually analyzed (not skipped). `scan_issues` are the scan issues
+    /// of the files outside `skip_files`, reported beside the populated codebase's issues.
     fn run_analyzer_selective(
         &self,
         codebase: &mut CodebaseMetadata,
         current_symbol_references: SymbolReferences,
         settings: &Settings,
         skip_files: &HashSet<FileId>,
+        scan_issues: IssueCollection,
     ) -> Result<SelectiveAnalysisOutput, OrchestratorError> {
         #[cfg(not(target_arch = "wasm32"))]
         const ANALYSIS_DURATION_THRESHOLD: Duration = Duration::from_secs(5);
@@ -1774,7 +1826,9 @@ impl IncrementalAnalysisService {
         let codebase_issues = if self.scan_only {
             IssueCollection::default()
         } else {
-            pragma_reconciler.reconcile(codebase.take_issues(true))?
+            let mut issues = codebase.take_issues(true);
+            issues.extend(scan_issues);
+            pragma_reconciler.reconcile(issues)?
         };
         for (file_id, pragmas) in &mut per_file_pragmas {
             if let Some(reconciled) = pragma_reconciler.state(*file_id) {
@@ -1884,6 +1938,29 @@ fn retain_owned_keys(
     keys.function_like_keys
         .retain(|key| merged.function_likes.get(key).is_some_and(|entry| entry.span.file_id == file_id));
     keys.constant_names.retain(|name| merged.constants.get(name).is_some_and(|entry| entry.span.file_id == file_id));
+}
+
+/// The file of an issue's primary annotation.
+fn primary_file(issue: &Issue) -> Option<FileId> {
+    issue.annotations.iter().find(|a| a.kind.is_primary()).map(|a| a.span.file_id).filter(|fid| !fid.is_zero())
+}
+
+/// Takes the issues the scanner, refinements and patches left on the merged codebase, before it is
+/// populated, grouped by the `scanned` file they belong to, and the issues of no scanned file apart.
+fn take_scan_issues(
+    codebase: &mut CodebaseMetadata,
+    scanned: &HashSet<FileId>,
+) -> (HashMap<FileId, IssueCollection>, IssueCollection) {
+    let mut by_file: HashMap<FileId, IssueCollection> = HashMap::default();
+    let mut unattributed = IssueCollection::default();
+    for issue in codebase.take_issues(true) {
+        match primary_file(&issue).filter(|file_id| scanned.contains(file_id)) {
+            Some(file_id) => by_file.entry(file_id).or_default().push(issue),
+            None => unattributed.push(issue),
+        }
+    }
+
+    (by_file, unattributed)
 }
 
 #[cfg(test)]
@@ -3128,6 +3205,90 @@ mod tests {
         service.set_node_analysis_files(files(&["src/Other.php", "src/unrelated.php"]));
         service.analyze_incremental(Some(&[FileId::new(b"src/unrelated.php")])).expect("Incremental analysis failed.");
         assert_matches_full(&service, &db, "a file enters beside a signature edit");
+    }
+
+    /// An `@mago-expect` pragma that a codebase issue fulfils stays fulfilled when its file enters the
+    /// node-analysis files, alone or beside an edit, with no rescan of the file.
+    #[test]
+    fn an_expected_codebase_issue_stays_fulfilled_when_its_file_enters_the_node_analysis_files() {
+        let expected = concat!(
+            "<?php\n",
+            "class Base {}\n",
+            "// @mago-expect analysis:invalid-extends-tag\n",
+            "/** @extends Missing<int> */\n",
+            "final class Child extends Base {}\n",
+        );
+        let unrelated = "<?php\nfunction unrelated(): int { return 1; }\n";
+        let mut db = make_database(vec![("src/Child.php", expected), ("src/unrelated.php", unrelated)]);
+        let files = |names: &[&str]| Some(names.iter().map(|name| FileId::new(name.as_bytes())).collect());
+
+        let mut service = make_watch_service(&db);
+        service.set_node_analysis_files(files(&["src/unrelated.php"]));
+        service.analyze().expect("Full analysis failed.");
+
+        service.set_node_analysis_files(None);
+        service.analyze_incremental(Some(&[])).expect("Incremental analysis failed.");
+        assert_matches_full(&service, &db, "the file enters alone");
+
+        let mut service = make_watch_service(&db);
+        service.set_node_analysis_files(files(&["src/unrelated.php"]));
+        service.analyze().expect("Full analysis failed.");
+        db.update(
+            FileId::new(b"src/unrelated.php"),
+            Cow::Borrowed(b"<?php\nfunction unrelated(): int { return 2; }\n"),
+        );
+        service.update_database(db.read_only());
+        service.set_node_analysis_files(None);
+        service.analyze_incremental(Some(&[FileId::new(b"src/unrelated.php")])).expect("Incremental analysis failed.");
+        assert_matches_full(&service, &db, "the file enters beside a body edit");
+    }
+
+    /// A docblock issue the scanner found in an unchanged file is reported again when an edit
+    /// elsewhere analyzes that file again.
+    #[test]
+    fn a_scan_issue_survives_when_an_edit_elsewhere_analyzes_its_file_again() {
+        let base = "<?php\nclass Base {\n    public function run(): string { return 'ok'; }\n}\n";
+        let child = concat!(
+            "<?php\n",
+            "class Child extends Base {\n",
+            "    /** @return list<int */\n",
+            "    public function value(): array { return []; }\n",
+            "    public function call(): string { return $this->run(); }\n",
+            "}\n",
+        );
+        let mut db = make_database(vec![("src/Base.php", base), ("src/Child.php", child)]);
+        let mut service = make_watch_service(&db);
+        service.analyze().expect("Full analysis failed.");
+        assert_matches_full(&service, &db, "initial");
+
+        db.update(
+            FileId::new(b"src/Base.php"),
+            Cow::Borrowed(b"<?php\nclass Base {\n    public function run(): int { return 1; }\n}\n"),
+        );
+        service.update_database(db.read_only());
+        service.analyze_incremental(Some(&[FileId::new(b"src/Base.php")])).expect("Incremental analysis failed.");
+        assert_matches_full(&service, &db, "a parent signature edit re-analyzes the child");
+    }
+
+    /// A class populated again keeps a used trait's hooked property as the trait's, not its own.
+    #[test]
+    fn a_class_populated_again_keeps_its_trait_properties_the_traits() {
+        let base = "<?php\nclass Base {\n    public function run(): string { return 'ok'; }\n}\n";
+        let traits = "<?php\ntrait HasStatus {\n    public string $status { get => 'draft'; }\n}\n";
+        let child = "<?php\nclass Child extends Base {\n    use HasStatus;\n}\n";
+        let mut db =
+            make_database(vec![("src/Base.php", base), ("src/HasStatus.php", traits), ("src/Child.php", child)]);
+        let mut service = make_watch_service(&db);
+        service.analyze().expect("Full analysis failed.");
+        assert_matches_full(&service, &db, "initial");
+
+        db.update(
+            FileId::new(b"src/Base.php"),
+            Cow::Borrowed(b"<?php\nclass Base {\n    public function run(): int { return 1; }\n}\n"),
+        );
+        service.update_database(db.read_only());
+        service.analyze_incremental(Some(&[FileId::new(b"src/Base.php")])).expect("Incremental analysis failed.");
+        assert_matches_full(&service, &db, "a parent signature edit re-populates the child");
     }
 
     /// Compare incremental analysis against a fresh full analysis.
