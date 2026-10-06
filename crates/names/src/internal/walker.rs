@@ -242,6 +242,9 @@ fn class_member_names<'arena>(members: &Sequence<'arena, ClassLikeMember<'arena>
             ClassLikeMember::Constant(constant) => {
                 names.others.extend(constant.items.iter().map(|item| item.name.value));
             }
+            ClassLikeMember::EnumCase(case) => {
+                names.others.insert(case.item.name().value);
+            }
             _ => {}
         }
     }
@@ -554,6 +557,16 @@ where
         let classlike = context.qualify_name(r#enum.name.value);
 
         self.resolved_names.insert_at(r#enum.name.span, classlike, false);
+
+        if self.sharp {
+            self.class_members.push(class_member_names(&r#enum.members));
+        }
+    }
+
+    fn walk_out_enum(&mut self, _enum: &'ast Enum<'arena>, _context: &mut NameResolutionContext<'arena, A>) {
+        if self.sharp {
+            self.class_members.pop();
+        }
     }
 
     fn walk_in_trait_use(&mut self, trait_use: &'ast TraitUse<'arena>, context: &mut NameResolutionContext<'arena, A>) {

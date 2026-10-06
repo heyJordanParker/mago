@@ -178,7 +178,7 @@ impl FormatCommand {
 
         let mut orchestrator = create_orchestrator(&configuration, color_choice, false, true, false);
         orchestrator.add_exclude_patterns(configuration.formatter.excludes.iter());
-        skip_sharp_files(&mut orchestrator, "format");
+        skip_sharp_files(&mut orchestrator);
         if !self.path.is_empty() {
             orchestrator.set_source_paths(self.path.iter().map(|p| p.to_string_lossy().to_string()));
         }
@@ -310,7 +310,7 @@ impl FormatCommand {
 
         let mut orchestrator = create_orchestrator(&configuration, color_choice, false, true, false);
         orchestrator.add_exclude_patterns(configuration.formatter.excludes.iter());
-        skip_sharp_files(&mut orchestrator, "format");
+        skip_sharp_files(&mut orchestrator);
 
         let database = orchestrator.load_database(workspace, false, None, None)?;
 

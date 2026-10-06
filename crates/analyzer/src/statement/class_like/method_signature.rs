@@ -7,6 +7,7 @@ use mago_codex::ttype::expander::StaticClassType;
 use mago_codex::ttype::expander::TypeExpansionOptions;
 use mago_codex::ttype::expander::expand_union;
 use mago_codex::visibility::Visibility;
+use mago_syntax::dialect::Dialect;
 use mago_word::Word;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,6 +16,7 @@ pub enum SignatureCompatibilityIssue {
     StaticModifierMismatch { child_is_static: bool, parent_is_static: bool },
     VisibilityNarrowed { child_visibility: Visibility, parent_visibility: Visibility },
     ParameterCountMismatch { child_required_count: usize, parent_required_count: usize },
+    MissingVariadicParameter { parameter_index: usize },
     IncompatibleParameterType { parameter_index: usize, child_type: Word, parent_type: Word },
     IncompatibleReturnType { child_type: Word, parent_type: Word },
     MissingReturnTypeDeclaration { parent_type: Word },
@@ -31,6 +33,7 @@ pub enum SignatureCompatibilityIssue {
 /// - Return type declaration must be present when a non-builtin parent declares one
 ///   (builtin declarations may be tentative, where omission only deprecates)
 /// - Parameter count (child must accept at least parent's required parameters)
+/// - In a PHP# file, a variadic parent parameter stays variadic, as the engine requires when it links the class
 /// - Parameter names should match (warning only - breaks named arguments)
 ///
 /// # Arguments
@@ -39,6 +42,7 @@ pub enum SignatureCompatibilityIssue {
 /// * `child_class_name` - The fully qualified name of the class containing the overriding method
 /// * `child_method` - The overriding method
 /// * `parent_method` - The parent/interface method being overridden/implemented
+/// * `dialect` - The dialect of the file that declares the class
 ///
 /// # Returns
 ///
@@ -49,6 +53,7 @@ pub fn validate_method_signature_compatibility(
     child_class_name: Word,
     child_method: &FunctionLikeMetadata,
     parent_method: &FunctionLikeMetadata,
+    dialect: Dialect,
 ) -> Vec<SignatureCompatibilityIssue> {
     if !child_method.flags.is_user_defined() {
         // The child method is not user-defined; skip validation.
@@ -134,6 +139,16 @@ pub fn validate_method_signature_compatibility(
 
             return issues;
         }
+    }
+
+    // Spec section 7 keeps an overridden variadic parameter variadic. Upstream Mago leaves it to the engine in PHP.
+    if dialect.is_sharp()
+        && let Some(parameter_index) = parent_method.parameters.iter().position(|p| p.flags.is_variadic())
+        && !child_method.parameters.iter().any(|p| p.flags.is_variadic())
+    {
+        issues.push(SignatureCompatibilityIssue::MissingVariadicParameter { parameter_index });
+
+        return issues;
     }
 
     for (index, parent_param) in parent_method.parameters.iter().enumerate() {

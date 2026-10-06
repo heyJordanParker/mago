@@ -1,12 +1,22 @@
 use std::rc::Rc;
+use std::sync::Arc;
 
 use mago_allocator::Arena;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
+use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::scanner::get_union_from_hint;
+use mago_codex::ttype::atomic::TAtomic;
+use mago_codex::ttype::atomic::array::TArray;
+use mago_codex::ttype::atomic::array::keyed::TKeyedArray;
+use mago_codex::ttype::atomic::array::list::TList;
 use mago_codex::ttype::atomic::callable::TCallable;
 use mago_codex::ttype::cast::cast_atomic_to_callable;
+use mago_codex::ttype::combiner;
+use mago_codex::ttype::combiner::CombinerOptions;
 use mago_codex::ttype::expander;
 use mago_codex::ttype::expander::TypeExpansionOptions;
+use mago_codex::ttype::get_array_parameters;
+use mago_codex::ttype::union::TUnion;
 use mago_codex::ttype::union::populate_union_type;
 use mago_names::binding::php_variable_name;
 use mago_names::kind::NameKind;
@@ -332,12 +342,57 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for LocalDeclaration<'arena> {
             None,
         )?;
 
-        if let Some((local_type, _)) = local_type {
-            block_context.locals.insert(variable_id, local_type);
+        match local_type {
+            Some((local_type, _)) => {
+                block_context.locals.insert(variable_id, local_type);
+            }
+            // A local without a written type takes its first value's general type, as C#'s `var` and TypeScript's
+            // `let` do. `null` and an empty literal have none, and the semantic checks refuse them.
+            None => {
+                if let Some(first_value) = block_context.locals.get(&variable_id)
+                    && !first_value.is_null()
+                    && !first_value
+                        .types
+                        .iter()
+                        .any(|atomic| matches!(atomic, TAtomic::Array(array) if array.is_empty()))
+                {
+                    let general_type = get_general_type(first_value, context.codebase);
+                    block_context.local_types.insert(variable_id, (Rc::new(general_type), self.value.span()));
+                }
+            }
         }
 
         Ok(())
     }
+}
+
+/// The type a written type would give a value: every literal and narrowed scalar widened, and every list or map shape
+/// made a `List<T>` or `Map<TKey, TValue>` of any length.
+fn get_general_type(value: &TUnion, codebase: &CodebaseMetadata) -> TUnion {
+    let mut widened = value.clone();
+    widened.widen_scalars();
+
+    let general = widened
+        .types
+        .iter()
+        .map(|atomic| match atomic {
+            TAtomic::Array(array) => {
+                let (key, value) = get_array_parameters(array, codebase);
+                let value = Arc::new(get_general_type(&value, codebase));
+
+                TAtomic::Array(match array {
+                    TArray::List(_) => TArray::List(TList::new(value)),
+                    TArray::Keyed(_) => TArray::Keyed(TKeyedArray::new_with_parameters(
+                        Arc::new(get_general_type(&key, codebase)),
+                        value,
+                    )),
+                })
+            }
+            atomic => atomic.clone(),
+        })
+        .collect();
+
+    TUnion::from_vec(combiner::combine(general, codebase, CombinerOptions::default()))
 }
 
 #[inline]

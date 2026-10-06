@@ -211,8 +211,8 @@ fn build_node_analysis_plan<'ast, 'arena>(
         let mut targeted_hook_routes = Vec::new();
         // A PHP# static call, `Calc.make()`, is a method call whose object the binder bound to a class. A hook that
         // targets static calls receives it, as it receives `Calc::make()` in PHP.
-        let is_sharp_static_call =
-            matches!(node, Node::MethodCall(call) if StaticCall::from_method_call(call, resolved_names).is_some());
+        let is_sharp_static_call = program.dialect.is_sharp()
+            && matches!(node, Node::MethodCall(call) if StaticCall::from_method_call(call, resolved_names).is_some());
         if is_sharp_static_call {
             requested |= requirements.requirements(NodeKind::StaticMethodCall);
         }

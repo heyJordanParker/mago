@@ -708,8 +708,9 @@ where
             }
         }
 
+        // Spec section 7 gives a PHP# variadic parameter its values as a list.
         let final_parameter_type = if parameter_metadata.flags.is_variadic() {
-            if function_like_metadata.flags.forbids_named_arguments() {
+            if function_like_metadata.flags.forbids_named_arguments() || context.dialect.is_sharp() {
                 get_list(final_parameter_type)
             } else {
                 get_keyed_array(get_arraykey(), final_parameter_type)
@@ -1612,8 +1613,9 @@ fn check_parameter_default_value<'ctx, 'arena, A>(
         return;
     }
 
-    let allow_implicit_null_default =
-        default_type.is_null() && context.settings.version.is_supported(Feature::ImplicitlyNullableParameterTypes);
+    let allow_implicit_null_default = default_type.is_null()
+        && context.settings.version.is_supported(Feature::ImplicitlyNullableParameterTypes)
+        && !context.dialect.is_sharp();
 
     let mut comparison_result = ComparisonResult::new();
     if union_comparator::is_contained_by(

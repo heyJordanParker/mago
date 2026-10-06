@@ -8,6 +8,7 @@ use mago_span::HasSpan;
 use mago_syntax::cst::Hint;
 use mago_syntax::cst::Identifier;
 use mago_syntax::cst::UnionHint;
+use mago_syntax::dialect::Dialect;
 use mago_word::Word;
 use mago_word::word;
 
@@ -56,7 +57,7 @@ pub fn get_type_metadata_from_hint<'arena, A>(
 where
     A: Arena,
 {
-    let type_union = get_union_from_hint(hint, classname, context.resolved_names);
+    let type_union = union_from_hint(hint, classname, context.resolved_names, context.program.dialect);
 
     let mut type_metadata = TypeMetadata::new(type_union, hint.span());
     type_metadata.from_docblock = false;
@@ -82,9 +83,20 @@ pub fn get_type_metadata_from_type(
 #[inline]
 #[must_use]
 pub fn get_union_from_hint(hint: &Hint<'_>, classname: Option<Word>, resolved_names: &ResolvedNames<'_>) -> TUnion {
+    union_from_hint(hint, classname, resolved_names, Dialect::Php)
+}
+
+/// `get_union_from_hint` for a type written in `dialect`. PHP#'s `Self` is PHP's `static`, spec section 25, and the
+/// checker refuses PHP's `self`, which the lexer reads as the same keyword.
+fn union_from_hint(
+    hint: &Hint<'_>,
+    classname: Option<Word>,
+    resolved_names: &ResolvedNames<'_>,
+    dialect: Dialect,
+) -> TUnion {
     match hint {
         Hint::Parenthesized(parenthesized_hint) => {
-            get_union_from_hint(parenthesized_hint.hint, classname, resolved_names)
+            union_from_hint(parenthesized_hint.hint, classname, resolved_names, dialect)
         }
         Hint::Identifier(identifier) => get_union_from_identifier_hint(identifier, resolved_names),
         Hint::Nullable(nullable_hint) => match nullable_hint.hint {
@@ -93,7 +105,7 @@ pub fn get_union_from_hint(hint: &Hint<'_>, classname: Option<Word>, resolved_na
             Hint::Integer(_) => get_nullable_int(),
             Hint::Float(_) => get_nullable_float(),
             Hint::Object(_) => get_nullable_object(),
-            _ => get_union_from_hint(nullable_hint.hint, classname, resolved_names).as_nullable(),
+            _ => union_from_hint(nullable_hint.hint, classname, resolved_names, dialect).as_nullable(),
         },
         Hint::Union(UnionHint { left: Hint::Null(_), right, .. }) => match right {
             Hint::Null(_) => get_null(),
@@ -101,7 +113,7 @@ pub fn get_union_from_hint(hint: &Hint<'_>, classname: Option<Word>, resolved_na
             Hint::Integer(_) => get_nullable_int(),
             Hint::Float(_) => get_nullable_float(),
             Hint::Object(_) => get_nullable_object(),
-            _ => get_union_from_hint(right, classname, resolved_names).as_nullable(),
+            _ => union_from_hint(right, classname, resolved_names, dialect).as_nullable(),
         },
         Hint::Union(UnionHint { left, right: Hint::Null(_), .. }) => match left {
             Hint::Null(_) => get_null(),
@@ -109,11 +121,11 @@ pub fn get_union_from_hint(hint: &Hint<'_>, classname: Option<Word>, resolved_na
             Hint::Integer(_) => get_nullable_int(),
             Hint::Float(_) => get_nullable_float(),
             Hint::Object(_) => get_nullable_object(),
-            _ => get_union_from_hint(left, classname, resolved_names).as_nullable(),
+            _ => union_from_hint(left, classname, resolved_names, dialect).as_nullable(),
         },
         Hint::Union(union_hint) => {
-            let left = get_union_from_hint(union_hint.left, classname, resolved_names);
-            let right = get_union_from_hint(union_hint.right, classname, resolved_names);
+            let left = union_from_hint(union_hint.left, classname, resolved_names, dialect);
+            let right = union_from_hint(union_hint.right, classname, resolved_names, dialect);
 
             let combined_types: Vec<TAtomic> = left.types.iter().chain(right.types.iter()).cloned().collect();
 
@@ -124,15 +136,11 @@ pub fn get_union_from_hint(hint: &Hint<'_>, classname: Option<Word>, resolved_na
         Hint::False(_) => get_false(),
         Hint::Array(_) => get_mixed_keyed_array(),
         Hint::Callable(_) => get_mixed_callable(),
-        Hint::Static(_) => {
+        Hint::Static(_) | Hint::Self_(_) => {
             let classname = classname.unwrap_or_else(|| word("static"));
+            let is_static = matches!(hint, Hint::Static(_)) || dialect.is_sharp();
 
-            wrap_atomic(TAtomic::Object(TObject::Named(TNamedObject::new_static(classname))))
-        }
-        Hint::Self_(_) => {
-            let classname = classname.unwrap_or_else(|| word("static"));
-
-            wrap_atomic(TAtomic::Object(TObject::Named(TNamedObject::new(classname))))
+            wrap_atomic(TAtomic::Object(TObject::Named(TNamedObject::new(classname).with_is_static(is_static))))
         }
         Hint::Void(_) => get_void(),
         Hint::Never(_) => get_never(),
@@ -144,8 +152,8 @@ pub fn get_union_from_hint(hint: &Hint<'_>, classname: Option<Word>, resolved_na
         Hint::Mixed(_) => get_mixed(),
         Hint::Parent(_) => wrap_atomic(TAtomic::Object(TObject::Named(TNamedObject::new(word("parent"))))),
         Hint::Intersection(intersection) => {
-            let left = get_union_from_hint(intersection.left, classname, resolved_names);
-            let right = get_union_from_hint(intersection.right, classname, resolved_names);
+            let left = union_from_hint(intersection.left, classname, resolved_names, dialect);
+            let right = union_from_hint(intersection.right, classname, resolved_names, dialect);
 
             let left_types = left.types;
             let right_types = right.types;
