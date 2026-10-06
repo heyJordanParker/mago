@@ -1535,6 +1535,17 @@ fn a_collection_method_message_names_the_sharp_type() {
     }
 }
 
+/// A collection method takes a value of the type its place is declared with, whatever the analyzer saw assigned last,
+/// as `$list[] = $x` is checked against the declared property: a `List<Shape>` holding a `Circle` takes a `Square`,
+/// and a `List<int>` reset to `[]` takes an int.
+#[test]
+fn a_collection_method_takes_values_of_the_type_its_place_is_declared_with() {
+    let sharp = "namespace Demo;\n\nimport Lib.Circle;\nimport Lib.Shape;\nimport Lib.Square;\n\nclass Board\n{\n    public List<Shape> shapes { get; private set; } = [];\n    public List<int> sizes { get; private set; } = [];\n\n    public int fill(List<Shape> drawn)\n    {\n        this.shapes = [new Circle()];\n        this.shapes.add(new Square());\n        drawn = [new Circle()];\n        drawn.add(new Square());\n        List<Shape> local = [new Square()];\n        local = [new Circle()];\n        local.add(new Square());\n        List<int> reset = [1];\n        reset = [];\n        reset.add(2);\n        this.sizes = [];\n        this.sizes.add(3);\n        this.sizes.add(\"x\");\n        return count(drawn) + count(local) + count(reset);\n    }\n}\n";
+    let shapes = "<?php\n\nnamespace Lib;\n\ninterface Shape\n{\n}\n\nfinal class Circle implements Shape\n{\n}\n\nfinal class Square implements Shape\n{\n}\n";
+
+    assert_eq!(issues(("src/Demo/Board.sharp", sharp), &[("src/Lib/Shape.php", shapes)]), ["26:24 invalid-argument"]);
+}
+
 /// A PHP# collection holds any value of its element type, as a `List<int>` holds any int, so a method takes one
 /// even where the analyzer knows the elements are literals, as TypeScript's `let a = [5]` is a `number[]`.
 #[test]
