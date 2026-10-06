@@ -193,6 +193,7 @@ enum NodeKind: string
     case ForOf = 'ForOf';
     case ForOfKeyValueTarget = 'ForOfKeyValueTarget';
     case ForOfTarget = 'ForOfTarget';
+    case ForOfVariable = 'ForOfVariable';
     case While = 'While';
     case WhileBody = 'WhileBody';
     case WhileColonDelimitedBody = 'WhileColonDelimitedBody';
