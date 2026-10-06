@@ -10,6 +10,7 @@
 )]
 
 use std::ffi::c_char;
+use std::fmt::Write;
 use std::fs;
 use std::mem::align_of;
 use std::mem::offset_of;
@@ -421,6 +422,83 @@ fn a_body_edit_keeps_the_key_until_the_inferred_return_changes() {
 
     assert_eq!(key(source, &total("int")), before, "the body changed and still returns int");
     assert_ne!(key(source, &total("float")), before, "the body now returns float");
+}
+
+/// The C header cbindgen writes for `ext/sharp`.
+const HEADER: &str = include_str!(concat!(env!("OUT_DIR"), "/sharp_unit.h"));
+
+#[test]
+fn the_c_header_lays_out_every_type_as_the_bridge_does() {
+    let check = tempfile::tempdir().unwrap();
+    fs::write(check.path().join("sharp_unit.h"), HEADER).unwrap();
+    let assertions = [
+        ("sizeof(sharp_unit_header)", size_of::<sharp_unit_header>()),
+        ("offsetof(sharp_unit_header, abi)", offset_of!(sharp_unit_header, abi)),
+        ("offsetof(sharp_unit_header, checker)", offset_of!(sharp_unit_header, checker)),
+        ("offsetof(sharp_unit_header, key)", offset_of!(sharp_unit_header, key)),
+        ("offsetof(sharp_unit_header, source_hash)", offset_of!(sharp_unit_header, source_hash)),
+        ("offsetof(sharp_unit_header, source_size)", offset_of!(sharp_unit_header, source_size)),
+        ("offsetof(sharp_unit_header, input_count)", offset_of!(sharp_unit_header, input_count)),
+        ("offsetof(sharp_unit_header, node_count)", offset_of!(sharp_unit_header, node_count)),
+        ("offsetof(sharp_unit_header, children_count)", offset_of!(sharp_unit_header, children_count)),
+        ("offsetof(sharp_unit_header, root)", offset_of!(sharp_unit_header, root)),
+        ("offsetof(sharp_unit_header, texts_size)", offset_of!(sharp_unit_header, texts_size)),
+        ("offsetof(sharp_unit_header, facts_size)", offset_of!(sharp_unit_header, facts_size)),
+        ("sizeof(sharp_input)", size_of::<sharp_input>()),
+        ("offsetof(sharp_input, size)", offset_of!(sharp_input, size)),
+        ("offsetof(sharp_input, mtime_ns)", offset_of!(sharp_input, mtime_ns)),
+        ("offsetof(sharp_input, hash)", offset_of!(sharp_input, hash)),
+        ("sizeof(sharp_node)", size_of::<sharp_node>()),
+        ("offsetof(sharp_node, attr)", offset_of!(sharp_node, attr)),
+        ("offsetof(sharp_node, value)", offset_of!(sharp_node, value)),
+        ("offsetof(sharp_node, long_value)", offset_of!(sharp_node, long_value)),
+        ("offsetof(sharp_node, text)", offset_of!(sharp_node, text)),
+        ("sizeof(sharp_str)", size_of::<sharp_str>()),
+        ("sizeof(SHARP_UNIT_MAGIC) - 1", SHARP_UNIT_MAGIC.len()),
+        ("sizeof(SHARP_UNIT_ABI) - 1", SHARP_UNIT_ABI.len()),
+        ("sizeof(SHARP_MAGO_COMMIT) - 1", 40),
+    ];
+    let mut source = String::from("#include <stddef.h>\n#include \"sharp_unit.h\"\n");
+    for (expression, value) in assertions {
+        let _ = writeln!(source, "_Static_assert({expression} == {value}, \"{expression}\");");
+    }
+    fs::write(check.path().join("check.c"), source).unwrap();
+
+    let output = Command::new("cc")
+        .args(["-std=c11", "-fsyntax-only", "-Werror"])
+        .arg(check.path().join("check.c"))
+        .output()
+        .expect("cc runs");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn the_c_header_carries_the_magic_the_abi_and_the_mago_commit() {
+    let define = |name: &str| {
+        HEADER
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("#define {name} ")))
+            .unwrap_or_else(|| panic!("the header defines {name}"))
+            .to_owned()
+    };
+    let bytes = |bytes: &[u8]| -> String {
+        let mut literal = String::from("\"");
+        for byte in bytes {
+            let _ = write!(literal, "\\x{byte:02x}");
+        }
+        literal.push('"');
+
+        literal
+    };
+    let commit = String::from_utf8(
+        Command::new("git").args(["rev-parse", "HEAD"]).current_dir(repository()).output().unwrap().stdout,
+    )
+    .unwrap();
+
+    assert_eq!(define("SHARP_UNIT_MAGIC"), bytes(b"SHARPC\0\0"));
+    assert_eq!(define("SHARP_UNIT_ABI"), bytes(&SHARP_UNIT_ABI));
+    assert_eq!(define("SHARP_MAGO_COMMIT"), format!("\"{}\"", commit.trim()));
+    assert!(HEADER.contains("#error"), "the header refuses a big-endian target");
 }
 
 fn repository() -> std::path::PathBuf {

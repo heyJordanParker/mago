@@ -22,6 +22,20 @@ regen-sdk-node-kinds:
 regen-sharp-kinds zend_ast_h zend_compile_h:
     php scripts/regen-sharp-kinds.php {{zend_ast_h}} {{zend_compile_h}} > crates/sharp-bridge/src/kind.rs
 
+# Copy the PHP# bridge's C header, `sharp_unit.h`, which php-sharp commits as `ext/sharp/sharp_unit.h`.
+sharp-header destination:
+    #!/usr/bin/env php
+    <?php
+    $messages = shell_exec('cargo build -p mago-sharp-bridge --message-format=json') ?: '';
+    foreach (explode("\n", $messages) as $line) {
+        $message = json_decode($line, true);
+        if (($message['reason'] ?? '') === 'build-script-executed' && str_contains($message['package_id'], 'mago-sharp-bridge')) {
+            exit(copy($message['out_dir'] . '/sharp_unit.h', '{{destination}}') ? 0 : 1);
+        }
+    }
+    fwrite(STDERR, "cargo reported no out_dir for mago-sharp-bridge\n");
+    exit(1);
+
 # Builds the library in release mode.
 build:
     cargo build --release
