@@ -1,6 +1,10 @@
 use mago_allocator::Arena;
 use mago_bytes::BytesDisplay;
+use mago_codex::ttype::add_optional_union_type;
+use mago_codex::ttype::atomic::TAtomic;
+use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::get_mixed;
+use mago_codex::ttype::get_never;
 use mago_names::binding::Binding;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -24,6 +28,7 @@ use crate::error::AnalysisError;
 use crate::resolver::property::resolve_method_value;
 use crate::resolver::static_property::StaticProperty;
 use crate::resolver::static_property::StaticPropertyName;
+use crate::utils::expression::get_bare_name_variable_id;
 
 pub mod class_constant_access;
 pub mod property_access;
@@ -44,6 +49,13 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Access<'arena> {
             Access::Property(PropertyAccess {
                 object, property: ClassLikeMemberSelector::Identifier(name), ..
             }) if report_full_name(context, object, Some(name)) => Ok(()),
+            // PHP# reads a member through a class value, `typeof(X).y` or `type.y`, as `Class.y` reads it on the class
+            // the value holds, which is PHP's `$type::y`.
+            Access::Property(access @ PropertyAccess { property: ClassLikeMemberSelector::Identifier(name), .. })
+                if let Some(classes) = class_value_classes(context, block_context, access.object) =>
+            {
+                analyze_class_value_member(context, block_context, artifacts, access, name, classes)
+            }
             // PHP# writes both `Class::NAME` and `Class::$name` as `Class.name`, with a bare name bound to a class.
             // Like the engine, a read is the constant or enum case when the class has one by that name, then the
             // static property, then the static method as a closure, as `Class::name(...)`. A constant expression
@@ -198,7 +210,7 @@ pub(crate) fn report_member_of_mixed_kinds<A>(
     // property, with `__call` last.
     let codebase = context.codebase;
     let property = concat_word!("$", name.value);
-    let (mut methods, mut properties) = (Vec::new(), Vec::new());
+    let mut kinds = Vec::new();
     for atomic in receiver.types.iter().filter(|atomic| !atomic.is_null()) {
         let Some(class) = atomic.get_object_or_enum_name() else {
             return;
@@ -210,46 +222,81 @@ pub(crate) fn report_member_of_mixed_kinds<A>(
         } else {
             declares_method && !declares_property
         };
-        let classes = if is_method { &mut methods } else { &mut properties };
-        classes.push(class);
+        kinds.push((usize::from(!is_method), class));
     }
-    // A union keeps no written order, so the message names the classes in alphabetical order.
-    for classes in [&mut methods, &mut properties] {
-        classes.sort_unstable_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-        classes.dedup();
-    }
-    let (Some(first_method), false) = (methods.first(), properties.is_empty()) else {
+
+    let (code, kind_names) = if is_call {
+        (IssueCode::AmbiguousObjectMethodAccess, ["method", "function in a property"])
+    } else {
+        (IssueCode::AmbiguousObjectPropertyAccess, ["method", "property"])
+    };
+    let Some(issue) = mixed_kinds_issue(context, object, name, is_call, &kind_names, kinds) else {
         return;
     };
-
-    let receiver = BytesDisplay(&context.source_file.contents[object.span().to_range_usize()]);
-    let member = BytesDisplay(name.value);
-    let (methods, properties) = (and_list(&methods), and_list(&properties));
-    let (code, message) = if is_call {
-        (
-            IssueCode::AmbiguousObjectMethodAccess,
-            format!(
-                "`{receiver}.{member}()` calls a method on {methods} but a function in a property on {properties}, so PHP# cannot tell how to call it."
-            ),
-        )
-    } else {
-        (
-            IssueCode::AmbiguousObjectPropertyAccess,
-            format!(
-                "`{receiver}.{member}` is a method on {methods} but a property on {properties}, so PHP# cannot tell how to read it."
-            ),
-        )
-    };
-    let class =
-        String::from_utf8_lossy(first_method.as_bytes().rsplit(|byte| *byte == b'\\').next().unwrap_or_default());
+    let (receiver, class) = (receiver_text(context, object), issue.1);
     let local = class.to_lowercase();
 
     context.collector.report_with_code(
         code,
-        Issue::error(message)
-            .with_annotation(Annotation::primary(name.span).with_message("Not the same kind of member on every class"))
+        issue
+            .0
             .with_help(format!("Narrow `{receiver}` to one class first, as in `if ({receiver} is {class} {local})`.")),
     );
+}
+
+/// The error for a member that is not one kind on every class the receiver can be, with the short name of the first
+/// class, or none when every class gives one kind. `kinds` pairs each class with its kind, an index into `kind_names`,
+/// and the message names each kind's classes once, in alphabetical order, as a union keeps no written order.
+fn mixed_kinds_issue<A>(
+    context: &Context<'_, '_, A>,
+    object: &Expression<'_>,
+    name: &LocalIdentifier<'_>,
+    is_call: bool,
+    kind_names: &[&str],
+    mut kinds: Vec<(usize, Word)>,
+) -> Option<(Issue, String)>
+where
+    A: Arena,
+{
+    kinds.sort_unstable_by(|(a_kind, a), (b_kind, b)| a_kind.cmp(b_kind).then(a.as_bytes().cmp(b.as_bytes())));
+    kinds.dedup();
+    let (first_kind, first_class) = *kinds.first()?;
+    if kinds.iter().all(|(kind, _)| *kind == first_kind) {
+        return None;
+    }
+
+    let parts: Vec<String> = kind_names
+        .iter()
+        .enumerate()
+        .filter_map(|(index, kind_name)| {
+            let classes: Vec<Word> = kinds.iter().filter(|(kind, _)| *kind == index).map(|(_, class)| *class).collect();
+
+            (!classes.is_empty()).then(|| format!("a {kind_name} on {}", and_list(&classes)))
+        })
+        .collect();
+    let (last, rest) = parts.split_last()?;
+    let receiver = receiver_text(context, object);
+    let member = BytesDisplay(name.value);
+    let message = if is_call {
+        format!("`{receiver}.{member}()` calls {} but {last}, so PHP# cannot tell how to call it.", rest.join(", "))
+    } else {
+        format!("`{receiver}.{member}` is {} but {last}, so PHP# cannot tell how to read it.", rest.join(", "))
+    };
+    let class = first_class.as_bytes().rsplit(|byte| *byte == b'\\').next().unwrap_or_default();
+
+    Some((
+        Issue::error(message)
+            .with_annotation(Annotation::primary(name.span).with_message("Not the same kind of member on every class")),
+        String::from_utf8_lossy(class).into_owned(),
+    ))
+}
+
+/// The source text of `object`, as the message names it.
+fn receiver_text<A>(context: &Context<'_, '_, A>, object: &Expression<'_>) -> String
+where
+    A: Arena,
+{
+    String::from_utf8_lossy(&context.source_file.contents[object.span().to_range_usize()]).into_owned()
 }
 
 /// The class names `classes` as an English list, each in backticks: "`A`", "`A` and `B`", "`A`, `B` and `C`".
@@ -260,6 +307,112 @@ fn and_list(classes: &[Word]) -> String {
         Some((last, [])) => last.clone(),
         Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
         None => String::new(),
+    }
+}
+
+/// The classes `object` holds when it is a PHP# class value: `typeof(X)`, or a local holding the class-string of a
+/// class. A `Class<T>` value holds `T` or a subclass, which has the same kind of member, so `T` stands for it.
+pub(crate) fn class_value_classes<A>(
+    context: &Context<'_, '_, A>,
+    block_context: &BlockContext<'_>,
+    object: &Expression<'_>,
+) -> Option<Vec<Word>>
+where
+    A: Arena,
+{
+    if !context.dialect.is_sharp() {
+        return None;
+    }
+
+    match object {
+        Expression::TypeOf(type_of) => Some(vec![word(context.resolved_names.get(&type_of.class))]),
+        Expression::ConstantAccess(local) => {
+            let local = block_context.locals.get(&get_bare_name_variable_id(&local.name, context.resolved_names)?)?;
+            let classes = local
+                .types
+                .iter()
+                .filter(|atomic| !atomic.is_null())
+                .map(|atomic| match atomic {
+                    TAtomic::Scalar(TScalar::ClassLikeString(class)) => {
+                        class.literal_value().or_else(|| class.constraint()?.get_object_or_enum_name())
+                    }
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>()?;
+
+            (!classes.is_empty()).then_some(classes)
+        }
+        _ => None,
+    }
+}
+
+/// Analyzes PHP#'s `type.name` read through a class value as `Class.y` reads it on the classes the value holds: the
+/// constant or enum case, then the static method as a closure, then the static property, as PHP's `$type::name`.
+fn analyze_class_value_member<'ctx, 'ast, 'arena, A>(
+    context: &mut Context<'ctx, 'arena, A>,
+    block_context: &mut BlockContext<'ctx>,
+    artifacts: &mut AnalysisArtifacts,
+    access: &'ast PropertyAccess<'arena>,
+    name: &'ast LocalIdentifier<'arena>,
+    classes: Vec<Word>,
+) -> Result<(), AnalysisError>
+where
+    A: Arena,
+{
+    const CONSTANT: usize = 0;
+    const STATIC_PROPERTY: usize = 1;
+    const STATIC_METHOD: usize = 2;
+
+    let kinds: Vec<(usize, Word)> = classes
+        .iter()
+        .map(|class| {
+            let kind = if context.codebase.class_constant_exists(class.as_bytes(), name.value) {
+                CONSTANT
+            } else if is_static_method_value(context, class.as_bytes(), name.value) {
+                STATIC_METHOD
+            } else {
+                STATIC_PROPERTY
+            };
+
+            (kind, *class)
+        })
+        .collect();
+    let kind_names = ["constant", "static property", "static method"];
+    if let Some((issue, _)) = mixed_kinds_issue(context, access.object, name, false, &kind_names, kinds.clone()) {
+        context.collector.report_with_code(IssueCode::AmbiguousClassLikeConstantAccess, issue);
+        artifacts.set_expression_type(access, get_never());
+
+        return Ok(());
+    }
+
+    match kinds[0].0 {
+        CONSTANT => class_constant_access::analyze_class_constant_access(
+            context,
+            block_context,
+            artifacts,
+            access.object,
+            &ClassLikeConstantSelector::Identifier(*name),
+            access.span(),
+        ),
+        STATIC_METHOD => {
+            access.object.analyze(context, block_context, artifacts)?;
+            let mut method_type = None;
+            for class in classes {
+                let value =
+                    resolve_method_value(context, block_context, artifacts, class, word(name.value), access.span())
+                        .unwrap_or_else(get_mixed);
+                method_type = Some(add_optional_union_type(value, method_type.as_ref(), context.codebase));
+            }
+            artifacts.set_expression_type(access, method_type.unwrap_or_else(get_mixed));
+
+            Ok(())
+        }
+        _ => static_property_access::analyze_static_property_access(
+            context,
+            block_context,
+            artifacts,
+            StaticProperty { class: access.object, name: StaticPropertyName::Identifier(name), span: access.span() },
+        ),
     }
 }
 

@@ -3610,6 +3610,58 @@ fn a_member_of_a_union_receiver_is_the_kind_every_class_declares() {
     );
 }
 
+/// ```php
+/// $type = \Lib\Calc::class;
+/// return \Lib\Calc::MAX + $type::MAX + $type::$count + \strlen($type::defaultTag());
+/// ```
+///
+/// A member read through a class value is the fetch of the member kind on the class the value holds, as `Class.y` is:
+/// `typeof(X).y` names the class, and a local holding a class value is the class of the fetch.
+#[test]
+fn a_member_read_through_a_class_value_is_the_fetch_of_its_kind_on_that_class() {
+    assert_eq!(
+        body_in(
+            RUN,
+            "        const type = typeof(Calc);\n        return typeof(Calc).MAX + type.MAX + type.count + strlen(type.defaultTag());\n",
+            &[(
+                "src/Lib/Calc.php",
+                "<?php namespace Lib; abstract class Calc { public const int MAX = 3; public static int $count = 0; public static function defaultTag(): string { return 'div'; } }",
+            )]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "type"
+                CLASS_NAME
+                  ZVAL "Lib\\Calc"
+              RETURN
+                BINARY_OP [1]
+                  BINARY_OP [1]
+                    BINARY_OP [1]
+                      CLASS_CONST
+                        ZVAL "Lib\\Calc"
+                        ZVAL "MAX"
+                      CLASS_CONST
+                        VAR
+                          ZVAL "type"
+                        ZVAL "MAX"
+                    STATIC_PROP
+                      VAR
+                        ZVAL "type"
+                      ZVAL "count"
+                  CALL
+                    ZVAL "strlen"
+                    ARG_LIST
+                      STATIC_CALL
+                        VAR
+                          ZVAL "type"
+                        ZVAL "defaultTag"
+                        ARG_LIST
+        "#}
+    );
+}
+
 /// A PHP class whose `__get` and `__callStatic` serve undeclared members, with a static property and a static method.
 const MAGIC_ORDER: (&str, &str) = (
     "src/Lib/Order.php",

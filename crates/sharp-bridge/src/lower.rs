@@ -181,6 +181,7 @@ mod types;
 use types::DeclarationKind;
 use types::Types;
 use types::agreed_kind;
+use types::class_value_classes;
 use types::receiver_classes;
 
 /// The values php-src gives the attrs the lowering emits, from `zend_compile.h` and `zend_vm_opcodes.h`.
@@ -1200,41 +1201,29 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 self.node(SHARP_AST_NEW, 0, line, &[class, arguments])
             }
-            // `Class.y` is the fetch of the member the checker found: a constant or enum case, a static property, or
-            // a static method as a first-class callable.
+            // `Class.y`, and `y` read through a class value, is the fetch of the member the checker found on the class:
+            // a constant or enum case, a static property, or a static method as a first-class callable.
             Expression::Access(Access::Property(access)) => match self.names.static_property_class(access) {
                 Some(class) => {
                     let full_name = self.names.get(&class.name);
                     let class = self.string(ZEND_NAME_FQ, self.line(class), full_name);
-                    let ClassLikeMemberSelector::Identifier(name) = &access.property else {
-                        unreachable!("check_slice refuses the member name `{}`", access.property);
-                    };
-                    let member = self.member(&access.property);
 
-                    match self.types.member_declaration(full_name, name.value).kind {
-                        DeclarationKind::Constant | DeclarationKind::EnumCase => {
-                            self.node(SHARP_AST_CLASS_CONST, 0, line, &[class, member])
-                        }
-                        DeclarationKind::StaticProperty => self.node(SHARP_AST_STATIC_PROP, 0, line, &[class, member]),
-                        DeclarationKind::StaticMethod => {
-                            let callable = self.node(SHARP_AST_CALLABLE_CONVERT, 0, line, &[]);
-
-                            self.node(SHARP_AST_STATIC_CALL, 0, line, &[class, member, callable])
-                        }
-                        kind => unreachable!("`Class.y` names a member, not a {kind:?}"),
-                    }
+                    self.static_member(line, class, &[full_name], &access.property)
                 }
-                None => {
-                    let is_method = self.is_method_value(access.object, &access.property);
-                    let object = self.expression(access.object);
-                    let member = self.member(&access.property);
+                None => match self.class_value(access.object) {
+                    Some((class, classes)) => self.static_member(line, class, &classes, &access.property),
+                    None => {
+                        let is_method = self.is_method_value(access.object, &access.property);
+                        let object = self.expression(access.object);
+                        let member = self.member(&access.property);
 
-                    if is_method {
-                        self.method_value(line, object, member)
-                    } else {
-                        self.node(SHARP_AST_PROP, 0, line, &[object, member])
+                        if is_method {
+                            self.method_value(line, object, member)
+                        } else {
+                            self.node(SHARP_AST_PROP, 0, line, &[object, member])
+                        }
                     }
-                }
+                },
             },
             // A link whose chain's conditional tests the receiver is the property call `untested_link` found.
             Expression::Call(Call::NullSafeMethod(call)) => {
@@ -1285,6 +1274,44 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             }
             _ => unreachable!("check_slice refuses the expression `{expression}`"),
         })
+    }
+
+    /// The fetch of the static `member` of `class`, whose node is `class` and whose possible classes are `classes`: a
+    /// class constant fetch for a constant or an enum case, a static property fetch, or a first-class callable of the
+    /// static method.
+    fn static_member(&mut self, line: u32, class: u32, classes: &[&[u8]], member: &ClassLikeMemberSelector) -> u32 {
+        let ClassLikeMemberSelector::Identifier(name) = member else {
+            unreachable!("check_slice refuses the member name `{member}`");
+        };
+        let kind = agreed_kind(classes.iter().map(|class| self.types.member_declaration(class, name.value).kind));
+        let member = self.member(member);
+
+        match kind {
+            DeclarationKind::Constant | DeclarationKind::EnumCase => {
+                self.node(SHARP_AST_CLASS_CONST, 0, line, &[class, member])
+            }
+            DeclarationKind::StaticProperty => self.node(SHARP_AST_STATIC_PROP, 0, line, &[class, member]),
+            DeclarationKind::StaticMethod => {
+                let callable = self.node(SHARP_AST_CALLABLE_CONVERT, 0, line, &[]);
+
+                self.node(SHARP_AST_STATIC_CALL, 0, line, &[class, member, callable])
+            }
+            kind => unreachable!("a class's member read names a static member, not a {kind:?}"),
+        }
+    }
+
+    /// The class node of a static member read or call through `object` and the classes it can be, when `object` is a
+    /// class value: `typeof(X)` is the name `X`, and any other class value is the value, as in PHP's `$type::y`.
+    fn class_value(&mut self, object: &Expression) -> Option<(u32, Vec<&'lowering [u8]>)> {
+        let classes = class_value_classes(self.types.expression_type(object))?;
+        let class = match object {
+            Expression::TypeOf(type_of) => {
+                self.string(ZEND_NAME_FQ, self.line(type_of.class), self.names.get(&type_of.class))
+            }
+            _ => self.expression(object),
+        };
+
+        Some((class, classes))
     }
 
     /// Whether `object.member` reads a method, which the read takes as a first-class callable. The member is the same
@@ -1702,7 +1729,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             (None, Expression::Self_(keyword)) => {
                 (SHARP_AST_STATIC_CALL, self.string(ZEND_NAME_NOT_FQ, self.line(keyword), b"static"))
             }
-            (None, object) => (SHARP_AST_METHOD_CALL, self.expression(object)),
+            (None, object) => match self.class_value(object) {
+                Some((class, _)) => (SHARP_AST_STATIC_CALL, class),
+                None => (SHARP_AST_METHOD_CALL, self.expression(object)),
+            },
         };
         let method = self.member(&call.method);
         let arguments = self.arguments(&call.argument_list);

@@ -2,6 +2,8 @@ use mago_analyzer::artifacts::AnalysisArtifacts;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::object::TObject;
+use mago_codex::ttype::atomic::scalar::TScalar;
+use mago_codex::ttype::atomic::scalar::class_like_string::TClassLikeString;
 use mago_codex::ttype::union::TUnion;
 use mago_span::HasSpan;
 use mago_syntax::cst::Call;
@@ -150,6 +152,29 @@ pub(crate) fn receiver_classes(r#type: &TUnion) -> Option<Vec<&[u8]>> {
         .map(|atomic| match atomic {
             TAtomic::Object(TObject::Named(object)) => Some(object.name.as_bytes()),
             TAtomic::Object(TObject::Enum(object)) => Some(object.name.as_bytes()),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+
+    (!classes.is_empty()).then_some(classes)
+}
+
+/// The fully qualified names of the classes a class value of `r#type` holds, leaving out `null`, or none when part of
+/// the type is no class value. A `Class<T>` value holds `T` or a subclass, which has the same kind of member.
+pub(crate) fn class_value_classes(r#type: &TUnion) -> Option<Vec<&[u8]>> {
+    let classes: Vec<&[u8]> = r#type
+        .types
+        .iter()
+        .filter(|atomic| !atomic.is_null())
+        .map(|atomic| match atomic {
+            TAtomic::Scalar(TScalar::ClassLikeString(TClassLikeString::Literal { value })) => Some(value.as_bytes()),
+            TAtomic::Scalar(TScalar::ClassLikeString(
+                TClassLikeString::Generic { constraint, .. } | TClassLikeString::OfType { constraint, .. },
+            )) => match constraint.as_ref() {
+                TAtomic::Object(TObject::Named(object)) => Some(object.name.as_bytes()),
+                TAtomic::Object(TObject::Enum(object)) => Some(object.name.as_bytes()),
+                _ => None,
+            },
             _ => None,
         })
         .collect::<Option<_>>()?;

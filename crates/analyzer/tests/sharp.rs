@@ -1200,10 +1200,49 @@ fn super_in_a_class_without_a_base_class_is_an_error_as_in_php() {
 /// The checker refuses a member of `typeof(X)` once, so the analyzer adds no issue on the refused read, its chain, or
 /// the value it gives.
 #[test]
-fn reading_a_member_of_typeof_adds_no_issue() {
-    let sharp = "namespace Demo;\n\nclass Report\n{\n    public string label()\n    {\n        return typeof(Report).name;\n    }\n\n    public string first()\n    {\n        return typeof(Report).name.first;\n    }\n\n    public string called()\n    {\n        return typeof(Report).name();\n    }\n}\n";
+fn a_member_read_through_a_class_value_is_checked_as_the_static_member_in_php() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public const int MAX = 3;\n    private static int count = 0;\n\n    public static string tag() => \"div\";\n\n    public int total()\n    {\n        const type = typeof(Report);\n        const max = type.MAX;\n        const seen = type.count;\n        return typeof(Report).MAX + max + seen;\n    }\n\n    public string label()\n    {\n        const type = typeof(Report);\n        return type.tag();\n    }\n\n    public int missing()\n    {\n        const type = typeof(Report);\n        return type.absent;\n    }\n\n    public void named()\n    {\n        const type = typeof(Report);\n        type.attributes();\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public const int MAX = 3;\n    private static int $count = 0;\n\n    public static function tag(): string\n    {\n        return \"div\";\n    }\n\n    public function total(): int\n    {\n        $type = Report::class;\n        $max = $type::MAX;\n        $seen = $type::$count;\n        return Report::MAX + $max + $seen;\n    }\n\n    public function label(): string\n    {\n        $type = Report::class;\n        return $type::tag();\n    }\n\n    public function missing(): int\n    {\n        $type = Report::class;\n        return $type::$absent;\n    }\n\n    public function named(): void\n    {\n        $type = Report::class;\n        $type::attributes();\n    }\n}\n";
 
-    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
+    let (issues, artifacts) =
+        analyze_with_artifacts(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[]);
+    let sharp_issues: Vec<String> = issues.iter().map(|issue| issue.code.clone().unwrap_or_default()).collect();
+    let php_issues = issues_with(settings(), ("src/Demo/Report.php", php), &[]);
+    let type_at = |text: &str| {
+        let start = sharp.find(text).unwrap() as u32;
+        artifacts.expression_types.get(&(start, start + text.len() as u32)).map(|r#type| r#type.get_id().to_string())
+    };
+
+    assert_eq!(sharp_issues, codes(&php_issues), "{php_issues:?}");
+    assert_eq!(sharp_issues, ["non-existent-property", "invalid-return-statement", "non-existent-method"]);
+    assert_eq!(type_at("type.MAX").as_deref(), Some("int(3)"));
+    assert_eq!(type_at("type.count").as_deref(), Some("int"));
+    assert_eq!(type_at("type.tag()").as_deref(), Some("string"));
+    assert_eq!(type_at("typeof(Report).MAX").as_deref(), Some("int(3)"));
+}
+
+/// The receiver of a class value read is a class value: `typeof(X)` and a `const` local holding it are the class-string
+/// of `X`.
+#[test]
+fn a_local_holding_typeof_is_the_class_string_of_its_class() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public const int MAX = 3;\n\n    public int total()\n    {\n        const type = typeof(Report);\n        return type.MAX;\n    }\n}\n";
+    let (issues, artifacts) =
+        analyze_with_artifacts(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[]);
+    let start = sharp.find("type.MAX").unwrap() as u32;
+
+    assert!(issues.is_empty(), "{issues:?}");
+    assert_eq!(
+        artifacts.expression_types.get(&(start, start + 4)).map(|r#type| r#type.get_id().to_string()).as_deref(),
+        Some("class-string('Demo\\Report')")
+    );
+}
+
+/// PHP reads a class-string's members only through `::`. An arrow read of one stays the error it is in PHP.
+#[test]
+fn an_arrow_read_of_a_class_string_stays_an_error_in_php() {
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public const int MAX = 3;\n\n    public function total(): mixed\n    {\n        $type = Report::class;\n        return $type->MAX;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[]), ["12:23 invalid-property-access"]);
 }
 
 #[test]

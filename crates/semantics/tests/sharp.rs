@@ -2007,19 +2007,15 @@ fn typeof_names_a_class_in_a_method_body() {
     assert_eq!(issues(code), Vec::<String>::new());
 }
 
+/// A member of `typeof(X)` or of a local holding a class value is a static member of the class it holds, as `X.y` is,
+/// so the analyzer checks that the class has it. `Class`'s own members, such as `attributes`, come with the library.
 #[test]
-fn a_member_of_typeof_is_not_supported_yet() {
+fn a_member_of_a_class_value_is_in_the_slice() {
     let code = leak(method(
-        "        const name = typeof(Order).name;\n        typeof(Order).attributes();\n        return extra;\n",
+        "        const type = typeof(Order);\n        const max = typeof(Order).MAX + type.MAX;\n        type.attributes();\n        return extra;\n",
     ));
 
-    assert_eq!(
-        issues(code),
-        [
-            "7:22 Reading a member of `typeof(Order)` is not supported yet.",
-            "8:9 Reading a member of `typeof(Order)` is not supported yet.",
-        ]
-    );
+    assert_eq!(issues(code), Vec::<String>::new());
 }
 
 #[test]
