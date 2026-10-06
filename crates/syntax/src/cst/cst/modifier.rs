@@ -31,6 +31,8 @@ pub enum Modifier<'arena> {
     Virtual(Keyword<'arena>),
     /// PHP#'s `override`, which marks a method that overrides one of its parent.
     Override(Keyword<'arena>),
+    /// PHP#'s `required`, which marks a constructor that `new Self(…)` can call on every subclass.
+    Required(Keyword<'arena>),
 }
 
 impl<'arena> Modifier<'arena> {
@@ -49,6 +51,7 @@ impl<'arena> Modifier<'arena> {
             Modifier::PrivateSet(k) => k,
             Modifier::Virtual(k) => k,
             Modifier::Override(k) => k,
+            Modifier::Required(k) => k,
         }
     }
 
@@ -153,7 +156,8 @@ impl HasSpan for Modifier<'_> {
             | Modifier::ProtectedSet(value)
             | Modifier::PublicSet(value)
             | Modifier::Virtual(value)
-            | Modifier::Override(value) => value.span(),
+            | Modifier::Override(value)
+            | Modifier::Required(value) => value.span(),
         }
     }
 }

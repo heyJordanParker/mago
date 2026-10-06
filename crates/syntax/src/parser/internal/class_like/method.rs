@@ -13,6 +13,7 @@ use crate::cst::sequence::Sequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use mago_allocator::prelude::*;
+use mago_span::HasSpan;
 
 impl<'arena, A> Parser<'_, 'arena, A>
 where
@@ -42,7 +43,8 @@ where
     /// The type is parsed once, and the name after it decides: a name followed by `(` makes a method, anything else
     /// a field. A type has no length limit, so no fixed lookahead can decide before it. A PHP property, which starts
     /// with `var` or a `$` variable, still parses so the rest of the class does, and its PHP syntax is an error. So do
-    /// `required` and a named constructor, which are one "not supported yet" error each.
+    /// a named constructor and `required` on any member but the constructor, which are one "not supported yet" error
+    /// each.
     pub(crate) fn parse_sharp_member_with_attributes_and_modifiers(
         &mut self,
         attributes: Sequence<'arena, AttributeList<'arena>>,
@@ -54,13 +56,14 @@ where
             ));
         }
 
-        // `required`, spec section 6.1, is a word before the type. The member after it parses as written.
-        if self.stream.lookahead(0)?.is_some_and(|token| token.kind == T![Identifier] && token.value == b"required")
-            && !matches!(self.stream.peek_kind(1)?, Some(T!["("] | T!["."] | T![";"] | T!["="] | T!["{"]))
+        // `required` written before any other modifier starts the member's modifiers.
+        let modifiers = if modifiers.is_empty()
+            && self.stream.lookahead(0)?.is_some_and(|token| token.kind == T![Identifier] && token.value == b"required")
         {
-            let required = self.stream.consume_span()?;
-            self.errors.push(ParseError::NotSupportedYetInSharp("`required`", required));
-        }
+            self.parse_modifier_sequence()?
+        } else {
+            modifiers
+        };
 
         let hint = self.parse_type_hint()?;
         // A named constructor, `public Report.fromJson(string json) : this(…) {}` in spec section 9.1, parses whole
@@ -93,6 +96,10 @@ where
                 return_type_hint: None,
                 body: self.parse_method_body()?,
             }));
+        }
+        // Spec section 25 marks a constructor `required`, and section 6.1 a property, which is not supported yet.
+        if let Some(required) = modifiers.iter().find(|modifier| matches!(modifier, Modifier::Required(_))) {
+            self.errors.push(ParseError::NotSupportedYetInSharp("`required`", required.span()));
         }
         // A bare name before `=` or `;` is a field written without its type: it is the name.
         if let Hint::Identifier(Identifier::Local(name)) = hint

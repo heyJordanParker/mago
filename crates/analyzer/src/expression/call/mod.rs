@@ -118,12 +118,13 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Call<'arena> {
                 call.argument_list.analyze(context, block_context, artifacts)
             }
             // PHP# writes the static call `Class::m()` as `Class.m()`, with a bare name the binder bound to a class.
-            Call::Method(call) => match StaticCall::from_method_call(call, context.resolved_names) {
-                Some(static_call) => {
-                    static_method_call::analyze_static_method_call(context, block_context, artifacts, static_call)
-                }
-                None => call.analyze(context, block_context, artifacts),
-            },
+            Call::Method(call)
+                if context.dialect.is_sharp()
+                    && let Some(static_call) = StaticCall::from_method_call(call, context.resolved_names) =>
+            {
+                static_method_call::analyze_static_method_call(context, block_context, artifacts, static_call)
+            }
+            Call::Method(call) => call.analyze(context, block_context, artifacts),
             Call::NullSafeMethod(call) => call.analyze(context, block_context, artifacts),
             Call::StaticMethod(call) => call.analyze(context, block_context, artifacts),
         }

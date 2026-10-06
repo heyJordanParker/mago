@@ -24,6 +24,7 @@ use mago_syntax::cst::If;
 use mago_syntax::cst::IfBody;
 use mago_syntax::cst::Interface;
 use mago_syntax::cst::Method;
+use mago_syntax::cst::Modifier;
 use mago_syntax::cst::Namespace;
 use mago_syntax::cst::Program;
 use mago_syntax::cst::Return;
@@ -712,7 +713,9 @@ where
             class_like_metadata.inheritable_method_ids.insert(name, method_identifier);
         }
 
-        if method_metadata.is_final && is_constructor {
+        // PHP#'s `required` constructor is one every subclass keeps, so `new Self(…)` can call it, spec section 25.
+        let is_required = method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Required(_)));
+        if (method_metadata.is_final || is_required) && is_constructor {
             class_like_metadata.flags |= MetadataFlags::CONSISTENT_CONSTRUCTOR;
         }
 
