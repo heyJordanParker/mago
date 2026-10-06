@@ -326,6 +326,25 @@ fn a_method_named_without_a_call_is_a_closure_of_its_signature() {
     );
 }
 
+/// `Class.name` with no constant, enum case or static property of that name is the static method as a value, typed as
+/// PHP types `Calc::make(...)`. An instance method read through its class stays an error.
+#[test]
+fn a_static_method_named_through_its_class_without_a_call_is_a_closure_of_its_signature() {
+    let sharp = "namespace Demo;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public int total()\n    {\n        const Function<Calc()> make = Calc.make;\n        const Function<int(int)> twice = Report.twice;\n        return make().add(twice(1), 2) + twice(\"x\") + Calc.add;\n    }\n\n    private static int twice(int n) => n * 2;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Calc;\n\nclass Report\n{\n    public function total(): int\n    {\n        $make = Calc::make(...);\n        $twice = Report::twice(...);\n        return $make()->add($twice(1), 2) + $twice(\"x\") + Calc::$add;\n    }\n\n    private static function twice(int $n): int { return $n * 2; }\n}\n";
+    let others = [("src/Lib/Calc.php", CALC)];
+
+    let php_issues = issues(("src/Demo/Report.php", php), &others);
+    assert_eq!(
+        codes(&php_issues),
+        ["invalid-argument", "non-existent-property", "null-operand", "mixed-return-statement"],
+        "{php_issues:?}"
+    );
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &others);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{sharp_issues:?}");
+    assert_eq!(&sharp_issues[..2], ["11:48 invalid-argument", "11:60 non-existent-property"]);
+}
+
 /// A method read as a value obeys the method's visibility, as `$order->secret(...)` does in PHP.
 #[test]
 fn a_private_method_read_as_a_value_from_outside_its_class_is_an_error() {

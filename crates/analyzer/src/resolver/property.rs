@@ -1489,9 +1489,10 @@ fn report_possibly_non_existent_property<A>(
 }
 
 /// Spec section 14.3: a PHP# read `x.name` of a class with no property `name` gives its method `name` as a closure,
-/// as PHP's `$x->name(...)` does, and the engine runs it so on the read's missing-property path. Reports a method
-/// the read cannot reach, as the call would. Returns the closure's type.
-fn resolve_method_value<A>(
+/// as PHP's `$x->name(...)` does, and `Class.name` gives its static method, as `Class::name(...)` does. The engine
+/// runs both on the read's missing-member path. Reports a method the read cannot reach, as the call would. Returns
+/// the closure's type.
+pub(crate) fn resolve_method_value<A>(
     context: &mut Context<'_, '_, A>,
     block_context: &BlockContext<'_>,
     artifacts: &mut AnalysisArtifacts,
