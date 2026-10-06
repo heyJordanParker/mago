@@ -18,9 +18,9 @@ regen-analyzer-issue-codes:
 regen-sdk-node-kinds:
     php scripts/regen-sdk-node-kinds.php
 
-# Regenerate the PHP# bridge's `sharp_kind` from php-src's `Zend/zend_ast.h`, such as php-sharp's.
-regen-sharp-kinds zend_ast_h:
-    php scripts/regen-sharp-kinds.php {{zend_ast_h}} > crates/sharp-bridge/src/kind.rs
+# Regenerate the PHP# bridge's `sharp_kind` and `SHARP_UNIT_ABI` from php-sharp's `Zend/zend_ast.h` and `Zend/zend_compile.h`.
+regen-sharp-kinds zend_ast_h zend_compile_h:
+    php scripts/regen-sharp-kinds.php {{zend_ast_h}} {{zend_compile_h}} > crates/sharp-bridge/src/kind.rs
 
 # Builds the library in release mode.
 build:
