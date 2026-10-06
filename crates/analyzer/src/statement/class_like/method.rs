@@ -24,6 +24,7 @@ use crate::statement::attributes::analyze_attributes;
 use crate::statement::function_like::FunctionLikeBody;
 use crate::statement::function_like::analyze_function_like;
 use crate::statement::function_like::check_unused_function_template_parameters;
+use crate::statement::function_like::rejected_nullable_parameter;
 use crate::statement::function_like::unused_parameter;
 use crate::utils::missing_type_hints;
 
@@ -140,9 +141,23 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
                 artifacts.method_calls_parent_initializer.insert(method_key, parent_initializer_name);
             }
 
-            if context.settings.find_unused_parameters
-                && !context.codebase.method_is_overriding(class_like_metadata.name.as_bytes(), method_name.as_bytes())
-            {
+            let is_overriding =
+                context.codebase.method_is_overriding(class_like_metadata.name.as_bytes(), method_name.as_bytes());
+
+            // An override keeps the parameter types of the method it overrides, so only a method that declares its
+            // own parameters can drop a `?`.
+            if context.dialect.is_sharp() && !is_overriding {
+                rejected_nullable_parameter::check_rejected_nullable_parameters(
+                    context,
+                    method_metadata,
+                    self.parameter_list.parameters.as_slice(),
+                    body,
+                    &method_block_context,
+                    artifacts,
+                );
+            }
+
+            if context.settings.find_unused_parameters && !is_overriding {
                 unused_parameter::check_unused_params(
                     method_metadata,
                     self.parameter_list.parameters.as_slice(),

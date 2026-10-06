@@ -3301,6 +3301,20 @@ fn comparison_operators_are_the_kinds_php_gives_them() {
 }
 
 /// ```php
+/// $a === null; null !== $a; $a == $a;
+/// ```
+///
+/// `== null` and `!= null` test for null alone, so `0 == null` is false. `[16]` and `[17]` are `ZEND_IS_IDENTICAL` and
+/// `ZEND_IS_NOT_IDENTICAL`, and `==` between two values stays `ZEND_IS_EQUAL`, `[18]`.
+#[test]
+fn equality_with_null_is_identity() {
+    let tree = body("        let a = 1;\n        a == null;\n        null != a;\n        a == a;\n        return a;\n");
+    let operators: Vec<&str> = tree.lines().filter(|line| line.starts_with("  ") && !line.starts_with("   ")).collect();
+
+    assert_eq!(operators, ["  ASSIGN", "  BINARY_OP [16]", "  BINARY_OP [17]", "  BINARY_OP [18]", "  RETURN"]);
+}
+
+/// ```php
 /// $a && $a || !$a;
 /// ```
 ///

@@ -69,18 +69,16 @@ fn issues_in(
     analyzed: (&'static str, &'static str),
     others: &[(&'static str, &'static str)],
 ) -> Vec<String> {
-    let code = analyzed.1;
+    analyze(registry, settings, analyzed, others).iter().map(|issue| located(analyzed.1, issue)).collect()
+}
 
-    analyze(registry, settings, analyzed, others)
-        .iter()
-        .map(|issue| {
-            let offset = issue.primary_span().expect("a primary span").start.offset as usize;
-            let line = code[..offset].matches('\n').count() + 1;
-            let column = offset - code[..offset].rfind('\n').map_or(0, |newline| newline + 1) + 1;
+/// An issue of `code` as `line:column code`, at its primary span.
+fn located(code: &str, issue: &Issue) -> String {
+    let offset = issue.primary_span().expect("a primary span").start.offset as usize;
+    let line = code[..offset].matches('\n').count() + 1;
+    let column = offset - code[..offset].rfind('\n').map_or(0, |newline| newline + 1) + 1;
 
-            format!("{line}:{column} {}", issue.code.as_deref().unwrap_or("none"))
-        })
-        .collect()
+    format!("{line}:{column} {}", issue.code.as_deref().unwrap_or("none"))
 }
 
 /// Analyzes `analyzed` together with `others` under `settings` and the plugins of `registry`, and returns its issues.
@@ -1423,6 +1421,150 @@ fn plus_keeps_adding_numbers_and_rejecting_nothing_new_in_php() {
     assert_eq!(issues(("src/Demo/report.php", php), &[]), Vec::<String>::new());
 }
 
+const CUSTOMER: &str = "namespace Demo;\n\nclass Customer\n{\n    public string name { get; set; } = \"\";\n\n    public string label()\n    {\n        return this.name;\n    }\n}\n\nclass Plan\n{\n    public int price { get; set; } = 0;\n}\n";
+
+/// Analyzes `analyzed` together with `others`, and returns its errors as `line:column code`.
+fn errors(analyzed: (&'static str, &'static str), others: &[(&'static str, &'static str)]) -> Vec<String> {
+    analyze(&PLUGIN_REGISTRY, settings(), analyzed, others)
+        .iter()
+        .filter(|issue| issue.level == Level::Error)
+        .map(|issue| located(analyzed.1, issue))
+        .collect()
+}
+
+/// Spec section 14.4: a null check on a value whose type has no `?` is a compile error.
+#[test]
+fn a_null_check_on_a_value_that_is_never_null_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Billing\n{\n    public void renew(Customer customer, Plan plan, Plan? maybe)\n    {\n        const a = customer != null;\n        const b = customer == null;\n        const c = customer !== null;\n        const d = null === customer;\n        const price = plan.price ?? 0;\n        let total = plan.price;\n        total ??= 1;\n        const name = customer?.name;\n        const label = customer?.label();\n        const e = maybe ?? plan;\n        const f = maybe?.price;\n        const g = maybe !== null;\n    }\n}\n";
+
+    assert_eq!(
+        errors(("src/Demo/Billing.sharp", sharp), &[("src/Demo/Customer.sharp", CUSTOMER)]),
+        [
+            "7:19 redundant-comparison",
+            "8:19 redundant-comparison",
+            "9:19 redundant-comparison",
+            "10:28 redundant-comparison",
+            "11:23 redundant-null-coalesce",
+            "13:9 redundant-null-coalesce",
+            "14:30 redundant-nullsafe-operator",
+            "15:31 redundant-nullsafe-operator",
+        ]
+    );
+}
+
+#[test]
+fn a_null_check_on_a_value_that_is_never_null_keeps_its_php_report() {
+    let php = "<?php\n\nnamespace Demo;\n\nclass Billing\n{\n    public function renew(Customer $customer, Plan $plan, ?Plan $maybe): void\n    {\n        $a = $customer != null;\n        $b = $customer == null;\n        $c = $customer !== null;\n        $d = null === $customer;\n        $price = $plan->price ?? 0;\n        $total = $plan->price;\n        $total ??= 1;\n        $name = $customer?->name;\n        $label = $customer?->label();\n        $e = $maybe ?? $plan;\n        $f = $maybe?->price;\n        $g = $maybe !== null;\n    }\n}\n";
+
+    let levelled: Vec<_> =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Billing.php", php), &[("src/Demo/Customer.sharp", CUSTOMER)])
+            .iter()
+            .map(|issue| format!("{} {:?}", located(php, issue), issue.level))
+            .collect();
+
+    assert_eq!(
+        levelled,
+        [
+            "9:27 null-operand Error",
+            "9:14 impossible-null-type-comparison Warning",
+            "10:27 null-operand Error",
+            "10:14 impossible-null-type-comparison Warning",
+            "11:14 redundant-comparison Help",
+            "11:14 impossible-null-type-comparison Warning",
+            "12:14 redundant-comparison Help",
+            "12:14 impossible-null-type-comparison Warning",
+            "13:18 redundant-null-coalesce Help",
+            "15:9 redundant-null-coalesce Help",
+            "16:26 redundant-nullsafe-operator Help",
+        ]
+    );
+}
+
+/// `== null` and `!= null` run as PHP's `=== null` and `!== null`, so they test for null alone and are no loose
+/// comparison with `null`.
+#[test]
+fn equality_with_null_tests_for_null_with_no_operand_issue() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(int? extra)\n    {\n        if (extra != null) {\n            return extra;\n        }\n        return 0;\n    }\n\n    public static bool missing(int? extra)\n    {\n        return null == extra;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// Spec section 14.4: a method that never returns null drops the `?` from its return type. A method a subclass may
+/// override keeps it, because the override may return null.
+#[test]
+fn a_nullable_return_type_on_a_method_that_never_returns_null_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Ledger\n{\n    private Customer customer;\n\n    public Ledger(Customer customer)\n    {\n        this.customer = customer;\n    }\n\n    public Customer? owner(bool known)\n    {\n        if (known) {\n            return this.cached();\n        }\n        return this.find(known);\n    }\n\n    private Customer? cached()\n    {\n        return this.customer;\n    }\n\n    private Customer? find(bool known)\n    {\n        if (known) {\n            return this.customer;\n        }\n        return null;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Ledger\n{\n    public function __construct(private Customer $customer)\n    {\n    }\n\n    public function owner(): ?Customer\n    {\n        return $this->cached();\n    }\n\n    private function cached(): ?Customer\n    {\n        return $this->customer;\n    }\n}\n";
+
+    assert_eq!(
+        errors(("src/Demo/Ledger.sharp", sharp), &[("src/Demo/Customer.sharp", CUSTOMER)]),
+        ["20:13 overly-wide-return-type"]
+    );
+    assert_eq!(issues(("src/Demo/Ledger.php", php), &[("src/Demo/Customer.sharp", CUSTOMER)]), Vec::<String>::new());
+
+    let help = analyze(
+        &PLUGIN_REGISTRY,
+        settings(),
+        ("src/Demo/Ledger.sharp", sharp),
+        &[("src/Demo/Customer.sharp", CUSTOMER)],
+    )
+    .into_iter()
+    .find(|issue| issue.code.as_deref() == Some("overly-wide-return-type"))
+    .and_then(|issue| issue.help);
+    assert_eq!(help.as_deref(), Some("Remove `null` from the return type, giving `Customer`."));
+}
+
+/// A PHP# method is closed unless it is `virtual` or an `override`, spec section 22, so a public method drops a `?`
+/// that it never returns, as a `final override` does. A `virtual` method and an open `override` keep it.
+#[test]
+fn a_closed_method_drops_a_nullable_return_type_and_an_open_one_keeps_it() {
+    let sharp = "namespace Demo;\n\npublic class Source\n{\n    public Customer? owner(Customer customer)\n    {\n        return customer;\n    }\n\n    public Customer? first(Customer customer) => customer;\n\n    public virtual Customer? fallback(Customer customer)\n    {\n        return customer;\n    }\n}\n\npublic class Archive : Source\n{\n    public override Customer? fallback(Customer customer)\n    {\n        return customer;\n    }\n}\n\npublic class Vault : Archive\n{\n    public final override Customer? fallback(Customer customer)\n    {\n        return customer;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Source\n{\n    final public function owner(Customer $customer): ?Customer\n    {\n        return $customer;\n    }\n\n    final public function first(Customer $customer): ?Customer\n    {\n        return $customer;\n    }\n\n    public function fallback(Customer $customer): ?Customer\n    {\n        return $customer;\n    }\n}\n\nclass Archive extends Source\n{\n    #[\\Override]\n    public function fallback(Customer $customer): ?Customer\n    {\n        return $customer;\n    }\n}\n\nclass Vault extends Archive\n{\n    #[\\Override]\n    final public function fallback(Customer $customer): ?Customer\n    {\n        return $customer;\n    }\n}\n";
+
+    assert_eq!(
+        errors(("src/Demo/Source.sharp", sharp), &[("src/Demo/Customer.sharp", CUSTOMER)]),
+        ["5:12 overly-wide-return-type", "10:12 overly-wide-return-type", "28:27 overly-wide-return-type"]
+    );
+    assert_eq!(issues(("src/Demo/Source.php", php), &[("src/Demo/Customer.sharp", CUSTOMER)]), Vec::<String>::new());
+}
+
+#[test]
+fn an_abstract_method_keeps_its_nullable_return_type() {
+    let sharp = "namespace Demo;\n\nabstract class Source\n{\n    public abstract Customer? current();\n}\n";
+
+    assert_eq!(
+        errors(("src/Demo/Source.sharp", sharp), &[("src/Demo/Customer.sharp", CUSTOMER)]),
+        Vec::<String>::new()
+    );
+}
+
+/// Spec section 14.4: a nullable parameter that the method rejects on every path drops its `?`, and the caller checks.
+#[test]
+fn a_nullable_parameter_the_method_rejects_on_every_path_is_an_error() {
+    let sharp = "namespace Demo;\n\nimport RuntimeException;\n\nclass Billing\n{\n    public void notify(Customer? customer)\n    {\n        Customer c = customer ?? throw new RuntimeException(\"none\");\n    }\n\n    public string remind(Customer? customer)\n    {\n        if (customer === null) {\n            throw new RuntimeException(\"none\");\n        }\n        return customer.name;\n    }\n\n    public int discount(Plan? plan)\n    {\n        return plan?.price ?? 0;\n    }\n\n    public void log(Customer? customer, bool loud)\n    {\n        if (loud) {\n            Customer c = customer ?? throw new RuntimeException(\"none\");\n        }\n    }\n\n    public string greet(Customer? customer)\n    {\n        const name = customer?.name;\n        Customer c = customer ?? throw new RuntimeException(\"none\");\n        return c.name;\n    }\n\n    public Customer verify(Customer? customer) => customer ?? throw new RuntimeException(\"none\");\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse RuntimeException;\n\nclass Billing\n{\n    public function notify(?Customer $customer): void\n    {\n        $c = $customer ?? throw new RuntimeException(\"none\");\n    }\n}\n";
+
+    assert_eq!(
+        errors(("src/Demo/Billing.sharp", sharp), &[("src/Demo/Customer.sharp", CUSTOMER)]),
+        ["7:24 rejected-nullable-parameter", "12:26 rejected-nullable-parameter", "39:28 rejected-nullable-parameter"]
+    );
+    assert!(
+        !codes(&issues(("src/Demo/Billing.php", php), &[("src/Demo/Customer.sharp", CUSTOMER)]))
+            .contains(&"rejected-nullable-parameter")
+    );
+
+    let help = analyze(
+        &PLUGIN_REGISTRY,
+        settings(),
+        ("src/Demo/Billing.sharp", sharp),
+        &[("src/Demo/Customer.sharp", CUSTOMER)],
+    )
+    .into_iter()
+    .find(|issue| issue.code.as_deref() == Some("rejected-nullable-parameter"))
+    .and_then(|issue| issue.help);
+    assert_eq!(help.as_deref(), Some("Declare `customer` as `Customer`, and check for null where the value enters."));
+}
+
 /// Each hook event, with the spans of the call's class, method, arguments and whole call.
 type StaticCallEvents = Vec<(&'static str, [Span; 4])>;
 
@@ -1786,6 +1928,14 @@ fn is_and_match_check_an_any_before_its_use() {
     assert_eq!(issues(("src/Demo/Inbox.sharp", sharp), &[("src/Demo/Source.php", SOURCE)]), Vec::<String>::new());
 }
 
+/// `== null` runs as `=== null` in PHP#, so it checks an `Any?`, and on an `Any`, which is never null, it is redundant.
+#[test]
+fn equality_with_null_checks_an_any_nullable_and_is_redundant_on_an_any() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public bool missing(Any? value) => value == null;\n\n    public bool gone(Any value) => value == null;\n}\n";
+
+    assert_eq!(issues(("src/Demo/Inbox.sharp", sharp), &[]), ["7:36 redundant-comparison"]);
+}
+
 /// An accessor of an `Any?` property takes and gives null, and one of an `Any` property gives any value but null.
 #[test]
 fn an_accessor_of_any_gives_no_null_and_of_any_nullable_does() {
@@ -1876,7 +2026,7 @@ fn written_errors(sharp: &'static str, issues: &[Issue]) -> Vec<String> {
 
 #[test]
 fn a_match_without_default_names_the_enum_cases_it_misses() {
-    let sharp = "namespace Demo;\n\nimport Lib.Limits;\nimport Lib.Status;\n\nclass Report\n{\n    public static string label(Status status) => match (status) {\n        Status.Open => \"open\",\n        Status.Closed => \"closed\",\n    };\n\n    public static void close(Status? status)\n    {\n        match (status) {\n            Status.Open when status !== null => {},\n            Status.Closed => {},\n        }\n    }\n\n    public static int level(int count) => match (count) {\n        Limits.LOW => 1,\n        Limits.HIGH => 2,\n    };\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Limits;\nimport Lib.Status;\n\nclass Report\n{\n    public static string label(Status status) => match (status) {\n        Status.Open => \"open\",\n        Status.Closed => \"closed\",\n    };\n\n    public static void close(Status? status, bool forced)\n    {\n        match (status) {\n            Status.Open when forced == true => {},\n            Status.Closed => {},\n        }\n    }\n\n    public static int level(int count) => match (count) {\n        Limits.LOW => 1,\n        Limits.HIGH => 2,\n    };\n}\n";
 
     let issues =
         analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Status.php", TICKETS)]);

@@ -70,8 +70,13 @@ where
     let lhs_type = artifacts.get_rc_expression_type(&binary.lhs).unwrap_or(&fallback_type);
     let rhs_type = artifacts.get_rc_expression_type(&binary.rhs).unwrap_or(&fallback_type);
 
-    check_comparison_operand(context, binary.lhs, lhs_type, rhs_type, "Left", &binary.operator);
-    check_comparison_operand(context, binary.rhs, rhs_type, lhs_type, "Right", &binary.operator);
+    // A PHP# `== null` runs as `=== null`, so it is no loose comparison with `null`.
+    let runs_as_identity =
+        binary.operator.is_identity() || (context.dialect.is_sharp() && binary.is_equality_with_null());
+    if !runs_as_identity {
+        check_comparison_operand(context, binary.lhs, lhs_type, rhs_type, "Left", &binary.operator);
+        check_comparison_operand(context, binary.rhs, rhs_type, lhs_type, "Right", &binary.operator);
+    }
 
     if context.settings.no_boolean_literal_comparison
         // Only consider equality/inequality operators.
@@ -202,6 +207,14 @@ where
 
     let result_type = if reported_general_invalid_operand {
         get_bool()
+    } else if context.dialect.is_sharp()
+        && let Some((operand, operand_type)) = get_never_null_operand_compared_with_null(binary, lhs_type, rhs_type)
+    {
+        if !block_context.flags.inside_loop_expressions() {
+            report_redundant_null_comparison(context, binary, operand, operand_type);
+        }
+
+        if binary.operator.is_negated_equality() { get_true() } else { get_false() }
     } else {
         match binary.operator {
             BinaryOperator::LessThan(_) => {
@@ -541,10 +554,6 @@ fn check_comparison_operand<'ast, 'arena, A>(
 ) where
     A: Arena,
 {
-    if operator.is_identity() {
-        return;
-    }
-
     let op_str = BytesDisplay(operator.as_bytes());
 
     if operand_type.is_null() {
@@ -609,6 +618,67 @@ fn check_comparison_operand<'ast, 'arena, A>(
 fn compares_by_value(atomic: &TAtomic) -> bool {
     matches!(atomic, TAtomic::Scalar(TScalar::String(_) | TScalar::Integer(_) | TScalar::Float(_)) | TAtomic::Array(_))
         || atomic.is_enum()
+}
+
+/// The operand that `==`, `!=`, `===` or `!==` compares with `null` when its type cannot be `null`, as in
+/// `customer != null` on a `Customer`.
+fn get_never_null_operand_compared_with_null<'ast, 'arena, 'types>(
+    binary: &'ast Binary<'arena>,
+    lhs_type: &'types TUnion,
+    rhs_type: &'types TUnion,
+) -> Option<(&'ast Expression<'arena>, &'types TUnion)> {
+    if !matches!(
+        binary.operator,
+        BinaryOperator::Equal(_)
+            | BinaryOperator::NotEqual(_)
+            | BinaryOperator::Identical(_)
+            | BinaryOperator::NotIdentical(_)
+    ) {
+        return None;
+    }
+
+    let is_never_null = |operand_type: &TUnion| {
+        !operand_type.can_be_null() && !operand_type.possibly_undefined() && !operand_type.is_never()
+    };
+
+    if rhs_type.is_null() && is_never_null(lhs_type) {
+        Some((binary.lhs, lhs_type))
+    } else if lhs_type.is_null() && is_never_null(rhs_type) {
+        Some((binary.rhs, rhs_type))
+    } else {
+        None
+    }
+}
+
+fn report_redundant_null_comparison<'arena, A>(
+    context: &mut Context<'_, 'arena, A>,
+    binary: &Binary<'arena>,
+    operand: &Expression<'arena>,
+    operand_type: &TUnion,
+) where
+    A: Arena,
+{
+    let operator_span = binary.operator.span();
+    if operator_span.is_zero() {
+        // this is a synthetic node, do not report it.
+        return;
+    }
+
+    let operand_type_str = operand_type.get_id();
+    let issue = context.as_null_check_error(
+        Issue::help(format!(
+            "Redundant `{}` comparison: `{operand_type_str}` is never `null`.",
+            BytesDisplay(binary.operator.as_bytes())
+        ))
+        .with_annotation(
+            Annotation::primary(operand.span())
+                .with_message(format!("This is `{operand_type_str}`, which is never `null`")),
+        )
+        .with_annotation(Annotation::secondary(operator_span).with_message("This null check cannot matter"))
+        .with_help("Remove the null check."),
+    );
+
+    context.collector.report_with_code(IssueCode::RedundantComparison, issue);
 }
 
 /// Helper to report redundant comparison issues.
