@@ -1747,7 +1747,7 @@ fn a_call_on_a_static_call_result_is_an_instance_call() {
 fn literals_are_zvals_of_their_php_value() {
     assert_eq!(
         body(
-            "        let a = \"line\\n\";\n        let b = 'raw\\n';\n        let c = 1.5;\n        let d = 0x10;\n        let e = 9223372036854775808;\n        let f = true;\n        let g = false;\n        let h = null;\n        return 1;\n"
+            "        let a = \"line\\n\";\n        let b = 'raw\\n';\n        let c = 1.5;\n        let d = 0x10;\n        let e = 9223372036854775808;\n        let f = true;\n        let g = false;\n        string? h = null;\n        return 1;\n"
         ),
         indoc! {r#"
             STMT_LIST

@@ -1340,6 +1340,15 @@ fn an_empty_literal_needs_a_type() {
 }
 
 #[test]
+fn a_null_start_needs_a_type() {
+    let code = leak(method(
+        "        let value = null;\n        const other = null;\n        string? kept = null;\n        let either = extra > 1 ? null : 1;\n        return 1;\n",
+    ));
+
+    assert_eq!(issues(code), ["7:21 A null start needs a type: write `T? value = null`."]);
+}
+
+#[test]
 fn a_type_with_type_arguments_other_than_list_or_map_is_not_supported_yet() {
     let code = "class Report\n{\n    public List<void> run(Set<string> a, List<int, int> b, Map<string> c, Paged<Line> d)\n    {\n        return [];\n    }\n}\n";
 

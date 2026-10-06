@@ -191,6 +191,15 @@ fn a_let_local_keeps_the_type_of_its_first_value_where_php_changes_it() {
     assert_eq!(issues(("src/Demo/Report.php", php), &[]), ["11:16 invalid-return-statement"]);
 }
 
+/// The semantic checks refuse a `let` that starts as `null` without a written type, so a later value adds no second
+/// error naming the `null` type.
+#[test]
+fn a_later_value_of_an_untyped_null_start_adds_no_issue() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total()\n    {\n        let value = null;\n        value = 5;\n        return value;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
+}
+
 /// A `let`'s first value fixes its general type: a literal widens to its scalar type, and a list or map literal to a
 /// `List<T>` or `Map<TKey, TValue>` of any length, so the local takes any value of that type and a collection method
 /// checks its arguments against it.

@@ -347,9 +347,10 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for LocalDeclaration<'arena> {
                 block_context.locals.insert(variable_id, local_type);
             }
             // A local without a written type takes its first value's general type, as C#'s `var` and TypeScript's
-            // `let` do. An empty literal has none, and the semantic checks refuse it.
+            // `let` do. `null` and an empty literal have none, and the semantic checks refuse them.
             None => {
                 if let Some(first_value) = block_context.locals.get(&variable_id)
+                    && !first_value.is_null()
                     && !first_value
                         .types
                         .iter()
