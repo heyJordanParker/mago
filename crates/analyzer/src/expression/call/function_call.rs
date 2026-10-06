@@ -121,8 +121,11 @@ where
             && let Some(metadata) = t.get_function_like_metadata()
         {
             let span = function_name.span();
-            if context.dialect.is_sharp() && !metadata.flags.is_built_in() {
-                report_declared_function_call(context, metadata.original_name, span);
+            if context.dialect.is_sharp()
+                && let Some(FunctionLikeIdentifier::Function(resolved)) = t.get_function_like_identifier()
+                && resolved.as_bytes().contains(&b'\\')
+            {
+                report_namespaced_function_call(context, *resolved, span);
             }
 
             crate::utils::casing::check_function_casing_with_metadata(context, metadata, name, span);
@@ -224,17 +227,18 @@ where
     Ok((targets, encountered_invalid_targets))
 }
 
-/// Spec section 8 lets PHP# call PHP's built-in functions. A function a library or the app declares waits on spec
-/// section 29, so calling one is not supported yet.
-fn report_declared_function_call<A>(context: &mut Context<'_, '_, A>, name: Word, span: Span)
+/// Spec sections 8 and 29 let PHP# call any plain PHP function, and the engine calls a bare name as the global
+/// function. A call that resolves to a namespaced function would run another function than the one checked, so it
+/// is not supported yet.
+fn report_namespaced_function_call<A>(context: &mut Context<'_, '_, A>, name: Word, span: Span)
 where
     A: Arena,
 {
     context.collector.report_with_code(
         IssueCode::NotSupportedYet,
-        Issue::error(format!("Calling the function `{name}` is not supported yet in PHP#."))
-            .with_annotation(Annotation::primary(span).with_message("Declared outside PHP's built-in functions."))
-            .with_note("PHP# calls PHP's built-in functions, such as `count` and `sprintf`, by their bare names."),
+        Issue::error(format!("Calling the namespaced function `{name}` is not supported yet in PHP#."))
+            .with_annotation(Annotation::primary(span).with_message("Resolves to a function inside a namespace."))
+            .with_note("PHP# calls global functions, such as `count` and Laravel's `now`, by their bare names."),
     );
 }
 

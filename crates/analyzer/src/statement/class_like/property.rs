@@ -131,7 +131,11 @@ fn analyze_default_value<'ctx, 'arena, A>(
 where
     A: Arena,
 {
-    value.analyze(context, block_context, artifacts)?;
+    if value.is_constant(&context.settings.version, false) {
+        block_context.in_constant_expression(|block_context| value.analyze(context, block_context, artifacts))?;
+    } else {
+        value.analyze(context, block_context, artifacts)?;
+    }
 
     if let Some(class_metadata) = block_context.scope.get_class_like()
         && let Some(property_metadata) = class_metadata.properties.get(&php_variable_name(variable_name))

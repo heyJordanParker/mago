@@ -7,7 +7,6 @@ use mago_codex::ttype::get_never;
 use mago_codex::ttype::get_null;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::StaticPropertyAccess;
-use mago_syntax::cst::Variable;
 use mago_word::word;
 
 use crate::analyzable::Analyzable;
@@ -15,6 +14,7 @@ use crate::artifacts::AnalysisArtifacts;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::resolver::static_property::StaticProperty;
 use crate::resolver::static_property::resolve_static_properties;
 use crate::utils::expression::get_static_property_access_expression_id;
 
@@ -28,88 +28,103 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for StaticPropertyAccess<'arena> {
     where
         A: Arena,
     {
-        let property_access_id = get_static_property_access_expression_id(
-            self.class,
-            &self.property,
-            block_context.scope.get_class_like_name(),
-            context.resolved_names,
-            Some(context.codebase),
-        );
-
-        if context.settings.memoize_properties
-            && let Some(property_access_id) = &property_access_id
-            && let Some(existing_type) = block_context.locals.get(property_access_id).cloned()
-        {
-            add_memoized_static_property_reference(context, block_context, artifacts, self.class, &self.property)?;
-            artifacts.set_rc_expression_type(self, existing_type);
-
-            return Ok(());
-        }
-
-        let resolution_result =
-            resolve_static_properties(context, block_context, artifacts, self.class, &self.property)?;
-
-        let mut resulting_expression_type = None;
-        if !resolution_result.has_error_path {
-            for resolved_property in resolution_result.properties {
-                if let Some(declaring_class_id) = resolved_property.declaring_class_id {
-                    artifacts.symbol_references.add_reference_for_property_read(
-                        &block_context.scope,
-                        declaring_class_id,
-                        resolved_property.property_name,
-                    );
-                }
-
-                resulting_expression_type = Some(add_optional_union_type(
-                    resolved_property.property_type,
-                    resulting_expression_type.as_ref(),
-                    context.codebase,
-                ));
-            }
-
-            if resolution_result.has_ambiguous_path
-                || resolution_result.encountered_mixed
-                || resolution_result.has_possibly_defined_property
-            {
-                resulting_expression_type =
-                    Some(add_optional_union_type(get_mixed(), resulting_expression_type.as_ref(), context.codebase));
-            }
-
-            if resolution_result.has_invalid_path || resolution_result.encountered_null {
-                resulting_expression_type =
-                    Some(add_optional_union_type(get_null(), resulting_expression_type.as_ref(), context.codebase));
-            }
-        }
-
-        let resulting_type = Rc::new(resulting_expression_type.unwrap_or_else(get_never));
-        if let Some(property_access_id) = property_access_id {
-            block_context.locals.insert(property_access_id, Rc::clone(&resulting_type));
-        }
-
-        artifacts.set_rc_expression_type(self, resulting_type);
-
-        Ok(())
+        analyze_static_property_access(
+            context,
+            block_context,
+            artifacts,
+            StaticProperty::from_static_property_access(self),
+        )
     }
 }
 
-/// Adds symbol reference for a memoized static property access.
-fn add_memoized_static_property_reference<'ctx, 'ast, 'arena, A>(
-    context: &Context<'ctx, 'arena, A>,
-    block_context: &BlockContext<'ctx>,
+/// Analyzes a read of a static property, written `Class::$name` in PHP or `Class.name` in PHP#.
+pub(crate) fn analyze_static_property_access<'ctx, 'arena, A>(
+    context: &mut Context<'ctx, 'arena, A>,
+    block_context: &mut BlockContext<'ctx>,
     artifacts: &mut AnalysisArtifacts,
-    class: &'ast Expression<'arena>,
-    property: &'ast Variable<'arena>,
+    access: StaticProperty<'_, 'arena>,
 ) -> Result<(), AnalysisError>
 where
     A: Arena,
 {
-    let property_name = match property {
-        Variable::Direct(var) => word(var.name),
-        _ => return Ok(()),
+    let property_access_id = get_static_property_access_expression_id(
+        access,
+        block_context.scope.get_class_like_name(),
+        context.resolved_names,
+        Some(context.codebase),
+    );
+
+    if context.settings.memoize_properties
+        && let Some(property_access_id) = &property_access_id
+        && let Some(existing_type) = block_context.locals.get(property_access_id).cloned()
+    {
+        add_memoized_static_property_reference(context, block_context, artifacts, access)?;
+        artifacts.set_rc_expression_type(&access.span, existing_type);
+
+        return Ok(());
+    }
+
+    let resolution_result = resolve_static_properties(context, block_context, artifacts, access)?;
+
+    let mut resulting_expression_type = None;
+    if !resolution_result.has_error_path {
+        for resolved_property in resolution_result.properties {
+            if let Some(declaring_class_id) = resolved_property.declaring_class_id {
+                artifacts.symbol_references.add_reference_for_property_read(
+                    &block_context.scope,
+                    declaring_class_id,
+                    resolved_property.property_name,
+                );
+            }
+
+            resulting_expression_type = Some(add_optional_union_type(
+                resolved_property.property_type,
+                resulting_expression_type.as_ref(),
+                context.codebase,
+            ));
+        }
+
+        if resolution_result.has_ambiguous_path
+            || resolution_result.encountered_mixed
+            || resolution_result.has_possibly_defined_property
+        {
+            resulting_expression_type =
+                Some(add_optional_union_type(get_mixed(), resulting_expression_type.as_ref(), context.codebase));
+        }
+
+        if resolution_result.has_invalid_path || resolution_result.encountered_null {
+            resulting_expression_type =
+                Some(add_optional_union_type(get_null(), resulting_expression_type.as_ref(), context.codebase));
+        }
+    }
+
+    let resulting_type = Rc::new(resulting_expression_type.unwrap_or_else(get_never));
+    if let Some(property_access_id) = property_access_id {
+        block_context.locals.insert(property_access_id, Rc::clone(&resulting_type));
+    }
+
+    artifacts.set_rc_expression_type(&access.span, resulting_type);
+
+    Ok(())
+}
+
+/// Adds symbol reference for a memoized static property access.
+fn add_memoized_static_property_reference<'ctx, 'arena, A>(
+    context: &Context<'ctx, 'arena, A>,
+    block_context: &BlockContext<'ctx>,
+    artifacts: &mut AnalysisArtifacts,
+    access: StaticProperty<'_, 'arena>,
+) -> Result<(), AnalysisError>
+where
+    A: Arena,
+{
+    let Some(property_name) = access.name.direct_name() else {
+        return Ok(());
     };
 
-    let class_name = match class.unparenthesized() {
+    let class_name = match access.class.unparenthesized() {
         Expression::Identifier(ident) => word(context.resolved_names.get(ident)),
+        Expression::ConstantAccess(class) => word(context.resolved_names.get(&class.name)),
         Expression::Self_(_) | Expression::Parent(_) | Expression::Static(_) => {
             block_context.scope.get_class_like_name().unwrap_or_else(|| word(""))
         }

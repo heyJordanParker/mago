@@ -1236,6 +1236,414 @@ fn new_creates_the_imported_class_by_its_full_name() {
     );
 }
 
+/// PHP has no class visibility, so a `public` class is the same class.
+#[test]
+fn a_public_class_is_a_class() {
+    let public = Lowered::new("namespace App.Tenant;\n\npublic class Report\n{\n}\n");
+    let internal = Lowered::new("namespace App.Tenant;\n\nclass Report\n{\n}\n");
+
+    assert_eq!(public.tree(), internal.tree());
+}
+
+/// ```php
+/// abstract class Shape { abstract public function area(): float; }
+/// final class Unit { }
+/// interface Measured { public function label(int $digits): string; }
+/// ```
+///
+/// `[64]` is `ZEND_ACC_EXPLICIT_ABSTRACT_CLASS` on the class and `ZEND_ACC_ABSTRACT` on the method, `[32]`
+/// `ZEND_ACC_FINAL`, `[1]` `ZEND_ACC_INTERFACE` on the interface, and an interface method is `ZEND_ACC_PUBLIC`, `[1]`,
+/// as php-src's grammar writes it. An abstract method has no statement list.
+#[test]
+fn abstract_and_final_classes_and_interfaces_are_class_declarations_with_their_flags() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nabstract class Shape\n{\n    public abstract float area();\n}\n\nfinal class Unit\n{\n}\n\ninterface Measured\n{\n    string label(int digits);\n}\n",
+    );
+
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              NAMESPACE
+                ZVAL "App\\Tenant"
+                null
+              CLASS [64] "Shape" @3-6
+                null
+                null
+                STMT_LIST
+                  METHOD [65] "area" @5-5
+                    PARAM_LIST
+                    null
+                    null
+                    ZVAL [1] "float"
+                    null
+                null
+                null
+              CLASS [32] "Unit" @8-10
+                null
+                null
+                STMT_LIST
+                null
+                null
+              CLASS [1] "Measured" @12-15
+                null
+                null
+                STMT_LIST
+                  METHOD [1] "label" @14-14
+                    PARAM_LIST
+                      PARAM
+                        ZVAL [1] "int"
+                        ZVAL "digits"
+                        null
+                        null
+                        null
+                        null
+                    null
+                    null
+                    ZVAL [1] "string"
+                    null
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// interface Linkable extends \Lib\Named { }
+/// class Page implements \Lib\Entity, \App\Tenant\Linkable { }
+/// ```
+///
+/// The header names are a name list in the interface list, with `ZEND_NAME_FQ`, which is 0. A class's header can
+/// hold its parent class, which only `zend_do_link_class` can tell from the interfaces, so the class carries
+/// php-sharp's `ZEND_ACC_PARENT_IN_INTERFACES`, `[2147483648]`, `1 << 31`. An interface's header holds only
+/// interfaces, as PHP's `extends` list does.
+#[test]
+fn a_header_is_the_interface_name_list_and_marks_a_class_to_find_its_parent_there() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Entity;\nimport Lib.Named;\n\ninterface Linkable : Named\n{\n}\n\nclass Page : Entity, Linkable\n{\n}\n",
+    );
+
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              NAMESPACE
+                ZVAL "App\\Tenant"
+                null
+              CLASS [1] "Linkable" @6-8
+                null
+                NAME_LIST
+                  ZVAL "Lib\\Named"
+                STMT_LIST
+                null
+                null
+              CLASS [2147483648] "Page" @10-12
+                null
+                NAME_LIST
+                  ZVAL "Lib\\Entity"
+                  ZVAL "App\\Tenant\\Linkable"
+                STMT_LIST
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// public function size(): int { return 1; }
+/// #[\Override] public function name(): string { return 'thumbnail'; }
+/// ```
+///
+/// `virtual` lowers to nothing, because PHP methods are open to overriding, and `override` lowers to `#[\Override]`,
+/// so PHP checks at link time that a parent method exists. Its attribute group follows the method's own.
+#[test]
+fn virtual_lowers_to_nothing_and_override_to_the_override_attribute() {
+    let lowered = Lowered::new(
+        "class Thumbnail : Image\n{\n    public virtual int size()\n    {\n        return 1;\n    }\n\n    [Deprecated]\n    public override string name()\n    {\n        return \"thumbnail\";\n    }\n}\n",
+    );
+
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              CLASS [2147483648] "Thumbnail" @1-13
+                null
+                NAME_LIST
+                  ZVAL "Image"
+                STMT_LIST
+                  METHOD [1] "size" @3-6
+                    PARAM_LIST
+                    null
+                    STMT_LIST
+                      RETURN
+                        ZVAL 1
+                    ZVAL [1] "int"
+                    null
+                  METHOD [1] "name" @9-12
+                    PARAM_LIST
+                    null
+                    STMT_LIST
+                      RETURN
+                        ZVAL "thumbnail"
+                    ZVAL [1] "string"
+                    ATTRIBUTE_LIST
+                      ATTRIBUTE_GROUP
+                        ATTRIBUTE
+                          ZVAL "Deprecated"
+                          null
+                      ATTRIBUTE_GROUP
+                        ATTRIBUTE
+                          ZVAL "Override"
+                          null
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// return parent::size(2);
+/// ```
+///
+/// `super` is `parent`, a name php-src writes with `ZEND_NAME_NOT_FQ`, which is 1, so the call is a static call that
+/// runs on the parent class.
+#[test]
+fn super_calls_are_static_calls_on_parent() {
+    assert_eq!(
+        body("        return super.size(2);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                STATIC_CALL
+                  ZVAL [1] "parent"
+                  ZVAL "size"
+                  ARG_LIST
+                    ZVAL 2
+        "#}
+    );
+}
+
+/// ```php
+/// return \Lib\Calc::class;
+/// ```
+///
+/// The class is its full name with `ZEND_NAME_FQ`, which is 0.
+#[test]
+fn typeof_is_the_class_name_of_the_imported_class() {
+    assert_eq!(
+        body("        return typeof(Calc);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CLASS_NAME
+                  ZVAL "Lib\\Calc"
+        "#}
+    );
+}
+
+/// ```php
+/// #[\Lib\Access(\Lib\Calc::class, role: \App\Tenant\Report::class)]
+/// class Report
+/// ```
+///
+/// `typeof(X)` in an attribute argument is the class name, which PHP takes as a constant expression.
+#[test]
+fn typeof_in_an_attribute_argument_is_the_class_name() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Access;\nimport Lib.Calc;\n\n[Access(typeof(Calc), role: typeof(Report))]\nclass Report\n{\n}\n",
+    );
+
+    assert_eq!(
+        lowered.render(lowered.child(lowered.child(lowered.unit().root, 2), 3)),
+        indoc! {r#"
+            ATTRIBUTE_LIST
+              ATTRIBUTE_GROUP
+                ATTRIBUTE
+                  ZVAL "Lib\\Access"
+                  ARG_LIST
+                    CLASS_NAME
+                      ZVAL "Lib\\Calc"
+                    NAMED_ARG
+                      ZVAL "role"
+                      CLASS_NAME
+                        ZVAL "App\\Tenant\\Report"
+        "#}
+    );
+}
+
+/// ```php
+/// public const int MAX = 3;
+/// protected const LIMIT = PHP_INT_MAX - 1;
+/// ```
+///
+/// A constant is a class constant group of one constant, as php-src's grammar builds it: the constant list, no
+/// attributes, then the type. `[1]` and `[2]` on the groups are `ZEND_ACC_PUBLIC` and `ZEND_ACC_PROTECTED`.
+#[test]
+fn a_class_constant_is_a_class_constant_group_of_one_constant() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public const int MAX = 3;\n    protected const LIMIT = PHP_INT_MAX - 1;\n}\n",
+    );
+    let class = lowered.child(lowered.unit().root, 2);
+
+    assert_eq!(
+        lowered.render(lowered.child(class, 2)),
+        indoc! {r#"
+            STMT_LIST
+              CLASS_CONST_GROUP [1]
+                CLASS_CONST_DECL
+                  CONST_ELEM
+                    ZVAL "MAX"
+                    ZVAL 3
+                    null
+                null
+                ZVAL [1] "int"
+              CLASS_CONST_GROUP [2]
+                CLASS_CONST_DECL
+                  CONST_ELEM
+                    ZVAL "LIMIT"
+                    BINARY_OP [2]
+                      CONST
+                        ZVAL [1] "PHP_INT_MAX"
+                      ZVAL 1
+                    null
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// private static int $made = 0;
+/// public private(set) static string $last = "none";
+/// ```
+///
+/// A static member's initial value is constant, so it is the default. `[20]` is `ZEND_ACC_PRIVATE | ZEND_ACC_STATIC`,
+/// and `[4113]` is `ZEND_ACC_PUBLIC | ZEND_ACC_STATIC | ZEND_ACC_PRIVATE_SET`.
+#[test]
+fn a_static_field_or_property_is_a_static_property_group() {
+    let lowered = Lowered::new(
+        "class Report\n{\n    private static int made = 0;\n    public static string last { get; private set; } = \"none\";\n}\n",
+    );
+    let groups: Vec<(u32, String)> = lowered
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.kind == sharp_kind::SHARP_AST_PROP_GROUP)
+        .map(|(index, node)| (node.attr, lowered.render(lowered.child(index as u32, 1))))
+        .collect();
+
+    assert_eq!(
+        groups,
+        [
+            (20, "PROP_DECL\n  PROP_ELEM\n    ZVAL \"made\"\n    ZVAL 0\n    null\n    null\n".to_owned()),
+            (4113, "PROP_DECL\n  PROP_ELEM\n    ZVAL \"last\"\n    ZVAL \"none\"\n    null\n    null\n".to_owned()),
+        ]
+    );
+}
+
+/// ```php
+/// \Lib\Calc::$rate = 2;
+/// \Lib\Calc::$count++;
+/// \Lib\Calc::$rate ??= 1;
+/// ```
+///
+/// A static member written through its class is a static property, as php-src's grammar builds `Class::$name`. The
+/// class is its full name with `ZEND_NAME_FQ`, which is 0.
+#[test]
+fn a_static_member_written_through_its_class_is_a_static_property() {
+    assert_eq!(
+        body("        Calc.rate = 2;\n        Calc.count++;\n        Calc.rate ??= 1;\n        return 1;\n"),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                STATIC_PROP
+                  ZVAL "Lib\\Calc"
+                  ZVAL "rate"
+                ZVAL 2
+              POST_INC
+                STATIC_PROP
+                  ZVAL "Lib\\Calc"
+                  ZVAL "count"
+              ASSIGN_COALESCE
+                STATIC_PROP
+                  ZVAL "Lib\\Calc"
+                  ZVAL "rate"
+                ZVAL 1
+              RETURN
+                ZVAL 1
+        "#}
+    );
+}
+
+/// ```php
+/// #[\Lib\Field(\Lib\Mode::Write)] public const int MAX = \Lib\Calc::MAX;
+/// private \Lib\Mode $mode = \Lib\Mode::Read;
+/// public function run(\Lib\Mode $extra = \Lib\Mode::Read)
+/// ```
+///
+/// PHP evaluates a constant expression without the static property fallback, so a class member read in a constant's
+/// value, a constant initial value, a parameter default and an attribute argument is an unmarked class constant.
+#[test]
+fn a_class_member_read_in_a_constant_expression_is_an_unmarked_class_constant() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\nimport Lib.Field;\nimport Lib.Mode;\n\nclass Report\n{\n    public const int MAX = Calc.MAX;\n    private Mode mode = Mode.Read;\n\n    [Field(Mode.Write)]\n    public int run(Mode extra = Mode.Read)\n    {\n        return 1;\n    }\n}\n",
+    );
+
+    let class_constants = lowered
+        .nodes()
+        .iter()
+        .filter(|node| node.kind == sharp_kind::SHARP_AST_CLASS_CONST)
+        .map(|node| node.attr)
+        .collect::<Vec<_>>();
+
+    assert_eq!(lowered.diagnostics(), Vec::<String>::new());
+    assert_eq!(class_constants, [0, 0, 0, 0]);
+}
+
+/// ```php
+/// return \Lib\Calc::rate->cents;
+/// ```
+///
+/// A class member read is a class constant fetch that the engine falls back from to the static property of the same
+/// name, as spec section 4 decides. `[32768]` is php-sharp's `ZEND_FETCH_CLASS_MEMBER_SYNTAX`, `1 << 15`, which marks
+/// the fallback above the fetch flags a constant expression passes in the same attr.
+#[test]
+fn a_class_member_read_is_a_class_constant_marked_to_fall_back_to_the_static_property() {
+    assert_eq!(
+        body("        return Calc.rate.cents;\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                PROP
+                  CLASS_CONST [32768]
+                    ZVAL "Lib\\Calc"
+                    ZVAL "rate"
+                  ZVAL "cents"
+        "#}
+    );
+}
+
 /// ```php
 /// return \App\Tenant\Report::make();
 /// ```
@@ -2124,7 +2532,8 @@ fn try_without_a_catch_has_an_empty_catch_list() {
 /// return \strlen(\sprintf("%d", \count($extra, mode: 0)));
 /// ```
 ///
-/// PHP# calls only PHP's built-in functions, so a call names the global function with `ZEND_NAME_FQ`, which is 0.
+/// PHP# calls only global functions, PHP's own and those a library or the app declares, so a call names the global
+/// function with `ZEND_NAME_FQ`, which is 0.
 #[test]
 fn a_function_call_is_a_call_of_the_global_function() {
     assert_eq!(
@@ -2326,69 +2735,18 @@ fn attributes_are_attribute_lists_of_attribute_groups_on_their_declarations() {
 
 /// The child count `zend_ast_get_num_children` gives a fixed-size kind, or 5 for a declaration. `None` for a list.
 fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
-    match kind {
-        sharp_kind::SHARP_AST_ARG_LIST
-        | sharp_kind::SHARP_AST_STMT_LIST
-        | sharp_kind::SHARP_AST_PARAM_LIST
-        | sharp_kind::SHARP_AST_CONST_DECL
-        | sharp_kind::SHARP_AST_IF
-        | sharp_kind::SHARP_AST_EXPR_LIST
-        | sharp_kind::SHARP_AST_PROP_DECL
-        | sharp_kind::SHARP_AST_ATTRIBUTE_LIST
-        | sharp_kind::SHARP_AST_ATTRIBUTE_GROUP
-        | sharp_kind::SHARP_AST_CATCH_LIST
-        | sharp_kind::SHARP_AST_NAME_LIST
-        | sharp_kind::SHARP_AST_ENCAPS_LIST
-        | sharp_kind::SHARP_AST_ARRAY => None,
-        sharp_kind::SHARP_AST_ZVAL | sharp_kind::SHARP_AST_TYPE => Some(0),
-        sharp_kind::SHARP_AST_VAR
-        | sharp_kind::SHARP_AST_CONST
-        | sharp_kind::SHARP_AST_UNARY_PLUS
-        | sharp_kind::SHARP_AST_UNARY_MINUS
-        | sharp_kind::SHARP_AST_UNARY_OP
-        | sharp_kind::SHARP_AST_PRE_INC
-        | sharp_kind::SHARP_AST_PRE_DEC
-        | sharp_kind::SHARP_AST_POST_INC
-        | sharp_kind::SHARP_AST_POST_DEC
-        | sharp_kind::SHARP_AST_RETURN
-        | sharp_kind::SHARP_AST_BREAK
-        | sharp_kind::SHARP_AST_CONTINUE
-        | sharp_kind::SHARP_AST_THROW
-        | sharp_kind::SHARP_AST_CAST
-        | sharp_kind::SHARP_AST_PROPERTY_HOOK_SHORT_BODY => Some(1),
-        sharp_kind::SHARP_AST_PROP
-        | sharp_kind::SHARP_AST_ASSIGN
-        | sharp_kind::SHARP_AST_ASSIGN_OP
-        | sharp_kind::SHARP_AST_BINARY_OP
-        | sharp_kind::SHARP_AST_GREATER
-        | sharp_kind::SHARP_AST_GREATER_EQUAL
-        | sharp_kind::SHARP_AST_AND
-        | sharp_kind::SHARP_AST_OR
-        | sharp_kind::SHARP_AST_DECLARE
-        | sharp_kind::SHARP_AST_NAMESPACE
-        | sharp_kind::SHARP_AST_NAMED_ARG
-        | sharp_kind::SHARP_AST_COALESCE
-        | sharp_kind::SHARP_AST_ASSIGN_COALESCE
-        | sharp_kind::SHARP_AST_NULLSAFE_PROP
-        | sharp_kind::SHARP_AST_IF_ELEM
-        | sharp_kind::SHARP_AST_WHILE
-        | sharp_kind::SHARP_AST_DO_WHILE
-        | sharp_kind::SHARP_AST_NEW
-        | sharp_kind::SHARP_AST_ATTRIBUTE
-        | sharp_kind::SHARP_AST_CALL
-        | sharp_kind::SHARP_AST_ARRAY_ELEM
-        | sharp_kind::SHARP_AST_DIM => Some(2),
-        sharp_kind::SHARP_AST_METHOD_CALL
-        | sharp_kind::SHARP_AST_STATIC_CALL
-        | sharp_kind::SHARP_AST_CONST_ELEM
-        | sharp_kind::SHARP_AST_NULLSAFE_METHOD_CALL
-        | sharp_kind::SHARP_AST_PROP_GROUP
-        | sharp_kind::SHARP_AST_TRY
-        | sharp_kind::SHARP_AST_CATCH
-        | sharp_kind::SHARP_AST_CONDITIONAL => Some(3),
-        sharp_kind::SHARP_AST_FOR | sharp_kind::SHARP_AST_FOREACH | sharp_kind::SHARP_AST_PROP_ELEM => Some(4),
-        sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_CLASS | sharp_kind::SHARP_AST_PROPERTY_HOOK => Some(5),
-        sharp_kind::SHARP_AST_PARAM => Some(6),
+    const IS_LIST: u32 = 1 << 7;
+    const NUM_CHILDREN_SHIFT: u32 = 8;
+
+    let value = kind as u32;
+    if value & IS_LIST != 0 {
+        None
+    } else if kind == sharp_kind::SHARP_AST_ZVAL {
+        Some(0)
+    } else if (sharp_kind::SHARP_AST_FUNC_DECL as u32..=sharp_kind::SHARP_AST_PROPERTY_HOOK as u32).contains(&value) {
+        Some(5)
+    } else {
+        Some(value >> NUM_CHILDREN_SHIFT)
     }
 }
 

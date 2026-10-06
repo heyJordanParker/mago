@@ -107,6 +107,7 @@ use crate::cst::cst::Implements;
 use crate::cst::cst::IncludeConstruct;
 use crate::cst::cst::IncludeOnceConstruct;
 use crate::cst::cst::IndirectVariable;
+use crate::cst::cst::Inheritance;
 use crate::cst::cst::Inline;
 use crate::cst::cst::Instantiation;
 use crate::cst::cst::Interface;
@@ -209,6 +210,7 @@ use crate::cst::cst::TraitUseSpecification;
 use crate::cst::cst::Try;
 use crate::cst::cst::TryCatchClause;
 use crate::cst::cst::TryFinallyClause;
+use crate::cst::cst::TypeOf;
 use crate::cst::cst::TypedUseItemList;
 use crate::cst::cst::TypedUseItemSequence;
 use crate::cst::cst::UnaryPostfix;
@@ -694,6 +696,12 @@ generate_ast_walker! {
         }
     }
 
+    'arena Inheritance as inheritance => {
+        for ty in &inheritance.types {
+            walker.walk_identifier(ty, context);
+        }
+    }
+
     'arena Class as class => {
         for attribute_list in &class.attribute_lists {
             walker.walk_attribute_list(attribute_list, context);
@@ -713,6 +721,10 @@ generate_ast_walker! {
             walker.walk_implements(implements, context);
         }
 
+        if let Some(inheritance) = &class.inheritance {
+            walker.walk_inheritance(inheritance, context);
+        }
+
         for class_member in &class.members {
             walker.walk_class_like_member(class_member, context);
         }
@@ -723,11 +735,19 @@ generate_ast_walker! {
             walker.walk_attribute_list(attribute_list, context);
         }
 
+        for modifier in &interface.modifiers {
+            walker.walk_modifier(modifier, context);
+        }
+
         walker.walk_keyword(&interface.interface, context);
         walker.walk_local_identifier(&interface.name, context);
 
         if let Some(extends) = &interface.extends {
             walker.walk_extends(extends, context);
+        }
+
+        if let Some(inheritance) = &interface.inheritance {
+            walker.walk_inheritance(inheritance, context);
         }
 
         for class_member in &interface.members {
@@ -738,6 +758,10 @@ generate_ast_walker! {
     'arena Trait as r#trait => {
         for attribute_list in &r#trait.attribute_lists {
             walker.walk_attribute_list(attribute_list, context);
+        }
+
+        for modifier in &r#trait.modifiers {
+            walker.walk_modifier(modifier, context);
         }
 
         walker.walk_keyword(&r#trait.r#trait, context);
@@ -751,6 +775,10 @@ generate_ast_walker! {
     'arena Enum as r#enum => {
         for attribute_list in &r#enum.attribute_lists {
             walker.walk_attribute_list(attribute_list, context);
+        }
+
+        for modifier in &r#enum.modifiers {
+            walker.walk_modifier(modifier, context);
         }
 
         walker.walk_keyword(&r#enum.r#enum, context);
@@ -1741,6 +1769,7 @@ generate_ast_walker! {
             Expression::Instantiation(instantiation) => walker.walk_instantiation(instantiation, context),
             Expression::MagicConstant(magic_constant) => walker.walk_magic_constant(magic_constant, context),
             Expression::Pipe(pipe) => walker.walk_pipe(pipe, context),
+            Expression::TypeOf(type_of) => walker.walk_type_of(type_of, context),
             Expression::Error(_) => {
                 // Nothing to walk for error expressions
             }
@@ -2427,6 +2456,11 @@ generate_ast_walker! {
     'arena Pipe as pipe => {
         walker.walk_expression(pipe.input, context);
         walker.walk_expression(pipe.callable, context);
+    }
+
+    'arena TypeOf as type_of => {
+        walker.walk_keyword(&type_of.r#typeof, context);
+        walker.walk_identifier(&type_of.class, context);
     }
 
     'arena Hint as hint => {
