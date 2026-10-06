@@ -10,6 +10,7 @@ use mago_syntax::cst::Literal;
 use mago_syntax::cst::Statement;
 use mago_syntax::cst::UnaryPrefixOperator;
 use mago_syntax::cst::Variable;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_word::Word;
 use mago_word::WordSet;
 use mago_word::word;
@@ -115,7 +116,7 @@ fn infer_from_expression<'arena>(
 ) -> (AssertionMap, AssertionMap) {
     let expression = unwrap_parens(expression);
 
-    match expression {
+    ensure_sufficient_stack(|| match expression {
         Expression::UnaryPrefix(unary) if matches!(unary.operator, UnaryPrefixOperator::Not(_)) => {
             infer_from_expression(unary.operand, parameter_names, resolved_names, !negated)
         }
@@ -139,7 +140,7 @@ fn infer_from_expression<'arena>(
             .map(|(var, atomic)| build_assertions(var, atomic, negated))
             .unwrap_or_default(),
         _ => Default::default(),
-    }
+    })
 }
 
 fn build_assertions(var: Word, atomic: TAtomic, negated: bool) -> (AssertionMap, AssertionMap) {
