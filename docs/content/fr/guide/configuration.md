@@ -184,7 +184,7 @@ Si un fichier correspond à la fois à `paths` et à `includes`, le motif le plu
 paths     = ["src", "tests"]
 includes  = ["vendor"]
 excludes  = ["cache/**", "build/**", "var/**"]
-extensions = ["php"]
+extensions = ["php", "sharp"]
 ```
 
 Les motifs glob fonctionnent dans les trois listes :
@@ -207,7 +207,9 @@ excludes = [
 | `paths` | liste de strings | `[]` | Répertoires ou globs pour votre code source. Si vide, l'ensemble du workspace est scanné. |
 | `includes` | liste de strings | `[]` | Répertoires ou globs pour le code tiers que Mago doit analyser sans le modifier. |
 | `excludes` | liste de strings | `[]` | Globs ou chemins exclus de tous les outils. |
-| `extensions` | liste de strings | `["php"]` | Extensions de fichiers traitées comme du PHP. |
+| `extensions` | liste de strings | `["php", "sharp"]` | Extensions des fichiers PHP et PHP# que Mago lit. |
+
+`mago lint`, `mago fmt` et `mago guard` ne lisent pas encore les fichiers PHP# : ils ignorent chaque fichier `.sharp` qu'ils trouvent et refusent celui nommé sur la ligne de commande.
 
 ### Réglages des globs
 

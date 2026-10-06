@@ -707,8 +707,9 @@ where
             }
         }
 
+        // Spec section 7 gives a PHP# variadic parameter its values as a list.
         let final_parameter_type = if parameter_metadata.flags.is_variadic() {
-            if function_like_metadata.flags.forbids_named_arguments() {
+            if function_like_metadata.flags.forbids_named_arguments() || context.dialect.is_sharp() {
                 get_list(final_parameter_type)
             } else {
                 get_keyed_array(get_arraykey(), final_parameter_type)

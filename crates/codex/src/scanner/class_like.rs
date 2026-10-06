@@ -244,7 +244,7 @@ where
         &r#enum.members,
         None,
         r#enum.implements.as_ref(),
-        None,
+        r#enum.inheritance.as_ref(),
         r#enum.backing_type_hint.as_ref(),
         context,
         scope,
@@ -406,7 +406,7 @@ where
     }
 
     // A PHP# header, `: Base, IFace`, lists a class's base among its interfaces. PHP links the one class there as
-    // the parent, and so does the populator.
+    // the parent, and so does the populator. An enum has no parent, so every name in its header is an interface.
     if let Some(inheritance) = inheritance {
         for type_name in &inheritance.types {
             class_like_metadata

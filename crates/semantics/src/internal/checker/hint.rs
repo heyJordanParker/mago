@@ -37,9 +37,16 @@ pub fn check_hint(hint: &Hint, context: &mut Context<'_, '_, '_>) {
                 );
             }
 
-            // PHP# writes `Any?` for PHP's `mixed`, and the slice reports `mixed` itself.
-            let is_sharp_mixed = context.program.dialect.is_sharp() && matches!(nullable_hint.hint, Hint::Mixed(_));
-            if !is_sharp_mixed && (nullable_hint.hint.is_standalone() || nullable_hint.hint.is_complex()) {
+            // PHP# writes `Any?` for PHP's `mixed` and `(int|string)?` for a union that holds null, and `check_slice`
+            // checks both.
+            let is_sharp_nullable = context.program.dialect.is_sharp()
+                && match nullable_hint.hint {
+                    Hint::Mixed(_) => true,
+                    Hint::Parenthesized(parenthesized) => parenthesized.hint.is_union(),
+                    _ => false,
+                };
+
+            if !is_sharp_nullable && (nullable_hint.hint.is_standalone() || nullable_hint.hint.is_complex()) {
                 let val = BytesDisplay(context.get_code_snippet(nullable_hint.hint));
 
                 context.report(

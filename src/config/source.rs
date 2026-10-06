@@ -8,6 +8,7 @@ use mago_database::GlobSettings;
 
 use crate::config::CURRENT_DIR;
 use crate::consts::PHP_EXTENSION;
+use crate::consts::SHARP_EXTENSION;
 use crate::error::Error;
 
 /// Configuration options for source discovery.
@@ -55,7 +56,7 @@ pub struct SourceConfiguration {
 
     /// File extensions to filter by.
     ///
-    /// Defaults to `[".php"]`.
+    /// Defaults to `["php", "sharp"]`.
     #[serde(default = "default_extensions")]
     pub extensions: Vec<String>,
 
@@ -137,7 +138,7 @@ impl SourceConfiguration {
             includes: vec![],
             patches: vec![],
             excludes: vec![],
-            extensions: vec![PHP_EXTENSION.to_string()],
+            extensions: default_extensions(),
             glob: GlobConfiguration::default(),
         }
     }
@@ -156,5 +157,5 @@ impl SourceConfiguration {
 }
 
 fn default_extensions() -> Vec<String> {
-    vec![PHP_EXTENSION.to_string()]
+    vec![PHP_EXTENSION.to_string(), SHARP_EXTENSION.to_string()]
 }
