@@ -8,12 +8,16 @@ use mago_codex::ttype::get_never;
 use mago_names::binding::Binding;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
+use std::rc::Rc;
+
 use mago_span::HasSpan;
+use mago_span::Span;
 use mago_syntax::cst::Access;
 use mago_syntax::cst::ClassLikeConstantSelector;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::LocalIdentifier;
+use mago_syntax::cst::NullSafePropertyAccess;
 use mago_syntax::cst::PropertyAccess;
 use mago_word::Word;
 use mago_word::concat_word;
@@ -54,7 +58,31 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Access<'arena> {
             Access::Property(access @ PropertyAccess { property: ClassLikeMemberSelector::Identifier(name), .. })
                 if let Some(classes) = class_value_classes(context, block_context, access.object) =>
             {
-                analyze_class_value_member(context, block_context, artifacts, access, name, classes)
+                analyze_class_value_member(
+                    context,
+                    block_context,
+                    artifacts,
+                    access.object,
+                    name,
+                    access.span(),
+                    classes,
+                )
+            }
+            Access::NullSafeProperty(
+                access @ NullSafePropertyAccess { property: ClassLikeMemberSelector::Identifier(name), .. },
+            ) if let Some(classes) = class_value_classes(context, block_context, access.object) => {
+                let (object, span) = (access.object, access.span());
+
+                analyze_null_safe_class_value(
+                    context,
+                    block_context,
+                    artifacts,
+                    object,
+                    span,
+                    |context, block_context, artifacts| {
+                        analyze_class_value_member(context, block_context, artifacts, object, name, span, classes)
+                    },
+                )
             }
             // PHP# writes both `Class::NAME` and `Class::$name` as `Class.name`, with a bare name bound to a class.
             // Like the engine, a read is the constant or enum case when the class has one by that name, then the
@@ -352,8 +380,9 @@ fn analyze_class_value_member<'ctx, 'ast, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
     block_context: &mut BlockContext<'ctx>,
     artifacts: &mut AnalysisArtifacts,
-    access: &'ast PropertyAccess<'arena>,
+    object: &'ast Expression<'arena>,
     name: &'ast LocalIdentifier<'arena>,
+    span: Span,
     classes: Vec<Word>,
 ) -> Result<(), AnalysisError>
 where
@@ -378,9 +407,9 @@ where
         })
         .collect();
     let kind_names = ["constant", "static property", "static method"];
-    if let Some((issue, _)) = mixed_kinds_issue(context, access.object, name, false, &kind_names, kinds.clone()) {
+    if let Some((issue, _)) = mixed_kinds_issue(context, object, name, false, &kind_names, kinds.clone()) {
         context.collector.report_with_code(IssueCode::AmbiguousClassLikeConstantAccess, issue);
-        artifacts.set_expression_type(access, get_never());
+        artifacts.set_expression_type(&span, get_never());
 
         return Ok(());
     }
@@ -390,20 +419,19 @@ where
             context,
             block_context,
             artifacts,
-            access.object,
+            object,
             &ClassLikeConstantSelector::Identifier(*name),
-            access.span(),
+            span,
         ),
         STATIC_METHOD => {
-            access.object.analyze(context, block_context, artifacts)?;
+            object.analyze(context, block_context, artifacts)?;
             let mut method_type = None;
             for class in classes {
-                let value =
-                    resolve_method_value(context, block_context, artifacts, class, word(name.value), access.span())
-                        .unwrap_or_else(get_mixed);
+                let value = resolve_method_value(context, block_context, artifacts, class, word(name.value), span)
+                    .unwrap_or_else(get_mixed);
                 method_type = Some(add_optional_union_type(value, method_type.as_ref(), context.codebase));
             }
-            artifacts.set_expression_type(access, method_type.unwrap_or_else(get_mixed));
+            artifacts.set_expression_type(&span, method_type.unwrap_or_else(get_mixed));
 
             Ok(())
         }
@@ -411,9 +439,45 @@ where
             context,
             block_context,
             artifacts,
-            StaticProperty { class: access.object, name: StaticPropertyName::Identifier(name), span: access.span() },
+            StaticProperty { class: object, name: StaticPropertyName::Identifier(name), span },
         ),
     }
+}
+
+/// Analyzes a PHP# null-safe read or call through the class value `object`, `type?.y` or `type?.m()`, with `analyze`.
+/// The member is read only when `object` holds a class, so `analyze` runs with the local narrowed to its class values,
+/// as `if (type !== null)` narrows it, and the result at `span` can also be the `null` the read stops at. Mago's
+/// null-safe property read leaves out a receiver's `null` while it resolves instance members, and has no path that
+/// resolves a class value's static members, so the narrowing is this local's.
+pub(crate) fn analyze_null_safe_class_value<'ctx, 'arena, A>(
+    context: &mut Context<'ctx, 'arena, A>,
+    block_context: &BlockContext<'ctx>,
+    artifacts: &mut AnalysisArtifacts,
+    object: &Expression<'arena>,
+    span: Span,
+    analyze: impl FnOnce(
+        &mut Context<'ctx, 'arena, A>,
+        &mut BlockContext<'ctx>,
+        &mut AnalysisArtifacts,
+    ) -> Result<(), AnalysisError>,
+) -> Result<(), AnalysisError>
+where
+    A: Arena,
+{
+    let mut narrowed = block_context.clone();
+    if let Expression::ConstantAccess(local) = object
+        && let Some(local) = get_bare_name_variable_id(&local.name, context.resolved_names)
+        && let Some(local_type) = narrowed.locals.get(&local)
+    {
+        let class_values = local_type.to_non_nullable();
+        narrowed.locals.insert(local, Rc::new(class_values));
+    }
+
+    analyze(context, &mut narrowed, artifacts)?;
+    let member_type = artifacts.get_expression_type(&span).cloned().unwrap_or_else(get_mixed);
+    artifacts.set_expression_type(&span, member_type.as_nullable());
+
+    Ok(())
 }
 
 /// Whether PHP# `Class.name` reads the static method `name`: the class has no static property of that name, which the

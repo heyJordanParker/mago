@@ -1225,9 +1225,17 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                     }
                 },
             },
-            // A link whose chain's conditional tests the receiver is the property call `untested_link` found.
+            // A link whose chain's conditional tests the receiver is the property call or the static call through a
+            // class value that `untested_link` found.
             Expression::Call(Call::NullSafeMethod(call)) => {
                 let tested = self.tested_links.contains(&expression.span());
+                if tested && let Some((class, _)) = self.class_value(call.object) {
+                    let method = self.member(&call.method);
+                    let arguments = self.arguments(&call.argument_list);
+
+                    return self.node(SHARP_AST_STATIC_CALL, 0, line, &[class, method, arguments]);
+                }
+
                 let object = if tested { self.expression(call.object) } else { self.null_safe_object(call.object) };
                 let method = self.member(&call.method);
                 let arguments = self.arguments(&call.argument_list);
@@ -1240,9 +1248,14 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                     self.node(SHARP_AST_NULLSAFE_METHOD_CALL, 0, line, &[object, method, arguments])
                 }
             }
-            // A link whose chain's conditional tests the receiver is the method value `untested_link` found.
+            // A link whose chain's conditional tests the receiver is the method value or the static member read through
+            // a class value that `untested_link` found.
             Expression::Access(Access::NullSafeProperty(access)) => {
                 let tested = self.tested_links.contains(&expression.span());
+                if tested && let Some((class, classes)) = self.class_value(access.object) {
+                    return self.static_member(line, class, &classes, &access.property);
+                }
+
                 let object = if tested { self.expression(access.object) } else { self.null_safe_object(access.object) };
                 let member = self.member(&access.property);
 
@@ -1312,6 +1325,11 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         };
 
         Some((class, classes))
+    }
+
+    /// Whether `object` is a class value, whose members are its class's static members.
+    fn is_class_value(&self, object: &Expression) -> bool {
+        class_value_classes(self.types.expression_type(object)).is_some()
     }
 
     /// Whether `object.member` reads a method, which the read takes as a first-class callable. The member is the same
@@ -1437,7 +1455,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 Expression::ArrayAccess(access) => access.array,
                 Expression::Access(Access::NullSafeProperty(access)) => {
                     if !self.tested_links.contains(&link.span())
-                        && self.is_method_value(access.object, &access.property)
+                        && (self.is_class_value(access.object) || self.is_method_value(access.object, &access.property))
                     {
                         return Some((link, access.object));
                     }
@@ -1445,7 +1463,9 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                     access.object
                 }
                 Expression::Call(Call::NullSafeMethod(call)) => {
-                    if !self.tested_links.contains(&link.span()) && self.is_property_call(link, call.object) {
+                    if !self.tested_links.contains(&link.span())
+                        && (self.is_class_value(call.object) || self.is_property_call(link, call.object))
+                    {
                         return Some((link, call.object));
                     }
 

@@ -30,6 +30,7 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::context::scope::control_action::ControlAction;
 use crate::error::AnalysisError;
+use crate::expression::access::analyze_null_safe_class_value;
 use crate::expression::access::class_value_classes;
 use crate::expression::access::report_full_name;
 use crate::expression::access::report_member_of_mixed_kinds;
@@ -142,6 +143,27 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Call<'arena> {
                 report_member_of_mixed_kinds(context, artifacts, call.object, &call.method, true);
 
                 Ok(())
+            }
+            // PHP# calls a static method through a class value that may be null, `type?.m()`, as PHP's `$type::m()`
+            // when `type` holds a class.
+            Call::NullSafeMethod(call) if class_value_classes(context, block_context, call.object).is_some() => {
+                let static_call = StaticCall {
+                    class: call.object,
+                    method: &call.method,
+                    argument_list: &call.argument_list,
+                    span: call.span(),
+                };
+
+                analyze_null_safe_class_value(
+                    context,
+                    block_context,
+                    artifacts,
+                    call.object,
+                    call.span(),
+                    |context, block_context, artifacts| {
+                        static_method_call::analyze_static_method_call(context, block_context, artifacts, static_call)
+                    },
+                )
             }
             Call::NullSafeMethod(call) => {
                 call.analyze(context, block_context, artifacts)?;

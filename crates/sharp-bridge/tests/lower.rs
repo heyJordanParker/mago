@@ -3663,6 +3663,102 @@ fn a_member_read_through_a_class_value_is_the_fetch_of_its_kind_on_that_class() 
 }
 
 /// ```php
+/// $type = $extra > 0 ? \Lib\Calc::class : null;
+/// $max = ($type === null ? null : $type::MAX);
+/// $count = ($type === null ? null : $type::$count);
+/// $tag = ($type === null ? null : $type::defaultTag());
+/// return ($max ?? 0) + ($count ?? 0) + \strlen($tag ?? '');
+/// ```
+///
+/// A null-safe read or call through a class value is the conditional a null-safe method value is, which reads the
+/// local itself and runs the static fetch or call when it holds a class.
+#[test]
+fn a_null_safe_member_read_through_a_class_value_is_a_conditional_over_the_static_fetch() {
+    assert_eq!(
+        body_in(
+            RUN,
+            "        const type = extra > 0 ? typeof(Calc) : null;\n        const max = type?.MAX;\n        const count = type?.count;\n        const tag = type?.defaultTag();\n        return (max ?? 0) + (count ?? 0) + strlen(tag ?? \"\");\n",
+            &[(
+                "src/Lib/Calc.php",
+                "<?php namespace Lib; abstract class Calc { public const int MAX = 3; public static int $count = 0; public static function defaultTag(): string { return 'div'; } }",
+            )]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "type"
+                CONDITIONAL
+                  GREATER
+                    VAR
+                      ZVAL "extra"
+                    ZVAL 0
+                  CLASS_NAME
+                    ZVAL "Lib\\Calc"
+                  ZVAL null
+              ASSIGN
+                VAR
+                  ZVAL "max"
+                CONDITIONAL [1]
+                  BINARY_OP [16]
+                    VAR
+                      ZVAL "type"
+                    ZVAL null
+                  ZVAL null
+                  CLASS_CONST
+                    VAR
+                      ZVAL "type"
+                    ZVAL "MAX"
+              ASSIGN
+                VAR
+                  ZVAL "count"
+                CONDITIONAL [1]
+                  BINARY_OP [16]
+                    VAR
+                      ZVAL "type"
+                    ZVAL null
+                  ZVAL null
+                  STATIC_PROP
+                    VAR
+                      ZVAL "type"
+                    ZVAL "count"
+              ASSIGN
+                VAR
+                  ZVAL "tag"
+                CONDITIONAL [1]
+                  BINARY_OP [16]
+                    VAR
+                      ZVAL "type"
+                    ZVAL null
+                  ZVAL null
+                  STATIC_CALL
+                    VAR
+                      ZVAL "type"
+                    ZVAL "defaultTag"
+                    ARG_LIST
+              RETURN
+                BINARY_OP [1]
+                  BINARY_OP [1]
+                    COALESCE
+                      VAR
+                        ZVAL "max"
+                      ZVAL 0
+                    COALESCE
+                      VAR
+                        ZVAL "count"
+                      ZVAL 0
+                  CALL
+                    ZVAL "strlen"
+                    ARG_LIST
+                      COALESCE
+                        VAR
+                          ZVAL "tag"
+                        ZVAL ""
+        "#}
+    );
+}
+
+/// ```php
 /// $type = \Lib\Calc::class;
 /// $tag = $type::defaultTag(...);
 /// return \strlen($tag());

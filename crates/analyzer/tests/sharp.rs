@@ -1245,6 +1245,24 @@ fn an_arrow_read_of_a_class_string_stays_an_error_in_php() {
     assert_eq!(issues(("src/Demo/Report.php", php), &[]), ["12:23 invalid-property-access"]);
 }
 
+/// A null-safe read or call through a class value that may be null reads the member when the value holds a class, and
+/// is `null` otherwise, as spec section 14.4 defines `a?.b`.
+#[test]
+fn a_null_safe_member_read_through_a_class_value_is_the_member_or_null() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public const int MAX = 3;\n    private static int count = 0;\n\n    public static string tag() => \"div\";\n\n    public int? max(bool flag)\n    {\n        const type = flag ? typeof(Report) : null;\n        return type?.MAX;\n    }\n\n    public int? seen(bool flag)\n    {\n        const type = flag ? typeof(Report) : null;\n        return type?.count;\n    }\n\n    public string? label(bool flag)\n    {\n        const type = flag ? typeof(Report) : null;\n        return type?.tag();\n    }\n}\n";
+    let (issues, artifacts) =
+        analyze_with_artifacts(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[]);
+    let type_at = |text: &str| {
+        let start = sharp.find(text).unwrap() as u32;
+        artifacts.expression_types.get(&(start, start + text.len() as u32)).map(|r#type| r#type.get_id().to_string())
+    };
+
+    assert!(issues.is_empty(), "{issues:?}");
+    assert_eq!(type_at("type?.MAX").as_deref(), Some("int(3)|null"));
+    assert_eq!(type_at("type?.count").as_deref(), Some("int|null"));
+    assert_eq!(type_at("type?.tag()").as_deref(), Some("null|string"));
+}
+
 /// A class value that may be null is refused before a member read, as PHP's `$type::MAX` throws "Cannot use null as
 /// class" when `$type` is null.
 #[test]
@@ -1255,7 +1273,10 @@ fn a_member_read_through_a_class_value_that_may_be_null_is_an_error() {
     let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
 
     assert_eq!(codes(&sharp_issues), codes(&issues(("src/Demo/Report.php", php), &[])));
-    assert_eq!(messages(("src/Demo/Report.sharp", sharp), &[]), ["Attempting static access on a possibly `null` value."]);
+    assert_eq!(
+        messages(("src/Demo/Report.sharp", sharp), &[]),
+        ["Attempting static access on a possibly `null` value."]
+    );
     assert_eq!(sharp_issues.len(), 1, "{sharp_issues:?}");
 }
 
