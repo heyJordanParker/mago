@@ -64,6 +64,8 @@ where
     pub(super) plugin_registry: &'ctx PluginRegistry,
     pub(super) external_analysis_session: Option<&'ctx ExternalAnalysisSession>,
     pub(super) additional_symbol_references: Option<&'ctx SymbolReferences>,
+    /// How many hidden variables the PHP# pattern forms being analyzed hold, as `php_shape` numbers them.
+    pub(super) temporaries: u32,
     class_initializers: WordMap<WordSet>,
 }
 
@@ -100,6 +102,7 @@ where
             plugin_registry,
             external_analysis_session,
             additional_symbol_references,
+            temporaries: 0,
             class_initializers: WordMap::default(),
         }
     }
@@ -154,7 +157,7 @@ where
         &mut self,
         condition: &Expression<'_>,
         condition_type: Option<&TUnion>,
-        construct: &'static str,
+        construct: &str,
     ) {
         if !self.dialect.is_sharp() {
             return;
@@ -254,6 +257,7 @@ where
             codebase: self.codebase,
             this_class_name,
             trust_existence_checks: self.settings.trust_existence_checks,
+            temporaries: self.temporaries,
         }
     }
 
