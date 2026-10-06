@@ -30,10 +30,12 @@ use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
+use mago_syntax::cst::Access;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
 use mago_word::Word;
 use mago_word::ascii_lowercase_word;
+use mago_word::concat_word;
 use mago_word::word;
 
 use crate::artifacts::AnalysisArtifacts;
@@ -45,6 +47,8 @@ use crate::resolver::class_name::report_non_existent_class_like;
 use crate::resolver::property::localize_property_type;
 use crate::resolver::selector::resolve_member_selector;
 use crate::utils::expression::analyze_member_object;
+use crate::utils::expression::get_bare_name_variable_id;
+use crate::utils::expression::is_this;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_method_name;
 use crate::utils::names::display_sharp_collection;
@@ -242,7 +246,8 @@ where
                     &closure_object
                 }
                 TAtomic::Array(array) if context.dialect.is_sharp() => {
-                    collection_methods = get_collection_methods(array, context.codebase);
+                    let declared = get_declared_collection(context, block_context, artifacts, object);
+                    collection_methods = get_collection_methods(declared.as_ref().unwrap_or(array), context.codebase);
                     &collection_methods
                 }
                 _ => {
@@ -1059,6 +1064,62 @@ where
     }
 
     true
+}
+
+/// The collection type the place a PHP# collection method is called on is declared with: a typed local, a parameter,
+/// or a property. The method takes values of that type, as `$list[] = $x` is checked against the declared property,
+/// so a value the analyzer saw assigned last, such as `[]` or a list of one implementation, narrows nothing.
+fn get_declared_collection<A>(
+    context: &Context<'_, '_, A>,
+    block_context: &BlockContext<'_>,
+    artifacts: &AnalysisArtifacts,
+    object: &Expression<'_>,
+) -> Option<TArray>
+where
+    A: Arena,
+{
+    let declared = match object.unparenthesized() {
+        Expression::ConstantAccess(access) => {
+            let variable_id = get_bare_name_variable_id(&access.name, context.resolved_names)?;
+
+            match block_context.local_types.get(&variable_id) {
+                Some((local_type, _)) => local_type.as_ref().clone(),
+                None => block_context
+                    .scope
+                    .get_function_like()?
+                    .parameters
+                    .iter()
+                    .find(|parameter| parameter.get_name().0 == variable_id)?
+                    .get_type_metadata()?
+                    .type_union
+                    .clone(),
+            }
+        }
+        Expression::Access(Access::Property(access)) => {
+            let ClassLikeMemberSelector::Identifier(property) = &access.property else {
+                return None;
+            };
+            let property_name = concat_word!(b"$", property.value);
+            let property_type =
+                |class: Word| context.codebase.get_property_type(class.as_bytes(), property_name.as_bytes());
+
+            // `this` keeps no expression type: its class is the scope's.
+            if is_this(access.object, context.resolved_names) {
+                property_type(block_context.scope.get_class_like_name()?)?.clone()
+            } else {
+                artifacts.get_expression_type(access.object)?.types.iter().find_map(|atomic| match atomic {
+                    TAtomic::Object(object) => property_type(object.get_name()?).cloned(),
+                    _ => None,
+                })?
+            }
+        }
+        _ => return None,
+    };
+
+    declared.types.iter().find_map(|atomic| match atomic {
+        TAtomic::Array(array) => Some(array.clone()),
+        _ => None,
+    })
 }
 
 /// The class whose methods a PHP# collection has, as spec section 12 writes them: a `List<T>` is called as
