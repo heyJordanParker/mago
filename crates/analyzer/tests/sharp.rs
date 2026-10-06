@@ -727,6 +727,157 @@ fn a_get_only_property_is_readonly_and_set_once_in_the_constructor() {
     );
 }
 
+const NEGATIVE: &str = "<?php\n\nnamespace Lib;\n\nfinal class Negative extends \\Exception\n{\n}\n";
+
+/// Spec section 6.1: an accessor body reads and writes `field`, the storage, and a `set` body reads `value`, both of
+/// the property's type, as PHP's hooks read `$this->name` and `$value`.
+#[test]
+fn accessor_bodies_read_field_and_value_with_the_property_type() {
+    let sharp = "namespace Demo;\n\nimport Lib.Negative;\n\nclass Product\n{\n    public string name { get => field; set => field = trim(value); } = \"\";\n    public int stock { get; private set { if (value < 0) { throw new Negative(); } field = value; } } = 0;\n    public int doubled { get => this.stock * 2; }\n    public int hits { get => field; set { field += value; field++; } } = 0;\n    public List<string> seen { get => field; set { field = []; field.add(value[0]); } } = [];\n    public Map<string, int> counts { get => field; set { field = value; field[\"all\"] = 1; } } = [:];\n    public List<string> tags { get => field; set { field = value; } } = [];\n\n    public void tag(string tag)\n    {\n        this.tags.add(tag);\n        this.stock = this.doubled + 1;\n        this.name = tag;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Product.sharp", sharp), &[("src/Lib/Negative.php", NEGATIVE)]), Vec::<String>::new());
+}
+
+/// `field` has the property's type, so a value of another type assigned to it is the error assigning that value to
+/// the property is, as `$this->count = 'many'` is in the PHP twin's hook.
+#[test]
+fn a_value_of_the_wrong_type_assigned_to_field_is_reported_as_in_php() {
+    let sharp = "namespace Demo;\n\nclass Counter\n{\n    public int count { get => field; set => field = \"many\"; } = 0;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Counter\n{\n    public int $count = 0 {\n        get => $this->count;\n        set {\n            $this->count = 'many';\n        }\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Counter.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Counter.php", php), &[]);
+
+    assert_eq!(sharp_issues, ["5:53 invalid-property-assignment-value"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+/// `field` and `value` read as the property's type, and a `get` body returns it, as the PHP twin's hooks do.
+#[test]
+fn field_value_and_a_get_body_have_the_property_type_as_in_php() {
+    let sharp = "namespace Demo;\n\nclass Counter\n{\n    public int count { get => strlen(field); set => field = strlen(value); } = 0;\n    public string label { get { return 1; } }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Counter\n{\n    public int $count = 0 {\n        get => strlen($this->count);\n        set {\n            $this->count = strlen($value);\n        }\n    }\n    public string $label {\n        get {\n            return 1;\n        }\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Counter.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Counter.php", php), &[]);
+
+    assert_eq!(sharp_issues.len(), 3, "{sharp_issues:?}");
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+/// A property whose accessors all have bodies that never use `field` has no storage, so nothing initializes it, as
+/// PHP's virtual property. Every other property is backed, and is initialized as a field is.
+#[test]
+fn only_a_property_with_storage_needs_initializing_as_in_php() {
+    let sharp = "namespace Demo;\n\nclass Store\n{\n    public int open { get => 1; }\n    public int named { get => this.open; set => this.save(value); }\n    public int count { get => field; set => field = value; }\n    public int total { get; set => field = value; }\n\n    public void save(int value)\n    {\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Store\n{\n    public int $open {\n        get => 1;\n    }\n    public int $named {\n        get => $this->open;\n        set {\n            $this->save($value);\n        }\n    }\n    public int $count {\n        get => $this->count;\n        set {\n            $this->count = $value;\n        }\n    }\n    public int $total {\n        set {\n            $this->total = $value;\n        }\n    }\n\n    public function save(int $value): void\n    {\n    }\n}\n";
+
+    let settings = || Settings { check_property_initialization: true, ..settings() };
+    let sharp_issues = issues_with(settings(), ("src/Demo/Store.sharp", sharp), &[]);
+    let php_issues = issues_with(settings(), ("src/Demo/Store.php", php), &[]);
+
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+    assert!(!sharp_issues.is_empty(), "the backed properties need initializing: {php_issues:?}");
+}
+
+/// A get-only property whose `get` body uses `field` is set where a get-only auto-property is: once, in the
+/// constructor.
+#[test]
+fn a_get_only_property_with_a_get_body_is_set_only_where_readonly_allows() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public int count { get => field * 2; }\n\n    public Report(int start)\n    {\n        this.count = start;\n    }\n\n    public void reset()\n    {\n        this.count = 0;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), ["14:14 invalid-property-write"]);
+}
+
+/// An accessor body writes another property as a method of its class does, so a write to a get-only property there
+/// is the error the same write in a method is. Writing `field` writes the accessor's own storage, which its get-only
+/// property allows.
+#[test]
+fn a_write_to_a_get_only_property_from_another_accessor_is_reported_as_from_a_method() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public int id { get; }\n    public int code { get => field; set { field = value; this.id = value; } } = 0;\n    public int hits { get { field = field + 1; return field; } } = 0;\n\n    public Report(int id)\n    {\n        this.id = id;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), ["6:63 invalid-property-write"]);
+}
+
+/// The same write in a plain PHP hook stays unreported, as before PHP# accessors.
+#[test]
+fn a_write_to_a_readonly_property_from_a_php_hook_stays_unreported() {
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public readonly int $id;\n    public int $code = 0 {\n        get => $this->code;\n        set {\n            $this->code = $value;\n            $this->id = $value;\n        }\n    }\n\n    public function __construct(int $id)\n    {\n        $this->id = $id;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
+}
+
+/// A `get` block runs as PHP's `get` hook, which returns the property's type on every path, as a method with a return
+/// type does.
+#[test]
+fn a_get_block_with_a_path_that_ends_without_returning_is_reported() {
+    let sharp = "namespace Demo;\n\nimport Lib.Negative;\n\nclass Report\n{\n    public int open { get { if (this.ready()) { return 1; } } }\n    public int closed { get { if (this.ready()) { return 1; } throw new Negative(); } }\n\n    public bool ready()\n    {\n        return true;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Negative.php", NEGATIVE)]),
+        ["7:23 missing-return-statement"]
+    );
+}
+
+/// A property with accessors that redeclares a plain PHP parent's untyped property is refused as a field that does
+/// is, because PHP refuses a type the parent property does not have. The refusal names it a property.
+#[test]
+fn a_property_with_accessors_over_a_php_parents_untyped_property_is_not_supported_yet() {
+    let parent = "<?php\n\nnamespace Lib;\n\nclass Record\n{\n    public $label;\n    public $code;\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Record;\n\nclass Order : Record\n{\n    public string label { get => field; set => field = value; } = \"\";\n    public string code { get; set; } = \"\";\n}\n";
+    let others = [("src/Lib/Record.php", parent)];
+
+    assert_eq!(issues(("src/Demo/Order.sharp", sharp), &others), ["7:12 not-supported-yet", "8:12 not-supported-yet"]);
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Order.sharp", sharp), &others)
+            .into_iter()
+            .map(|issue| (issue.message, issue.help.unwrap_or_default()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                "A property that replaces the untyped PHP property `Lib\\Record::$label` is not supported yet."
+                    .to_owned(),
+                "Rename the property, or give the PHP property a type.".to_owned()
+            ),
+            (
+                "A property that replaces the untyped PHP property `Lib\\Record::$code` is not supported yet."
+                    .to_owned(),
+                "Rename the property, or give the PHP property a type.".to_owned()
+            ),
+        ]
+    );
+}
+
+/// A property over a plain PHP parent's attributes has no storage. PHP# has no conversion from the `mixed` that
+/// `getAttribute` returns to the property's type yet: spec section 21 writes it `as`, which is not built. So the `get`
+/// body reports `mixed` as the PHP twin's hook does.
+#[test]
+fn a_property_over_a_php_parents_attributes_reports_its_mixed_get_as_in_php() {
+    let sharp = "namespace Demo;\n\nimport Lib.Model;\n\nclass Order : Model\n{\n    public Address shipping { get => this.getAttribute(\"shipping\"); set => this.setAttribute(\"shipping\", value); }\n}\n\nclass Address\n{\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Model;\n\nclass Order extends Model\n{\n    public Address $shipping {\n        get => $this->getAttribute('shipping');\n        set {\n            $this->setAttribute('shipping', $value);\n        }\n    }\n}\n\nclass Address\n{\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Order.sharp", sharp), &[("src/Lib/Model.php", MODEL)]);
+    let php_issues = issues(("src/Demo/Order.php", php), &[("src/Lib/Model.php", MODEL)]);
+
+    assert_eq!(sharp_issues, ["7:38 mixed-return-statement"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+/// A nullable property with accessor bodies has the issues of its PHP twin. Over a plain PHP parent's attributes it
+/// has no storage, so its `get` still reports `mixed` until spec section 21's `as` is built. One whose body uses
+/// `field` starts as null, so it needs no constructor, and a get-only one without storage needs no initial value.
+#[test]
+fn nullable_properties_with_accessor_bodies_have_the_issues_of_their_php_twins() {
+    let sharp = "namespace Demo;\n\nimport Lib.Model;\n\nclass Order : Model\n{\n    public Address? shipping { get => this.getAttribute(\"shipping\"); set => this.setAttribute(\"shipping\", value); }\n    public string? note { get => field; set => field = value; }\n    public string? summary { get => this.note; }\n}\n\nclass Address\n{\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Model;\n\nclass Order extends Model\n{\n    public ?Address $shipping {\n        get => $this->getAttribute('shipping');\n        set {\n            $this->setAttribute('shipping', $value);\n        }\n    }\n    public ?string $note = null {\n        get => $this->note;\n        set {\n            $this->note = $value;\n        }\n    }\n    public ?string $summary {\n        get => $this->note;\n    }\n}\n\nclass Address\n{\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Order.sharp", sharp), &[("src/Lib/Model.php", MODEL)]);
+    let php_issues = issues(("src/Demo/Order.php", php), &[("src/Lib/Model.php", MODEL)]);
+
+    assert_eq!(sharp_issues, ["7:39 mixed-return-statement"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
 #[test]
 fn typeof_is_the_class_name_as_in_php() {
     let registry = "<?php\n\nnamespace Lib;\n\nfinal class Registry\n{\n    /** @param class-string<Calc> $class */\n    public static function keep(string $class): string\n    {\n        return $class;\n    }\n}\n";
@@ -867,8 +1018,9 @@ fn virtual_and_override_are_checked_as_final_and_the_override_attribute_in_php()
     assert_eq!(missing.message, "Missing `override` modifier on overriding method `Demo\\Child::size`.");
 }
 
-/// A plain PHP base class with untyped properties typed by `@var`, one declared in a trait, and typed properties.
-const MODEL: &str = "<?php\n\nnamespace Lib;\n\ntrait HasTimestamps\n{\n    /** @var bool */\n    public $timestamps = true;\n}\n\nabstract class Model\n{\n    use HasTimestamps;\n\n    /** @var string|null */\n    protected $table;\n\n    /** @var array<int, string> */\n    protected $fillable = [];\n\n    protected $with = [];\n\n    protected int $perPage = 15;\n\n    protected array $appends = [];\n\n    private $secret = 'model';\n}\n";
+/// A plain PHP base class with untyped properties typed by `@var`, one declared in a trait, typed properties, and
+/// attributes read and written through `getAttribute` and `setAttribute`.
+const MODEL: &str = "<?php\n\nnamespace Lib;\n\ntrait HasTimestamps\n{\n    /** @var bool */\n    public $timestamps = true;\n}\n\nabstract class Model\n{\n    use HasTimestamps;\n\n    /** @var string|null */\n    protected $table;\n\n    /** @var array<int, string> */\n    protected $fillable = [];\n\n    protected $with = [];\n\n    protected int $perPage = 15;\n\n    protected array $appends = [];\n\n    private $secret = 'model';\n\n    /** @var array<string, mixed> */\n    private array $attributes = [];\n\n    public function getAttribute(string $key): mixed\n    {\n        return $this->attributes[$key] ?? null;\n    }\n\n    public function setAttribute(string $key, mixed $value): static\n    {\n        $this->attributes[$key] = $value;\n\n        return $this;\n    }\n}\n";
 
 /// An override of a plain PHP parent's property writes a type that fits the parent's `@var`, or any type when the
 /// parent has none, and the type of a typed parent, with the parent's access level, spec section 6.1. Its PHP twin
@@ -1633,6 +1785,14 @@ fn is_and_match_check_an_any_before_its_use() {
     let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public int size(Any? value)\n    {\n        if (value is string text) {\n            return strlen(text);\n        }\n        return match (value) {\n            int count => count + 1,\n            null => 0,\n            default => -1,\n        };\n    }\n}\n";
 
     assert_eq!(issues(("src/Demo/Inbox.sharp", sharp), &[("src/Demo/Source.php", SOURCE)]), Vec::<String>::new());
+}
+
+/// An accessor of an `Any?` property takes and gives null, and one of an `Any` property gives any value but null.
+#[test]
+fn an_accessor_of_any_gives_no_null_and_of_any_nullable_does() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public Any? note { get => field; set => field = value; }\n\n    public Any label { get => this.note ?? \"none\"; }\n\n    public Any blank { get => null; }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Inbox.sharp", sharp), &[]), ["9:31 invalid-return-statement"]);
 }
 
 /// An override of a plain PHP property of PHP's `mixed`, written or in `@var`, or of an untyped one, writes `Any?`, or

@@ -433,31 +433,13 @@ where
         // A conditional return type whose branches are all `void`/`never` erases to `void`, which
         // the check above cannot see through since it only sees the unexpanded conditional.
         if !expanded_type.is_void() {
-            let expected_return_type_id = expanded_type.get_id();
-
-            let help_message = if expanded_type.is_nullable() {
-                "Ensure all code paths end with a `return` statement. You may need to add `return null;` to the paths that currently don't return a value.".to_string()
-            } else {
-                format!(
-                    "Add a `return` statement that provides a value of type '{expected_return_type_id}' to all paths, or change the function's return type to '{expected_return_type_id}|null' and return `null` explicitly."
-                )
-            };
-
-            context.collector.report_with_code(
-                IssueCode::MissingReturnStatement,
-                Issue::error(format!("Missing return statement in function `{}`", function_metadata.name))
-                    .with_annotation(
-                        Annotation::primary(function_metadata.name_span.unwrap_or(function_metadata.span))
-                            .with_message(format!(
-                                "This function is declared to return '{expected_return_type_id}'..."
-                            )),
-                    )
-                    .with_annotation(
-                        Annotation::secondary(body.span())
-                            .with_message("...but this path can exit without returning a value."),
-                    )
-                    .with_note("A function that does not explicitly return a value will implicitly return `null`.")
-                    .with_help(help_message),
+            report_missing_return(
+                context,
+                "function",
+                function_metadata.name,
+                function_metadata.name_span.unwrap_or(function_metadata.span),
+                body.span(),
+                &expanded_type,
             );
         }
     }
@@ -725,7 +707,7 @@ where
         if parameter_node.is_promoted_property()
             && let Some(hook_list) = &parameter_node.hooks
         {
-            let property_name = word(parameter_node.variable.name);
+            let property_name = php_variable_name(parameter_node.variable.name);
             for hook in &hook_list.hooks {
                 analyze_property_hook(hook, property_name, context, block_context, artifacts)?;
             }
@@ -733,6 +715,43 @@ where
     }
 
     Ok(())
+}
+
+/// Reports a body that can end without returning a value, though the `kind` named `name`, declared at `declaration`,
+/// returns `expected_type`: a function, or a PHP# `get` accessor, which returns its property's type.
+pub(crate) fn report_missing_return<A>(
+    context: &mut Context<'_, '_, A>,
+    kind: &str,
+    name: Word,
+    declaration: Span,
+    body: Span,
+    expected_type: &TUnion,
+) where
+    A: Arena,
+{
+    let expected_return_type_id = expected_type.get_id();
+
+    let help_message = if expected_type.is_nullable() {
+        "Ensure all code paths end with a `return` statement. You may need to add `return null;` to the paths that currently don't return a value.".to_string()
+    } else {
+        format!(
+            "Add a `return` statement that provides a value of type '{expected_return_type_id}' to all paths, or change the {kind}'s return type to '{expected_return_type_id}|null' and return `null` explicitly."
+        )
+    };
+
+    context.collector.report_with_code(
+        IssueCode::MissingReturnStatement,
+        Issue::error(format!("Missing return statement in {kind} `{name}`"))
+            .with_annotation(
+                Annotation::primary(declaration)
+                    .with_message(format!("This {kind} is declared to return '{expected_return_type_id}'...")),
+            )
+            .with_annotation(
+                Annotation::secondary(body).with_message("...but this path can exit without returning a value."),
+            )
+            .with_note(format!("A {kind} that does not explicitly return a value will implicitly return `null`."))
+            .with_help(help_message),
+    );
 }
 
 /// Checks if a type is a single unresolved template parameter with a mixed bound.
