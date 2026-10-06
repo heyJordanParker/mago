@@ -39,6 +39,8 @@ pub enum Binding {
     Constant,
     /// A member of the enclosing class, written without `this.`.
     Member,
+    /// `field` in an accessor body: the storage of the property the accessor belongs to.
+    Field,
 }
 
 /// A PHP# scope rule a bare name breaks. The name still has its [`Binding`].

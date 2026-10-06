@@ -1,4 +1,5 @@
 use mago_bytes::BytesDisplay;
+use mago_names::ResolvedNames;
 use mago_names::binding::Binding;
 use mago_names::binding::BindingError;
 use mago_names::binding::Local;
@@ -16,6 +17,7 @@ use mago_syntax::cst::ArrayElement;
 use mago_syntax::cst::Assignment;
 use mago_syntax::cst::AssignmentOperator;
 use mago_syntax::cst::BinaryOperator;
+use mago_syntax::cst::Block;
 use mago_syntax::cst::Break;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::ClassLikeConstant;
@@ -59,7 +61,9 @@ use mago_syntax::cst::PatternMatchArm;
 use mago_syntax::cst::PatternMatchArmBody;
 use mago_syntax::cst::Program;
 use mago_syntax::cst::Property;
+use mago_syntax::cst::PropertyHook;
 use mago_syntax::cst::PropertyHookBody;
+use mago_syntax::cst::PropertyHookConcreteBody;
 use mago_syntax::cst::PropertyHookList;
 use mago_syntax::cst::PropertyItem;
 use mago_syntax::cst::Sequence;
@@ -124,11 +128,21 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   accessor, because PHP has no `readonly` static property.
 /// - An initial value: any expression a method body has, without `this`, which is an error. A constant initial value,
 ///   as a parameter default is, becomes the member's default, and any other runs at the start of the constructor.
-/// - An auto-property: `public`, `protected` or `private`, an optional `static`, a type, one name, the accessors
-///   `get;` and an optional `set;` that may take an access modifier narrower than the property's, and an optional
-///   initial value after the accessors, which is a field's. A property without `get`, an accessor declared twice, or
-///   a `set` access modifier as wide as the property's is an error, as in C#. A get-only property runs as `readonly`,
-///   and the analyzer reports every write to it that `readonly` refuses.
+/// - A property: `public`, `protected` or `private`, an optional `static`, a type, one name, the accessors `get` and
+///   an optional `set` that may take an access modifier narrower than the property's, and an optional initial value
+///   after the accessors, which is a field's. A property without `get`, an accessor declared twice, or a `set` access
+///   modifier as wide as the property's is an error, as in C#. A get-only property is set only where `readonly`
+///   allows, and the analyzer reports every other write to it.
+/// - An accessor: `get;` or `set;`, which is an auto accessor, or a body, `=> expr;` or a block, which is a method
+///   body's. A body names the property's storage `field`, and a `set` body names the incoming value `value`. A
+///   property has storage when an accessor is auto or a body uses `field`, and a property without storage takes no
+///   initial value and is not declared by a constructor parameter, because PHP runs it as a virtual property. A `get`
+///   block returns a value and a `set` block returns none, as php-src types its hooks. `field` in a lambda is an
+///   error, because PHP runs a lambda as a function of its own, where `$this->name` calls the accessor again.
+///   `this.name` or `this?.name` inside `name`'s own accessor is an error that names `field`, because PHP reads the
+///   storage there, while C# calls the accessor again. A static property with a body is not supported yet, because
+///   PHP has no hooks on a static property, and neither is a non-constant initial value on a property whose `set` has
+///   a body, which would run the body in the constructor.
 /// - A computed property: `public`, `protected` or `private`, a type, one name and an expression body, as in
 ///   `public string slug => Str.slug(name);`. Its expression is a method body's expression and runs on each read. A
 ///   `static` computed property is not supported yet, because PHP has no hooks on a static property.
@@ -160,11 +174,11 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   parentheses with `?` after it, as in `(int|string)?`, which the engine compiles as `int|string|null`.
 ///   `check_union` reports `null` written in a union, as in `int|null`, as not supported yet. PHP's own check reports
 ///   a nullable union inside another union, and a single type in parentheses, as in `(Calc)?`, which PHP# writes
-///   `Calc?`. `(int)?` is a parse error, as PHP lexes `(int)` as a cast. A field or an auto-property with `set` of a
-///   nullable type or a nullable union starts as null without an initial value, as in C# and Swift, so
+///   `Calc?`. `(int)?` is a parse error, as PHP lexes `(int)` as a cast. A field, or a property with storage and `set`,
+///   of a nullable type or a nullable union starts as null without an initial value, as in C# and Swift, so
 ///   `private int? total;` holds null until it is written, and the engine gives it the default `null`. A get-only
-///   auto-property of one without an initial value is not supported yet, because it runs as `readonly`, which takes
-///   no default.
+///   property with storage of one without an initial value is not supported yet, because it is set only where
+///   `readonly` allows, and `readonly` takes no default. A property without storage holds nothing to start with.
 /// - `Self`, written exactly so, is the class a static method is called on, spec section 25, and PHP's `static`. It is
 ///   a method's return type only, as in Swift, nullable as in `Self?`, in a union as in `Self|int`, or a type argument
 ///   there as in `List<Self>`, and any other type position, a function type's included, is an error. The lexer reads
@@ -473,7 +487,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         ) => Some(Enum),
         (Node::EnumCaseBackedItem(_), Enum) => Some(Constant),
         (Node::ClassLikeMember(ClassLikeMember::Property(property)), Class) => {
-            match is_slice_property(property, &context.version) {
+            match is_slice_property(property, &context.version, context.names) {
                 Ok(()) => Some(FieldOrProperty),
                 Err(issue) => {
                     context.report(*issue);
@@ -497,15 +511,27 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         ) => Some(ClassConstant),
         (Node::ClassLikeConstantItem(_), ClassConstant) => Some(Constant),
         (Node::HookedProperty(property), FieldOrProperty) => {
-            check_accessors(&property.modifiers, &property.hook_list, property.item.variable().span, context);
+            let variable = property.item.variable();
+            check_accessors(&property.modifiers, &property.hook_list, variable.span, context);
+            check_accessor_bodies(&property.hook_list, variable.name, context);
+            if let Some(initial_value) = &property.initial_value
+                && !context.names.has_storage(&property.hook_list)
+            {
+                report_no_storage(variable, initial_value.value.span(), "its initial value", context);
+            }
 
             Some(FieldOrProperty)
         }
-        // `check_accessors` checked the accessors. An initial value is a method body's expression without `this`.
-        (Node::PropertyHookList(_), FieldOrProperty) => None,
+        // `check_accessors` reported each accessor outside the slice. An accessor body is a method body.
+        (Node::PropertyHookList(_), FieldOrProperty | Parameter) => Some(place),
+        (Node::PropertyHook(accessor), FieldOrProperty | Parameter) => is_slice_accessor(accessor).then_some(place),
+        (
+            Node::PropertyHookBody(_) | Node::PropertyHookAbstractBody(_) | Node::PropertyHookConcreteBody(_),
+            FieldOrProperty | Parameter,
+        ) => Some(place),
         // A computed property's expression runs on each read, as a method body does.
         (Node::ComputedProperty(_), FieldOrProperty) => Some(FieldOrProperty),
-        (Node::PropertyHookConcreteExpressionBody(_), FieldOrProperty) => Some(Body),
+        (Node::Block(_) | Node::PropertyHookConcreteExpressionBody(_), FieldOrProperty | Parameter) => Some(Body),
         // A constant initial value is the member's default, which PHP evaluates as a constant expression.
         (Node::Expression(value), FieldOrProperty) => {
             let uses_this = report_this_in_initial_value(node, context);
@@ -627,6 +653,10 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
                 && parameter.modifiers.contains_visibility()
             {
                 check_accessors(&parameter.modifiers, accessors, parameter.variable.span, context);
+                check_accessor_bodies(accessors, parameter.variable.name, context);
+                if !context.names.has_storage(accessors) {
+                    report_no_storage(&parameter.variable, parameter.variable.span, "the constructor to set", context);
+                }
             }
 
             Some(Parameter)
@@ -686,7 +716,6 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             ),
             Parameter,
         ) => Some(Parameter),
-        (Node::PropertyHookList(_), Parameter) => None,
         (Node::FunctionLikeParameterDefaultValue(_), Parameter) => Some(Constant),
         (Node::Block(_), Method | Body) => Some(Body),
         (Node::MethodExpressionBody(_), Method) => Some(Body),
@@ -1137,7 +1166,7 @@ fn report_optional_before_required(parameters: &FunctionLikeParameterList, conte
 /// A field written `override` replaces a plain PHP parent's property, spec section 6.1. It takes the parent's access
 /// level, which may be `public` and which the analyzer checks, and a constant initial value, its new default, because
 /// the parent's constructor may read the property before this class's constructor sets any other.
-fn is_slice_property(property: &Property, version: &PHPVersion) -> Result<(), Box<Issue>> {
+fn is_slice_property(property: &Property, version: &PHPVersion, names: &ResolvedNames) -> Result<(), Box<Issue>> {
     let not_supported = |span: Span, message: &str, note: &str| {
         Issue::error(message)
             .with_annotation(Annotation::primary(span).with_message("Not supported yet."))
@@ -1145,7 +1174,17 @@ fn is_slice_property(property: &Property, version: &PHPVersion) -> Result<(), Bo
     };
     let no_access_modifier = "A PHP# member without an access modifier is `private`, while PHP makes it `public`.";
 
-    if property.modifiers().contains_static() {
+    if let Some(r#static) = property.modifiers().get_static() {
+        if let Property::Hooked(hooked) = property
+            && hooked.hook_list.hooks.iter().any(|accessor| matches!(accessor.body, PropertyHookBody::Concrete(_)))
+        {
+            return Err(Box::new(not_supported(
+                r#static.span(),
+                "A static property with an accessor body is not supported yet in PHP#.",
+                "PHP has no hooks on a static property.",
+            )));
+        }
+
         if let Property::Hooked(auto_property) = property
             && auto_property.hook_list.is_get_only()
         {
@@ -1237,9 +1276,21 @@ fn is_slice_property(property: &Property, version: &PHPVersion) -> Result<(), Bo
                     "An initial value before the accessors is not supported yet in PHP#.",
                     "A PHP# property writes its initial value after its accessors: `public int views { get; set; } = 0;`.",
                 )))
+            } else if let Some(initial_value) = &auto_property.initial_value
+                && !initial_value.value.is_constant(version, false)
+                && auto_property.hook_list.hooks.iter().any(|accessor| {
+                    accessor.name.value == b"set" && matches!(accessor.body, PropertyHookBody::Concrete(_))
+                })
+            {
+                Err(Box::new(not_supported(
+                    initial_value.value.span(),
+                    "An initial value that is not constant, on a property whose `set` has a body, is not supported yet in PHP#.",
+                    "A constant initial value is the property's default, while any other would run the `set` body at the start of the constructor.",
+                )))
             } else if auto_property.initial_value.is_none()
                 && matches!(auto_property.hint, Some(Hint::Nullable(_)))
                 && auto_property.hook_list.is_get_only()
+                && names.has_storage(&auto_property.hook_list)
             {
                 Err(Box::new(not_supported(
                     property.first_variable().span,
@@ -1338,9 +1389,10 @@ fn is_slice_constant(constant: &ClassLikeConstant) -> Result<(), Box<Issue>> {
     }
 }
 
-/// Checks the accessors of an auto-property, declared in the class body or on a constructor parameter: `get;` once,
-/// and an optional `set;` once, which may take an access modifier narrower than the property's, as in C#. Accessor
-/// bodies, `init` and an access modifier on `get` are not supported yet.
+/// Checks the accessors of a property, declared in the class body or on a constructor parameter: `get` once, and an
+/// optional `set` once, which may take an access modifier narrower than the property's, as in C#. Each is `;`, an
+/// expression body `=> expr;` or a block. `init`, an access modifier on `get` and a parameter list on `set` are not
+/// supported yet.
 fn check_accessors(
     modifiers: &Sequence<Modifier>,
     accessors: &PropertyHookList,
@@ -1352,20 +1404,11 @@ fn check_accessors(
 
     for accessor in &accessors.hooks {
         let name = accessor.name.value;
-        let is_auto = accessor.attribute_lists.is_empty()
-            && accessor.ampersand.is_none()
-            && accessor.parameter_list.is_none()
-            && matches!(accessor.body, PropertyHookBody::Abstract(_))
-            && accessor.modifiers.len() <= 1
-            && accessor.modifiers.iter().all(|modifier| {
-                matches!(modifier, Modifier::Protected(_) | Modifier::Private(_) | Modifier::Public(_))
-            });
-
-        if !is_auto || !(name == b"get" || name == b"set") || (name == b"get" && !accessor.modifiers.is_empty()) {
+        if !is_slice_accessor(accessor) {
             report_not_supported(
                 accessor.span(),
                 "accessor",
-                "A PHP# property's accessors are `get;` and `set;`, and `set` may take `private` or `protected`.",
+                "A PHP# property's accessors are `get` and `set`, each written `;`, `=> expr;` or with a block body, and `set` may take `private` or `protected`.",
                 context,
             );
         } else if declared.contains(&name) {
@@ -1391,6 +1434,106 @@ fn check_accessors(
                 .with_help("Add `get;`, as in `public int views { get; set; }`."),
         );
     }
+}
+
+/// Whether the slice has an accessor: `get` or `set` without attributes, `&` or a parameter list, where only `set`
+/// takes an access modifier, `private`, `protected` or `public`, which `check_accessors` compares with the property's.
+fn is_slice_accessor(accessor: &PropertyHook) -> bool {
+    let name = accessor.name.value;
+
+    accessor.attribute_lists.is_empty()
+        && accessor.ampersand.is_none()
+        && accessor.parameter_list.is_none()
+        && match accessor.modifiers.as_slice() {
+            [] => name == b"get" || name == b"set",
+            [Modifier::Public(_) | Modifier::Protected(_) | Modifier::Private(_)] => name == b"set",
+            _ => false,
+        }
+}
+
+/// Reports a property without storage that something sets: an initial value, or a constructor that receives it.
+fn report_no_storage(property: &DirectVariable, span: Span, set_by: &str, context: &mut Context<'_, '_, '_>) {
+    context.report(
+        Issue::error(format!(
+            "The property `{}` has no storage for {set_by}: give it an auto accessor, such as `get;`, or use `field` in an accessor body.",
+            BytesDisplay(property.name)
+        ))
+        .with_annotation(Annotation::primary(span).with_message("Set here."))
+        .with_note("Its accessors compute every read and write, as PHP's virtual property does."),
+    );
+}
+
+/// Checks the bodies of a property's accessors: the returns PHP's hooks allow, `field` in a lambda, and the property
+/// read through `this` inside its own accessor.
+fn check_accessor_bodies(accessors: &PropertyHookList, property: &[u8], context: &mut Context<'_, '_, '_>) {
+    for accessor in accessors.hooks.iter().filter(|accessor| is_slice_accessor(accessor)) {
+        if let PropertyHookBody::Concrete(PropertyHookConcreteBody::Block(block)) = &accessor.body {
+            check_accessor_returns(accessor.name.value, block, context);
+        }
+
+        check_accessor_node(Node::PropertyHookBody(&accessor.body), property, false, context);
+    }
+}
+
+/// php-src gives a `get` hook the property's type and a `set` hook `void`, so a `get` block returns a value and a
+/// `set` block returns none. A lambda's returns are its own.
+fn check_accessor_returns(accessor: &[u8], block: &Block, context: &mut Context<'_, '_, '_>) {
+    for r#return in mago_syntax::utils::find_returns_in_block(block) {
+        match (accessor, &r#return.value) {
+            (b"get", None) => context.report(
+                Issue::error("A `get` accessor must return a value.")
+                    .with_annotation(Annotation::primary(r#return.span()).with_message("Returns no value."))
+                    .with_note("PHP gives a `get` hook the property's type.")
+                    .with_help("Return the property's value, such as `return field;`."),
+            ),
+            (b"set", Some(value)) => context.report(
+                Issue::error("A `set` accessor must not return a value.")
+                    .with_annotation(Annotation::primary(value.span()).with_message("Returned here."))
+                    .with_note("PHP gives a `set` hook the return type `void`.")
+                    .with_help("Write the value with `field = value;`, then `return;` if the body ends early."),
+            ),
+            _ => {}
+        }
+    }
+}
+
+/// A lambda runs as a function of its own, so `$this->name` there calls the accessor again, in PHP as in C#. In the
+/// accessor itself PHP reads and writes the storage through `$this->name` and `$this?->name`, where C# calls the
+/// accessor again, so the accessor writes `field`, and a lambda cannot.
+fn check_accessor_node(node: Node<'_, '_>, property: &[u8], in_lambda: bool, context: &mut Context<'_, '_, '_>) {
+    let in_lambda = in_lambda || matches!(node, Node::ArrowFunction(_) | Node::Closure(_));
+    let member = match node {
+        Node::PropertyAccess(access) => Some((access.object, &access.property)),
+        Node::NullSafePropertyAccess(access) => Some((access.object, &access.property)),
+        _ => None,
+    };
+
+    match node {
+        Node::ConstantAccess(access) if in_lambda && context.names.binding(&access.name) == Some(Binding::Field) => {
+            context.report(
+                Issue::error(
+                    "`field` cannot be used in a lambda: PHP would call the accessor again instead of reading the storage.",
+                )
+                .with_annotation(Annotation::primary(access.span()).with_message("Used here."))
+                .with_help("Copy `field` into a local before the lambda, and use the local inside it."),
+            );
+        }
+        _ if !in_lambda
+            && let Some((object, selector)) = member
+            && matches!(object.unparenthesized(), Expression::ConstantAccess(object) if context.names.binding(&object.name) == Some(Binding::This))
+            && matches!(selector, ClassLikeMemberSelector::Identifier(member) if member.value == property) =>
+        {
+            let property = BytesDisplay(property);
+            context.report(
+                Issue::error(format!("Write `field` instead of `this.{property}` inside `{property}`'s own accessor."))
+                    .with_annotation(Annotation::primary(node.span()).with_message("Written here."))
+                    .with_note("PHP reads and writes the storage there, while C# would call the accessor again."),
+            );
+        }
+        _ => {}
+    }
+
+    ensure_sufficient_stack(|| node.visit_children(|child| check_accessor_node(child, property, in_lambda, context)));
 }
 
 /// Reports each `this` in an initial value. A constant initial value is the member's default, and any other runs at
@@ -1604,13 +1747,13 @@ fn report_hidden_pattern_variables(pattern: &Pattern, hidden: bool, context: &mu
     }
 }
 
-/// Whether the slice can write an expression: a local, a parameter, a member written `object.name`, or an index of one
-/// of them, as in `counts["a"]`. A member written by its bare name passes, because `check_constant_access` reports it
-/// with the name to write instead.
+/// Whether the slice can write an expression: a local, a parameter, `field`, a member written `object.name`, or an
+/// index of one of them, as in `counts["a"]`. A member written by its bare name passes, because
+/// `check_constant_access` reports it with the name to write instead.
 fn is_slice_target(target: &Expression, context: &Context<'_, '_, '_>) -> bool {
     match target {
         Expression::ConstantAccess(access) => {
-            matches!(context.names.binding(&access.name), Some(Binding::Local(_) | Binding::Member))
+            matches!(context.names.binding(&access.name), Some(Binding::Local(_) | Binding::Field | Binding::Member))
         }
         Expression::Access(Access::Property(_)) => true,
         Expression::ArrayAccess(access) => is_slice_target(access.array, context),
@@ -1988,7 +2131,7 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# enum has attributes, an optional `public`, a name, an optional `: string, Interface` header whose `int` or `string` comes first, constants, cases and methods, with no other modifiers or `implements`."
         }
         Place::FieldOrProperty => {
-            "A PHP# field is `private` or `protected`, and a property has the accessors `get;` and an optional `set;`. Both may be `static`, and have a type of `int`, `float`, `bool`, `string`, a class, `List<T>`, `Map<TKey, TValue>` or `Function<R(P)>`, nullable as in `int?` or not, or a union of them as in `int|string`, a name, and an optional initial value."
+            "A PHP# field is `private` or `protected`, and a property has the accessors `get` and an optional `set`, each `;`, `=> expr;` or a block. Both may be `static`, and have a type of `int`, `float`, `bool`, `string`, a class, `List<T>`, `Map<TKey, TValue>` or `Function<R(P)>`, nullable as in `int?` or not, or a union of them as in `int|string`, a name, and an optional initial value."
         }
         Place::ClassConstant => {
             "A PHP# constant has `public`, `protected` or `private`, an optional type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, or a union of them as in `int|string`, one name, and a constant value."
