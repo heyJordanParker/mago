@@ -787,7 +787,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             context.report(
                 Issue::error("A type pattern is never nullable: null never matches a type.")
                     .with_annotation(Annotation::primary(node.span()).with_message("Written here."))
-                    .with_help("Test for null with its own pattern, as in `x is null`, or join both with `or`, as in `x is int or null`."),
+                    .with_help("Test for null with `x == null`, or join both with `or`, as in `x is int or null`."),
             );
 
             None

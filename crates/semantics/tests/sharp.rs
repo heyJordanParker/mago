@@ -2210,6 +2210,14 @@ fn a_nullable_type_pattern_or_as_to_a_nullable_type_is_an_error() {
 }
 
 #[test]
+fn a_nullable_type_pattern_names_the_null_check_to_write() {
+    let code = leak(method("        const a = extra is int? n;\n        return extra;\n"));
+
+    let help: Vec<_> = check("src/Report.sharp", code).into_iter().filter_map(|issue| issue.help).collect();
+    assert_eq!(help, ["Test for null with `x == null`, or join both with `or`, as in `x is int or null`."]);
+}
+
+#[test]
 fn a_pattern_variable_under_or_or_not_is_an_error_but_under_the_not_that_starts_is() {
     let code = leak(method(
         "        const a = extra is int x or string y;\n        const b = extra is not (int z and > 0);\n        const c = match (extra) {\n            not int w => 1,\n            default => 0,\n        };\n        return extra;\n",
