@@ -14,7 +14,8 @@ use super::types::Types;
 /// It parsed without errors, and no check reported an error-level issue. Only [`check`] creates one, and the lowering
 /// takes one, so the lowering never sees a construct the parser or the checks refuse.
 ///
-/// Its fields are private to this module, so code that skips the checks cannot build one:
+/// Its fields are private to this module, so code must build one through [`check`]. `check` trusts its caller to pass
+/// every issue the checks reported for the file. The orchestrator is that caller:
 ///
 /// ```compile_fail
 /// # mod types {
@@ -115,8 +116,9 @@ pub enum Refusal<'program> {
 
 /// Accepts `program` when it parsed without errors and the checks reported no error-level issue.
 ///
-/// `program` is the orchestrator's parse of `file`, and `issues` is every issue the checks reported for the file.
-/// `artifacts` and `codebase` are the file's analysis, which the lowering reads its types from.
+/// `program` is the orchestrator's parse of `file`, and `artifacts` and `codebase` are the file's analysis, which the
+/// lowering reads its types from. `issues` must be every issue the orchestrator reported for `file`. `check` runs no
+/// check itself, so a caller that leaves an issue out owns the program it lowers.
 ///
 /// # Errors
 ///
