@@ -420,6 +420,10 @@ where
         }
 
         if !resolved_template_types.is_empty() {
+            artifacts.inferred_type_arguments.insert(
+                (instantiation_span.start.offset, instantiation_span.end.offset),
+                resolved_template_types.clone(),
+            );
             type_parameters = Some(resolved_template_types);
         }
     } else if let Some(argument_list) = &argument_list

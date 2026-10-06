@@ -10,6 +10,7 @@ use foldhash::HashSet;
 use mago_allocator::LocalArena;
 use mago_analyzer::Analyzer;
 use mago_analyzer::analysis_result::AnalysisResult;
+use mago_analyzer::artifacts::AnalysisArtifacts;
 use mago_analyzer::plugin::PluginRegistry;
 use mago_analyzer::plugin::context::HookContext;
 use mago_analyzer::plugin::hook::ExpressionHook;
@@ -22,6 +23,7 @@ use mago_analyzer::plugin::provider::ProviderMeta;
 use mago_analyzer::settings::Settings;
 use mago_codex::populator::populate_codebase;
 use mago_codex::scanner::scan_program;
+use mago_codex::ttype::TType;
 use mago_database::DatabaseReader;
 use mago_database::file::File;
 use mago_names::CHANGING_COLLECTION_METHODS;
@@ -88,6 +90,17 @@ fn analyze(
     analyzed: (&'static str, &'static str),
     others: &[(&'static str, &'static str)],
 ) -> Vec<Issue> {
+    analyze_with_artifacts(registry, settings, analyzed, others).0
+}
+
+/// Analyzes `analyzed` together with `others` under `settings` and the plugins of `registry`, and returns its issues
+/// and the analysis artifacts.
+fn analyze_with_artifacts(
+    registry: &PluginRegistry,
+    settings: Settings,
+    analyzed: (&'static str, &'static str),
+    others: &[(&'static str, &'static str)],
+) -> (Vec<Issue>, AnalysisArtifacts) {
     let Prelude { mut database, mut metadata, mut symbol_references } = PRELUDE.clone();
 
     let file_ids: Vec<_> = std::iter::once(&analyzed)
@@ -113,12 +126,12 @@ fn analyze(
 
     let (file, program, names) = &programs[0];
     let mut result = AnalysisResult::new(symbol_references);
-    Analyzer::new(&arena, file, names, &metadata, registry, settings)
-        .analyze(program, &mut result)
+    let artifacts = Analyzer::new(&arena, file, names, &metadata, registry, settings)
+        .analyze_with_artifacts(program, &mut result)
         .expect("analysis succeeds");
 
     // The analyzed file's parse errors come first, as `mago analyze` reports them beside the analysis.
-    program.errors.iter().map(Issue::from).chain(result.issues).collect()
+    (program.errors.iter().map(Issue::from).chain(result.issues).collect(), artifacts)
 }
 
 #[test]
@@ -3067,4 +3080,34 @@ fn a_spread_of_a_value_that_is_neither_a_list_nor_a_map_is_an_error() {
             "Cannot use spread operator on non-iterable type `int`.",
         ]
     );
+}
+
+/// The checker's types reach the running program, inferred ones too (decision 029), so the analysis records the type
+/// arguments it inferred for each generic call and `new`, by the span of the call, one per template in declaration
+/// order.
+#[test]
+fn the_inferred_type_arguments_of_a_generic_call_and_a_generic_new_are_recorded_by_span() {
+    let sharp = "namespace Demo;\n\nimport Lib.Box;\nimport Lib.Pairs;\n\nclass Report\n{\n    public int run()\n    {\n        const pair = Pairs.of(5, \"tea\");\n        const box = new Box(2.5);\n        return count(pair) + (int)box.item;\n    }\n}\n";
+    let library = "<?php\n\nnamespace Lib;\n\n/** @template T */\nfinal class Box\n{\n    /** @param T $item */\n    public function __construct(public mixed $item) {}\n}\n\nfinal class Pairs\n{\n    /**\n     * @template K\n     * @template V\n     *\n     * @param K $key\n     * @param V $value\n     *\n     * @return list<K|V>\n     */\n    public static function of(mixed $key, mixed $value): array\n    {\n        return [$key, $value];\n    }\n}\n";
+    let call = sharp.find("Pairs.of").unwrap() as u32;
+    let instantiation = sharp.find("new Box").unwrap() as u32;
+    let end_of = |start: u32| start + sharp[start as usize..].find(')').unwrap() as u32 + 1;
+
+    let (issues, artifacts) = analyze_with_artifacts(
+        &PLUGIN_REGISTRY,
+        settings(),
+        ("src/Demo/Report.sharp", sharp),
+        &[("src/Lib/Box.php", library)],
+    );
+    let type_arguments = |start: u32| -> Vec<String> {
+        let span = (start, end_of(start));
+        let recorded = artifacts.inferred_type_arguments.get(&span);
+        let recorded = recorded.unwrap_or_else(|| panic!("{span:?} in {:?}", artifacts.inferred_type_arguments.keys()));
+
+        recorded.iter().map(|argument| argument.get_id().to_string()).collect()
+    };
+
+    assert!(issues.is_empty(), "{issues:?}");
+    assert_eq!(type_arguments(call), ["int(5)", "string('tea')"]);
+    assert_eq!(type_arguments(instantiation), ["float"]);
 }
