@@ -62,7 +62,8 @@ where
     }
 
     let is_sharp = context.program.dialect.is_sharp();
-    if parameter.modifiers.contains_readonly() || (is_sharp && parameter.hooks.as_ref().is_some_and(is_sharp_get_only))
+    if parameter.modifiers.contains_readonly()
+        || (is_sharp && parameter.hooks.as_ref().is_some_and(PropertyHookList::is_get_only))
     {
         flags |= MetadataFlags::READONLY;
     }
@@ -317,8 +318,12 @@ where
                 flags |= MetadataFlags::HAS_DEFAULT;
             }
 
-            if is_sharp && is_sharp_get_only(&hooked_property.hook_list) {
+            if is_sharp && hooked_property.hook_list.is_get_only() {
                 flags |= MetadataFlags::READONLY;
+            }
+
+            if hooked_property.modifiers.contains_static() {
+                flags |= MetadataFlags::STATIC;
             }
 
             if hooked_property.modifiers.contains_abstract() {
@@ -378,6 +383,64 @@ where
 
             vec![metadata]
         }
+        // A PHP# computed property runs as PHP's virtual property with one `get => expr;` hook.
+        Property::Computed(computed_property) => {
+            let read_visibility = match computed_property.modifiers.get_first_read_visibility() {
+                Some(visibility) => Visibility::try_from(visibility).unwrap_or(Visibility::Public),
+                None => Visibility::Public,
+            };
+
+            let mut metadata =
+                PropertyMetadata::new(VariableIdentifier(php_variable_name(computed_property.variable.name)), flags);
+
+            metadata.attributes = scan_attribute_lists(
+                &computed_property.attribute_lists,
+                context,
+                scope,
+                Some(class_like_metadata.original_name),
+            );
+            metadata.set_name_span(Some(computed_property.variable.span));
+            metadata.set_span(Some(computed_property.span()));
+            metadata.set_visibility(read_visibility, read_visibility);
+            metadata.set_type_declaration_metadata(
+                computed_property
+                    .hint
+                    .as_ref()
+                    .map(|hint| get_type_metadata_from_hint(hint, Some(class_like_metadata.name), context)),
+            );
+
+            if let Some(document) = document.as_ref() {
+                update_property_metadata_from_docblock(
+                    &mut metadata,
+                    document,
+                    classname,
+                    type_context,
+                    scope,
+                    class_like_metadata,
+                    false,
+                );
+            }
+
+            let get = word("get");
+            metadata.hooks.insert(
+                get,
+                PropertyHookMetadata {
+                    name: get,
+                    span: computed_property.body.span(),
+                    flags: MetadataFlags::empty(),
+                    parameter: None,
+                    returns_by_ref: false,
+                    is_abstract: false,
+                    attributes: Vec::new(),
+                    return_type_metadata: None,
+                    has_docblock: false,
+                    issues: Vec::new(),
+                },
+            );
+            metadata.set_is_virtual(true);
+
+            vec![metadata]
+        }
     }
 }
 
@@ -391,11 +454,6 @@ fn sharp_write_visibility(accessors: &PropertyHookList, read_visibility: Visibil
         None if read_visibility == Visibility::Public => Visibility::Protected,
         None => read_visibility,
     }
-}
-
-/// Whether a PHP# accessor list declares a get-only property, which runs as `readonly`.
-fn is_sharp_get_only(accessors: &PropertyHookList) -> bool {
-    !accessors.hooks.iter().any(|accessor| accessor.name.value == b"set")
 }
 
 fn scan_property_hook<'arena, A>(

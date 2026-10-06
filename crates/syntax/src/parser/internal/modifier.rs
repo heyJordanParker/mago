@@ -30,6 +30,13 @@ where
             Some(T!["private(set)"]) => Modifier::PrivateSet(self.expect_any_keyword()?),
             Some(T!["protected(set)"]) => Modifier::ProtectedSet(self.expect_any_keyword()?),
             Some(T!["public(set)"]) => Modifier::PublicSet(self.expect_any_keyword()?),
+            Some(T![Identifier]) if self.dialect.is_sharp() && self.stream.peek_kind(1)? != Some(T!["("]) => {
+                match self.stream.lookahead(0)?.map(|token| token.value) {
+                    Some(b"virtual") => Modifier::Virtual(self.expect_any_keyword()?),
+                    Some(b"override") => Modifier::Override(self.expect_any_keyword()?),
+                    _ => return Ok(None),
+                }
+            }
             _ => return Ok(None),
         }))
     }

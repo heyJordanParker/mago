@@ -38,6 +38,7 @@ use mago_codex::visibility::Visibility;
 use mago_names::kind::NameKind;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
+use mago_reporting::Level;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::comments::docblock::PrecedingDocblocks;
@@ -46,7 +47,9 @@ use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::Enum;
 use mago_syntax::cst::EnumCaseItem;
 use mago_syntax::cst::Extends;
+use mago_syntax::cst::Identifier;
 use mago_syntax::cst::Implements;
+use mago_syntax::cst::Inheritance;
 use mago_syntax::cst::Interface;
 use mago_syntax::cst::Property;
 use mago_syntax::cst::Trait;
@@ -409,6 +412,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Class<'arena> {
             self.span(),
             self.extends.as_ref(),
             self.implements.as_ref(),
+            self.inheritance.as_ref(),
             class_like_metadata,
             self.members.as_slice(),
         )?;
@@ -453,9 +457,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Class<'arena> {
             );
         }
 
-        if context.settings.check_missing_override {
-            override_attribute::check_override_attribute(class_like_metadata, self.members.as_slice(), context);
-        }
+        override_attribute::check_override_attribute(class_like_metadata, self.members.as_slice(), context);
 
         let should_check_unused = 'check_unused: {
             if !context.settings.find_unused_definitions {
@@ -552,6 +554,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Interface<'arena> {
             self.span(),
             self.extends.as_ref(),
             None,
+            self.inheritance.as_ref(),
             class_like_metadata,
             self.members.as_slice(),
         )?;
@@ -576,9 +579,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Interface<'arena> {
             );
         }
 
-        if context.settings.check_missing_override {
-            override_attribute::check_override_attribute(class_like_metadata, self.members.as_slice(), context);
-        }
+        override_attribute::check_override_attribute(class_like_metadata, self.members.as_slice(), context);
 
         // Call plugin on_leave_interface hooks
         if context.plugin_registry.has_interface_hooks() {
@@ -633,6 +634,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Trait<'arena> {
             self.span(),
             None,
             None,
+            None,
             class_like_metadata,
             self.members.as_slice(),
         )?;
@@ -657,9 +659,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Trait<'arena> {
             );
         }
 
-        if context.settings.check_missing_override {
-            override_attribute::check_override_attribute(class_like_metadata, self.members.as_slice(), context);
-        }
+        override_attribute::check_override_attribute(class_like_metadata, self.members.as_slice(), context);
 
         // Call plugin on_leave_trait hooks
         if context.plugin_registry.has_trait_hooks() {
@@ -714,15 +714,14 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Enum<'arena> {
             self.span(),
             None,
             self.implements.as_ref(),
+            None,
             class_like_metadata,
             self.members.as_slice(),
         )?;
 
         check_duplicate_enum_case_values(context, artifacts, name, self);
 
-        if context.settings.check_missing_override {
-            override_attribute::check_override_attribute(class_like_metadata, self.members.as_slice(), context);
-        }
+        override_attribute::check_override_attribute(class_like_metadata, self.members.as_slice(), context);
 
         if context.settings.find_unused_definitions
             && !class_like_metadata.flags.is_unchecked()
@@ -825,6 +824,7 @@ pub(crate) fn analyze_class_like<'ctx, 'ast, 'arena, A>(
     declaration_span: Span,
     extends_ast: Option<&'ast Extends<'arena>>,
     implements_ast: Option<&'ast Implements<'arena>>,
+    inheritance_ast: Option<&'ast Inheritance<'arena>>,
     class_like_metadata: &'ctx ClassLikeMetadata,
     members: &'ast [ClassLikeMember<'arena>],
 ) -> Result<(), AnalysisError>
@@ -857,8 +857,22 @@ where
 
     let mut checked_signatures: HashSet<(Word, Word)> = HashSet::default();
 
-    check_class_like_extends(context, class_like_metadata, extends_ast);
-    check_class_like_implements(context, class_like_metadata, implements_ast, &mut checked_signatures);
+    let mut extended_types: Vec<&Identifier<'arena>> = extends_ast.iter().flat_map(|e| e.types.iter()).collect();
+    let mut implemented_types: Vec<&Identifier<'arena>> = implements_ast.iter().flat_map(|i| i.types.iter()).collect();
+
+    // A PHP# header, `: Base, IFace`, names an interface's parents, or a class's parent among its interfaces: the
+    // one class the populator linked as the parent.
+    for type_name in inheritance_ast.iter().flat_map(|inheritance| inheritance.types.iter()) {
+        let is_parent = class_like_metadata.kind.is_interface()
+            || class_like_metadata
+                .direct_parent_class
+                .is_some_and(|parent| parent.as_bytes().eq_ignore_ascii_case(context.resolved_names.get(type_name)));
+
+        if is_parent { extended_types.push(type_name) } else { implemented_types.push(type_name) }
+    }
+
+    check_class_like_extends(context, class_like_metadata, &extended_types);
+    check_class_like_implements(context, class_like_metadata, &implemented_types, &mut checked_signatures);
 
     for member in members {
         if let ClassLikeMember::TraitUse(used_trait) = member {
@@ -1082,7 +1096,7 @@ where
                 if context.settings.diff {
                     let first_var_name = match property {
                         Property::Plain(plain) => plain.items.first().map(|item| word(item.variable().name)),
-                        Property::Hooked(hooked) => Some(word(hooked.item.variable().name)),
+                        Property::Hooked(_) | Property::Computed(_) => Some(word(property.first_variable().name)),
                     };
 
                     if let Some(var_name) = first_var_name
@@ -1097,7 +1111,7 @@ where
                 // Check for imprecise type hints (bare `array` or `iterable`)
                 let first_property_name = match property {
                     Property::Plain(plain) => plain.items.first().map(|item| word(item.variable().name)),
-                    Property::Hooked(hooked) => Some(word(hooked.item.variable().name)),
+                    Property::Hooked(_) | Property::Computed(_) => Some(word(property.first_variable().name)),
                 };
 
                 let prop_meta = first_property_name.and_then(|name| class_like_metadata.properties.get(&name));
@@ -1105,8 +1119,8 @@ where
 
                 let property_names: Vec<Word> = match property {
                     Property::Plain(plain) => plain.items.iter().map(|item| word(item.variable().name)).collect(),
-                    Property::Hooked(hooked) => {
-                        vec![word(hooked.item.variable().name)]
+                    Property::Hooked(_) | Property::Computed(_) => {
+                        vec![word(property.first_variable().name)]
                     }
                 };
 
@@ -1167,7 +1181,7 @@ where
 fn check_class_like_extends<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
     class_like_metadata: &'ctx ClassLikeMetadata,
-    extends_ast: Option<&Extends<'arena>>,
+    extended_types: &[&Identifier<'arena>],
 ) where
     A: Arena,
 {
@@ -1176,9 +1190,9 @@ fn check_class_like_extends<'ctx, 'arena, A>(
         return;
     }
 
-    let Some(extends) = extends_ast else {
+    if extended_types.is_empty() {
         return;
-    };
+    }
 
     let using_kind_str = class_like_metadata.kind.as_str();
     let using_kind_capitalized =
@@ -1186,7 +1200,7 @@ fn check_class_like_extends<'ctx, 'arena, A>(
     let using_name = class_like_metadata.original_name;
     let using_class_span = class_like_metadata.name_span.unwrap_or(class_like_metadata.span);
 
-    for extended_type in &extends.types {
+    for &extended_type in extended_types {
         let extended_type_str = context.resolved_names.get(&extended_type);
         let extended_class_metadata = context.codebase.get_class_like(extended_type_str);
 
@@ -1357,7 +1371,7 @@ fn check_class_like_extends<'ctx, 'arena, A>(
 fn check_class_like_implements<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
     class_like_metadata: &'ctx ClassLikeMetadata,
-    implements_ast: Option<&Implements<'arena>>,
+    implemented_types: &[&Identifier<'arena>],
     checked_signatures: &mut HashSet<(Word, Word)>,
 ) where
     A: Arena,
@@ -1368,9 +1382,9 @@ fn check_class_like_implements<'ctx, 'arena, A>(
         return;
     }
 
-    let Some(implements) = implements_ast else {
+    if implemented_types.is_empty() {
         return;
-    };
+    }
 
     let using_kind_str = class_like_metadata.kind.as_str();
     let using_kind_capitalized =
@@ -1378,7 +1392,7 @@ fn check_class_like_implements<'ctx, 'arena, A>(
     let using_name = class_like_metadata.original_name;
     let using_class_span = class_like_metadata.name_span.unwrap_or(class_like_metadata.span);
 
-    for implemented_type in &implements.types {
+    for &implemented_type in implemented_types {
         let implemented_type_str = context.resolved_names.get(&implemented_type);
         let implemented_interface_metadata = context.codebase.get_class_like(implemented_type_str);
 
@@ -2497,8 +2511,8 @@ fn check_trait_property_conflicts<'ctx, 'ast, 'arena, A>(
                                         }
                                     }
                                 }
-                                Property::Hooked(hooked_prop) => {
-                                    let var_name = Word::from(hooked_prop.item.variable().name);
+                                Property::Hooked(_) | Property::Computed(_) => {
+                                    let var_name = Word::from(prop.first_variable().name);
                                     if var_name == *property_name {
                                         return Some(prop.span());
                                     }
@@ -2977,18 +2991,33 @@ fn report_signature_compatibility_issue<'ctx, A>(
             child_name: child_param_name,
             parent_name: parent_param_name,
         } => {
+            // PHP# keeps every parameter name of the method it overrides, spec section 22, so a rename is an error, and
+            // PHP# writes the names without `$`.
+            let (level, child_param_name, parent_param_name) = if context.dialect.is_sharp() {
+                (
+                    Level::Error,
+                    word(mago_bytes::trim_start_byte(child_param_name.as_bytes(), b'$')),
+                    word(mago_bytes::trim_start_byte(parent_param_name.as_bytes(), b'$')),
+                )
+            } else {
+                (Level::Warning, child_param_name, parent_param_name)
+            };
+
             context.collector.report_with_code(
                 IssueCode::IncompatibleParameterName,
-                Issue::warning(format!(
-                    "Parameter #{} of `{}::{}()` is named `{}` but parent `{}::{}()` names it `{}`",
-                    parameter_index + 1,
-                    child_name,
-                    method_name,
-                    child_param_name,
-                    parent_name,
-                    method_name,
-                    parent_param_name
-                ))
+                Issue::new(
+                    level,
+                    format!(
+                        "Parameter #{} of `{}::{}()` is named `{}` but parent `{}::{}()` names it `{}`",
+                        parameter_index + 1,
+                        child_name,
+                        method_name,
+                        child_param_name,
+                        parent_name,
+                        method_name,
+                        parent_param_name
+                    ),
+                )
                 .with_annotation(Annotation::primary(primary_span).with_message(format!(
                     "Parameter named `{child_param_name}` but parent uses `{parent_param_name}`",
                 )))
@@ -3432,6 +3461,23 @@ fn check_class_like_properties<'ctx, A>(
 
                     let property_name = property_metadata.name.0;
                     let class_name = class_like_metadata.original_name;
+
+                    // Every PHP# field has a type, so it cannot replace an untyped PHP property yet.
+                    if context.dialect.is_sharp() {
+                        context.collector.report_with_code(
+                            IssueCode::NotSupportedYet,
+                            Issue::error(format!(
+                                "A field that replaces the untyped PHP property `{parent_class_name}::{property_name}` is not supported yet."
+                            ))
+                            .with_annotation(
+                                Annotation::primary(declaring_type.span)
+                                    .with_message("PHP refuses a type the parent property does not have."),
+                            )
+                            .with_help("Rename the field, or give the PHP property a type."),
+                        );
+
+                        continue;
+                    }
 
                     let mut issue = Issue::error(format!(
                         "Property `{class_name}::{property_name}` adds a type that is missing on the parent property."

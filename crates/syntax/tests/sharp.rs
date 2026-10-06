@@ -4,6 +4,7 @@ use std::borrow::Cow;
 
 use mago_allocator::LocalArena;
 use mago_database::file::File;
+use mago_php_version::PHPVersion;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_syntax::cst::*;
@@ -201,7 +202,66 @@ fn a_by_reference_parameter_is_a_parse_error() {
     assert!(!program.errors.is_empty());
 }
 
-/// `required`, `via`, a named constructor and a computed property are spec syntax outside the slice. Each one is a
+#[test]
+fn an_expression_bodied_method_is_its_arrow_its_expression_and_a_semicolon() {
+    const CODE: &str = "class Report\n{\n    public int total() => this.count + 1;\n\n    public void touch() => this.save();\n\n    public Report(int count) => this.count = count;\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let bodies: Vec<_> = class_members(program)
+        .iter()
+        .map(|member| {
+            let ClassLikeMember::Method(method) = member else {
+                panic!("expected a method, got {member:#?}");
+            };
+            let MethodBody::Expression(body) = &method.body else {
+                panic!("expected an expression body, got {:#?}", method.body);
+            };
+
+            (source(CODE, method), source(CODE, &method.body), source(CODE, body.expression))
+        })
+        .collect();
+
+    assert_eq!(
+        bodies,
+        [
+            ("public int total() => this.count + 1;", "=> this.count + 1;", "this.count + 1"),
+            ("public void touch() => this.save();", "=> this.save();", "this.save()"),
+            ("public Report(int count) => this.count = count;", "=> this.count = count;", "this.count = count"),
+        ]
+    );
+}
+
+#[test]
+fn a_computed_property_is_its_type_its_name_and_an_expression_body() {
+    const CODE: &str = "class Report\n{\n    [Shown] public string slug => Str.slug(this.name);\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(ClassLikeMember::Property(Property::Computed(property))) = class_members(program).first() else {
+        panic!("expected a computed property, got {:#?}", class_members(program));
+    };
+    assert_eq!(property.variable.name, b"slug");
+    assert_eq!(source(CODE, property.hint.as_ref().expect("a type")), "string");
+    assert_eq!(source(CODE, &property.body), "=> Str.slug(this.name);");
+    assert_eq!(source(CODE, property.body.expression), "Str.slug(this.name)");
+    assert_eq!(source(CODE, property), "[Shown] public string slug => Str.slug(this.name);");
+}
+
+#[test]
+fn php_keeps_refusing_an_arrow_after_a_method_or_a_property() {
+    for member in ["public function total(): int => 1;", "public int $total => 1;"] {
+        let arena = LocalArena::new();
+        let code: &'static str = Box::leak(format!("<?php class Report {{ {member} }}").into_boxed_str());
+        let program = parse(&arena, "src/Report.php", code);
+
+        assert!(!program.errors.is_empty(), "{member}");
+    }
+}
+
+/// `required`, `via` and a named constructor are spec syntax outside the slice. Each one is a
 /// single error where it starts, and the class around it still parses.
 #[test]
 fn spec_syntax_outside_the_slice_is_one_not_supported_error_where_it_starts() {
@@ -223,7 +283,6 @@ fn spec_syntax_outside_the_slice_is_one_not_supported_error_where_it_starts() {
             "A named constructor is not supported yet in PHP#.",
             "Report.fromJson",
         ),
-        ("public string slug => this.name;", "A computed property is not supported yet in PHP#.", "=>"),
     ] {
         let arena = LocalArena::new();
         let code: &'static str = Box::leak(
@@ -1003,6 +1062,46 @@ fn a_php_file_keeps_nesting_deeper_than_512_levels() {
     assert_eq!(terms.len(), 100_001);
 }
 
+/// The span of a PHP sum or call chain of 10,000 terms reaches its first term, and whether it is constant reaches its
+/// last, on a thread whose stack is far smaller than one frame per term, as a rayon worker's or a PHP fiber's stack is
+/// for a deep enough chain.
+#[test]
+fn a_php_chain_of_10_000_terms_has_a_span_and_a_constness_on_a_small_stack() {
+    let sum = vec!["1"; 10_000].join(" + ");
+    let chain = format!("$this{}", "->run(1)".repeat(10_000));
+    let code = format!(
+        "<?php\nnamespace App;\n\nclass Report\n{{\n    public function run(int $extra): int\n    {{\n        return {sum};\n    }}\n\n    public function chain(): self\n    {{\n        return {chain};\n    }}\n}}\n"
+    );
+    let [sum_span, chain_span] = [&sum, &chain].map(|terms| {
+        let start = code.find(terms.as_str()).expect("the chain is written");
+        (start, start + terms.len())
+    });
+
+    let values = std::thread::Builder::new()
+        .stack_size(128 * 1024)
+        .spawn(move || {
+            let arena = LocalArena::new();
+            let program = parse(&arena, "src/Report.php", Box::leak(code.into_boxed_str()));
+            assert!(program.errors.is_empty(), "{:#?}", program.errors);
+
+            Node::Program(program).filter_map(|node| match node {
+                Node::Return(statement) => statement.value.map(|value| {
+                    let span = value.span();
+                    (
+                        (span.start.offset as usize, span.end.offset as usize),
+                        value.is_constant(&PHPVersion::LATEST, false),
+                    )
+                }),
+                _ => None,
+            })
+        })
+        .expect("the thread starts")
+        .join()
+        .expect("the spans and constness are computed");
+
+    assert_eq!(values, [(sum_span, true), (chain_span, false)]);
+}
+
 /// The source of every attribute list under `node`, in source order.
 fn attribute_lists<'a>(code: &'a str, node: Node<'_, '_>) -> Vec<&'a str> {
     let mut lists = Vec::new();
@@ -1099,6 +1198,127 @@ fn an_attribute_target_is_not_supported_yet() {
         .map(|attribute| attribute.name.value())
         .collect();
     assert_eq!(names, [&b"NotNull"[..]]);
+}
+
+#[test]
+fn typeof_names_a_class_by_its_short_name() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        Store.keep(typeof(Order));\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [statement] = method_body(program) else {
+        panic!("expected one statement, got {:#?}", method_body(program));
+    };
+    let Expression::Call(Call::Method(keep)) = expression(statement) else {
+        panic!("expected a method call, got {statement:#?}");
+    };
+    let Some(Expression::TypeOf(type_of)) = keep.argument_list.arguments.first().map(Argument::value) else {
+        panic!("expected `typeof(Order)`, got {:#?}", keep.argument_list.arguments);
+    };
+    assert_eq!(type_of.class.value(), b"Order");
+    assert_eq!(source(CODE, type_of), "typeof(Order)");
+}
+
+#[test]
+fn a_class_or_an_interface_names_its_base_class_and_interfaces_after_a_colon() {
+    const CODE: &str = "public class Page : Entity, Linkable\n{\n}\n\npublic interface Linkable : Named\n{\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Page.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::Class(class), Statement::Interface(interface)] = program.statements.as_slice() else {
+        panic!("expected a class and an interface, got {:#?}", program.statements);
+    };
+    let headers: Vec<(&str, Vec<&[u8]>)> = [&class.inheritance, &interface.inheritance]
+        .into_iter()
+        .map(|inheritance| {
+            let inheritance = inheritance.as_ref().expect("a header");
+            (source(CODE, inheritance), inheritance.types.iter().map(Identifier::value).collect())
+        })
+        .collect();
+    assert_eq!(headers, [(": Entity, Linkable", vec![&b"Entity"[..], b"Linkable"]), (": Named", vec![&b"Named"[..]])]);
+    assert_eq!(source(CODE, class), "public class Page : Entity, Linkable\n{\n}");
+}
+
+/// An enum or a trait takes `public` as a class does, so the checker refuses the whole declaration where it starts.
+#[test]
+fn an_enum_or_a_trait_starts_with_its_modifiers() {
+    const CODE: &str = "public enum Suit\n{\n}\n\npublic trait Tagged\n{\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Suit.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::Enum(r#enum), Statement::Trait(r#trait)] = program.statements.as_slice() else {
+        panic!("expected an enum and a trait, got {:#?}", program.statements);
+    };
+    assert_eq!(source(CODE, r#enum), "public enum Suit\n{\n}");
+    assert_eq!(source(CODE, r#trait), "public trait Tagged\n{\n}");
+}
+
+#[test]
+fn virtual_and_override_are_method_modifiers_and_stay_names_elsewhere() {
+    const CODE: &str = "class Shape\n{\n    public virtual string name()\n    {\n        return override(virtual);\n    }\n\n    protected override int size()\n    {\n        return 1;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Shape.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let modifiers: Vec<Vec<String>> = class_members(program)
+        .iter()
+        .map(|member| {
+            let ClassLikeMember::Method(method) = member else {
+                panic!("expected a method, got {member:#?}");
+            };
+
+            method.modifiers.iter().map(ToString::to_string).collect()
+        })
+        .collect();
+    assert_eq!(modifiers, [vec!["Public", "Virtual"], vec!["Protected", "Override"]]);
+}
+
+#[test]
+fn super_before_a_dot_is_the_parent_class() {
+    const CODE: &str =
+        "class Page\n{\n    public override string label()\n    {\n        return super.label();\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Page.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [statement] = method_body(program) else {
+        panic!("expected one statement, got {:#?}", method_body(program));
+    };
+    let Expression::Call(Call::Method(label)) = expression(statement) else {
+        panic!("expected a method call, got {statement:#?}");
+    };
+    let Expression::Parent(keyword) = label.object else {
+        panic!("expected `super`, got {:#?}", label.object);
+    };
+    assert_eq!(source(CODE, keyword), "super");
+    assert_eq!(source(CODE, label), "super.label()");
+}
+
+#[test]
+fn super_without_a_dot_is_a_name() {
+    const CODE: &str = "class Page\n{\n    public int label()\n    {\n        return super;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Page.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [statement] = method_body(program) else {
+        panic!("expected one statement, got {:#?}", method_body(program));
+    };
+    assert_eq!(bare_name(expression(statement)), b"super");
+}
+
+#[test]
+fn typeof_in_php_is_a_function_call() {
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.php", "<?php typeof(Order);");
+
+    let Some(Statement::Expression(statement)) = program.statements.get(1) else {
+        panic!("expected an expression statement, got {:#?}", program.statements);
+    };
+    assert!(matches!(statement.expression, Expression::Call(Call::Function(_))), "{statement:#?}");
 }
 
 #[test]

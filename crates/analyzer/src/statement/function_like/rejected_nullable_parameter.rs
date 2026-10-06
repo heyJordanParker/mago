@@ -28,6 +28,7 @@ use crate::artifacts::AnalysisArtifacts;
 use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
+use crate::statement::function_like::FunctionLikeBody;
 use crate::utils::misc::unwrap_expression;
 
 /// Reports each nullable parameter of a PHP# method that the method rejects on every path before any other use, as
@@ -41,7 +42,7 @@ pub fn check_rejected_nullable_parameters<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
     method: &'ctx FunctionLikeMetadata,
     parameters: &[FunctionLikeParameter<'arena>],
-    statements: &[Statement<'arena>],
+    body: FunctionLikeBody<'_, 'arena>,
     block_context: &BlockContext<'ctx>,
     artifacts: &AnalysisArtifacts,
 ) where
@@ -59,8 +60,15 @@ pub fn check_rejected_nullable_parameters<'ctx, 'arena, A>(
             Local { declaration: parameter.variable.span, kind: LocalKind::Parameter },
             context.resolved_names,
         );
-        for statement in statements {
-            ParameterWalker.walk_statement(statement, &mut uses);
+        match body {
+            FunctionLikeBody::Statements(statements, _) => {
+                for statement in statements {
+                    ParameterWalker.walk_statement(statement, &mut uses);
+                }
+            }
+            FunctionLikeBody::Expression(expression) | FunctionLikeBody::ExpressionStatement(expression) => {
+                ParameterWalker.walk_expression(expression, &mut uses);
+            }
         }
 
         let is_rejected = !uses.assigned

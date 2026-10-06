@@ -42,6 +42,7 @@ use crate::cst::cst::Closure;
 use crate::cst::cst::ClosureUseClause;
 use crate::cst::cst::ClosureUseClauseVariable;
 use crate::cst::cst::CompositeString;
+use crate::cst::cst::ComputedProperty;
 use crate::cst::cst::Conditional;
 use crate::cst::cst::Constant;
 use crate::cst::cst::ConstantAccess;
@@ -110,6 +111,7 @@ use crate::cst::cst::Implements;
 use crate::cst::cst::IncludeConstruct;
 use crate::cst::cst::IncludeOnceConstruct;
 use crate::cst::cst::IndirectVariable;
+use crate::cst::cst::Inheritance;
 use crate::cst::cst::Inline;
 use crate::cst::cst::Instantiation;
 use crate::cst::cst::Interface;
@@ -138,6 +140,7 @@ use crate::cst::cst::Method;
 use crate::cst::cst::MethodAbstractBody;
 use crate::cst::cst::MethodBody;
 use crate::cst::cst::MethodCall;
+use crate::cst::cst::MethodExpressionBody;
 use crate::cst::cst::MethodPartialApplication;
 use crate::cst::cst::MissingArrayElement;
 use crate::cst::cst::MixedUseItemList;
@@ -211,6 +214,7 @@ use crate::cst::cst::TraitUseSpecification;
 use crate::cst::cst::Try;
 use crate::cst::cst::TryCatchClause;
 use crate::cst::cst::TryFinallyClause;
+use crate::cst::cst::TypeOf;
 use crate::cst::cst::TypedUseItemList;
 use crate::cst::cst::TypedUseItemSequence;
 use crate::cst::cst::UnaryPostfix;
@@ -289,6 +293,7 @@ pub enum NodeKind {
     EnumCaseUnitItem,
     Extends,
     Implements,
+    Inheritance,
     ClassLikeConstantSelector,
     ClassLikeMember,
     ClassLikeMemberExpressionSelector,
@@ -296,6 +301,8 @@ pub enum NodeKind {
     Method,
     MethodAbstractBody,
     MethodBody,
+    MethodExpressionBody,
+    ComputedProperty,
     HookedProperty,
     PlainProperty,
     Property,
@@ -394,6 +401,7 @@ pub enum NodeKind {
     Keyword,
     Literal,
     Pipe,
+    TypeOf,
     LiteralFloat,
     LiteralInteger,
     LiteralString,
@@ -529,6 +537,7 @@ pub enum Node<'ast, 'arena> {
     EnumCaseUnitItem(&'ast EnumCaseUnitItem<'arena>),
     Extends(&'ast Extends<'arena>),
     Implements(&'ast Implements<'arena>),
+    Inheritance(&'ast Inheritance<'arena>),
     ClassLikeConstantSelector(&'ast ClassLikeConstantSelector<'arena>),
     ClassLikeMember(&'ast ClassLikeMember<'arena>),
     ClassLikeMemberExpressionSelector(&'ast ClassLikeMemberExpressionSelector<'arena>),
@@ -536,6 +545,8 @@ pub enum Node<'ast, 'arena> {
     Method(&'ast Method<'arena>),
     MethodAbstractBody(&'ast MethodAbstractBody<'arena>),
     MethodBody(&'ast MethodBody<'arena>),
+    MethodExpressionBody(&'ast MethodExpressionBody<'arena>),
+    ComputedProperty(&'ast ComputedProperty<'arena>),
     HookedProperty(&'ast HookedProperty<'arena>),
     PlainProperty(&'ast PlainProperty<'arena>),
     Property(&'ast Property<'arena>),
@@ -711,6 +722,7 @@ pub enum Node<'ast, 'arena> {
     NestedVariable(&'ast NestedVariable<'arena>),
     Variable(&'ast Variable<'arena>),
     Pipe(&'ast Pipe<'arena>),
+    TypeOf(&'ast TypeOf<'arena>),
     Error(Span),
     MissingTerminator(Span),
     ClassLikeMemberMissingSelector(Span),
@@ -846,6 +858,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Self::EnumCaseUnitItem(_) => NodeKind::EnumCaseUnitItem,
             Self::Extends(_) => NodeKind::Extends,
             Self::Implements(_) => NodeKind::Implements,
+            Self::Inheritance(_) => NodeKind::Inheritance,
             Self::ClassLikeConstantSelector(_) => NodeKind::ClassLikeConstantSelector,
             Self::ClassLikeMember(_) => NodeKind::ClassLikeMember,
             Self::ClassLikeMemberExpressionSelector(_) => NodeKind::ClassLikeMemberExpressionSelector,
@@ -853,6 +866,8 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Self::Method(_) => NodeKind::Method,
             Self::MethodAbstractBody(_) => NodeKind::MethodAbstractBody,
             Self::MethodBody(_) => NodeKind::MethodBody,
+            Self::MethodExpressionBody(_) => NodeKind::MethodExpressionBody,
+            Self::ComputedProperty(_) => NodeKind::ComputedProperty,
             Self::HookedProperty(_) => NodeKind::HookedProperty,
             Self::PlainProperty(_) => NodeKind::PlainProperty,
             Self::Property(_) => NodeKind::Property,
@@ -1028,6 +1043,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Self::NestedVariable(_) => NodeKind::NestedVariable,
             Self::Variable(_) => NodeKind::Variable,
             Self::Pipe(_) => NodeKind::Pipe,
+            Self::TypeOf(_) => NodeKind::TypeOf,
             Self::Error(_) => NodeKind::Error,
             Self::MissingTerminator(_) => NodeKind::MissingTerminator,
             Self::ClassLikeMemberMissingSelector(_) => NodeKind::ClassLikeMemberMissingSelector,
@@ -1248,6 +1264,11 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                     f(Node::Identifier(item));
                 }
             }
+            Node::Inheritance(node) => {
+                for item in node.types.iter() {
+                    f(Node::Identifier(item));
+                }
+            }
             Node::ClassLikeConstantSelector(node) => match node {
                 ClassLikeConstantSelector::Identifier(node) => f(Node::LocalIdentifier(node)),
                 ClassLikeConstantSelector::Expression(node) => {
@@ -1300,7 +1321,22 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Node::MethodBody(node) => match node {
                 MethodBody::Abstract(node) => f(Node::MethodAbstractBody(node)),
                 MethodBody::Concrete(node) => f(Node::Block(node)),
+                MethodBody::Expression(node) => f(Node::MethodExpressionBody(node)),
             },
+            Node::MethodExpressionBody(node) => f(Node::Expression(node.expression)),
+            Node::ComputedProperty(node) => {
+                for item in node.attribute_lists.iter() {
+                    f(Node::AttributeList(item));
+                }
+                for item in node.modifiers.iter() {
+                    f(Node::Modifier(item));
+                }
+                for item in node.hint.iter() {
+                    f(Node::Hint(item));
+                }
+                f(Node::DirectVariable(&node.variable));
+                f(Node::PropertyHookConcreteExpressionBody(&node.body));
+            }
             Node::HookedProperty(node) => {
                 for item in node.attribute_lists.iter() {
                     f(Node::AttributeList(item));
@@ -1340,6 +1376,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Node::Property(node) => match node {
                 Property::Plain(node) => f(Node::PlainProperty(node)),
                 Property::Hooked(node) => f(Node::HookedProperty(node)),
+                Property::Computed(node) => f(Node::ComputedProperty(node)),
             },
             Node::PropertyAbstractItem(node) => {
                 f(Node::DirectVariable(&node.variable));
@@ -1498,6 +1535,9 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 for item in node.implements.iter() {
                     f(Node::Implements(item));
                 }
+                for item in node.inheritance.iter() {
+                    f(Node::Inheritance(item));
+                }
                 for item in node.members.iter() {
                     f(Node::ClassLikeMember(item));
                 }
@@ -1505,6 +1545,9 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Node::Enum(node) => {
                 for item in node.attribute_lists.iter() {
                     f(Node::AttributeList(item));
+                }
+                for item in node.modifiers.iter() {
+                    f(Node::Modifier(item));
                 }
                 f(Node::Keyword(&node.r#enum));
                 f(Node::LocalIdentifier(&node.name));
@@ -1525,10 +1568,16 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 for item in node.attribute_lists.iter() {
                     f(Node::AttributeList(item));
                 }
+                for item in node.modifiers.iter() {
+                    f(Node::Modifier(item));
+                }
                 f(Node::Keyword(&node.interface));
                 f(Node::LocalIdentifier(&node.name));
                 for item in node.extends.iter() {
                     f(Node::Extends(item));
+                }
+                for item in node.inheritance.iter() {
+                    f(Node::Inheritance(item));
                 }
                 for item in node.members.iter() {
                     f(Node::ClassLikeMember(item));
@@ -1537,6 +1586,9 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Node::Trait(node) => {
                 for item in node.attribute_lists.iter() {
                     f(Node::AttributeList(item));
+                }
+                for item in node.modifiers.iter() {
+                    f(Node::Modifier(item));
                 }
                 f(Node::Keyword(&node.r#trait));
                 f(Node::LocalIdentifier(&node.name));
@@ -1824,6 +1876,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                     Expression::Instantiation(node) => Node::Instantiation(node),
                     Expression::MagicConstant(node) => Node::MagicConstant(node),
                     Expression::Pipe(node) => Node::Pipe(node),
+                    Expression::TypeOf(node) => Node::TypeOf(node),
                     Expression::Error(span) => Node::Error(*span),
                 };
                 f(child);
@@ -2016,6 +2069,8 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 Modifier::PrivateSet(node) => Node::Keyword(node),
                 Modifier::ProtectedSet(node) => Node::Keyword(node),
                 Modifier::PublicSet(node) => Node::Keyword(node),
+                Modifier::Virtual(node) => Node::Keyword(node),
+                Modifier::Override(node) => Node::Keyword(node),
             }),
             Node::Namespace(node) => {
                 f(Node::Keyword(&node.r#namespace));
@@ -2454,6 +2509,10 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 f(Node::Expression(pipe.input));
                 f(Node::Expression(pipe.callable));
             }
+            Node::TypeOf(type_of) => {
+                f(Node::Keyword(&type_of.r#typeof));
+                f(Node::Identifier(&type_of.class));
+            }
             Node::Error(_)
             | Node::MissingTerminator(_)
             | Node::ClassLikeMemberMissingSelector(_)
@@ -2523,6 +2582,7 @@ impl HasSpan for Node<'_, '_> {
             Self::EnumCaseUnitItem(node) => node.span(),
             Self::Extends(node) => node.span(),
             Self::Implements(node) => node.span(),
+            Self::Inheritance(node) => node.span(),
             Self::ClassLikeConstantSelector(node) => node.span(),
             Self::ClassLikeMember(node) => node.span(),
             Self::ClassLikeMemberExpressionSelector(node) => node.span(),
@@ -2530,6 +2590,8 @@ impl HasSpan for Node<'_, '_> {
             Self::Method(node) => node.span(),
             Self::MethodAbstractBody(node) => node.span(),
             Self::MethodBody(node) => node.span(),
+            Self::MethodExpressionBody(node) => node.span(),
+            Self::ComputedProperty(node) => node.span(),
             Self::HookedProperty(node) => node.span(),
             Self::PlainProperty(node) => node.span(),
             Self::Property(node) => node.span(),
@@ -2705,6 +2767,7 @@ impl HasSpan for Node<'_, '_> {
             Self::NestedVariable(node) => node.span(),
             Self::Variable(node) => node.span(),
             Self::Pipe(node) => node.span(),
+            Self::TypeOf(node) => node.span(),
             Self::Error(span)
             | Self::MissingTerminator(span)
             | Self::ClassLikeMemberMissingSelector(span)

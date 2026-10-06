@@ -21,6 +21,7 @@ use mago_syntax::cst::Function;
 use mago_syntax::cst::IfBody;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::MethodBody;
+use mago_syntax::cst::Modifier;
 use mago_syntax::cst::ModifierSequenceExt;
 use mago_syntax::cst::Statement;
 use mago_syntax::cst::SwitchBody;
@@ -128,18 +129,42 @@ where
         where_constraints: WordMap::default(),
     };
 
-    if let MethodBody::Concrete(block) = &method.body {
-        if utils::block_has_yield(block) {
-            metadata.flags |= MetadataFlags::HAS_YIELD;
-        }
+    match &method.body {
+        MethodBody::Concrete(block) => {
+            if utils::block_has_yield(block) {
+                metadata.flags |= MetadataFlags::HAS_YIELD;
+            }
 
-        if utils::block_has_throws(block) {
-            metadata.flags |= MetadataFlags::HAS_THROW;
-        }
+            if utils::block_has_throws(block) {
+                metadata.flags |= MetadataFlags::HAS_THROW;
+            }
 
-        collect_globals_into(block, &mut metadata.globals_accessed);
-    } else {
-        method_metadata.is_abstract = true;
+            collect_globals_into(block, &mut metadata.globals_accessed);
+        }
+        // A PHP# expression body, which has no `global` statement.
+        MethodBody::Expression(body) => {
+            if utils::expression_has_yield(body.expression) {
+                metadata.flags |= MetadataFlags::HAS_YIELD;
+            }
+
+            if utils::expression_has_throws(body.expression) {
+                metadata.flags |= MetadataFlags::HAS_THROW;
+            }
+        }
+        MethodBody::Abstract(_) => {
+            method_metadata.is_abstract = true;
+        }
+    }
+
+    // A PHP# method is closed unless it is `virtual`, abstract or an `override`, spec section 22, so the analyzer
+    // reads it as final. The engine still runs it as an open PHP method.
+    if context.program.dialect.is_sharp()
+        && !method_metadata.is_abstract
+        && !method_metadata.is_constructor
+        && method_metadata.visibility != Visibility::Private
+        && !method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Virtual(_) | Modifier::Override(_)))
+    {
+        method_metadata.is_final = true;
     }
 
     metadata.method_metadata = Some(method_metadata);
@@ -153,8 +178,12 @@ where
         scope,
     );
 
-    if let MethodBody::Concrete(block) = &method.body {
-        infer_assertions_from_block_body(block, &mut metadata, context.resolved_names);
+    match &method.body {
+        MethodBody::Concrete(block) => infer_assertions_from_block_body(block, &mut metadata, context.resolved_names),
+        MethodBody::Expression(body) if method.returns_value() => {
+            infer_assertions_from_expression_body(body.expression, &mut metadata, context.resolved_names);
+        }
+        MethodBody::Expression(_) | MethodBody::Abstract(_) => {}
     }
 
     if metadata.attributes.iter().any(|attr| attr.name.as_bytes().eq_ignore_ascii_case(b"Deprecated")) {

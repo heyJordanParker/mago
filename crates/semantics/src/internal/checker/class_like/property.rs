@@ -309,6 +309,8 @@ pub fn check_property(
 
                 last_write_visibility = Some(modifier.span());
             }
+            // Only PHP# parses these, and `check_slice` decides them.
+            Modifier::Virtual(_) | Modifier::Override(_) => {}
         }
     }
 
@@ -467,6 +469,7 @@ pub fn check_property(
         // A PHP# initial value may run in the constructor, and a PHP# accessor list is C#'s, not PHP's hooks, so
         // `check_slice` decides both.
         _ if context.program.dialect.is_sharp() => {}
+        Property::Computed(_) => unreachable!("only the PHP# parser gives a computed property"),
         Property::Plain(plain_property) => {
             if !context.version.is_supported(Feature::AsymmetricVisibility)
                 && let Some(write_visibility) = plain_property.modifiers.get_first_write_visibility()

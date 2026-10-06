@@ -43,7 +43,7 @@ where
                             cst::MethodBody::Abstract(method_abstract_body) => {
                                 Some(self.lower_terminator(method_abstract_body.terminator))
                             }
-                            cst::MethodBody::Concrete(_) => None,
+                            cst::MethodBody::Concrete(_) | cst::MethodBody::Expression(_) => None,
                         },
                     });
                 }
@@ -63,6 +63,15 @@ where
                 }
                 cst::ClassLikeMember::Property(cst::Property::Hooked(property)) => {
                     let node = self.arena.alloc(self.lower_hooked_property(property));
+                    collected.push(MemberItem {
+                        meta: (),
+                        span: member.span(),
+                        kind: MemberItemKind::HookedProperty(node),
+                        terminator: None,
+                    });
+                }
+                cst::ClassLikeMember::Property(cst::Property::Computed(property)) => {
+                    let node = self.arena.alloc(self.lower_computed_property(property));
                     collected.push(MemberItem {
                         meta: (),
                         span: member.span(),

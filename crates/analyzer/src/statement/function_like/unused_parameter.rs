@@ -59,15 +59,19 @@ pub fn check_unused_params<'ctx, 'ast, 'arena, A>(
                 );
             }
         }
-        FunctionLikeBody::Expression(expression) => {
+        FunctionLikeBody::Expression(expression) | FunctionLikeBody::ExpressionStatement(expression) => {
             if expression_potentially_contains_function_call(expression, FUNC_GET_ARGS, ctx) {
                 // `func_get_args` is used, so we can't determine if the parameters are unused in this case
                 return;
             }
 
+            // A PHP# method may have an expression body, and its constructor may promote parameters.
+            let kind = if metadata.kind.is_method() { "method" } else { "arrow function" };
             for param in params {
-                if !is_variable_used_in_expression(expression, ctx, param.variable.name) {
-                    report_parameter(param, metadata.span, ctx, "arrow function");
+                if !param.is_promoted_property()
+                    && !is_variable_used_in_expression(expression, ctx, param.variable.name)
+                {
+                    report_parameter(param, metadata.span, ctx, kind);
                 }
             }
         }

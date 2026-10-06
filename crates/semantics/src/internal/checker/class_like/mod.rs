@@ -117,6 +117,10 @@ pub fn check_class<'ast, 'arena>(class: &'ast Class<'arena>, context: &mut Conte
                         .with_help("Remove the `static` modifier."),
                 );
             }
+            // Spec section 5 makes a PHP# class `public` or, by default, `internal`.
+            Modifier::Public(_) if context.program.dialect.is_sharp() => {}
+            // Only PHP# parses these, and `check_slice` decides them.
+            Modifier::Virtual(_) | Modifier::Override(_) => {}
             Modifier::Public(keyword)
             | Modifier::Protected(keyword)
             | Modifier::Private(keyword)
@@ -662,6 +666,27 @@ pub fn check_interface<'ast, 'arena>(interface: &'ast Interface<'arena>, context
                             }
                         }
                     }
+                    Property::Computed(computed_property) => {
+                        let property_name = BytesDisplay(computed_property.variable.name);
+
+                        context.report(
+                            Issue::error(format!(
+                                "Interface virtual property `{interface_name}::{property_name}` must be abstract."
+                            ))
+                            .with_annotation(
+                                Annotation::primary(computed_property.body.span()).with_message("Body defined here."),
+                            )
+                            .with_annotation(
+                                Annotation::secondary(computed_property.variable.span())
+                                    .with_message("Property declared here."),
+                            )
+                            .with_annotation(
+                                Annotation::secondary(interface.span())
+                                    .with_message(format!("Interface `{interface_fqcn}` defined here.")),
+                            )
+                            .with_note("Abstract hooked properties must not contain a body."),
+                        );
+                    }
                 }
 
                 check_property(
@@ -1024,6 +1049,8 @@ pub fn check_anonymous_class<'ast, 'arena>(
 
     for modifier in &anonymous_class.modifiers {
         match &modifier {
+            // Only PHP# parses these, and `check_slice` decides them.
+            Modifier::Virtual(_) | Modifier::Override(_) => {}
             Modifier::Static(_)
             | Modifier::Abstract(_)
             | Modifier::PrivateSet(_)
@@ -1275,8 +1302,8 @@ pub fn check_members<'ast, 'arena>(
                         }
                     }
                 }
-                Property::Hooked(hooked_property) => {
-                    let item_variable = hooked_property.item.variable();
+                Property::Hooked(_) | Property::Computed(_) => {
+                    let item_variable = property.first_variable();
                     let item_name_bytes: &[u8] = item_variable.name;
                     let item_name = BytesDisplay(item_name_bytes);
 

@@ -1,4 +1,5 @@
 use mago_allocator::Arena;
+use mago_bytes::BytesDisplay;
 use mago_word::Word;
 use mago_word::ascii_lowercase_word;
 use mago_word::word;
@@ -336,13 +337,18 @@ where
                 }
 
                 if !found_parent {
+                    // The keyword is `super` in PHP#.
+                    let keyword = BytesDisplay(parent_keyword.value);
+
                     context.collector.report_with_code(
                         IssueCode::InvalidParentType,
                         Issue::error(format!(
-                            "Cannot use `parent` as the current type (`{}`) does not have a parent class.",
+                            "Cannot use `{keyword}` as the current type (`{}`) does not have a parent class.",
                             self_meta.original_name
                         ))
-                        .with_annotation(Annotation::primary(parent_keyword.span()).with_message("`parent` used here"))
+                        .with_annotation(
+                            Annotation::primary(parent_keyword.span()).with_message(format!("`{keyword}` used here")),
+                        )
                         .with_annotation(
                             Annotation::secondary(self_meta.name_span.unwrap_or(self_meta.span))
                                 .with_message(format!("Class `{}` has no parent", self_meta.original_name)),

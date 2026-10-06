@@ -22,9 +22,11 @@ use mago_syntax::cst::BinaryOperator;
 use mago_syntax::cst::Block;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::Class;
+use mago_syntax::cst::ClassLikeConstant;
 use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::CompositeString;
+use mago_syntax::cst::Conditional;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::DirectVariable;
 use mago_syntax::cst::Expression;
@@ -36,7 +38,9 @@ use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::Hint;
 use mago_syntax::cst::If;
 use mago_syntax::cst::IfBody;
+use mago_syntax::cst::Inheritance;
 use mago_syntax::cst::Instantiation;
+use mago_syntax::cst::Interface;
 use mago_syntax::cst::InterpolatedString;
 use mago_syntax::cst::Literal;
 use mago_syntax::cst::LiteralStringPart;
@@ -53,8 +57,8 @@ use mago_syntax::cst::PartialArgumentList;
 use mago_syntax::cst::PositionalArgument;
 use mago_syntax::cst::Program;
 use mago_syntax::cst::Property;
+use mago_syntax::cst::PropertyHookConcreteExpressionBody;
 use mago_syntax::cst::PropertyHookList;
-use mago_syntax::cst::PropertyItem;
 use mago_syntax::cst::Sequence;
 use mago_syntax::cst::Statement;
 use mago_syntax::cst::StringPart;
@@ -83,10 +87,16 @@ use crate::sharp_kind::SHARP_AST_ATTRIBUTE_LIST;
 use crate::sharp_kind::SHARP_AST_BINARY_OP;
 use crate::sharp_kind::SHARP_AST_BREAK;
 use crate::sharp_kind::SHARP_AST_CALL;
+use crate::sharp_kind::SHARP_AST_CAST;
 use crate::sharp_kind::SHARP_AST_CATCH;
 use crate::sharp_kind::SHARP_AST_CATCH_LIST;
 use crate::sharp_kind::SHARP_AST_CLASS;
+use crate::sharp_kind::SHARP_AST_CLASS_CONST;
+use crate::sharp_kind::SHARP_AST_CLASS_CONST_DECL;
+use crate::sharp_kind::SHARP_AST_CLASS_CONST_GROUP;
+use crate::sharp_kind::SHARP_AST_CLASS_NAME;
 use crate::sharp_kind::SHARP_AST_COALESCE;
+use crate::sharp_kind::SHARP_AST_CONDITIONAL;
 use crate::sharp_kind::SHARP_AST_CONST;
 use crate::sharp_kind::SHARP_AST_CONST_DECL;
 use crate::sharp_kind::SHARP_AST_CONST_ELEM;
@@ -120,8 +130,11 @@ use crate::sharp_kind::SHARP_AST_PROP;
 use crate::sharp_kind::SHARP_AST_PROP_DECL;
 use crate::sharp_kind::SHARP_AST_PROP_ELEM;
 use crate::sharp_kind::SHARP_AST_PROP_GROUP;
+use crate::sharp_kind::SHARP_AST_PROPERTY_HOOK;
+use crate::sharp_kind::SHARP_AST_PROPERTY_HOOK_SHORT_BODY;
 use crate::sharp_kind::SHARP_AST_RETURN;
 use crate::sharp_kind::SHARP_AST_STATIC_CALL;
+use crate::sharp_kind::SHARP_AST_STATIC_PROP;
 use crate::sharp_kind::SHARP_AST_STMT_LIST;
 use crate::sharp_kind::SHARP_AST_THROW;
 use crate::sharp_kind::SHARP_AST_TRY;
@@ -144,10 +157,18 @@ const ZEND_ACC_PUBLIC: u32 = 1 << 0;
 const ZEND_ACC_PROTECTED: u32 = 1 << 1;
 const ZEND_ACC_PRIVATE: u32 = 1 << 2;
 const ZEND_ACC_STATIC: u32 = 1 << 4;
+const ZEND_ACC_FINAL: u32 = 1 << 5;
+const ZEND_ACC_ABSTRACT: u32 = 1 << 6;
+const ZEND_ACC_EXPLICIT_ABSTRACT_CLASS: u32 = 1 << 6;
+const ZEND_ACC_INTERFACE: u32 = 1 << 0;
 const ZEND_ACC_READONLY: u32 = 1 << 7;
 const ZEND_ACC_PROTECTED_SET: u32 = 1 << 11;
 const ZEND_ACC_PRIVATE_SET: u32 = 1 << 12;
 const ZEND_TYPE_NULLABLE: u32 = 1 << 8;
+const ZEND_PARENTHESIZED_CONDITIONAL: u32 = 1;
+const IS_LONG: u32 = 4;
+const IS_DOUBLE: u32 = 5;
+const IS_STRING: u32 = 6;
 const ZEND_ADD: u32 = 1;
 const ZEND_SUB: u32 = 2;
 const ZEND_MUL: u32 = 3;
@@ -161,6 +182,11 @@ const ZEND_IS_EQUAL: u32 = 18;
 const ZEND_IS_NOT_EQUAL: u32 = 19;
 const ZEND_IS_SMALLER: u32 = 20;
 const ZEND_IS_SMALLER_OR_EQUAL: u32 = 21;
+/// php-sharp's own attr from `zend_compile.h`: a class constant fetch that falls back to the static property. It sits
+/// above the fetch flags a constant expression passes in the same attr.
+const ZEND_FETCH_CLASS_MEMBER_SYNTAX: u32 = 1 << 15;
+/// php-sharp's own class flag from `zend_compile.h`: the class's parent, if any, is in its interface list.
+const ZEND_ACC_PARENT_IN_INTERFACES: u32 = 1 << 31;
 
 /// A null child.
 const NULL: u32 = u32::MAX;
@@ -242,11 +268,29 @@ struct Lowering<'lowering, 'arena> {
     nodes: Vec<sharp_node>,
     children: Vec<u32>,
     texts: LocalArena,
+    /// Whether the lowering is inside a constant expression, which PHP evaluates without opcodes.
+    in_constant_expression: bool,
 }
 
 impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     fn new(lines: &'lowering Lines, names: &'lowering ResolvedNames<'arena>) -> Self {
-        Self { lines, names, nodes: Vec::new(), children: Vec::new(), texts: LocalArena::new() }
+        Self {
+            lines,
+            names,
+            nodes: Vec::new(),
+            children: Vec::new(),
+            texts: LocalArena::new(),
+            in_constant_expression: false,
+        }
+    }
+
+    /// Lowers a constant expression: a constant's value, a default or an attribute's arguments.
+    fn constant_expression(&mut self, lower: impl FnOnce(&mut Self) -> u32) -> u32 {
+        self.in_constant_expression = true;
+        let index = lower(self);
+        self.in_constant_expression = false;
+
+        index
     }
 
     /// `declare(strict_types=1);` first, then the namespaces and classes. Imports are not lowered: every class name
@@ -287,6 +331,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             }
             Statement::Use(_) => {}
             Statement::Class(class) => statements.push(self.class(class)),
+            Statement::Interface(interface) => statements.push(self.interface(interface)),
             _ => unreachable!("check_slice refuses the file statement `{statement}`"),
         }
     }
@@ -298,7 +343,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let mut initial_values = Vec::new();
         for member in &class.members {
             if let ClassLikeMember::Property(property) = member
-                && let Some(value) = initial_value(property)
+                && let Some(value) = property.initial_value()
                 && !is_default(property, value)
             {
                 initial_values.push(self.initial_value(property.first_variable(), value));
@@ -312,10 +357,11 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 ClassLikeMember::Method(method) if php_method_name(method) == b"__construct" => {
                     has_constructor = true;
 
-                    self.method(method, &initial_values)
+                    self.method(method, modifier_flags(&method.modifiers), &initial_values)
                 }
-                ClassLikeMember::Method(method) => self.method(method, &[]),
+                ClassLikeMember::Method(method) => self.method(method, modifier_flags(&method.modifiers), &[]),
                 ClassLikeMember::Property(property) => self.property(property),
+                ClassLikeMember::Constant(constant) => self.constant(constant),
                 _ => unreachable!("check_slice refuses the class member `{member}`"),
             });
         }
@@ -336,23 +382,63 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         }
 
         let members = self.node(SHARP_AST_STMT_LIST, 0, self.line(class.left_brace), &members);
-        let attributes = self.attributes(&class.attribute_lists);
+        let attributes = self.attributes(&class.attribute_lists, None);
+        let (header, parent_in_interfaces) = match &class.inheritance {
+            Some(inheritance) => (self.name_list(inheritance), ZEND_ACC_PARENT_IN_INTERFACES),
+            None => (NULL, 0),
+        };
 
         self.declaration(
             SHARP_AST_CLASS,
-            0,
+            class_flags(&class.modifiers) | parent_in_interfaces,
             class.class.span,
             class.right_brace,
             class.name.value,
-            &[NULL, NULL, members, attributes, NULL],
+            &[NULL, header, members, attributes, NULL],
         )
     }
 
-    /// A method is a `function` with its return type after its parameters. Its first line is where PHP writes
-    /// `function`: the return type, or the name of the constructor, which runs as `__construct` and has no return
-    /// type. The constructor's body starts with the class's initial values that are not constant.
-    fn method(&mut self, method: &Method, initial_values: &[u32]) -> u32 {
-        let flags = modifier_flags(&method.modifiers);
+    /// A header's names, which PHP compiles as the interface list.
+    fn name_list(&mut self, inheritance: &Inheritance) -> u32 {
+        let names: Vec<u32> = inheritance
+            .types
+            .iter()
+            .map(|name| self.string(ZEND_NAME_FQ, self.line(name), self.names.get(name)))
+            .collect();
+
+        self.node(SHARP_AST_NAME_LIST, 0, self.line(inheritance), &names)
+    }
+
+    /// An interface is a class declaration with `ZEND_ACC_INTERFACE`, and its methods are `public`, as php-src's
+    /// grammar builds `interface Measured { public function area(): float; }`.
+    fn interface(&mut self, interface: &Interface) -> u32 {
+        let mut members = Vec::new();
+        for member in &interface.members {
+            let ClassLikeMember::Method(method) = member else {
+                unreachable!("check_slice refuses the interface member `{member}`");
+            };
+
+            members.push(self.method(method, ZEND_ACC_PUBLIC, &[]));
+        }
+
+        let members = self.node(SHARP_AST_STMT_LIST, 0, self.line(interface.left_brace), &members);
+        let header = interface.inheritance.as_ref().map_or(NULL, |inheritance| self.name_list(inheritance));
+
+        self.declaration(
+            SHARP_AST_CLASS,
+            ZEND_ACC_INTERFACE,
+            interface.interface.span,
+            interface.right_brace,
+            interface.name.value,
+            &[NULL, header, members, NULL, NULL],
+        )
+    }
+
+    /// A method is a `function` with its return type after its parameters, and with `flags`. Its first line is where
+    /// PHP writes `function`: the return type, or the name of the constructor, which runs as `__construct` and has
+    /// no return type. The constructor's body starts with the class's initial values that are not constant, and an
+    /// abstract method has no statement list.
+    fn method(&mut self, method: &Method, flags: u32, initial_values: &[u32]) -> u32 {
         if flags & (ZEND_ACC_PUBLIC | ZEND_ACC_PROTECTED | ZEND_ACC_PRIVATE) == 0 {
             unreachable!("check_slice refuses a method without an access modifier");
         }
@@ -363,19 +449,34 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         }
 
         let parameters = self.node(SHARP_AST_PARAM_LIST, 0, self.line(&method.parameter_list), &parameters);
-        let MethodBody::Concrete(body) = &method.body else {
-            unreachable!("semantics refuses a method without a body");
-        };
         let mut statements = initial_values.to_vec();
-        for statement in &body.statements {
-            statements.push(self.statement(statement));
-        }
-        let body = self.node(SHARP_AST_STMT_LIST, 0, self.line(body), &statements);
+        let body = match &method.body {
+            MethodBody::Concrete(block) => {
+                for statement in &block.statements {
+                    statements.push(self.statement(statement));
+                }
+
+                self.node(SHARP_AST_STMT_LIST, 0, self.line(block), &statements)
+            }
+            MethodBody::Expression(body) => {
+                let line = self.line(body);
+                let expression = self.expression(body.expression);
+                statements.push(if method.returns_value() {
+                    self.node(SHARP_AST_RETURN, 0, line, &[expression])
+                } else {
+                    expression
+                });
+
+                self.node(SHARP_AST_STMT_LIST, 0, line, &statements)
+            }
+            MethodBody::Abstract(_) => NULL,
+        };
         let (start, return_type) = match &method.return_type_hint {
             Some(return_type_hint) => (return_type_hint.span(), self.hint(&return_type_hint.hint)),
             None => (method.name.span, NULL),
         };
-        let attributes = self.attributes(&method.attribute_lists);
+        let r#override = method.modifiers.iter().find(|modifier| matches!(modifier, Modifier::Override(_)));
+        let attributes = self.attributes(&method.attribute_lists, r#override);
 
         self.declaration(
             SHARP_AST_METHOD,
@@ -393,24 +494,31 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         };
         let hint = self.hint(hint);
         let name = self.string(0, self.line(parameter.variable.span), parameter.variable.name);
-        let default = parameter.default_value.as_ref().map_or(NULL, |default| self.expression(default.value));
+        let default = parameter
+            .default_value
+            .as_ref()
+            .map_or(NULL, |default| self.constant_expression(|lowering| lowering.expression(default.value)));
         let accessor_flags =
             parameter.hooks.as_ref().map_or(0, |accessors| accessor_flags(&parameter.modifiers, accessors));
         let flags = modifier_flags(&parameter.modifiers) | accessor_flags;
-        let attributes = self.attributes(&parameter.attribute_lists);
+        let attributes = self.attributes(&parameter.attribute_lists, None);
 
         self.node(SHARP_AST_PARAM, flags, self.line(parameter), &[hint, name, default, attributes, NULL, NULL])
     }
 
-    /// A field or an auto-property is a property group of one property, as php-src's grammar builds
-    /// `private int $count = 0;`, `public private(set) int $views = 0;` and `public readonly int $id;`. A constant
-    /// initial value is its default, unless the property is `readonly`.
+    /// A field, an auto-property or a computed property is a property group of one property, as php-src's grammar
+    /// builds `private int $count = 0;`, `public private(set) int $views = 0;`, `public readonly int $id;` and
+    /// `public string $slug { get => expr; }`. A constant initial value is its default, unless the property is
+    /// `readonly`.
     fn property(&mut self, property: &Property) -> u32 {
-        let (accessor_flags, attribute_lists) = match property {
-            Property::Plain(field) => (0, &field.attribute_lists),
-            Property::Hooked(auto_property) => {
-                (accessor_flags(&auto_property.modifiers, &auto_property.hook_list), &auto_property.attribute_lists)
-            }
+        let (accessor_flags, attribute_lists, hooks) = match property {
+            Property::Plain(field) => (0, &field.attribute_lists, NULL),
+            Property::Hooked(auto_property) => (
+                accessor_flags(&auto_property.modifiers, &auto_property.hook_list),
+                &auto_property.attribute_lists,
+                NULL,
+            ),
+            Property::Computed(computed) => (0, &computed.attribute_lists, self.get_hook(&computed.body)),
         };
         let Some(hint) = property.hint() else {
             unreachable!("the PHP# parser gives every field and property its type");
@@ -419,23 +527,46 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let variable = property.first_variable();
         let line = self.line(variable);
         let name = self.string(0, line, variable.name);
-        let default = match initial_value(property) {
-            Some(value) if is_default(property, value) => self.expression(value),
+        let default = match property.initial_value() {
+            Some(value) if is_default(property, value) => {
+                self.constant_expression(|lowering| lowering.expression(value))
+            }
             _ => NULL,
         };
-        let element = self.node(SHARP_AST_PROP_ELEM, 0, line, &[name, default, NULL, NULL]);
+        let element = self.node(SHARP_AST_PROP_ELEM, 0, line, &[name, default, NULL, hooks]);
         let declaration = self.node(SHARP_AST_PROP_DECL, 0, line, &[element]);
         let flags = modifier_flags(property.modifiers()) | accessor_flags;
-        let attributes = self.attributes(attribute_lists);
+        let attributes = self.attributes(attribute_lists, None);
 
         self.node(SHARP_AST_PROP_GROUP, flags, self.line(property), &[hint, declaration, attributes])
     }
 
+    /// A computed property's `=> expr;` is a hook list of one `get` hook whose body is the short body php-src's
+    /// grammar builds for `get => expr;`, on the arrow's lines.
+    fn get_hook(&mut self, body: &PropertyHookConcreteExpressionBody) -> u32 {
+        let line = self.line(body.arrow);
+        let expression = self.expression(body.expression);
+        let short_body = self.node(SHARP_AST_PROPERTY_HOOK_SHORT_BODY, 0, line, &[expression]);
+        let hook = self.declaration(
+            SHARP_AST_PROPERTY_HOOK,
+            0,
+            body.arrow,
+            body,
+            b"get",
+            &[NULL, NULL, short_body, NULL, NULL],
+        );
+
+        self.node(SHARP_AST_STMT_LIST, 0, line, &[hook])
+    }
+
     /// A declaration's attributes are one `ATTRIBUTE_LIST` with an `ATTRIBUTE_GROUP` per `[...]`, as php-src's grammar
-    /// builds `#[...]`, or null without attributes. Each attribute names its class by its full name.
-    fn attributes(&mut self, lists: &Sequence<AttributeList>) -> u32 {
-        let Some(first) = lists.first() else {
-            return NULL;
+    /// builds `#[...]`, or null without attributes. Each attribute names its class by its full name. A method's
+    /// `override` adds a last group of `#[\Override]`.
+    fn attributes(&mut self, lists: &Sequence<AttributeList>, r#override: Option<&Modifier>) -> u32 {
+        let line = match (lists.first(), r#override) {
+            (Some(first), _) => self.line(first),
+            (None, Some(r#override)) => self.line(r#override),
+            (None, None) => return NULL,
         };
 
         let mut groups = Vec::new();
@@ -444,7 +575,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             for attribute in &list.attributes {
                 let line = self.line(attribute.name);
                 let name = self.string(ZEND_NAME_FQ, line, self.names.get(&attribute.name));
-                let arguments = attribute.argument_list.as_ref().map_or(NULL, |list| self.attribute_arguments(list));
+                let arguments = attribute
+                    .argument_list
+                    .as_ref()
+                    .map_or(NULL, |list| self.constant_expression(|lowering| lowering.attribute_arguments(list)));
 
                 attributes.push(self.node(SHARP_AST_ATTRIBUTE, 0, line, &[name, arguments]));
             }
@@ -452,7 +586,33 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             groups.push(self.node(SHARP_AST_ATTRIBUTE_GROUP, 0, self.line(list), &attributes));
         }
 
-        self.node(SHARP_AST_ATTRIBUTE_LIST, 0, self.line(first), &groups)
+        if let Some(r#override) = r#override {
+            let line = self.line(r#override);
+            let name = self.string(ZEND_NAME_FQ, line, b"Override");
+            let attribute = self.node(SHARP_AST_ATTRIBUTE, 0, line, &[name, NULL]);
+            groups.push(self.node(SHARP_AST_ATTRIBUTE_GROUP, 0, line, &[attribute]));
+        }
+
+        self.node(SHARP_AST_ATTRIBUTE_LIST, 0, line, &groups)
+    }
+
+    /// A constant is a class constant group of one constant, as php-src's grammar builds `public const int MAX = 3;`:
+    /// the constant list, no attributes, then the type.
+    fn constant(&mut self, constant: &ClassLikeConstant) -> u32 {
+        let item = constant.first_item();
+        let line = self.line(item.name);
+        let name = self.string(0, line, item.name.value);
+        let value = self.constant_expression(|lowering| lowering.expression(item.value));
+        let element = self.node(SHARP_AST_CONST_ELEM, 0, line, &[name, value, NULL]);
+        let declaration = self.node(SHARP_AST_CLASS_CONST_DECL, 0, line, &[element]);
+        let hint = constant.hint.as_ref().map_or(NULL, |hint| self.hint(hint));
+
+        self.node(
+            SHARP_AST_CLASS_CONST_GROUP,
+            modifier_flags(&constant.modifiers),
+            self.line(constant),
+            &[declaration, NULL, hint],
+        )
     }
 
     /// `$this->name = value;` on the line of the member's name.
@@ -646,7 +806,21 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
         ensure_sufficient_stack(|| match expression {
             Expression::Literal(literal) => self.literal(literal),
-            Expression::Parenthesized(parenthesized) => self.expression(parenthesized.expression),
+            Expression::Parenthesized(parenthesized) => {
+                let index = self.expression(parenthesized.expression);
+                if let Expression::Conditional(_) = parenthesized.expression {
+                    self.nodes[index as usize].attr = ZEND_PARENTHESIZED_CONDITIONAL;
+                }
+
+                index
+            }
+            Expression::Conditional(Conditional { condition, then: Some(then), r#else, .. }) => {
+                let condition = self.expression(condition);
+                let then = self.expression(then);
+                let r#else = self.expression(r#else);
+
+                self.node(SHARP_AST_CONDITIONAL, 0, line, &[condition, then, r#else])
+            }
             Expression::ConstantAccess(name) => self.name(name),
             Expression::Binary(binary) => {
                 let (kind, attr) = binary_kind(binary);
@@ -701,12 +875,24 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 self.node(SHARP_AST_NEW, 0, line, &[class, arguments])
             }
-            Expression::Access(Access::Property(access)) => {
-                let object = self.expression(access.object);
-                let property = self.member(&access.property);
+            // Spec section 4 looks up the kind of `Class.y` when it runs, so the read is a class constant fetch
+            // marked to fall back to the static property of the same name. A constant expression reads only
+            // constants and enum cases, as PHP's does, so its fetch is unmarked.
+            Expression::Access(Access::Property(access)) => match self.names.static_property_class(access) {
+                Some(class) => {
+                    let class = self.string(ZEND_NAME_FQ, self.line(class), self.names.get(&class.name));
+                    let member = self.member(&access.property);
+                    let attr = if self.in_constant_expression { 0 } else { ZEND_FETCH_CLASS_MEMBER_SYNTAX };
 
-                self.node(SHARP_AST_PROP, 0, line, &[object, property])
-            }
+                    self.node(SHARP_AST_CLASS_CONST, attr, line, &[class, member])
+                }
+                None => {
+                    let object = self.expression(access.object);
+                    let property = self.member(&access.property);
+
+                    self.node(SHARP_AST_PROP, 0, line, &[object, property])
+                }
+            },
             Expression::Call(Call::NullSafeMethod(call)) => {
                 let object = self.expression(call.object);
                 let method = self.member(&call.method);
@@ -719,6 +905,11 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 let property = self.member(&access.property);
 
                 self.node(SHARP_AST_NULLSAFE_PROP, 0, line, &[object, property])
+            }
+            Expression::TypeOf(type_of) => {
+                let class = self.string(ZEND_NAME_FQ, self.line(type_of.class), self.names.get(&type_of.class));
+
+                self.node(SHARP_AST_CLASS_NAME, 0, line, &[class])
             }
             Expression::Throw(throw) => {
                 let exception = self.expression(throw.exception);
@@ -764,14 +955,23 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.string(0, self.line(text), value)
     }
 
-    /// What an assignment, a compound assignment, `++` or `--` writes: a local or parameter, or `object.name`, as
-    /// php-src's `variable` rule takes them.
+    /// What an assignment, a compound assignment, `++` or `--` writes: a local or parameter, `object.name`, or
+    /// `Class.name`, which php-src's grammar builds as the static property `Class::$name`.
     fn target(&mut self, target: &Expression) -> u32 {
         match target {
             Expression::ConstantAccess(name) if matches!(self.names.binding(&name.name), Some(Binding::Local(_))) => {
                 self.variable(name.span(), name.name.value())
             }
-            Expression::Access(Access::Property(_)) => self.expression(target),
+            Expression::Access(Access::Property(access)) => match self.names.static_property_class(access) {
+                Some(class) => {
+                    let line = self.line(target);
+                    let class = self.string(ZEND_NAME_FQ, self.line(class), self.names.get(&class.name));
+                    let property = self.member(&access.property);
+
+                    self.node(SHARP_AST_STATIC_PROP, 0, line, &[class, property])
+                }
+                None => self.expression(target),
+            },
             _ => unreachable!("check_slice refuses writing to `{target}`"),
         }
     }
@@ -799,16 +999,20 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_VAR, 0, line, &[name])
     }
 
-    /// `Class.m()` is a static call on the class's full name. Any other `object.m()` is an instance call.
+    /// `Class.m()` is a static call on the class's full name, and `super.m()` one on `parent`. Any other `object.m()`
+    /// is an instance call.
     fn method_call(&mut self, call: &MethodCall) -> u32 {
         let line = self.line(call);
-        let (kind, object) = match self.names.static_call_class(call) {
-            Some(class) => {
+        let (kind, object) = match (self.names.static_call_class(call), call.object) {
+            (Some(class), _) => {
                 let class = self.string(ZEND_NAME_FQ, self.line(class), self.names.get(&class.name));
 
                 (SHARP_AST_STATIC_CALL, class)
             }
-            None => (SHARP_AST_METHOD_CALL, self.expression(call.object)),
+            (None, Expression::Parent(keyword)) => {
+                (SHARP_AST_STATIC_CALL, self.string(ZEND_NAME_NOT_FQ, self.line(keyword), b"parent"))
+            }
+            (None, object) => (SHARP_AST_METHOD_CALL, self.expression(object)),
         };
         let method = self.member(&call.method);
         let arguments = self.arguments(&call.argument_list);
@@ -971,8 +1175,10 @@ fn modifier_flags(modifiers: &Sequence<Modifier>) -> u32 {
             Modifier::Protected(_) => ZEND_ACC_PROTECTED,
             Modifier::Private(_) => ZEND_ACC_PRIVATE,
             Modifier::Static(_) => ZEND_ACC_STATIC,
+            Modifier::Abstract(_) => ZEND_ACC_ABSTRACT,
+            // PHP methods are open to overriding, and `method` lowers `override` to `#[\Override]`.
+            Modifier::Virtual(_) | Modifier::Override(_) => 0,
             Modifier::Final(_)
-            | Modifier::Abstract(_)
             | Modifier::Readonly(_)
             | Modifier::PublicSet(_)
             | Modifier::ProtectedSet(_)
@@ -983,37 +1189,41 @@ fn modifier_flags(modifiers: &Sequence<Modifier>) -> u32 {
     flags
 }
 
-/// The initial value of a field or an auto-property.
-fn initial_value<'arena>(property: &Property<'arena>) -> Option<&'arena Expression<'arena>> {
-    match property {
-        Property::Plain(field) => match field.items.first() {
-            Some(PropertyItem::Concrete(item)) => Some(item.value),
-            _ => None,
-        },
-        Property::Hooked(auto_property) => {
-            auto_property.initial_value.as_ref().map(|initial_value| initial_value.value)
-        }
+/// The flags of a class's modifiers. `public` adds none, because every PHP class is public.
+fn class_flags(modifiers: &Sequence<Modifier>) -> u32 {
+    let mut flags = 0;
+    for modifier in modifiers {
+        flags |= match modifier {
+            Modifier::Public(_) => 0,
+            Modifier::Abstract(_) => ZEND_ACC_EXPLICIT_ABSTRACT_CLASS,
+            Modifier::Final(_) => ZEND_ACC_FINAL,
+            Modifier::Protected(_)
+            | Modifier::Private(_)
+            | Modifier::Static(_)
+            | Modifier::Readonly(_)
+            | Modifier::PublicSet(_)
+            | Modifier::ProtectedSet(_)
+            | Modifier::PrivateSet(_)
+            | Modifier::Virtual(_)
+            | Modifier::Override(_) => unreachable!("check_slice refuses the class modifier `{modifier}`"),
+        };
     }
+
+    flags
 }
 
 /// Whether PHP takes an initial value as the property's default: a constant expression without `new`, on a property
 /// that is not `readonly`, which takes no default.
 fn is_default(property: &Property, value: &Expression) -> bool {
-    !matches!(property, Property::Hooked(auto_property) if is_get_only(&auto_property.hook_list))
+    !matches!(property, Property::Hooked(auto_property) if auto_property.hook_list.is_get_only())
         && value.is_constant(&PHPVersion::PHP85, false)
 }
 
-/// Whether an accessor list has no `set`. Spec section 6.1 sets a get-only property in the constructor, which PHP's
-/// `readonly` enforces.
-fn is_get_only(accessors: &PropertyHookList) -> bool {
-    !accessors.hooks.iter().any(|accessor| accessor.name.value == b"set")
-}
-
-/// The flags an auto-property's accessors add: `readonly` for a get-only property, or the set visibility php-src
-/// writes `private(set)` or `protected(set)` from the `set` accessor's access modifier. A private property needs no
-/// set visibility.
+/// The flags an auto-property's accessors add: `readonly` for a get-only property, which spec section 6.1 sets in
+/// the constructor, or the set visibility php-src writes `private(set)` or `protected(set)` from the `set` accessor's
+/// access modifier. A private property needs no set visibility.
 fn accessor_flags(modifiers: &Sequence<Modifier>, accessors: &PropertyHookList) -> u32 {
-    if is_get_only(accessors) {
+    if accessors.is_get_only() {
         return ZEND_ACC_READONLY;
     }
 
@@ -1075,6 +1285,9 @@ fn prefix_kind(operator: &UnaryPrefixOperator) -> (sharp_kind, u32) {
         UnaryPrefixOperator::Not(_) => (SHARP_AST_UNARY_OP, ZEND_BOOL_NOT),
         UnaryPrefixOperator::PreIncrement(_) => (SHARP_AST_PRE_INC, 0),
         UnaryPrefixOperator::PreDecrement(_) => (SHARP_AST_PRE_DEC, 0),
+        UnaryPrefixOperator::IntCast(..) => (SHARP_AST_CAST, IS_LONG),
+        UnaryPrefixOperator::FloatCast(..) => (SHARP_AST_CAST, IS_DOUBLE),
+        UnaryPrefixOperator::StringCast(..) => (SHARP_AST_CAST, IS_STRING),
         UnaryPrefixOperator::ErrorControl(_)
         | UnaryPrefixOperator::Reference(_)
         | UnaryPrefixOperator::ArrayCast(..)
@@ -1082,12 +1295,9 @@ fn prefix_kind(operator: &UnaryPrefixOperator) -> (sharp_kind, u32) {
         | UnaryPrefixOperator::BooleanCast(..)
         | UnaryPrefixOperator::DoubleCast(..)
         | UnaryPrefixOperator::RealCast(..)
-        | UnaryPrefixOperator::FloatCast(..)
-        | UnaryPrefixOperator::IntCast(..)
         | UnaryPrefixOperator::IntegerCast(..)
         | UnaryPrefixOperator::ObjectCast(..)
         | UnaryPrefixOperator::UnsetCast(..)
-        | UnaryPrefixOperator::StringCast(..)
         | UnaryPrefixOperator::BinaryCast(..)
         | UnaryPrefixOperator::VoidCast(..)
         | UnaryPrefixOperator::BitwiseNot(_) => unreachable!("check_slice refuses the operator `{operator}`"),

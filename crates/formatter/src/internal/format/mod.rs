@@ -1023,6 +1023,7 @@ where
             match self {
                 Property::Plain(p) => p.format(f),
                 Property::Hooked(p) => p.format(f),
+                Property::Computed(_) => unreachable!("`mago format` skips PHP# files, the only ones with it"),
             }
         })
     }
@@ -1732,6 +1733,8 @@ where
                 Modifier::PrivateSet(keyword) => keyword.format(f),
                 Modifier::ProtectedSet(keyword) => keyword.format(f),
                 Modifier::PublicSet(keyword) => keyword.format(f),
+                Modifier::Virtual(keyword) => keyword.format(f),
+                Modifier::Override(keyword) => keyword.format(f),
             }
         })
     }

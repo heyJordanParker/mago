@@ -110,6 +110,10 @@ Variable names passed to `getVariableDefinedness()` may include or omit the lead
 
 Within one plugin callback, the plugin's after-file hooks run first and its targeted hooks then share that same file-scoped reference registry. Different plugins receive separate registries; Mago merges every plugin's contributions with the file result and replaces them if that file is reanalyzed.
 
+## Checks of named paths
+
+`mago analyze <paths>` analyzes the whole project and reports only the issues in the named paths. Targeted hooks report in the file they inspect, so that check runs them only in the named files. Every other hook and provider still runs in every file. A reference that a targeted hook adds in an unnamed file is missing from that check, so add references that other files' issues depend on from an after-file hook.
+
 ## Example
 
 ```php

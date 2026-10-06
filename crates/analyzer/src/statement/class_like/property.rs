@@ -15,6 +15,7 @@ use mago_names::binding::php_variable_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
+use mago_syntax::cst::ComputedProperty;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::HookedProperty;
 use mago_syntax::cst::PlainProperty;
@@ -23,6 +24,7 @@ use mago_syntax::cst::PropertyConcreteItem;
 use mago_syntax::cst::PropertyHook;
 use mago_syntax::cst::PropertyHookBody;
 use mago_syntax::cst::PropertyHookConcreteBody;
+use mago_syntax::cst::PropertyHookConcreteExpressionBody;
 use mago_syntax::cst::PropertyItem;
 use mago_word::Word;
 use mago_word::word;
@@ -54,6 +56,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Property<'arena> {
         match self {
             Property::Plain(plain) => plain.analyze(context, block_context, artifacts),
             Property::Hooked(hooked) => hooked.analyze(context, block_context, artifacts),
+            Property::Computed(computed) => computed.analyze(context, block_context, artifacts),
         }
     }
 }
@@ -128,7 +131,11 @@ fn analyze_default_value<'ctx, 'arena, A>(
 where
     A: Arena,
 {
-    value.analyze(context, block_context, artifacts)?;
+    if value.is_constant(&context.settings.version, false) {
+        block_context.in_constant_expression(|block_context| value.analyze(context, block_context, artifacts))?;
+    } else {
+        value.analyze(context, block_context, artifacts)?;
+    }
 
     if let Some(class_metadata) = block_context.scope.get_class_like()
         && let Some(property_metadata) = class_metadata.properties.get(&php_variable_name(variable_name))
@@ -253,13 +260,66 @@ where
         return Ok(());
     };
 
+    let parameter_name = hook.parameter_list.as_ref().and_then(|p| p.parameters.first()).map(|p| word(p.variable.name));
+    let mut hook_block_context =
+        hook_block_context(hook.name.value, parameter_name, property_name, context, parent_block_context)?;
+
+    match body {
+        PropertyHookConcreteBody::Block(block) => {
+            analyze_statements(block.statements.as_slice(), context, &mut hook_block_context, artifacts)?;
+        }
+        PropertyHookConcreteBody::Expression(expr_body) => {
+            analyze_hook_expression(hook.name.value, expr_body, context, &mut hook_block_context, artifacts)?;
+        }
+    }
+
+    Ok(())
+}
+
+impl<'ast, 'arena> Analyzable<'ast, 'arena> for ComputedProperty<'arena> {
+    /// A PHP# computed property runs as PHP's `get => expr;` hook, and its expression is analyzed as that hook's.
+    fn analyze<'ctx, A>(
+        &'ast self,
+        context: &mut Context<'ctx, 'arena, A>,
+        block_context: &mut BlockContext<'ctx>,
+        artifacts: &mut AnalysisArtifacts,
+    ) -> Result<(), AnalysisError>
+    where
+        A: Arena,
+    {
+        analyze_attributes(
+            context,
+            block_context,
+            artifacts,
+            self.attribute_lists.as_slice(),
+            AttributeTarget::Property,
+        )?;
+
+        let property_name = php_variable_name(self.variable.name);
+        let mut hook_block_context = hook_block_context(b"get", None, property_name, context, block_context)?;
+
+        analyze_hook_expression(b"get", &self.body, context, &mut hook_block_context, artifacts)
+    }
+}
+
+/// The block context a property hook's body runs in: `$this`, the class's properties, and a `set` hook's value.
+fn hook_block_context<'ctx, A>(
+    hook_name: &[u8],
+    parameter_name: Option<Word>,
+    property_name: Word,
+    context: &mut Context<'ctx, '_, A>,
+    parent_block_context: &BlockContext<'ctx>,
+) -> Result<BlockContext<'ctx>, AnalysisError>
+where
+    A: Arena,
+{
     let mut scope = ScopeContext::new(parent_block_context.scope.get_reference_origin());
     scope.set_class_like(parent_block_context.scope.get_class_like());
     scope.set_static(false);
 
     if let Some(class_like) = parent_block_context.scope.get_class_like()
         && let Some(property) = class_like.properties.get(&property_name)
-        && let Some(hook_meta) = property.hooks.get(&word(hook.name.value))
+        && let Some(hook_meta) = property.hooks.get(&word(hook_name))
     {
         scope.set_property_hook(Some((property_name, hook_meta)));
 
@@ -288,40 +348,40 @@ where
         add_properties_to_context(context, &mut hook_block_context, class_like_metadata, None)?;
     }
 
-    if hook.name.value == b"set" {
+    if hook_name == b"set" {
         let value_type = get_value_type_for_set_hook(property_name, parent_block_context);
-        let param_name = hook
-            .parameter_list
-            .as_ref()
-            .and_then(|p| p.parameters.first())
-            .map_or_else(|| word(b"$value"), |p| word(p.variable.name));
 
-        hook_block_context.locals.insert(param_name, Rc::new(value_type));
+        hook_block_context.locals.insert(parameter_name.unwrap_or_else(|| word(b"$value")), Rc::new(value_type));
     }
 
-    match body {
-        PropertyHookConcreteBody::Block(block) => {
-            analyze_statements(block.statements.as_slice(), context, &mut hook_block_context, artifacts)?;
-        }
-        PropertyHookConcreteBody::Expression(expr_body) => {
-            expr_body.expression.analyze(context, &mut hook_block_context, artifacts)?;
+    Ok(hook_block_context)
+}
 
-            if hook.name.value == b"get" {
-                let value_type = artifacts
-                    .get_rc_expression_type(&expr_body.expression)
-                    .cloned()
-                    .unwrap_or_else(|| Rc::new(get_mixed()));
+/// Analyzes a hook's `=> expr;` body, which a `get` hook returns.
+fn analyze_hook_expression<'ctx, 'arena, A>(
+    hook_name: &[u8],
+    expr_body: &PropertyHookConcreteExpressionBody<'arena>,
+    context: &mut Context<'ctx, 'arena, A>,
+    hook_block_context: &mut BlockContext<'ctx>,
+    artifacts: &mut AnalysisArtifacts,
+) -> Result<(), AnalysisError>
+where
+    A: Arena,
+{
+    expr_body.expression.analyze(context, hook_block_context, artifacts)?;
 
-                handle_return_value(
-                    context,
-                    &mut hook_block_context,
-                    artifacts,
-                    Some(expr_body.expression),
-                    value_type,
-                    expr_body.expression.span(),
-                );
-            }
-        }
+    if hook_name == b"get" {
+        let value_type =
+            artifacts.get_rc_expression_type(&expr_body.expression).cloned().unwrap_or_else(|| Rc::new(get_mixed()));
+
+        handle_return_value(
+            context,
+            hook_block_context,
+            artifacts,
+            Some(expr_body.expression),
+            value_type,
+            expr_body.expression.span(),
+        );
     }
 
     Ok(())

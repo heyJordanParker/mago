@@ -4,6 +4,7 @@ use mago_php_version::PHPVersion;
 use mago_php_version::feature::Feature;
 use mago_span::HasSpan;
 use mago_span::Span;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 
 use crate::cst::UnaryPrefixOperator;
 use crate::cst::cst::access::Access;
@@ -40,6 +41,7 @@ use crate::cst::cst::pipe::Pipe;
 use crate::cst::cst::string::CompositeString;
 use crate::cst::cst::string::StringPart;
 use crate::cst::cst::throw::Throw;
+use crate::cst::cst::type_of::TypeOf;
 use crate::cst::cst::unary::UnaryPostfix;
 use crate::cst::cst::unary::UnaryPrefix;
 use crate::cst::cst::variable::Variable;
@@ -92,13 +94,14 @@ pub enum Expression<'arena> {
     Instantiation(Instantiation<'arena>),
     MagicConstant(MagicConstant<'arena>),
     Pipe(Pipe<'arena>),
+    TypeOf(TypeOf<'arena>),
     Error(Span),
 }
 
 impl<'arena> Expression<'arena> {
     #[must_use]
     pub fn is_constant(&self, version: &PHPVersion, initialization: bool) -> bool {
-        match &self {
+        ensure_sufficient_stack(|| match &self {
             Self::Binary(operation) => {
                 operation.operator.is_constant()
                     && operation.lhs.is_constant(version, initialization)
@@ -113,6 +116,7 @@ impl<'arena> Expression<'arena> {
             Self::Literal(_) => true,
             Self::Identifier(_) => true,
             Self::MagicConstant(_) => true,
+            Self::TypeOf(_) => true,
             Self::ConstantAccess(_) => true,
             Self::Self_(_) => true,
             Self::Parent(_) => true,
@@ -227,7 +231,7 @@ impl<'arena> Expression<'arena> {
                 }
             }
             _ => false,
-        }
+        })
     }
 
     #[inline]
@@ -449,6 +453,7 @@ impl<'arena> Expression<'arena> {
             Expression::Static(_) => NodeKind::Keyword,
             Expression::Self_(_) => NodeKind::Keyword,
             Expression::Pipe(_) => NodeKind::Pipe,
+            Expression::TypeOf(_) => NodeKind::TypeOf,
             Expression::Error(_) => NodeKind::Error,
         }
     }
@@ -462,7 +467,7 @@ impl HasSpan for Parenthesized<'_> {
 
 impl HasSpan for Expression<'_> {
     fn span(&self) -> Span {
-        match &self {
+        ensure_sufficient_stack(|| match &self {
             Expression::Binary(expression) => expression.span(),
             Expression::ConstantAccess(expression) => expression.span(),
             Expression::UnaryPrefix(expression) => expression.span(),
@@ -496,7 +501,8 @@ impl HasSpan for Expression<'_> {
             Expression::Instantiation(expression) => expression.span(),
             Expression::MagicConstant(expression) => expression.span(),
             Expression::Pipe(expression) => expression.span(),
+            Expression::TypeOf(expression) => expression.span(),
             Expression::Error(span) => *span,
-        }
+        })
     }
 }

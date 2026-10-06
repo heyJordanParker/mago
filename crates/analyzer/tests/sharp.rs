@@ -322,6 +322,22 @@ fn unused_parameters_are_found_as_in_php() {
 }
 
 #[test]
+fn unused_parameters_of_an_expression_body_are_found_as_in_php() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    private int count = 0;\n\n    public Report(private int start, int unused) => this.count = start;\n\n    public int total(int used, int unused) => used;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    private int $count = 0;\n    public function __construct(private int $start, int $unused) { $this->count = $start; }\n\n    public function total(int $used, int $unused): int { return $used; }\n}\n";
+    let settings = || Settings { find_unused_parameters: true, ..settings() };
+
+    let sharp_issues = issues_with(settings(), ("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues_with(settings(), ("src/Demo/Report.php", php), &[]);
+
+    assert_eq!(
+        sharp_issues,
+        ["7:38 unused-parameter", "9:32 unused-parameter", "7:31 unused-property", "5:17 write-only-property"]
+    );
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
 fn a_for_counter_has_the_type_of_its_value_as_in_php() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    public static string total(int extra)\n    {\n        let total = 0;\n        for (let step = 0; step < extra; step++) {\n            total += step;\n        }\n        return total;\n    }\n}\n";
     let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function total(int $extra): string\n    {\n        $total = 0;\n        for ($step = 0; $step < $extra; $step++) {\n            $total += $step;\n        }\n        return $total;\n    }\n}\n";
@@ -628,6 +644,215 @@ fn a_get_only_property_is_readonly_and_set_once_in_the_constructor() {
     );
 }
 
+#[test]
+fn typeof_is_the_class_name_as_in_php() {
+    let registry = "<?php\n\nnamespace Lib;\n\nfinal class Registry\n{\n    /** @param class-string<Calc> $class */\n    public static function keep(string $class): string\n    {\n        return $class;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Calc;\nimport Lib.Registry;\n\nclass Report\n{\n    public static string total()\n    {\n        Registry.keep(typeof(Report));\n        Registry.keep(typeof(Missing));\n        return Registry.keep(typeof(Calc));\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Calc;\nuse Lib\\Registry;\n\nclass Report\n{\n    public static function total(): string\n    {\n        Registry::keep(Report::class);\n        Registry::keep(Missing::class);\n        return Registry::keep(Calc::class);\n    }\n}\n";
+    let others = [("src/Lib/Calc.php", CALC), ("src/Lib/Registry.php", registry)];
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &others);
+    let php_issues = issues(("src/Demo/Report.php", php), &others);
+
+    assert_eq!(sharp_issues, ["10:23 invalid-argument", "11:30 non-existent-class-like", "11:23 invalid-argument"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+/// A static member written through its class name is checked as PHP checks `Class::$name`.
+#[test]
+fn a_static_member_write_is_checked_as_in_php() {
+    let sharp = "namespace Demo;\n\nclass Counter\n{\n    public const int START = 10;\n    private static int count = 0;\n    public static string last { get; private set; } = \"none\";\n\n    public static void touch()\n    {\n        Counter.count = 5;\n        Counter.count++;\n        Counter.count += 2;\n        Counter.last ??= \"never\";\n        Counter.count = \"many\";\n        Counter.missing = 1;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Counter\n{\n    public const int START = 10;\n    private static int $count = 0;\n    public private(set) static string $last = \"none\";\n\n    public static function touch(): void\n    {\n        Counter::$count = 5;\n        Counter::$count++;\n        Counter::$count += 2;\n        Counter::$last ??= \"never\";\n        Counter::$count = \"many\";\n        Counter::$missing = 1;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Counter.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Counter.php", php), &[]);
+
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{sharp_issues:?} {php_issues:?}");
+    assert_eq!(php_issues.len(), 3, "{php_issues:?}");
+}
+
+/// `Class.y` reads a constant or an enum case when the class has one by that name, and the static property otherwise,
+/// so each read is checked as the PHP twin's `::` read of that member.
+#[test]
+fn a_class_member_read_is_checked_as_its_constant_enum_case_or_static_property_in_php() {
+    let registry = "<?php\n\nnamespace Lib;\n\nenum Order: string\n{\n    case Ascending = 'asc';\n}\n\nfinal class Registry\n{\n    public const int VERSION = 2;\n    public static string $label = 'registry';\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Order;\nimport Lib.Registry;\n\nclass Members\n{\n    public static int version()\n    {\n        return Registry.VERSION;\n    }\n\n    public static Order order()\n    {\n        return Order.Ascending;\n    }\n\n    public static int label()\n    {\n        return Registry.label;\n    }\n\n    public static int missing()\n    {\n        return Registry.missing;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Order;\nuse Lib\\Registry;\n\nclass Members\n{\n    public static function version(): int\n    {\n        return Registry::VERSION;\n    }\n\n    public static function order(): Order\n    {\n        return Order::Ascending;\n    }\n\n    public static function label(): int\n    {\n        return Registry::$label;\n    }\n\n    public static function missing(): int\n    {\n        return Registry::$missing;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Members.sharp", sharp), &[("src/Lib/Registry.php", registry)]);
+    let php_issues = issues(("src/Demo/Members.php", php), &[("src/Lib/Registry.php", registry)]);
+
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{sharp_issues:?} {php_issues:?}");
+    assert_eq!(
+        sharp_issues,
+        ["20:16 invalid-return-statement", "25:25 non-existent-property", "25:16 invalid-return-statement"]
+    );
+}
+
+/// A constant expression reads `Class.y` as the class constant or enum case, as PHP's `Class::y`: a parameter default,
+/// a constant's value and a constant initial value check as their PHP twins, and a static property there is a
+/// constant the class does not have.
+#[test]
+fn a_class_member_read_in_a_constant_expression_is_checked_as_a_class_constant() {
+    let registry = "<?php\n\nnamespace Lib;\n\nenum Order: string\n{\n    case Ascending = 'asc';\n}\n\nfinal class Registry\n{\n    public const int VERSION = 2;\n    public static string $label = 'registry';\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Order;\nimport Lib.Registry;\n\nclass Members\n{\n    public const int NEXT = Registry.VERSION + 1;\n    public const string LABEL = Registry.label;\n    private Order sort = Order.Ascending;\n\n    public string run(Order order = Order.Ascending, int version = Registry.VERSION)\n    {\n        return this.sort.value;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Order;\nuse Lib\\Registry;\n\nclass Members\n{\n    public const int NEXT = Registry::VERSION + 1;\n    public const string LABEL = Registry::label;\n    private Order $sort = Order::Ascending;\n\n    public function run(Order $order = Order::Ascending, int $version = Registry::VERSION): string\n    {\n        return $this->sort->value;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Members.sharp", sharp), &[("src/Lib/Registry.php", registry)]);
+    let php_issues = issues(("src/Demo/Members.php", php), &[("src/Lib/Registry.php", registry)]);
+
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{sharp_issues:?} {php_issues:?}");
+    assert_eq!(sharp_issues, ["9:42 non-existent-class-constant"]);
+}
+
+/// A PHP class extends a PHP# abstract class and implements a PHP# interface, whose method has no access modifier
+/// and is public, as their PHP twins are.
+#[test]
+fn abstract_and_final_classes_and_interfaces_are_checked_as_in_php() {
+    let square = "<?php\n\nnamespace Demo;\n\nfinal class Square extends Shape implements Measured\n{\n    public function area(): float\n    {\n        return 4.0;\n    }\n\n    protected function name(): string\n    {\n        return 'square';\n    }\n}\n\nfunction measure(Measured $shape): float\n{\n    return $shape->area() + (new Square())->area();\n}\n";
+    let sharp = "namespace Demo;\n\nabstract class Shape\n{\n    public abstract float area();\n\n    protected abstract string name();\n}\n\nfinal class Unit\n{\n}\n\ninterface Measured\n{\n    float area();\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nabstract class Shape\n{\n    abstract public function area(): float;\n\n    abstract protected function name(): string;\n}\n\nfinal class Unit\n{\n}\n\ninterface Measured\n{\n    public function area(): float;\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Square.php", square), &[("src/Demo/Shape.sharp", sharp)]);
+    let php_issues = issues(("src/Demo/Square.php", square), &[("src/Demo/Shape.php", php)]);
+
+    assert_eq!(sharp_issues, php_issues);
+    assert_eq!(issues(("src/Demo/Shape.sharp", sharp), &[]), issues(("src/Demo/Shape.php", php), &[]));
+}
+
+/// A header names a PHP base class and a PHP interface, so the class calls the base's methods and passes where the
+/// interface is expected. `super.size()` calls the PHP# base's method, as `parent::size()` does in PHP.
+#[test]
+fn a_header_names_the_base_class_and_the_interfaces_as_in_php() {
+    let library = "<?php\n\nnamespace Lib;\n\ninterface Named\n{\n    public function name(): string;\n}\n\nabstract class Entity\n{\n    public function id(): int\n    {\n        return 7;\n    }\n}\n\nfinal class Shelf\n{\n    public static function show(Named $named, Entity $entity): string\n    {\n        return $named->name() . $entity->id();\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Entity;\nimport Lib.Named;\nimport Lib.Shelf;\n\npublic class Page : Entity, Named\n{\n    public string name()\n    {\n        return \"page\";\n    }\n\n    public int number()\n    {\n        return this.id();\n    }\n\n    public string shown()\n    {\n        return Shelf.show(this, this);\n    }\n}\n\npublic class Image\n{\n    public virtual int size()\n    {\n        return 10;\n    }\n}\n\npublic class Thumbnail : Image\n{\n    public override int size()\n    {\n        return super.size() + 1;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Entity;\nuse Lib\\Named;\nuse Lib\\Shelf;\n\nclass Page extends Entity implements Named\n{\n    public function name(): string\n    {\n        return \"page\";\n    }\n\n    public function number(): int\n    {\n        return $this->id();\n    }\n\n    public function shown(): string\n    {\n        return Shelf::show($this, $this);\n    }\n}\n\nclass Image\n{\n    public function size(): int\n    {\n        return 10;\n    }\n}\n\nclass Thumbnail extends Image\n{\n    #[\\Override]\n    public function size(): int\n    {\n        return parent::size() + 1;\n    }\n}\n";
+    let others = [("src/Lib/Entity.php", library)];
+
+    assert_eq!(issues(("src/Demo/Page.php", php), &others), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Page.sharp", sharp), &others), Vec::<String>::new());
+}
+
+/// A header with two classes, a trait, a missing name, a final class or an interface whose method the class lacks
+/// reports what its PHP twin's `extends` and `implements` report.
+#[test]
+fn a_header_reports_what_extends_and_implements_report_in_php() {
+    let library = "<?php\n\nnamespace Lib;\n\ninterface Named\n{\n    public function name(): string;\n}\n\nclass Entity\n{\n}\n\nclass Other\n{\n}\n\ntrait Mixin\n{\n}\n\nfinal class Sealed\n{\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Entity;\nimport Lib.Mixin;\nimport Lib.Named;\nimport Lib.Other;\nimport Lib.Sealed;\n\npublic class Twice : Entity, Other\n{\n}\n\npublic class Blend : Mixin\n{\n}\n\npublic class Lost : Missing\n{\n}\n\npublic class Closed : Sealed\n{\n}\n\npublic class Partial : Named\n{\n}\n\npublic interface Wide : Entity\n{\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Entity;\nuse Lib\\Mixin;\nuse Lib\\Named;\nuse Lib\\Other;\nuse Lib\\Sealed;\n\nclass Twice extends Entity implements Other\n{\n}\n\nclass Blend implements Mixin\n{\n}\n\nclass Lost implements Missing\n{\n}\n\nclass Closed extends Sealed\n{\n}\n\nclass Partial implements Named\n{\n}\n\ninterface Wide extends Entity\n{\n}\n";
+    let others = [("src/Lib/Named.php", library)];
+
+    let sharp_issues = issues(("src/Demo/Twice.sharp", sharp), &others);
+    let php_issues = issues(("src/Demo/Twice.php", php), &others);
+
+    assert_eq!(
+        codes(&php_issues),
+        [
+            "invalid-implement",
+            "invalid-implement",
+            "non-existent-class-like",
+            "extend-final-class",
+            "unimplemented-abstract-method",
+            "invalid-extend"
+        ]
+    );
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+/// A method is closed unless it is `virtual`, and `override` is required to replace one, spec section 22. So PHP#
+/// reports what PHP reports for a `final` method and a missing or stray `#[\Override]`, without the
+/// `check-missing-override` setting. Implementing an interface method takes no `override`.
+#[test]
+fn virtual_and_override_are_checked_as_final_and_the_override_attribute_in_php() {
+    let library = "<?php\n\nnamespace Lib;\n\ninterface Named\n{\n    public function name(): string;\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Named;\n\npublic class Base\n{\n    public virtual int size()\n    {\n        return 1;\n    }\n\n    public string label()\n    {\n        return \"base\";\n    }\n\n    public virtual int depth()\n    {\n        return 0;\n    }\n}\n\npublic class Child : Base, Named\n{\n    public int size()\n    {\n        return 2;\n    }\n\n    public override string label()\n    {\n        return \"child\";\n    }\n\n    public override int width()\n    {\n        return 3;\n    }\n\n    public final override int depth()\n    {\n        return 1;\n    }\n\n    public string name()\n    {\n        return \"child\";\n    }\n}\n\npublic class GrandChild : Child\n{\n    public override int depth()\n    {\n        return 2;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Named;\n\nclass Base\n{\n    public function size(): int\n    {\n        return 1;\n    }\n\n    final public function label(): string\n    {\n        return \"base\";\n    }\n\n    public function depth(): int\n    {\n        return 0;\n    }\n}\n\nclass Child extends Base implements Named\n{\n    public function size(): int\n    {\n        return 2;\n    }\n\n    #[\\Override]\n    public function label(): string\n    {\n        return \"child\";\n    }\n\n    #[\\Override]\n    public function width(): int\n    {\n        return 3;\n    }\n\n    #[\\Override]\n    final public function depth(): int\n    {\n        return 1;\n    }\n\n    #[\\Override]\n    public function name(): string\n    {\n        return \"child\";\n    }\n}\n\nclass GrandChild extends Child\n{\n    #[\\Override]\n    public function depth(): int\n    {\n        return 2;\n    }\n}\n";
+    let others = [("src/Lib/Named.php", library)];
+
+    let sharp_issues = issues(("src/Demo/Base.sharp", sharp), &others);
+    let php_issues =
+        issues_with(Settings { check_missing_override: true, ..settings() }, ("src/Demo/Base.php", php), &others);
+
+    assert_eq!(
+        codes(&php_issues),
+        ["override-final-method", "missing-override-attribute", "invalid-override-attribute", "override-final-method"],
+        "{php_issues:?}"
+    );
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{sharp_issues:?}");
+
+    let missing = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Base.sharp", sharp), &others).remove(1);
+    assert_eq!(missing.message, "Missing `override` modifier on overriding method `Demo\\Child::size`.");
+}
+
+/// Every PHP# field has a type, so a field cannot replace an untyped PHP property yet: PHP refuses the added type.
+#[test]
+fn a_field_that_replaces_an_untyped_php_property_is_not_supported_yet() {
+    let library = "<?php\n\nnamespace Lib;\n\nclass Entity\n{\n    protected $label = 'entity';\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Entity;\n\npublic class Post : Entity\n{\n    protected string label = \"post\";\n}\n";
+
+    let issues =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Post.sharp", sharp), &[("src/Lib/Entity.php", library)]);
+
+    assert_eq!(
+        issues.iter().map(|issue| issue.code.as_deref().unwrap_or("none")).collect::<Vec<_>>(),
+        ["not-supported-yet"]
+    );
+    assert_eq!(
+        issues[0].message,
+        "A field that replaces the untyped PHP property `Lib\\Entity::$label` is not supported yet."
+    );
+}
+
+/// A PHP class that implements a class reports it, and keeps the metadata upstream Mago builds: only a PHP# header
+/// links its class as the parent.
+#[test]
+fn a_php_class_that_implements_a_class_is_still_an_error() {
+    let php = "<?php\n\nnamespace Demo;\n\nclass Entity\n{\n    public function id(): int\n    {\n        return 7;\n    }\n}\n\nclass Page implements Entity\n{\n    public function number(): int\n    {\n        return parent::id();\n    }\n}\n";
+
+    assert_eq!(
+        codes(&issues(("src/Demo/Page.php", php), &[])),
+        ["invalid-implement", "invalid-parent-type", "mixed-return-statement"]
+    );
+}
+
+/// A plain PHP method is open unless PHP marks it `final`, and replacing one needs `override`, spec section 22. So
+/// PHP# reports what PHP reports for its `#[\Override]` twin: a missing `override`, `override` with no parent method,
+/// replacing a `final` method, and, as errors, renamed parameters.
+#[test]
+fn replacing_a_php_method_follows_php_rules_with_override_required() {
+    let library = "<?php\n\nnamespace Lib;\n\nabstract class Report\n{\n    abstract protected function render(): string;\n\n    public function title(): string\n    {\n        return 'Report';\n    }\n\n    final public function id(): string\n    {\n        return 'report';\n    }\n\n    public function resize(int $width, int $height): void\n    {\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Report;\n\npublic class SalesReport : Report\n{\n    protected override string render()\n    {\n        return \"sales\";\n    }\n\n    public override string title()\n    {\n        return \"Sales\";\n    }\n}\n\npublic class PlainReport : Report\n{\n    protected override string render()\n    {\n        return \"plain\";\n    }\n\n    public string title()\n    {\n        return \"Plain\";\n    }\n}\n\npublic class FinalReport : Report\n{\n    protected override string render()\n    {\n        return \"final\";\n    }\n\n    public override string id()\n    {\n        return \"final\";\n    }\n}\n\npublic class StrayReport : Report\n{\n    protected override string render()\n    {\n        return \"stray\";\n    }\n\n    public override string footer()\n    {\n        return \"\";\n    }\n}\n\npublic class RenamedReport : Report\n{\n    protected override string render()\n    {\n        return \"renamed\";\n    }\n\n    public override void resize(int w, int h)\n    {\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Report;\n\nclass SalesReport extends Report\n{\n    #[\\Override]\n    protected function render(): string\n    {\n        return \"sales\";\n    }\n\n    #[\\Override]\n    public function title(): string\n    {\n        return \"Sales\";\n    }\n}\n\nclass PlainReport extends Report\n{\n    #[\\Override]\n    protected function render(): string\n    {\n        return \"plain\";\n    }\n\n    public function title(): string\n    {\n        return \"Plain\";\n    }\n}\n\nclass FinalReport extends Report\n{\n    #[\\Override]\n    protected function render(): string\n    {\n        return \"final\";\n    }\n\n    #[\\Override]\n    public function id(): string\n    {\n        return \"final\";\n    }\n}\n\nclass StrayReport extends Report\n{\n    #[\\Override]\n    protected function render(): string\n    {\n        return \"stray\";\n    }\n\n    #[\\Override]\n    public function footer(): string\n    {\n        return \"\";\n    }\n}\n\nclass RenamedReport extends Report\n{\n    #[\\Override]\n    protected function render(): string\n    {\n        return \"renamed\";\n    }\n\n    #[\\Override]\n    public function resize(int $w, int $h): void\n    {\n    }\n}\n";
+    let others = [("src/Lib/Report.php", library)];
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &others);
+    let php_issues =
+        issues_with(Settings { check_missing_override: true, ..settings() }, ("src/Demo/Report.php", php), &others);
+
+    assert_eq!(
+        codes(&php_issues),
+        [
+            "missing-override-attribute",
+            "override-final-method",
+            "invalid-override-attribute",
+            "incompatible-parameter-name",
+            "incompatible-parameter-name"
+        ],
+        "{php_issues:?}"
+    );
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{sharp_issues:?}");
+
+    let renamed: Vec<_> = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &others)
+        .into_iter()
+        .filter(|issue| issue.code.as_deref() == Some("incompatible-parameter-name"))
+        .collect();
+    assert!(renamed.iter().all(|issue| issue.level == Level::Error), "{renamed:?}");
+    assert_eq!(
+        renamed[0].message,
+        "Parameter #1 of `Demo\\RenamedReport::resize()` is named `w` but parent `Lib\\Report::resize()` names it `width`"
+    );
+}
+
 /// A parse error reports its spot once, so returning what failed to parse adds no `never-return`, in PHP# and PHP.
 #[test]
 fn returning_a_value_that_failed_to_parse_adds_no_issue() {
@@ -636,6 +861,33 @@ fn returning_a_value_that_failed_to_parse_adds_no_issue() {
 
     assert_eq!(issues(("src/Demo/make.php", php), &[]), ["7:12 parse"]);
     assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), ["7:20 parse"]);
+}
+
+/// `super` names the base class, so a class whose header names only interfaces has none, as `parent::` in a PHP
+/// class without `extends` has none.
+#[test]
+fn super_in_a_class_without_a_base_class_is_an_error_as_in_php() {
+    let sharp = "namespace Demo;\n\npublic interface Named\n{\n    string name();\n}\n\npublic class Tag : Named\n{\n    public string name()\n    {\n        return super.name();\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\ninterface Named\n{\n    public function name(): string;\n}\n\nclass Tag implements Named\n{\n    public function name(): string\n    {\n        return parent::name();\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Tag.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Tag.php", php), &[]);
+
+    assert_eq!(codes(&php_issues), ["invalid-parent-type", "mixed-return-statement"], "{php_issues:?}");
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{sharp_issues:?}");
+
+    let invalid = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Tag.sharp", sharp), &[]).remove(0);
+    assert_eq!(invalid.level, Level::Error);
+    assert_eq!(invalid.message, "Cannot use `super` as the current type (`Demo\\Tag`) does not have a parent class.");
+}
+
+/// The checker refuses a member of `typeof(X)` once, so the analyzer adds no issue on the refused read, its chain, or
+/// the value it gives.
+#[test]
+fn reading_a_member_of_typeof_adds_no_issue() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public string label()\n    {\n        return typeof(Report).name;\n    }\n\n    public string first()\n    {\n        return typeof(Report).name.first;\n    }\n\n    public string called()\n    {\n        return typeof(Report).name();\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
 }
 
 #[test]
@@ -677,14 +929,41 @@ fn a_template_is_a_string_as_php_interpolation_is() {
 }
 
 #[test]
-fn calling_a_function_the_app_declares_is_not_supported_yet() {
-    let helpers = "<?php\n\nnamespace Demo;\n\nfunction helper(int $value): int\n{\n    return $value;\n}\n";
-    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(int extra)\n    {\n        return helper(extra);\n    }\n}\n";
-    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function total(int $extra): int\n    {\n        return helper($extra);\n    }\n}\n";
+fn a_global_function_the_app_declares_checks_its_arguments_as_in_php() {
+    let helpers = "<?php\n\nfunction helper(int $value): int\n{\n    return $value;\n}\n";
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(int extra)\n    {\n        return helper(extra) + helper(\"one\");\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function total(int $extra): int\n    {\n        return helper($extra) + helper(\"one\");\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/helpers.php", helpers)]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[("src/helpers.php", helpers)]);
+
+    assert_eq!(sharp_issues, ["7:39 invalid-argument"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn calling_a_function_that_does_not_exist_is_reported_as_in_php() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(int extra)\n    {\n        return missing(extra);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function total(int $extra): int\n    {\n        return missing($extra);\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[]);
+
+    assert_eq!(sharp_issues, ["7:16 non-existent-function", "7:16 mixed-return-statement"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+/// The engine calls a bare function name as the global function, so a call the analyzer resolves to a namespaced
+/// function would run another function than the one it checked.
+#[test]
+fn calling_a_namespaced_function_is_not_supported_yet() {
+    let helpers = "<?php\n\nnamespace Demo;\n\nfunction helper(int $value): int\n{\n    return $value;\n}\n\nfunction strlen(string $value): int\n{\n    return 0;\n}\n";
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(int extra)\n    {\n        return helper(extra) + strlen(\"one\");\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function total(int $extra): int\n    {\n        return helper($extra) + strlen(\"one\");\n    }\n}\n";
 
     assert_eq!(
         issues(("src/Demo/Report.sharp", sharp), &[("src/Demo/helpers.php", helpers)]),
-        ["7:16 not-supported-yet"]
+        ["7:16 not-supported-yet", "7:32 not-supported-yet"]
     );
     assert_eq!(issues(("src/Demo/Report.php", php), &[("src/Demo/helpers.php", helpers)]), Vec::<String>::new());
 }
@@ -718,6 +997,120 @@ fn plus_on_a_string_and_a_value_that_may_not_be_one_is_an_invalid_operand() {
         issues(("src/Demo/Report.sharp", sharp), &[]),
         ["7:19 invalid-operand", "8:19 invalid-operand", "9:19 invalid-operand"]
     );
+}
+
+#[test]
+fn a_ternary_with_a_bool_condition_has_the_type_it_has_in_php() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static string? host(string host, bool secure)\n    {\n        const scheme = secure ? \"https\" : \"http\";\n        return host != \"\" ? scheme + host : (secure ? 1 : null);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function host(string $host, bool $secure): ?string\n    {\n        $scheme = $secure ? \"https\" : \"http\";\n        return $host != \"\" ? $scheme . $host : ($secure ? 1 : null);\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[]);
+
+    assert!(!php_issues.is_empty(), "{php_issues:?}");
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn a_ternary_whose_condition_is_not_bool_is_an_invalid_operand() {
+    let any = "<?php\n\nnamespace Lib;\n\nfinal class Any\n{\n    public static function value(): mixed\n    {\n        return 1;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Any;\n\nclass Report\n{\n    public static int pick(int count, string name, bool? maybe)\n    {\n        const a = count ? 1 : 2;\n        const b = name ? 1 : 2;\n        const c = maybe ? 1 : 2;\n        const d = Any.value() ? 1 : 2;\n        const e = count ?: 2;\n        return a + b + c + d + e;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Any.php", any)]),
+        ["9:19 invalid-operand", "10:19 invalid-operand", "11:19 invalid-operand", "12:19 invalid-operand"]
+    );
+}
+
+#[test]
+fn every_condition_keeps_testing_truthiness_in_php() {
+    let php = "<?php\n\nnamespace Demo;\n\nfunction pick(int $count, string $name, int $a, string $b): int\n{\n    if ($count) {\n        $count++;\n    } elseif ($name) {\n        $count--;\n    }\n    while ($count) {\n        $count--;\n    }\n    do {\n        $count++;\n    } while ($count < 3 && $name);\n    for ($i = 3; $i; $i--) {\n        $count++;\n    }\n    return $a || !$b ? $count : 2;\n}\n";
+
+    assert_eq!(issues(("src/Demo/report.php", php), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn every_condition_that_is_bool_has_no_issue() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int pick(int count, string name, bool on)\n    {\n        if (count > 0) {\n            count++;\n        } else if (name != \"\") {\n            count--;\n        }\n        while (count > 10 && on) {\n            count--;\n        }\n        do {\n            count++;\n        } while (count < 3 || !on);\n        for (let i = 3; i > 0; i--) {\n            count++;\n        }\n        while (true) {\n            break;\n        }\n        return on ? count : 0;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn a_condition_that_is_not_bool_is_an_invalid_operand_everywhere() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int pick(int count, string name, bool on, int n, string s)\n    {\n        if (count) {\n            count++;\n        } else if (name) {\n            count--;\n        }\n        while (count) {\n            count--;\n        }\n        do {\n            count++;\n        } while (count % 3);\n        for (let i = 3; i; i--) {\n            count += s ? 1 : 2;\n        }\n        const a = n && on;\n        const b = on || s;\n        const c = !n;\n        return a && b && c ? 1 : 0;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[]),
+        [
+            "7:13 invalid-operand",
+            "9:20 invalid-operand",
+            "12:16 invalid-operand",
+            "17:18 invalid-operand",
+            "19:22 invalid-operand",
+            "18:25 invalid-operand",
+            "21:19 invalid-operand",
+            "22:25 invalid-operand",
+            "23:20 invalid-operand",
+        ]
+    );
+}
+
+#[test]
+fn casts_between_numbers_have_the_types_they_have_in_php() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static string cents(float price, int count)\n    {\n        const cents = (int)(price * 100);\n        const share = (float)count / 3;\n        return (string)cents + (string)share + (string)(int)share;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function cents(float $price, int $count): string\n    {\n        $cents = (int)($price * 100);\n        $share = (float)$count / 3;\n        return (string)$cents . (string)$share . (string)(int)$share;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[]);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn a_cast_of_a_value_that_is_not_a_number_is_an_invalid_operand() {
+    let any = "<?php\n\nnamespace Lib;\n\nfinal class Any\n{\n    public static function value(): mixed\n    {\n        return 1;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Any;\n\nclass Report\n{\n    public static string pick(string name, bool flag, int? maybe)\n    {\n        const a = (int)name;\n        const b = (float)flag;\n        const c = (string)name;\n        const d = (int)maybe;\n        const e = (string)Any.value();\n        return `${a}${b}${c}${d}${e}`;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Any.php", any)]),
+        [
+            "9:19 invalid-operand",
+            "10:19 invalid-operand",
+            "11:19 invalid-operand",
+            "12:19 invalid-operand",
+            "13:19 invalid-operand",
+        ]
+    );
+}
+
+#[test]
+fn int_and_float_parse_have_the_types_of_the_sharp_library_classes() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int count(string text, int? fallback)\n    {\n        const price = Float.parse(text) + (Float.tryParse(fallback) ?? 0.0);\n        const count = Int.parse(text) + (Int.tryParse(null) ?? 0);\n        return price > 1.0 ? count : Int.tryParse(text);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function count(string $text, ?int $fallback): int\n    {\n        $price = \\Sharp\\Float::parse($text) + (\\Sharp\\Float::tryParse($fallback) ?? 0.0);\n        $count = \\Sharp\\Int::parse($text) + (\\Sharp\\Int::tryParse(null) ?? 0);\n        return $price > 1.0 ? $count : \\Sharp\\Int::tryParse($text);\n    }\n}\n";
+
+    // `check_throws` skips `.sharp` files, so the PHP twin is analyzed without it.
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues_with(Settings { check_throws: false, ..settings() }, ("src/Demo/Report.php", php), &[]);
+
+    assert_eq!(sharp_issues, ["9:16 nullable-return-statement", "9:16 invalid-return-statement"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn expression_bodies_and_computed_properties_are_checked_as_php_checks_their_twins() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    private string name = \"\";\n    private int count = 0;\n\n    public Report(string name) => this.name = name;\n\n    public string slug => strtolower(this.name);\n    public int size => this.name;\n    public int total() => this.count + 1;\n    public string label() => this.count;\n    public void touch() => this.count++;\n    public void reset(int unused) => this.count = 0;\n    public void rename() => this.slug = \"x\";\n}\n";
+    let php = "<?php\n\nnamespace Demo;\nclass Report\n{\n    private string $name = \"\";\n    private int $count = 0;\n\n    public function __construct(string $name) { $this->name = $name; }\n\n    public string $slug { get => strtolower($this->name); }\n    public int $size { get => $this->name; }\n    public function total(): int { return $this->count + 1; }\n    public function label(): string { return $this->count; }\n    public function touch(): void { $this->count++; }\n    public function reset(int $unused): void { $this->count = 0; }\n    public function rename(): void { $this->slug = \"x\"; }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[]);
+
+    assert_eq!(
+        sharp_issues,
+        ["11:24 invalid-return-statement", "13:30 invalid-return-statement", "16:34 invalid-property-write"]
+    );
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
 }
 
 #[test]
@@ -820,6 +1213,20 @@ fn a_nullable_return_type_on_a_method_that_never_returns_null_is_an_error() {
     assert_eq!(help.as_deref(), Some("Remove `null` from the return type, giving `Customer`."));
 }
 
+/// A PHP# method is closed unless it is `virtual` or an `override`, spec section 22, so a public method drops a `?`
+/// that it never returns, as a `final override` does. A `virtual` method and an open `override` keep it.
+#[test]
+fn a_closed_method_drops_a_nullable_return_type_and_an_open_one_keeps_it() {
+    let sharp = "namespace Demo;\n\npublic class Source\n{\n    public Customer? owner(Customer customer)\n    {\n        return customer;\n    }\n\n    public Customer? first(Customer customer) => customer;\n\n    public virtual Customer? fallback(Customer customer)\n    {\n        return customer;\n    }\n}\n\npublic class Archive : Source\n{\n    public override Customer? fallback(Customer customer)\n    {\n        return customer;\n    }\n}\n\npublic class Vault : Archive\n{\n    public final override Customer? fallback(Customer customer)\n    {\n        return customer;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Source\n{\n    final public function owner(Customer $customer): ?Customer\n    {\n        return $customer;\n    }\n\n    final public function first(Customer $customer): ?Customer\n    {\n        return $customer;\n    }\n\n    public function fallback(Customer $customer): ?Customer\n    {\n        return $customer;\n    }\n}\n\nclass Archive extends Source\n{\n    #[\\Override]\n    public function fallback(Customer $customer): ?Customer\n    {\n        return $customer;\n    }\n}\n\nclass Vault extends Archive\n{\n    #[\\Override]\n    final public function fallback(Customer $customer): ?Customer\n    {\n        return $customer;\n    }\n}\n";
+
+    assert_eq!(
+        errors(("src/Demo/Source.sharp", sharp), &[("src/Demo/Customer.sharp", CUSTOMER)]),
+        ["5:12 overly-wide-return-type", "10:12 overly-wide-return-type", "28:27 overly-wide-return-type"]
+    );
+    assert_eq!(issues(("src/Demo/Source.php", php), &[("src/Demo/Customer.sharp", CUSTOMER)]), Vec::<String>::new());
+}
+
 #[test]
 fn an_abstract_method_keeps_its_nullable_return_type() {
     let sharp = "namespace Demo;\n\nabstract class Source\n{\n    public abstract Customer? current();\n}\n";
@@ -833,12 +1240,12 @@ fn an_abstract_method_keeps_its_nullable_return_type() {
 /// Spec section 14.4: a nullable parameter that the method rejects on every path drops its `?`, and the caller checks.
 #[test]
 fn a_nullable_parameter_the_method_rejects_on_every_path_is_an_error() {
-    let sharp = "namespace Demo;\n\nimport RuntimeException;\n\nclass Billing\n{\n    public void notify(Customer? customer)\n    {\n        Customer c = customer ?? throw new RuntimeException(\"none\");\n    }\n\n    public string remind(Customer? customer)\n    {\n        if (customer === null) {\n            throw new RuntimeException(\"none\");\n        }\n        return customer.name;\n    }\n\n    public int discount(Plan? plan)\n    {\n        return plan?.price ?? 0;\n    }\n\n    public void log(Customer? customer, bool loud)\n    {\n        if (loud) {\n            Customer c = customer ?? throw new RuntimeException(\"none\");\n        }\n    }\n\n    public string greet(Customer? customer)\n    {\n        const name = customer?.name;\n        Customer c = customer ?? throw new RuntimeException(\"none\");\n        return c.name;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport RuntimeException;\n\nclass Billing\n{\n    public void notify(Customer? customer)\n    {\n        Customer c = customer ?? throw new RuntimeException(\"none\");\n    }\n\n    public string remind(Customer? customer)\n    {\n        if (customer === null) {\n            throw new RuntimeException(\"none\");\n        }\n        return customer.name;\n    }\n\n    public int discount(Plan? plan)\n    {\n        return plan?.price ?? 0;\n    }\n\n    public void log(Customer? customer, bool loud)\n    {\n        if (loud) {\n            Customer c = customer ?? throw new RuntimeException(\"none\");\n        }\n    }\n\n    public string greet(Customer? customer)\n    {\n        const name = customer?.name;\n        Customer c = customer ?? throw new RuntimeException(\"none\");\n        return c.name;\n    }\n\n    public Customer verify(Customer? customer) => customer ?? throw new RuntimeException(\"none\");\n}\n";
     let php = "<?php\n\nnamespace Demo;\n\nuse RuntimeException;\n\nclass Billing\n{\n    public function notify(?Customer $customer): void\n    {\n        $c = $customer ?? throw new RuntimeException(\"none\");\n    }\n}\n";
 
     assert_eq!(
         errors(("src/Demo/Billing.sharp", sharp), &[("src/Demo/Customer.sharp", CUSTOMER)]),
-        ["7:24 rejected-nullable-parameter", "12:26 rejected-nullable-parameter"]
+        ["7:24 rejected-nullable-parameter", "12:26 rejected-nullable-parameter", "39:28 rejected-nullable-parameter"]
     );
     assert!(
         !codes(&issues(("src/Demo/Billing.php", php), &[("src/Demo/Customer.sharp", CUSTOMER)]))

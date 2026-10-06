@@ -142,6 +142,37 @@ fn a_project_with_no_source_paths_is_checked_whole_around_the_named_file() {
 }
 
 #[test]
+fn a_scoped_check_runs_node_hooks_only_in_the_named_files() {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !common::php_sdk_is_available(repository, "the scoped check test") {
+        return;
+    }
+
+    let directory = workspace(repository, SOURCE_PATHS);
+    std::fs::write(directory.path().join("src/Third.php"), "<?php\n\n// node hook: fail\nfunction third(): void {}\n")
+        .expect("third file");
+
+    let whole = analyze(directory.path(), &[]);
+    assert!(
+        String::from_utf8_lossy(&whole.stderr).contains("The node hook ran on `src/Third.php`."),
+        "the node hook fails in the marked file: {}",
+        String::from_utf8_lossy(&whole.stderr)
+    );
+
+    let scoped = issues(&analyze(directory.path(), &["src/Second.php"]));
+    assert!(
+        scoped
+            .iter()
+            .any(|issue| issue["code"] == "server-proof/node" && primary_file(issue) == Some("src/Second.php")),
+        "the node hook runs in the named file: {scoped:#?}"
+    );
+    assert!(
+        reports_the_duplicate_route_in(&scoped, "src/Second.php"),
+        "the cross-file rule still sees the unnamed files: {scoped:#?}"
+    );
+}
+
+#[test]
 fn every_way_of_naming_a_file_checks_it_against_the_whole_project() {
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
     if !common::php_sdk_is_available(repository, "the scoped check test") {
