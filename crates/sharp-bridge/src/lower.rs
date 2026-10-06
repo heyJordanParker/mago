@@ -434,7 +434,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// A field, an auto-property or a computed property is a property group of one property, as php-src's grammar
     /// builds `private int $count = 0;`, `public private(set) int $views = 0;`, `public readonly int $id;` and
     /// `public string $slug { get => expr; }`. A constant initial value is its default, unless the property is
-    /// `readonly`.
+    /// `readonly`. A member that starts as null without an initial value takes the default `null` on the line of its
+    /// name, as php-src builds `private ?int $total = null;`.
     fn property(&mut self, property: &Property) -> u32 {
         let (accessor_flags, attribute_lists, hooks) = match property {
             Property::Plain(field) => (0, &field.attribute_lists, NULL),
@@ -454,6 +455,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let name = self.string(0, line, variable.name);
         let default = match initial_value(property) {
             Some(value) if is_default(property, value) => self.expression(value),
+            None if is_null_by_default(property) => self.zval(line, sharp_value::SHARP_NULL, |_| {}),
             _ => NULL,
         };
         let element = self.node(SHARP_AST_PROP_ELEM, 0, line, &[name, default, NULL, hooks]);
@@ -1098,6 +1100,18 @@ fn initial_value<'arena>(property: &Property<'arena>) -> Option<&'arena Expressi
 fn is_default(property: &Property, value: &Expression) -> bool {
     !matches!(property, Property::Hooked(auto_property) if is_get_only(&auto_property.hook_list))
         && value.is_constant(&PHPVersion::PHP85, false)
+}
+
+/// Whether a member without an initial value starts as null, as in C# and Swift: a field or an auto-property with
+/// `set` of a nullable type. A get-only property is `readonly`, which takes no default, so the checker refuses one of a
+/// nullable type without an initial value.
+fn is_null_by_default(property: &Property) -> bool {
+    matches!(property.hint(), Some(Hint::Nullable(_)))
+        && match property {
+            Property::Plain(_) => true,
+            Property::Hooked(auto_property) => !is_get_only(&auto_property.hook_list),
+            Property::Computed(_) => false,
+        }
 }
 
 /// Whether an accessor list has no `set`. Spec section 6.1 sets a get-only property in the constructor, which PHP's

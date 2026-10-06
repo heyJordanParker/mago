@@ -857,6 +857,104 @@ fn a_get_only_property_gets_its_initial_value_in_the_constructor() {
 }
 
 /// ```php
+/// private ?int $total = null;
+/// public ?\Lib\Calc $owner = null;
+/// private int|string|null $key = null;
+/// private ?int $start = 1;
+/// public readonly ?int $limit;
+///
+/// public function __construct()
+/// {
+///     $this->limit = null;
+/// }
+/// ```
+///
+/// A field or a settable auto-property of a nullable type without an initial value starts as null, so it takes the
+/// default `null` on the line of its name. A get-only property is `readonly`, which takes no default, so its initial
+/// value runs in the constructor. `[257]` is `ZEND_NAME_NOT_FQ | ZEND_TYPE_NULLABLE`, and `[256]` is
+/// `ZEND_TYPE_NULLABLE` on a class name.
+#[test]
+fn a_nullable_field_or_settable_auto_property_without_an_initial_value_defaults_to_null() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private int? total;\n    public Calc? owner { get; set; }\n    private (int|string)? key;\n    private int? start = 1;\n    public int? limit { get; } = null;\n}\n",
+    );
+    let class = lowered.child(lowered.unit().root, 2);
+
+    assert_eq!(
+        lowered.render(lowered.child(class, 2)),
+        indoc! {r#"
+            STMT_LIST
+              PROP_GROUP [4]
+                ZVAL [257] "int"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "total"
+                    ZVAL null
+                    null
+                    null
+                null
+              PROP_GROUP [1]
+                ZVAL [256] "Lib\\Calc"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "owner"
+                    ZVAL null
+                    null
+                    null
+                null
+              PROP_GROUP [4]
+                TYPE_UNION
+                  ZVAL [1] "int"
+                  ZVAL [1] "string"
+                  ZVAL [1] "null"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "key"
+                    ZVAL null
+                    null
+                    null
+                null
+              PROP_GROUP [4]
+                ZVAL [257] "int"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "start"
+                    ZVAL 1
+                    null
+                    null
+                null
+              PROP_GROUP [129]
+                ZVAL [257] "int"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "limit"
+                    null
+                    null
+                    null
+                null
+              METHOD [1] "__construct" @5-12
+                PARAM_LIST
+                null
+                STMT_LIST
+                  ASSIGN
+                    PROP
+                      VAR
+                        ZVAL "this"
+                      ZVAL "limit"
+                    ZVAL null
+                null
+                null
+        "#}
+    );
+    let members = lowered.child(class, 2);
+    let default_lines = [0, 1, 2].map(|member| {
+        let element = lowered.child(lowered.child(lowered.child(members, member), 1), 0);
+        lowered.nodes()[lowered.child(element, 1) as usize].line
+    });
+    assert_eq!(default_lines, [7, 8, 9]);
+}
+
+/// ```php
 /// public static function make(): void {}
 /// private function hide() {}
 /// protected function share() {}

@@ -111,15 +111,18 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   is not the last or has a default. `check_parameter_list` reports a variadic parameter that declares a member or
 ///   has a `void` type in a `.sharp` file only, as upstream Mago reports neither.
 /// - Types: `int`, `float`, `bool`, `string` and a class written by its short name, and `void` as a return type.
-///   PHP's own check reports a `void` parameter. Each of them is nullable when written with `?` after it, as in
-///   `int?`, and PHP's own check reports `void?`. A union of them but `void`, written inline as spec section 24 writes
-///   it, as in `int|string`, goes wherever a type goes. PHP's own check reports `void` and a nullable type, as in
-///   `int?|string`, in a union, and `check_union` reports a type written twice, which the engine refuses. A union
-///   holds null only when written in parentheses with `?` after it, as in `(int|string)?`, which the engine compiles
-///   as `int|string|null`. `check_union` reports `null` written in a union, as in `int|null`, as not supported yet.
-///   PHP's own check reports a nullable union inside another union, and a single type in parentheses, as in `(Calc)?`,
-///   which PHP# writes `Calc?`. `(int)?` is a parse error, as PHP lexes `(int)` as a cast. A nullable type and a
-///   nullable union on a field or an auto-property, as in `private int? total;`, are not supported yet.
+///   PHP's own check reports a `void` parameter and a `void` field. Each of them is nullable when written with `?`
+///   after it, as in `int?`, and PHP's own check reports `void?`. A union of them but `void`, written inline as spec
+///   section 24 writes it, as in `int|string`, goes wherever a type goes. PHP's own check reports `void` and a nullable
+///   type, as in `int?|string`, in a union, and `check_union` reports a type written twice, which the engine refuses. A
+///   union holds null only when written in parentheses with `?` after it, as in `(int|string)?`, which the engine
+///   compiles as `int|string|null`. `check_union` reports `null` written in a union, as in `int|null`, as not supported
+///   yet. PHP's own check reports a nullable union inside another union, and a single type in parentheses, as in
+///   `(Calc)?`, which PHP# writes `Calc?`. `(int)?` is a parse error, as PHP lexes `(int)` as a cast. A field or an
+///   auto-property with `set` of a nullable type or a nullable union starts as null without an initial value, as in
+///   C# and Swift, so `private int? total;` holds null until it is written, and the engine gives it the default `null`.
+///   A get-only auto-property of one without an initial value is not supported yet, because it runs as `readonly`,
+///   which takes no default.
 /// - A method body: a block, or an expression body, `=> expr;`, which returns the expression, or runs it as a
 ///   statement in a `void` method and the constructor, as in C#.
 /// - In a method body: blocks, expression statements, `return`, `let` and `const` declarations, `if` with `else if`
@@ -326,7 +329,6 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             | Node::Modifier(Modifier::Public(_) | Modifier::Protected(_) | Modifier::Private(_)),
             FieldOrProperty,
         ) => Some(FieldOrProperty),
-        (Node::Hint(hint), FieldOrProperty) if is_slice_type(hint) && !matches!(hint, Hint::Void(_)) => Some(FieldOrProperty),
         (Node::Method(method), Class) => match is_slice_method(method, context.program) {
             Ok(()) => Some(Method),
             Err((message, help)) => {
@@ -392,7 +394,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         // `check_hint` reports a type in parentheses that is not a union.
         (
             Node::Hint(Hint::Nullable(NullableHint { hint: Hint::Parenthesized(parenthesized), .. })),
-            Method | Parameter | Body,
+            FieldOrProperty | Method | Parameter | Body,
         ) => {
             if let Hint::Union(union) = parenthesized.hint {
                 check_union(union, place, context);
@@ -400,13 +402,13 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
             None
         }
-        (Node::Hint(hint), Method | Parameter | Body) if is_slice_type(hint) => Some(place),
-        (Node::Hint(Hint::Union(union)), Method | Parameter | Body | FieldOrProperty) => {
+        (Node::Hint(hint), FieldOrProperty | Method | Parameter | Body) if is_slice_type(hint) => Some(place),
+        (Node::Hint(Hint::Union(union)), FieldOrProperty | Method | Parameter | Body) => {
             check_union(union, place, context);
 
             None
         }
-        (Node::NullableHint(_), Method | Parameter | Body) => Some(place),
+        (Node::NullableHint(_), FieldOrProperty | Method | Parameter | Body) => Some(place),
         (Node::DirectVariable(_), Parameter) => Some(Parameter),
         // An access modifier declares a member, and `check_accessors` checked its accessors. PHP reports `static`,
         // `final` and `abstract` on a parameter, a member declared outside the constructor, and accessors without one.
@@ -710,6 +712,15 @@ fn is_slice_property(property: &Property) -> Result<(), Box<Issue>> {
                     item.span(),
                     "An initial value before the accessors is not supported yet in PHP#.",
                     "A PHP# property writes its initial value after its accessors: `public int views { get; set; } = 0;`.",
+                )))
+            } else if auto_property.initial_value.is_none()
+                && matches!(auto_property.hint, Some(Hint::Nullable(_)))
+                && !auto_property.hook_list.hooks.iter().any(|accessor| accessor.name.value == b"set")
+            {
+                Err(Box::new(not_supported(
+                    property.first_variable().span,
+                    "A get-only nullable property without an initial value is not supported yet in PHP#.",
+                    "A get-only property runs as PHP's `readonly`, which takes no default, so it cannot start as null: give it an initial value, as in `public int? total { get; } = null;`, or a `set` accessor.",
                 )))
             } else {
                 Ok(())
@@ -1129,7 +1140,7 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# class has attributes, a name, fields and methods, with no modifiers, `extends` or `implements`."
         }
         Place::FieldOrProperty => {
-            "A PHP# field is `private` or `protected`, and a property has the accessors `get;` and an optional `set;`. Both have a type of `int`, `float`, `bool`, `string` or a class, or a union of them as in `int|string`, a name, and an optional initial value."
+            "A PHP# field is `private` or `protected`, and a property has the accessors `get;` and an optional `set;`. Both have a type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, or a union of them as in `int|string`, a name, and an optional initial value."
         }
         Place::Method => {
             "A PHP# method takes `public`, `protected`, `private` and `static`, parameters, and a return type of `int`, `float`, `bool`, `string`, `void` or a class, each but `void` nullable as in `int?`, or a union of them but `void`, as in `int|string`."

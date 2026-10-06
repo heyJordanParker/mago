@@ -872,15 +872,71 @@ fn a_field_ended_by_a_closing_tag_is_not_supported_yet() {
 
 #[test]
 fn fields_outside_the_slice_are_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private static int count = 0;\n    private int first, second;\n    private int? maybe;\n}\n";
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private static int count = 0;\n    private int first, second;\n}\n";
 
     assert_eq!(
         issues(code),
         [
             "5:13 This modifier is not supported yet in PHP#.",
             "6:5 A field declaring several names is not supported yet in PHP#.",
-            "7:13 This type is not supported yet in PHP#.",
         ]
+    );
+}
+
+#[test]
+fn a_nullable_field_or_auto_property_is_in_the_slice_with_or_without_an_initial_value() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private int? total;\n    protected Calc? owner;\n    private (int|string)? key;\n    private int? start = 1;\n    public Calc? helper { get; set; }\n    public int? count { get; private set; }\n    public (int|string)? code { get; protected set; } = 2;\n    public int? limit { get; } = null;\n    public string? label { get; } = \"none\";\n\n    public Report(public int? id { get; }, private int? flag, public (int|string)? tag { get; })\n    {\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_nullable_field_of_a_type_outside_the_slice_is_not_supported_yet() {
+    let code =
+        "namespace App.Tenant;\n\nclass Report\n{\n    private iterable? items;\n    private (int|iterable)? key;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["5:13 This type is not supported yet in PHP#.", "6:18 This type is not supported yet in PHP#."]
+    );
+}
+
+#[test]
+fn a_void_field_reports_only_the_php_error() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private void? nothing;\n    private void plain;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["6:13 Property `Report::plain` cannot have type `void`.", "5:13 Type `void` cannot be nullable."]
+    );
+}
+
+#[test]
+fn a_get_only_nullable_property_without_an_initial_value_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int? total { get; }\n    private (int|string)? key { get; }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:17 A get-only nullable property without an initial value is not supported yet in PHP#.",
+            "6:27 A get-only nullable property without an initial value is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn a_get_only_nullable_property_without_an_initial_value_names_the_initial_value_or_set_to_write() {
+    let notes: Vec<Vec<String>> =
+        check("src/Report.sharp", "namespace App.Tenant;\n\nclass Report\n{\n    public int? total { get; }\n}\n")
+            .into_iter()
+            .map(|issue| issue.notes)
+            .collect();
+
+    assert_eq!(
+        notes,
+        [[
+            "A get-only property runs as PHP's `readonly`, which takes no default, so it cannot start as null: give it an initial value, as in `public int? total { get; } = null;`, or a `set` accessor."
+        ]]
     );
 }
 
@@ -1060,10 +1116,7 @@ fn a_type_written_twice_in_a_union_is_an_error_as_in_php() {
 fn a_nullable_union_holds_null_where_a_nullable_type_does() {
     let code = "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private (int|string)? key = null;\n    public (int|string)? amount { get; set; } = null;\n\n    public Report(private (bool|Calc)? flag, (int|string)? start)\n    {\n    }\n\n    public (int|string)? run((int|float|Calc)? extra)\n    {\n        (int|string)? local = null;\n        const (int|bool)? fixed = null;\n        for ((int|bool)? step = null; ; ) {\n        }\n        return local;\n    }\n}\n";
 
-    assert_eq!(
-        issues(code),
-        ["7:13 This type is not supported yet in PHP#.", "8:12 This type is not supported yet in PHP#."]
-    );
+    assert_eq!(issues(code), Vec::<String>::new());
 }
 
 #[test]

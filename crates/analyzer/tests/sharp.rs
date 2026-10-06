@@ -1125,3 +1125,39 @@ fn a_nullable_union_holds_its_types_and_null_as_its_php_twin_does() {
     assert_eq!(sharp_issues, ["17:19 invalid-argument"]);
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
 }
+
+#[test]
+fn a_nullable_field_without_an_initial_value_starts_as_null_as_its_php_twin_does() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    private int? total;\n    private (int|string)? key;\n    public Report? next { get; set; }\n\n    public int? current()\n    {\n        return this.total;\n    }\n\n    public int sum()\n    {\n        return (this.total ?? 0) + (this.next?.sum() ?? 0);\n    }\n\n    public (int|string)? find() => this.key;\n}\n";
+    let php = "<?php\n\ndeclare(strict_types=1);\n\nnamespace Demo;\n\nclass Report\n{\n    private ?int $total = null;\n    private int|string|null $key = null;\n    public ?Report $next = null;\n\n    public function current(): ?int\n    {\n        return $this->total;\n    }\n\n    public function sum(): int\n    {\n        return ($this->total ?? 0) + ($this->next?->sum() ?? 0);\n    }\n\n    public function find(): int|string|null\n    {\n        return $this->key;\n    }\n}\n";
+    let php_without_default = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    private ?int $total;\n\n    public function current(): ?int\n    {\n        return $this->total;\n    }\n}\n";
+    let settings = || Settings { check_property_initialization: true, ..settings() };
+
+    let sharp_issues = issues_with(settings(), ("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues_with(settings(), ("src/Demo/Report.php", php), &[]);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+    assert_eq!(issues_with(settings(), ("src/Demo/Report.php", php_without_default), &[]), ["5:7 missing-constructor"]);
+}
+
+#[test]
+fn a_nullable_field_without_an_initial_value_reads_as_the_same_field_written_with_null() {
+    let implicit = "namespace Demo;\n\nclass Report\n{\n    private int? total;\n\n    public int current()\n    {\n        return this.total;\n    }\n}\n";
+    let explicit = "namespace Demo;\n\nclass Report\n{\n    private int? total = null;\n\n    public int current()\n    {\n        return this.total;\n    }\n}\n";
+    let messages = |code| -> Vec<String> {
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", code), &[])
+            .into_iter()
+            .map(|issue| issue.message)
+            .collect()
+    };
+
+    assert_eq!(messages(implicit), messages(explicit));
+    assert_eq!(
+        messages(implicit),
+        [
+            "Function `Demo\\Report::current` is declared to return `int` but possibly returns a nullable value (inferred as `int|null`).",
+            "Invalid return type for function `Demo\\Report::current`: expected `int`, but found `int|null`.",
+        ]
+    );
+}
