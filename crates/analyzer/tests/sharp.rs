@@ -1321,3 +1321,116 @@ fn an_enum_case_value_reads_a_class_member_as_a_class_constant_and_a_class_reads
     assert_eq!(codes(&sharp_issues), codes(&php_issues), "{sharp_issues:?} {php_issues:?}");
     assert_eq!(sharp_issues, ["8:28 non-existent-class-constant", "8:19 invalid-enum-case-value"]);
 }
+
+/// An enum's header names its interfaces, as PHP's `implements` does, so its case passes where an interface is
+/// expected, with and without a backing type.
+#[test]
+fn an_enum_header_names_the_interfaces_as_implements_does_in_php() {
+    let library = "<?php\n\nnamespace Lib;\n\ninterface HasLabel\n{\n    public function label(): string;\n}\n\nfinal class Shelf\n{\n    public static function show(HasLabel $labeled): string\n    {\n        return $labeled->label();\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.HasLabel;\nimport Lib.Shelf;\n\npublic enum Status : string, HasLabel\n{\n    case Active = \"a\";\n\n    public string label() => this.name;\n\n    public static string shown() => Shelf.show(Status.Active);\n}\n\nenum Suit : HasLabel\n{\n    case Hearts;\n\n    public string label() => this.name;\n\n    public static string shown() => Shelf.show(Suit.Hearts);\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\HasLabel;\nuse Lib\\Shelf;\n\nenum Status: string implements HasLabel\n{\n    case Active = \"a\";\n\n    public function label(): string\n    {\n        return $this->name;\n    }\n\n    public static function shown(): string\n    {\n        return Shelf::show(Status::Active);\n    }\n}\n\nenum Suit implements HasLabel\n{\n    case Hearts;\n\n    public function label(): string\n    {\n        return $this->name;\n    }\n\n    public static function shown(): string\n    {\n        return Shelf::show(Suit::Hearts);\n    }\n}\n";
+    let others = [("src/Lib/HasLabel.php", library)];
+
+    assert_eq!(issues(("src/Demo/Status.php", php), &others), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Status.sharp", sharp), &others), Vec::<String>::new());
+}
+
+/// A case is read as `Status.Active` in a class, in the enum's own method, in a parameter default, in a constant, and
+/// with a method called on it, and a case's value reads another class's constant. Each is checked as the PHP twin's
+/// `::` read.
+#[test]
+fn a_case_read_in_every_place_has_the_issues_of_its_php_twin() {
+    let registry = "<?php\n\nnamespace Lib;\n\nfinal class Registry\n{\n    public const string PAUSED = 'p';\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Registry;\n\npublic enum Status : string\n{\n    case Active = \"a\";\n    case Paused = Registry.PAUSED;\n\n    public const Status Default = Status.Active;\n\n    public bool active() => this === Status.Active;\n\n    public string label() => this.name;\n}\n\nclass Report\n{\n    public string run(Status status = Status.Active)\n    {\n        if (status === Status.Active) {\n            return Status.Active.label();\n        }\n        return Status.Default.label();\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Registry;\n\nenum Status: string\n{\n    case Active = \"a\";\n    case Paused = Registry::PAUSED;\n\n    public const Status Default = Status::Active;\n\n    public function active(): bool\n    {\n        return $this === Status::Active;\n    }\n\n    public function label(): string\n    {\n        return $this->name;\n    }\n}\n\nclass Report\n{\n    public function run(Status $status = Status::Active): string\n    {\n        if ($status === Status::Active) {\n            return Status::Active->label();\n        }\n        return Status::Default->label();\n    }\n}\n";
+    let others = [("src/Lib/Registry.php", registry)];
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &others);
+    let php_issues = issues(("src/Demo/Report.php", php), &others);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{php_issues:?}");
+}
+
+const MONEY: &str = "<?php\n\nnamespace App\\Shared;\n\nfinal class Money\n{\n    public const int MAX = 100;\n\n    public static function of(int $cents): int\n    {\n        return $cents;\n    }\n}\n";
+
+/// The messages of every issue in `analyzed`, analyzed together with `others`.
+fn messages(analyzed: (&'static str, &'static str), others: &[(&'static str, &'static str)]) -> Vec<String> {
+    analyze(&PLUGIN_REGISTRY, settings(), analyzed, others).into_iter().map(|issue| issue.message).collect()
+}
+
+/// Spec section 23 keeps full names in `import` lines. A chain whose root names no class, but whose dotted start names
+/// one, is a full name, which only the codebase tells from a class and its member. The refused value has no type, as
+/// a call on a missing class has none, so returning it reports `mixed` as it does there.
+#[test]
+fn a_full_name_inside_code_names_the_import_to_add() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int run(int extra)\n    {\n        return App.Shared.Money.of(extra);\n    }\n}\n";
+    let analyzed = ("src/App/Tenant/Report.sharp", code);
+    let others = [("src/App/Shared/Money.php", MONEY)];
+
+    assert_eq!(
+        messages(analyzed, &others),
+        [
+            "Full names appear only in `import` lines: add `import App.Shared.Money;` and write `Money`.",
+            "Could not infer a precise return type for function `App\\Tenant\\Report::run`. Saw type `mixed`.",
+        ]
+    );
+    assert_eq!(issues(analyzed, &others), ["7:16 non-existent-class-like", "7:16 mixed-return-statement"]);
+}
+
+#[test]
+fn a_member_read_through_a_full_name_names_the_import_to_add() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int run()\n    {\n        return App.Shared.Money.MAX;\n    }\n}\n";
+    let analyzed = ("src/App/Tenant/Report.sharp", code);
+    let others = [("src/App/Shared/Money.php", MONEY)];
+
+    assert_eq!(
+        messages(analyzed, &others),
+        [
+            "Full names appear only in `import` lines: add `import App.Shared.Money;` and write `Money`.",
+            "Could not infer a precise return type for function `App\\Tenant\\Report::run`. Saw type `mixed`.",
+        ]
+    );
+    assert_eq!(issues(analyzed, &others), ["7:16 non-existent-class-like", "7:16 mixed-return-statement"]);
+}
+
+/// A root that names a class is a class whatever follows it, even when its name and the next one also name a class.
+#[test]
+fn a_class_declared_in_the_file_is_never_the_root_of_a_full_name() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public static int Totals = 1;\n\n    public int run(int extra)\n    {\n        return Report.Totals + extra;\n    }\n}\n";
+    let totals = "<?php\n\nnamespace Report;\n\nfinal class Totals\n{\n}\n";
+
+    assert_eq!(
+        issues(("src/App/Tenant/Report.sharp", code), &[("src/Report/Totals.php", totals)]),
+        Vec::<String>::new()
+    );
+}
+
+/// A class of the same namespace needs no import, so `Status.Active.label()` reads a case of an enum another file
+/// declares and calls its method.
+#[test]
+fn a_case_of_an_enum_in_another_file_of_the_namespace_takes_a_method_call() {
+    let status = "namespace App.Tenant;\n\npublic enum Status : string\n{\n    case Active = \"a\";\n\n    public string label() => this.name;\n}\n";
+    let report = "namespace App.Tenant;\n\nclass Report\n{\n    public string run()\n    {\n        return Status.Active.label();\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/App/Tenant/Report.sharp", report), &[("src/App/Tenant/Status.sharp", status)]),
+        Vec::<String>::new()
+    );
+}
+
+/// A class, a missing name or an interface whose method the enum lacks in an enum's header reports what its PHP twin's
+/// `implements` reports. PHP refuses a class there when it links the enum, so the analyzer reports it first.
+#[test]
+fn an_enum_header_reports_what_implements_reports_in_php() {
+    let library = "<?php\n\nnamespace Lib;\n\ninterface HasLabel\n{\n    public function label(): string;\n}\n\nclass Entity\n{\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Entity;\nimport Lib.HasLabel;\n\nenum Kind : string, Entity\n{\n    case One = \"1\";\n}\n\nenum Lost : Missing\n{\n    case One;\n}\n\nenum Partial : HasLabel\n{\n    case One;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Entity;\nuse Lib\\HasLabel;\n\nenum Kind: string implements Entity\n{\n    case One = \"1\";\n}\n\nenum Lost implements Missing\n{\n    case One;\n}\n\nenum Partial implements HasLabel\n{\n    case One;\n}\n";
+    let others = [("src/Lib/HasLabel.php", library)];
+
+    let sharp_issues = issues(("src/Demo/Kind.sharp", sharp), &others);
+    let php_issues = issues(("src/Demo/Kind.php", php), &others);
+
+    assert_eq!(codes(&php_issues), ["invalid-implement", "non-existent-class-like", "unimplemented-abstract-method"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{sharp_issues:?}");
+}

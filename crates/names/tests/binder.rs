@@ -68,6 +68,17 @@ fn the_names_in_a_class_or_interface_header_resolve_as_class_names() {
 }
 
 #[test]
+fn the_interfaces_in_an_enum_header_resolve_as_class_names() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nimport App.Shared.HasLabel;\n\nenum Status : string, HasLabel, Sorted\n{\n}\n\nenum Suit : HasLabel\n{\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(resolved(&names, CODE, "HasLabel,", 0), b"App\\Shared\\HasLabel");
+    assert_eq!(resolved(&names, CODE, "Sorted", 0), b"App\\Tenant\\Store\\Sorted");
+    assert_eq!(resolved(&names, CODE, "HasLabel\n", 0), b"App\\Shared\\HasLabel");
+}
+
+#[test]
 fn bare_names_bind_to_locals_this_classes_and_constants() {
     const CODE: &str = "namespace App.Tenant.Store;\n\nimport App.Shared.Money;\n\nclass Report\n{\n    public int total(int extra)\n    {\n        let label = extra;\n        const base = Money.of(label);\n        Calc.make(this, base, PHP_EOL);\n        return extra;\n    }\n}\n";
     let arena = LocalArena::new();

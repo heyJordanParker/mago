@@ -3,6 +3,7 @@ namespace App.Tenant;
 import Lib.Calc;
 import Lib.Field;
 import Lib.Entity;
+import Lib.HasLabel;
 
 [Entity(label: "Reports", order: 2 * 3), Searchable]
 [Entity(null), Access(typeof(Report))]
@@ -107,6 +108,8 @@ public class Report
         Report.last ??= "touched";
         const limit = Report.MAX;
         const rate = Calc.rate.cents;
+        const label = Status.Active.label();
+        const active = Status.Default === Status.Active;
         return;
     }
 
@@ -225,8 +228,10 @@ public class Report
 }
 
 [Entity("status"), Searchable]
-enum Status : string
+public enum Status : string, HasLabel
 {
+    public const Status Default = Status.Active;
+
     case Active = "active";
     [Field("archived")]
     case Archived = "archived";
@@ -234,6 +239,11 @@ enum Status : string
     public string title()
     {
         return this.value;
+    }
+
+    public string label()
+    {
+        return this === Status.Active ? "Active" : this.title();
     }
 
     public static Status parse(string value)

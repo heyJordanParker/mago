@@ -35,6 +35,7 @@ use mago_syntax::cst::Hint;
 use mago_syntax::cst::Identifier;
 use mago_syntax::cst::If;
 use mago_syntax::cst::IfBody;
+use mago_syntax::cst::Inheritance;
 use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::LocalIdentifier;
 use mago_syntax::cst::Method;
@@ -86,11 +87,15 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - An interface: an optional `public`, a name, an optional `: Interface` header and methods, with no attributes,
 ///   other modifiers or `extends`. An interface method has parameters, a return type and no body, as spec section 29
 ///   writes `Money quote(Cart cart);`. A modifier on it is an error, because every interface method is public.
-/// - An enum: attributes, a name, an optional backing type of `int` or `string`, cases and methods, with no modifiers,
-///   constants or `implements`. A case has attributes as a class has them, and is `case Active;` or, in a backed
-///   enum, `case Active = "a";`, whose value is a constant expression. A case named `class`, compared ignoring case,
-///   is an error, as in PHP. A method follows a class's method rules, but an enum has no constructor, so a method
-///   without a return type is an error. PHP's `check_enum` reports a property and any other backing type.
+/// - An enum: attributes, an optional `public`, a name, an optional `: string, Interface` header, constants, cases and
+///   methods, with no other modifiers or `implements`. A leading `int` or `string` in the header is the backing type,
+///   and every class name is an interface. A constant follows a class constant's rules. A case has attributes as a
+///   class has them, and is `case Active;` or, in a backed enum, `case Active = "a";`, whose value is a constant
+///   expression. A case named `class`, compared ignoring case, is an error, as in PHP. A method follows a class's
+///   method rules, but an enum has no constructor, so a method without a return type is an error. PHP's `check_enum`
+///   reports a property and any other backing type, and the analyzer a class name in the header.
+/// - A header of a class, an interface or an enum that names one type twice is an error, and so is an enum header that
+///   names `UnitEnum` or `BackedEnum`, because the engine refuses both when it declares the class.
 /// - Attributes: on a class, an enum, an enum case, a method, a field, a property and a parameter, written `[Name]` or
 ///   `[Name(arguments)]`, several in one list, as in `[Field("Name"), Searchable]`, or in several lists. An argument
 ///   is positional or named, and is a constant expression as a parameter default is. An attribute target, as in
@@ -164,7 +169,7 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// run on a file with a parse error, which is the one error to fix first. The constructs PHP# never has, such as `$`
 /// variables, `global` and top-level functions, keep their own errors.
 ///
-/// Five more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
+/// Six more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
 /// - `+` that may join a string with any other value, which spec section 18 makes an error, in
 ///   `analyze_arithmetic_operation`. `+` on two strings joins them.
 /// - a condition of `if`, `while`, `do … while`, `for` or `? :`, or an operand of `&&`, `||` or `!`, that is not
@@ -173,6 +178,8 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   `analyze`.
 /// - an instance method used as a value, such as `order.total` without a call, in `report_non_existent_property`.
 /// - a call that resolves to a namespaced function, in `report_namespaced_function_call`.
+/// - a full name in code, such as `App.Shared.Money.of(1)`, which spec section 23 keeps in `import` lines, in
+///   `report_full_name`. One file cannot tell it from a class and its member, such as `Status.Active`.
 #[inline]
 pub fn check_slice(node: Node<'_, '_>, context: &mut Context<'_, '_, '_>) {
     let place = match context.slice_places.last() {
@@ -314,8 +321,12 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             ),
             Class,
         ) => Some(Class),
-        (Node::Inheritance(_), Class | Interface) => Some(place),
-        (Node::Modifier(Modifier::Public(_)), Interface) => Some(Interface),
+        (Node::Inheritance(inheritance), Class | Interface | Enum) => {
+            check_header(inheritance, place, context);
+
+            Some(place)
+        }
+        (Node::Modifier(Modifier::Public(_)), Interface | Enum) => Some(place),
         (Node::ClassLikeMember(ClassLikeMember::Method(_)), Interface) => Some(Interface),
         (Node::Modifier(modifier), Signature) => {
             context.report(
@@ -381,7 +392,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
                 }
             }
         }
-        (Node::ClassLikeMember(ClassLikeMember::Constant(constant)), Class) => match is_slice_constant(constant) {
+        (Node::ClassLikeMember(ClassLikeMember::Constant(constant)), Class | Enum) => match is_slice_constant(constant) {
             Ok(()) => Some(ClassConstant),
             Err(issue) => {
                 context.report(*issue);
@@ -806,6 +817,33 @@ fn is_slice_signature(method: &Method) -> Result<(), (&'static str, &'static str
         ))
     } else {
         Ok(())
+    }
+}
+
+/// Reports what the engine refuses in a header when it declares the class: a name the header already holds, and in an
+/// enum, `UnitEnum` or `BackedEnum`, which the engine adds to every enum or every backed one. Names compare as PHP's
+/// do, resolved and ignoring case.
+fn check_header(inheritance: &Inheritance, place: Place, context: &mut Context<'_, '_, '_>) {
+    let mut named: Vec<&[u8]> = Vec::new();
+    for name in &inheritance.types {
+        let resolved = context.get_name(name.span().start);
+        let issue = if place == Place::Enum
+            && (resolved.eq_ignore_ascii_case(b"UnitEnum") || resolved.eq_ignore_ascii_case(b"BackedEnum"))
+        {
+            Issue::error(
+                "Every enum implements `UnitEnum`, and every backed enum `BackedEnum`, so an enum header never names them.",
+            )
+            .with_annotation(Annotation::primary(name.span()).with_message("Remove this name."))
+        } else if named.iter().any(|earlier| earlier.eq_ignore_ascii_case(resolved)) {
+            Issue::error(format!("This header names `{}` twice.", BytesDisplay(name.value())))
+                .with_annotation(Annotation::primary(name.span()).with_message("Remove this name."))
+        } else {
+            named.push(resolved);
+
+            continue;
+        };
+
+        context.report(issue.with_note("The engine refuses this header when it declares the class."));
     }
 }
 
@@ -1325,7 +1363,7 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# interface method has no modifier, parameters, a return type of `int`, `float`, `bool`, `string`, `void` or a class, and no body."
         }
         Place::Enum => {
-            "A PHP# enum has attributes, a name, an optional `int` or `string` backing type, cases and methods, with no modifiers, constants or `implements`."
+            "A PHP# enum has attributes, an optional `public`, a name, an optional `: string, Interface` header whose `int` or `string` comes first, constants, cases and methods, with no other modifiers or `implements`."
         }
         Place::FieldOrProperty => {
             "A PHP# field is `private` or `protected`, and a property has the accessors `get;` and an optional `set;`. Both may be `static`, and have a type of `int`, `float`, `bool`, `string` or a class, a name, and an optional initial value."
@@ -1625,20 +1663,18 @@ fn check_variable(variable: &Variable, context: &mut Context<'_, '_, '_>) {
 /// member name spans of the accesses it checks go into the context's `slice_members`, because each access has its own
 /// member name and an access's own span grows with the chain before it.
 ///
-/// A chain rooted at a class reaches its constants, enum cases and static members, and a chain of capitalized names
-/// is a full name, which belongs in an `import` line.
+/// A chain rooted at a class reaches its constants, enum cases and static members. One file cannot tell a full name,
+/// `App.Status`, from a class and its member, `Status.Active`, so the analyzer reports a full name.
 fn check_member_access(object: &Expression, member: &ClassLikeMemberSelector, context: &mut Context<'_, '_, '_>) {
     if !context.slice_members.insert(member.span()) {
         return;
     }
 
-    let mut properties = Vec::new();
     let mut root = object;
     while let Expression::Access(Access::Property(property)) = root
         && let ClassLikeMemberSelector::Identifier(name) = &property.property
     {
         context.slice_members.insert(name.span);
-        properties.push(name);
         root = property.object;
     }
 
@@ -1653,52 +1689,7 @@ fn check_member_access(object: &Expression, member: &ClassLikeMemberSelector, co
             )
             .with_note("The engine runs `typeof(X)` as the class name `X::class`, which has no members yet."),
         );
-
-        return;
     }
-
-    let Expression::ConstantAccess(root) = root else {
-        return;
-    };
-
-    if context.names.binding(&root.name) != Some(Binding::Class) {
-        return;
-    }
-
-    properties.reverse();
-    let Some(first_property) = properties.first() else {
-        return;
-    };
-
-    let is_full_name = !context.names.is_imported(&root.name)
-        && !declares_class(context.program, root.name.value())
-        && starts_uppercase(root.name.value())
-        && properties.iter().all(|property| starts_uppercase(property.value));
-
-    if !is_full_name {
-        return;
-    }
-
-    let mut full_name = root.name.value().to_vec();
-    for property in &properties {
-        full_name.push(b'.');
-        full_name.extend_from_slice(property.value);
-    }
-
-    let last = properties.last().map_or(first_property.value, |property| property.value);
-    let full_name = BytesDisplay(&full_name);
-    let class = BytesDisplay(last);
-    let span = Span::between(root.span(), properties.last().map_or(first_property.span, |property| property.span));
-
-    context.report(
-        Issue::error(format!(
-            "Full names appear only in `import` lines: add `import {full_name};` and write `{class}`."
-        ))
-        .with_annotation(Annotation::primary(span).with_message("Full name used here."))
-        .with_help(
-            "In code, `.` is always member access, so a class is written by the short name its import brings in.",
-        ),
-    );
 }
 
 /// A class or an enum a PHP# file declares. The slice's class rules treat both alike.
@@ -1725,10 +1716,6 @@ fn declarations<'ast, 'arena>(
     }
 
     (classes, imports)
-}
-
-fn declares_class(program: &Program, name: &[u8]) -> bool {
-    declarations(program).0.iter().any(|class| class.name.value.eq_ignore_ascii_case(name))
 }
 
 fn collect_declarations<'ast, 'arena>(
@@ -1929,8 +1916,4 @@ fn report_static_member_in_constant(
 /// The class or enum of a PHP# file whose body holds `span`.
 fn enclosing_class<'ast, 'arena>(program: &'ast Program<'arena>, span: Span) -> Option<ClassLike<'ast, 'arena>> {
     declarations(program).0.into_iter().find(|class| class.span.contains(&span.start))
-}
-
-fn starts_uppercase(name: &[u8]) -> bool {
-    name.first().is_some_and(u8::is_ascii_uppercase)
 }

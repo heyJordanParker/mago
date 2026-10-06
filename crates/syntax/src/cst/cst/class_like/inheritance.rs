@@ -44,8 +44,10 @@ pub struct Extends<'arena> {
     pub types: TokenSeparatedSequence<'arena, Identifier<'arena>>,
 }
 
-/// Represents PHP#'s class or interface header: `:` and the base class and interfaces, as spec section 22 writes it.
-/// The checker and the engine tell the class from the interfaces.
+/// Represents PHP#'s class, interface or enum header: `:` and the base class and interfaces.
+///
+/// Spec section 22 writes it. The checker and the engine tell the class from the interfaces. An enum's header holds
+/// only interfaces.
 ///
 /// # Example
 ///

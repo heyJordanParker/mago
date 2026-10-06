@@ -439,20 +439,23 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         )
     }
 
-    /// An enum is a final class with the enum flag and its backing type as its last child, as php-src's grammar builds
-    /// `enum Status: string`.
+    /// An enum is a final class with the enum flag, its header as its interface list and its backing type as its last
+    /// child, as php-src's grammar builds `enum Status: string implements HasLabel`. An enum has no parent, so its
+    /// header needs no mark.
     fn r#enum(&mut self, r#enum: &Enum) -> u32 {
         let mut members = Vec::new();
         for member in &r#enum.members {
             members.push(match member {
                 ClassLikeMember::Method(method) => self.method(method, modifier_flags(&method.modifiers), &[]),
                 ClassLikeMember::EnumCase(case) => self.enum_case(case),
+                ClassLikeMember::Constant(constant) => self.constant(constant),
                 _ => unreachable!("check_slice refuses the enum member `{member}`"),
             });
         }
 
         let members = self.node(SHARP_AST_STMT_LIST, 0, self.line(r#enum.left_brace), &members);
         let attributes = self.attributes(&r#enum.attribute_lists, None);
+        let header = r#enum.inheritance.as_ref().map_or(NULL, |inheritance| self.name_list(inheritance));
         let backing_type = r#enum.backing_type_hint.as_ref().map_or(NULL, |backing_type| self.hint(&backing_type.hint));
 
         self.declaration(
@@ -461,7 +464,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             r#enum.r#enum.span,
             r#enum.right_brace,
             r#enum.name.value,
-            &[NULL, NULL, members, attributes, backing_type],
+            &[NULL, header, members, attributes, backing_type],
         )
     }
 

@@ -1128,6 +1128,15 @@ fn a_public_class_is_a_class() {
     assert_eq!(public.tree(), internal.tree());
 }
 
+/// PHP has no enum visibility, so a `public` enum is the same enum.
+#[test]
+fn a_public_enum_is_an_enum() {
+    let public = Lowered::new("namespace App.Tenant;\n\npublic enum Suit\n{\n    case Hearts;\n}\n");
+    let internal = Lowered::new("namespace App.Tenant;\n\nenum Suit\n{\n    case Hearts;\n}\n");
+
+    assert_eq!(public.tree(), internal.tree());
+}
+
 /// ```php
 /// abstract class Shape { abstract public function area(): float; }
 /// final class Unit { }
@@ -2834,6 +2843,184 @@ fn an_int_backed_enum_is_a_final_enum_class_of_int_cases() {
                     null
                 null
                 ZVAL [1] "int"
+        "#}
+    );
+}
+
+/// ```php
+/// <?php declare(strict_types=1); namespace App\Tenant;
+///
+///
+///
+/// enum Status: string implements \Lib\HasLabel, \App\Tenant\Sorted
+/// {
+///     case Active = "a";
+/// }
+///
+/// enum Suit implements \Lib\HasLabel
+/// {
+///     case Hearts;
+/// }
+/// ```
+///
+/// An enum's header is the interface name list, its 2nd child, with `ZEND_NAME_FQ`, which is 0. It carries no
+/// `ZEND_ACC_PARENT_IN_INTERFACES`: an enum has no parent, so every name there is an interface.
+#[test]
+fn an_enum_header_is_the_interface_name_list_without_a_parent_mark() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.HasLabel;\n\nenum Status : string, HasLabel, Sorted\n{\n    case Active = \"a\";\n}\n\nenum Suit : HasLabel\n{\n    case Hearts;\n}\n",
+    );
+
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              NAMESPACE
+                ZVAL "App\\Tenant"
+                null
+              CLASS [268435488] "Status" @5-8
+                null
+                NAME_LIST
+                  ZVAL "Lib\\HasLabel"
+                  ZVAL "App\\Tenant\\Sorted"
+                STMT_LIST
+                  ENUM_CASE
+                    ZVAL "Active"
+                    ZVAL "a"
+                    null
+                    null
+                null
+                ZVAL [1] "string"
+              CLASS [268435488] "Suit" @10-13
+                null
+                NAME_LIST
+                  ZVAL "Lib\\HasLabel"
+                STMT_LIST
+                  ENUM_CASE
+                    ZVAL "Hearts"
+                    null
+                    null
+                    null
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// <?php declare(strict_types=1); namespace App\Tenant;
+///
+/// enum Status: string
+/// {
+///     case Active = "a";
+///
+///     public const \App\Tenant\Status Default = \App\Tenant\Status::Active;
+/// }
+/// ```
+///
+/// An enum's constant is a class constant group of one constant, as a class's is. Its value is a constant expression,
+/// so its read of a case is an unmarked class constant.
+#[test]
+fn an_enum_constant_is_a_class_constant_group_that_reads_a_case_unmarked() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nenum Status : string\n{\n    case Active = \"a\";\n\n    public const Status Default = Status.Active;\n}\n",
+    );
+    let r#enum = lowered.child(lowered.unit().root, 2);
+
+    assert_eq!(
+        lowered.render(lowered.child(r#enum, 2)),
+        indoc! {r#"
+            STMT_LIST
+              ENUM_CASE
+                ZVAL "Active"
+                ZVAL "a"
+                null
+                null
+              CLASS_CONST_GROUP [1]
+                CLASS_CONST_DECL
+                  CONST_ELEM
+                    ZVAL "Default"
+                    CLASS_CONST
+                      ZVAL "App\\Tenant\\Status"
+                      ZVAL "Active"
+                    null
+                null
+                ZVAL "App\\Tenant\\Status"
+        "#}
+    );
+}
+
+/// ```php
+/// case Paused = \Lib\Registry::PAUSED;
+/// public const \App\Tenant\Status Default = \App\Tenant\Status::Active;
+/// return $this === \App\Tenant\Status::Active;
+/// public function run(\App\Tenant\Status $status = \App\Tenant\Status::Active): string
+/// if ($status === \App\Tenant\Status::Active) { return \App\Tenant\Status::Active->label(); }
+/// return \App\Tenant\Status::Default->label();
+/// ```
+///
+/// A case read is a class constant fetch in every place: unmarked in a case's value, a constant and a parameter
+/// default, which are constant expressions, and marked with `[32768]`, `1 << 15`, to fall back to the static property
+/// in a method body. A method called on a case is an instance call on that fetch.
+#[test]
+fn a_case_read_is_a_class_constant_in_every_place() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Registry;\n\npublic enum Status : string\n{\n    case Active = \"a\";\n    case Paused = Registry.PAUSED;\n\n    public const Status Default = Status.Active;\n\n    public bool active() => this === Status.Active;\n\n    public string label() => this.name;\n}\n\nclass Report\n{\n    public string run(Status status = Status.Active)\n    {\n        if (status === Status.Active) {\n            return Status.Active.label();\n        }\n        return Status.Default.label();\n    }\n}\n",
+    );
+    let reads: Vec<(u32, String)> = lowered
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.kind == sharp_kind::SHARP_AST_CLASS_CONST)
+        .map(|(index, node)| (node.attr, lowered.render(lowered.child(index as u32, 1)).trim_end().to_owned()))
+        .collect();
+
+    assert_eq!(
+        reads,
+        [
+            (0, "ZVAL \"PAUSED\"".to_owned()),
+            (0, "ZVAL \"Active\"".to_owned()),
+            (1 << 15, "ZVAL \"Active\"".to_owned()),
+            (0, "ZVAL \"Active\"".to_owned()),
+            (1 << 15, "ZVAL \"Active\"".to_owned()),
+            (1 << 15, "ZVAL \"Active\"".to_owned()),
+            (1 << 15, "ZVAL \"Default\"".to_owned()),
+        ]
+    );
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              IF
+                IF_ELEM
+                  BINARY_OP [16]
+                    VAR
+                      ZVAL "status"
+                    CLASS_CONST [32768]
+                      ZVAL "App\\Tenant\\Status"
+                      ZVAL "Active"
+                  STMT_LIST
+                    RETURN
+                      METHOD_CALL
+                        CLASS_CONST [32768]
+                          ZVAL "App\\Tenant\\Status"
+                          ZVAL "Active"
+                        ZVAL "label"
+                        ARG_LIST
+              RETURN
+                METHOD_CALL
+                  CLASS_CONST [32768]
+                    ZVAL "App\\Tenant\\Status"
+                    ZVAL "Default"
+                  ZVAL "label"
+                  ARG_LIST
         "#}
     );
 }

@@ -4,6 +4,8 @@ use crate::cst::cst::AttributeList;
 use crate::cst::cst::Class;
 use crate::cst::cst::Enum;
 use crate::cst::cst::EnumBackingTypeHint;
+use crate::cst::cst::Hint;
+use crate::cst::cst::Inheritance;
 use crate::cst::cst::Interface;
 use crate::cst::cst::Modifier;
 use crate::cst::cst::Statement;
@@ -260,12 +262,17 @@ where
         attributes: Sequence<'arena, AttributeList<'arena>>,
         modifiers: Sequence<'arena, Modifier<'arena>>,
     ) -> Result<Enum<'arena>, ParseError> {
+        let r#enum = self.expect_keyword(T!["enum"])?;
+        let name = self.parse_local_identifier()?;
+        let (backing_type_hint, inheritance) = self.parse_enum_header()?;
+
         Ok(Enum {
             attribute_lists: attributes,
             modifiers,
-            r#enum: self.expect_keyword(T!["enum"])?,
-            name: self.parse_local_identifier()?,
-            backing_type_hint: self.parse_optional_enum_backing_type_hint()?,
+            r#enum,
+            name,
+            backing_type_hint,
+            inheritance,
             implements: self.parse_optional_implements()?,
             left_brace: self.stream.eat_span(T!["{"])?,
             members: {
@@ -298,12 +305,34 @@ where
         })
     }
 
-    fn parse_optional_enum_backing_type_hint(&mut self) -> Result<Option<EnumBackingTypeHint<'arena>>, ParseError> {
-        Ok(match self.stream.peek_kind(0)? {
-            Some(T![":"]) => {
-                Some(EnumBackingTypeHint { colon: self.stream.consume_span()?, hint: self.parse_type_hint()? })
-            }
-            _ => None,
-        })
+    /// The backing type after `:`, as PHP writes `: string`, and in PHP# the interfaces, as in `: string, HasLabel` or
+    /// `: HasLabel`. A leading class name opens the interfaces, and any other type is the backing type, which
+    /// `check_enum` holds to `int` or `string`.
+    fn parse_enum_header(
+        &mut self,
+    ) -> Result<(Option<EnumBackingTypeHint<'arena>>, Option<Inheritance<'arena>>), ParseError> {
+        if !matches!(self.stream.peek_kind(0)?, Some(T![":"])) {
+            return Ok((None, None));
+        }
+
+        let colon = self.stream.consume_span()?;
+        let hint = self.parse_type_hint()?;
+        if !self.dialect.is_sharp() {
+            return Ok((Some(EnumBackingTypeHint { colon, hint }), None));
+        }
+
+        if let Hint::Identifier(first) = hint {
+            return Ok((None, Some(self.parse_inheritance_from(colon, first)?)));
+        }
+
+        let backing_type_hint = Some(EnumBackingTypeHint { colon, hint });
+        if !matches!(self.stream.peek_kind(0)?, Some(T![","])) {
+            return Ok((backing_type_hint, None));
+        }
+
+        let comma = self.stream.consume_span()?;
+        let first = self.parse_identifier()?;
+
+        Ok((backing_type_hint, Some(self.parse_inheritance_from(comma, first)?)))
     }
 }
