@@ -12,6 +12,7 @@ use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::reference::SymbolReferences;
 use mago_codex::ttype::combine_union_types;
 use mago_codex::ttype::combiner::CombinerOptions;
+use mago_codex::ttype::combiner::combine;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::union::TUnion;
 use mago_span::HasSpan;
@@ -239,12 +240,18 @@ impl AnalysisArtifacts {
 
     /// Records the type arguments of the generic call or `new` at `span`, one per template in declaration order. A
     /// template no argument bound is `mixed`, and a literal is its scalar type, as in `int` for `5`.
-    pub(crate) fn record_type_arguments(&mut self, span: Span, type_arguments: impl Iterator<Item = Option<TUnion>>) {
+    pub(crate) fn record_type_arguments(
+        &mut self,
+        span: Span,
+        type_arguments: impl Iterator<Item = Option<TUnion>>,
+        codebase: &CodebaseMetadata,
+    ) {
         let type_arguments = type_arguments
             .map(|type_argument| match type_argument {
                 Some(mut type_argument) if !type_argument.is_placeholder() => {
                     type_argument.widen_scalars();
-                    type_argument
+
+                    TUnion::from_vec(combine(type_argument.types.into_owned(), codebase, CombinerOptions::default()))
                 }
                 _ => get_mixed(),
             })

@@ -2764,16 +2764,12 @@ fn the_inferred_type_arguments_of_a_generic_call_and_a_generic_new_are_recorded_
     assert_eq!(type_arguments(instantiation), ["float"]);
 }
 
-/// The type arguments of the call in `sharp`, with `library` beside it.
-fn recorded_type_arguments(sharp: &'static str, library: &'static str, call: &str) -> Vec<String> {
-    let start = sharp.find(call).unwrap() as u32;
+/// The type arguments of the call in the analyzed file, with `library` beside it.
+fn recorded_type_arguments(analyzed: (&'static str, &'static str), library: &'static str, call: &str) -> Vec<String> {
+    let start = analyzed.1.find(call).unwrap() as u32;
     let span = (start, start + call.len() as u32);
-    let (issues, artifacts) = analyze_with_artifacts(
-        &PLUGIN_REGISTRY,
-        settings(),
-        ("src/Demo/Report.sharp", sharp),
-        &[("src/Lib/Library.php", library)],
-    );
+    let (issues, artifacts) =
+        analyze_with_artifacts(&PLUGIN_REGISTRY, settings(), analyzed, &[("src/Lib/Library.php", library)]);
     assert!(issues.is_empty(), "{issues:?}");
 
     let recorded = artifacts.inferred_type_arguments.get(&span);
@@ -2788,16 +2784,49 @@ fn a_call_template_no_argument_binds_records_mixed() {
     let sharp = "namespace Demo;\n\nimport Lib.Pairs;\n\nclass Report\n{\n    public int run()\n    {\n        const none = Pairs.none();\n        return count(none);\n    }\n}\n";
     let library = "<?php\n\nnamespace Lib;\n\nfinal class Pairs\n{\n    /**\n     * @template T of int\n     *\n     * @return list<T>\n     */\n    public static function none(): array\n    {\n        return [];\n    }\n}\n";
 
-    assert_eq!(recorded_type_arguments(sharp, library, "Pairs.none()"), ["mixed"]);
+    assert_eq!(recorded_type_arguments(("src/Demo/Report.sharp", sharp), library, "Pairs.none()"), ["mixed"]);
 }
 
-/// A templated class without a constructor binds no template when it is created, so each type argument is `mixed`.
+/// A templated class without a constructor binds no template when it is created, so each type argument is `mixed`,
+/// `SplObjectStorage`'s too, though the analyzer types its object with `never` arguments.
 #[test]
 fn new_on_a_templated_class_without_a_constructor_records_mixed() {
     let sharp = "namespace Demo;\n\nimport Lib.Bag;\n\nclass Report\n{\n    public Bag run()\n    {\n        return new Bag();\n    }\n}\n";
     let library = "<?php\n\nnamespace Lib;\n\n/**\n * @template K\n * @template V\n */\nfinal class Bag\n{\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfunction storage(): \\SplObjectStorage\n{\n    return new \\SplObjectStorage();\n}\n";
 
-    assert_eq!(recorded_type_arguments(sharp, library, "new Bag()"), ["mixed", "mixed"]);
+    assert_eq!(recorded_type_arguments(("src/Demo/Report.sharp", sharp), library, "new Bag()"), ["mixed", "mixed"]);
+    assert_eq!(
+        recorded_type_arguments(("src/Demo/storage.php", php), library, "new \\SplObjectStorage()"),
+        ["mixed", "mixed"]
+    );
+}
+
+/// A literal records its scalar type once, however many literals bind the template.
+#[test]
+fn a_template_bound_by_several_literals_records_their_scalar_type_once() {
+    let sharp = "namespace Demo;\n\nimport Lib.Lists;\n\nclass Report\n{\n    public int run()\n    {\n        const sizes = Lists.of(5, 6);\n        const flags = Lists.of(true, false);\n        return count(sizes) + count(flags);\n    }\n}\n";
+    let library = "<?php\n\nnamespace Lib;\n\nfinal class Lists\n{\n    /**\n     * @template T\n     *\n     * @param T ...$items\n     *\n     * @return list<T>\n     */\n    public static function of(mixed ...$items): array\n    {\n        return $items;\n    }\n}\n";
+    let analyzed = ("src/Demo/Report.sharp", sharp);
+
+    assert_eq!(recorded_type_arguments(analyzed, library, "Lists.of(5, 6)"), ["int"]);
+    assert_eq!(recorded_type_arguments(analyzed, library, "Lists.of(true, false)"), ["bool"]);
+}
+
+/// A template only a callback binds gets the callback's return type, as every `map` does.
+#[test]
+fn a_template_only_a_callback_binds_records_the_callback_return_type() {
+    let php = "<?php\n\nnamespace Demo;\n\n/**\n * @return list<string>\n */\nfunction labels(): array\n{\n    return \\Lib\\map([1, 2], fn (int $x): string => \"a\");\n}\n";
+    let library = "<?php\n\nnamespace Lib;\n\n/**\n * @template T\n * @template R\n *\n * @param list<T> $items\n * @param callable(T): R $f\n *\n * @return list<R>\n */\nfunction map(array $items, callable $f): array\n{\n    return array_map($f, $items);\n}\n";
+
+    assert_eq!(
+        recorded_type_arguments(
+            ("src/Demo/labels.php", php),
+            library,
+            "\\Lib\\map([1, 2], fn (int $x): string => \"a\")"
+        ),
+        ["int", "string"]
+    );
 }
 
 /// The record widens a copy of each bound, so a call's return type keeps the literal it inferred, and plain PHP that
