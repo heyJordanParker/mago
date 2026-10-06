@@ -31,6 +31,7 @@ use mago_syntax::cst::FunctionPartialApplication;
 use mago_syntax::cst::Hint;
 use mago_syntax::cst::Identifier;
 use mago_syntax::cst::Implements;
+use mago_syntax::cst::Inheritance;
 use mago_syntax::cst::Instantiation;
 use mago_syntax::cst::Interface;
 use mago_syntax::cst::LocalDeclaration;
@@ -48,6 +49,7 @@ use mago_syntax::cst::StaticPropertyAccess;
 use mago_syntax::cst::Trait;
 use mago_syntax::cst::TraitUse;
 use mago_syntax::cst::TryCatchClause;
+use mago_syntax::cst::TypeOf;
 use mago_syntax::cst::UnaryPostfix;
 use mago_syntax::cst::UnaryPrefix;
 use mago_syntax::cst::Use;
@@ -582,6 +584,18 @@ where
         }
     }
 
+    fn walk_in_inheritance(
+        &mut self,
+        inheritance: &'ast Inheritance<'arena>,
+        context: &mut NameResolutionContext<'arena, A>,
+    ) {
+        for parent in &inheritance.types {
+            let (parent_classlike, imported) = context.resolve(NameKind::Default, parent.value());
+
+            self.resolved_names.insert_at(parent.span(), parent_classlike, imported);
+        }
+    }
+
     fn walk_in_hint(&mut self, hint: &'ast Hint<'arena>, context: &mut NameResolutionContext<'arena, A>) {
         if let Hint::Identifier(identifier) = hint {
             let (name, imported) = context.resolve(NameKind::Default, identifier.value());
@@ -644,6 +658,12 @@ where
 
             self.resolved_names.insert_at(identifier.span(), name, imported);
         }
+    }
+
+    fn walk_in_type_of(&mut self, type_of: &'ast TypeOf<'arena>, context: &mut NameResolutionContext<'arena, A>) {
+        let (name, imported) = context.resolve(NameKind::Default, type_of.class.value());
+
+        self.resolved_names.insert_at(type_of.class.span(), name, imported);
     }
 
     fn walk_in_static_method_call(

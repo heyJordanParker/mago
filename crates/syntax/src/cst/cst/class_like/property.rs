@@ -291,6 +291,31 @@ impl<'arena> Property<'arena> {
             Property::Computed(c) => c.hint.as_ref(),
         }
     }
+
+    /// Returns the initial value of the first property: its default, or the PHP# initial value written after the
+    /// accessors of an auto-property.
+    #[must_use]
+    pub fn initial_value(&self) -> Option<&'arena Expression<'arena>> {
+        match &self {
+            Property::Plain(plain) => match plain.items.first() {
+                Some(PropertyItem::Concrete(item)) => Some(item.value),
+                _ => None,
+            },
+            Property::Hooked(hooked) => match &hooked.item {
+                PropertyItem::Concrete(item) => Some(item.value),
+                PropertyItem::Abstract(_) => hooked.initial_value.as_ref().map(|initial_value| initial_value.value),
+            },
+            Property::Computed(_) => None,
+        }
+    }
+}
+
+impl PropertyHookList<'_> {
+    /// Returns `true` when the list has no `set` hook, which makes a PHP# auto-property get-only (spec section 6.1).
+    #[must_use]
+    pub fn is_get_only(&self) -> bool {
+        !self.hooks.iter().any(|hook| hook.name.value == b"set")
+    }
 }
 
 impl<'arena> PropertyItem<'arena> {

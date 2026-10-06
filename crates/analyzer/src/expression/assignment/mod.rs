@@ -53,6 +53,7 @@ use crate::context::scope::var_references_dynamic;
 use crate::error::AnalysisError;
 use crate::expression::find_expression_logic_issues;
 use crate::formula::get_formula;
+use crate::resolver::static_property::StaticProperty;
 use crate::statement::function_like::expect_function_type;
 use crate::utils::docblock::check_docblock_type_incompatibility;
 use crate::utils::docblock::get_type_from_var_docblock;
@@ -416,20 +417,32 @@ where
                 destructuring,
             );
         }
-        Expression::Access(Access::Property(property_access)) => property_assignment::analyze(
-            context,
-            block_context,
-            artifacts,
-            property_access,
-            &source_type,
-            source_expression.map(mago_span::HasSpan::span),
-            property_write_kind,
-        )?,
+        Expression::Access(Access::Property(property_access)) => {
+            match StaticProperty::from_property_access(property_access, context.resolved_names) {
+                Some(static_property) => static_property_assignment::analyze(
+                    context,
+                    block_context,
+                    artifacts,
+                    static_property,
+                    &source_type,
+                    target_expression_id,
+                )?,
+                None => property_assignment::analyze(
+                    context,
+                    block_context,
+                    artifacts,
+                    property_access,
+                    &source_type,
+                    source_expression.map(mago_span::HasSpan::span),
+                    property_write_kind,
+                )?,
+            }
+        }
         Expression::Access(Access::StaticProperty(property_access)) => static_property_assignment::analyze(
             context,
             block_context,
             artifacts,
-            property_access,
+            StaticProperty::from_static_property_access(property_access),
             &source_type,
             target_expression_id,
         )?,

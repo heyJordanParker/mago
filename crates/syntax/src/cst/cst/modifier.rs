@@ -27,6 +27,10 @@ pub enum Modifier<'arena> {
     ProtectedSet(Keyword<'arena>),
     Private(Keyword<'arena>),
     PrivateSet(Keyword<'arena>),
+    /// PHP#'s `virtual`, which opens a method to overriding.
+    Virtual(Keyword<'arena>),
+    /// PHP#'s `override`, which marks a method that overrides one of its parent.
+    Override(Keyword<'arena>),
 }
 
 impl<'arena> Modifier<'arena> {
@@ -43,6 +47,8 @@ impl<'arena> Modifier<'arena> {
             Modifier::ProtectedSet(k) => k,
             Modifier::Private(k) => k,
             Modifier::PrivateSet(k) => k,
+            Modifier::Virtual(k) => k,
+            Modifier::Override(k) => k,
         }
     }
 
@@ -145,7 +151,9 @@ impl HasSpan for Modifier<'_> {
             | Modifier::Private(value)
             | Modifier::PrivateSet(value)
             | Modifier::ProtectedSet(value)
-            | Modifier::PublicSet(value) => value.span(),
+            | Modifier::PublicSet(value)
+            | Modifier::Virtual(value)
+            | Modifier::Override(value) => value.span(),
         }
     }
 }

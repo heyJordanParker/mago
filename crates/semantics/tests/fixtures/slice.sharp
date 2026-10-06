@@ -5,9 +5,15 @@ import Lib.Field;
 import Lib.Entity;
 
 [Entity(label: "Reports", order: 2 * 3), Searchable]
-[Entity(null)]
-class Report
+[Entity(null), Access(typeof(Report))]
+public class Report
 {
+    public const int MAX = 3;
+    protected const LIMIT = PHP_INT_MAX - 1;
+    protected const int NEXT = Calc.MAX + 1;
+    private const string? NAME = "report";
+    private static int made = 0;
+    public static string last { get; private set; } = "none";
     [Field] private int count = 0;
     protected float rate = 2.5 * -PHP_INT_MAX;
     private string label;
@@ -95,6 +101,14 @@ class Report
         const chained = Calc.make().add(1).rate;
         const sum = Calc.make().add(1, 2);
         const big = 0xFFFFFFFFFFFFFFFF;
+        const kind = typeof(Calc);
+        Report.made = 1;
+        Report.made++;
+        --Report.made;
+        Report.made += 2;
+        Report.last ??= "touched";
+        const limit = Report.MAX;
+        const rate = Calc.rate.cents;
         return;
     }
 
@@ -250,4 +264,46 @@ class Report
         count += twice(half(4)) + add(1, by: 2) + bump() + array_sum(array_map(x => x * 2, [1, 2]));
         return n => check("n", n) ? n + count : n;
     }
+}
+
+abstract class Shape
+{
+    public abstract float area();
+
+    protected abstract string name(int digits);
+}
+
+class Square : Shape, Measured
+{
+    public override float area()
+    {
+        return 1.0;
+    }
+
+    protected override string name(int digits)
+    {
+        return "square";
+    }
+
+    public virtual int sides()
+    {
+        return 4;
+    }
+}
+
+final class Unit : Square
+{
+    public override int sides()
+    {
+        return super.sides();
+    }
+}
+
+public interface Measured : Sized
+{
+    float area();
+}
+
+interface Sized
+{
 }
