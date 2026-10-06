@@ -61,6 +61,7 @@ use crate::artifacts::AnalysisArtifacts;
 use crate::code::IssueCode;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::expression::analyze_php_shape;
 use crate::expression::assignment::analyze_assignment;
 use crate::plugin::HookAction;
 use crate::plugin::context::HookContext;
@@ -231,6 +232,9 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Statement<'arena> {
                 Statement::Foreach(foreach) => foreach.analyze(context, block_context, artifacts),
                 Statement::For(r#for) => r#for.analyze(context, block_context, artifacts),
                 Statement::ForOf(for_of) => analyze_for_of(for_of, context, block_context, artifacts),
+                Statement::PatternMatch(_) => {
+                    analyze_php_shape(Node::Statement(self), context, block_context, artifacts)
+                }
                 Statement::While(r#while) => r#while.analyze(context, block_context, artifacts),
                 Statement::DoWhile(do_while) => do_while.analyze(context, block_context, artifacts),
                 Statement::Continue(r#continue) => r#continue.analyze(context, block_context, artifacts),
