@@ -1316,6 +1316,13 @@ fn list_and_map_types_literals_and_indexes_are_in_the_slice() {
 }
 
 #[test]
+fn an_interface_method_takes_and_returns_list_and_map_types() {
+    let code = "interface Grouped\n{\n    List<int> sizes(Map<string, List<int>> groups);\n\n    Map<float, int> rounded();\n}\n";
+
+    assert_eq!(issues(code), ["5:9 A `Map`'s keys are `int` or `string`, as a PHP array's keys are."]);
+}
+
+#[test]
 fn a_type_with_type_arguments_other_than_list_or_map_is_not_supported_yet() {
     let code = "class Report\n{\n    public List<void> run(Set<string> a, List<int, int> b, Map<string> c, Paged<Line> d)\n    {\n        return [];\n    }\n}\n";
 

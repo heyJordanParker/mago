@@ -417,7 +417,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             FieldOrProperty,
         ) => Some(FieldOrProperty),
         (Node::Hint(hint), FieldOrProperty) if is_slice_type(hint) && !matches!(hint, Hint::Void(_)) => Some(FieldOrProperty),
-        (Node::GenericHint(generic), FieldOrProperty | Method | Parameter | Body) => {
+        (Node::GenericHint(generic), FieldOrProperty | Method | Signature | Parameter | Body) => {
             if let [key, _] = generic.arguments.as_slice()
                 && !matches!(key, Hint::Integer(_) | Hint::String(_))
             {
@@ -1382,7 +1382,7 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# interface has an optional `public`, a name, an optional `: Interface` header and methods, with no attributes, other modifiers, `extends`, constants or properties."
         }
         Place::Signature => {
-            "A PHP# interface method has no modifier, parameters, a return type of `int`, `float`, `bool`, `string`, `void` or a class, and no body."
+            "A PHP# interface method has no modifier, parameters, a return type of `int`, `float`, `bool`, `string`, `void`, a class, `List<T>` or `Map<TKey, TValue>`, and no body."
         }
         Place::FieldOrProperty => {
             "A PHP# field is `private` or `protected`, and a property has the accessors `get;` and an optional `set;`. Both may be `static`, and have a type of `int`, `float`, `bool`, `string`, a class, `List<T>` or `Map<TKey, TValue>`, a name, and an optional initial value."
