@@ -17,12 +17,18 @@ use crate::cst::sequence::Sequence;
 ///
 /// $fn = fn($x) => $x * 2;
 /// ```
+///
+/// A PHP# lambda with an expression body has no `fn`, and a lone parameter needs no parentheses:
+///
+/// ```csharp
+/// lines.filter(l => !l.refunded);
+/// ```
 #[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct ArrowFunction<'arena> {
     pub attribute_lists: Sequence<'arena, AttributeList<'arena>>,
     pub r#static: Option<Keyword<'arena>>,
-    pub r#fn: Keyword<'arena>,
+    pub r#fn: Option<Keyword<'arena>>,
     pub ampersand: Option<Span>,
     pub parameter_list: FunctionLikeParameterList<'arena>,
     pub return_type_hint: Option<FunctionLikeReturnTypeHint<'arena>>,
@@ -40,6 +46,10 @@ impl HasSpan for ArrowFunction<'_> {
             return r#static.span().join(self.expression.span());
         }
 
-        self.r#fn.span().join(self.expression.span())
+        if let Some(r#fn) = &self.r#fn {
+            return r#fn.span().join(self.expression.span());
+        }
+
+        self.parameter_list.span().join(self.expression.span())
     }
 }

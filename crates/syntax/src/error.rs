@@ -63,6 +63,8 @@ pub enum ParseError {
     NotSupportedYetInSharp(&'static str, Span),
     /// An escape JavaScript refuses in a PHP# template, such as `\1` or `\x4`, at its backslash and next character.
     InvalidTemplateEscapeInSharp(Span),
+    /// A PHP `fn` arrow function or `function` closure written in a PHP# file, at its keyword.
+    PhpLambdaInSharp(Span),
 }
 
 impl HasFileId for SyntaxError {
@@ -90,7 +92,8 @@ impl HasFileId for ParseError {
             | ParseError::NestingTooDeepInSharp(span)
             | ParseError::ForInInSharp(span)
             | ParseError::NotSupportedYetInSharp(_, span)
-            | ParseError::InvalidTemplateEscapeInSharp(span) => span.file_id,
+            | ParseError::InvalidTemplateEscapeInSharp(span)
+            | ParseError::PhpLambdaInSharp(span) => span.file_id,
         }
     }
 }
@@ -122,7 +125,8 @@ impl HasSpan for ParseError {
             | ParseError::NestingTooDeepInSharp(span)
             | ParseError::ForInInSharp(span)
             | ParseError::NotSupportedYetInSharp(_, span)
-            | ParseError::InvalidTemplateEscapeInSharp(span) => *span,
+            | ParseError::InvalidTemplateEscapeInSharp(span)
+            | ParseError::PhpLambdaInSharp(span) => *span,
         }
     }
 }
@@ -208,6 +212,10 @@ impl std::fmt::Display for ParseError {
             ParseError::InvalidTemplateEscapeInSharp(_) => {
                 "A template takes JavaScript's escapes, as in `\\n`, `\\x41` or `\\u{1F600}`.".to_string()
             }
+            ParseError::PhpLambdaInSharp(_) => {
+                "PHP# writes a lambda as a bare arrow without `fn` or `function`, as in `x => x.id` or `(a, b) => { … }`"
+                    .to_string()
+            }
         };
 
         write!(f, "{message}")
@@ -251,7 +259,8 @@ impl From<&ParseError> for Issue {
             | ParseError::QualifiedNameInSharp(..)
             | ParseError::UntypedParameterInSharp(..)
             | ParseError::ForInInSharp(..)
-            | ParseError::InvalidTemplateEscapeInSharp(..) => Issue::error(error.to_string())
+            | ParseError::InvalidTemplateEscapeInSharp(..)
+            | ParseError::PhpLambdaInSharp(..) => Issue::error(error.to_string())
                 .with_code(PARSE_ERROR_CODE)
                 .with_annotation(Annotation::primary(error.span()).with_message("Written here.")),
             ParseError::NotSupportedYetInSharp(_, span) => Issue::error(error.to_string())

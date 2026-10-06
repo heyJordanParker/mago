@@ -12,8 +12,8 @@ impl<'arena, A> Parser<'_, 'arena, A>
 where
     A: Arena,
 {
-    /// Whether a PHP# local declaration starts here: `const`, `let` followed by a name, or a type followed by a name
-    /// and `=`.
+    /// Whether a PHP# local declaration starts here: `const`, `let` followed by a name, or a type, as
+    /// `is_at_typed_local` reads it.
     pub(crate) fn is_at_local_declaration(&mut self) -> Result<bool, ParseError> {
         if !self.dialect.is_sharp() {
             return Ok(false);
@@ -64,8 +64,12 @@ where
         })
     }
 
-    /// Returns `true` when the next tokens read as a type, a name and `=`: a name, an optional `?` written
-    /// right after it, another name and `=`. A spaced `?` is the conditional operator.
+    /// Returns `true` when the next tokens read as a type: a name and an optional `?` written right after it, then
+    /// another name and `=`, or `|`, which starts a union type as in `int|string key = 1;`, or `(` and a name with
+    /// `|` after it, or a type with type arguments, which start a nullable union as in `(int|string)? key = null;` or
+    /// `(List<int>|string)? items = null;`. A spaced `?` is the conditional operator. The token buffer cannot look past
+    /// a union, so a statement of the bitwise `|`, such as `flags | 1;` or `(flags | 1);`, is a parse error while the
+    /// slice refuses bitwise `|`.
     ///
     /// A capitalized name followed by `<` starts a type with type arguments, as in `List<Line> lines = [];`, because
     /// spec section 24 capitalizes every type but the built-in ones. Its arguments can be longer than the parser
@@ -74,8 +78,26 @@ where
         let Some(hint) = self.stream.lookahead(0)? else {
             return Ok(false);
         };
+        if hint.kind == T!["("] {
+            let Some(first) = self.stream.lookahead(1)? else {
+                return Ok(false);
+            };
+
+            return Ok(match self.stream.peek_kind(2)? {
+                Some(T!["|"]) => first.kind == T![Identifier],
+                Some(T!["<"]) => {
+                    (matches!(first.kind, T![Identifier | "list"])
+                        && first.value.first().is_some_and(u8::is_ascii_uppercase))
+                        || (first.kind == T!["function"] && first.value == b"Function")
+                }
+                _ => false,
+            });
+        }
         if self.is_at_generic_hint()? {
             return Ok(hint.value.first().is_some_and(u8::is_ascii_uppercase));
+        }
+        if self.is_at_function_hint()? {
+            return Ok(true);
         }
 
         if hint.kind != T![Identifier] {
@@ -92,7 +114,12 @@ where
             _ => 1,
         };
 
-        Ok(self.stream.peek_kind(name)?.is_some_and(|kind| kind.is_identifier_maybe_reserved())
-            && matches!(self.stream.peek_kind(name + 1)?, Some(T!["="])))
+        match self.stream.peek_kind(name)? {
+            Some(T!["|"]) => Ok(true),
+            Some(kind) if kind.is_identifier_maybe_reserved() => {
+                Ok(matches!(self.stream.peek_kind(name + 1)?, Some(T!["="])))
+            }
+            _ => Ok(false),
+        }
     }
 }

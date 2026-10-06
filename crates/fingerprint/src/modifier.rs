@@ -27,6 +27,7 @@ impl Fingerprintable for Modifier<'_> {
             Modifier::PrivateSet(_) => "private_set".hash(hasher),
             Modifier::Virtual(_) => "virtual".hash(hasher),
             Modifier::Override(_) => "override".hash(hasher),
+            Modifier::Required(_) => "required".hash(hasher),
         }
     }
 }
@@ -55,6 +56,7 @@ pub fn fingerprint_modifiers<'modifier, H>(
             Modifier::PrivateSet(_) => Some("private_set"),
             Modifier::Virtual(_) => Some("virtual"),
             Modifier::Override(_) => Some("override"),
+            Modifier::Required(_) => Some("required"),
         })
         .collect();
 

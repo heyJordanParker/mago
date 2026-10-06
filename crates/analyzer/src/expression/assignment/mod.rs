@@ -20,6 +20,8 @@ use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_never;
 use mago_codex::ttype::get_null;
 use mago_codex::ttype::union::TUnion;
+use mago_names::binding::Binding;
+use mago_names::binding::php_variable_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -31,6 +33,7 @@ use mago_syntax::cst::Assignment;
 use mago_syntax::cst::AssignmentOperator;
 use mago_syntax::cst::Binary;
 use mago_syntax::cst::BinaryOperator;
+use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::List;
 use mago_syntax::cst::UnaryPrefix;
@@ -51,6 +54,7 @@ use crate::error::AnalysisError;
 use crate::expression::find_expression_logic_issues;
 use crate::formula::get_formula;
 use crate::resolver::static_property::StaticProperty;
+use crate::statement::function_like::expect_function_type;
 use crate::utils::docblock::check_docblock_type_incompatibility;
 use crate::utils::docblock::get_type_from_var_docblock;
 use crate::utils::expression::array::get_array_target_type_given_index;
@@ -141,6 +145,10 @@ where
 
         match assignment_operator {
             None => {
+                let declared_type =
+                    declared_target_type(target_expression, target_variable_id.as_ref(), context, block_context);
+                expect_function_type(context, artifacts, source_expression, declared_type.as_deref());
+
                 source_expression.analyze(context, block_context, artifacts)?;
             }
             // this rewrites $a += 4 and $a ??= 4 to $a = $a + 4 and $a = $a ?? 4 respectively
@@ -1299,6 +1307,43 @@ fn handle_assignment_with_boolean_logic<'ctx, 'arena, A>(
         .into_iter()
         .map(Rc::new),
     );
+}
+
+/// The type an assignment's target declares: a typed PHP# local's type, or the type of a property of `this`.
+fn declared_target_type<A>(
+    target_expression: &Expression<'_>,
+    target_variable_id: Option<&Word>,
+    context: &Context<'_, '_, A>,
+    block_context: &BlockContext<'_>,
+) -> Option<Rc<TUnion>>
+where
+    A: Arena,
+{
+    if let Some((local_type, _)) = target_variable_id.and_then(|variable_id| block_context.local_types.get(variable_id))
+    {
+        return Some(Rc::clone(local_type));
+    }
+
+    let Expression::Access(Access::Property(access)) = target_expression else {
+        return None;
+    };
+    let ClassLikeMemberSelector::Identifier(property) = &access.property else {
+        return None;
+    };
+    let is_this = match access.object {
+        Expression::ConstantAccess(object) => context.resolved_names.binding(&object.name) == Some(Binding::This),
+        Expression::Variable(Variable::Direct(object)) => object.name == b"$this",
+        _ => false,
+    };
+    if !is_this {
+        return None;
+    }
+
+    let class_name = block_context.scope.get_class_like_name()?;
+    let property_type =
+        context.codebase.get_property_type(class_name.as_bytes(), php_variable_name(property.value).as_bytes())?;
+
+    Some(Rc::new(property_type.clone()))
 }
 
 fn is_closure_expression<'arena>(expression: &'arena Expression<'arena>) -> bool {

@@ -240,6 +240,7 @@ enum NodeKind: string
     case IntersectionHint = 'IntersectionHint';
     case NullableHint = 'NullableHint';
     case GenericHint = 'GenericHint';
+    case FunctionHint = 'FunctionHint';
     case ParenthesizedHint = 'ParenthesizedHint';
     case UnionHint = 'UnionHint';
     case Unset = 'Unset';

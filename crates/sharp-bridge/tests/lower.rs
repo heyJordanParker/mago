@@ -122,7 +122,11 @@ impl Lowered {
                     sharp_value::SHARP_STRING => write!(tree, " {:?}", text(node.text)),
                 };
             }
-            sharp_kind::SHARP_AST_CLASS | sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_PROPERTY_HOOK => {
+            sharp_kind::SHARP_AST_CLASS
+            | sharp_kind::SHARP_AST_METHOD
+            | sharp_kind::SHARP_AST_PROPERTY_HOOK
+            | sharp_kind::SHARP_AST_CLOSURE
+            | sharp_kind::SHARP_AST_ARROW_FUNC => {
                 let _ = write!(tree, " {:?} @{}-{}", text(node.text), node.line, node.end_line);
             }
             _ => {}
@@ -195,6 +199,18 @@ fn a_construct_outside_the_slice_returns_its_not_supported_error() {
     let lowered = Lowered::new(&method("        echo extra;\n        return 1;\n"));
 
     assert_eq!(lowered.diagnostics(), ["9:9 compile error: This statement is not supported yet in PHP#."]);
+}
+
+/// The lowering takes only a checked program, so an enum the slice refuses lowers no node of the enum.
+#[test]
+fn an_enum_the_slice_refuses_returns_its_error_and_no_nodes() {
+    let lowered = Lowered::new("enum Status\n{\n    case Active;\n\n    public status() {}\n}\n");
+
+    assert_eq!(
+        lowered.diagnostics(),
+        ["5:12 compile error: An enum has no constructor: its cases are its only values."]
+    );
+    assert_eq!(lowered.unit().node_count, 0);
 }
 
 #[test]
@@ -857,6 +873,104 @@ fn a_get_only_property_gets_its_initial_value_in_the_constructor() {
 }
 
 /// ```php
+/// private ?int $total = null;
+/// public ?\Lib\Calc $owner = null;
+/// private int|string|null $key = null;
+/// private ?int $start = 1;
+/// public readonly ?int $limit;
+///
+/// public function __construct()
+/// {
+///     $this->limit = null;
+/// }
+/// ```
+///
+/// A field or a settable auto-property of a nullable type without an initial value starts as null, so it takes the
+/// default `null` on the line of its name. A get-only property is `readonly`, which takes no default, so its initial
+/// value runs in the constructor. `[257]` is `ZEND_NAME_NOT_FQ | ZEND_TYPE_NULLABLE`, and `[256]` is
+/// `ZEND_TYPE_NULLABLE` on a class name.
+#[test]
+fn a_nullable_field_or_settable_auto_property_without_an_initial_value_defaults_to_null() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private int? total;\n    public Calc? owner { get; set; }\n    private (int|string)? key;\n    private int? start = 1;\n    public int? limit { get; } = null;\n}\n",
+    );
+    let class = lowered.child(lowered.unit().root, 2);
+
+    assert_eq!(
+        lowered.render(lowered.child(class, 2)),
+        indoc! {r#"
+            STMT_LIST
+              PROP_GROUP [4]
+                ZVAL [257] "int"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "total"
+                    ZVAL null
+                    null
+                    null
+                null
+              PROP_GROUP [1]
+                ZVAL [256] "Lib\\Calc"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "owner"
+                    ZVAL null
+                    null
+                    null
+                null
+              PROP_GROUP [4]
+                TYPE_UNION
+                  ZVAL [1] "int"
+                  ZVAL [1] "string"
+                  ZVAL [1] "null"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "key"
+                    ZVAL null
+                    null
+                    null
+                null
+              PROP_GROUP [4]
+                ZVAL [257] "int"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "start"
+                    ZVAL 1
+                    null
+                    null
+                null
+              PROP_GROUP [129]
+                ZVAL [257] "int"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "limit"
+                    null
+                    null
+                    null
+                null
+              METHOD [1] "__construct" @5-12
+                PARAM_LIST
+                null
+                STMT_LIST
+                  ASSIGN
+                    PROP
+                      VAR
+                        ZVAL "this"
+                      ZVAL "limit"
+                    ZVAL null
+                null
+                null
+        "#}
+    );
+    let members = lowered.child(class, 2);
+    let default_lines = [0, 1, 2].map(|member| {
+        let element = lowered.child(lowered.child(lowered.child(members, member), 1), 0);
+        lowered.nodes()[lowered.child(element, 1) as usize].line
+    });
+    assert_eq!(default_lines, [7, 8, 9]);
+}
+
+/// ```php
 /// public static function make(): void {}
 /// private function hide() {}
 /// protected function share() {}
@@ -1053,6 +1167,46 @@ fn a_map_keyed_by_a_backed_enum_lowers_as_any_map() {
                       ZVAL "Lib\\Calc"
                       ZVAL "Active"
                   ZVAL 0
+        "#}
+    );
+}
+
+/// ```php
+/// public function apply(\Closure $step, ?\Closure $other = null): \Closure { return $step; }
+/// ```
+///
+/// A function type runs as PHP's `\Closure`, so its type is the full name `Closure` with `ZEND_NAME_FQ`, which is 0.
+#[test]
+fn a_function_type_is_the_closure_class() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public Function<bool(int)> apply(Function<int(string, int)> step, Function<void()>? other = null) { return step; }\n}\n",
+    );
+    let method = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a method");
+
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 0)),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                ZVAL "Closure"
+                ZVAL "step"
+                null
+                null
+                null
+                null
+              PARAM
+                ZVAL [256] "Closure"
+                ZVAL "other"
+                ZVAL null
+                null
+                null
+                null
+        "#}
+    );
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 3)),
+        indoc! {r#"
+            ZVAL "Closure"
         "#}
     );
 }
@@ -1259,6 +1413,255 @@ fn calc_make_is_a_static_call_on_the_imported_class() {
 }
 
 /// ```php
+/// private int|string $key = 1;
+/// public function find(int|float|\Lib\Calc $id): \Lib\Calc|string { return "none"; }
+/// ```
+///
+/// A union is one `TYPE_UNION` list of its types in the order they are written, as php-src's `union_type` rule
+/// builds `int|float|\Lib\Calc`, on the line of its first type.
+#[test]
+fn a_union_type_is_one_type_union_list_of_its_types_in_written_order() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private int|string key = 1;\n\n    public Calc|string find(\n        int|float|Calc id,\n    ) { return \"none\"; }\n}\n",
+    );
+    let members = lowered.child(lowered.child(lowered.unit().root, 2), 2);
+    let field = lowered.child(lowered.child(members, 0), 0);
+    let method = lowered.child(members, 1);
+    let parameter = lowered.child(lowered.child(lowered.child(method, 0), 0), 0);
+    let return_type = lowered.child(method, 3);
+
+    assert_eq!(
+        lowered.render(field),
+        indoc! {r#"
+            TYPE_UNION
+              ZVAL [1] "int"
+              ZVAL [1] "string"
+        "#}
+    );
+    assert_eq!(
+        lowered.render(parameter),
+        indoc! {r#"
+            TYPE_UNION
+              ZVAL [1] "int"
+              ZVAL [1] "float"
+              ZVAL "Lib\\Calc"
+        "#}
+    );
+    assert_eq!(
+        lowered.render(return_type),
+        indoc! {r#"
+            TYPE_UNION
+              ZVAL "Lib\\Calc"
+              ZVAL [1] "string"
+        "#}
+    );
+    assert_eq!([field, parameter, return_type].map(|union| lowered.nodes()[union as usize].line), [7, 10, 9]);
+}
+
+/// ```php
+/// public function find(int|string|null $id): \Lib\Calc|string|null { return null; }
+/// ```
+///
+/// A union in parentheses with `?` after it is the `TYPE_UNION` list of its types in the order they are written,
+/// then the name `null` with `ZEND_NAME_NOT_FQ`, as php-src's `union_type` rule builds `int|string|null`. The list
+/// carries no `ZEND_TYPE_NULLABLE`, and `null` is on the line of the `?`.
+#[test]
+fn a_nullable_union_is_its_type_union_list_with_null_last() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public (Calc|string)? find(\n        (int|string)? id,\n    ) { return null; }\n}\n",
+    );
+    assert_eq!(lowered.diagnostics(), Vec::<String>::new());
+    let method = lowered.child(lowered.child(lowered.child(lowered.unit().root, 2), 2), 0);
+    let parameters = lowered.child(method, 0);
+    let return_type = lowered.child(method, 3);
+
+    assert_eq!(
+        lowered.render(parameters),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                TYPE_UNION
+                  ZVAL [1] "int"
+                  ZVAL [1] "string"
+                  ZVAL [1] "null"
+                ZVAL "id"
+                null
+                null
+                null
+                null
+        "#}
+    );
+    assert_eq!(
+        lowered.render(return_type),
+        indoc! {r#"
+            TYPE_UNION
+              ZVAL "Lib\\Calc"
+              ZVAL [1] "string"
+              ZVAL [1] "null"
+        "#}
+    );
+    let parameter = lowered.child(lowered.child(parameters, 0), 0);
+    let null_lines = [parameter, return_type].map(|union| lowered.nodes()[lowered.child(union, 2) as usize].line);
+    assert_eq!(null_lines, [8, 7]);
+}
+
+/// ```php
+/// public static function sum(string $label, int|float ...$values): int { return 0; }
+/// ```
+///
+/// `[16]` is `ZEND_PARAM_VARIADIC`, which php-src's grammar adds to the parameter's attr.
+#[test]
+fn a_variadic_parameter_carries_the_variadic_flag() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public static int sum(string label, int|float ...values) { return 0; }\n}\n",
+    );
+    let method = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a method");
+
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 0)),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                ZVAL [1] "string"
+                ZVAL "label"
+                null
+                null
+                null
+                null
+              PARAM [16]
+                TYPE_UNION
+                  ZVAL [1] "int"
+                  ZVAL [1] "float"
+                ZVAL "values"
+                null
+                null
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// $pick = fn(int|string $key, int|\Lib\Calc|null $fallback, int ...$rest) => count($rest);
+/// return $pick(1, null, ...$extra);
+/// ```
+///
+/// A lambda's parameters lower as a method's do: a union is a `TYPE_UNION`, a nullable union ends with `null`, and a
+/// variadic parameter carries `ZEND_PARAM_VARIADIC`, which is 16. A spread into a local's lambda is an `UNPACK`.
+#[test]
+fn a_lambda_takes_union_and_variadic_parameters_and_a_spread_call() {
+    assert_eq!(
+        body(
+            "        const pick = (int|string key, (int|Calc)? fallback, int ...rest) => count(rest);\n        return pick(1, null, ...extra);\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "pick"
+                ARROW_FUNC "" @9-9
+                  PARAM_LIST
+                    PARAM
+                      TYPE_UNION
+                        ZVAL [1] "int"
+                        ZVAL [1] "string"
+                      ZVAL "key"
+                      null
+                      null
+                      null
+                      null
+                    PARAM
+                      TYPE_UNION
+                        ZVAL [1] "int"
+                        ZVAL "Lib\\Calc"
+                        ZVAL [1] "null"
+                      ZVAL "fallback"
+                      null
+                      null
+                      null
+                      null
+                    PARAM [16]
+                      ZVAL [1] "int"
+                      ZVAL "rest"
+                      null
+                      null
+                      null
+                      null
+                  null
+                  CALL
+                    ZVAL "count"
+                    ARG_LIST
+                      VAR
+                        ZVAL "rest"
+                  null
+                  null
+              RETURN
+                CALL
+                  VAR
+                    ZVAL "pick"
+                  ARG_LIST
+                    ZVAL 1
+                    ZVAL null
+                    UNPACK
+                      VAR
+                        ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
+/// \Lib\Calc::sum(...$extra);
+/// $this->run(1, ...$extra);
+/// $made = new \Lib\Calc(...$extra);
+/// return max(...$extra);
+/// ```
+///
+/// A spread argument is an `UNPACK` of its value, as php-src's grammar builds `...$extra`.
+#[test]
+fn a_spread_argument_is_an_unpack_of_its_value() {
+    assert_eq!(
+        body(
+            "        Calc.sum(...extra);\n        this.run(1, ...extra);\n        const made = new Calc(...extra);\n        return max(...extra);\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              STATIC_CALL
+                ZVAL "Lib\\Calc"
+                ZVAL "sum"
+                ARG_LIST
+                  UNPACK
+                    VAR
+                      ZVAL "extra"
+              METHOD_CALL
+                VAR
+                  ZVAL "this"
+                ZVAL "run"
+                ARG_LIST
+                  ZVAL 1
+                  UNPACK
+                    VAR
+                      ZVAL "extra"
+              ASSIGN
+                VAR
+                  ZVAL "made"
+                NEW
+                  ZVAL "Lib\\Calc"
+                  ARG_LIST
+                    UNPACK
+                      VAR
+                        ZVAL "extra"
+              RETURN
+                CALL
+                  ZVAL "max"
+                  ARG_LIST
+                    UNPACK
+                      VAR
+                        ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
 /// return new \Lib\Calc($extra, rate: 2);
 /// ```
 ///
@@ -1287,6 +1690,15 @@ fn new_creates_the_imported_class_by_its_full_name() {
 fn a_public_class_is_a_class() {
     let public = Lowered::new("namespace App.Tenant;\n\npublic class Report\n{\n}\n");
     let internal = Lowered::new("namespace App.Tenant;\n\nclass Report\n{\n}\n");
+
+    assert_eq!(public.tree(), internal.tree());
+}
+
+/// PHP has no enum visibility, so a `public` enum is the same enum.
+#[test]
+fn a_public_enum_is_an_enum() {
+    let public = Lowered::new("namespace App.Tenant;\n\npublic enum Suit\n{\n    case Hearts;\n}\n");
+    let internal = Lowered::new("namespace App.Tenant;\n\nenum Suit\n{\n    case Hearts;\n}\n");
 
     assert_eq!(public.tree(), internal.tree());
 }
@@ -1469,6 +1881,89 @@ fn virtual_lowers_to_nothing_and_override_to_the_override_attribute() {
 }
 
 /// ```php
+/// class Account extends \Lib\Ledger
+/// {
+///     #[\Override]
+///     public function total(string $label, int|float ...$amounts): int|float
+///     {
+///         return parent::total($label, ...$amounts);
+///     }
+/// }
+/// ```
+///
+/// The classes slice and the signatures slice lower together: the header marks the class to find its parent in the
+/// name list, the variadic union parameter carries `ZEND_PARAM_VARIADIC`, and the spread into `super` is an `UNPACK`
+/// argument of the static call on `parent`.
+#[test]
+fn a_subclass_method_with_a_union_variadic_spreads_it_into_the_parent_method() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Ledger;\n\nclass Account : Ledger\n{\n    public override int|float total(string label, int|float ...amounts)\n    {\n        return super.total(label, ...amounts);\n    }\n}\n",
+    );
+
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              NAMESPACE
+                ZVAL "App\\Tenant"
+                null
+              CLASS [2147483648] "Account" @5-11
+                null
+                NAME_LIST
+                  ZVAL "Lib\\Ledger"
+                STMT_LIST
+                  METHOD [1] "total" @7-10
+                    PARAM_LIST
+                      PARAM
+                        ZVAL [1] "string"
+                        ZVAL "label"
+                        null
+                        null
+                        null
+                        null
+                      PARAM [16]
+                        TYPE_UNION
+                          ZVAL [1] "int"
+                          ZVAL [1] "float"
+                        ZVAL "amounts"
+                        null
+                        null
+                        null
+                        null
+                    null
+                    STMT_LIST
+                      RETURN
+                        STATIC_CALL
+                          ZVAL [1] "parent"
+                          ZVAL "total"
+                          ARG_LIST
+                            VAR
+                              ZVAL "label"
+                            UNPACK
+                              VAR
+                                ZVAL "amounts"
+                    TYPE_UNION
+                      ZVAL [1] "int"
+                      ZVAL [1] "float"
+                    ATTRIBUTE_LIST
+                      ATTRIBUTE_GROUP
+                        ATTRIBUTE
+                          ZVAL "Override"
+                          null
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
 /// return parent::size(2);
 /// ```
 ///
@@ -1484,6 +1979,123 @@ fn super_calls_are_static_calls_on_parent() {
                 STATIC_CALL
                   ZVAL [1] "parent"
                   ZVAL "size"
+                  ARG_LIST
+                    ZVAL 2
+        "#}
+    );
+}
+
+/// ```php
+/// public function __construct(\Lib\Row $row) {}
+/// public static function fromSchema(\Lib\Row $row): static { return new static($row); }
+/// public static function find(\Lib\Row $row): ?static { return static::fromSchema($row); }
+/// public static function counted(\Lib\Row $row): static|int { return static::fromSchema($row); }
+/// ```
+///
+/// `Self` is `static`. As a return type it is a `TYPE` node with `IS_STATIC`, which is 15, and `Self?` adds
+/// `ZEND_TYPE_NULLABLE`, which is 256. As a class it is the name `static` with `ZEND_NAME_NOT_FQ`, which is 1, as
+/// php-src's grammar builds `new static` and `static::`. `required` adds no flag, as PHP has no `required`.
+#[test]
+fn self_is_static_and_required_adds_no_flag() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Row;\n\npublic abstract class DatabaseEntity\n{\n    public required DatabaseEntity(Row row)\n    {\n    }\n\n    public static Self fromSchema(Row row)\n    {\n        return new Self(row);\n    }\n\n    public static Self? find(Row row) => Self.fromSchema(row);\n\n    public static Self|int counted(Row row) => Self.fromSchema(row);\n}\n",
+    );
+
+    assert_eq!(
+        lowered.render(lowered.child(lowered.child(lowered.unit().root, 2), 2)),
+        indoc! {r#"
+            STMT_LIST
+              METHOD [1] "__construct" @7-9
+                PARAM_LIST
+                  PARAM
+                    ZVAL "Lib\\Row"
+                    ZVAL "row"
+                    null
+                    null
+                    null
+                    null
+                null
+                STMT_LIST
+                null
+                null
+              METHOD [17] "fromSchema" @11-14
+                PARAM_LIST
+                  PARAM
+                    ZVAL "Lib\\Row"
+                    ZVAL "row"
+                    null
+                    null
+                    null
+                    null
+                null
+                STMT_LIST
+                  RETURN
+                    NEW
+                      ZVAL [1] "static"
+                      ARG_LIST
+                        VAR
+                          ZVAL "row"
+                TYPE [15]
+                null
+              METHOD [17] "find" @16-16
+                PARAM_LIST
+                  PARAM
+                    ZVAL "Lib\\Row"
+                    ZVAL "row"
+                    null
+                    null
+                    null
+                    null
+                null
+                STMT_LIST
+                  RETURN
+                    STATIC_CALL
+                      ZVAL [1] "static"
+                      ZVAL "fromSchema"
+                      ARG_LIST
+                        VAR
+                          ZVAL "row"
+                TYPE [271]
+                null
+              METHOD [17] "counted" @18-18
+                PARAM_LIST
+                  PARAM
+                    ZVAL "Lib\\Row"
+                    ZVAL "row"
+                    null
+                    null
+                    null
+                    null
+                null
+                STMT_LIST
+                  RETURN
+                    STATIC_CALL
+                      ZVAL [1] "static"
+                      ZVAL "fromSchema"
+                      ARG_LIST
+                        VAR
+                          ZVAL "row"
+                TYPE_UNION
+                  TYPE [15]
+                  ZVAL [1] "int"
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// return static::make(2);
+/// ```
+#[test]
+fn self_calls_are_static_calls_on_static() {
+    assert_eq!(
+        body("        return Self.make(2);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                STATIC_CALL
+                  ZVAL [1] "static"
+                  ZVAL "make"
                   ARG_LIST
                     ZVAL 2
         "#}
@@ -1575,6 +2187,48 @@ fn a_class_constant_is_a_class_constant_group_of_one_constant() {
                     null
                 null
                 null
+        "#}
+    );
+}
+
+/// ```php
+/// public const int|string KEY = 1;
+/// public const int|string|null CODE = null;
+/// ```
+///
+/// A constant's union type is the type union a parameter's is.
+#[test]
+fn a_union_typed_class_constant_has_its_type_union() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public const int|string KEY = 1;\n    public const (int|string)? CODE = null;\n}\n",
+    );
+    let class = lowered.child(lowered.unit().root, 2);
+
+    assert_eq!(
+        lowered.render(lowered.child(class, 2)),
+        indoc! {r#"
+            STMT_LIST
+              CLASS_CONST_GROUP [1]
+                CLASS_CONST_DECL
+                  CONST_ELEM
+                    ZVAL "KEY"
+                    ZVAL 1
+                    null
+                null
+                TYPE_UNION
+                  ZVAL [1] "int"
+                  ZVAL [1] "string"
+              CLASS_CONST_GROUP [1]
+                CLASS_CONST_DECL
+                  CONST_ELEM
+                    ZVAL "CODE"
+                    ZVAL null
+                    null
+                null
+                TYPE_UNION
+                  ZVAL [1] "int"
+                  ZVAL [1] "string"
+                  ZVAL [1] "null"
         "#}
     );
 }
@@ -2730,6 +3384,229 @@ fn a_template_is_an_encaps_list_of_its_text_and_interpolations() {
     );
 }
 
+/// ```php
+/// $twice = fn (int $a) => $a * $extra; $half = fn ($b) => $b / 2; return $twice($half(4));
+/// ```
+///
+/// A lambda that writes none of the locals it captures is PHP's `fn`, which captures by value what its body reads.
+/// php-src's grammar gives an arrow function no name, no `use` list and its expression as its body. A call of a local
+/// calls the closure the local holds.
+#[test]
+fn a_lambda_that_writes_no_capture_is_an_arrow_function() {
+    assert_eq!(
+        body(
+            "        const twice = (int a) => a * extra;\n        const half = b => b / 2;\n        return twice(half(4));\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "twice"
+                ARROW_FUNC "" @9-9
+                  PARAM_LIST
+                    PARAM
+                      ZVAL [1] "int"
+                      ZVAL "a"
+                      null
+                      null
+                      null
+                      null
+                  null
+                  BINARY_OP [3]
+                    VAR
+                      ZVAL "a"
+                    VAR
+                      ZVAL "extra"
+                  null
+                  null
+              ASSIGN
+                VAR
+                  ZVAL "half"
+                ARROW_FUNC "" @10-10
+                  PARAM_LIST
+                    PARAM
+                      null
+                      ZVAL "b"
+                      null
+                      null
+                      null
+                      null
+                  null
+                  BINARY_OP [4]
+                    VAR
+                      ZVAL "b"
+                    ZVAL 2
+                  null
+                  null
+              RETURN
+                CALL
+                  VAR
+                    ZVAL "twice"
+                  ARG_LIST
+                    CALL
+                      VAR
+                        ZVAL "half"
+                      ARG_LIST
+                        ZVAL 4
+        "#}
+    );
+}
+
+/// ```php
+/// $count = 0;
+/// $add = function (int $step) use (&$count, $extra) {
+///     $count += $step + $extra;
+/// };
+/// $bump = function () use (&$count) { return $count += 1; };
+/// $add(1);
+/// return $count;
+/// ```
+///
+/// Spec section 3: a lambda captures the variable itself. A lambda with a block body, or one that writes a local it
+/// captures, is PHP's `function` with a `use` list in first-use order, which captures a local that code writes by
+/// reference, `ZEND_BIND_REF`, which is 1, and any other by value. An expression body is the `return` of it.
+#[test]
+fn a_lambda_with_a_block_or_a_written_capture_is_a_closure_with_a_use_list() {
+    assert_eq!(
+        body(
+            "        let count = 0;\n        const add = (int step) => {\n            count += step + extra;\n        };\n        const bump = () => count += 1;\n        add(1);\n        return count;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "count"
+                ZVAL 0
+              ASSIGN
+                VAR
+                  ZVAL "add"
+                CLOSURE "" @10-12
+                  PARAM_LIST
+                    PARAM
+                      ZVAL [1] "int"
+                      ZVAL "step"
+                      null
+                      null
+                      null
+                      null
+                  CLOSURE_USES
+                    ZVAL [1] "count"
+                    ZVAL "extra"
+                  STMT_LIST
+                    ASSIGN_OP [1]
+                      VAR
+                        ZVAL "count"
+                      BINARY_OP [1]
+                        VAR
+                          ZVAL "step"
+                        VAR
+                          ZVAL "extra"
+                  null
+                  null
+              ASSIGN
+                VAR
+                  ZVAL "bump"
+                CLOSURE "" @13-13
+                  PARAM_LIST
+                  CLOSURE_USES
+                    ZVAL [1] "count"
+                  STMT_LIST
+                    RETURN
+                      ASSIGN_OP [1]
+                        VAR
+                          ZVAL "count"
+                        ZVAL 1
+                  null
+                  null
+              CALL
+                VAR
+                  ZVAL "add"
+                ARG_LIST
+                  ZVAL 1
+              RETURN
+                VAR
+                  ZVAL "count"
+        "#}
+    );
+}
+
+/// ```php
+/// while ($extra > 0) {
+///     { unset($seen); $seen = $extra; }
+///     $mark = function () use (&$seen) { $seen += 1; };
+///     $mark();
+///     $extra -= 1;
+/// }
+/// return $extra;
+/// ```
+///
+/// Spec section 3 gives each loop pass its own `let`. PHP reuses one variable across passes, so a `let` declared in a
+/// loop body that a lambda captures by reference is unset before its assignment, and the lambda of each pass keeps
+/// its own. php-src's grammar builds `unset($seen);` as a statement list of one `UNSET`.
+#[test]
+fn a_let_in_a_loop_captured_by_reference_is_unset_before_its_assignment() {
+    assert_eq!(
+        body(
+            "        while (extra > 0) {\n            let seen = extra;\n            const mark = () => {\n                seen += 1;\n            };\n            mark();\n            extra -= 1;\n        }\n        return extra;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              WHILE
+                GREATER
+                  VAR
+                    ZVAL "extra"
+                  ZVAL 0
+                STMT_LIST
+                  STMT_LIST
+                    STMT_LIST
+                      UNSET
+                        VAR
+                          ZVAL "seen"
+                    ASSIGN
+                      VAR
+                        ZVAL "seen"
+                      VAR
+                        ZVAL "extra"
+                  ASSIGN
+                    VAR
+                      ZVAL "mark"
+                    CLOSURE "" @11-13
+                      PARAM_LIST
+                      CLOSURE_USES
+                        ZVAL [1] "seen"
+                      STMT_LIST
+                        ASSIGN_OP [1]
+                          VAR
+                            ZVAL "seen"
+                          ZVAL 1
+                      null
+                      null
+                  CALL
+                    VAR
+                      ZVAL "mark"
+                    ARG_LIST
+                  ASSIGN_OP [2]
+                    VAR
+                      ZVAL "extra"
+                    ZVAL 1
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
+/// A `let` the lambda declares in its own body lives in each call's own frame, so it is never unset, even when the
+/// lambda sits in a loop.
+#[test]
+fn a_let_declared_inside_a_lambda_in_a_loop_is_not_unset() {
+    let tree = body(
+        "        while (extra > 0) {\n            const step = () => {\n                let inner = 1;\n                const again = () => {\n                    inner += 1;\n                };\n                again();\n            };\n            step();\n            extra -= 1;\n        }\n        return extra;\n",
+    );
+
+    assert!(!tree.contains("UNSET"), "{tree}");
+}
+
 /// php-src takes a list's line from its first child, and each piece of text's from where it starts.
 #[test]
 fn a_template_over_several_lines_keeps_the_line_of_each_part() {
@@ -2858,7 +3735,637 @@ fn attributes_are_attribute_lists_of_attribute_groups_on_their_declarations() {
     );
 }
 
+/// ```php
+/// <?php declare(strict_types=1); namespace App\Tenant;
+///
+///
+///
+/// #[\Lib\Label("Order status")]
+/// enum Status: string
+/// {
+///     case Active = "active";
+///     #[\Lib\Label("Gone")]
+///     case Archived = "archived";
+///
+///     public function title(): string
+///     {
+///         return $this->value;
+///     }
+///
+///     public static function parse(string $value): \App\Tenant\Status
+///     {
+///         $all = \App\Tenant\Status::cases();
+///         return \App\Tenant\Status::tryFrom($value) ?? \App\Tenant\Status::from("active");
+///     }
+/// }
+/// ```
+///
+/// An enum is a `CLASS` with `[268435488]`, `ZEND_ACC_ENUM | ZEND_ACC_FINAL`, and its backing type as its 5th child. A
+/// case is an `ENUM_CASE` of its name, its value, a null doc comment and its attributes, on the line of its name.
+#[test]
+fn a_backed_enum_is_a_final_enum_class_with_its_backing_type_cases_and_methods() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Label;\n\n[Label(\"Order status\")]\nenum Status : string\n{\n    case Active = \"active\";\n    [Label(\"Gone\")]\n    case Archived = \"archived\";\n\n    public string title()\n    {\n        return this.value;\n    }\n\n    public static Status parse(string value)\n    {\n        const all = Status.cases();\n        return Status.tryFrom(value) ?? Status.from(\"active\");\n    }\n}\n",
+    );
+    let case_lines: Vec<u32> = lowered
+        .nodes()
+        .iter()
+        .filter(|node| node.kind == sharp_kind::SHARP_AST_ENUM_CASE)
+        .map(|node| node.line)
+        .collect();
+
+    assert_eq!(case_lines, [8, 10]);
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              NAMESPACE
+                ZVAL "App\\Tenant"
+                null
+              CLASS [268435488] "Status" @6-22
+                null
+                null
+                STMT_LIST
+                  ENUM_CASE
+                    ZVAL "Active"
+                    ZVAL "active"
+                    null
+                    null
+                  ENUM_CASE
+                    ZVAL "Archived"
+                    ZVAL "archived"
+                    null
+                    ATTRIBUTE_LIST
+                      ATTRIBUTE_GROUP
+                        ATTRIBUTE
+                          ZVAL "Lib\\Label"
+                          ARG_LIST
+                            ZVAL "Gone"
+                  METHOD [1] "title" @12-15
+                    PARAM_LIST
+                    null
+                    STMT_LIST
+                      RETURN
+                        PROP
+                          VAR
+                            ZVAL "this"
+                          ZVAL "value"
+                    ZVAL [1] "string"
+                    null
+                  METHOD [17] "parse" @17-21
+                    PARAM_LIST
+                      PARAM
+                        ZVAL [1] "string"
+                        ZVAL "value"
+                        null
+                        null
+                        null
+                        null
+                    null
+                    STMT_LIST
+                      ASSIGN
+                        VAR
+                          ZVAL "all"
+                        STATIC_CALL
+                          ZVAL "App\\Tenant\\Status"
+                          ZVAL "cases"
+                          ARG_LIST
+                      RETURN
+                        COALESCE
+                          STATIC_CALL
+                            ZVAL "App\\Tenant\\Status"
+                            ZVAL "tryFrom"
+                            ARG_LIST
+                              VAR
+                                ZVAL "value"
+                          STATIC_CALL
+                            ZVAL "App\\Tenant\\Status"
+                            ZVAL "from"
+                            ARG_LIST
+                              ZVAL "active"
+                    ZVAL "App\\Tenant\\Status"
+                    null
+                ATTRIBUTE_LIST
+                  ATTRIBUTE_GROUP
+                    ATTRIBUTE
+                      ZVAL "Lib\\Label"
+                      ARG_LIST
+                        ZVAL "Order status"
+                ZVAL [1] "string"
+        "#}
+    );
+}
+
+/// ```php
+/// <?php declare(strict_types=1); enum Suit
+/// {
+///     case Hearts;
+///     case Spades;
+///
+///     public function label(): string { return $this->name; }
+///
+///     public static function size(): int { return \count(\Suit::cases()); }
+/// }
+/// ```
+///
+/// A pure enum has no backing type, and its cases have no value.
+#[test]
+fn a_pure_enum_is_a_final_enum_class_of_unit_cases_without_a_backing_type() {
+    let lowered = Lowered::new(
+        "enum Suit\n{\n    case Hearts;\n    case Spades;\n\n    public string label() => this.name;\n\n    public static int size() => count(Suit.cases());\n}\n",
+    );
+
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              CLASS [268435488] "Suit" @1-9
+                null
+                null
+                STMT_LIST
+                  ENUM_CASE
+                    ZVAL "Hearts"
+                    null
+                    null
+                    null
+                  ENUM_CASE
+                    ZVAL "Spades"
+                    null
+                    null
+                    null
+                  METHOD [1] "label" @6-6
+                    PARAM_LIST
+                    null
+                    STMT_LIST
+                      RETURN
+                        PROP
+                          VAR
+                            ZVAL "this"
+                          ZVAL "name"
+                    ZVAL [1] "string"
+                    null
+                  METHOD [17] "size" @8-8
+                    PARAM_LIST
+                    null
+                    STMT_LIST
+                      RETURN
+                        CALL
+                          ZVAL "count"
+                          ARG_LIST
+                            STATIC_CALL
+                              ZVAL "Suit"
+                              ZVAL "cases"
+                              ARG_LIST
+                    ZVAL [1] "int"
+                    null
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// <?php declare(strict_types=1); enum Rank: int
+/// {
+///     case Low = -1;
+///     case High = 2;
+/// }
+/// ```
+///
+/// An int-backed enum has `int` as its backing type, and a negative case value is the `UNARY_MINUS` of its literal, as
+/// php-src's grammar builds `-1`.
+#[test]
+fn an_int_backed_enum_is_a_final_enum_class_of_int_cases() {
+    let lowered = Lowered::new("enum Rank : int\n{\n    case Low = -1;\n    case High = 2;\n}\n");
+    let case_lines: Vec<u32> = lowered
+        .nodes()
+        .iter()
+        .filter(|node| node.kind == sharp_kind::SHARP_AST_ENUM_CASE)
+        .map(|node| node.line)
+        .collect();
+
+    assert_eq!(case_lines, [3, 4]);
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              CLASS [268435488] "Rank" @1-5
+                null
+                null
+                STMT_LIST
+                  ENUM_CASE
+                    ZVAL "Low"
+                    UNARY_MINUS
+                      ZVAL 1
+                    null
+                    null
+                  ENUM_CASE
+                    ZVAL "High"
+                    ZVAL 2
+                    null
+                    null
+                null
+                ZVAL [1] "int"
+        "#}
+    );
+}
+
+/// ```php
+/// <?php declare(strict_types=1); namespace App\Tenant;
+///
+///
+///
+/// enum Status: string implements \Lib\HasLabel, \App\Tenant\Sorted
+/// {
+///     case Active = "a";
+/// }
+///
+/// enum Suit implements \Lib\HasLabel
+/// {
+///     case Hearts;
+/// }
+/// ```
+///
+/// An enum's header is the interface name list, its 2nd child, with `ZEND_NAME_FQ`, which is 0. It carries no
+/// `ZEND_ACC_PARENT_IN_INTERFACES`: an enum has no parent, so every name there is an interface.
+#[test]
+fn an_enum_header_is_the_interface_name_list_without_a_parent_mark() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.HasLabel;\n\nenum Status : string, HasLabel, Sorted\n{\n    case Active = \"a\";\n}\n\nenum Suit : HasLabel\n{\n    case Hearts;\n}\n",
+    );
+
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              NAMESPACE
+                ZVAL "App\\Tenant"
+                null
+              CLASS [268435488] "Status" @5-8
+                null
+                NAME_LIST
+                  ZVAL "Lib\\HasLabel"
+                  ZVAL "App\\Tenant\\Sorted"
+                STMT_LIST
+                  ENUM_CASE
+                    ZVAL "Active"
+                    ZVAL "a"
+                    null
+                    null
+                null
+                ZVAL [1] "string"
+              CLASS [268435488] "Suit" @10-13
+                null
+                NAME_LIST
+                  ZVAL "Lib\\HasLabel"
+                STMT_LIST
+                  ENUM_CASE
+                    ZVAL "Hearts"
+                    null
+                    null
+                    null
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// <?php declare(strict_types=1); namespace App\Tenant;
+///
+/// enum Status: string
+/// {
+///     case Active = "a";
+///
+///     public const \App\Tenant\Status Default = \App\Tenant\Status::Active;
+/// }
+/// ```
+///
+/// An enum's constant is a class constant group of one constant, as a class's is. Its value is a constant expression,
+/// so its read of a case is an unmarked class constant.
+#[test]
+fn an_enum_constant_is_a_class_constant_group_that_reads_a_case_unmarked() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nenum Status : string\n{\n    case Active = \"a\";\n\n    public const Status Default = Status.Active;\n}\n",
+    );
+    let r#enum = lowered.child(lowered.unit().root, 2);
+
+    assert_eq!(
+        lowered.render(lowered.child(r#enum, 2)),
+        indoc! {r#"
+            STMT_LIST
+              ENUM_CASE
+                ZVAL "Active"
+                ZVAL "a"
+                null
+                null
+              CLASS_CONST_GROUP [1]
+                CLASS_CONST_DECL
+                  CONST_ELEM
+                    ZVAL "Default"
+                    CLASS_CONST
+                      ZVAL "App\\Tenant\\Status"
+                      ZVAL "Active"
+                    null
+                null
+                ZVAL "App\\Tenant\\Status"
+        "#}
+    );
+}
+
+/// ```php
+/// case Paused = \Lib\Registry::PAUSED;
+/// public const \App\Tenant\Status Default = \App\Tenant\Status::Active;
+/// return $this === \App\Tenant\Status::Active;
+/// public function run(\App\Tenant\Status $status = \App\Tenant\Status::Active): string
+/// if ($status === \App\Tenant\Status::Active) { return \App\Tenant\Status::Active->label(); }
+/// return \App\Tenant\Status::Default->label();
+/// ```
+///
+/// A case read is a class constant fetch in every place: unmarked in a case's value, a constant and a parameter
+/// default, which are constant expressions, and marked with `[32768]`, `1 << 15`, to fall back to the static property
+/// in a method body. A method called on a case is an instance call on that fetch.
+#[test]
+fn a_case_read_is_a_class_constant_in_every_place() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Registry;\n\npublic enum Status : string\n{\n    case Active = \"a\";\n    case Paused = Registry.PAUSED;\n\n    public const Status Default = Status.Active;\n\n    public bool active() => this === Status.Active;\n\n    public string label() => this.name;\n}\n\nclass Report\n{\n    public string run(Status status = Status.Active)\n    {\n        if (status === Status.Active) {\n            return Status.Active.label();\n        }\n        return Status.Default.label();\n    }\n}\n",
+    );
+    let reads: Vec<(u32, String)> = lowered
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.kind == sharp_kind::SHARP_AST_CLASS_CONST)
+        .map(|(index, node)| (node.attr, lowered.render(lowered.child(index as u32, 1)).trim_end().to_owned()))
+        .collect();
+
+    assert_eq!(
+        reads,
+        [
+            (0, "ZVAL \"PAUSED\"".to_owned()),
+            (0, "ZVAL \"Active\"".to_owned()),
+            (1 << 15, "ZVAL \"Active\"".to_owned()),
+            (0, "ZVAL \"Active\"".to_owned()),
+            (1 << 15, "ZVAL \"Active\"".to_owned()),
+            (1 << 15, "ZVAL \"Active\"".to_owned()),
+            (1 << 15, "ZVAL \"Default\"".to_owned()),
+        ]
+    );
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              IF
+                IF_ELEM
+                  BINARY_OP [16]
+                    VAR
+                      ZVAL "status"
+                    CLASS_CONST [32768]
+                      ZVAL "App\\Tenant\\Status"
+                      ZVAL "Active"
+                  STMT_LIST
+                    RETURN
+                      METHOD_CALL
+                        CLASS_CONST [32768]
+                          ZVAL "App\\Tenant\\Status"
+                          ZVAL "Active"
+                        ZVAL "label"
+                        ARG_LIST
+              RETURN
+                METHOD_CALL
+                  CLASS_CONST [32768]
+                    ZVAL "App\\Tenant\\Status"
+                    ZVAL "Default"
+                  ZVAL "label"
+                  ARG_LIST
+        "#}
+    );
+}
+
+/// An enum case's value is a constant expression, so a class member read there is an unmarked class constant, while a
+/// read of the enum's own case in a method is marked to fall back to the static property, as in a class.
+#[test]
+fn a_class_member_read_in_an_enum_case_value_is_an_unmarked_class_constant() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nenum Rank : int\n{\n    case Top = Calc.MAX;\n\n    public static Rank first() => Rank.Top;\n}\n",
+    );
+    let class_constants = lowered
+        .nodes()
+        .iter()
+        .filter(|node| node.kind == sharp_kind::SHARP_AST_CLASS_CONST)
+        .map(|node| node.attr)
+        .collect::<Vec<_>>();
+
+    assert_eq!(lowered.diagnostics(), Vec::<String>::new());
+    assert_eq!(class_constants, [0, 1 << 15]);
+}
+
+/// ```php
+/// <?php declare(strict_types=1); enum Suit
+/// {
+///     case Hearts;
+///     case Spades;
+///
+///     public static function all(): array { return [\Suit::Hearts, \Suit::Spades]; }
+///
+///     public function matches(): \Closure
+///     {
+///         $first = \Suit::Hearts;
+///         return fn ($other) => $other === $this || $other === $first;
+///     }
+/// }
+/// ```
+///
+/// An enum's method lowers a list literal, a function type and a lambda as a class's method does, so a case read in
+/// either is the marked class constant of any method body.
+#[test]
+fn an_enum_method_lowers_a_list_literal_a_function_type_and_a_lambda_as_a_class_method_does() {
+    let lowered = Lowered::new(
+        "enum Suit\n{\n    case Hearts;\n    case Spades;\n\n    public static List<Suit> all() => [Suit.Hearts, Suit.Spades];\n\n    public Function<bool(Suit)> matches()\n    {\n        const first = Suit.Hearts;\n        return other => other === this || other === first;\n    }\n}\n",
+    );
+
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              CLASS [268435488] "Suit" @1-13
+                null
+                null
+                STMT_LIST
+                  ENUM_CASE
+                    ZVAL "Hearts"
+                    null
+                    null
+                    null
+                  ENUM_CASE
+                    ZVAL "Spades"
+                    null
+                    null
+                    null
+                  METHOD [17] "all" @6-6
+                    PARAM_LIST
+                    null
+                    STMT_LIST
+                      RETURN
+                        ARRAY [3]
+                          ARRAY_ELEM
+                            CLASS_CONST [32768]
+                              ZVAL "Suit"
+                              ZVAL "Hearts"
+                            null
+                          ARRAY_ELEM
+                            CLASS_CONST [32768]
+                              ZVAL "Suit"
+                              ZVAL "Spades"
+                            null
+                    TYPE [7]
+                    null
+                  METHOD [1] "matches" @8-12
+                    PARAM_LIST
+                    null
+                    STMT_LIST
+                      ASSIGN
+                        VAR
+                          ZVAL "first"
+                        CLASS_CONST [32768]
+                          ZVAL "Suit"
+                          ZVAL "Hearts"
+                      RETURN
+                        ARROW_FUNC "" @11-11
+                          PARAM_LIST
+                            PARAM
+                              null
+                              ZVAL "other"
+                              null
+                              null
+                              null
+                              null
+                          null
+                          OR
+                            BINARY_OP [16]
+                              VAR
+                                ZVAL "other"
+                              VAR
+                                ZVAL "this"
+                            BINARY_OP [16]
+                              VAR
+                                ZVAL "other"
+                              VAR
+                                ZVAL "first"
+                          null
+                          null
+                    ZVAL "Closure"
+                    null
+                null
+                null
+        "#}
+    );
+}
+
 /// The child count `zend_ast_get_num_children` gives a fixed-size kind, or 5 for a declaration. `None` for a list.
+/// ```php
+/// enum Status: string
+/// {
+///     public const int|string Key = 1;
+///     case Active = "a";
+///     public static function first(): static { return Status::Active; }
+///     public static function all(): array { return static::cases(); }
+/// }
+/// ```
+///
+/// An enum's method returns `Self` as a class's does, a `TYPE` of `IS_STATIC`, which is 15, and a `List<Self>` as a
+/// `TYPE` of `IS_ARRAY`, which is 7. `Self.cases()` is a static call on `static`. Its constant's union type is a
+/// `TYPE_UNION`.
+#[test]
+fn an_enum_returns_self_and_holds_a_union_typed_constant() {
+    let lowered = Lowered::new(
+        "namespace App;\n\nenum Status : string\n{\n    public const int|string Key = 1;\n\n    case Active = \"a\";\n\n    public static Self first() => Status.Active;\n\n    public static List<Self> all() => Self.cases();\n}\n",
+    );
+    let class = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_CLASS).expect("an enum");
+
+    assert_eq!(
+        lowered.render(class as u32),
+        indoc! {r#"
+            CLASS [268435488] "Status" @3-12
+              null
+              null
+              STMT_LIST
+                CLASS_CONST_GROUP [1]
+                  CLASS_CONST_DECL
+                    CONST_ELEM
+                      ZVAL "Key"
+                      ZVAL 1
+                      null
+                  null
+                  TYPE_UNION
+                    ZVAL [1] "int"
+                    ZVAL [1] "string"
+                ENUM_CASE
+                  ZVAL "Active"
+                  ZVAL "a"
+                  null
+                  null
+                METHOD [17] "first" @9-9
+                  PARAM_LIST
+                  null
+                  STMT_LIST
+                    RETURN
+                      CLASS_CONST [32768]
+                        ZVAL "App\\Status"
+                        ZVAL "Active"
+                  TYPE [15]
+                  null
+                METHOD [17] "all" @11-11
+                  PARAM_LIST
+                  null
+                  STMT_LIST
+                    RETURN
+                      STATIC_CALL
+                        ZVAL [1] "static"
+                        ZVAL "cases"
+                        ARG_LIST
+                  TYPE [7]
+                  null
+              null
+              ZVAL [1] "string"
+        "#}
+    );
+}
+
 fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
     const IS_LIST: u32 = 1 << 7;
     const NUM_CHILDREN_SHIFT: u32 = 8;

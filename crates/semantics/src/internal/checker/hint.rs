@@ -37,7 +37,11 @@ pub fn check_hint(hint: &Hint, context: &mut Context<'_, '_, '_>) {
                 );
             }
 
-            if nullable_hint.hint.is_standalone() || nullable_hint.hint.is_complex() {
+            // PHP# writes a union that holds null as `(int|string)?`, and `check_slice` checks it.
+            let is_sharp_nullable_union = context.program.dialect.is_sharp()
+                && matches!(nullable_hint.hint, Hint::Parenthesized(parenthesized) if parenthesized.hint.is_union());
+
+            if !is_sharp_nullable_union && (nullable_hint.hint.is_standalone() || nullable_hint.hint.is_complex()) {
                 let val = BytesDisplay(context.get_code_snippet(nullable_hint.hint));
 
                 context.report(
