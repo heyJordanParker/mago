@@ -322,6 +322,17 @@ fn a_member_of_the_enclosing_class_without_this_is_recorded() {
 }
 
 #[test]
+fn a_case_or_method_of_the_enclosing_enum_without_this_is_recorded() {
+    const CODE: &str = "enum Status : string\n{\n    case Active = \"a\";\n\n    public string label()\n    {\n        return Active + label() + this.value;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "Active", 1), Some(Binding::Member));
+    assert_eq!(binding(&names, CODE, "label()", 1), Some(Binding::Member));
+    assert_eq!(binding(&names, CODE, "this", 0), Some(Binding::This));
+}
+
+#[test]
 fn a_member_name_matches_as_php_matches_it() {
     const CODE: &str = "class Report\n{\n    const int RATE = 2;\n\n    public int total()\n    {\n        return Total() + Rate;\n    }\n}\n";
     let arena = LocalArena::new();

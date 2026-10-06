@@ -209,3 +209,40 @@ class Report
         return total;
     }
 }
+
+[Entity("status"), Searchable]
+enum Status : string
+{
+    case Active = "active";
+    [Field("archived")]
+    case Archived = "archived";
+
+    public string title()
+    {
+        return this.value;
+    }
+
+    public static Status parse(string value)
+    {
+        const all = Status.cases();
+        const fallback = Status.from("active");
+        return Status.tryFrom(value) ?? fallback;
+    }
+}
+
+enum Suit
+{
+    case Hearts;
+    case Spades;
+
+    public string label() => this.name;
+
+    public static int size() => count(Suit.cases());
+}
+
+enum Rank : int
+{
+    case Ace = 1;
+    case Two = 1 + 1;
+    case Top = PHP_INT_MAX;
+}

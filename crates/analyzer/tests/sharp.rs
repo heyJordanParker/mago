@@ -1026,3 +1026,46 @@ fn attribute_arguments_are_checked_against_the_attribute_constructor_as_in_php()
     );
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
 }
+
+#[test]
+fn a_backed_enum_and_a_class_using_it_have_the_issues_of_their_php_twins() {
+    let sharp = "namespace Demo;\n\nenum Status : string\n{\n    case Active = \"a\";\n    case Paused = \"p\";\n\n    public string label()\n    {\n        return this.name + \": \" + this.value;\n    }\n\n    public static Status fallback()\n    {\n        return Status.from(\"a\");\n    }\n}\n\nclass Report\n{\n    private Status status;\n\n    public Report(Status status)\n    {\n        this.status = status;\n    }\n\n    public string describe(string code)\n    {\n        const found = Status.tryFrom(code);\n        if (found === null || count(Status.cases()) < 2) {\n            return this.status.label();\n        }\n        return found.value + found.name;\n    }\n\n    public static Report make()\n    {\n        return new Report(Status.fallback());\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nenum Status: string\n{\n    case Active = \"a\";\n    case Paused = \"p\";\n\n    public function label(): string\n    {\n        return $this->name . \": \" . $this->value;\n    }\n\n    public static function fallback(): Status\n    {\n        return Status::from(\"a\");\n    }\n}\n\nclass Report\n{\n    private Status $status;\n\n    public function __construct(Status $status)\n    {\n        $this->status = $status;\n    }\n\n    public function describe(string $code): string\n    {\n        $found = Status::tryFrom($code);\n        if ($found === null || count(Status::cases()) < 2) {\n            return $this->status->label();\n        }\n        return $found->value . $found->name;\n    }\n\n    public static function make(): Report\n    {\n        return new Report(Status::fallback());\n    }\n}\n";
+
+    // `check_throws` skips `.sharp` files, so the PHP twin is analyzed without it.
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues_with(Settings { check_throws: false, ..settings() }, ("src/Demo/Report.php", php), &[]);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn php_calls_a_sharp_enum_and_sharp_calls_a_php_enum_with_no_issues() {
+    let status = "namespace Demo;\n\nenum Status : string\n{\n    case Active = \"a\";\n\n    public string label() => this.name;\n}\n";
+    let php_caller =
+        "<?php\n\nnamespace App;\n\nfunction run(): string\n{\n    return \\Demo\\Status::from('a')->label();\n}\n";
+    let color = "<?php\n\nnamespace Lib;\n\nenum Color: string\n{\n    case Red = 'r';\n}\n";
+    let sharp_caller = "namespace Demo;\n\nimport Lib.Color;\n\nclass Paint\n{\n    public static string code(string raw)\n    {\n        return Color.from(raw).value;\n    }\n}\n";
+    // `check_throws` reports the `ValueError` of `from` in a PHP file, whichever dialect declares the enum.
+    let php_settings = Settings { check_throws: false, ..settings() };
+
+    assert_eq!(
+        issues_with(php_settings, ("src/App/run.php", php_caller), &[("src/Demo/Status.sharp", status)]),
+        Vec::<String>::new()
+    );
+    assert_eq!(issues(("src/Demo/Paint.sharp", sharp_caller), &[("src/Lib/Color.php", color)]), Vec::<String>::new());
+}
+
+#[test]
+fn from_with_a_value_of_the_wrong_backing_type_is_reported_as_in_php() {
+    let sharp = "namespace Demo;\n\nenum Status : string\n{\n    case Active = \"a\";\n}\n\nclass Report\n{\n    public static Status make()\n    {\n        return Status.from(1);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nenum Status: string\n{\n    case Active = \"a\";\n}\n\nclass Report\n{\n    public static function make(): Status\n    {\n        return Status::from(1);\n    }\n}\n";
+
+    // `check_throws` skips `.sharp` files, so the PHP twin is analyzed without it.
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues_with(Settings { check_throws: false, ..settings() }, ("src/Demo/Report.php", php), &[]);
+
+    assert_eq!(sharp_issues, ["12:28 invalid-argument"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}

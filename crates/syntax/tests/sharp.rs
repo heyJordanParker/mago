@@ -308,6 +308,45 @@ fn spec_syntax_outside_the_slice_is_one_not_supported_error_where_it_starts() {
     }
 }
 
+/// A case that carries data, spec section 20, is one error from its name to its closing parenthesis. The case stays
+/// in the enum, and the members after it still parse. PHP keeps its own parse error at the parenthesis.
+#[test]
+fn a_case_that_carries_data_is_one_not_supported_error_and_the_enum_parses_on() {
+    const CODE: &str = "enum PaymentResult\n{\n    case Open;\n    case Paid(string transactionId, int cents);\n\n    public int run() { return 1; }\n}\n";
+    let arena = LocalArena::new();
+
+    let php_code: &'static str = Box::leak(format!("<?php {CODE}").into_boxed_str());
+    let php = parse(&arena, "src/PaymentResult.php", php_code);
+    let Some(php_error) = php.errors.first() else {
+        panic!("expected a PHP error, got none");
+    };
+    assert_eq!(source(php_code, php_error), "(");
+    assert!(
+        !php.errors.iter().any(|error| matches!(error, ParseError::NotSupportedYetInSharp(..))),
+        "{:#?}",
+        php.errors
+    );
+
+    let program = parse(&arena, "src/PaymentResult.sharp", CODE);
+    let [error] = program.errors else {
+        panic!("expected one error, got {:#?}", program.errors);
+    };
+    assert_eq!(error.to_string(), "A case that carries data is not supported yet in PHP#.");
+    assert_eq!(source(CODE, error), "Paid(string transactionId, int cents)");
+    let Some(Statement::Enum(payment_result)) = program.statements.first() else {
+        panic!("expected an enum, got {:#?}", program.statements);
+    };
+    let [ClassLikeMember::EnumCase(open), ClassLikeMember::EnumCase(paid), ClassLikeMember::Method(run)] =
+        payment_result.members.as_slice()
+    else {
+        panic!("expected the cases `Open` and `Paid` and the method `run`, got {:#?}", payment_result.members);
+    };
+    assert_eq!(open.item.name().value, b"Open");
+    assert!(matches!(paid.item, EnumCaseItem::Unit(_)), "{:#?}", paid.item);
+    assert_eq!(paid.item.name().value, b"Paid");
+    assert_eq!(run.name.value, b"run");
+}
+
 /// A PHP#-only parse error is its own message, so `mago analyze` shows the rule as the issue's title.
 #[test]
 fn a_sharp_parse_error_shows_its_message_as_the_issue_title() {

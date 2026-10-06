@@ -2174,6 +2174,262 @@ fn attributes_are_attribute_lists_of_attribute_groups_on_their_declarations() {
     );
 }
 
+/// ```php
+/// <?php declare(strict_types=1); namespace App\Tenant;
+///
+///
+///
+/// #[\Lib\Label("Order status")]
+/// enum Status: string
+/// {
+///     case Active = "active";
+///     #[\Lib\Label("Gone")]
+///     case Archived = "archived";
+///
+///     public function title(): string
+///     {
+///         return $this->value;
+///     }
+///
+///     public static function parse(string $value): \App\Tenant\Status
+///     {
+///         $all = \App\Tenant\Status::cases();
+///         return \App\Tenant\Status::tryFrom($value) ?? \App\Tenant\Status::from("active");
+///     }
+/// }
+/// ```
+///
+/// An enum is a `CLASS` with `[268435488]`, `ZEND_ACC_ENUM | ZEND_ACC_FINAL`, and its backing type as its 5th child. A
+/// case is an `ENUM_CASE` of its name, its value, a null doc comment and its attributes, on the line of its name.
+#[test]
+fn a_backed_enum_is_a_final_enum_class_with_its_backing_type_cases_and_methods() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Label;\n\n[Label(\"Order status\")]\nenum Status : string\n{\n    case Active = \"active\";\n    [Label(\"Gone\")]\n    case Archived = \"archived\";\n\n    public string title()\n    {\n        return this.value;\n    }\n\n    public static Status parse(string value)\n    {\n        const all = Status.cases();\n        return Status.tryFrom(value) ?? Status.from(\"active\");\n    }\n}\n",
+    );
+    let case_lines: Vec<u32> = lowered
+        .nodes()
+        .iter()
+        .filter(|node| node.kind == sharp_kind::SHARP_AST_ENUM_CASE)
+        .map(|node| node.line)
+        .collect();
+
+    assert_eq!(case_lines, [8, 10]);
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              NAMESPACE
+                ZVAL "App\\Tenant"
+                null
+              CLASS [268435488] "Status" @6-22
+                null
+                null
+                STMT_LIST
+                  ENUM_CASE
+                    ZVAL "Active"
+                    ZVAL "active"
+                    null
+                    null
+                  ENUM_CASE
+                    ZVAL "Archived"
+                    ZVAL "archived"
+                    null
+                    ATTRIBUTE_LIST
+                      ATTRIBUTE_GROUP
+                        ATTRIBUTE
+                          ZVAL "Lib\\Label"
+                          ARG_LIST
+                            ZVAL "Gone"
+                  METHOD [1] "title" @12-15
+                    PARAM_LIST
+                    null
+                    STMT_LIST
+                      RETURN
+                        PROP
+                          VAR
+                            ZVAL "this"
+                          ZVAL "value"
+                    ZVAL [1] "string"
+                    null
+                  METHOD [17] "parse" @17-21
+                    PARAM_LIST
+                      PARAM
+                        ZVAL [1] "string"
+                        ZVAL "value"
+                        null
+                        null
+                        null
+                        null
+                    null
+                    STMT_LIST
+                      ASSIGN
+                        VAR
+                          ZVAL "all"
+                        STATIC_CALL
+                          ZVAL "App\\Tenant\\Status"
+                          ZVAL "cases"
+                          ARG_LIST
+                      RETURN
+                        COALESCE
+                          STATIC_CALL
+                            ZVAL "App\\Tenant\\Status"
+                            ZVAL "tryFrom"
+                            ARG_LIST
+                              VAR
+                                ZVAL "value"
+                          STATIC_CALL
+                            ZVAL "App\\Tenant\\Status"
+                            ZVAL "from"
+                            ARG_LIST
+                              ZVAL "active"
+                    ZVAL "App\\Tenant\\Status"
+                    null
+                ATTRIBUTE_LIST
+                  ATTRIBUTE_GROUP
+                    ATTRIBUTE
+                      ZVAL "Lib\\Label"
+                      ARG_LIST
+                        ZVAL "Order status"
+                ZVAL [1] "string"
+        "#}
+    );
+}
+
+/// ```php
+/// <?php declare(strict_types=1); enum Suit
+/// {
+///     case Hearts;
+///     case Spades;
+///
+///     public function label(): string { return $this->name; }
+///
+///     public static function size(): int { return \count(\Suit::cases()); }
+/// }
+/// ```
+///
+/// A pure enum has no backing type, and its cases have no value.
+#[test]
+fn a_pure_enum_is_a_final_enum_class_of_unit_cases_without_a_backing_type() {
+    let lowered = Lowered::new(
+        "enum Suit\n{\n    case Hearts;\n    case Spades;\n\n    public string label() => this.name;\n\n    public static int size() => count(Suit.cases());\n}\n",
+    );
+
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              CLASS [268435488] "Suit" @1-9
+                null
+                null
+                STMT_LIST
+                  ENUM_CASE
+                    ZVAL "Hearts"
+                    null
+                    null
+                    null
+                  ENUM_CASE
+                    ZVAL "Spades"
+                    null
+                    null
+                    null
+                  METHOD [1] "label" @6-6
+                    PARAM_LIST
+                    null
+                    STMT_LIST
+                      RETURN
+                        PROP
+                          VAR
+                            ZVAL "this"
+                          ZVAL "name"
+                    ZVAL [1] "string"
+                    null
+                  METHOD [17] "size" @8-8
+                    PARAM_LIST
+                    null
+                    STMT_LIST
+                      RETURN
+                        CALL
+                          ZVAL "count"
+                          ARG_LIST
+                            STATIC_CALL
+                              ZVAL "Suit"
+                              ZVAL "cases"
+                              ARG_LIST
+                    ZVAL [1] "int"
+                    null
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// <?php declare(strict_types=1); enum Rank: int
+/// {
+///     case Low = -1;
+///     case High = 2;
+/// }
+/// ```
+///
+/// An int-backed enum has `int` as its backing type, and a negative case value is the `UNARY_MINUS` of its literal, as
+/// php-src's grammar builds `-1`.
+#[test]
+fn an_int_backed_enum_is_a_final_enum_class_of_int_cases() {
+    let lowered = Lowered::new("enum Rank : int\n{\n    case Low = -1;\n    case High = 2;\n}\n");
+    let case_lines: Vec<u32> = lowered
+        .nodes()
+        .iter()
+        .filter(|node| node.kind == sharp_kind::SHARP_AST_ENUM_CASE)
+        .map(|node| node.line)
+        .collect();
+
+    assert_eq!(case_lines, [3, 4]);
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              CLASS [268435488] "Rank" @1-5
+                null
+                null
+                STMT_LIST
+                  ENUM_CASE
+                    ZVAL "Low"
+                    UNARY_MINUS
+                      ZVAL 1
+                    null
+                    null
+                  ENUM_CASE
+                    ZVAL "High"
+                    ZVAL 2
+                    null
+                    null
+                null
+                ZVAL [1] "int"
+        "#}
+    );
+}
+
 /// The child count `zend_ast_get_num_children` gives a fixed-size kind, or 5 for a declaration. `None` for a list.
 fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
     const IS_LIST: u32 = 1 << 7;

@@ -48,7 +48,7 @@ fn the_slice_fixture_has_no_semantic_issues() {
 
 #[test]
 fn every_construct_outside_the_slice_is_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\nenum Suit\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        switch (extra) {\n            default: return 1;\n        }\n        echo extra;\n        const made = new Report;\n        const arrow = fn() => 1;\n        const closure = function () { return 1; };\n        const partial = this.run(...);\n        const text = <<<TEXT\ntotal\nTEXT;\n        return extra;\n    }\n}\n";
+    let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\ntrait Named\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        switch (extra) {\n            default: return 1;\n        }\n        echo extra;\n        const made = new Report;\n        const arrow = fn() => 1;\n        const closure = function () { return 1; };\n        const partial = this.run(...);\n        const text = <<<TEXT\ntotal\nTEXT;\n        return extra;\n    }\n}\n";
 
     assert_eq!(
         issues(code),
@@ -1251,4 +1251,85 @@ fn a_spread_argument_is_not_supported_yet() {
     let code = leak(method("        const parts = this.parts();\n        return this.total(...parts);\n"));
 
     assert_eq!(issues(code), ["8:27 This spread argument is not supported yet in PHP#."]);
+}
+
+#[test]
+fn a_constant_implements_or_a_member_modifier_in_an_enum_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Shape;\n\nenum Status : string implements Shape\n{\n    const DEFAULT = \"a\";\n    case Active = \"a\";\n\n    final public string label()\n    {\n        return this.name;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:22 This `implements` clause is not supported yet in PHP#.",
+            "7:5 This class member is not supported yet in PHP#.",
+            "10:5 This modifier is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn a_property_in_an_enum_reports_only_the_php_error() {
+    let code = "namespace App.Tenant;\n\nenum Status\n{\n    case Active;\n\n    private int count = 0;\n}\n";
+
+    assert_eq!(issues(code), ["7:5 Enum `Status` cannot have properties."]);
+}
+
+#[test]
+fn a_backing_type_other_than_int_or_string_reports_only_the_php_error() {
+    let code = "namespace App.Tenant;\n\nenum Status : float\n{\n    case Active = 1.5;\n}\n";
+
+    assert_eq!(issues(code), ["3:15 Enum `Status` backing type must be either `string` or `int`, but found `float`."]);
+}
+
+#[test]
+fn an_enum_method_without_a_return_type_is_an_error() {
+    let code = "namespace App.Tenant;\n\nenum Status\n{\n    case Active;\n\n    public status() {}\n    public label() {}\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:12 An enum has no constructor: its cases are its only values.",
+            "8:12 A PHP# method needs a return type: only the constructor, named after its class, has none.",
+        ]
+    );
+}
+
+#[test]
+fn an_enum_case_named_class_is_an_error_as_in_php() {
+    let code = "namespace App.Tenant;\n\nenum Status\n{\n    case class;\n}\n\nenum Mode : string\n{\n    case CLASS = \"c\";\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:10 An enum case cannot be named `class`: PHP reserves `class` for the class name.",
+            "10:10 An enum case cannot be named `class`: PHP reserves `class` for the class name.",
+        ]
+    );
+}
+
+#[test]
+fn a_bare_case_name_in_an_enum_method_is_an_error_that_names_the_enum() {
+    let code = "namespace App.Tenant;\n\nenum Status\n{\n    case Active;\n\n    public bool active()\n    {\n        return this === Active && label() != \"\";\n    }\n\n    public string label() => this.name;\n\n    public static Status first() => Active;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "9:25 Write `Status.Active`: an enum case is reached through its enum's name.",
+            "9:35 Write `this.label()`: members of the same object are always written with `this.`.",
+            "14:37 Write `Status.Active`: an enum case is reached through its enum's name.",
+        ]
+    );
+}
+
+#[test]
+fn an_enum_named_like_a_reserved_class_name_or_an_import_is_an_error_as_a_class_is() {
+    let code = "namespace App.Tenant;\n\nimport App.Shared.Status;\n\nenum Status\n{\n    case Active;\n}\n\nenum Mixed\n{\n    case One;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "3:8 Cannot import `App.Shared.Status` as `Status`: this file declares a class named `Status`.",
+            "10:6 Cannot use `Mixed` as a class name: it is reserved.",
+        ]
+    );
 }
