@@ -122,7 +122,11 @@ impl Lowered {
                     sharp_value::SHARP_STRING => write!(tree, " {:?}", text(node.text)),
                 };
             }
-            sharp_kind::SHARP_AST_CLASS | sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_PROPERTY_HOOK => {
+            sharp_kind::SHARP_AST_CLASS
+            | sharp_kind::SHARP_AST_METHOD
+            | sharp_kind::SHARP_AST_PROPERTY_HOOK
+            | sharp_kind::SHARP_AST_CLOSURE
+            | sharp_kind::SHARP_AST_ARROW_FUNC => {
                 let _ = write!(tree, " {:?} @{}-{}", text(node.text), node.line, node.end_line);
             }
             _ => {}
@@ -968,6 +972,163 @@ fn a_nullable_type_is_its_type_with_the_nullable_flag() {
 }
 
 /// ```php
+/// public function group(array $items, ?array $sizes = ['a' => 1]): ?array { return null; }
+/// ```
+///
+/// A `List` or `Map` is a PHP array, so its type is `array`: a `TYPE` with `IS_ARRAY`, which is 7, as php-src's
+/// grammar builds it, and `[263]` adds `ZEND_TYPE_NULLABLE`.
+#[test]
+fn a_list_or_map_type_is_the_array_type() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public Map<string, List<int>>? group(List<int> items, Map<string, int>? sizes = [\"a\": 1]) { return null; }\n}\n",
+    );
+    let method = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a method");
+
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 0)),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                TYPE [7]
+                ZVAL "items"
+                null
+                null
+                null
+                null
+              PARAM
+                TYPE [263]
+                ZVAL "sizes"
+                ARRAY [3]
+                  ARRAY_ELEM
+                    ZVAL 1
+                    ZVAL "a"
+                null
+                null
+                null
+        "#}
+    );
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 3)),
+        indoc! {"
+            TYPE [263]
+        "}
+    );
+}
+
+/// ```php
+/// public function apply(\Closure $step, ?\Closure $other = null): \Closure { return $step; }
+/// ```
+///
+/// A function type runs as PHP's `\Closure`, so its type is the full name `Closure` with `ZEND_NAME_FQ`, which is 0.
+#[test]
+fn a_function_type_is_the_closure_class() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public Function<bool(int)> apply(Function<int(string, int)> step, Function<void()>? other = null) { return step; }\n}\n",
+    );
+    let method = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a method");
+
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 0)),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                ZVAL "Closure"
+                ZVAL "step"
+                null
+                null
+                null
+                null
+              PARAM
+                ZVAL [256] "Closure"
+                ZVAL "other"
+                ZVAL null
+                null
+                null
+                null
+        "#}
+    );
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 3)),
+        indoc! {r#"
+            ZVAL "Closure"
+        "#}
+    );
+}
+
+/// ```php
+/// $numbers = [1, $extra];
+/// $named = ['a' => 1, 2 => $numbers[0]];
+/// $empty = [];
+/// $numbers[0] = $named['a'];
+/// $this->sizes['a'] += 1;
+/// return $numbers[1];
+/// ```
+///
+/// A list or map literal is an `ARRAY` with `ZEND_ARRAY_SYNTAX_SHORT`, which is 3, of `ARRAY_ELEM`s that take the value
+/// before the key. An index is a `DIM` of the value and the key, read or written as its place in the tree decides.
+#[test]
+fn literals_are_short_arrays_and_an_index_is_a_dim() {
+    assert_eq!(
+        body(
+            "        List<int> numbers = [1, extra];\n        const named = [\"a\": 1, 2: numbers[0]];\n        const empty = [:];\n        numbers[0] = named[\"a\"];\n        this.sizes[\"a\"] += 1;\n        return numbers[1];\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "numbers"
+                ARRAY [3]
+                  ARRAY_ELEM
+                    ZVAL 1
+                    null
+                  ARRAY_ELEM
+                    VAR
+                      ZVAL "extra"
+                    null
+              ASSIGN
+                VAR
+                  ZVAL "named"
+                ARRAY [3]
+                  ARRAY_ELEM
+                    ZVAL 1
+                    ZVAL "a"
+                  ARRAY_ELEM
+                    DIM
+                      VAR
+                        ZVAL "numbers"
+                      ZVAL 0
+                    ZVAL 2
+              ASSIGN
+                VAR
+                  ZVAL "empty"
+                ARRAY [3]
+              ASSIGN
+                DIM
+                  VAR
+                    ZVAL "numbers"
+                  ZVAL 0
+                DIM
+                  VAR
+                    ZVAL "named"
+                  ZVAL "a"
+              ASSIGN_OP [1]
+                DIM
+                  PROP
+                    VAR
+                      ZVAL "this"
+                    ZVAL "sizes"
+                  ZVAL "a"
+                ZVAL 1
+              RETURN
+                DIM
+                  VAR
+                    ZVAL "numbers"
+                  ZVAL 1
+        "#}
+    );
+}
+
+/// ```php
 /// public function run(): void
 /// {
 ///     return;
@@ -1115,6 +1276,414 @@ fn new_creates_the_imported_class_by_its_full_name() {
                     NAMED_ARG
                       ZVAL "rate"
                       ZVAL 2
+        "#}
+    );
+}
+
+/// PHP has no class visibility, so a `public` class is the same class.
+#[test]
+fn a_public_class_is_a_class() {
+    let public = Lowered::new("namespace App.Tenant;\n\npublic class Report\n{\n}\n");
+    let internal = Lowered::new("namespace App.Tenant;\n\nclass Report\n{\n}\n");
+
+    assert_eq!(public.tree(), internal.tree());
+}
+
+/// ```php
+/// abstract class Shape { abstract public function area(): float; }
+/// final class Unit { }
+/// interface Measured { public function label(int $digits): string; }
+/// ```
+///
+/// `[64]` is `ZEND_ACC_EXPLICIT_ABSTRACT_CLASS` on the class and `ZEND_ACC_ABSTRACT` on the method, `[32]`
+/// `ZEND_ACC_FINAL`, `[1]` `ZEND_ACC_INTERFACE` on the interface, and an interface method is `ZEND_ACC_PUBLIC`, `[1]`,
+/// as php-src's grammar writes it. An abstract method has no statement list.
+#[test]
+fn abstract_and_final_classes_and_interfaces_are_class_declarations_with_their_flags() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nabstract class Shape\n{\n    public abstract float area();\n}\n\nfinal class Unit\n{\n}\n\ninterface Measured\n{\n    string label(int digits);\n}\n",
+    );
+
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              NAMESPACE
+                ZVAL "App\\Tenant"
+                null
+              CLASS [64] "Shape" @3-6
+                null
+                null
+                STMT_LIST
+                  METHOD [65] "area" @5-5
+                    PARAM_LIST
+                    null
+                    null
+                    ZVAL [1] "float"
+                    null
+                null
+                null
+              CLASS [32] "Unit" @8-10
+                null
+                null
+                STMT_LIST
+                null
+                null
+              CLASS [1] "Measured" @12-15
+                null
+                null
+                STMT_LIST
+                  METHOD [1] "label" @14-14
+                    PARAM_LIST
+                      PARAM
+                        ZVAL [1] "int"
+                        ZVAL "digits"
+                        null
+                        null
+                        null
+                        null
+                    null
+                    null
+                    ZVAL [1] "string"
+                    null
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// interface Linkable extends \Lib\Named { }
+/// class Page implements \Lib\Entity, \App\Tenant\Linkable { }
+/// ```
+///
+/// The header names are a name list in the interface list, with `ZEND_NAME_FQ`, which is 0. A class's header can
+/// hold its parent class, which only `zend_do_link_class` can tell from the interfaces, so the class carries
+/// php-sharp's `ZEND_ACC_PARENT_IN_INTERFACES`, `[2147483648]`, `1 << 31`. An interface's header holds only
+/// interfaces, as PHP's `extends` list does.
+#[test]
+fn a_header_is_the_interface_name_list_and_marks_a_class_to_find_its_parent_there() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Entity;\nimport Lib.Named;\n\ninterface Linkable : Named\n{\n}\n\nclass Page : Entity, Linkable\n{\n}\n",
+    );
+
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              NAMESPACE
+                ZVAL "App\\Tenant"
+                null
+              CLASS [1] "Linkable" @6-8
+                null
+                NAME_LIST
+                  ZVAL "Lib\\Named"
+                STMT_LIST
+                null
+                null
+              CLASS [2147483648] "Page" @10-12
+                null
+                NAME_LIST
+                  ZVAL "Lib\\Entity"
+                  ZVAL "App\\Tenant\\Linkable"
+                STMT_LIST
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// public function size(): int { return 1; }
+/// #[\Override] public function name(): string { return 'thumbnail'; }
+/// ```
+///
+/// `virtual` lowers to nothing, because PHP methods are open to overriding, and `override` lowers to `#[\Override]`,
+/// so PHP checks at link time that a parent method exists. Its attribute group follows the method's own.
+#[test]
+fn virtual_lowers_to_nothing_and_override_to_the_override_attribute() {
+    let lowered = Lowered::new(
+        "class Thumbnail : Image\n{\n    public virtual int size()\n    {\n        return 1;\n    }\n\n    [Deprecated]\n    public override string name()\n    {\n        return \"thumbnail\";\n    }\n}\n",
+    );
+
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              CLASS [2147483648] "Thumbnail" @1-13
+                null
+                NAME_LIST
+                  ZVAL "Image"
+                STMT_LIST
+                  METHOD [1] "size" @3-6
+                    PARAM_LIST
+                    null
+                    STMT_LIST
+                      RETURN
+                        ZVAL 1
+                    ZVAL [1] "int"
+                    null
+                  METHOD [1] "name" @9-12
+                    PARAM_LIST
+                    null
+                    STMT_LIST
+                      RETURN
+                        ZVAL "thumbnail"
+                    ZVAL [1] "string"
+                    ATTRIBUTE_LIST
+                      ATTRIBUTE_GROUP
+                        ATTRIBUTE
+                          ZVAL "Deprecated"
+                          null
+                      ATTRIBUTE_GROUP
+                        ATTRIBUTE
+                          ZVAL "Override"
+                          null
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// return parent::size(2);
+/// ```
+///
+/// `super` is `parent`, a name php-src writes with `ZEND_NAME_NOT_FQ`, which is 1, so the call is a static call that
+/// runs on the parent class.
+#[test]
+fn super_calls_are_static_calls_on_parent() {
+    assert_eq!(
+        body("        return super.size(2);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                STATIC_CALL
+                  ZVAL [1] "parent"
+                  ZVAL "size"
+                  ARG_LIST
+                    ZVAL 2
+        "#}
+    );
+}
+
+/// ```php
+/// return \Lib\Calc::class;
+/// ```
+///
+/// The class is its full name with `ZEND_NAME_FQ`, which is 0.
+#[test]
+fn typeof_is_the_class_name_of_the_imported_class() {
+    assert_eq!(
+        body("        return typeof(Calc);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CLASS_NAME
+                  ZVAL "Lib\\Calc"
+        "#}
+    );
+}
+
+/// ```php
+/// #[\Lib\Access(\Lib\Calc::class, role: \App\Tenant\Report::class)]
+/// class Report
+/// ```
+///
+/// `typeof(X)` in an attribute argument is the class name, which PHP takes as a constant expression.
+#[test]
+fn typeof_in_an_attribute_argument_is_the_class_name() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Access;\nimport Lib.Calc;\n\n[Access(typeof(Calc), role: typeof(Report))]\nclass Report\n{\n}\n",
+    );
+
+    assert_eq!(
+        lowered.render(lowered.child(lowered.child(lowered.unit().root, 2), 3)),
+        indoc! {r#"
+            ATTRIBUTE_LIST
+              ATTRIBUTE_GROUP
+                ATTRIBUTE
+                  ZVAL "Lib\\Access"
+                  ARG_LIST
+                    CLASS_NAME
+                      ZVAL "Lib\\Calc"
+                    NAMED_ARG
+                      ZVAL "role"
+                      CLASS_NAME
+                        ZVAL "App\\Tenant\\Report"
+        "#}
+    );
+}
+
+/// ```php
+/// public const int MAX = 3;
+/// protected const LIMIT = PHP_INT_MAX - 1;
+/// ```
+///
+/// A constant is a class constant group of one constant, as php-src's grammar builds it: the constant list, no
+/// attributes, then the type. `[1]` and `[2]` on the groups are `ZEND_ACC_PUBLIC` and `ZEND_ACC_PROTECTED`.
+#[test]
+fn a_class_constant_is_a_class_constant_group_of_one_constant() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public const int MAX = 3;\n    protected const LIMIT = PHP_INT_MAX - 1;\n}\n",
+    );
+    let class = lowered.child(lowered.unit().root, 2);
+
+    assert_eq!(
+        lowered.render(lowered.child(class, 2)),
+        indoc! {r#"
+            STMT_LIST
+              CLASS_CONST_GROUP [1]
+                CLASS_CONST_DECL
+                  CONST_ELEM
+                    ZVAL "MAX"
+                    ZVAL 3
+                    null
+                null
+                ZVAL [1] "int"
+              CLASS_CONST_GROUP [2]
+                CLASS_CONST_DECL
+                  CONST_ELEM
+                    ZVAL "LIMIT"
+                    BINARY_OP [2]
+                      CONST
+                        ZVAL [1] "PHP_INT_MAX"
+                      ZVAL 1
+                    null
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// private static int $made = 0;
+/// public private(set) static string $last = "none";
+/// ```
+///
+/// A static member's initial value is constant, so it is the default. `[20]` is `ZEND_ACC_PRIVATE | ZEND_ACC_STATIC`,
+/// and `[4113]` is `ZEND_ACC_PUBLIC | ZEND_ACC_STATIC | ZEND_ACC_PRIVATE_SET`.
+#[test]
+fn a_static_field_or_property_is_a_static_property_group() {
+    let lowered = Lowered::new(
+        "class Report\n{\n    private static int made = 0;\n    public static string last { get; private set; } = \"none\";\n}\n",
+    );
+    let groups: Vec<(u32, String)> = lowered
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.kind == sharp_kind::SHARP_AST_PROP_GROUP)
+        .map(|(index, node)| (node.attr, lowered.render(lowered.child(index as u32, 1))))
+        .collect();
+
+    assert_eq!(
+        groups,
+        [
+            (20, "PROP_DECL\n  PROP_ELEM\n    ZVAL \"made\"\n    ZVAL 0\n    null\n    null\n".to_owned()),
+            (4113, "PROP_DECL\n  PROP_ELEM\n    ZVAL \"last\"\n    ZVAL \"none\"\n    null\n    null\n".to_owned()),
+        ]
+    );
+}
+
+/// ```php
+/// \Lib\Calc::$rate = 2;
+/// \Lib\Calc::$count++;
+/// \Lib\Calc::$rate ??= 1;
+/// ```
+///
+/// A static member written through its class is a static property, as php-src's grammar builds `Class::$name`. The
+/// class is its full name with `ZEND_NAME_FQ`, which is 0.
+#[test]
+fn a_static_member_written_through_its_class_is_a_static_property() {
+    assert_eq!(
+        body("        Calc.rate = 2;\n        Calc.count++;\n        Calc.rate ??= 1;\n        return 1;\n"),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                STATIC_PROP
+                  ZVAL "Lib\\Calc"
+                  ZVAL "rate"
+                ZVAL 2
+              POST_INC
+                STATIC_PROP
+                  ZVAL "Lib\\Calc"
+                  ZVAL "count"
+              ASSIGN_COALESCE
+                STATIC_PROP
+                  ZVAL "Lib\\Calc"
+                  ZVAL "rate"
+                ZVAL 1
+              RETURN
+                ZVAL 1
+        "#}
+    );
+}
+
+/// ```php
+/// #[\Lib\Field(\Lib\Mode::Write)] public const int MAX = \Lib\Calc::MAX;
+/// private \Lib\Mode $mode = \Lib\Mode::Read;
+/// public function run(\Lib\Mode $extra = \Lib\Mode::Read)
+/// ```
+///
+/// PHP evaluates a constant expression without the static property fallback, so a class member read in a constant's
+/// value, a constant initial value, a parameter default and an attribute argument is an unmarked class constant.
+#[test]
+fn a_class_member_read_in_a_constant_expression_is_an_unmarked_class_constant() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\nimport Lib.Field;\nimport Lib.Mode;\n\nclass Report\n{\n    public const int MAX = Calc.MAX;\n    private Mode mode = Mode.Read;\n\n    [Field(Mode.Write)]\n    public int run(Mode extra = Mode.Read)\n    {\n        return 1;\n    }\n}\n",
+    );
+
+    let class_constants = lowered
+        .nodes()
+        .iter()
+        .filter(|node| node.kind == sharp_kind::SHARP_AST_CLASS_CONST)
+        .map(|node| node.attr)
+        .collect::<Vec<_>>();
+
+    assert_eq!(lowered.diagnostics(), Vec::<String>::new());
+    assert_eq!(class_constants, [0, 0, 0, 0]);
+}
+
+/// ```php
+/// return \Lib\Calc::rate->cents;
+/// ```
+///
+/// A class member read is a class constant fetch that the engine falls back from to the static property of the same
+/// name, as spec section 4 decides. `[32768]` is php-sharp's `ZEND_FETCH_CLASS_MEMBER_SYNTAX`, `1 << 15`, which marks
+/// the fallback above the fetch flags a constant expression passes in the same attr.
+#[test]
+fn a_class_member_read_is_a_class_constant_marked_to_fall_back_to_the_static_property() {
+    assert_eq!(
+        body("        return Calc.rate.cents;\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                PROP
+                  CLASS_CONST [32768]
+                    ZVAL "Lib\\Calc"
+                    ZVAL "rate"
+                  ZVAL "cents"
         "#}
     );
 }
@@ -1557,6 +2126,40 @@ fn null_safe_calls_and_reads_are_nullsafe_kinds() {
                           ZVAL "extra"
                     ZVAL "value"
                   ZVAL "cents"
+        "#}
+    );
+}
+
+/// ```php
+/// return ($extra[0] ?? null)?->value ?? ($extra[1] ?? null)?->total();
+/// ```
+///
+/// `?.` reads a missing key as null, as `??` does, so the index it reads from is the left side of a `COALESCE`.
+#[test]
+fn null_safe_access_on_an_index_coalesces_a_missing_key_to_null() {
+    assert_eq!(
+        body("        return extra[0]?.value ?? (extra[1])?.total();\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                COALESCE
+                  NULLSAFE_PROP
+                    COALESCE
+                      DIM
+                        VAR
+                          ZVAL "extra"
+                        ZVAL 0
+                      ZVAL null
+                    ZVAL "value"
+                  NULLSAFE_METHOD_CALL
+                    COALESCE
+                      DIM
+                        VAR
+                          ZVAL "extra"
+                        ZVAL 1
+                      ZVAL null
+                    ZVAL "total"
+                    ARG_LIST
         "#}
     );
 }
@@ -2044,6 +2647,229 @@ fn a_template_is_an_encaps_list_of_its_text_and_interpolations() {
                   ZVAL "extra"
         "#}
     );
+}
+
+/// ```php
+/// $twice = fn (int $a) => $a * $extra; $half = fn ($b) => $b / 2; return $twice($half(4));
+/// ```
+///
+/// A lambda that writes none of the locals it captures is PHP's `fn`, which captures by value what its body reads.
+/// php-src's grammar gives an arrow function no name, no `use` list and its expression as its body. A call of a local
+/// calls the closure the local holds.
+#[test]
+fn a_lambda_that_writes_no_capture_is_an_arrow_function() {
+    assert_eq!(
+        body(
+            "        const twice = (int a) => a * extra;\n        const half = b => b / 2;\n        return twice(half(4));\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "twice"
+                ARROW_FUNC "" @9-9
+                  PARAM_LIST
+                    PARAM
+                      ZVAL [1] "int"
+                      ZVAL "a"
+                      null
+                      null
+                      null
+                      null
+                  null
+                  BINARY_OP [3]
+                    VAR
+                      ZVAL "a"
+                    VAR
+                      ZVAL "extra"
+                  null
+                  null
+              ASSIGN
+                VAR
+                  ZVAL "half"
+                ARROW_FUNC "" @10-10
+                  PARAM_LIST
+                    PARAM
+                      null
+                      ZVAL "b"
+                      null
+                      null
+                      null
+                      null
+                  null
+                  BINARY_OP [4]
+                    VAR
+                      ZVAL "b"
+                    ZVAL 2
+                  null
+                  null
+              RETURN
+                CALL
+                  VAR
+                    ZVAL "twice"
+                  ARG_LIST
+                    CALL
+                      VAR
+                        ZVAL "half"
+                      ARG_LIST
+                        ZVAL 4
+        "#}
+    );
+}
+
+/// ```php
+/// $count = 0;
+/// $add = function (int $step) use (&$count, $extra) {
+///     $count += $step + $extra;
+/// };
+/// $bump = function () use (&$count) { return $count += 1; };
+/// $add(1);
+/// return $count;
+/// ```
+///
+/// Spec section 3: a lambda captures the variable itself. A lambda with a block body, or one that writes a local it
+/// captures, is PHP's `function` with a `use` list in first-use order, which captures a local that code writes by
+/// reference, `ZEND_BIND_REF`, which is 1, and any other by value. An expression body is the `return` of it.
+#[test]
+fn a_lambda_with_a_block_or_a_written_capture_is_a_closure_with_a_use_list() {
+    assert_eq!(
+        body(
+            "        let count = 0;\n        const add = (int step) => {\n            count += step + extra;\n        };\n        const bump = () => count += 1;\n        add(1);\n        return count;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "count"
+                ZVAL 0
+              ASSIGN
+                VAR
+                  ZVAL "add"
+                CLOSURE "" @10-12
+                  PARAM_LIST
+                    PARAM
+                      ZVAL [1] "int"
+                      ZVAL "step"
+                      null
+                      null
+                      null
+                      null
+                  CLOSURE_USES
+                    ZVAL [1] "count"
+                    ZVAL "extra"
+                  STMT_LIST
+                    ASSIGN_OP [1]
+                      VAR
+                        ZVAL "count"
+                      BINARY_OP [1]
+                        VAR
+                          ZVAL "step"
+                        VAR
+                          ZVAL "extra"
+                  null
+                  null
+              ASSIGN
+                VAR
+                  ZVAL "bump"
+                CLOSURE "" @13-13
+                  PARAM_LIST
+                  CLOSURE_USES
+                    ZVAL [1] "count"
+                  STMT_LIST
+                    RETURN
+                      ASSIGN_OP [1]
+                        VAR
+                          ZVAL "count"
+                        ZVAL 1
+                  null
+                  null
+              CALL
+                VAR
+                  ZVAL "add"
+                ARG_LIST
+                  ZVAL 1
+              RETURN
+                VAR
+                  ZVAL "count"
+        "#}
+    );
+}
+
+/// ```php
+/// while ($extra > 0) {
+///     { unset($seen); $seen = $extra; }
+///     $mark = function () use (&$seen) { $seen += 1; };
+///     $mark();
+///     $extra -= 1;
+/// }
+/// return $extra;
+/// ```
+///
+/// Spec section 3 gives each loop pass its own `let`. PHP reuses one variable across passes, so a `let` declared in a
+/// loop body that a lambda captures by reference is unset before its assignment, and the lambda of each pass keeps
+/// its own. php-src's grammar builds `unset($seen);` as a statement list of one `UNSET`.
+#[test]
+fn a_let_in_a_loop_captured_by_reference_is_unset_before_its_assignment() {
+    assert_eq!(
+        body(
+            "        while (extra > 0) {\n            let seen = extra;\n            const mark = () => {\n                seen += 1;\n            };\n            mark();\n            extra -= 1;\n        }\n        return extra;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              WHILE
+                GREATER
+                  VAR
+                    ZVAL "extra"
+                  ZVAL 0
+                STMT_LIST
+                  STMT_LIST
+                    STMT_LIST
+                      UNSET
+                        VAR
+                          ZVAL "seen"
+                    ASSIGN
+                      VAR
+                        ZVAL "seen"
+                      VAR
+                        ZVAL "extra"
+                  ASSIGN
+                    VAR
+                      ZVAL "mark"
+                    CLOSURE "" @11-13
+                      PARAM_LIST
+                      CLOSURE_USES
+                        ZVAL [1] "seen"
+                      STMT_LIST
+                        ASSIGN_OP [1]
+                          VAR
+                            ZVAL "seen"
+                          ZVAL 1
+                      null
+                      null
+                  CALL
+                    VAR
+                      ZVAL "mark"
+                    ARG_LIST
+                  ASSIGN_OP [2]
+                    VAR
+                      ZVAL "extra"
+                    ZVAL 1
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
+/// A `let` the lambda declares in its own body lives in each call's own frame, so it is never unset, even when the
+/// lambda sits in a loop.
+#[test]
+fn a_let_declared_inside_a_lambda_in_a_loop_is_not_unset() {
+    let tree = body(
+        "        while (extra > 0) {\n            const step = () => {\n                let inner = 1;\n                const again = () => {\n                    inner += 1;\n                };\n                again();\n            };\n            step();\n            extra -= 1;\n        }\n        return extra;\n",
+    );
+
+    assert!(!tree.contains("UNSET"), "{tree}");
 }
 
 /// php-src takes a list's line from its first child, and each piece of text's from where it starts.

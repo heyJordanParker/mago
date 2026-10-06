@@ -10,16 +10,30 @@ use crate::cst::cst::variable::DirectVariable;
 use crate::cst::sequence::Sequence;
 use crate::cst::sequence::TokenSeparatedSequence;
 
+/// Represents a closure in PHP.
+///
+/// ```php
+/// <?php
+///
+/// $increment = function () use (&$count) { $count += 1; };
+/// ```
+///
+/// A PHP# lambda with a block body has no `function` and no `use` clause, and an arrow before its block:
+///
+/// ```csharp
+/// const increment = () => { count += 1; };
+/// ```
 #[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Closure<'arena> {
     pub attribute_lists: Sequence<'arena, AttributeList<'arena>>,
     pub r#static: Option<Keyword<'arena>>,
-    pub function: Keyword<'arena>,
+    pub function: Option<Keyword<'arena>>,
     pub ampersand: Option<Span>,
     pub parameter_list: FunctionLikeParameterList<'arena>,
     pub use_clause: Option<ClosureUseClause<'arena>>,
     pub return_type_hint: Option<FunctionLikeReturnTypeHint<'arena>>,
+    pub arrow: Option<Span>,
     pub body: Block<'arena>,
 }
 
@@ -49,7 +63,11 @@ impl HasSpan for Closure<'_> {
             return r#static.span().join(self.body.span());
         }
 
-        self.function.span.join(self.body.span())
+        if let Some(function) = &self.function {
+            return function.span.join(self.body.span());
+        }
+
+        self.parameter_list.span().join(self.body.span())
     }
 }
 

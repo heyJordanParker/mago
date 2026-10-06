@@ -5,6 +5,7 @@ use crate::cst::cst::argument::PartialArgumentList;
 use crate::cst::cst::attribute::AttributeList;
 use crate::cst::cst::class_like::inheritance::Extends;
 use crate::cst::cst::class_like::inheritance::Implements;
+use crate::cst::cst::class_like::inheritance::Inheritance;
 use crate::cst::cst::class_like::member::ClassLikeMember;
 use crate::cst::cst::identifier::LocalIdentifier;
 use crate::cst::cst::keyword::Keyword;
@@ -33,9 +34,13 @@ pub mod trait_use;
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Interface<'arena> {
     pub attribute_lists: Sequence<'arena, AttributeList<'arena>>,
+    /// PHP#'s `public`, as in `public interface Foo {}`. Always empty in PHP.
+    pub modifiers: Sequence<'arena, Modifier<'arena>>,
     pub interface: Keyword<'arena>,
     pub name: LocalIdentifier<'arena>,
     pub extends: Option<Extends<'arena>>,
+    /// PHP#'s `: Interface` header. Always `None` in PHP.
+    pub inheritance: Option<Inheritance<'arena>>,
     pub left_brace: Span,
     pub members: Sequence<'arena, ClassLikeMember<'arena>>,
     pub right_brace: Span,
@@ -64,6 +69,8 @@ pub struct Class<'arena> {
     pub name: LocalIdentifier<'arena>,
     pub extends: Option<Extends<'arena>>,
     pub implements: Option<Implements<'arena>>,
+    /// PHP#'s `: Base, Interface` header. Always `None` in PHP.
+    pub inheritance: Option<Inheritance<'arena>>,
     pub left_brace: Span,
     pub members: Sequence<'arena, ClassLikeMember<'arena>>,
     pub right_brace: Span,
@@ -115,6 +122,8 @@ pub struct AnonymousClass<'arena> {
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Trait<'arena> {
     pub attribute_lists: Sequence<'arena, AttributeList<'arena>>,
+    /// PHP#'s `public`, as in `public trait Foo {}`. Always empty in PHP.
+    pub modifiers: Sequence<'arena, Modifier<'arena>>,
     pub r#trait: Keyword<'arena>,
     pub name: LocalIdentifier<'arena>,
     pub left_brace: Span,
@@ -140,6 +149,8 @@ pub struct Trait<'arena> {
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Enum<'arena> {
     pub attribute_lists: Sequence<'arena, AttributeList<'arena>>,
+    /// PHP#'s `public`, as in `public enum Foo {}`. Always empty in PHP.
+    pub modifiers: Sequence<'arena, Modifier<'arena>>,
     pub r#enum: Keyword<'arena>,
     pub name: LocalIdentifier<'arena>,
     pub backing_type_hint: Option<EnumBackingTypeHint<'arena>>,
@@ -181,6 +192,10 @@ impl HasSpan for Interface<'_> {
             return attribute_list.span().join(self.right_brace);
         }
 
+        if let Some(modifier) = self.modifiers.first() {
+            return modifier.span().join(self.right_brace);
+        }
+
         self.interface.span().join(self.right_brace)
     }
 }
@@ -211,6 +226,10 @@ impl HasSpan for Trait<'_> {
             return attribute_list.span().join(self.right_brace);
         }
 
+        if let Some(modifier) = self.modifiers.first() {
+            return modifier.span().join(self.right_brace);
+        }
+
         self.r#trait.span().join(self.right_brace)
     }
 }
@@ -219,6 +238,10 @@ impl HasSpan for Enum<'_> {
     fn span(&self) -> Span {
         if let Some(attribute_list) = self.attribute_lists.first() {
             return attribute_list.span().join(self.right_brace);
+        }
+
+        if let Some(modifier) = self.modifiers.first() {
+            return modifier.span().join(self.right_brace);
         }
 
         self.r#enum.span().join(self.right_brace)

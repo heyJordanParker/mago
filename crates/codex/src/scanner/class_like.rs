@@ -19,6 +19,7 @@ use mago_syntax::cst::EnumBackingTypeHint;
 use mago_syntax::cst::Extends;
 use mago_syntax::cst::Hint;
 use mago_syntax::cst::Implements;
+use mago_syntax::cst::Inheritance;
 use mago_syntax::cst::Interface;
 use mago_syntax::cst::Modifier;
 use mago_syntax::cst::ModifierSequenceExt;
@@ -112,6 +113,7 @@ where
         class.extends.as_ref(),
         class.implements.as_ref(),
         None,
+        None,
         context,
         scope,
     )?;
@@ -143,6 +145,7 @@ where
         &class.members,
         class.extends.as_ref(),
         class.implements.as_ref(),
+        class.inheritance.as_ref(),
         None,
         context,
         scope,
@@ -175,6 +178,7 @@ where
         &interface.members,
         interface.extends.as_ref(),
         None,
+        interface.inheritance.as_ref(),
         None,
         context,
         scope,
@@ -205,6 +209,7 @@ where
         &r#trait.attribute_lists,
         None,
         &r#trait.members,
+        None,
         None,
         None,
         None,
@@ -239,6 +244,7 @@ where
         &r#enum.members,
         None,
         r#enum.implements.as_ref(),
+        None,
         r#enum.backing_type_hint.as_ref(),
         context,
         scope,
@@ -285,6 +291,7 @@ fn scan_class_like<'arena, A>(
     members: &'arena Sequence<ClassLikeMember<'arena>>,
     extends: Option<&'arena Extends<'arena>>,
     implements: Option<&'arena Implements<'arena>>,
+    inheritance: Option<&'arena Inheritance<'arena>>,
     enum_type: Option<&'arena EnumBackingTypeHint<'arena>>,
     context: &Context<'_, 'arena, A>,
     scope: &mut NamespaceScope,
@@ -301,7 +308,8 @@ where
 
     let verdict = evaluate_version_attributes(attribute_lists, context, context.php_version);
 
-    let flags = MetadataFlags::origin_flags(context.file.file_type);
+    let mut flags = MetadataFlags::origin_flags(context.file.file_type);
+    flags.set(MetadataFlags::SHARP, context.program.dialect.is_sharp());
 
     let mut class_like_metadata = ClassLikeMetadata::new(name, original_name, span, name_span, flags);
     class_like_metadata.version_constraint = verdict.constraint;
@@ -394,6 +402,15 @@ where
             let interface_name = ascii_lowercase_word(interface_name);
 
             class_like_metadata.add_direct_parent_interface(interface_name);
+        }
+    }
+
+    // A PHP# header, `: Base, IFace`, lists a class's base among its interfaces. PHP links the one class there as
+    // the parent, and so does the populator.
+    if let Some(inheritance) = inheritance {
+        for type_name in &inheritance.types {
+            class_like_metadata
+                .add_direct_parent_interface(ascii_lowercase_word(context.resolved_names.get(type_name)));
         }
     }
 

@@ -70,7 +70,7 @@ impl<'arena> FunctionLikeParts<'arena> {
             attribute_lists: &closure.attribute_lists,
             modifiers: None,
             static_keyword: closure.r#static.as_ref(),
-            fn_or_function: Some(&closure.function),
+            fn_or_function: closure.function.as_ref(),
             ampersand: closure.ampersand,
             name: None,
             parameter_list: &closure.parameter_list,

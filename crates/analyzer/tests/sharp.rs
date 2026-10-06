@@ -24,9 +24,11 @@ use mago_codex::populator::populate_codebase;
 use mago_codex::scanner::scan_program;
 use mago_database::DatabaseReader;
 use mago_database::file::File;
+use mago_names::CHANGING_COLLECTION_METHODS;
 use mago_names::resolver::NameResolver;
 use mago_prelude::Prelude;
 use mago_reporting::Issue;
+use mago_reporting::Level;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::Call;
@@ -155,6 +157,36 @@ fn the_analyzer_reads_the_dialect_from_the_program_not_the_file_name() {
     assert!(result.issues.iter().any(|issue| issue.code.as_deref() == Some("invalid-operand")), "{:#?}", result.issues);
 }
 
+/// The binder records a call of a changing collection method as a write to its local, so a lambda captures that
+/// local by reference. It knows the methods only by name, so its list must name every collection method without
+/// `@mutation-free`, which changes the collection.
+#[test]
+fn the_binder_knows_every_changing_collection_method() {
+    for class in ["Sharp\\ListMethods", "Sharp\\MapMethods"] {
+        let metadata =
+            PRELUDE.metadata.get_class_like(class.as_bytes()).expect("the collection stub is in the prelude");
+        let mut changing: Vec<&str> = metadata
+            .methods
+            .iter()
+            .filter(|method| {
+                !PRELUDE
+                    .metadata
+                    .get_method(class.as_bytes(), method.as_bytes())
+                    .expect("a method")
+                    .flags
+                    .is_mutation_free()
+            })
+            .map(|method| std::str::from_utf8(method.as_bytes()).expect("an ASCII name"))
+            .collect();
+        changing.sort_unstable();
+        assert!(!changing.is_empty(), "{class} has no changing method, so the stub was not read");
+
+        let known: Vec<&str> =
+            changing.iter().copied().filter(|method| CHANGING_COLLECTION_METHODS.contains(method)).collect();
+        assert_eq!(known, changing, "{class} changes the collection in a method CHANGING_COLLECTION_METHODS lacks");
+    }
+}
+
 /// The issue codes alone, in order.
 fn codes(issues: &[String]) -> Vec<&str> {
     issues.iter().map(|issue| issue.split_once(' ').map_or("", |(_, code)| code)).collect()
@@ -277,23 +309,54 @@ fn sharp_arguments_follow_strict_conversion_rules() {
     assert_eq!(php_issues, ["12:29 invalid-argument"]);
 }
 
+/// Spec section 14.3: a method named without parentheses is a function value, typed as PHP types `$calc->add(...)`.
 #[test]
-fn a_method_used_as_a_value_is_not_supported_yet() {
-    let sharp = "namespace Demo;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public int total()\n    {\n        const calc = Calc.make();\n        const add = calc.add;\n        return this.total;\n    }\n}\n";
+fn a_method_named_without_a_call_is_a_closure_of_its_signature() {
+    let sharp = "namespace Demo;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public int total()\n    {\n        const calc = Calc.make();\n        Function<int(int, int)> add = calc.add;\n        const Function<int()> again = this.total;\n        return add(1, 2) + again() + calc.add(\"x\", 1) + add(\"y\", 2);\n    }\n\n    private int hidden() => 1;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Calc;\n\nclass Report\n{\n    public function total(): int\n    {\n        $calc = Calc::make();\n        $add = $calc->add(...);\n        $again = $this->total(...);\n        return $add(1, 2) + $again() + $calc->add(\"x\", 1) + $add(\"y\", 2);\n    }\n\n    private function hidden(): int { return 1; }\n}\n";
+    let others = [("src/Lib/Calc.php", CALC)];
 
-    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Calc.php", CALC)]);
+    assert_eq!(
+        codes(&issues(("src/Demo/Report.php", php), &others)),
+        ["invalid-argument", "invalid-argument", "unused-method"]
+    );
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &others),
+        ["12:47 invalid-argument", "12:61 invalid-argument", "15:17 unused-method"]
+    );
+}
 
-    assert!(sharp_issues.contains(&"10:26 not-supported-yet".to_string()), "{sharp_issues:?}");
-    assert!(sharp_issues.contains(&"11:21 not-supported-yet".to_string()), "{sharp_issues:?}");
-    assert!(!sharp_issues.iter().any(|issue| issue.ends_with("non-existent-property")), "{sharp_issues:?}");
+/// `Class.name` with no constant, enum case or static property of that name is the static method as a value, typed as
+/// PHP types `Calc::make(...)`. An instance method read through its class stays an error.
+#[test]
+fn a_static_method_named_through_its_class_without_a_call_is_a_closure_of_its_signature() {
+    let sharp = "namespace Demo;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public int total()\n    {\n        const Function<Calc()> make = Calc.make;\n        const Function<int(int)> twice = Report.twice;\n        return make().add(twice(1), 2) + twice(\"x\") + Calc.add;\n    }\n\n    private static int twice(int n) => n * 2;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Calc;\n\nclass Report\n{\n    public function total(): int\n    {\n        $make = Calc::make(...);\n        $twice = Report::twice(...);\n        return $make()->add($twice(1), 2) + $twice(\"x\") + Calc::$add;\n    }\n\n    private static function twice(int $n): int { return $n * 2; }\n}\n";
+    let others = [("src/Lib/Calc.php", CALC)];
 
-    let helps: Vec<_> =
-        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Calc.php", CALC)])
-            .into_iter()
-            .filter(|issue| issue.code.as_deref() == Some("not-supported-yet"))
-            .filter_map(|issue| issue.help)
-            .collect();
-    assert_eq!(helps, ["Call the method: `calc.add()`.", "Call the method: `this.total()`."]);
+    let php_issues = issues(("src/Demo/Report.php", php), &others);
+    assert_eq!(
+        codes(&php_issues),
+        ["invalid-argument", "non-existent-property", "null-operand", "mixed-return-statement"],
+        "{php_issues:?}"
+    );
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &others);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{sharp_issues:?}");
+    assert_eq!(&sharp_issues[..2], ["11:48 invalid-argument", "11:60 non-existent-property"]);
+}
+
+/// A method read as a value obeys the method's visibility, as `$order->secret(...)` does in PHP.
+#[test]
+fn a_private_method_read_as_a_value_from_outside_its_class_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public Function<int()> run(Order order) => order.secret;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public function run(Order $order): \\Closure { return $order->secret(...); }\n}\n";
+    let order = "<?php\n\nnamespace Demo;\n\nfinal class Order\n{\n    public function __construct() { $this->secret(); }\n\n    private function secret(): int { return 1; }\n}\n";
+    let others = [("src/Demo/Order.php", order)];
+
+    let php_codes =
+        codes(&issues(("src/Demo/Report.php", php), &others)).into_iter().map(str::to_owned).collect::<Vec<_>>();
+    assert_eq!(codes(&issues(("src/Demo/Report.sharp", sharp), &others)), php_codes);
+    assert!(php_codes.iter().any(|code| code.contains("method")), "{php_codes:?}");
 }
 
 #[test]
@@ -427,13 +490,10 @@ fn null_safe_access_gives_a_nullable_value_as_in_php() {
 }
 
 #[test]
-fn a_method_used_as_a_value_through_null_safe_access_is_not_supported_yet() {
-    let sharp = "namespace Demo;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public static void total(Calc? calc)\n    {\n        const add = calc?.add;\n    }\n}\n";
+fn a_method_read_through_null_safe_access_is_a_closure_or_null() {
+    let sharp = "namespace Demo;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public static int total(Calc? calc)\n    {\n        Function<int(int, int)>? add = calc?.add;\n        const Function<int(int, int)> call = add ?? ((a, b) => 0);\n        return call(1, 2);\n    }\n}\n";
 
-    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Calc.php", CALC)]);
-
-    assert!(sharp_issues.contains(&"9:27 not-supported-yet".to_string()), "{sharp_issues:?}");
-    assert!(!sharp_issues.iter().any(|issue| issue.ends_with("non-existent-property")), "{sharp_issues:?}");
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Calc.php", CALC)]), Vec::<String>::new());
 }
 
 #[test]
@@ -645,6 +705,215 @@ fn a_get_only_property_is_readonly_and_set_once_in_the_constructor() {
     );
 }
 
+#[test]
+fn typeof_is_the_class_name_as_in_php() {
+    let registry = "<?php\n\nnamespace Lib;\n\nfinal class Registry\n{\n    /** @param class-string<Calc> $class */\n    public static function keep(string $class): string\n    {\n        return $class;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Calc;\nimport Lib.Registry;\n\nclass Report\n{\n    public static string total()\n    {\n        Registry.keep(typeof(Report));\n        Registry.keep(typeof(Missing));\n        return Registry.keep(typeof(Calc));\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Calc;\nuse Lib\\Registry;\n\nclass Report\n{\n    public static function total(): string\n    {\n        Registry::keep(Report::class);\n        Registry::keep(Missing::class);\n        return Registry::keep(Calc::class);\n    }\n}\n";
+    let others = [("src/Lib/Calc.php", CALC), ("src/Lib/Registry.php", registry)];
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &others);
+    let php_issues = issues(("src/Demo/Report.php", php), &others);
+
+    assert_eq!(sharp_issues, ["10:23 invalid-argument", "11:30 non-existent-class-like", "11:23 invalid-argument"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+/// A static member written through its class name is checked as PHP checks `Class::$name`.
+#[test]
+fn a_static_member_write_is_checked_as_in_php() {
+    let sharp = "namespace Demo;\n\nclass Counter\n{\n    public const int START = 10;\n    private static int count = 0;\n    public static string last { get; private set; } = \"none\";\n\n    public static void touch()\n    {\n        Counter.count = 5;\n        Counter.count++;\n        Counter.count += 2;\n        Counter.last ??= \"never\";\n        Counter.count = \"many\";\n        Counter.missing = 1;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Counter\n{\n    public const int START = 10;\n    private static int $count = 0;\n    public private(set) static string $last = \"none\";\n\n    public static function touch(): void\n    {\n        Counter::$count = 5;\n        Counter::$count++;\n        Counter::$count += 2;\n        Counter::$last ??= \"never\";\n        Counter::$count = \"many\";\n        Counter::$missing = 1;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Counter.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Counter.php", php), &[]);
+
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{sharp_issues:?} {php_issues:?}");
+    assert_eq!(php_issues.len(), 3, "{php_issues:?}");
+}
+
+/// `Class.y` reads a constant or an enum case when the class has one by that name, and the static property otherwise,
+/// so each read is checked as the PHP twin's `::` read of that member.
+#[test]
+fn a_class_member_read_is_checked_as_its_constant_enum_case_or_static_property_in_php() {
+    let registry = "<?php\n\nnamespace Lib;\n\nenum Order: string\n{\n    case Ascending = 'asc';\n}\n\nfinal class Registry\n{\n    public const int VERSION = 2;\n    public static string $label = 'registry';\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Order;\nimport Lib.Registry;\n\nclass Members\n{\n    public static int version()\n    {\n        return Registry.VERSION;\n    }\n\n    public static Order order()\n    {\n        return Order.Ascending;\n    }\n\n    public static int label()\n    {\n        return Registry.label;\n    }\n\n    public static int missing()\n    {\n        return Registry.missing;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Order;\nuse Lib\\Registry;\n\nclass Members\n{\n    public static function version(): int\n    {\n        return Registry::VERSION;\n    }\n\n    public static function order(): Order\n    {\n        return Order::Ascending;\n    }\n\n    public static function label(): int\n    {\n        return Registry::$label;\n    }\n\n    public static function missing(): int\n    {\n        return Registry::$missing;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Members.sharp", sharp), &[("src/Lib/Registry.php", registry)]);
+    let php_issues = issues(("src/Demo/Members.php", php), &[("src/Lib/Registry.php", registry)]);
+
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{sharp_issues:?} {php_issues:?}");
+    assert_eq!(
+        sharp_issues,
+        ["20:16 invalid-return-statement", "25:25 non-existent-property", "25:16 invalid-return-statement"]
+    );
+}
+
+/// A constant expression reads `Class.y` as the class constant or enum case, as PHP's `Class::y`: a parameter default,
+/// a constant's value and a constant initial value check as their PHP twins, and a static property there is a
+/// constant the class does not have.
+#[test]
+fn a_class_member_read_in_a_constant_expression_is_checked_as_a_class_constant() {
+    let registry = "<?php\n\nnamespace Lib;\n\nenum Order: string\n{\n    case Ascending = 'asc';\n}\n\nfinal class Registry\n{\n    public const int VERSION = 2;\n    public static string $label = 'registry';\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Order;\nimport Lib.Registry;\n\nclass Members\n{\n    public const int NEXT = Registry.VERSION + 1;\n    public const string LABEL = Registry.label;\n    private Order sort = Order.Ascending;\n\n    public string run(Order order = Order.Ascending, int version = Registry.VERSION)\n    {\n        return this.sort.value;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Order;\nuse Lib\\Registry;\n\nclass Members\n{\n    public const int NEXT = Registry::VERSION + 1;\n    public const string LABEL = Registry::label;\n    private Order $sort = Order::Ascending;\n\n    public function run(Order $order = Order::Ascending, int $version = Registry::VERSION): string\n    {\n        return $this->sort->value;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Members.sharp", sharp), &[("src/Lib/Registry.php", registry)]);
+    let php_issues = issues(("src/Demo/Members.php", php), &[("src/Lib/Registry.php", registry)]);
+
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{sharp_issues:?} {php_issues:?}");
+    assert_eq!(sharp_issues, ["9:42 non-existent-class-constant"]);
+}
+
+/// A PHP class extends a PHP# abstract class and implements a PHP# interface, whose method has no access modifier
+/// and is public, as their PHP twins are.
+#[test]
+fn abstract_and_final_classes_and_interfaces_are_checked_as_in_php() {
+    let square = "<?php\n\nnamespace Demo;\n\nfinal class Square extends Shape implements Measured\n{\n    public function area(): float\n    {\n        return 4.0;\n    }\n\n    protected function name(): string\n    {\n        return 'square';\n    }\n}\n\nfunction measure(Measured $shape): float\n{\n    return $shape->area() + (new Square())->area();\n}\n";
+    let sharp = "namespace Demo;\n\nabstract class Shape\n{\n    public abstract float area();\n\n    protected abstract string name();\n}\n\nfinal class Unit\n{\n}\n\ninterface Measured\n{\n    float area();\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nabstract class Shape\n{\n    abstract public function area(): float;\n\n    abstract protected function name(): string;\n}\n\nfinal class Unit\n{\n}\n\ninterface Measured\n{\n    public function area(): float;\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Square.php", square), &[("src/Demo/Shape.sharp", sharp)]);
+    let php_issues = issues(("src/Demo/Square.php", square), &[("src/Demo/Shape.php", php)]);
+
+    assert_eq!(sharp_issues, php_issues);
+    assert_eq!(issues(("src/Demo/Shape.sharp", sharp), &[]), issues(("src/Demo/Shape.php", php), &[]));
+}
+
+/// A header names a PHP base class and a PHP interface, so the class calls the base's methods and passes where the
+/// interface is expected. `super.size()` calls the PHP# base's method, as `parent::size()` does in PHP.
+#[test]
+fn a_header_names_the_base_class_and_the_interfaces_as_in_php() {
+    let library = "<?php\n\nnamespace Lib;\n\ninterface Named\n{\n    public function name(): string;\n}\n\nabstract class Entity\n{\n    public function id(): int\n    {\n        return 7;\n    }\n}\n\nfinal class Shelf\n{\n    public static function show(Named $named, Entity $entity): string\n    {\n        return $named->name() . $entity->id();\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Entity;\nimport Lib.Named;\nimport Lib.Shelf;\n\npublic class Page : Entity, Named\n{\n    public string name()\n    {\n        return \"page\";\n    }\n\n    public int number()\n    {\n        return this.id();\n    }\n\n    public string shown()\n    {\n        return Shelf.show(this, this);\n    }\n}\n\npublic class Image\n{\n    public virtual int size()\n    {\n        return 10;\n    }\n}\n\npublic class Thumbnail : Image\n{\n    public override int size()\n    {\n        return super.size() + 1;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Entity;\nuse Lib\\Named;\nuse Lib\\Shelf;\n\nclass Page extends Entity implements Named\n{\n    public function name(): string\n    {\n        return \"page\";\n    }\n\n    public function number(): int\n    {\n        return $this->id();\n    }\n\n    public function shown(): string\n    {\n        return Shelf::show($this, $this);\n    }\n}\n\nclass Image\n{\n    public function size(): int\n    {\n        return 10;\n    }\n}\n\nclass Thumbnail extends Image\n{\n    #[\\Override]\n    public function size(): int\n    {\n        return parent::size() + 1;\n    }\n}\n";
+    let others = [("src/Lib/Entity.php", library)];
+
+    assert_eq!(issues(("src/Demo/Page.php", php), &others), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Page.sharp", sharp), &others), Vec::<String>::new());
+}
+
+/// A header with two classes, a trait, a missing name, a final class or an interface whose method the class lacks
+/// reports what its PHP twin's `extends` and `implements` report.
+#[test]
+fn a_header_reports_what_extends_and_implements_report_in_php() {
+    let library = "<?php\n\nnamespace Lib;\n\ninterface Named\n{\n    public function name(): string;\n}\n\nclass Entity\n{\n}\n\nclass Other\n{\n}\n\ntrait Mixin\n{\n}\n\nfinal class Sealed\n{\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Entity;\nimport Lib.Mixin;\nimport Lib.Named;\nimport Lib.Other;\nimport Lib.Sealed;\n\npublic class Twice : Entity, Other\n{\n}\n\npublic class Blend : Mixin\n{\n}\n\npublic class Lost : Missing\n{\n}\n\npublic class Closed : Sealed\n{\n}\n\npublic class Partial : Named\n{\n}\n\npublic interface Wide : Entity\n{\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Entity;\nuse Lib\\Mixin;\nuse Lib\\Named;\nuse Lib\\Other;\nuse Lib\\Sealed;\n\nclass Twice extends Entity implements Other\n{\n}\n\nclass Blend implements Mixin\n{\n}\n\nclass Lost implements Missing\n{\n}\n\nclass Closed extends Sealed\n{\n}\n\nclass Partial implements Named\n{\n}\n\ninterface Wide extends Entity\n{\n}\n";
+    let others = [("src/Lib/Named.php", library)];
+
+    let sharp_issues = issues(("src/Demo/Twice.sharp", sharp), &others);
+    let php_issues = issues(("src/Demo/Twice.php", php), &others);
+
+    assert_eq!(
+        codes(&php_issues),
+        [
+            "invalid-implement",
+            "invalid-implement",
+            "non-existent-class-like",
+            "extend-final-class",
+            "unimplemented-abstract-method",
+            "invalid-extend"
+        ]
+    );
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+/// A method is closed unless it is `virtual`, and `override` is required to replace one, spec section 22. So PHP#
+/// reports what PHP reports for a `final` method and a missing or stray `#[\Override]`, without the
+/// `check-missing-override` setting. Implementing an interface method takes no `override`.
+#[test]
+fn virtual_and_override_are_checked_as_final_and_the_override_attribute_in_php() {
+    let library = "<?php\n\nnamespace Lib;\n\ninterface Named\n{\n    public function name(): string;\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Named;\n\npublic class Base\n{\n    public virtual int size()\n    {\n        return 1;\n    }\n\n    public string label()\n    {\n        return \"base\";\n    }\n\n    public virtual int depth()\n    {\n        return 0;\n    }\n}\n\npublic class Child : Base, Named\n{\n    public int size()\n    {\n        return 2;\n    }\n\n    public override string label()\n    {\n        return \"child\";\n    }\n\n    public override int width()\n    {\n        return 3;\n    }\n\n    public final override int depth()\n    {\n        return 1;\n    }\n\n    public string name()\n    {\n        return \"child\";\n    }\n}\n\npublic class GrandChild : Child\n{\n    public override int depth()\n    {\n        return 2;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Named;\n\nclass Base\n{\n    public function size(): int\n    {\n        return 1;\n    }\n\n    final public function label(): string\n    {\n        return \"base\";\n    }\n\n    public function depth(): int\n    {\n        return 0;\n    }\n}\n\nclass Child extends Base implements Named\n{\n    public function size(): int\n    {\n        return 2;\n    }\n\n    #[\\Override]\n    public function label(): string\n    {\n        return \"child\";\n    }\n\n    #[\\Override]\n    public function width(): int\n    {\n        return 3;\n    }\n\n    #[\\Override]\n    final public function depth(): int\n    {\n        return 1;\n    }\n\n    #[\\Override]\n    public function name(): string\n    {\n        return \"child\";\n    }\n}\n\nclass GrandChild extends Child\n{\n    #[\\Override]\n    public function depth(): int\n    {\n        return 2;\n    }\n}\n";
+    let others = [("src/Lib/Named.php", library)];
+
+    let sharp_issues = issues(("src/Demo/Base.sharp", sharp), &others);
+    let php_issues =
+        issues_with(Settings { check_missing_override: true, ..settings() }, ("src/Demo/Base.php", php), &others);
+
+    assert_eq!(
+        codes(&php_issues),
+        ["override-final-method", "missing-override-attribute", "invalid-override-attribute", "override-final-method"],
+        "{php_issues:?}"
+    );
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{sharp_issues:?}");
+
+    let missing = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Base.sharp", sharp), &others).remove(1);
+    assert_eq!(missing.message, "Missing `override` modifier on overriding method `Demo\\Child::size`.");
+}
+
+/// Every PHP# field has a type, so a field cannot replace an untyped PHP property yet: PHP refuses the added type.
+#[test]
+fn a_field_that_replaces_an_untyped_php_property_is_not_supported_yet() {
+    let library = "<?php\n\nnamespace Lib;\n\nclass Entity\n{\n    protected $label = 'entity';\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Entity;\n\npublic class Post : Entity\n{\n    protected string label = \"post\";\n}\n";
+
+    let issues =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Post.sharp", sharp), &[("src/Lib/Entity.php", library)]);
+
+    assert_eq!(
+        issues.iter().map(|issue| issue.code.as_deref().unwrap_or("none")).collect::<Vec<_>>(),
+        ["not-supported-yet"]
+    );
+    assert_eq!(
+        issues[0].message,
+        "A field that replaces the untyped PHP property `Lib\\Entity::$label` is not supported yet."
+    );
+}
+
+/// A PHP class that implements a class reports it, and keeps the metadata upstream Mago builds: only a PHP# header
+/// links its class as the parent.
+#[test]
+fn a_php_class_that_implements_a_class_is_still_an_error() {
+    let php = "<?php\n\nnamespace Demo;\n\nclass Entity\n{\n    public function id(): int\n    {\n        return 7;\n    }\n}\n\nclass Page implements Entity\n{\n    public function number(): int\n    {\n        return parent::id();\n    }\n}\n";
+
+    assert_eq!(
+        codes(&issues(("src/Demo/Page.php", php), &[])),
+        ["invalid-implement", "invalid-parent-type", "mixed-return-statement"]
+    );
+}
+
+/// A plain PHP method is open unless PHP marks it `final`, and replacing one needs `override`, spec section 22. So
+/// PHP# reports what PHP reports for its `#[\Override]` twin: a missing `override`, `override` with no parent method,
+/// replacing a `final` method, and, as errors, renamed parameters.
+#[test]
+fn replacing_a_php_method_follows_php_rules_with_override_required() {
+    let library = "<?php\n\nnamespace Lib;\n\nabstract class Report\n{\n    abstract protected function render(): string;\n\n    public function title(): string\n    {\n        return 'Report';\n    }\n\n    final public function id(): string\n    {\n        return 'report';\n    }\n\n    public function resize(int $width, int $height): void\n    {\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Report;\n\npublic class SalesReport : Report\n{\n    protected override string render()\n    {\n        return \"sales\";\n    }\n\n    public override string title()\n    {\n        return \"Sales\";\n    }\n}\n\npublic class PlainReport : Report\n{\n    protected override string render()\n    {\n        return \"plain\";\n    }\n\n    public string title()\n    {\n        return \"Plain\";\n    }\n}\n\npublic class FinalReport : Report\n{\n    protected override string render()\n    {\n        return \"final\";\n    }\n\n    public override string id()\n    {\n        return \"final\";\n    }\n}\n\npublic class StrayReport : Report\n{\n    protected override string render()\n    {\n        return \"stray\";\n    }\n\n    public override string footer()\n    {\n        return \"\";\n    }\n}\n\npublic class RenamedReport : Report\n{\n    protected override string render()\n    {\n        return \"renamed\";\n    }\n\n    public override void resize(int w, int h)\n    {\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Report;\n\nclass SalesReport extends Report\n{\n    #[\\Override]\n    protected function render(): string\n    {\n        return \"sales\";\n    }\n\n    #[\\Override]\n    public function title(): string\n    {\n        return \"Sales\";\n    }\n}\n\nclass PlainReport extends Report\n{\n    #[\\Override]\n    protected function render(): string\n    {\n        return \"plain\";\n    }\n\n    public function title(): string\n    {\n        return \"Plain\";\n    }\n}\n\nclass FinalReport extends Report\n{\n    #[\\Override]\n    protected function render(): string\n    {\n        return \"final\";\n    }\n\n    #[\\Override]\n    public function id(): string\n    {\n        return \"final\";\n    }\n}\n\nclass StrayReport extends Report\n{\n    #[\\Override]\n    protected function render(): string\n    {\n        return \"stray\";\n    }\n\n    #[\\Override]\n    public function footer(): string\n    {\n        return \"\";\n    }\n}\n\nclass RenamedReport extends Report\n{\n    #[\\Override]\n    protected function render(): string\n    {\n        return \"renamed\";\n    }\n\n    #[\\Override]\n    public function resize(int $w, int $h): void\n    {\n    }\n}\n";
+    let others = [("src/Lib/Report.php", library)];
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &others);
+    let php_issues =
+        issues_with(Settings { check_missing_override: true, ..settings() }, ("src/Demo/Report.php", php), &others);
+
+    assert_eq!(
+        codes(&php_issues),
+        [
+            "missing-override-attribute",
+            "override-final-method",
+            "invalid-override-attribute",
+            "incompatible-parameter-name",
+            "incompatible-parameter-name"
+        ],
+        "{php_issues:?}"
+    );
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{sharp_issues:?}");
+
+    let renamed: Vec<_> = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &others)
+        .into_iter()
+        .filter(|issue| issue.code.as_deref() == Some("incompatible-parameter-name"))
+        .collect();
+    assert!(renamed.iter().all(|issue| issue.level == Level::Error), "{renamed:?}");
+    assert_eq!(
+        renamed[0].message,
+        "Parameter #1 of `Demo\\RenamedReport::resize()` is named `w` but parent `Lib\\Report::resize()` names it `width`"
+    );
+}
+
 /// A parse error reports its spot once, so returning what failed to parse adds no `never-return`, in PHP# and PHP.
 #[test]
 fn returning_a_value_that_failed_to_parse_adds_no_issue() {
@@ -653,6 +922,33 @@ fn returning_a_value_that_failed_to_parse_adds_no_issue() {
 
     assert_eq!(issues(("src/Demo/make.php", php), &[]), ["7:12 parse"]);
     assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), ["7:20 parse"]);
+}
+
+/// `super` names the base class, so a class whose header names only interfaces has none, as `parent::` in a PHP
+/// class without `extends` has none.
+#[test]
+fn super_in_a_class_without_a_base_class_is_an_error_as_in_php() {
+    let sharp = "namespace Demo;\n\npublic interface Named\n{\n    string name();\n}\n\npublic class Tag : Named\n{\n    public string name()\n    {\n        return super.name();\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\ninterface Named\n{\n    public function name(): string;\n}\n\nclass Tag implements Named\n{\n    public function name(): string\n    {\n        return parent::name();\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Tag.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Tag.php", php), &[]);
+
+    assert_eq!(codes(&php_issues), ["invalid-parent-type", "mixed-return-statement"], "{php_issues:?}");
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{sharp_issues:?}");
+
+    let invalid = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Tag.sharp", sharp), &[]).remove(0);
+    assert_eq!(invalid.level, Level::Error);
+    assert_eq!(invalid.message, "Cannot use `super` as the current type (`Demo\\Tag`) does not have a parent class.");
+}
+
+/// The checker refuses a member of `typeof(X)` once, so the analyzer adds no issue on the refused read, its chain, or
+/// the value it gives.
+#[test]
+fn reading_a_member_of_typeof_adds_no_issue() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public string label()\n    {\n        return typeof(Report).name;\n    }\n\n    public string first()\n    {\n        return typeof(Report).name.first;\n    }\n\n    public string called()\n    {\n        return typeof(Report).name();\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
 }
 
 #[test]
@@ -1012,6 +1308,105 @@ fn static_call_hooks_see_a_sharp_static_call_as_its_parts_as_in_php() {
 }
 
 #[test]
+fn a_lambda_reads_and_writes_the_locals_around_it_as_its_php_closure_does() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public int run(int extra)\n    {\n        let count = 0;\n        const add = (int a, int b) => a + b + extra;\n        const increment = () => { count += 1; };\n        increment();\n        return add(count, 1);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public function run(int $extra): int\n    {\n        $count = 0;\n        $add = fn (int $a, int $b) => $a + $b + $extra;\n        $increment = function () use (&$count) { $count += 1; };\n        $increment();\n        return $add($count, 1);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn a_lambda_called_with_a_wrong_argument_or_returning_a_wrong_type_is_an_error_as_in_php() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public int run(int extra)\n    {\n        const twice = (int a) => a * 2;\n        const label = () => \"none\";\n        twice(\"x\");\n        return label();\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public function run(int $extra): int\n    {\n        $twice = fn (int $a) => $a * 2;\n        $label = fn () => \"none\";\n        $twice(\"x\");\n        return $label();\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+
+    assert_eq!(sharp_issues, ["9:15 invalid-argument", "10:16 invalid-return-statement"]);
+    assert_eq!(codes(&sharp_issues), codes(&issues(("src/Demo/Report.php", php), &[])));
+}
+
+#[test]
+fn a_lambda_passed_to_php_takes_its_parameter_types_from_the_php_signature_as_in_php() {
+    let numbers = "<?php\n\nnamespace Lib;\n\nfinal class Numbers\n{\n    /**\n     * @param \\Closure(int): bool $keep\n     */\n    public static function count(\\Closure $keep): int\n    {\n        return $keep(1) ? 1 : 0;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Numbers;\n\nclass Report\n{\n    public int run(int extra)\n    {\n        return Numbers.count(n => n > extra) + Numbers.count((string s) => s == \"\");\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Numbers;\n\nclass Report\n{\n    public function run(int $extra): int\n    {\n        return Numbers::count(fn ($n) => $n > $extra) + Numbers::count(fn (string $s) => $s == \"\");\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Numbers.php", numbers)]);
+
+    assert_eq!(sharp_issues, ["9:62 invalid-argument"]);
+    assert_eq!(codes(&sharp_issues), codes(&issues(("src/Demo/Report.php", php), &[("src/Lib/Numbers.php", numbers)])));
+}
+
+#[test]
+fn a_function_type_is_a_closure_type_that_takes_lambdas_and_calls_as_in_php() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    private Function<int(int)> scale;\n\n    public Report(int factor)\n    {\n        this.scale = n => n * factor;\n    }\n\n    public Function<bool(int)> above(int floor) => n => n > floor;\n\n    public int run(int extra)\n    {\n        const scale = this.scale;\n        const check = this.above(extra);\n        Function<int(int)> twice = n => n * 2;\n        return check(twice(scale(extra))) ? 1 : 0;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    /** @var \\Closure(int): int */\n    private \\Closure $scale;\n\n    public function __construct(int $factor)\n    {\n        $this->scale = fn (int $n) => $n * $factor;\n    }\n\n    /** @return \\Closure(int): bool */\n    public function above(int $floor): \\Closure { return fn (int $n) => $n > $floor; }\n\n    public function run(int $extra): int\n    {\n        $scale = $this->scale;\n        $check = $this->above($extra);\n        $twice = fn (int $n) => $n * 2;\n        return $check($twice($scale($extra))) ? 1 : 0;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn a_function_type_refuses_a_lambda_of_another_type_and_a_string_or_array_callable() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int apply(Function<int(int)> step, int value) => step(value);\n\n    public static int run(int extra)\n    {\n        Report.apply((string s) => 1, extra);\n        Report.apply(n => \"text\", extra);\n        Report.apply(\"abs\", extra);\n        return Report.apply([\"Demo\\\\Report\", \"run\"], extra);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[]),
+        ["9:22 invalid-argument", "10:22 invalid-argument", "11:22 invalid-argument", "12:29 invalid-argument"]
+    );
+}
+
+/// Spec section 12's methods that take a function give each lambda the element type, and type what they return from
+/// it: `filter` and `sortedBy` keep the element type, `map` and `sumOf` take the lambda's return type, `groupBy` and
+/// `associateBy` key a map by it, and `filterValues` keeps a map's keys.
+#[test]
+fn collection_methods_that_take_a_lambda_type_its_parameter_and_their_result() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public int run(List<int> numbers, Map<string, int> prices)\n    {\n        List<int> evens = numbers.filter(n => n % 2 == 0);\n        List<string> labels = numbers.map(n => `#${n}`);\n        int total = evens.sumOf(n => n * 2);\n        List<string> sorted = labels.sortedBy(s => strlen(s));\n        Map<int, List<int>> groups = numbers.groupBy(n => n % 3);\n        Map<string, string> byLabel = labels.associateBy(s => s);\n        Map<string, int> cheap = prices.filterValues(p => p < 100);\n        List<int> kept = prices.filter(p => p > 0);\n        List<float> halves = prices.map(p => p / 2);\n        int first = numbers.first(n => n > 2);\n        bool expensive = prices.any(p => p > 1000);\n        return total + first + count(sorted) + count(groups) + count(byLabel) + count(cheap) + count(kept) + count(halves) + (expensive ? 1 : 0);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// A method value passed to a collection method types what it returns, as a lambda does.
+#[test]
+fn a_method_value_passed_to_a_collection_method_types_its_result() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public List<string> run(List<int> numbers)\n    {\n        List<string> labels = numbers.map(this.label);\n        List<int> wrong = numbers.map(this.label);\n        return labels;\n    }\n\n    private string label(int n) => (string) n;\n}\n";
+
+    assert_eq!(codes(&issues(("src/Demo/Report.sharp", sharp), &[])), ["invalid-local-assignment-value"]);
+}
+
+/// A lambda passed to a collection method is checked against the element type, as any argument is.
+#[test]
+fn a_collection_method_refuses_a_lambda_of_another_element_type() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public int run(List<int> numbers)\n    {\n        List<int> kept = numbers.filter((string s) => s == \"\");\n        List<string> labels = numbers.map(n => n * 2);\n        return count(kept) + count(labels);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[]),
+        ["7:41 invalid-argument", "8:31 invalid-local-assignment-value"]
+    );
+}
+
+/// Spec section 14 calls a property that holds a function as a method: `x.priceOf(line)` calls the property when the
+/// class has a property `priceOf` and no method `priceOf`, on `this`, on another object and on an inherited
+/// property, and checks the call against the property's function type as `($x->priceOf)($line)` is checked in PHP.
+#[test]
+fn a_call_of_a_property_holding_a_function_is_checked_against_its_function_type() {
+    let pricing = "<?php\n\nnamespace Lib;\n\nabstract class BasePricing\n{\n    /** @var \\Closure(int): int */\n    public \\Closure $priceOf;\n}\n\nfinal class Pricing extends BasePricing\n{\n    public function __construct()\n    {\n        $this->priceOf = fn (int $amount): int => $amount * 2;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Pricing;\n\nclass Report\n{\n    private Function<int(int)> scale;\n\n    public Report(int factor)\n    {\n        this.scale = n => n * factor;\n    }\n\n    public int run(Pricing pricing, int extra) => this.scale(extra) + pricing.priceOf(extra);\n\n    public int wrong(Pricing pricing) => this.scale(\"x\") + strlen(pricing.priceOf(1));\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Pricing;\n\nclass Report\n{\n    /** @var \\Closure(int): int */\n    private \\Closure $scale;\n\n    public function __construct(int $factor)\n    {\n        $this->scale = fn (int $n) => $n * $factor;\n    }\n\n    public function run(Pricing $pricing, int $extra): int { return ($this->scale)($extra) + ($pricing->priceOf)($extra); }\n\n    public function wrong(Pricing $pricing): int { return ($this->scale)(\"x\") + strlen(($pricing->priceOf)(1)); }\n}\n";
+    let others = [("src/Lib/Pricing.php", pricing)];
+
+    let codes = |issues: Vec<String>| -> Vec<String> {
+        issues.into_iter().map(|issue| issue.split_once(' ').unwrap().1.to_owned()).collect()
+    };
+    let php_issues = codes(issues(("src/Demo/Report.php", php), &others));
+
+    assert_eq!(php_issues, ["invalid-argument", "invalid-argument"]);
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &others), ["16:53 invalid-argument", "16:67 invalid-argument"]);
+}
+
+#[test]
 fn attribute_arguments_are_checked_against_the_attribute_constructor_as_in_php() {
     let field = "<?php\n\nnamespace Lib;\n\n#[\\Attribute]\nfinal class Field\n{\n    public function __construct(public string $label, public int $width = 1)\n    {\n    }\n}\n";
     let sharp = "namespace Demo;\n\nimport Lib.Field;\n\n[Field(\"Report\")]\nclass Report\n{\n    [Field(label: 3)] private int count = 0;\n\n    [Field(\"run\", width: \"wide\")]\n    public int run([Field(width: 2)] int extra, [Field(\"page\", 2, 3)] int page)\n    {\n        return extra + page + this.count;\n    }\n}\n";
@@ -1025,4 +1420,198 @@ fn attribute_arguments_are_checked_against_the_attribute_constructor_as_in_php()
         ["8:19 invalid-argument", "10:26 invalid-argument", "11:26 too-few-arguments", "11:67 too-many-arguments"]
     );
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+const TOTALS: &str = "<?php\n\nnamespace Lib;\n\nfinal class Totals\n{\n    /** @param list<int> $values */\n    public static function sum(array $values): int\n    {\n        return array_sum($values);\n    }\n\n    /** @return list<int> */\n    public static function sizes(): array\n    {\n        return [1, 2];\n    }\n}\n";
+
+#[test]
+fn lists_and_maps_type_their_literals_indexes_and_loops_as_php_arrays() {
+    let sharp = "namespace Demo;\n\nimport Lib.Totals;\n\nclass Order\n{\n    public List<Line> lines { get; private set; } = [];\n    private Map<string, int> counts = [:];\n\n    public int total(List<Line> extra)\n    {\n        List<Line> all = [new Line(1), extra[0]];\n        this.lines = all;\n        this.counts[\"lines\"] = count(this.lines);\n        const named = [\"a\": 1, \"b\": 2];\n        let sum = (named[\"a\"] ?? 0) + Totals.sum(Totals.sizes()) + all[1].cents;\n        for (const line of all) {\n            sum += line.cents;\n        }\n        for (const [name, size] of this.counts) {\n            if (name == \"lines\") {\n                sum += size;\n            }\n        }\n        for (const line of this.lines) {\n            sum += line.cents;\n        }\n        if (in_array(2, Totals.sizes(), true)) {\n            sum += 1;\n        }\n        return sum + (this.counts[\"lines\"] ?? 0);\n    }\n}\n\nclass Line\n{\n    public Line(public int cents { get; })\n    {\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Order.sharp", sharp), &[("src/Lib/Totals.php", TOTALS)]), Vec::<String>::new());
+}
+
+#[test]
+fn a_wrong_element_type_is_reported_where_it_enters_the_collection() {
+    let sharp = "namespace Demo;\n\nimport Lib.Totals;\n\nclass Order\n{\n    public List<Line> lines { get; private set; } = [];\n    private Map<string, int> counts = [:];\n\n    public List<int> wrong(List<Line> extra)\n    {\n        List<Line> all = [1];\n        Map<string, int> sizes = [\"a\": \"one\"];\n        this.counts[\"lines\"] = \"many\";\n        this.lines = [2];\n        Totals.sum(extra);\n        return extra;\n    }\n}\n\nclass Line\n{\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Order.sharp", sharp), &[("src/Lib/Totals.php", TOTALS)]),
+        [
+            "12:26 invalid-local-assignment-value",
+            "13:34 invalid-local-assignment-value",
+            "14:9 invalid-property-assignment-value",
+            "15:22 invalid-property-assignment-value",
+            "16:20 invalid-argument",
+            "17:16 invalid-return-statement",
+        ]
+    );
+}
+
+/// Spec section 12 writes a change to a collection in a property back through the property's `set`, so code that
+/// cannot reach the `set` cannot change the collection, as PHP refuses the same write when it runs.
+#[test]
+fn an_index_write_to_a_property_needs_its_set() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public Map<int, int> lines { get; private set; } = [:];\n    public Map<string, int> codes { get; }\n\n    public Order()\n    {\n        this.codes = [:];\n    }\n\n    public void change(Order other)\n    {\n        this.lines[0] = 1;\n        other.lines[0] = 1;\n        this.codes[\"a\"] = 1;\n    }\n}\n\nclass Shop\n{\n    public void change(Order order)\n    {\n        order.lines[0] = 1;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    public private(set) array $lines = [];\n    public readonly array $codes;\n\n    public function __construct()\n    {\n        $this->codes = [];\n    }\n\n    public function change(Order $other): void\n    {\n        $this->lines[0] = 1;\n        $other->lines[0] = 1;\n        $this->codes['a'] = 1;\n    }\n}\n\nclass Shop\n{\n    public function change(Order $order): void\n    {\n        $order->lines[0] = 1;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Order.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Order.php", php), &[]);
+
+    assert_eq!(sharp_issues, ["17:14 invalid-property-write", "25:15 invalid-property-write"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+/// A bare `x[i]` throws when the key is missing, which fits a `List`, whose keys run without gaps. A `Map` key is
+/// often missing, so a `Map` is read with `??`, as spec section 12 decides. A compound assignment reads first.
+#[test]
+fn a_bare_index_read_on_a_map_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Prices\n{\n    private Map<string, int> prices = [\"pro\": 5];\n\n    public int read(Map<string, int> plans, List<int> sizes, string plan)\n    {\n        let total = sizes[0] + (plans[plan] ?? 0) + (this.prices[plan] ?? 0);\n        total += plans[plan];\n        this.prices[plan] += 1;\n        const named = [\"a\": 1];\n        return total + named[\"a\"];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Prices.sharp", sharp), &[]),
+        [
+            "10:18 possibly-undefined-array-index",
+            "11:9 possibly-undefined-array-index",
+            "13:24 possibly-undefined-array-index",
+        ]
+    );
+}
+
+/// `?.` reads a missing key as null, as `??` does, because `x[k]?.name` runs as `($x[$k] ?? null)?->name`.
+#[test]
+fn a_null_safe_access_on_an_index_reads_a_missing_key_as_null() {
+    let sharp = "namespace Demo;\n\nclass Shelf\n{\n    public string? first(Map<string, Item> items, string key)\n    {\n        return items[key]?.name ?? items[key]?.label();\n    }\n}\n\nclass Item\n{\n    public Item(public string name { get; })\n    {\n    }\n\n    public string? label()\n    {\n        return null;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Shelf.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// Writing `x[i] = v` to a `List` could leave a gap in its keys, so spec section 12 writes a `List` with `set` and
+/// `add`. Every step of the target that is a `List` is reported.
+#[test]
+fn an_index_write_to_a_list_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Sizes\n{\n    public void change(List<int> sizes, Map<string, List<int>> groups, List<Map<string, int>> rows)\n    {\n        sizes[0] = 1;\n        sizes[0] += 1;\n        groups[\"a\"][0] = 1;\n        rows[0][\"a\"] = 1;\n        groups[\"b\"] = [1];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Sizes.sharp", sharp), &[]),
+        [
+            "7:9 invalid-array-access",
+            "8:9 invalid-array-access",
+            "9:9 invalid-array-access",
+            "10:9 invalid-array-access"
+        ]
+    );
+}
+
+/// `for (const [k, v] of x)` reads the keys of a `Map`. A `List`'s indexes come from `entries()`, as spec section 12
+/// writes. PHP stores an all-digit string key as an `int`, so the key of a `Map<string, V>` reads back as
+/// `int|string`.
+#[test]
+fn a_key_and_value_loop_reads_a_map_and_its_keys_as_php_stores_them() {
+    let sharp = "namespace Demo;\n\nclass Loops\n{\n    public int run(List<int> sizes, Map<string, int> counts)\n    {\n        let total = 0;\n        for (const [index, size] of sizes) {\n            total += index + size;\n        }\n        for (const [name, count] of counts) {\n            total += strlen(name) + count;\n        }\n        return total;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Loops.sharp", sharp), &[]),
+        ["8:37 invalid-iterator", "12:29 possibly-invalid-argument"]
+    );
+}
+
+/// A `List` has `add`, `set`, `get` and `entries()`, and a `Map` has `delete` and `get`, each typed by the elements of
+/// the collection it is called on, as spec section 12 decides.
+#[test]
+fn collection_methods_take_and_give_the_types_of_their_elements() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public List<Line> lines { get; private set; } = [];\n    private Map<string, int> counts = [:];\n\n    public int total(Line line, List<Line> extra)\n    {\n        this.lines.add(line);\n        extra.add(line);\n        extra.set(0, line);\n        this.counts.delete(\"a\");\n        let sum = (this.counts.get(\"b\") ?? 0) + (extra.get(0)?.cents ?? 0);\n        for (const [index, item] of extra.entries()) {\n            sum += index + item.cents;\n        }\n        return sum;\n    }\n\n    public void wrong(List<Line> extra, Map<string, int> counts)\n    {\n        extra.add(1);\n        extra.set(\"a\", new Line(1));\n        counts.add(1);\n        extra.delete(0);\n    }\n}\n\nclass Line\n{\n    public Line(public int cents { get; })\n    {\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Order.sharp", sharp), &[]),
+        ["23:19 invalid-argument", "24:19 invalid-argument", "25:16 non-existent-method", "26:15 non-existent-method"]
+    );
+}
+
+/// The analyzer checks a collection method against `Sharp\ListMethods` or `Sharp\MapMethods`, and every message names
+/// the PHP# type the code wrote instead, as in "`add` doesn't exist on `Map<string, int>`".
+#[test]
+fn a_collection_method_message_names_the_sharp_type() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public void wrong(List<Line> lines, List<int> sizes, Map<string, int> counts)\n    {\n        lines.add(1);\n        sizes.set(\"a\", 1);\n        counts.add(1);\n        sizes.delete(0);\n        counts.get(1.5);\n        sizes.get();\n        sizes.get(0, 1);\n    }\n}\n\nclass Line\n{\n}\n";
+    let issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Order.sharp", sharp), &[]);
+
+    let messages: Vec<&str> = issues.iter().map(|issue| issue.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [
+            "Invalid argument type for argument #1 of `List<Demo\\Line>.add`: expected `Demo\\Line`, but found `int(1)`.",
+            "Invalid argument type for argument #1 of `List<int>.set`: expected `int`, but found `string('a')`.",
+            "Method `add` does not exist on `Map<string, int>`.",
+            "Method `delete` does not exist on `List<int>`.",
+            "Invalid argument type for argument #1 of `Map<string, int>.get`: expected `string`, but found `float(1.5)`.",
+            "Too few arguments provided for method `List<int>.get`.",
+            "Too many arguments provided for method `List<int>.get`.",
+        ]
+    );
+    for issue in &issues {
+        let text = format!("{issue:?}");
+        assert!(!text.contains("ListMethods") && !text.contains("MapMethods"), "{text}");
+    }
+}
+
+/// A collection method takes a value of the type its place is declared with, whatever the analyzer saw assigned last,
+/// as `$list[] = $x` is checked against the declared property: a `List<Shape>` holding a `Circle` takes a `Square`,
+/// and a `List<int>` reset to `[]` takes an int.
+#[test]
+fn a_collection_method_takes_values_of_the_type_its_place_is_declared_with() {
+    let sharp = "namespace Demo;\n\nimport Lib.Circle;\nimport Lib.Shape;\nimport Lib.Square;\n\nclass Board\n{\n    public List<Shape> shapes { get; private set; } = [];\n    public List<int> sizes { get; private set; } = [];\n\n    public int fill(List<Shape> drawn)\n    {\n        this.shapes = [new Circle()];\n        this.shapes.add(new Square());\n        drawn = [new Circle()];\n        drawn.add(new Square());\n        List<Shape> local = [new Square()];\n        local = [new Circle()];\n        local.add(new Square());\n        List<int> reset = [1];\n        reset = [];\n        reset.add(2);\n        this.sizes = [];\n        this.sizes.add(3);\n        this.sizes.add(\"x\");\n        return count(drawn) + count(local) + count(reset);\n    }\n}\n";
+    let shapes = "<?php\n\nnamespace Lib;\n\ninterface Shape\n{\n}\n\nfinal class Circle implements Shape\n{\n}\n\nfinal class Square implements Shape\n{\n}\n";
+
+    assert_eq!(issues(("src/Demo/Board.sharp", sharp), &[("src/Lib/Shape.php", shapes)]), ["26:24 invalid-argument"]);
+}
+
+/// A PHP# collection holds any value of its element type, as a `List<int>` holds any int, so a method takes one
+/// even where the analyzer knows the elements are literals, as TypeScript's `let a = [5]` is a `number[]`.
+#[test]
+fn collection_methods_take_any_value_of_a_type_the_elements_are_literals_of() {
+    let sharp = "namespace Demo;\n\nclass Tray\n{\n    public List<int> items { get; private set; } = [];\n\n    public void fill()\n    {\n        let sizes = [5];\n        sizes.add(6);\n        this.items = [5];\n        this.items.add(6);\n        this.items.set(0, 7);\n        let names = [\"tea\": true];\n        names.delete(\"pie\");\n        let found = names.get(\"pie\") ?? false;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tray.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// A method that changes a collection writes it back where it lives, so spec section 12 allows it only on a place
+/// the caller can write: a local, a parameter, or a property whose `set` the caller reaches. The runtime never meets
+/// a write the checker accepts and it refuses.
+#[test]
+fn a_changing_collection_method_needs_a_place_the_caller_can_write() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public List<int> lines { get; private set; } = [];\n    public List<int> fixed { get; } = [];\n    public List<int> computed => [1];\n}\n\nclass Shop\n{\n    public int change(Order order, Map<string, List<int>> groups)\n    {\n        order.lines.add(1);\n        order.fixed.add(1);\n        order.computed.add(1);\n        this.make().add(1);\n        return count(order.lines.entries()) + (order.fixed.get(0) ?? 0) + count(groups);\n    }\n\n    public List<int> make()\n    {\n        return [];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Shop.sharp", sharp), &[]),
+        [
+            "14:15 invalid-property-write",
+            "15:15 invalid-property-write",
+            "16:15 invalid-property-write",
+            "17:9 invalid-pass-by-reference"
+        ]
+    );
+}
+
+/// A property with hooks changes through `get` and then `set`, as Swift and decision 014 do, so a changing method
+/// may run on it where its `set` is reachable.
+#[test]
+fn a_changing_collection_method_may_run_on_a_property_with_a_set_hook() {
+    let sharp = "namespace Demo;\n\nimport Lib.Box;\n\nclass Shop\n{\n    public void fill(Box box)\n    {\n        box.items.add(1);\n    }\n}\n";
+    let box_class = "<?php\n\nnamespace Lib;\n\nfinal class Box\n{\n    /** @var list<int> */\n    public array $items = [] {\n        get => $this->items;\n        set(array $value) {\n            $this->items = $value;\n        }\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Shop.sharp", sharp), &[("src/Lib/Box.php", box_class)]), Vec::<String>::new());
+}
+
+/// `+=`, `++` and `--` read an index, then write it. On a `Map` the read is bare, and on a `List` the write is, so
+/// both are refused, as Kotlin refuses `map[k] += 1`, and the help writes the form that compiles.
+#[test]
+fn a_compound_assignment_or_increment_on_an_index_names_the_form_that_compiles() {
+    let sharp = "namespace Demo;\n\nclass Counts\n{\n    public void bump(Map<string, int> counts, List<int> sizes)\n    {\n        counts[\"a\"] += 1;\n        counts[\"b\"]++;\n        sizes[0] += 1;\n        sizes[1]--;\n    }\n}\n";
+
+    let issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counts.sharp", sharp), &[]);
+    let helps: Vec<_> = issues.iter().map(|issue| issue.help.as_deref().unwrap_or("")).collect();
+
+    assert_eq!(issues.len(), 4, "{issues:?}");
+    assert!(helps[..2].iter().all(|help| help.contains("m[k] = (m[k] ?? 0) + 1")), "{helps:?}");
+    assert!(helps[2..].iter().all(|help| help.contains("list.set(i, list[i] + 1)")), "{helps:?}");
 }

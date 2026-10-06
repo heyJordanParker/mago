@@ -57,7 +57,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ClassLikeConstantItem<'arena> {
     where
         A: Arena,
     {
-        self.value.analyze(context, block_context, artifacts)?;
+        block_context.in_constant_expression(|block_context| self.value.analyze(context, block_context, artifacts))?;
 
         if let Some(class_metadata) = block_context.scope.get_class_like()
             && let Some(constant_metadata) = class_metadata.constants.get(&word(self.name.value))

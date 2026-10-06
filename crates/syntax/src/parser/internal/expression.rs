@@ -235,6 +235,10 @@ where
             return Ok(self.arena.alloc(self.parse_ambiguous_clone_expression()?));
         }
 
+        if self.dialect.is_sharp() && self.is_at_lambda()? {
+            return self.parse_lambda();
+        }
+
         if !self.state.within_string_interpolation
             && (matches!((token.kind, next), (T!["function" | "fn"], _))
                 || matches!((token.kind, next), (T!["static"], Some(T!["function" | "fn"]))))
@@ -261,6 +265,15 @@ where
             self.errors.push(ParseError::NotSupportedYetInSharp("A named constructor", class.span.join(name.span)));
 
             return Ok(self.arena.alloc(Expression::Error(new.join(end))));
+        }
+
+        if self.is_at_type_of()? {
+            return Ok(self.arena.alloc(Expression::TypeOf(self.parse_type_of()?)));
+        }
+
+        // `super.label()` calls the parent's method, spec section 22, as PHP's `parent::label()`.
+        if self.dialect.is_sharp() && token.kind == T![Identifier] && token.value == b"super" && next == Some(T!["."]) {
+            return Ok(self.arena.alloc(Expression::Parent(self.expect_any_keyword()?)));
         }
 
         Ok(self.arena.alloc(match (token.kind, next) {

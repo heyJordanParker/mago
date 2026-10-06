@@ -44,6 +44,27 @@ pub struct Extends<'arena> {
     pub types: TokenSeparatedSequence<'arena, Identifier<'arena>>,
 }
 
+/// Represents PHP#'s class or interface header: `:` and the base class and interfaces, as spec section 22 writes it.
+/// The checker and the engine tell the class from the interfaces.
+///
+/// # Example
+///
+/// ```csharp
+/// public class Page : DatabaseEntity, Linkable {}
+/// ```
+#[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct Inheritance<'arena> {
+    pub colon: Span,
+    pub types: TokenSeparatedSequence<'arena, Identifier<'arena>>,
+}
+
+impl HasSpan for Inheritance<'_> {
+    fn span(&self) -> Span {
+        Span::between(self.colon, self.types.span(self.colon.file_id, self.colon.end))
+    }
+}
+
 impl HasSpan for Implements<'_> {
     fn span(&self) -> Span {
         let span = self.implements.span();

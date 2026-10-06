@@ -90,7 +90,23 @@ where
     analyze_attributes(context, &mut block_context, artifacts, attribute_lists, AttributeTarget::ClassLike)
 }
 
+/// Analyzes attributes, whose arguments are constant expressions.
 pub fn analyze_attributes<'ctx, 'arena, A>(
+    context: &mut Context<'ctx, 'arena, A>,
+    block_context: &mut BlockContext<'ctx>,
+    artifacts: &mut AnalysisArtifacts,
+    attribute_lists: &[AttributeList<'arena>],
+    target: AttributeTarget,
+) -> Result<(), AnalysisError>
+where
+    A: Arena,
+{
+    block_context.in_constant_expression(|block_context| {
+        analyze_attribute_lists(context, block_context, artifacts, attribute_lists, target)
+    })
+}
+
+fn analyze_attribute_lists<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
     block_context: &mut BlockContext<'ctx>,
     artifacts: &mut AnalysisArtifacts,

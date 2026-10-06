@@ -8,9 +8,11 @@ use mago_span::Position;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::MethodCall;
+use mago_syntax::cst::PropertyAccess;
 
 use crate::binding::Binding;
 use crate::binding::BindingError;
+use crate::binding::Local;
 
 pub mod binding;
 pub mod kind;
@@ -18,6 +20,13 @@ pub mod resolver;
 pub mod scope;
 
 mod internal;
+
+/// The methods of a PHP# `List` or `Map` that change it.
+///
+/// Spec section 12 runs them on the collection a local holds, so a call of one on a local writes the local, as
+/// [`ResolvedNames::is_written`] reports. The binder knows no types, so a call of a method of these names on an object
+/// writes its local too, which captures it by reference, as harmless.
+pub const CHANGING_COLLECTION_METHODS: [&str; 3] = ["add", "set", "delete"];
 
 /// Stores the results of a name resolution pass over a PHP program.
 ///
@@ -42,6 +51,14 @@ pub struct ResolvedNames<'arena> {
     /// The PHP# scope rules the bare names break, in source order. Empty for PHP.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
     binding_errors: Vec<BindingError>,
+
+    /// Start offset of every PHP# lambda -> the names and locals declared outside it that it uses, in first-use order.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "HashMap::is_empty"))]
+    captures: HashMap<u32, Vec<(&'arena [u8], Local)>>,
+
+    /// Declaration start offset of every PHP# local that code writes after its declaration.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "foldhash::HashSet::is_empty"))]
+    written_locals: foldhash::HashSet<u32>,
 }
 
 impl<'arena> ResolvedNames<'arena> {
@@ -149,7 +166,20 @@ impl<'arena> ResolvedNames<'arena> {
     /// The checker and the engine both read this, so they never disagree on a static call.
     #[must_use]
     pub fn static_call_class<'ast>(&self, call: &MethodCall<'ast>) -> Option<&'ast ConstantAccess<'ast>> {
-        match call.object {
+        self.class_object(call.object)
+    }
+
+    /// Returns the class of a PHP# static property access, `Class.name`: the object of `access` when the binder bound
+    /// it to a class. Returns `None` for an instance property and for every access in a PHP file.
+    ///
+    /// The checker, the analyzer and the engine all read this, so they never disagree on a static property.
+    #[must_use]
+    pub fn static_property_class<'ast>(&self, access: &PropertyAccess<'ast>) -> Option<&'ast ConstantAccess<'ast>> {
+        self.class_object(access.object)
+    }
+
+    fn class_object<'ast>(&self, object: &'ast Expression<'ast>) -> Option<&'ast ConstantAccess<'ast>> {
+        match object {
             Expression::ConstantAccess(access) if self.binding(&access.name) == Some(Binding::Class) => Some(access),
             _ => None,
         }
@@ -161,8 +191,35 @@ impl<'arena> ResolvedNames<'arena> {
         &self.binding_errors
     }
 
+    /// Returns the name and local of each local declared outside the PHP# lambda starting at the given position that
+    /// the lambda uses, in the order it first uses them. A lambda inside another captures what it uses for both.
+    pub fn captures<T>(&self, lambda: &T) -> &[(&'arena [u8], Local)]
+    where
+        T: HasPosition,
+    {
+        self.captures.get(&lambda.offset()).map_or(&[], Vec::as_slice)
+    }
+
+    /// Returns whether code writes the PHP# local after its declaration: with `=`, a compound assignment, `++` or
+    /// `--` on it or an index of it, or a call of one of the [`CHANGING_COLLECTION_METHODS`] on it.
+    #[must_use]
+    pub fn is_written(&self, local: &Local) -> bool {
+        self.written_locals.contains(&local.declaration.start.offset)
+    }
+
     pub(crate) fn bind(&mut self, span: Span, binding: Binding) {
         self.bindings.insert(span.start.offset, binding);
+    }
+
+    pub(crate) fn capture(&mut self, lambda: u32, name: &'arena [u8], local: Local) {
+        let captures = self.captures.entry(lambda).or_default();
+        if !captures.iter().any(|(_, captured)| *captured == local) {
+            captures.push((name, local));
+        }
+    }
+
+    pub(crate) fn write(&mut self, local: Local) {
+        self.written_locals.insert(local.declaration.start.offset);
     }
 
     pub(crate) fn report_binding_error(&mut self, error: BindingError) {

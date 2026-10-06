@@ -60,6 +60,7 @@ enum NodeKind: string
     case EnumCaseUnitItem = 'EnumCaseUnitItem';
     case Extends = 'Extends';
     case Implements = 'Implements';
+    case Inheritance = 'Inheritance';
     case ClassLikeConstantSelector = 'ClassLikeConstantSelector';
     case ClassLikeMember = 'ClassLikeMember';
     case ClassLikeMemberExpressionSelector = 'ClassLikeMemberExpressionSelector';
@@ -167,6 +168,7 @@ enum NodeKind: string
     case Keyword = 'Keyword';
     case Literal = 'Literal';
     case Pipe = 'Pipe';
+    case TypeOf = 'TypeOf';
     case LiteralFloat = 'LiteralFloat';
     case LiteralInteger = 'LiteralInteger';
     case LiteralString = 'LiteralString';
@@ -236,6 +238,8 @@ enum NodeKind: string
     case Hint = 'Hint';
     case IntersectionHint = 'IntersectionHint';
     case NullableHint = 'NullableHint';
+    case GenericHint = 'GenericHint';
+    case FunctionHint = 'FunctionHint';
     case ParenthesizedHint = 'ParenthesizedHint';
     case UnionHint = 'UnionHint';
     case Unset = 'Unset';

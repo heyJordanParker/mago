@@ -83,11 +83,13 @@ use crate::cst::cst::FullOpeningTag;
 use crate::cst::cst::FullyQualifiedIdentifier;
 use crate::cst::cst::Function;
 use crate::cst::cst::FunctionCall;
+use crate::cst::cst::FunctionHint;
 use crate::cst::cst::FunctionLikeParameter;
 use crate::cst::cst::FunctionLikeParameterDefaultValue;
 use crate::cst::cst::FunctionLikeParameterList;
 use crate::cst::cst::FunctionLikeReturnTypeHint;
 use crate::cst::cst::FunctionPartialApplication;
+use crate::cst::cst::GenericHint;
 use crate::cst::cst::Global;
 use crate::cst::cst::Goto;
 use crate::cst::cst::HaltCompiler;
@@ -106,6 +108,7 @@ use crate::cst::cst::Implements;
 use crate::cst::cst::IncludeConstruct;
 use crate::cst::cst::IncludeOnceConstruct;
 use crate::cst::cst::IndirectVariable;
+use crate::cst::cst::Inheritance;
 use crate::cst::cst::Inline;
 use crate::cst::cst::Instantiation;
 use crate::cst::cst::Interface;
@@ -208,6 +211,7 @@ use crate::cst::cst::TraitUseSpecification;
 use crate::cst::cst::Try;
 use crate::cst::cst::TryCatchClause;
 use crate::cst::cst::TryFinallyClause;
+use crate::cst::cst::TypeOf;
 use crate::cst::cst::TypedUseItemList;
 use crate::cst::cst::TypedUseItemSequence;
 use crate::cst::cst::UnaryPostfix;
@@ -693,6 +697,12 @@ generate_ast_walker! {
         }
     }
 
+    'arena Inheritance as inheritance => {
+        for ty in &inheritance.types {
+            walker.walk_identifier(ty, context);
+        }
+    }
+
     'arena Class as class => {
         for attribute_list in &class.attribute_lists {
             walker.walk_attribute_list(attribute_list, context);
@@ -712,6 +722,10 @@ generate_ast_walker! {
             walker.walk_implements(implements, context);
         }
 
+        if let Some(inheritance) = &class.inheritance {
+            walker.walk_inheritance(inheritance, context);
+        }
+
         for class_member in &class.members {
             walker.walk_class_like_member(class_member, context);
         }
@@ -722,11 +736,19 @@ generate_ast_walker! {
             walker.walk_attribute_list(attribute_list, context);
         }
 
+        for modifier in &interface.modifiers {
+            walker.walk_modifier(modifier, context);
+        }
+
         walker.walk_keyword(&interface.interface, context);
         walker.walk_local_identifier(&interface.name, context);
 
         if let Some(extends) = &interface.extends {
             walker.walk_extends(extends, context);
+        }
+
+        if let Some(inheritance) = &interface.inheritance {
+            walker.walk_inheritance(inheritance, context);
         }
 
         for class_member in &interface.members {
@@ -737,6 +759,10 @@ generate_ast_walker! {
     'arena Trait as r#trait => {
         for attribute_list in &r#trait.attribute_lists {
             walker.walk_attribute_list(attribute_list, context);
+        }
+
+        for modifier in &r#trait.modifiers {
+            walker.walk_modifier(modifier, context);
         }
 
         walker.walk_keyword(&r#trait.r#trait, context);
@@ -750,6 +776,10 @@ generate_ast_walker! {
     'arena Enum as r#enum => {
         for attribute_list in &r#enum.attribute_lists {
             walker.walk_attribute_list(attribute_list, context);
+        }
+
+        for modifier in &r#enum.modifiers {
+            walker.walk_modifier(modifier, context);
         }
 
         walker.walk_keyword(&r#enum.r#enum, context);
@@ -1740,6 +1770,7 @@ generate_ast_walker! {
             Expression::Instantiation(instantiation) => walker.walk_instantiation(instantiation, context),
             Expression::MagicConstant(magic_constant) => walker.walk_magic_constant(magic_constant, context),
             Expression::Pipe(pipe) => walker.walk_pipe(pipe, context),
+            Expression::TypeOf(type_of) => walker.walk_type_of(type_of, context),
             Expression::Error(_) => {
                 // Nothing to walk for error expressions
             }
@@ -1985,7 +2016,10 @@ generate_ast_walker! {
             walker.walk_keyword(keyword, context);
         }
 
-        walker.walk_keyword(&closure.function, context);
+        if let Some(keyword) = &closure.function {
+            walker.walk_keyword(keyword, context);
+        }
+
         walker.walk_function_like_parameter_list(&closure.parameter_list, context);
         if let Some(use_clause) = &closure.use_clause {
             walker.walk_closure_use_clause(use_clause, context);
@@ -2017,7 +2051,10 @@ generate_ast_walker! {
             walker.walk_keyword(keyword, context);
         }
 
-        walker.walk_keyword(&arrow_function.r#fn, context);
+        if let Some(keyword) = &arrow_function.r#fn {
+            walker.walk_keyword(keyword, context);
+        }
+
         walker.walk_function_like_parameter_list(&arrow_function.parameter_list, context);
 
         if let Some(return_type_hint) = &arrow_function.return_type_hint {
@@ -2428,6 +2465,11 @@ generate_ast_walker! {
         walker.walk_expression(pipe.callable, context);
     }
 
+    'arena TypeOf as type_of => {
+        walker.walk_keyword(&type_of.r#typeof, context);
+        walker.walk_identifier(&type_of.class, context);
+    }
+
     'arena Hint as hint => {
         ensure_sufficient_stack(|| match hint {
             Hint::Identifier(identifier) => {
@@ -2466,7 +2508,28 @@ generate_ast_walker! {
             Hint::Iterable(local_identifier) => {
                 walker.walk_local_identifier(local_identifier, context);
             }
+            Hint::Generic(generic_hint) => {
+                walker.walk_generic_hint(generic_hint, context);
+            }
+            Hint::Function(function_hint) => {
+                walker.walk_function_hint(function_hint, context);
+            }
         });
+    }
+
+    'arena GenericHint as generic_hint => {
+        walker.walk_local_identifier(&generic_hint.name, context);
+        for argument in &generic_hint.arguments {
+            walker.walk_hint(argument, context);
+        }
+    }
+
+    'arena FunctionHint as function_hint => {
+        walker.walk_keyword(&function_hint.function, context);
+        walker.walk_hint(function_hint.return_type, context);
+        for parameter in &function_hint.parameters {
+            walker.walk_hint(parameter, context);
+        }
     }
 
     'arena ParenthesizedHint as parenthesized_hint => {

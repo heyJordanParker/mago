@@ -35,6 +35,8 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::context::scope::control_action::ControlAction;
 use crate::error::AnalysisError;
+use crate::expression::is_refused;
+use crate::statement::function_like::expect_function_type;
 use crate::utils::docblock::check_docblock_type_incompatibility;
 use crate::utils::docblock::get_type_from_var_docblock;
 use crate::utils::expression::get_direct_variable_id;
@@ -54,16 +56,25 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Return<'arena> {
         A: Arena,
     {
         let inferred_return_type = if let Some(return_value) = self.value.as_ref() {
+            let return_type =
+                block_context.scope.get_function_like().and_then(|function| function.return_type_metadata.as_ref());
+            expect_function_type(
+                context,
+                artifacts,
+                return_value,
+                return_type.map(|return_type| &return_type.type_union),
+            );
+
             block_context.flags.set_inside_return(true);
             return_value.analyze(context, block_context, artifacts)?;
             block_context.flags.set_inside_return(false);
 
             let inferred_return_type = artifacts.get_rc_expression_type(&return_value).cloned();
 
-            // A value that failed to parse is `never`, and its parse error already reports it.
+            // A refused value is `never`, and its error already reports it.
             if let Some(inferred_return_type) = &inferred_return_type
                 && inferred_return_type.is_never()
-                && !matches!(return_value, Expression::Error(_))
+                && !is_refused(return_value)
             {
                 context.collector.report_with_code(
                     IssueCode::NeverReturn,

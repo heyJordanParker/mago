@@ -1,5 +1,3 @@
-use std::collections::hash_map::Entry;
-
 use foldhash::HashMap;
 
 use mago_allocator::Arena;
@@ -33,6 +31,7 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::invocation::InvocationTarget;
+use crate::statement::function_like::closure_parameter_types;
 use crate::utils::expression::is_referenceable;
 use crate::utils::get_type_diff;
 
@@ -107,36 +106,8 @@ where
         return Ok(());
     }
 
-    let inferred_parameter_types = closure_parameter_type.map(|closure_parameter_type| {
-        let mut inferred_parameters = HashMap::default();
-
-        closure_parameter_type
-            .types
-            .as_ref()
-            .iter()
-            .filter_map(|atomic| match atomic {
-                TAtomic::Callable(TCallable::Signature(callable)) => Some(callable),
-                _ => None,
-            })
-            .flat_map(|callable| callable.parameters.iter().enumerate())
-            .filter_map(|(parameter_index, parameter)| {
-                parameter.get_type_signature().map(|param_type| (parameter_index, param_type.clone()))
-            })
-            .for_each(|(parameter_index, parameter_type)| match inferred_parameters.entry(parameter_index) {
-                Entry::Occupied(occupied_entry) => {
-                    let existing_type: TUnion = occupied_entry.remove();
-                    let updated_type =
-                        add_union_type(existing_type, &parameter_type, context.codebase, CombinerOptions::default());
-
-                    inferred_parameters.insert(parameter_index, updated_type);
-                }
-                Entry::Vacant(vacant_entry) => {
-                    vacant_entry.insert(parameter_type);
-                }
-            });
-
-        inferred_parameters
-    });
+    let inferred_parameter_types =
+        closure_parameter_type.map(|closure_parameter_type| closure_parameter_types(context, closure_parameter_type));
 
     let inferred_parameter_types = std::mem::replace(&mut artifacts.inferred_parameter_types, inferred_parameter_types);
 

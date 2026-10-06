@@ -1711,6 +1711,11 @@ where
                 Hint::Object(_) => Document::String(b"object"),
                 Hint::Mixed(_) => Document::String(b"mixed"),
                 Hint::Iterable(_) => Document::String(b"iterable"),
+                #[allow(clippy::unreachable)]
+                Hint::Generic(_) => unreachable!("the formatter refuses a PHP# file, the only one with type arguments"),
+                Hint::Function(_) => {
+                    unreachable!("the formatter refuses a PHP# file, the only one with function types")
+                }
             }
         })
     }
@@ -1733,6 +1738,8 @@ where
                 Modifier::PrivateSet(keyword) => keyword.format(f),
                 Modifier::ProtectedSet(keyword) => keyword.format(f),
                 Modifier::PublicSet(keyword) => keyword.format(f),
+                Modifier::Virtual(keyword) => keyword.format(f),
+                Modifier::Override(keyword) => keyword.format(f),
             }
         })
     }

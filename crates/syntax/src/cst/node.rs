@@ -88,11 +88,13 @@ use crate::cst::cst::FullOpeningTag;
 use crate::cst::cst::FullyQualifiedIdentifier;
 use crate::cst::cst::Function;
 use crate::cst::cst::FunctionCall;
+use crate::cst::cst::FunctionHint;
 use crate::cst::cst::FunctionLikeParameter;
 use crate::cst::cst::FunctionLikeParameterDefaultValue;
 use crate::cst::cst::FunctionLikeParameterList;
 use crate::cst::cst::FunctionLikeReturnTypeHint;
 use crate::cst::cst::FunctionPartialApplication;
+use crate::cst::cst::GenericHint;
 use crate::cst::cst::Global;
 use crate::cst::cst::Goto;
 use crate::cst::cst::HaltCompiler;
@@ -111,6 +113,7 @@ use crate::cst::cst::Implements;
 use crate::cst::cst::IncludeConstruct;
 use crate::cst::cst::IncludeOnceConstruct;
 use crate::cst::cst::IndirectVariable;
+use crate::cst::cst::Inheritance;
 use crate::cst::cst::Inline;
 use crate::cst::cst::Instantiation;
 use crate::cst::cst::Interface;
@@ -213,6 +216,7 @@ use crate::cst::cst::TraitUseSpecification;
 use crate::cst::cst::Try;
 use crate::cst::cst::TryCatchClause;
 use crate::cst::cst::TryFinallyClause;
+use crate::cst::cst::TypeOf;
 use crate::cst::cst::TypedUseItemList;
 use crate::cst::cst::TypedUseItemSequence;
 use crate::cst::cst::UnaryPostfix;
@@ -291,6 +295,7 @@ pub enum NodeKind {
     EnumCaseUnitItem,
     Extends,
     Implements,
+    Inheritance,
     ClassLikeConstantSelector,
     ClassLikeMember,
     ClassLikeMemberExpressionSelector,
@@ -398,6 +403,7 @@ pub enum NodeKind {
     Keyword,
     Literal,
     Pipe,
+    TypeOf,
     LiteralFloat,
     LiteralInteger,
     LiteralString,
@@ -467,6 +473,8 @@ pub enum NodeKind {
     Hint,
     IntersectionHint,
     NullableHint,
+    GenericHint,
+    FunctionHint,
     ParenthesizedHint,
     UnionHint,
     Unset,
@@ -533,6 +541,7 @@ pub enum Node<'ast, 'arena> {
     EnumCaseUnitItem(&'ast EnumCaseUnitItem<'arena>),
     Extends(&'ast Extends<'arena>),
     Implements(&'ast Implements<'arena>),
+    Inheritance(&'ast Inheritance<'arena>),
     ClassLikeConstantSelector(&'ast ClassLikeConstantSelector<'arena>),
     ClassLikeMember(&'ast ClassLikeMember<'arena>),
     ClassLikeMemberExpressionSelector(&'ast ClassLikeMemberExpressionSelector<'arena>),
@@ -708,6 +717,8 @@ pub enum Node<'ast, 'arena> {
     Hint(&'ast Hint<'arena>),
     IntersectionHint(&'ast IntersectionHint<'arena>),
     NullableHint(&'ast NullableHint<'arena>),
+    GenericHint(&'ast GenericHint<'arena>),
+    FunctionHint(&'ast FunctionHint<'arena>),
     ParenthesizedHint(&'ast ParenthesizedHint<'arena>),
     UnionHint(&'ast UnionHint<'arena>),
     Unset(&'ast Unset<'arena>),
@@ -717,6 +728,7 @@ pub enum Node<'ast, 'arena> {
     NestedVariable(&'ast NestedVariable<'arena>),
     Variable(&'ast Variable<'arena>),
     Pipe(&'ast Pipe<'arena>),
+    TypeOf(&'ast TypeOf<'arena>),
     Error(Span),
     MissingTerminator(Span),
     ClassLikeMemberMissingSelector(Span),
@@ -852,6 +864,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Self::EnumCaseUnitItem(_) => NodeKind::EnumCaseUnitItem,
             Self::Extends(_) => NodeKind::Extends,
             Self::Implements(_) => NodeKind::Implements,
+            Self::Inheritance(_) => NodeKind::Inheritance,
             Self::ClassLikeConstantSelector(_) => NodeKind::ClassLikeConstantSelector,
             Self::ClassLikeMember(_) => NodeKind::ClassLikeMember,
             Self::ClassLikeMemberExpressionSelector(_) => NodeKind::ClassLikeMemberExpressionSelector,
@@ -1027,6 +1040,8 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Self::Hint(_) => NodeKind::Hint,
             Self::IntersectionHint(_) => NodeKind::IntersectionHint,
             Self::NullableHint(_) => NodeKind::NullableHint,
+            Self::GenericHint(_) => NodeKind::GenericHint,
+            Self::FunctionHint(_) => NodeKind::FunctionHint,
             Self::ParenthesizedHint(_) => NodeKind::ParenthesizedHint,
             Self::UnionHint(_) => NodeKind::UnionHint,
             Self::Unset(_) => NodeKind::Unset,
@@ -1036,6 +1051,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Self::NestedVariable(_) => NodeKind::NestedVariable,
             Self::Variable(_) => NodeKind::Variable,
             Self::Pipe(_) => NodeKind::Pipe,
+            Self::TypeOf(_) => NodeKind::TypeOf,
             Self::Error(_) => NodeKind::Error,
             Self::MissingTerminator(_) => NodeKind::MissingTerminator,
             Self::ClassLikeMemberMissingSelector(_) => NodeKind::ClassLikeMemberMissingSelector,
@@ -1252,6 +1268,11 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             }
             Node::Implements(node) => {
                 f(Node::Keyword(&node.implements));
+                for item in node.types.iter() {
+                    f(Node::Identifier(item));
+                }
+            }
+            Node::Inheritance(node) => {
                 for item in node.types.iter() {
                     f(Node::Identifier(item));
                 }
@@ -1522,6 +1543,9 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 for item in node.implements.iter() {
                     f(Node::Implements(item));
                 }
+                for item in node.inheritance.iter() {
+                    f(Node::Inheritance(item));
+                }
                 for item in node.members.iter() {
                     f(Node::ClassLikeMember(item));
                 }
@@ -1529,6 +1553,9 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Node::Enum(node) => {
                 for item in node.attribute_lists.iter() {
                     f(Node::AttributeList(item));
+                }
+                for item in node.modifiers.iter() {
+                    f(Node::Modifier(item));
                 }
                 f(Node::Keyword(&node.r#enum));
                 f(Node::LocalIdentifier(&node.name));
@@ -1549,10 +1576,16 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 for item in node.attribute_lists.iter() {
                     f(Node::AttributeList(item));
                 }
+                for item in node.modifiers.iter() {
+                    f(Node::Modifier(item));
+                }
                 f(Node::Keyword(&node.interface));
                 f(Node::LocalIdentifier(&node.name));
                 for item in node.extends.iter() {
                     f(Node::Extends(item));
+                }
+                for item in node.inheritance.iter() {
+                    f(Node::Inheritance(item));
                 }
                 for item in node.members.iter() {
                     f(Node::ClassLikeMember(item));
@@ -1561,6 +1594,9 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Node::Trait(node) => {
                 for item in node.attribute_lists.iter() {
                     f(Node::AttributeList(item));
+                }
+                for item in node.modifiers.iter() {
+                    f(Node::Modifier(item));
                 }
                 f(Node::Keyword(&node.r#trait));
                 f(Node::LocalIdentifier(&node.name));
@@ -1848,6 +1884,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                     Expression::Instantiation(node) => Node::Instantiation(node),
                     Expression::MagicConstant(node) => Node::MagicConstant(node),
                     Expression::Pipe(node) => Node::Pipe(node),
+                    Expression::TypeOf(node) => Node::TypeOf(node),
                     Expression::Error(span) => Node::Error(*span),
                 };
                 f(child);
@@ -1904,7 +1941,9 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 if let Some(r#static) = &node.r#static {
                     f(Node::Keyword(r#static));
                 }
-                f(Node::Keyword(&node.r#fn));
+                if let Some(r#fn) = &node.r#fn {
+                    f(Node::Keyword(r#fn));
+                }
                 f(Node::FunctionLikeParameterList(&node.parameter_list));
                 if let Some(return_type_hint) = &node.return_type_hint {
                     f(Node::FunctionLikeReturnTypeHint(return_type_hint));
@@ -1915,7 +1954,9 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 for item in node.attribute_lists.iter() {
                     f(Node::AttributeList(item));
                 }
-                f(Node::Keyword(&node.function));
+                if let Some(function) = &node.function {
+                    f(Node::Keyword(function));
+                }
                 f(Node::FunctionLikeParameterList(&node.parameter_list));
                 if let Some(use_clause) = &node.use_clause {
                     f(Node::ClosureUseClause(use_clause));
@@ -2040,6 +2081,8 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 Modifier::PrivateSet(node) => Node::Keyword(node),
                 Modifier::ProtectedSet(node) => Node::Keyword(node),
                 Modifier::PublicSet(node) => Node::Keyword(node),
+                Modifier::Virtual(node) => Node::Keyword(node),
+                Modifier::Override(node) => Node::Keyword(node),
             }),
             Node::Namespace(node) => {
                 f(Node::Keyword(&node.r#namespace));
@@ -2435,7 +2478,22 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 | Hint::Object(local_identifier)
                 | Hint::Mixed(local_identifier)
                 | Hint::Iterable(local_identifier) => f(Node::LocalIdentifier(local_identifier)),
+                Hint::Generic(generic_hint) => f(Node::GenericHint(generic_hint)),
+                Hint::Function(function_hint) => f(Node::FunctionHint(function_hint)),
             },
+            Node::GenericHint(node) => {
+                f(Node::LocalIdentifier(&node.name));
+                for argument in node.arguments.iter() {
+                    f(Node::Hint(argument));
+                }
+            }
+            Node::FunctionHint(node) => {
+                f(Node::Keyword(&node.function));
+                f(Node::Hint(node.return_type));
+                for parameter in node.parameters.iter() {
+                    f(Node::Hint(parameter));
+                }
+            }
             Node::IntersectionHint(node) => {
                 f(Node::Hint(node.left));
                 f(Node::Hint(node.right));
@@ -2477,6 +2535,10 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Node::Pipe(pipe) => {
                 f(Node::Expression(pipe.input));
                 f(Node::Expression(pipe.callable));
+            }
+            Node::TypeOf(type_of) => {
+                f(Node::Keyword(&type_of.r#typeof));
+                f(Node::Identifier(&type_of.class));
             }
             Node::Error(_)
             | Node::MissingTerminator(_)
@@ -2547,6 +2609,7 @@ impl HasSpan for Node<'_, '_> {
             Self::EnumCaseUnitItem(node) => node.span(),
             Self::Extends(node) => node.span(),
             Self::Implements(node) => node.span(),
+            Self::Inheritance(node) => node.span(),
             Self::ClassLikeConstantSelector(node) => node.span(),
             Self::ClassLikeMember(node) => node.span(),
             Self::ClassLikeMemberExpressionSelector(node) => node.span(),
@@ -2722,6 +2785,8 @@ impl HasSpan for Node<'_, '_> {
             Self::Hint(node) => node.span(),
             Self::IntersectionHint(node) => node.span(),
             Self::NullableHint(node) => node.span(),
+            Self::GenericHint(node) => node.span(),
+            Self::FunctionHint(node) => node.span(),
             Self::ParenthesizedHint(node) => node.span(),
             Self::UnionHint(node) => node.span(),
             Self::Unset(node) => node.span(),
@@ -2731,6 +2796,7 @@ impl HasSpan for Node<'_, '_> {
             Self::NestedVariable(node) => node.span(),
             Self::Variable(node) => node.span(),
             Self::Pipe(node) => node.span(),
+            Self::TypeOf(node) => node.span(),
             Self::Error(span)
             | Self::MissingTerminator(span)
             | Self::ClassLikeMemberMissingSelector(span)

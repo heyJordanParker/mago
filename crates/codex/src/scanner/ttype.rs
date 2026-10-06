@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use mago_allocator::Arena;
 use mago_names::ResolvedNames;
 use mago_names::scope::NamespaceScope;
@@ -15,6 +17,7 @@ use crate::ttype::TType;
 use crate::ttype::atomic::TAtomic;
 use crate::ttype::atomic::callable::TCallable;
 use crate::ttype::atomic::callable::TCallableSignature;
+use crate::ttype::atomic::callable::parameter::TCallableParameter;
 use crate::ttype::atomic::object::TObject;
 use crate::ttype::atomic::object::named::TNamedObject;
 use crate::ttype::atomic::reference::TReference;
@@ -24,6 +27,8 @@ use crate::ttype::get_bool;
 use crate::ttype::get_false;
 use crate::ttype::get_float;
 use crate::ttype::get_int;
+use crate::ttype::get_keyed_array;
+use crate::ttype::get_list;
 use crate::ttype::get_mixed;
 use crate::ttype::get_mixed_callable;
 use crate::ttype::get_mixed_iterable;
@@ -179,6 +184,38 @@ pub fn get_union_from_hint(hint: &Hint<'_>, classname: Option<Word>, resolved_na
             TUnion::from_vec(intersection_types)
         }
         Hint::Iterable(_) => get_mixed_iterable(),
+        Hint::Generic(generic) => {
+            let mut arguments =
+                generic.arguments.iter().map(|argument| get_union_from_hint(argument, classname, resolved_names));
+
+            match (generic.name.value, arguments.next(), arguments.next(), arguments.next()) {
+                (b"List", Some(element), None, None) => get_list(element),
+                (b"Map", Some(key), Some(value), None) => get_keyed_array(key, value),
+                _ => get_mixed_keyed_array(),
+            }
+        }
+        // Spec section 14.1: `Function<R(P)>` is PHP's `Closure(P): R`, the only function value PHP# makes.
+        Hint::Function(function) => {
+            let parameters = function
+                .parameters
+                .iter()
+                .map(|parameter| {
+                    TCallableParameter::new(
+                        Some(Arc::new(get_union_from_hint(parameter, classname, resolved_names))),
+                        false,
+                        false,
+                        false,
+                    )
+                })
+                .collect();
+            let return_type = get_union_from_hint(function.return_type, classname, resolved_names);
+
+            wrap_atomic(TAtomic::Callable(TCallable::Signature(
+                TCallableSignature::new(false, true)
+                    .with_parameters(parameters)
+                    .with_return_type(Some(Arc::new(return_type))),
+            )))
+        }
     }
 }
 

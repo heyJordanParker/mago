@@ -57,6 +57,17 @@ fn dotted_namespace_and_import_resolve_to_php_names() {
 }
 
 #[test]
+fn the_names_in_a_class_or_interface_header_resolve_as_class_names() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nimport App.Shared.Entity;\n\nclass Page : Entity, Linkable\n{\n}\n\ninterface Linkable : Named\n{\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(resolved(&names, CODE, "Entity,", 0), b"App\\Shared\\Entity");
+    assert_eq!(resolved(&names, CODE, "Linkable\n", 0), b"App\\Tenant\\Store\\Linkable");
+    assert_eq!(resolved(&names, CODE, "Named", 0), b"App\\Tenant\\Store\\Named");
+}
+
+#[test]
 fn bare_names_bind_to_locals_this_classes_and_constants() {
     const CODE: &str = "namespace App.Tenant.Store;\n\nimport App.Shared.Money;\n\nclass Report\n{\n    public int total(int extra)\n    {\n        let label = extra;\n        const base = Money.of(label);\n        Calc.make(this, base, PHP_EOL);\n        return extra;\n    }\n}\n";
     let arena = LocalArena::new();
@@ -75,6 +86,17 @@ fn bare_names_bind_to_locals_this_classes_and_constants() {
     assert_eq!(binding(&names, CODE, "Calc", 0), Some(Binding::Class));
     assert_eq!(resolved(&names, CODE, "Calc", 0), b"App\\Tenant\\Store\\Calc");
     assert_eq!(binding(&names, CODE, "PHP_EOL", 0), Some(Binding::Constant));
+}
+
+#[test]
+fn the_class_in_typeof_resolves_like_any_class_name() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nimport App.Shared.Money;\n\nclass Report\n{\n    public void total()\n    {\n        Store.keep(typeof(Money), typeof(Order));\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(resolved(&names, CODE, "Money)", 0), b"App\\Shared\\Money");
+    assert_eq!(resolved(&names, CODE, "Order", 0), b"App\\Tenant\\Store\\Order");
+    assert_eq!(binding(&names, CODE, "Order", 0), None);
 }
 
 #[test]
@@ -329,6 +351,48 @@ fn a_member_name_matches_as_php_matches_it() {
 
     assert_eq!(binding(&names, CODE, "Total()", 0), Some(Binding::Member));
     assert_eq!(binding(&names, CODE, "Rate", 0), Some(Binding::Constant));
+}
+
+#[test]
+fn a_lambda_binds_its_parameters_and_records_the_outer_locals_it_captures() {
+    const CODE: &str = "class Report\n{\n    public int total(int extra)\n    {\n        let count = 0;\n        const base = 2;\n        const add = (a) => a + base;\n        const bump = () => { count += 1; return add(count); };\n        const nested = () => () => extra;\n        return bump();\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    let parameter = span(CODE, "(a)", 0);
+    let parameter = Span::new(parameter.file_id, parameter.start.forward(1), parameter.end.backward(1));
+    assert_eq!(
+        binding(&names, CODE, "a + base", 0),
+        Some(Binding::Local(Local { declaration: parameter, kind: LocalKind::Parameter }))
+    );
+    assert_eq!(binding(&names, CODE, "base;", 0), Some(local(CODE, "base", 0, LocalKind::Const)));
+    assert_eq!(names.captures(&span(CODE, "(a)", 0)), [(&b"base"[..], declared(CODE, "base", 0, LocalKind::Const))]);
+    assert_eq!(
+        names.captures(&span(CODE, "() => {", 0)),
+        [
+            (&b"count"[..], declared(CODE, "count", 0, LocalKind::Let)),
+            (&b"add"[..], declared(CODE, "add", 0, LocalKind::Const))
+        ]
+    );
+    let extra = [(&b"extra"[..], declared(CODE, "extra", 0, LocalKind::Parameter))];
+    assert_eq!(names.captures(&span(CODE, "() => () =>", 0)), extra);
+    assert_eq!(names.captures(&span(CODE, "() => extra", 0)), extra);
+}
+
+#[test]
+fn a_local_written_after_its_declaration_is_recorded_as_written() {
+    const CODE: &str = "class Report\n{\n    public int total(int extra)\n    {\n        let count = 0;\n        let other = 0;\n        let kept = 1;\n        let sizes = [:];\n        let lines = [];\n        let read = [];\n        count += 1;\n        other++;\n        extra = 2;\n        sizes[\"a\"][\"b\"] = 1;\n        lines.ADD(1);\n        read.get(0);\n        return count + other + kept + extra;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert!(names.is_written(&declared(CODE, "lines", 0, LocalKind::Let)));
+    assert!(!names.is_written(&declared(CODE, "read", 0, LocalKind::Let)));
+
+    assert!(names.is_written(&declared(CODE, "count", 0, LocalKind::Let)));
+    assert!(names.is_written(&declared(CODE, "other", 0, LocalKind::Let)));
+    assert!(names.is_written(&declared(CODE, "extra", 0, LocalKind::Parameter)));
+    assert!(names.is_written(&declared(CODE, "sizes", 0, LocalKind::Let)));
+    assert!(!names.is_written(&declared(CODE, "kept", 0, LocalKind::Let)));
 }
 
 #[test]
