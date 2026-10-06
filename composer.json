@@ -1,5 +1,5 @@
 {
-  "name": "carthage-software/mago",
+  "name": "heyjordanparker/mago-sharp",
   "description": "Mago is a toolchain for PHP that aims to provide a set of tools to help developers write better code.",
   "type": "library",
   "license": "MIT OR Apache-2.0",
