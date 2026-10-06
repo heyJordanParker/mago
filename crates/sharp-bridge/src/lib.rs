@@ -3,7 +3,7 @@
 //! `sharp_lower` runs one `.sharp` file through the parser, the binder and the semantic checks, and lowers it into
 //! the tree php-src's own parser builds for the equivalent PHP. The tree is a flat node array behind a C ABI, which
 //! `ext/sharp` turns into `zend_ast` the way HHVM's `hackc-translator.cpp` turns hackc's unit into runtime structures.
-//! cbindgen writes this file's ABI to `sharp_bridge.h` in `OUT_DIR`.
+//! cbindgen writes this file's ABI and the compiled file's layout in `unit.rs` to `sharp_unit.h` in `OUT_DIR`.
 
 #![allow(non_camel_case_types)]
 
