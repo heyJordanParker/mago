@@ -222,6 +222,17 @@ fn locals_and_this_have_no_resolved_name() {
 }
 
 #[test]
+fn any_is_a_built_in_type_and_never_a_class_name() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nclass Report\n{\n    public Any run(Any? extra)\n    {\n        Any? held = extra;\n        return held ?? 1;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    for nth in 0..3 {
+        assert!(!names.contains(&Position::new(offset(CODE, "Any", nth))), "`Any` #{nth} has a resolved name");
+    }
+}
+
+#[test]
 fn a_name_before_a_partial_method_application_is_a_class() {
     const CODE: &str = "class Report\n{\n    public void run()\n    {\n        Calc.make(...);\n    }\n}\n";
     let arena = LocalArena::new();

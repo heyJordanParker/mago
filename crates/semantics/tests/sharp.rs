@@ -537,6 +537,13 @@ fn a_reserved_class_name_is_an_error() {
 }
 
 #[test]
+fn any_is_a_reserved_class_name() {
+    let code = "namespace App.Tenant;\n\nclass Any\n{\n}\n";
+
+    assert_eq!(issues(code), ["3:7 Cannot use `Any` as a class name: it is reserved."]);
+}
+
+#[test]
 fn methods_whose_names_differ_only_in_case_are_an_error() {
     let code = "class Report\n{\n    public int run() { return 1; }\n\n    public int Run() { return 2; }\n}\n";
 
@@ -546,13 +553,14 @@ fn methods_whose_names_differ_only_in_case_are_an_error() {
 
 #[test]
 fn an_import_whose_short_name_is_reserved_is_an_error() {
-    let code = "namespace App.Tenant;\n\nimport Lib.Int;\nimport Lib.Mixed;\n\nclass Report\n{\n}\n";
+    let code = "namespace App.Tenant;\n\nimport Lib.Int;\nimport Lib.Mixed;\nimport Lib.Any;\n\nclass Report\n{\n}\n";
 
     assert_eq!(
         issues(code),
         [
-            "3:8 Cannot import `Lib.Int` as `Int`: PHP reserves `Int` for a type.",
-            "4:8 Cannot import `Lib.Mixed` as `Mixed`: PHP reserves `Mixed` for a type.",
+            "3:8 Cannot import `Lib.Int` as `Int`: PHP# reserves `Int` for a type.",
+            "4:8 Cannot import `Lib.Mixed` as `Mixed`: PHP# reserves `Mixed` for a type.",
+            "5:8 Cannot import `Lib.Any` as `Any`: PHP# reserves `Any` for a type.",
         ]
     );
 }
@@ -1006,17 +1014,17 @@ fn a_member_name_written_as_an_expression_is_not_supported_yet() {
 
 #[test]
 fn types_outside_the_slice_are_not_supported_yet() {
-    let code = "class Report\n{\n    public mixed run(iterable? a, int|string b, iterable c, callable d, (Lib&Other)|null e)\n    {\n        return 1;\n    }\n\n    public self make(Lib f, float g, bool h, string i)\n    {\n        return this;\n    }\n}\n";
+    let code = "class Report\n{\n    public object run(iterable? a, int|string b, iterable c, callable d, (Lib&Other)|null e)\n    {\n        return 1;\n    }\n\n    public self make(Lib f, float g, bool h, string i)\n    {\n        return this;\n    }\n}\n";
 
     assert_eq!(
         issues(code),
         [
             "3:12 This type is not supported yet in PHP#.",
-            "3:22 This type is not supported yet in PHP#.",
-            "3:35 This type is not supported yet in PHP#.",
-            "3:49 This type is not supported yet in PHP#.",
-            "3:61 This type is not supported yet in PHP#.",
-            "3:73 This type is not supported yet in PHP#.",
+            "3:23 This type is not supported yet in PHP#.",
+            "3:36 This type is not supported yet in PHP#.",
+            "3:50 This type is not supported yet in PHP#.",
+            "3:62 This type is not supported yet in PHP#.",
+            "3:74 This type is not supported yet in PHP#.",
             "8:12 This type is not supported yet in PHP#.",
         ]
     );
@@ -1033,8 +1041,7 @@ fn a_typed_local_takes_the_types_of_the_slice_but_not_void() {
         [
             "7:9 A local cannot be `void`: `void` is only a return type.",
             "8:9 This type is not supported yet in PHP#.",
-            "9:9 Type `mixed` cannot be nullable.",
-            "9:9 This type is not supported yet in PHP#.",
+            "9:9 PHP# has no `mixed`: write `Any?`, or `Any` for a value that is never null.",
             "11:9 Cannot assign to `kept`: it is declared with `const`.",
         ]
     );
@@ -1233,6 +1240,28 @@ fn php_cast_aliases_do_not_exist_in_php_sharp() {
             "9:19 PHP# has no `(real)`: write `(float)`.",
             "10:19 PHP# has no `(boolean)`: compare the value instead, as in `count > 0` or `flag == \"1\"`.",
             "11:19 PHP# has no `(binary)`: write `(string)`.",
+        ]
+    );
+}
+
+#[test]
+fn any_and_nullable_any_are_types_of_the_slice() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private Any last = 0;\n\n    public Any payload { get; set; }\n\n    public Any keep(Any value, Any? maybe = null)\n    {\n        Any? held = maybe;\n        const Any kept = value;\n        for (Any? step = held; ; ) {\n        }\n        return kept;\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn mixed_does_not_exist_in_php_sharp() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private mixed last = null;\n\n    public mixed keep(mixed value)\n    {\n        mixed? held = value;\n        return held;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:13 PHP# has no `mixed`: write `Any?`, or `Any` for a value that is never null.",
+            "7:12 PHP# has no `mixed`: write `Any?`, or `Any` for a value that is never null.",
+            "7:23 PHP# has no `mixed`: write `Any?`, or `Any` for a value that is never null.",
+            "9:9 PHP# has no `mixed`: write `Any?`, or `Any` for a value that is never null.",
         ]
     );
 }

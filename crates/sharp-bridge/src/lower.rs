@@ -48,6 +48,7 @@ use mago_syntax::cst::Modifier;
 use mago_syntax::cst::ModifierSequenceExt;
 use mago_syntax::cst::NamedArgument;
 use mago_syntax::cst::NamespaceBody;
+use mago_syntax::cst::NullableHint;
 use mago_syntax::cst::PartialArgument;
 use mago_syntax::cst::PartialArgumentList;
 use mago_syntax::cst::PositionalArgument;
@@ -511,14 +512,17 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_ASSIGN, 0, line, &[property, value])
     }
 
-    /// A built-in type is written unqualified, and a class by its full name. A nullable type is its type with
-    /// `ZEND_TYPE_NULLABLE`, as php-src's grammar builds `?int`.
+    /// A built-in type is written unqualified, and a class by its full name. `Any` and `Any?` are PHP's `mixed`, which
+    /// already holds null. Any other nullable type is its type with `ZEND_TYPE_NULLABLE`, as php-src's grammar builds
+    /// `?int`.
     fn hint(&mut self, hint: &Hint) -> u32 {
         match hint {
             Hint::Integer(name) | Hint::Float(name) | Hint::Bool(name) | Hint::String(name) | Hint::Void(name) => {
                 self.string(ZEND_NAME_NOT_FQ, self.line(name.span), name.value)
             }
+            Hint::Mixed(any) => self.string(ZEND_NAME_NOT_FQ, self.line(any.span), b"mixed"),
             Hint::Identifier(class) => self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class)),
+            Hint::Nullable(NullableHint { hint: any @ Hint::Mixed(_), .. }) => self.hint(any),
             Hint::Nullable(nullable) => {
                 let index = self.hint(nullable.hint);
                 self.nodes[index as usize].attr |= ZEND_TYPE_NULLABLE;

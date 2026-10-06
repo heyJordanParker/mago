@@ -402,6 +402,51 @@ fn a_question_mark_after_a_type_makes_it_nullable() {
 }
 
 #[test]
+fn any_is_the_type_php_writes_mixed_and_any_question_mark_is_it_nullable() {
+    const CODE: &str = "class Report\n{\n    public Any find(Any? value) { return value; }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(ClassLikeMember::Method(method)) = class_members(program).first() else {
+        panic!("expected a method, got {:#?}", class_members(program));
+    };
+    let Hint::Mixed(any) = &method.return_type_hint.as_ref().expect("a return type").hint else {
+        panic!("expected `Any`, got {:#?}", method.return_type_hint);
+    };
+    let Some(Hint::Nullable(NullableHint { hint: Hint::Mixed(nullable), .. })) =
+        method.parameter_list.parameters.first().and_then(|parameter| parameter.hint.as_ref())
+    else {
+        panic!("expected `Any?`, got {:#?}", method.parameter_list.parameters);
+    };
+
+    assert_eq!((source(CODE, any), source(CODE, nullable)), ("Any", "Any"));
+}
+
+#[test]
+fn any_in_a_php_file_is_a_class_name() {
+    const CODE: &str = "<?php class Report { public function find(Any $value): Any { return $value; } }\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.php", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(Statement::Class(class)) =
+        program.statements.iter().find(|statement| matches!(statement, Statement::Class(_)))
+    else {
+        panic!("expected a class, got {:#?}", program.statements);
+    };
+    let Some(ClassLikeMember::Method(method)) = class.members.first() else {
+        panic!("expected a method, got {:#?}", class.members);
+    };
+
+    assert!(
+        matches!(method.return_type_hint.as_ref().map(|hint| &hint.hint), Some(Hint::Identifier(_))),
+        "{:#?}",
+        method.return_type_hint
+    );
+}
+
+#[test]
 fn a_question_mark_before_a_type_is_a_php_syntax_error_that_names_the_suffix() {
     const CODE: &str = "class Report\n{\n    public ?int find(?Calc calc) { return null; }\n}\n";
     let arena = LocalArena::new();

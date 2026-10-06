@@ -73,6 +73,9 @@ use crate::internal::context::Context;
 const SUPERGLOBALS: [&[u8]; 9] =
     [b"GLOBALS", b"_SERVER", b"_GET", b"_POST", b"_FILES", b"_COOKIE", b"_SESSION", b"_REQUEST", b"_ENV"];
 
+/// How PHP# writes PHP's `mixed`. The parser reads both as `Hint::Mixed`, and only `Any` is PHP#.
+const ANY: &[u8] = b"Any";
+
 /// Checks a PHP# file against the slice: the only constructs a `.sharp` file may use, and the contract the
 /// engine's lowering implements.
 ///
@@ -104,9 +107,9 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   auto-property rules. A `public` parameter without accessors is an error, as spec section 9 says.
 /// - A parameter: always a type, a name and an optional default, and neither variadic nor by reference. A default is
 ///   a constant expression: a literal, a constant, or the operators below on them, without `++` and `--`.
-/// - Types: `int`, `float`, `bool`, `string` and a class written by its short name, and `void` as a return type.
-///   PHP's own check reports a `void` parameter. Each of them is nullable when written with `?` after it, as in
-///   `int?`, and PHP's own check reports `void?`.
+/// - Types: `int`, `float`, `bool`, `string`, `Any` and a class written by its short name, and `void` as a return
+///   type. PHP's own check reports a `void` parameter. Each of them is nullable when written with `?` after it, as in
+///   `int?`, and PHP's own check reports `void?`. PHP's `mixed` is an error, because spec section 24 writes it `Any?`.
 /// - A method body: a block, or an expression body, `=> expr;`, which returns the expression, or runs it as a
 ///   statement in a `void` method and the constructor, as in C#.
 /// - In a method body: blocks, expression statements, `return`, `let` and `const` declarations, `if` with `else if`
@@ -301,6 +304,15 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             | Node::Modifier(Modifier::Public(_) | Modifier::Protected(_) | Modifier::Private(_)),
             FieldOrProperty,
         ) => Some(FieldOrProperty),
+        (Node::Hint(Hint::Mixed(mixed)), FieldOrProperty | Method | Parameter | Body) if mixed.value != ANY => {
+            context.report(
+                Issue::error("PHP# has no `mixed`: write `Any?`, or `Any` for a value that is never null.")
+                    .with_annotation(Annotation::primary(mixed.span).with_message("Written here."))
+                    .with_note("Spec section 24 removes PHP's `mixed`: `Any` holds a value of any type but null, and `Any?` also allows null."),
+            );
+
+            None
+        }
         (Node::Hint(hint), FieldOrProperty) if is_slice_type(hint) && !matches!(hint, Hint::Void(_)) => Some(FieldOrProperty),
         (Node::Method(method), Class) => match is_slice_method(method, context.program) {
             Ok(()) => Some(Method),
@@ -892,7 +904,7 @@ fn is_slice_type(hint: &Hint) -> bool {
             | Hint::Void(_)
             | Hint::Identifier(Identifier::Local(_))
             | Hint::Nullable(_)
-    )
+    ) || matches!(hint, Hint::Mixed(any) if any.value == ANY)
 }
 
 /// Whether the slice has a binary operator. Every operator is named, so a new one does not compile until it is
@@ -1054,13 +1066,13 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# class has attributes, a name, fields and methods, with no modifiers, `extends` or `implements`."
         }
         Place::FieldOrProperty => {
-            "A PHP# field is `private` or `protected`, and a property has the accessors `get;` and an optional `set;`. Both have a type of `int`, `float`, `bool`, `string` or a class, a name, and an optional initial value."
+            "A PHP# field is `private` or `protected`, and a property has the accessors `get;` and an optional `set;`. Both have a type of `int`, `float`, `bool`, `string`, `Any` or a class, a name, and an optional initial value."
         }
         Place::Method => {
-            "A PHP# method takes `public`, `protected`, `private` and `static`, parameters, and a return type of `int`, `float`, `bool`, `string`, `void` or a class, each but `void` nullable as in `int?`."
+            "A PHP# method takes `public`, `protected`, `private` and `static`, parameters, and a return type of `int`, `float`, `bool`, `string`, `Any`, `void` or a class, each but `void` nullable as in `int?`."
         }
         Place::Parameter => {
-            "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, a name, and an optional default."
+            "A PHP# parameter has a type of `int`, `float`, `bool`, `string`, `Any` or a class, nullable as in `int?` or not, a name, and an optional default."
         }
         Place::Body | Place::Instantiation | Place::FunctionCall | Place::TryCatchClause => {
             "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, `break` and `continue` without a level, and `try` with `catch` and `finally`, with literals, templates, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, the ternary `c ? a : b`, `(int)`, `(float)` and `(string)`, `++` and `--`, method calls and property reads written with `.` or `?.`, `new Class(...)`, calls of PHP's built-in functions and `throw`."
@@ -1207,7 +1219,7 @@ pub fn check_class_name(class: &Class, context: &mut Context<'_, '_, '_>) {
         context.report(
             Issue::error(format!("Cannot use `{name}` as a class name: it is reserved."))
                 .with_annotation(Annotation::primary(class.name.span).with_message("Class declared here."))
-                .with_note("PHP reserves this name for a type."),
+                .with_note("PHP# reserves this name for a type."),
         );
     }
 }
@@ -1227,7 +1239,7 @@ pub fn check_declarations(program: &Program, context: &mut Context<'_, '_, '_>) 
 
             context.report(
                 Issue::error(format!(
-                    "Cannot import `{full_name}` as `{short_name}`: PHP reserves `{short_name}` for a type."
+                    "Cannot import `{full_name}` as `{short_name}`: PHP# reserves `{short_name}` for a type."
                 ))
                 .with_annotation(Annotation::primary(import.name.span()).with_message("Imported here."))
                 .with_help("Import a class with another name."),
@@ -1475,8 +1487,9 @@ fn check_local_name(name: &[u8], span: Span, kind: &str, context: &mut Context<'
     }
 }
 
+/// PHP# reserves PHP's type names and `Any`, its name for `mixed`.
 fn is_reserved_class_name(name: &[u8]) -> bool {
-    RESERVED_CLASS_NAMES.iter().any(|reserved| reserved.eq_ignore_ascii_case(name))
+    RESERVED_CLASS_NAMES.iter().chain(&[ANY]).any(|reserved| reserved.eq_ignore_ascii_case(name))
 }
 
 /// Returns true when the PHP name `full_name` is the class `class_name` declared in `namespace`.

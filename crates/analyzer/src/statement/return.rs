@@ -309,7 +309,13 @@ pub fn handle_return_value<'ctx, A>(
     }
 
     if let Some(return_value) = return_value {
-        if expected_return_type.is_mixed() {
+        let mut union_comparison_result = ComparisonResult::with_strict_nonnull(context.dialect.is_sharp());
+
+        // In a `.sharp` file, `nonnull`, which PHP# writes `Any`, still refuses a value that may be null.
+        let strict_nonnull_refuses = union_comparison_result.strict_nonnull
+            && !expected_return_type.accepts_null()
+            && inferred_return_type.can_be_null();
+        if expected_return_type.is_mixed() && !strict_nonnull_refuses {
             return;
         }
 
@@ -361,8 +367,6 @@ pub fn handle_return_value<'ctx, A>(
 
             return;
         }
-
-        let mut union_comparison_result = ComparisonResult::new();
 
         let is_contained_by = is_contained_by(
             context.codebase,

@@ -101,6 +101,13 @@ class Report
         return this;
     }
 
+    public Any? hold(Any value, Any? maybe = null)
+    {
+        Any? kept = maybe;
+        const Any same = value;
+        return kept ?? same;
+    }
+
     private float ratio()
     {
         return 0.5;

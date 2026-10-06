@@ -37,7 +37,9 @@ pub fn check_hint(hint: &Hint, context: &mut Context<'_, '_, '_>) {
                 );
             }
 
-            if nullable_hint.hint.is_standalone() || nullable_hint.hint.is_complex() {
+            // PHP# writes `Any?` for PHP's `mixed`, and the slice reports `mixed` itself.
+            let is_sharp_mixed = context.program.dialect.is_sharp() && matches!(nullable_hint.hint, Hint::Mixed(_));
+            if !is_sharp_mixed && (nullable_hint.hint.is_standalone() || nullable_hint.hint.is_complex()) {
                 let val = BytesDisplay(context.get_code_snippet(nullable_hint.hint));
 
                 context.report(
