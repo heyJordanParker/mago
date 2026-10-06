@@ -1,4 +1,5 @@
 use mago_allocator::Arena;
+use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::atomic::scalar::string::TString;
@@ -10,6 +11,8 @@ use mago_codex::ttype::get_non_empty_unspecified_literal_string;
 use mago_codex::ttype::get_string;
 use mago_codex::ttype::get_unspecified_literal_string;
 use mago_codex::ttype::union::TUnion;
+use mago_reporting::Annotation;
+use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_syntax::cst::CompositeString;
 use mago_syntax::cst::StringPart;
@@ -18,6 +21,7 @@ use mago_word::word;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
+use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
@@ -86,6 +90,19 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for CompositeString<'arena> {
                 // TODO: maybe it is worth reporting an issue here?
                 continue;
             };
+
+            if context.dialect.is_sharp() && part_type.is_mixed() {
+                context.collector.report_with_code(
+                    IssueCode::MixedOperand,
+                    Issue::error(format!(
+                        "A template shows only a checked value, but this is `{}`.",
+                        part_type.get_id()
+                    ))
+                    .with_annotation(Annotation::primary(part.span()).with_message("This has type `mixed`"))
+                    .with_note("Spec section 24 refuses each use of an `Any` or `Any?` until it is checked.")
+                    .with_help("Check what the value is with `is`, `as` or `match` before the template shows it."),
+                );
+            }
 
             let casted_part_type = cast_type_to_string(
                 &part_type,
