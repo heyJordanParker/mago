@@ -783,6 +783,133 @@ fn a_local_can_be_declared_with_its_type_written() {
 }
 
 #[test]
+fn a_local_can_be_declared_with_a_union_type_written() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        int|string key = 1;\n        const Calc|int?|float found = null;\n        for (int|bool step = 0; ; ) {\n        }\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let types: Vec<&str> = method_body(program)
+        .iter()
+        .map(|statement| {
+            let local = match statement {
+                Statement::LocalDeclaration(local) => local,
+                Statement::For(r#for) => r#for.declaration.as_ref().expect("a declaration"),
+                _ => panic!("expected a local declaration, got {statement:#?}"),
+            };
+
+            source(CODE, local.hint.as_ref().expect("a type"))
+        })
+        .collect();
+
+    assert_eq!(types, ["int|string", "Calc|int?|float", "int|bool"]);
+}
+
+#[test]
+fn a_local_union_type_may_hold_collection_and_function_types() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        List<int>|string items = [];\n        Function<int()>|int make = 1;\n        (List<int>|string)? maybe = null;\n        (Function<int()>|int)? later = null;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let types: Vec<&str> = method_body(program)
+        .iter()
+        .map(|statement| {
+            let Statement::LocalDeclaration(local) = statement else {
+                panic!("expected a local declaration, got {statement:#?}");
+            };
+
+            source(CODE, local.hint.as_ref().expect("a type"))
+        })
+        .collect();
+
+    assert_eq!(types, ["List<int>|string", "Function<int()>|int", "(List<int>|string)?", "(Function<int()>|int)?"]);
+}
+
+#[test]
+fn a_union_in_parentheses_with_a_question_mark_after_it_is_nullable_wherever_a_type_goes() {
+    const CODE: &str = "class Report\n{\n    private (int|string)? key = null;\n    public (int|Calc)? id { get; }\n\n    public Report(private (bool|float)? flag)\n    {\n    }\n\n    public (Calc|string)? find((int|float)? extra)\n    {\n        (int|string)? found = null;\n        const (int|bool)? fixed = null;\n        for ((int|float)? step = null; ; ) {\n        }\n        return found;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [
+        ClassLikeMember::Property(Property::Plain(field)),
+        ClassLikeMember::Property(Property::Hooked(property)),
+        ClassLikeMember::Method(constructor),
+        ClassLikeMember::Method(find),
+    ] = class_members(program).as_slice()
+    else {
+        panic!("expected a field, a property and two methods, got {:#?}", class_members(program));
+    };
+    let MethodBody::Concrete(body) = &find.body else {
+        panic!("expected a method body, got {:#?}", find.body);
+    };
+    let locals = body.statements.iter().filter_map(|statement| match statement {
+        Statement::LocalDeclaration(local) => local.hint,
+        Statement::For(r#for) => r#for.declaration.as_ref().and_then(|local| local.hint),
+        _ => None,
+    });
+    let hints = [field.hint.as_ref(), property.hint.as_ref()]
+        .into_iter()
+        .flatten()
+        .chain(constructor.parameter_list.parameters.iter().filter_map(|parameter| parameter.hint.as_ref()))
+        .chain(find.return_type_hint.iter().map(|return_type| &return_type.hint))
+        .chain(find.parameter_list.parameters.iter().filter_map(|parameter| parameter.hint.as_ref()))
+        .chain(locals);
+    let unions: Vec<&str> = hints
+        .map(|hint| {
+            let Hint::Nullable(NullableHint { hint: Hint::Parenthesized(parenthesized), .. }) = hint else {
+                panic!("expected a nullable type in parentheses, got {hint:#?}");
+            };
+            assert!(matches!(parenthesized.hint, Hint::Union(_)), "{hint:#?}");
+
+            source(CODE, hint)
+        })
+        .collect();
+
+    assert_eq!(
+        unions,
+        [
+            "(int|string)?",
+            "(int|Calc)?",
+            "(bool|float)?",
+            "(Calc|string)?",
+            "(int|float)?",
+            "(int|string)?",
+            "(int|bool)?",
+            "(int|float)?",
+        ]
+    );
+}
+
+/// The lexer reads `(int)` as a cast, as PHP does, so PHP# writes `int?`.
+#[test]
+fn a_built_in_type_in_parentheses_is_a_parse_error() {
+    const CODE: &str = "class Report\n{\n    public int run((int)? extra) { return 1; }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    let spans: Vec<&str> = program.errors.iter().map(|error| source(CODE, error)).collect();
+    assert_eq!(spans.first(), Some(&"(int)"), "{:#?}", program.errors);
+}
+
+#[test]
+fn a_statement_starting_with_parentheses_without_a_union_is_an_expression() {
+    const CODE: &str =
+        "class Report\n{\n    void run()\n    {\n        (found).run();\n        (found || other);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [call, logical] = method_body(program) else {
+        panic!("expected two statements, got {:#?}", method_body(program));
+    };
+    assert!(matches!(expression(call), Expression::Call(Call::Method(_))), "{call:#?}");
+    assert!(matches!(expression(logical), Expression::Parenthesized(_)), "{logical:#?}");
+}
+
+#[test]
 fn a_spaced_question_mark_after_a_name_is_not_a_typed_local() {
     const CODE: &str = "class Report\n{\n    void run()\n    {\n        found ? total = 1 : 2;\n    }\n}\n";
     let arena = LocalArena::new();
@@ -1772,6 +1899,88 @@ fn super_without_a_dot_is_a_name() {
         panic!("expected one statement, got {:#?}", method_body(program));
     };
     assert_eq!(bare_name(expression(statement)), b"super");
+}
+
+/// `required` on a constructor is a modifier, spec section 25, and stays a name elsewhere. The parser keeps its own
+/// "not supported yet" error for `required` on any other member.
+#[test]
+fn required_is_a_constructor_modifier_and_stays_a_name_elsewhere() {
+    const CODE: &str = "class Entity\n{\n    public required Entity(Row row)\n    {\n        required(row);\n    }\n\n    required Entity(int count) {}\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Entity.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let modifiers: Vec<Vec<String>> = class_members(program)
+        .iter()
+        .map(|member| {
+            let ClassLikeMember::Method(method) = member else {
+                panic!("expected a method, got {member:#?}");
+            };
+
+            method.modifiers.iter().map(ToString::to_string).collect()
+        })
+        .collect();
+    assert_eq!(modifiers, [vec!["Public", "Required"], vec!["Required"]]);
+    let Some(ClassLikeMember::Method(constructor)) = class_members(program).first() else {
+        panic!("expected a method, got {:#?}", class_members(program));
+    };
+    assert_eq!(constructor.return_type_hint, None);
+    assert_eq!(source(CODE, &constructor.modifiers.as_slice()[1]), "required");
+}
+
+#[test]
+fn required_on_a_method_with_a_return_type_is_not_supported_yet() {
+    for member in ["public required int run() { return 1; }", "public required static int make() { return 1; }"] {
+        let arena = LocalArena::new();
+        let code: &'static str = Box::leak(
+            format!("class Report\n{{\n    {member}\n\n    public int other() {{ return 1; }}\n}}\n").into_boxed_str(),
+        );
+        let program = parse(&arena, "src/Report.sharp", code);
+
+        let [error] = program.errors else {
+            panic!("expected one error for `{member}`, got {:#?}", program.errors);
+        };
+        assert_eq!(error.to_string(), "`required` is not supported yet in PHP#.", "{member}");
+        assert_eq!(source(code, error), "required", "{member}");
+    }
+}
+
+/// The lexer reads `Self` and `self` as one keyword. The checker tells them apart by how the keyword is written.
+#[test]
+fn self_is_a_return_type_an_instantiated_class_and_the_class_of_a_static_call() {
+    const CODE: &str =
+        "class Entity\n{\n    public static Self make()\n    {\n        return new Self(Self.count());\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Entity.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(ClassLikeMember::Method(make)) = class_members(program).first() else {
+        panic!("expected a method, got {:#?}", class_members(program));
+    };
+    let Some(FunctionLikeReturnTypeHint { hint: Hint::Self_(keyword), .. }) = &make.return_type_hint else {
+        panic!("expected a `Self` return type, got {:#?}", make.return_type_hint);
+    };
+    assert_eq!(keyword.value, b"Self");
+    let [statement] = method_body(program) else {
+        panic!("expected one statement, got {:#?}", method_body(program));
+    };
+    let Expression::Instantiation(Instantiation {
+        class: Expression::Self_(class),
+        argument_list: Some(arguments),
+        ..
+    }) = expression(statement)
+    else {
+        panic!("expected `new Self(…)`, got {statement:#?}");
+    };
+    assert_eq!(class.value, b"Self");
+    let [Argument::Positional(argument)] = arguments.arguments.as_slice() else {
+        panic!("expected one argument, got {arguments:#?}");
+    };
+    let Expression::Call(Call::Method(count)) = argument.value else {
+        panic!("expected a method call, got {:#?}", argument.value);
+    };
+    assert!(matches!(count.object, Expression::Self_(keyword) if keyword.value == b"Self"), "{:#?}", count.object);
+    assert_eq!(source(CODE, count), "Self.count()");
 }
 
 #[test]

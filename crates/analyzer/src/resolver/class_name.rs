@@ -258,7 +258,7 @@ where
         {
             possible_types.push(resolve_named_class(context, block_context, &constant_access.name));
         }
-        Expression::Self_(self_keyword) => {
+        Expression::Self_(self_keyword) if !context.dialect.is_sharp() => {
             if let Some(self_class) = block_context.scope.get_class_like() {
                 let origin = ResolutionOrigin::Named { is_parent: false, is_self: true };
                 let mut class_name = ResolvedClassname::new(
@@ -280,7 +280,9 @@ where
                 );
             }
         }
-        Expression::Static(static_keyword) => {
+        // PHP#'s `Self` is PHP's `static`, spec section 25, and the checker refuses PHP's `self`, which the lexer reads
+        // as the same keyword.
+        Expression::Static(static_keyword) | Expression::Self_(static_keyword) => {
             if let Some(self_class) = block_context.scope.get_class_like() {
                 let origin = ResolutionOrigin::Static { can_extend: !self_class.flags.is_final() };
                 let mut classname = ResolvedClassname::new(

@@ -1422,6 +1422,241 @@ fn attribute_arguments_are_checked_against_the_attribute_constructor_as_in_php()
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
 }
 
+const PRICES: &str = "<?php\n\nnamespace Lib;\n\nfinal class Prices\n{\n    /** @return array<string, int> */\n    public static function named(): array\n    {\n        return ['a' => 1];\n    }\n\n    /** @return iterable<int, int> */\n    public static function stream(): iterable\n    {\n        yield 1;\n    }\n\n    /** @return list<int> */\n    public static function listed(): array\n    {\n        return [1, 2];\n    }\n}\n";
+
+#[test]
+fn a_spread_of_a_value_that_is_not_a_list_is_an_invalid_argument() {
+    let sharp = "namespace Demo;\n\nimport Lib.Prices;\n\nclass Report\n{\n    public Report(int first, int second)\n    {\n    }\n\n    public int size() => 1;\n\n    public static int sum(int ...values) => count(values);\n\n    public static int spread()\n    {\n        const named = Report.sum(...Prices.named());\n        const stream = Report.sum(...Prices.stream());\n        const made = new Report(...Prices.named());\n        return named + stream + made.size() + Report.sum(...Prices.listed());\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Prices;\n\nclass Report\n{\n    public function __construct(int $first, int $second)\n    {\n    }\n\n    public function size(): int { return 1; }\n\n    public static function sum(int ...$values): int { return count($values); }\n\n    public static function spread(): int\n    {\n        $named = Report::sum(...Prices::named());\n        $stream = Report::sum(...Prices::stream());\n        $made = new Report(...Prices::named());\n        return $named + $stream + $made->size() + Report::sum(...Prices::listed());\n    }\n}\n";
+
+    // An `array<string, int>` may be empty, so the constructor may get too few arguments, in PHP too.
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Prices.php", PRICES)]),
+        ["17:37 invalid-argument", "18:38 invalid-argument", "19:36 invalid-argument", "19:32 too-few-arguments"]
+    );
+    assert_eq!(issues(("src/Demo/Report.php", php), &[("src/Lib/Prices.php", PRICES)]), ["21:27 too-few-arguments"]);
+}
+
+#[test]
+fn a_spread_of_a_value_that_is_not_iterable_is_one_invalid_argument() {
+    let into_defaults = "namespace Demo;\n\nclass Report\n{\n    public static int part(int first = 1, int second = 2) => first + second;\n\n    public static int run(int number) => Report.part(...number);\n}\n";
+    let into_variadic = "namespace Demo;\n\nclass Report\n{\n    public static int sum(int ...values) => count(values);\n\n    public static int run(int number) => Report.sum(...number);\n}\n";
+
+    for sharp in [into_defaults, into_variadic] {
+        let issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[]);
+        let messages: Vec<&str> = issues.iter().map(|issue| issue.message.as_str()).collect();
+
+        assert_eq!(messages, ["Cannot spread a value of type `int`: PHP# spreads only a list."], "{sharp}");
+    }
+}
+
+#[test]
+fn a_named_argument_never_fills_a_variadic_parameter_of_a_method_or_a_php_function() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int sum(int ...values) => max(0, ...values);\n\n    public static int run()\n    {\n        const named = Report.sum(first: 1, second: 2);\n        const own = Report.sum(values: 1);\n        const after = Report.sum(1, values: 2);\n        return named + own + after + strlen(sprintf(\"%d\", 1, other: 2));\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function sum(int ...$values): int { return max(0, ...$values); }\n\n    public static function run(): int\n    {\n        $named = Report::sum(first: 1, second: 2);\n        $own = Report::sum(values: 1);\n        $after = Report::sum(1, values: 2);\n        return $named + $own + $after + strlen(sprintf(\"%d\", 1, other: 2));\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[]),
+        [
+            "9:34 invalid-named-argument",
+            "10:32 invalid-named-argument",
+            "11:37 invalid-named-argument",
+            "12:62 invalid-named-argument",
+        ]
+    );
+    let annotations: Vec<String> = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[])
+        .iter()
+        .filter_map(|issue| issue.primary_annotation()?.message.clone())
+        .collect();
+    assert_eq!(annotations, ["A variadic parameter takes no named argument in PHP#"; 4]);
+    assert_eq!(issues(("src/Demo/Report.php", php), &[]), ["13:33 named-argument-after-positional"]);
+}
+
+#[test]
+fn a_default_that_does_not_fit_its_type_is_an_error_unless_the_type_is_nullable() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    protected int key = null;\n    protected int|string other = false;\n    protected int? kept = null;\n\n    public Report(protected int|string id = null)\n    {\n    }\n\n    public static int size(int|string id = null, int x = null, int? y = null) => 1;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    protected int $key = null;\n    protected int|string $other = false;\n    protected ?int $kept = null;\n\n    public function __construct(protected int|string $id = null)\n    {\n    }\n\n    public static function size(int|string $id = null, int $x = null, ?int $y = null): int { return 1; }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[]),
+        [
+            "5:25 invalid-property-default-value",
+            "6:34 invalid-property-default-value",
+            "9:45 invalid-parameter-default-value",
+            "13:44 invalid-parameter-default-value",
+            "13:58 invalid-parameter-default-value",
+        ]
+    );
+    assert_eq!(issues(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn a_variadic_parameter_is_a_list_that_spreads_into_methods_and_php_functions_with_no_issue() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int sum(int ...values)\n    {\n        const most = max(0, ...values);\n        return Report.total(...values) + new Report(...values).size() + most;\n    }\n\n    public Report(int ...values)\n    {\n    }\n\n    public int size() => 1;\n\n    public static int total(int ...values) => count(values);\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn a_union_type_is_checked_as_php_checks_its_twin() {
+    let sharp = "namespace Demo;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private int|string key = 1;\n\n    public int|string find(int|Calc id)\n    {\n        int|string found = this.key;\n        if (found === 1) {\n            return 1.5;\n        }\n        return id;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Calc;\n\nclass Report\n{\n    private int|string $key = 1;\n\n    public function find(int|Calc $id): int|string\n    {\n        $found = $this->key;\n        if ($found === 1) {\n            return 1.5;\n        }\n        return $id;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Calc.php", CALC)]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[("src/Lib/Calc.php", CALC)]);
+
+    assert_eq!(sharp_issues, ["13:20 invalid-return-statement", "15:16 invalid-return-statement"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+/// A lambda's union and variadic parameters, and a function type's union parameter, are checked as their PHP twins'.
+#[test]
+fn a_lambda_with_union_and_variadic_parameters_is_checked_as_its_php_twin() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public int run()\n    {\n        const pick = (int|string key, int ...rest) => count(rest);\n        Function<int(int|string)> size = key => 1;\n        pick(1.5);\n        pick(\"a\", 1, \"b\");\n        return pick(1, ...[2, 3]) + size(2.5);\n    }\n}\n";
+    let php = "<?php\n\ndeclare(strict_types=1);\n\nnamespace Demo;\n\nclass Report\n{\n    public function run(): int\n    {\n        $pick = fn(int|string $key, int ...$rest): int => count($rest);\n        $size = fn(int|string $key): int => 1;\n        $pick(1.5);\n        $pick(\"a\", 1, \"b\");\n        return $pick(1, ...[2, 3]) + $size(2.5);\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[]);
+
+    assert_eq!(sharp_issues, ["9:14 invalid-argument", "10:22 invalid-argument", "11:42 invalid-argument"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{php_issues:?}");
+}
+
+/// An enum's method that returns `Self` is checked as one returning `static`, and its union-typed constant as a
+/// typed constant, as in PHP.
+#[test]
+fn an_enum_returning_self_with_a_union_constant_is_checked_as_its_php_twin() {
+    let sharp = "namespace Demo;\n\nenum Status : string\n{\n    public const int|string Key = 1;\n\n    case Active = \"a\";\n\n    public static Self first() => Status.Active;\n\n    public static List<Self> all() => Self.cases();\n\n    public static Self? find(string ...codes) => Status.tryFrom(codes[0] ?? \"a\");\n\n    public static Self wrong() => \"a\";\n\n    public static int|string key() => Status.Key;\n}\n";
+    let php = "<?php\n\ndeclare(strict_types=1);\n\nnamespace Demo;\n\nenum Status: string\n{\n    public const int|string Key = 1;\n\n    case Active = \"a\";\n\n    public static function first(): static { return Status::Active; }\n\n    /** @return list<static> */\n    public static function all(): array { return static::cases(); }\n\n    public static function find(string ...$codes): ?static { return Status::tryFrom($codes[0] ?? \"a\"); }\n\n    public static function wrong(): static { return \"a\"; }\n\n    public static function key(): int|string { return Status::Key; }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Status.sharp", sharp), &[]);
+    let php_issues = issues_with(Settings { check_throws: false, ..settings() }, ("src/Demo/Status.php", php), &[]);
+
+    assert_eq!(sharp_issues, ["15:35 invalid-return-statement"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{php_issues:?}");
+}
+
+#[test]
+fn a_nullable_union_holds_its_types_and_null_as_its_php_twin_does() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    private (int|string)? key = null;\n\n    public (int|string)? find((int|string)? id)\n    {\n        (int|string)? found = id ?? this.key;\n        return found;\n    }\n\n    public int run()\n    {\n        this.find(null);\n        this.find(\"one\");\n        this.find(1.5);\n        return 1;\n    }\n}\n";
+    let php = "<?php\n\ndeclare(strict_types=1);\n\nnamespace Demo;\n\nclass Report\n{\n    private int|string|null $key = null;\n\n    public function find(int|string|null $id): int|string|null\n    {\n        $found = $id ?? $this->key;\n        return $found;\n    }\n\n    public function run(): int\n    {\n        $this->find(null);\n        $this->find(\"one\");\n        $this->find(1.5);\n        return 1;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[]);
+
+    assert_eq!(sharp_issues, ["17:19 invalid-argument"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn a_nullable_field_without_an_initial_value_starts_as_null_as_its_php_twin_does() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    private int? total;\n    private (int|string)? key;\n    public Report? next { get; set; }\n\n    public int? current()\n    {\n        return this.total;\n    }\n\n    public int sum()\n    {\n        return (this.total ?? 0) + (this.next?.sum() ?? 0);\n    }\n\n    public (int|string)? find() => this.key;\n}\n";
+    let php = "<?php\n\ndeclare(strict_types=1);\n\nnamespace Demo;\n\nclass Report\n{\n    private ?int $total = null;\n    private int|string|null $key = null;\n    public ?Report $next = null;\n\n    public function current(): ?int\n    {\n        return $this->total;\n    }\n\n    public function sum(): int\n    {\n        return ($this->total ?? 0) + ($this->next?->sum() ?? 0);\n    }\n\n    public function find(): int|string|null\n    {\n        return $this->key;\n    }\n}\n";
+    let php_without_default = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    private ?int $total;\n\n    public function current(): ?int\n    {\n        return $this->total;\n    }\n}\n";
+    let settings = || Settings { check_property_initialization: true, ..settings() };
+
+    let sharp_issues = issues_with(settings(), ("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues_with(settings(), ("src/Demo/Report.php", php), &[]);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+    assert_eq!(issues_with(settings(), ("src/Demo/Report.php", php_without_default), &[]), ["5:7 missing-constructor"]);
+}
+
+#[test]
+fn a_nullable_field_returned_as_a_value_is_reported_as_its_php_twin_is() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    private int? total;\n\n    public int current()\n    {\n        return this.total;\n    }\n}\n";
+    let php = "<?php\n\ndeclare(strict_types=1);\n\nnamespace Demo;\n\nclass Report\n{\n    private ?int $total = null;\n\n    public function current(): int\n    {\n        return $this->total;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[]);
+
+    assert_eq!(sharp_issues, ["9:16 nullable-return-statement", "9:16 invalid-return-statement"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+const ROW: &str = "<?php\n\nnamespace Lib;\n\nfinal class Row\n{\n}\n";
+const CLOCK: &str = "<?php\n\nnamespace Lib;\n\nfinal class Clock\n{\n}\n";
+
+/// Spec section 25's example: `Self` is PHP's `static`, and a `required` constructor is the one every subclass keeps,
+/// as PHP's `@consistent-constructor`. So `Order.fromSchema(row)` returns an `Order`, and a subclass constructor that
+/// adds a parameter without a default is an error, as in PHP.
+#[test]
+fn self_and_a_required_constructor_are_checked_as_static_and_a_consistent_constructor_in_php() {
+    let sharp = "namespace Demo;\n\nimport Lib.Clock;\nimport Lib.Row;\n\npublic abstract class DatabaseEntity\n{\n    public required DatabaseEntity(Row row)\n    {\n    }\n\n    public static Self fromSchema(Row row)\n    {\n        return new Self(row);\n    }\n}\n\npublic class Order : DatabaseEntity\n{\n    public Order(Row row, Clock? clock = null)\n    {\n        super.__construct(row);\n    }\n\n    public static Order make(Row row) => Order.fromSchema(row);\n\n    public static Invoice wrong(Row row) => Order.fromSchema(row);\n}\n\npublic class Invoice : DatabaseEntity\n{\n    public Invoice(Row row, Clock clock)\n    {\n        super.__construct(row);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Clock;\nuse Lib\\Row;\n\n/** @consistent-constructor */\nabstract class DatabaseEntity\n{\n    public function __construct(Row $row)\n    {\n    }\n\n    public static function fromSchema(Row $row): static\n    {\n        return new static($row);\n    }\n}\n\nclass Order extends DatabaseEntity\n{\n    public function __construct(Row $row, ?Clock $clock = null)\n    {\n        parent::__construct($row);\n    }\n\n    public static function make(Row $row): Order\n    {\n        return Order::fromSchema($row);\n    }\n\n    public static function wrong(Row $row): Invoice\n    {\n        return Order::fromSchema($row);\n    }\n}\n\nclass Invoice extends DatabaseEntity\n{\n    public function __construct(Row $row, Clock $clock)\n    {\n        parent::__construct($row);\n    }\n}\n";
+    let others = [("src/Lib/Row.php", ROW), ("src/Lib/Clock.php", CLOCK)];
+
+    let sharp_issues = issues(("src/Demo/DatabaseEntity.sharp", sharp), &others);
+    let php_issues = issues(("src/Demo/DatabaseEntity.php", php), &others);
+
+    assert_eq!(sharp_issues, ["27:45 invalid-return-statement", "32:12 incompatible-parameter-count"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{php_issues:?}");
+}
+
+/// `Self` can be any descendant, so a grandchild's constructor is compared with its parent's as a child's is, spec
+/// section 25.
+#[test]
+fn every_descendant_of_a_required_constructor_keeps_a_matching_constructor() {
+    let sharp = "namespace Demo;\n\nimport Lib.Clock;\nimport Lib.Row;\n\npublic abstract class DatabaseEntity\n{\n    public required DatabaseEntity(Row row)\n    {\n    }\n\n    public static Self fromSchema(Row row) => new Self(row);\n}\n\npublic class Order : DatabaseEntity\n{\n    public Order(Row row, Clock? clock = null)\n    {\n        super.__construct(row);\n    }\n}\n\npublic class Shipment : Order\n{\n    public Shipment()\n    {\n        super.__construct(new Row());\n    }\n}\n\npublic class LineItem : Order\n{\n    public LineItem(Row row, Clock clock)\n    {\n        super.__construct(row, clock);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/DatabaseEntity.sharp", sharp), &[("src/Lib/Row.php", ROW), ("src/Lib/Clock.php", CLOCK)]),
+        ["25:12 incompatible-parameter-count", "33:12 incompatible-parameter-count"]
+    );
+}
+
+/// Only a `required` constructor binds the subclasses' constructors, so without one a subclass constructor may add a
+/// parameter without a default, as in PHP.
+#[test]
+fn a_subclass_constructor_of_a_class_without_a_required_constructor_may_add_parameters() {
+    let sharp = "namespace Demo;\n\nimport Lib.Clock;\nimport Lib.Row;\n\npublic abstract class DatabaseEntity\n{\n    public DatabaseEntity(Row row)\n    {\n        row;\n    }\n}\n\npublic class Invoice : DatabaseEntity\n{\n    public Invoice(Row row, Clock clock)\n    {\n        super.__construct(row);\n        clock;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/DatabaseEntity.sharp", sharp), &[("src/Lib/Row.php", ROW), ("src/Lib/Clock.php", CLOCK)]),
+        ["10:9 unused-statement", "19:9 unused-statement"]
+    );
+}
+
+/// `Self.count()` is PHP's `static::count()`.
+#[test]
+fn self_calls_a_static_method_as_static_does_in_php() {
+    let sharp = "namespace Demo;\n\npublic class Counter\n{\n    public static int count() => 1;\n\n    public static int twice() => Self.count() + Self.count();\n\n    public static int missing() => Self.absent();\n\n    public static Self make() => new Self(Self.count());\n\n    public required Counter(int start)\n    {\n        start;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\n/** @consistent-constructor */\nclass Counter\n{\n    public static function count(): int\n    {\n        return 1;\n    }\n\n    public static function twice(): int\n    {\n        return static::count() + static::count();\n    }\n\n    public static function missing(): int\n    {\n        return static::absent();\n    }\n\n    public static function make(): static\n    {\n        return new static(static::count());\n    }\n\n    public function __construct(int $start)\n    {\n        $start;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Counter.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Counter.php", php), &[]);
+
+    assert_eq!(sharp_issues, ["9:41 non-existent-method", "9:36 mixed-return-statement", "15:9 unused-statement"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{php_issues:?}");
+}
+
+/// PHP reads `Self->count()` as an instance call on `self`, and only a `.sharp` file reads `Self.count()` as a
+/// static call.
+#[test]
+fn a_php_self_arrow_call_keeps_its_upstream_issue() {
+    let php = "<?php\n\nnamespace Demo;\n\nclass Counter\n{\n    public static function count(): int\n    {\n        return Self->count();\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Counter.php", php), &[]),
+        ["9:16 invalid-scope-keyword-context", "9:16 mixed-return-statement"]
+    );
+}
+
+/// An override of a method whose parameter is variadic declares it variadic too, spec section 7, as PHP refuses
+/// otherwise when it links the class. Upstream Mago misses it, so a `.php` file keeps reporting nothing.
+#[test]
+fn an_override_of_a_variadic_parameter_is_variadic() {
+    let sharp = "namespace Demo;\n\npublic class Base\n{\n    public virtual int sum(int ...values) => count(values);\n}\n\npublic class Child : Base\n{\n    public override int sum(int values) => values;\n}\n\npublic class Fine : Base\n{\n    public override int sum(int ...values) => count(values) + 1;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Base\n{\n    public function sum(int ...$values): int\n    {\n        return count($values);\n    }\n}\n\nclass Child extends Base\n{\n    #[\\Override]\n    public function sum(int $values): int\n    {\n        return $values;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Base.sharp", sharp), &[]), ["10:25 incompatible-parameter-count"]);
+    assert_eq!(issues(("src/Demo/Base.php", php), &[]), Vec::<String>::new());
+
+    let issue = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Base.sharp", sharp), &[]).remove(0);
+    assert_eq!(issue.message, "`Demo\\Child::sum()` must declare parameter `values` variadic like `Demo\\Base::sum()`");
+}
+
 #[test]
 fn a_backed_enum_and_a_class_using_it_have_the_issues_of_their_php_twins() {
     let sharp = "namespace Demo;\n\nenum Status : string\n{\n    case Active = \"a\";\n    case Paused = \"p\";\n\n    public string label()\n    {\n        return this.name + \": \" + this.value;\n    }\n\n    public static Status fallback()\n    {\n        return Status.from(\"a\");\n    }\n}\n\nclass Report\n{\n    private Status status;\n\n    public Report(Status status)\n    {\n        this.status = status;\n    }\n\n    public string describe(string code)\n    {\n        const found = Status.tryFrom(code);\n        if (found === null || count(Status.cases()) < 2) {\n            return this.status.label();\n        }\n        return found.value + found.name;\n    }\n\n    public static Report make()\n    {\n        return new Report(Status.fallback());\n    }\n}\n";

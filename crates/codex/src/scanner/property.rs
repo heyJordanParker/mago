@@ -33,6 +33,7 @@ use crate::scanner::ttype::merge_type_preserving_nullability;
 use crate::scanner::typing_error_issue;
 use crate::scanner::version_claim::TypeOverride;
 use crate::scanner::version_claim::evaluate_version_attributes;
+use crate::ttype::get_null;
 use crate::ttype::resolution::TypeResolutionContext;
 use crate::visibility::Visibility;
 
@@ -190,6 +191,7 @@ where
     }
 
     let mut flags = MetadataFlags::origin_flags(context.file.file_type);
+    let is_sharp = context.program.dialect.is_sharp();
 
     match property {
         Property::Plain(plain_property) => {
@@ -205,8 +207,12 @@ where
                 .items
                 .iter()
                 .map(|item| {
-                    let (name, name_span, has_default, default_type) =
+                    let (name, name_span, mut has_default, mut default_type) =
                         scan_property_item(item, classname, context, scope);
+                    if is_sharp && !has_default {
+                        default_type = sharp_null_default(plain_property.hint.as_ref(), name_span);
+                        has_default = default_type.is_some();
+                    }
 
                     let mut item_flags = flags;
 
@@ -291,7 +297,6 @@ where
                 Some(class_like_metadata.original_name),
             );
 
-            let is_sharp = context.program.dialect.is_sharp();
             let (name, name_span, mut has_default, mut default_type) =
                 scan_property_item(&hooked_property.item, classname, context, scope);
             if let Some(initial_value) = &hooked_property.initial_value {
@@ -301,6 +306,10 @@ where
                     type_metadata.inferred = true;
                     type_metadata
                 });
+            }
+            if is_sharp && !has_default && !hooked_property.hook_list.is_get_only() {
+                default_type = sharp_null_default(hooked_property.hint.as_ref(), name_span);
+                has_default = default_type.is_some();
             }
 
             let read_visibility = match hooked_property.modifiers.get_first_read_visibility() {
@@ -454,6 +463,16 @@ fn sharp_write_visibility(accessors: &PropertyHookList, read_visibility: Visibil
         None if read_visibility == Visibility::Public => Visibility::Protected,
         None => read_visibility,
     }
+}
+
+/// The default of a PHP# field or auto-property with `set` of a nullable type written without an initial value: it
+/// starts as null, as in C# and Swift, and the engine gives it the default `null`.
+fn sharp_null_default(hint: Option<&Hint>, name_span: Span) -> Option<TypeMetadata> {
+    matches!(hint, Some(Hint::Nullable(_))).then(|| {
+        let mut type_metadata = TypeMetadata::new(get_null(), name_span);
+        type_metadata.inferred = true;
+        type_metadata
+    })
 }
 
 fn scan_property_hook<'arena, A>(

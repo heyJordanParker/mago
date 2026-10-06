@@ -209,7 +209,7 @@ pub fn check_method<'ast, 'arena>(
                 );
             }
             // Only PHP# parses these, and `check_slice` decides them.
-            Modifier::Virtual(_) | Modifier::Override(_) => {}
+            Modifier::Virtual(_) | Modifier::Override(_) | Modifier::Required(_) => {}
         }
     }
 
