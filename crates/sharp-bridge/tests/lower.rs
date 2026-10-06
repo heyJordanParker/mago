@@ -3281,6 +3281,119 @@ fn a_magic_property_and_a_magic_method_of_a_php_class_are_a_property_and_a_metho
 }
 
 /// ```php
+/// $again = ($other === null ? null : $other->count(...));
+/// return (($nullsafe#1 = $this->next()) === null ? null : ($nullsafe#1->scale)(1)->count());
+/// ```
+///
+/// PHP's `?->` cannot take a method as a first-class callable or call a property's function, so a null-safe method
+/// value or property call is a conditional on the receiver. It wraps the rest of the chain, which a null receiver skips
+/// as `?->` does. A receiver other than a local goes into a hidden variable, so it runs once.
+#[test]
+fn a_null_safe_method_value_or_property_call_is_a_conditional_over_the_rest_of_the_chain() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    private Function<Report(int)> scale;\n\n    public Report()\n    {\n        this.scale = n => this;\n    }\n\n    public int? run(Report? other)\n    {\n        const Function<int()>? again = other?.count;\n        return this.next()?.scale(1).count();\n    }\n\n    private Report? next() => null;\n\n    private int count() => 1;\n}\n",
+    );
+
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "again"
+                CONDITIONAL [1]
+                  BINARY_OP [16]
+                    VAR
+                      ZVAL "other"
+                    ZVAL null
+                  ZVAL null
+                  METHOD_CALL
+                    VAR
+                      ZVAL "other"
+                    ZVAL "count"
+                    CALLABLE_CONVERT
+              RETURN
+                CONDITIONAL [1]
+                  BINARY_OP [16]
+                    ASSIGN
+                      VAR
+                        ZVAL "nullsafe#1"
+                      METHOD_CALL
+                        VAR
+                          ZVAL "this"
+                        ZVAL "next"
+                        ARG_LIST
+                    ZVAL null
+                  ZVAL null
+                  METHOD_CALL
+                    CALL
+                      PROP
+                        VAR
+                          ZVAL "nullsafe#1"
+                        ZVAL "scale"
+                      ARG_LIST
+                        ZVAL 1
+                    ZVAL "count"
+                    ARG_LIST
+        "#}
+    );
+}
+
+/// ```php
+/// return (($nullsafe#1 = (($nullsafe#2 = $this->next()) === null ? null : ($nullsafe#2->scale)(1))) === null
+///     ? null : ($nullsafe#1->scale)(2));
+/// ```
+///
+/// A null-safe property call whose receiver is another one tests each receiver in its own hidden variable.
+#[test]
+fn nested_null_safe_property_calls_each_get_their_own_hidden_variable() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    private Function<Report?(int)> scale;\n\n    public Report()\n    {\n        this.scale = n => null;\n    }\n\n    public Report? run()\n    {\n        return this.next()?.scale(1)?.scale(2);\n    }\n\n    private Report? next() => null;\n}\n",
+    );
+
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CONDITIONAL [1]
+                  BINARY_OP [16]
+                    ASSIGN
+                      VAR
+                        ZVAL "nullsafe#1"
+                      CONDITIONAL [1]
+                        BINARY_OP [16]
+                          ASSIGN
+                            VAR
+                              ZVAL "nullsafe#2"
+                            METHOD_CALL
+                              VAR
+                                ZVAL "this"
+                              ZVAL "next"
+                              ARG_LIST
+                          ZVAL null
+                        ZVAL null
+                        CALL
+                          PROP
+                            VAR
+                              ZVAL "nullsafe#2"
+                            ZVAL "scale"
+                          ARG_LIST
+                            ZVAL 1
+                    ZVAL null
+                  ZVAL null
+                  CALL
+                    PROP
+                      VAR
+                        ZVAL "nullsafe#1"
+                      ZVAL "scale"
+                    ARG_LIST
+                      ZVAL 2
+        "#}
+    );
+}
+
+/// ```php
 /// return \App\Tenant\Report::make();
 /// ```
 #[test]

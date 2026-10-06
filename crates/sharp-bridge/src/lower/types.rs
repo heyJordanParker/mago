@@ -89,16 +89,18 @@ impl<'analysis> Types<'analysis> {
         Declaration { kind }
     }
 
-    /// The declaration the method call `call` runs: the receiver's method, or else its property holding a function,
-    /// as spec section 14 calls one. The receiver's type names one class.
+    /// The declaration the method call `call`, null-safe or not, runs: the receiver's method, or else its property
+    /// holding a function, as spec section 14 calls one. The receiver's type names one class.
     pub(crate) fn call_target(&self, call: &Expression) -> Declaration {
-        let Expression::Call(Call::Method(call)) = call else {
-            unreachable!("only a method call has a typed call target yet");
+        let (object, method) = match call {
+            Expression::Call(Call::Method(call)) => (call.object, &call.method),
+            Expression::Call(Call::NullSafeMethod(call)) => (call.object, &call.method),
+            _ => unreachable!("only a method call has a typed call target yet"),
         };
-        let ClassLikeMemberSelector::Identifier(method) = &call.method else {
-            unreachable!("check_slice refuses the method name `{}`", call.method);
+        let ClassLikeMemberSelector::Identifier(method) = method else {
+            unreachable!("check_slice refuses the method name `{method}`");
         };
-        let class = single_class(self.expression_type(call.object))
+        let class = single_class(self.expression_type(object))
             .unwrap_or_else(|| unreachable!("the lowering asks only for a receiver whose type names one class"));
 
         let kind = self.method_kind(class, method.value).or_else(|| self.property_kind(class, method.value));

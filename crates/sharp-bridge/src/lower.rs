@@ -268,8 +268,12 @@ struct Lowering<'lowering, 'arena> {
     nodes: Vec<sharp_node>,
     children: Vec<u32>,
     texts: Vec<u8>,
-    /// How many hidden variables the pattern forms being lowered hold.
+    /// How many hidden variables the pattern forms and null-safe chains being lowered hold.
     temporaries: u32,
+    /// The receivers of the null-safe chains being lowered that their hidden variable holds, by span, with its name.
+    null_safe_receivers: Vec<(Span, Vec<u8>)>,
+    /// The null-safe links whose chain's conditional already tests the receiver, so each is its plain form.
+    tested_links: Vec<Span>,
     /// The declaration offsets of the locals a lambda captures by reference: those code writes.
     by_reference: HashSet<u32>,
     /// How many loop bodies hold the statement being lowered, inside the innermost method or lambda.
@@ -292,6 +296,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             children: Vec::new(),
             texts: Vec::new(),
             temporaries: 0,
+            null_safe_receivers: Vec::new(),
+            tested_links: Vec::new(),
             by_reference: HashSet::default(),
             loop_depth: 0,
             property: Vec::new(),
@@ -1024,6 +1030,14 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
     fn expression(&mut self, expression: &Expression) -> u32 {
         let line = self.line(expression);
+        if let Some((_, name)) = self.null_safe_receivers.iter().find(|(span, _)| *span == expression.span()) {
+            let name = name.clone();
+
+            return self.variable(expression.span(), &name);
+        }
+        if let Some((link, receiver)) = self.untested_link(expression) {
+            return self.null_safe_chain(expression, link, receiver);
+        }
 
         ensure_sufficient_stack(|| match expression {
             Expression::Literal(literal) => self.literal(literal),
@@ -1174,39 +1188,44 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                         kind => unreachable!("`Class.y` names a member, not a {kind:?}"),
                     }
                 }
-                // `object.name` is the method `name` as a first-class callable when the checker found a method.
                 None => {
-                    let is_method = match (single_class(self.types.expression_type(access.object)), &access.property) {
-                        (Some(class), ClassLikeMemberSelector::Identifier(name)) => matches!(
-                            self.types.member_declaration(class, name.value).kind,
-                            DeclarationKind::Method | DeclarationKind::StaticMethod
-                        ),
-                        _ => false,
-                    };
+                    let is_method = self.is_method_value(access.object, &access.property);
                     let object = self.expression(access.object);
                     let member = self.member(&access.property);
 
                     if is_method {
-                        let callable = self.node(SHARP_AST_CALLABLE_CONVERT, 0, line, &[]);
-
-                        self.node(SHARP_AST_METHOD_CALL, 0, line, &[object, member, callable])
+                        self.method_value(line, object, member)
                     } else {
                         self.node(SHARP_AST_PROP, 0, line, &[object, member])
                     }
                 }
             },
+            // A link whose chain's conditional tests the receiver is the property call `untested_link` found.
             Expression::Call(Call::NullSafeMethod(call)) => {
-                let object = self.null_safe_object(call.object);
+                let tested = self.tested_links.contains(&expression.span());
+                let object = if tested { self.expression(call.object) } else { self.null_safe_object(call.object) };
                 let method = self.member(&call.method);
                 let arguments = self.arguments(&call.argument_list);
 
-                self.node(SHARP_AST_NULLSAFE_METHOD_CALL, 0, line, &[object, method, arguments])
-            }
-            Expression::Access(Access::NullSafeProperty(access)) => {
-                let object = self.null_safe_object(access.object);
-                let property = self.member(&access.property);
+                if tested {
+                    let property = self.node(SHARP_AST_PROP, 0, line, &[object, method]);
 
-                self.node(SHARP_AST_NULLSAFE_PROP, 0, line, &[object, property])
+                    self.node(SHARP_AST_CALL, 0, line, &[property, arguments])
+                } else {
+                    self.node(SHARP_AST_NULLSAFE_METHOD_CALL, 0, line, &[object, method, arguments])
+                }
+            }
+            // A link whose chain's conditional tests the receiver is the method value `untested_link` found.
+            Expression::Access(Access::NullSafeProperty(access)) => {
+                let tested = self.tested_links.contains(&expression.span());
+                let object = if tested { self.expression(access.object) } else { self.null_safe_object(access.object) };
+                let member = self.member(&access.property);
+
+                if tested {
+                    self.method_value(line, object, member)
+                } else {
+                    self.node(SHARP_AST_NULLSAFE_PROP, 0, line, &[object, member])
+                }
             }
             Expression::TypeOf(type_of) => {
                 let class = self.string(ZEND_NAME_FQ, self.line(type_of.class), self.names.get(&type_of.class));
@@ -1230,6 +1249,105 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             }
             _ => unreachable!("check_slice refuses the expression `{expression}`"),
         })
+    }
+
+    /// Whether `object.member` reads a method, which the read takes as a first-class callable.
+    fn is_method_value(&self, object: &Expression, member: &ClassLikeMemberSelector) -> bool {
+        match (single_class(self.types.expression_type(object)), member) {
+            (Some(class), ClassLikeMemberSelector::Identifier(name)) => matches!(
+                self.types.member_declaration(class, name.value).kind,
+                DeclarationKind::Method | DeclarationKind::StaticMethod
+            ),
+            _ => false,
+        }
+    }
+
+    /// Whether the method call `call` on `object` runs the function the property of that name holds.
+    fn is_property_call(&self, call: &Expression, object: &Expression) -> bool {
+        single_class(self.types.expression_type(object)).is_some()
+            && self.types.call_target(call).kind == DeclarationKind::Property
+    }
+
+    /// `$object->member(...)`, the method as a first-class callable.
+    fn method_value(&mut self, line: u32, object: u32, member: u32) -> u32 {
+        let callable = self.node(SHARP_AST_CALLABLE_CONVERT, 0, line, &[]);
+
+        self.node(SHARP_AST_METHOD_CALL, 0, line, &[object, member, callable])
+    }
+
+    /// The highest null-safe link in `chain` that PHP's `?->` cannot write, a method value or a property call, with
+    /// its receiver, when `chain` is a member read, a call or an index whose chain holds one no conditional tests yet.
+    /// The walk stops at a receiver a hidden variable holds, whose links its own conditional tests.
+    fn untested_link<'chain, 'ast>(
+        &self,
+        chain: &'chain Expression<'ast>,
+    ) -> Option<(&'chain Expression<'ast>, &'chain Expression<'ast>)> {
+        let mut link = chain;
+        loop {
+            if self.null_safe_receivers.iter().any(|(span, _)| *span == link.span()) {
+                return None;
+            }
+
+            link = match link {
+                Expression::Access(Access::Property(access)) => access.object,
+                Expression::Call(Call::Method(call)) => call.object,
+                Expression::ArrayAccess(access) => access.array,
+                Expression::Access(Access::NullSafeProperty(access)) => {
+                    if !self.tested_links.contains(&link.span())
+                        && self.is_method_value(access.object, &access.property)
+                    {
+                        return Some((link, access.object));
+                    }
+
+                    access.object
+                }
+                Expression::Call(Call::NullSafeMethod(call)) => {
+                    if !self.tested_links.contains(&link.span()) && self.is_property_call(link, call.object) {
+                        return Some((link, call.object));
+                    }
+
+                    call.object
+                }
+                _ => return None,
+            };
+        }
+    }
+
+    /// A chain whose `untested` null-safe link PHP's `?->` cannot write, as
+    /// `($nullsafe#N = receiver) === null ? null : chain`, with the chain reading `$nullsafe#N` in place of the
+    /// receiver. The conditional wraps the whole chain, which a null receiver skips as `?->` does. A local receiver is
+    /// tested and read as itself.
+    fn null_safe_chain(&mut self, chain: &Expression, untested: &Expression, receiver: &Expression) -> u32 {
+        let line = self.line(chain);
+        let is_local = matches!(
+            receiver,
+            Expression::ConstantAccess(name) if matches!(self.names.binding(&name.name), Some(Binding::Local(_)))
+        );
+        let tested = if is_local {
+            self.null_safe_object(receiver)
+        } else {
+            self.temporaries += 1;
+            let name = format!("nullsafe#{}", self.temporaries).into_bytes();
+            let variable = self.variable(receiver.span(), &name);
+            let value = self.null_safe_object(receiver);
+            self.null_safe_receivers.push((receiver.span(), name));
+
+            self.node(SHARP_AST_ASSIGN, 0, line, &[variable, value])
+        };
+        let null = self.zval(line, sharp_value::SHARP_NULL, |_| {});
+        let condition = self.node(SHARP_AST_BINARY_OP, ZEND_IS_IDENTICAL, line, &[tested, null]);
+
+        self.tested_links.push(untested.span());
+        let rest = self.expression(chain);
+        self.tested_links.pop();
+        if !is_local {
+            self.null_safe_receivers.pop();
+            self.temporaries -= 1;
+        }
+
+        let null = self.zval(line, sharp_value::SHARP_NULL, |_| {});
+
+        self.node(SHARP_AST_CONDITIONAL, ZEND_PARENTHESIZED_CONDITIONAL, line, &[condition, null, rest])
     }
 
     /// The object of `?.`. An index there reads a missing key as null, as `??` does, so `x[k]?.name` is
@@ -1476,10 +1594,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let method = self.member(&call.method);
         let arguments = self.arguments(&call.argument_list);
 
-        if kind == SHARP_AST_METHOD_CALL
-            && single_class(self.types.expression_type(call.object)).is_some()
-            && self.types.call_target(expression).kind == DeclarationKind::Property
-        {
+        if kind == SHARP_AST_METHOD_CALL && self.is_property_call(expression, call.object) {
             let property = self.node(SHARP_AST_PROP, 0, line, &[object, method]);
 
             return self.node(SHARP_AST_CALL, 0, line, &[property, arguments]);
