@@ -1400,9 +1400,29 @@ fn check_const_write(target: &Expression, write: &str, context: &mut Context<'_,
     }
 }
 
+/// Checks a local's name, and reports an empty literal declared without a type, which has no element type to give
+/// the local. Swift refuses an empty collection literal without a type for the same reason.
 #[inline]
 pub fn check_local_declaration(local_declaration: &LocalDeclaration, context: &mut Context<'_, '_, '_>) {
     check_local_name(local_declaration.name.value, local_declaration.name.span, "local", context);
+
+    if local_declaration.hint.is_none()
+        && let Expression::Array(literal) = local_declaration.value
+        && literal.elements.is_empty()
+    {
+        let name = BytesDisplay(local_declaration.name.value);
+        let typed = match (local_declaration.is_const(), literal.colon.is_some()) {
+            (false, false) => format!("List<T> {name} = []"),
+            (false, true) => format!("Map<TKey, TValue> {name} = [:]"),
+            (true, false) => format!("const List<T> {name} = []"),
+            (true, true) => format!("const Map<TKey, TValue> {name} = [:]"),
+        };
+
+        context.report(
+            Issue::error(format!("An empty literal needs a type: write `{typed}`."))
+                .with_annotation(Annotation::primary(literal.span()).with_message("Empty literal without a type.")),
+        );
+    }
 }
 
 #[inline]

@@ -1026,7 +1026,7 @@ fn a_list_or_map_type_is_the_array_type() {
 fn literals_are_short_arrays_and_an_index_is_a_dim() {
     assert_eq!(
         body(
-            "        List<int> numbers = [1, extra];\n        const named = [\"a\": 1, 2: numbers[0]];\n        const empty = [:];\n        numbers[0] = named[\"a\"];\n        this.sizes[\"a\"] += 1;\n        return numbers[1];\n"
+            "        List<int> numbers = [1, extra];\n        const named = [\"a\": 1, 2: numbers[0]];\n        const Map<string, int> empty = [:];\n        numbers[0] = named[\"a\"];\n        this.sizes[\"a\"] += 1;\n        return numbers[1];\n"
         ),
         indoc! {r#"
             STMT_LIST

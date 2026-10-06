@@ -247,7 +247,15 @@ where
                 }
                 TAtomic::Array(array) if context.dialect.is_sharp() => {
                     let declared = get_declared_collection(context, block_context, artifacts, object);
-                    collection_methods = get_collection_methods(declared.as_ref().unwrap_or(array), context.codebase);
+                    let collection = match &declared {
+                        Some(declared) => declared,
+                        // An empty literal with no declared type is neither a List nor a Map, and the semantic checks
+                        // refuse its declaration.
+                        None if array.is_empty() => continue,
+                        None => array,
+                    };
+
+                    collection_methods = get_collection_methods(collection, context.codebase);
                     &collection_methods
                 }
                 _ => {
