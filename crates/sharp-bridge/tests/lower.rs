@@ -3560,6 +3560,44 @@ fn a_declared_member_wins_over_a_magic_one() {
     );
 }
 
+/// A PHP class whose `__get` and `__callStatic` serve undeclared members, with a static property and a static method.
+const MAGIC_ORDER: (&str, &str) = (
+    "src/Lib/Order.php",
+    "<?php namespace Lib; final class Order { public static int $max = 3; public static function twice(int $n): int { return $n * 2; } public function __get(string $name): mixed { return null; } public static function __callStatic(string $name, array $arguments): mixed { return null; } }",
+);
+
+/// `Class.y` reads only a member the class declares. One its `__callStatic` would serve is refused, so the lowering of
+/// `Class.y` never meets a magic member.
+#[test]
+fn a_static_member_only_a_magic_method_serves_is_refused() {
+    let lowered = Lowered::with(
+        "namespace App.Tenant;\n\nimport Lib.Order;\n\nclass Report\n{\n    public void run()\n    {\n        const where = Order.where;\n    }\n}\n",
+        &[MAGIC_ORDER],
+    );
+
+    assert_eq!(
+        lowered.diagnostics(),
+        ["9:29 compile error: Static property `$where` does not exist on class `Lib\\Order`."]
+    );
+}
+
+/// A constant expression reads only constants and enum cases, as PHP's does, so a parameter default of a static
+/// property or a static method is refused, and the lowering never emits a fetch PHP refuses there.
+#[test]
+fn a_static_property_or_method_in_a_constant_expression_is_refused() {
+    let property = Lowered::with(
+        "namespace App.Tenant;\n\nimport Lib.Order;\n\nclass Report\n{\n    public int run(int limit = Order.max)\n    {\n        return limit;\n    }\n}\n",
+        &[MAGIC_ORDER],
+    );
+    let method = Lowered::with(
+        "namespace App.Tenant;\n\nimport Lib.Order;\n\nclass Report\n{\n    public int run(Function<int(int)> twice = Order.twice)\n    {\n        return twice(1);\n    }\n}\n",
+        &[MAGIC_ORDER],
+    );
+
+    assert_eq!(property.diagnostics(), ["7:38 compile error: Class-like constant `max` does not exist."]);
+    assert_eq!(method.diagnostics(), ["7:53 compile error: Class-like constant `twice` does not exist."]);
+}
+
 /// ```php
 /// return \App\Tenant\Report::make();
 /// ```
