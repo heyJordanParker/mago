@@ -3662,6 +3662,51 @@ fn a_member_read_through_a_class_value_is_the_fetch_of_its_kind_on_that_class() 
     );
 }
 
+/// ```php
+/// $type = \Lib\Calc::class;
+/// $tag = $type::defaultTag(...);
+/// return \strlen($tag());
+/// ```
+///
+/// A static method read through a class value without a call is its first-class callable, as `Class.m` is.
+#[test]
+fn a_static_method_read_through_a_class_value_is_its_first_class_callable() {
+    assert_eq!(
+        body_in(
+            RUN,
+            "        const type = typeof(Calc);\n        const Function<string()> tag = type.defaultTag;\n        return strlen(tag());\n",
+            &[(
+                "src/Lib/Calc.php",
+                "<?php namespace Lib; abstract class Calc { public static function defaultTag(): string { return 'div'; } }",
+            )]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "type"
+                CLASS_NAME
+                  ZVAL "Lib\\Calc"
+              ASSIGN
+                VAR
+                  ZVAL "tag"
+                STATIC_CALL
+                  VAR
+                    ZVAL "type"
+                  ZVAL "defaultTag"
+                  CALLABLE_CONVERT
+              RETURN
+                CALL
+                  ZVAL "strlen"
+                  ARG_LIST
+                    CALL
+                      VAR
+                        ZVAL "tag"
+                      ARG_LIST
+        "#}
+    );
+}
+
 /// A PHP class whose `__get` and `__callStatic` serve undeclared members, with a static property and a static method.
 const MAGIC_ORDER: (&str, &str) = (
     "src/Lib/Order.php",
