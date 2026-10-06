@@ -70,7 +70,6 @@ pub struct CheckedProgram<'program> {
     file: &'program File,
     program: &'program Program<'program>,
     names: ResolvedNames<'program>,
-    #[expect(dead_code, reason = "the first typed site in piece 3 reads it")]
     types: Types<'program>,
 }
 
@@ -99,7 +98,6 @@ impl<'program> CheckedProgram<'program> {
         &self.names
     }
 
-    #[expect(dead_code, reason = "the first typed site in piece 3 reads it")]
     pub(crate) fn types(&self) -> &Types<'program> {
         &self.types
     }

@@ -2460,15 +2460,14 @@ fn abstract_and_final_classes_and_interfaces_are_class_declarations_with_their_f
 
 /// ```php
 /// interface Linkable extends \Lib\Named { }
-/// class Page implements \Lib\Entity, \App\Tenant\Linkable { }
+/// class Page extends \Lib\Entity implements \App\Tenant\Linkable { }
 /// ```
 ///
-/// The header names are a name list in the interface list, with `ZEND_NAME_FQ`, which is 0. A class's header can
-/// hold its parent class, which only `zend_do_link_class` can tell from the interfaces, so the class carries
-/// php-sharp's `ZEND_ACC_PARENT_IN_INTERFACES`, `[2147483648]`, `1 << 31`. An interface's header holds only
-/// interfaces, as PHP's `extends` list does.
+/// A class's header name that the checker found to be a class is its `extends` name, and the rest are its
+/// `implements` name list, each with `ZEND_NAME_FQ`, which is 0. An interface's header holds only interfaces, as PHP's
+/// `extends` list does.
 #[test]
-fn a_header_is_the_interface_name_list_and_marks_a_class_to_find_its_parent_there() {
+fn a_header_is_the_parent_class_and_the_interface_name_list() {
     let lowered = Lowered::with(
         "namespace App.Tenant;\n\nimport Lib.Entity;\nimport Lib.Named;\n\ninterface Linkable : Named\n{\n}\n\nclass Page : Entity, Linkable\n{\n}\n",
         &[("src/Lib/Entity.php", "<?php namespace Lib; interface Named {} class Entity {}")],
@@ -2495,10 +2494,9 @@ fn a_header_is_the_interface_name_list_and_marks_a_class_to_find_its_parent_ther
                 STMT_LIST
                 null
                 null
-              CLASS [2147483648] "Page" @10-12
-                null
+              CLASS "Page" @10-12
+                ZVAL "Lib\\Entity"
                 NAME_LIST
-                  ZVAL "Lib\\Entity"
                   ZVAL "App\\Tenant\\Linkable"
                 STMT_LIST
                 null
@@ -2532,10 +2530,9 @@ fn virtual_lowers_to_nothing_and_override_to_the_override_attribute() {
                     ZVAL 1
                     null
                 null
-              CLASS [2147483648] "Thumbnail" @1-13
+              CLASS "Thumbnail" @1-13
+                ZVAL "Image"
                 null
-                NAME_LIST
-                  ZVAL "Image"
                 STMT_LIST
                   METHOD [1] "size" @3-6
                     PARAM_LIST
@@ -2656,10 +2653,9 @@ fn a_subclass_method_with_a_union_variadic_spreads_it_into_the_parent_method() {
               NAMESPACE
                 ZVAL "App\\Tenant"
                 null
-              CLASS [2147483648] "Account" @5-11
+              CLASS "Account" @5-11
+                ZVAL "Lib\\Ledger"
                 null
-                NAME_LIST
-                  ZVAL "Lib\\Ledger"
                 STMT_LIST
                   METHOD [1] "total" @7-10
                     PARAM_LIST
@@ -5246,10 +5242,10 @@ fn an_int_backed_enum_is_a_final_enum_class_of_int_cases() {
 /// }
 /// ```
 ///
-/// An enum's header is the interface name list, its 2nd child, with `ZEND_NAME_FQ`, which is 0. It carries no
-/// `ZEND_ACC_PARENT_IN_INTERFACES`: an enum has no parent, so every name there is an interface.
+/// An enum's header is the interface name list, its 2nd child, with `ZEND_NAME_FQ`, which is 0. An enum has no
+/// parent, so every name there is an interface.
 #[test]
-fn an_enum_header_is_the_interface_name_list_without_a_parent_mark() {
+fn an_enum_header_is_the_interface_name_list() {
     let lowered = Lowered::with(
         "namespace App.Tenant;\n\nimport Lib.HasLabel;\n\nenum Status : string, HasLabel, Sorted\n{\n    case Active = \"a\";\n}\n\nenum Suit : HasLabel\n{\n    case Hearts;\n}\n",
         &[common::HAS_LABEL, ("src/App/Tenant/Sorted.php", "<?php namespace App\\Tenant; interface Sorted {}")],

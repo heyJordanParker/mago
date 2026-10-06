@@ -176,6 +176,9 @@ use crate::store_text;
 pub(crate) mod checked;
 mod types;
 
+use types::DeclarationKind;
+use types::Types;
+
 /// The values php-src gives the attrs the lowering emits, from `zend_compile.h` and `zend_vm_opcodes.h`.
 const ZEND_NAME_FQ: u32 = 0;
 const ZEND_NAME_NOT_FQ: u32 = 1;
@@ -217,8 +220,6 @@ const ZEND_IS_SMALLER_OR_EQUAL: u32 = 21;
 /// php-sharp's own attr from `zend_compile.h`: a class constant fetch that falls back to the static property. It sits
 /// above the fetch flags a constant expression passes in the same attr.
 const ZEND_FETCH_CLASS_MEMBER_SYNTAX: u32 = 1 << 15;
-/// php-sharp's own class flag from `zend_compile.h`: the class's parent, if any, is in its interface list.
-const ZEND_ACC_PARENT_IN_INTERFACES: u32 = 1 << 31;
 /// php-sharp's own property flag from `zend_compile.h`: the property loses its type when the class links if the
 /// property it overrides has none.
 const ZEND_ACC_TYPE_FOLLOWS_PARENT: u32 = 1 << 13;
@@ -231,7 +232,7 @@ const NULL: u32 = u32::MAX;
 pub fn lower(checked: &CheckedProgram<'_>) -> Unit {
     let lines = Lines::new(&checked.file().contents);
 
-    Lowering::new(&lines, checked.names()).program(checked)
+    Lowering::new(&lines, checked.names(), checked.types()).program(checked)
 }
 
 /// The offset each line starts at, counted as the Zend scanner counts: `\n`, `\r\n` and a lone `\r` each end a line.
@@ -264,6 +265,7 @@ impl Lines {
 struct Lowering<'lowering, 'arena> {
     lines: &'lowering Lines,
     names: &'lowering ResolvedNames<'arena>,
+    types: &'lowering Types<'lowering>,
     nodes: Vec<sharp_node>,
     children: Vec<u32>,
     texts: Vec<u8>,
@@ -280,10 +282,15 @@ struct Lowering<'lowering, 'arena> {
 }
 
 impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
-    fn new(lines: &'lowering Lines, names: &'lowering ResolvedNames<'arena>) -> Self {
+    fn new(
+        lines: &'lowering Lines,
+        names: &'lowering ResolvedNames<'arena>,
+        types: &'lowering Types<'lowering>,
+    ) -> Self {
         Self {
             lines,
             names,
+            types,
             nodes: Vec::new(),
             children: Vec::new(),
             texts: Vec::new(),
@@ -407,19 +414,43 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
         let members = self.node(SHARP_AST_STMT_LIST, 0, self.line(class.left_brace), &members);
         let attributes = self.attributes(&class.attribute_lists, None);
-        let (header, parent_in_interfaces) = match &class.inheritance {
-            Some(inheritance) => (self.name_list(inheritance), ZEND_ACC_PARENT_IN_INTERFACES),
-            None => (NULL, 0),
+        let (parent, interfaces) = match &class.inheritance {
+            Some(inheritance) => self.class_header(inheritance),
+            None => (NULL, NULL),
         };
 
         self.declaration(
             SHARP_AST_CLASS,
-            class_flags(&class.modifiers) | parent_in_interfaces,
+            class_flags(&class.modifiers),
             class.class.span,
             class.right_brace,
             class.name.value,
-            &[NULL, header, members, attributes, NULL],
+            &[parent, interfaces, members, attributes, NULL],
         )
+    }
+
+    /// A class header's names as PHP's `extends` name and `implements` name list: the name the checker found to be a
+    /// class is the parent, and the rest are interfaces. Either is null when the header names none.
+    fn class_header(&mut self, inheritance: &Inheritance) -> (u32, u32) {
+        let mut parent = NULL;
+        let mut interfaces = Vec::new();
+        for name in &inheritance.types {
+            let full_name = self.names.get(name);
+            let index = self.string(ZEND_NAME_FQ, self.line(name), full_name);
+            match self.types.declaration_kind(full_name) {
+                DeclarationKind::Class => parent = index,
+                DeclarationKind::Interface => interfaces.push(index),
+                DeclarationKind::Enum => unreachable!("the checker refuses an enum in a class header"),
+            }
+        }
+
+        let interfaces = if interfaces.is_empty() {
+            NULL
+        } else {
+            self.node(SHARP_AST_NAME_LIST, 0, self.line(inheritance), &interfaces)
+        };
+
+        (parent, interfaces)
     }
 
     /// A header's names, which PHP compiles as the interface list.
