@@ -29,6 +29,7 @@ use mago_codex::ttype::expander::TypeExpansionOptions;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::intersect_union_types;
 use mago_codex::ttype::template::TemplateResult;
+use mago_codex::ttype::template::bounds::get_most_specific_type_from_bounds;
 use mago_codex::ttype::template::inferred_type_replacer;
 use mago_codex::ttype::union::TUnion;
 use mago_reporting::Annotation;
@@ -866,6 +867,24 @@ where
         calling_instance_type,
         method_class_type,
     );
+
+    if let Some(template_types) = function_template_types
+        && !template_types.is_empty()
+    {
+        let type_arguments = template_types
+            .iter()
+            .map(|(template_name, template)| {
+                template_result
+                    .lower_bounds
+                    .get(template_name)
+                    .and_then(|bounds| bounds.get(&template.defining_entity))
+                    .map_or_else(get_mixed, |bounds| get_most_specific_type_from_bounds(bounds, context.codebase))
+            })
+            .collect();
+        artifacts
+            .inferred_type_arguments
+            .insert((invocation.span.start.offset, invocation.span.end.offset), type_arguments);
+    }
 
     let max_params = invocation.target.parameter_count();
     let number_of_required_parameters = invocation

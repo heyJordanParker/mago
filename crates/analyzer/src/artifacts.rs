@@ -51,6 +51,8 @@ pub struct ResolvedMethodCall {
 #[derive(Debug, Clone)]
 pub struct AnalysisArtifacts {
     pub expression_types: HashMap<(u32, u32), Rc<TUnion>>,
+    /// The type arguments of each generic call and `new`, keyed by its span, one per template in declaration order.
+    pub inferred_type_arguments: HashMap<(u32, u32), Vec<TUnion>>,
     pub if_true_assertions: HashMap<(u32, u32), WordMap<AssertionSet>>,
     pub if_false_assertions: HashMap<(u32, u32), WordMap<AssertionSet>>,
     pub true_branch_only_assertions: HashMap<(u32, u32), WordMap<AssertionSet>>,
@@ -87,6 +89,7 @@ impl AnalysisArtifacts {
     pub fn new() -> Self {
         Self {
             expression_types: HashMap::default(),
+            inferred_type_arguments: HashMap::default(),
             inferred_return_types: Vec::new(),
             inferred_yield_key_types: Vec::new(),
             inferred_yield_value_types: Vec::new(),
