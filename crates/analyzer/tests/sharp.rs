@@ -211,16 +211,37 @@ fn correct_sharp_code_has_no_issues() {
     assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Calc.php", CALC)]), Vec::<String>::new());
 }
 
+/// A `let` without a written type takes its first value's type, as C#'s `var` and TypeScript's `let` do, so a value
+/// of another type is an error where it is assigned. A plain PHP variable still takes any value.
 #[test]
-fn assigning_to_a_let_local_changes_its_type_as_in_php() {
+fn a_let_local_keeps_the_type_of_its_first_value_where_php_changes_it() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total()\n    {\n        let value = 1;\n        value = \"one\";\n        return value;\n    }\n}\n";
     let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function total(): int\n    {\n        $value = 1;\n        $value = \"one\";\n        return $value;\n    }\n}\n";
 
-    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
-    let php_issues = issues(("src/Demo/Report.php", php), &[]);
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), ["8:17 invalid-local-assignment-value"]);
+    assert_eq!(issues(("src/Demo/Report.php", php), &[]), ["11:16 invalid-return-statement"]);
+}
 
-    assert_eq!(sharp_issues, ["9:16 invalid-return-statement"]);
-    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+/// The semantic checks refuse a `let` that starts as `null` without a written type, so a later value adds no second
+/// error naming the `null` type.
+#[test]
+fn a_later_value_of_an_untyped_null_start_adds_no_issue() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total()\n    {\n        let value = null;\n        value = 5;\n        return value;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// A `let`'s first value fixes its general type: a literal widens to its scalar type, and a list or map literal to a
+/// `List<T>` or `Map<TKey, TValue>` of any length, so the local takes any value of that type and a collection method
+/// checks its arguments against it.
+#[test]
+fn a_let_local_takes_any_value_of_its_first_values_general_type() {
+    let sharp = "namespace Demo;\n\nclass Tally\n{\n    public int run()\n    {\n        let total = 0;\n        total = 5;\n        let sizes = [5];\n        sizes = [];\n        sizes.add(6);\n        sizes.add(\"six\");\n        let rows = [[1]];\n        rows = [[2, 3], []];\n        let prices = [\"a\": 1];\n        prices = [\"b\": 2, \"c\": 3];\n        prices = [1.5];\n        return total + count(sizes) + count(rows) + count(prices);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tally.sharp", sharp), &[]),
+        ["12:19 invalid-argument", "17:18 invalid-local-assignment-value"]
+    );
 }
 
 #[test]
@@ -362,7 +383,7 @@ fn a_private_method_read_as_a_value_from_outside_its_class_is_an_error() {
 #[test]
 fn a_local_passed_by_reference_to_a_php_method_changes_as_in_php() {
     let counter = "<?php\n\nnamespace Lib;\n\nfinal class Counter\n{\n    public static function make(): self\n    {\n        return new self();\n    }\n\n    public function fill(?string &$value): void\n    {\n        $value = 'filled';\n    }\n}\n";
-    let sharp = "namespace Demo;\n\nimport Lib.Counter;\n\nclass Report\n{\n    public static int total()\n    {\n        let value = null;\n        const counter = Counter.make();\n        counter.fill(value);\n        return value;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Counter;\n\nclass Report\n{\n    public static int total()\n    {\n        string? value = null;\n        const counter = Counter.make();\n        counter.fill(value);\n        return value;\n    }\n}\n";
     let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Counter;\n\nclass Report\n{\n    public static function total(): int\n    {\n        $value = null;\n        $counter = Counter::make();\n        $counter->fill($value);\n        return $value;\n    }\n}\n";
 
     let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Counter.php", counter)]);
@@ -424,13 +445,13 @@ fn a_parameter_read_only_by_a_for_counter_is_used() {
 #[test]
 fn for_of_loop_variables_have_the_key_and_value_types_as_in_php() {
     let store = "<?php\n\nnamespace Demo;\n\nclass Store\n{\n    /** @return array<int, string> */\n    public static function names(): array\n    {\n        return ['a'];\n    }\n}\n";
-    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int last()\n    {\n        let found = 0;\n        for (const [key, name] of Store.names()) {\n            found = key;\n            found = name;\n        }\n        return found;\n    }\n}\n";
-    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function last(): int\n    {\n        $found = 0;\n        foreach (Store::names() as $key => $name) {\n            $found = $key;\n            $found = $name;\n        }\n        return $found;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int last()\n    {\n        let found = 0;\n        for (const [key, name] of Store.names()) {\n            found = key;\n            return name;\n        }\n        return found;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function last(): int\n    {\n        $found = 0;\n        foreach (Store::names() as $key => $name) {\n            $found = $key;\n            return $name;\n        }\n        return $found;\n    }\n}\n";
 
     let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Demo/Store.php", store)]);
     let php_issues = issues(("src/Demo/Report.php", php), &[("src/Demo/Store.php", store)]);
 
-    assert_eq!(sharp_issues, ["12:16 invalid-return-statement"]);
+    assert_eq!(sharp_issues, ["10:20 invalid-return-statement"]);
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
 }
 
@@ -2063,6 +2084,15 @@ fn a_collection_method_takes_values_of_the_type_its_place_is_declared_with() {
     let shapes = "<?php\n\nnamespace Lib;\n\ninterface Shape\n{\n}\n\nfinal class Circle implements Shape\n{\n}\n\nfinal class Square implements Shape\n{\n}\n";
 
     assert_eq!(issues(("src/Demo/Board.sharp", sharp), &[("src/Lib/Shape.php", shapes)]), ["26:24 invalid-argument"]);
+}
+
+/// The semantic checks refuse an empty literal declared without a type, so a method called on it reports nothing
+/// more, and never names the `Map<never, never>` the literal alone would give.
+#[test]
+fn a_method_on_an_untyped_empty_literal_adds_no_issue() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public int run()\n    {\n        let messages = [];\n        messages.add(\"a\");\n        const totals = [:];\n        totals.set(\"a\", 1);\n        return count(messages);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Inbox.sharp", sharp), &[]), Vec::<String>::new());
 }
 
 /// A PHP# collection holds any value of its element type, as a `List<int>` holds any int, so a method takes one
