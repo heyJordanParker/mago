@@ -56,13 +56,13 @@ use crate::cst::Match;
 use crate::cst::MatchArm;
 use crate::cst::MatchDefaultArm;
 use crate::cst::MatchExpressionArm;
-use crate::cst::MatchGuard;
 use crate::cst::Node;
 use crate::cst::Parenthesized;
 use crate::cst::Pattern;
 use crate::cst::PatternMatch;
 use crate::cst::PatternMatchArm;
 use crate::cst::PatternMatchArmBody;
+use crate::cst::PatternMatchPatternArm;
 use crate::cst::PositionalArgument;
 use crate::cst::PropertyAccess;
 use crate::cst::Statement;
@@ -214,7 +214,7 @@ where
                         return None;
                     };
                     let follows = arm_follows(pattern_match, index);
-                    let condition = self.arm_condition(arm.pattern, follows, arm.guard.as_ref(), &mut subject)?;
+                    let condition = self.arm_condition(arm, follows, &mut subject)?;
 
                     MatchArm::Expression(MatchExpressionArm {
                         conditions: TokenSeparatedSequence::from_slices(self.arena.alloc_slice_copy(&[condition]), &[]),
@@ -279,15 +279,7 @@ where
         for (index, arm) in pattern_match.arms.iter().enumerate() {
             if let PatternMatchArm::Pattern(arm) = arm {
                 let follows = arm_follows(pattern_match, index);
-                let condition = self.arm_condition(arm.pattern, follows, arm.guard.as_ref(), &mut subject)?;
-                // php-src gives the jump after a branch its condition's line, and the subject's read may be on the
-                // line before the pattern. The parentheses run from the pattern to the arrow, so the `if` is on the
-                // pattern's line and their span is no other node's.
-                let condition = self.alloc(Expression::Parenthesized(Parenthesized {
-                    left_parenthesis: start_of(arm.pattern.span()),
-                    expression: condition,
-                    right_parenthesis: arm.arrow,
-                }));
+                let condition = self.arm_condition(arm, follows, &mut subject)?;
                 branches.push((arm.pattern.span(), condition, self.arm_statement(&arm.body)));
             }
         }
@@ -318,21 +310,27 @@ where
     }
 
     /// An arm's pattern test, `and` its `when` condition. The `and` is the `when` keyword, so a report on the condition
-    /// names `when`.
+    /// names `when`. The subject's read may be on the line before the pattern, and php-src gives an arm and the jump
+    /// after a branch their condition's line, so the condition is parenthesized from the pattern to the arrow: the arm
+    /// starts on its pattern's line, and the parentheses' span is no other node's.
     fn arm_condition(
         &mut self,
-        pattern: &'arena Pattern<'arena>,
+        arm: &PatternMatchPatternArm<'arena>,
         follows: Span,
-        guard: Option<&MatchGuard<'arena>>,
         subject: &mut Subject<'arena>,
     ) -> Option<&'arena Expression<'arena>> {
-        let test = self.test(pattern, follows, subject)?;
-        self.tests.push((pattern.span(), test));
-
-        Some(match guard {
+        let test = self.test(arm.pattern, follows, subject)?;
+        self.tests.push((arm.pattern.span(), test));
+        let condition = match &arm.guard {
             Some(guard) => self.binary(test, BinaryOperator::LowAnd(guard.when), guard.condition),
             None => test,
-        })
+        };
+
+        Some(self.alloc(Expression::Parenthesized(Parenthesized {
+            left_parenthesis: start_of(arm.pattern.span()),
+            expression: condition,
+            right_parenthesis: arm.arrow,
+        })))
     }
 
     fn arm_statement(&self, body: &PatternMatchArmBody<'arena>) -> &'arena Statement<'arena> {

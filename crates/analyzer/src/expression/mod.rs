@@ -337,13 +337,21 @@ where
         Node::Statement(statement) => ObjectChecks.walk_statement(statement, &mut object_checks),
         _ => {}
     }
-    // An arm whose test is always true takes every value the arms before it leave, as `default` does, so its test is
-    // not redundant.
-    let arm_tests: Vec<Span> = match node {
-        Node::Expression(Expression::PatternMatch(_)) | Node::Statement(Statement::PatternMatch(_)) => {
-            tests.iter().map(|(_, test)| test.span()).collect()
+    // The last arm of a `match` without `default` takes every value the arms before it leave, as `default` does, so its
+    // test is always true and not redundant. An arm before it that is always true leaves nothing for the arms after it.
+    let last_arm_test: Option<Span> = match node {
+        Node::Expression(Expression::PatternMatch(pattern_match))
+        | Node::Statement(Statement::PatternMatch(pattern_match))
+            if !pattern_match.arms.iter().any(PatternMatchArm::is_default) =>
+        {
+            pattern_match.arms.last().and_then(|arm| match arm {
+                PatternMatchArm::Pattern(arm) => {
+                    tests.iter().find(|(pattern, _)| *pattern == arm.pattern.span()).map(|(_, test)| test.span())
+                }
+                PatternMatchArm::Default(_) => None,
+            })
         }
-        _ => vec![],
+        _ => None,
     };
     let is_code = |issue: &Issue, code: IssueCode| issue.code.as_deref() == Some(code.as_str());
     let issues: Vec<Issue> = issues
@@ -359,7 +367,8 @@ where
             // PHP's report on `match (true)` names `true`, so a PHP# `match` reports what it misses itself.
             !is_code(issue, IssueCode::MatchNotExhaustive)
                 && (!redundant || span.is_none_or(|span| !object_checks.contains(&span.start.offset)))
-                && (!always_true || span.is_none_or(|span| !arm_tests.iter().any(|test| test.contains(&span.start))))
+                && (!always_true
+                    || span.is_none_or(|span| !last_arm_test.is_some_and(|test| test.contains(&span.start))))
         })
         .collect();
 

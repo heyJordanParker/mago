@@ -1556,6 +1556,42 @@ fn a_match_without_default_that_handles_every_enum_case_reports_nothing() {
     assert_eq!(reported, Vec::<&str>::new());
 }
 
+/// Only the last arm of a `match` takes what the arms before it leave, as `default` does. An arm before it that is
+/// always true leaves nothing for the arms after it.
+#[test]
+fn an_arm_that_is_always_true_before_the_last_is_reported_with_the_arms_it_hides() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Report\n{\n    public static string label(Status status) => match (status) {\n        Status.Open or Status.Closed or Status.Archived => \"any\",\n        Status.Open => \"open\",\n    };\n\n    public static string kind(Status status) => match (status) {\n        Status s => \"any\",\n        Status.Closed => \"closed\",\n        default => \"none\",\n    };\n}\n";
+
+    let issues =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Status.php", STATUS)]);
+    let warnings: Vec<String> = issues
+        .iter()
+        .filter(|issue| matches!(issue.level, Level::Error | Level::Warning))
+        .map(|issue| {
+            let span = issue.primary_span().expect("a report has a primary span");
+            format!(
+                "{} {}",
+                &sharp[span.start.offset as usize..span.end.offset as usize],
+                issue.code.as_deref().unwrap_or("")
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        warnings,
+        [
+            "Status.Open or Status.Closed or Status.Archived => \"any\" match-arm-always-true",
+            "Status.Open => \"open\" unreachable-match-arm",
+            "Status s => \"any\" match-arm-always-true",
+            "Status.Closed => \"closed\" unreachable-match-arm",
+        ]
+    );
+    assert!(
+        issues.iter().any(|issue| issue.code.as_deref() == Some("redundant-logical-operation")),
+        "the arm before the last keeps its redundancy report: {issues:?}"
+    );
+}
+
 #[test]
 fn a_pattern_the_parser_refuses_reports_only_its_parse_error() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    public static void count(int? count)\n    {\n        match (count) {\n            [int first] => {},\n            Shape.Circle(radius) => {},\n            default => {},\n        }\n    }\n}\n";
