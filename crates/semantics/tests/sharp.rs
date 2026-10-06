@@ -706,6 +706,7 @@ fn self_names_the_class_and_self_where_it_goes() {
             format!("14:9 {without_self}"),
             format!("15:20 {with_self}"),
             format!("16:20 {with_self}"),
+            format!("16:25 {without_self}"),
             "22:5 PHP# has no `self`: write the class's own name, `Copyable`, for the declaring class, or `Self` for the class a static method is called on.".to_owned(),
         ]
     );
@@ -724,6 +725,7 @@ fn static_is_written_self() {
             format!("13:21 {message}"),
             format!("14:20 {message}"),
             format!("15:20 {message}"),
+            format!("15:27 {message}"),
         ]
     );
 }
@@ -1142,6 +1144,170 @@ fn a_double_underscore_class_with_a_constructor_reports_its_name_once() {
         issues(code),
         ["3:7 PHP# has no `__Shape__`: `Position.current()` gives the file, directory, line, column and function."
             .to_owned()]
+    );
+}
+
+/// A refusal skips a node's children only when its span covers them, so a method refused at its name still has its
+/// body checked.
+#[test]
+fn a_method_refused_at_its_name_has_its_body_checked() {
+    let code = "namespace App.Tenant;\n\nclass Forms\n{\n    public void forms()\n    {\n        const host = _SERVER[\"x\"];\n        echo \"a\";\n    }\n}\n";
+    let php = "<?php\n\nclass Forms\n{\n    public function forms(): void\n    {\n        $host = $_SERVER[\"x\"];\n        echo \"a\";\n    }\n}\n";
+
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
+    assert_eq!(
+        issues(code),
+        [
+            "5:17 A method named after its class is not supported yet in PHP#.",
+            "7:22 PHP# has no superglobals; take a Request",
+            "8:9 PHP# has no `echo`: write `printf` or `fwrite`.",
+        ]
+    );
+}
+
+/// A member refused at its name, a modifier or a type keeps its parameters, initial values and body checked.
+#[test]
+fn a_member_refused_at_part_of_its_declaration_has_the_rest_checked() {
+    let code = "namespace App.Tenant;\n\ninterface Named\n{\n    void __get(string name = _SERVER[\"x\"]);\n}\n\nenum Suit\n{\n    case Hearts;\n\n    public Suit()\n    {\n        echo \"a\";\n    }\n}\n\nclass Report\n{\n    int count = __LINE__;\n    const int MAX = __LINE__;\n\n    public Report(public int id = __LINE__, &total = __LINE__)\n    {\n    }\n\n    int run()\n    {\n        Map<float, callable> rows = [:];\n        echo \"b\";\n        return 1;\n    }\n}\n";
+    let php = "<?php\n\ninterface Named\n{\n    public function __get(string $name = 'x'): void;\n}\n\nclass Report\n{\n    private int $count = __LINE__;\n    public const int MAX = __LINE__;\n\n    public function __construct(public int $id = __LINE__, int &$total = __LINE__)\n    {\n    }\n\n    public function run(): int\n    {\n        echo \"b\";\n        return 1;\n    }\n}\n";
+    let line = "write `Position.current().line`.";
+
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
+    assert_eq!(
+        issues(code),
+        [
+            "5:10 This method name is not supported yet in PHP#.".to_owned(),
+            "5:30 PHP# has no superglobals; take a Request".to_owned(),
+            "12:12 An enum has no constructor: its cases are its only values.".to_owned(),
+            "14:9 PHP# has no `echo`: write `printf` or `fwrite`.".to_owned(),
+            "20:9 A field without `private` or `protected` is not supported yet in PHP#.".to_owned(),
+            format!("20:17 PHP# has no `__LINE__`: {line}"),
+            "21:15 A constant without `public`, `protected` or `private` is not supported yet in PHP#.".to_owned(),
+            format!("21:21 PHP# has no `__LINE__`: {line}"),
+            "23:19 A `public` constructor parameter needs accessors: a public member is a property, as in `public int id { get; }`.".to_owned(),
+            format!("23:35 PHP# has no `__LINE__`: {line}"),
+            "23:45 A by-reference parameter is not supported yet in PHP#.".to_owned(),
+            format!("23:54 PHP# has no `__LINE__`: {line}"),
+            "27:9 A method without `public`, `protected` or `private` is not supported yet in PHP#.".to_owned(),
+            "29:13 A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value.".to_owned(),
+            "29:20 This type is not supported yet in PHP#.".to_owned(),
+            "30:9 PHP# has no `echo`: write `printf` or `fwrite`.".to_owned(),
+        ]
+    );
+}
+
+/// An expression refused at its operator, keyword or target keeps its operands and arguments checked.
+#[test]
+fn an_expression_refused_at_part_of_it_has_the_rest_checked() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public void run()\n    {\n        const a = (array) _SERVER;\n        const b = _GET ?: __LINE__;\n        const c = self.make(__LINE__);\n        const d = new static(__LINE__);\n        const e = total(__LINE__);\n        const f = _SERVER[__LINE__];\n        PI = __LINE__;\n        _SERVER[\"x\"] = _GET;\n        const g = _GET ? 1 : 2 ? 3 : __LINE__;\n    }\n\n    public int total(int x) => x;\n}\n";
+    let php = "<?php\n\nclass Report\n{\n    public function run(): void\n    {\n        $a = (array) $_SERVER;\n        $b = $_GET ?: __LINE__;\n        $c = self::make(__LINE__);\n        $d = new static(__LINE__);\n        $e = $this->total(__LINE__);\n        $f = $_SERVER[__LINE__];\n        $_SERVER[\"x\"] = $_GET;\n        $g = ($_GET ? 1 : 2) ? 3 : __LINE__;\n    }\n\n    public function total(int $x): int\n    {\n        return $x;\n    }\n}\n";
+    let line = "write `Position.current().line`.";
+    let request = "PHP# has no superglobals; take a Request";
+
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
+    assert_eq!(
+        issues(code),
+        [
+            "7:19 PHP# has no `(array)`: write a struct's `parse(value)` for an object, or `List.wrap(value)` for a value."
+                .to_owned(),
+            format!("7:27 {request}"),
+            "8:24 PHP# has no `?:`: write `a ?? b` to replace null, or `c ? a : b` with a `bool` condition.".to_owned(),
+            format!("8:19 {request}"),
+            format!("8:27 PHP# has no `__LINE__`: {line}"),
+            "9:19 PHP# has no `self`: write the class's own name, `Report`, for the declaring class, or `Self` for the class a static method is called on.".to_owned(),
+            format!("9:29 PHP# has no `__LINE__`: {line}"),
+            "10:23 PHP# writes `Self` for PHP's `static`.".to_owned(),
+            format!("10:30 PHP# has no `__LINE__`: {line}"),
+            "11:19 Write `this.total()`: members of the same object are always written with `this.`.".to_owned(),
+            format!("11:25 PHP# has no `__LINE__`: {line}"),
+            format!("12:19 {request}"),
+            format!("12:27 PHP# has no `__LINE__`: {line}"),
+            "13:9 This write target is not supported yet in PHP#.".to_owned(),
+            format!("13:14 PHP# has no `__LINE__`: {line}"),
+            format!("14:9 {request}"),
+            format!("14:24 {request}"),
+            "15:19 Unparenthesized `a ? b : c ? d : e` is not supported. Use either `(a ? b : c) ? d : e` or `a ? b : (c ? d : e)`.".to_owned(),
+            format!("15:38 PHP# has no `__LINE__`: {line}"),
+        ]
+    );
+}
+
+/// A top-level function and a namespace outside the slice are refused at their name or keyword, and the code inside
+/// them is still checked.
+#[test]
+fn a_function_or_namespace_refused_at_its_name_has_its_code_checked() {
+    let code = "namespace App.Tenant;\n\nfunction helper()\n{\n    echo \"a\";\n}\n\nnamespace App.Other;\n\nclass Report\n{\n    public void run()\n    {\n        echo \"b\";\n    }\n}\n";
+    let braced = "namespace App.Tenant {\n    class Report\n    {\n        public void run()\n        {\n            echo \"a\";\n        }\n    }\n}\n";
+    let php = "<?php\n\nnamespace App\\Tenant;\n\nfunction helper()\n{\n    echo \"a\";\n}\n\nnamespace App\\Other;\n\nclass Report\n{\n    public function run(): void\n    {\n        echo \"b\";\n    }\n}\n";
+
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
+    assert_eq!(
+        issues(code),
+        [
+            "3:10 PHP# has no top-level functions: move `helper` into a class as a static method.",
+            "5:5 PHP# has no `echo`: write `printf` or `fwrite`.",
+            "8:1 This namespace is not supported yet in PHP#.",
+            "14:9 PHP# has no `echo`: write `printf` or `fwrite`.",
+        ]
+    );
+    assert_eq!(
+        issues(braced),
+        ["1:1 This namespace is not supported yet in PHP#.", "6:13 PHP# has no `echo`: write `printf` or `fwrite`."]
+    );
+}
+
+/// A class in a refused namespace is still the class its methods belong to, so its constructor is a constructor.
+#[test]
+fn a_constructor_in_a_refused_namespace_is_a_constructor() {
+    let code = "namespace App.Tenant;\n\nnamespace App.Other;\n\nclass Report\n{\n    public Report()\n    {\n    }\n}\n\nenum Suit\n{\n    case Hearts;\n\n    public Suit()\n    {\n    }\n}\n";
+    let php = "<?php\n\nnamespace App\\Tenant;\n\nnamespace App\\Other;\n\nclass Report\n{\n    public function __construct()\n    {\n    }\n}\n";
+
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
+    assert_eq!(
+        issues(code),
+        [
+            "3:1 This namespace is not supported yet in PHP#.",
+            "16:12 An enum has no constructor: its cases are its only values.",
+        ]
+    );
+}
+
+/// A `Map` key whose type is outside the slice is refused once, as that type, and a key of a type the slice has but a
+/// key cannot take is refused as a key.
+#[test]
+fn a_map_key_is_refused_once() {
+    let code = leak(method(
+        "        Map<callable, int> rows = [:];\n        Map<static, int> others = [:];\n        Map<float, int> prices = [:];\n        Map<callable?, int> maybe = [:];\n        Map<int?, int> counts = [:];\n        return 1;\n",
+    ));
+    let key = "A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value.";
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:13 This type is not supported yet in PHP#.".to_owned(),
+            "8:13 PHP# writes `Self` for PHP's `static`.".to_owned(),
+            format!("9:13 {key}"),
+            "10:13 This type is not supported yet in PHP#.".to_owned(),
+            format!("11:13 {key}"),
+        ]
+    );
+}
+
+/// A `public` parameter declares a property only on a constructor. Elsewhere PHP's own error reports it alone.
+#[test]
+fn a_public_parameter_outside_a_constructor_reports_only_the_php_error() {
+    let code = "namespace App.Tenant;\n\nfunction helper(public int id)\n{\n}\n\nclass Report\n{\n    public void run(public int id)\n    {\n    }\n}\n";
+    let php = "<?php\n\nfunction helper(public int $id)\n{\n}\n\nclass Report\n{\n    public function run(public int $id): void\n    {\n    }\n}\n";
+    let promoted = "Promoted properties are not allowed outside of constructors.";
+
+    assert_eq!(issues_in("src/Report.php", php), [format!("3:17 {promoted}"), format!("9:25 {promoted}")]);
+    assert_eq!(
+        issues(code),
+        [
+            format!("3:17 {promoted}"),
+            "3:10 PHP# has no top-level functions: move `helper` into a class as a static method.".to_owned(),
+            format!("9:21 {promoted}"),
+        ]
     );
 }
 
@@ -2260,7 +2426,10 @@ fn an_array_cast_is_an_error_that_names_parse_and_list_wrap() {
                 .to_owned(),
             format!("8:23 PHP# has no `(array)`: {value}"),
             format!("9:24 PHP# has no `(array)`: {value}"),
+            "9:31 PHP# has no superglobals; take a Request".to_owned(),
             format!("10:25 PHP# has no `(array)`: {value}"),
+            "10:32 PHP# has no `__VERSION__`: `Position.current()` gives the file, directory, line, column and function."
+                .to_owned(),
         ]
     );
     assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());

@@ -30,6 +30,7 @@ use mago_word::WordSet;
 use crate::error::OrchestratorError;
 use crate::service::body_return::resolve_body_returns;
 use crate::service::issue_reconciliation::DeferredIssueReconciler;
+use crate::service::issue_reconciliation::drop_follow_on_issues;
 
 pub struct AnalysisService {
     database: ReadDatabase,
@@ -108,7 +109,8 @@ impl AnalysisService {
         }
 
         let semantics_checker = SemanticsChecker::new(self.settings.version);
-        issues.extend(semantics_checker.check(&file, program, &resolved_names));
+        let semantic_issues = semantics_checker.check(&file, program, &resolved_names);
+        issues.extend(semantic_issues.iter().cloned());
 
         let mut user_codebase = scan_program(&arena, &file, program, &resolved_names, self.settings.version);
         let codebase_scan = self
@@ -171,6 +173,8 @@ impl AnalysisService {
         }
 
         let artifacts = analyzer.analyze_with_artifacts(program, &mut analysis_result)?;
+        analysis_result.issues =
+            drop_follow_on_issues(&file, &semantic_issues, std::mem::take(&mut analysis_result.issues));
 
         if after_file {
             let reported = self.plugin_registry.run_external_after_file_analysis_hooks(

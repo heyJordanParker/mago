@@ -7,6 +7,7 @@ use mago_names::binding::php_method_name;
 use mago_names::scope::php_name;
 use mago_php_version::PHPVersion;
 use mago_reporting::Annotation;
+use mago_reporting::AnnotationKind;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
@@ -219,8 +220,10 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   names, so no file declares a class of either.
 ///
 /// The check runs on every node the checking walk enters, and refuses any node, or any position of a node, that this
-/// list does not name. It reports each refusal once, at its outermost node, and skips the nodes inside it. It does not
-/// run on a file with a parse error, which is the one error to fix first. The constructs PHP# never has, such as `$`
+/// list does not name. It reports each refusal once, at its outermost node, and skips the nodes inside the refusal's
+/// span. A node refused at a part, such as a method at its name or a cast at its operator, keeps its other parts
+/// checked, so every PHP form PHP# removes is refused by name wherever it is written. It does not run on a file with a
+/// parse error, which is the one error to fix first. The constructs PHP# never has, such as `$`
 /// variables, `global` and top-level functions, keep their own errors. So do the PHP forms PHP# removes, each an error
 /// that names its replacement. In a method body, they are `echo`, `print`, `die`, and `exit` without parentheses or
 /// with a string literal or a template as its first argument. In a method body and a constant expression, they are
@@ -299,6 +302,9 @@ pub enum Place {
     SuperCall,
     /// `Self.method(...)`, whose method and arguments are the method body's.
     SelfCall,
+    /// An expression of a method body reported over one of its parts, at this span: the walk skips that part and
+    /// checks the rest as the method body, such as the value of a write whose target the slice refuses.
+    RefusedPart(Span),
     /// An attribute list: its attributes' names and arguments.
     Attribute,
     /// A constant expression: a parameter default, an attribute argument, a class constant's value or an enum case's
@@ -307,7 +313,9 @@ pub enum Place {
 }
 
 /// Decides one node at its place. Returns the place of its children when the slice has the node, and `None` when
-/// the node is reported.
+/// the node is reported. A refusal skips the node's children only when its span covers them: a node refused at a
+/// part, such as a method at its name or a cast at its operator, keeps the place it would have had, so the walk still
+/// checks the rest.
 fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) -> Option<Place> {
     use Place::Attribute;
     use Place::Body;
@@ -328,20 +336,25 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
     use Place::SuperCall;
     use Place::TryCatchClause;
 
-    if let Some(target) = write_target(node) {
-        // PHP# never has `$` variables, and the walk reports a write to one at the variable.
-        if !matches!(target, Expression::Variable(_)) && !is_slice_target(target, context) {
-            match superglobal_span(target, context) {
-                Some(span) => report_superglobal(span, context),
-                None => report_not_supported(
-                    target.span(),
-                    "write target",
-                    "PHP# writes to a local, a parameter or a member written `object.name`.",
-                    context,
-                ),
-            }
+    if let Place::RefusedPart(part) = place {
+        return if node.span() == part { None } else { enter(node, Body, context) };
+    }
 
-            return None;
+    if let Some(target) = write_target(node) {
+        // PHP# never has `$` variables, and the walk reports a write to one at the variable, and a superglobal at its
+        // name.
+        if !matches!(target, Expression::Variable(_))
+            && !is_slice_target(target, context)
+            && superglobal_span(target, context).is_none()
+        {
+            report_not_supported(
+                target.span(),
+                "write target",
+                "PHP# writes to a local, a parameter or a member written `object.name`.",
+                context,
+            );
+
+            return Some(Place::RefusedPart(target.span()));
         }
 
         if let Expression::Access(Access::Property(property)) = target {
@@ -358,7 +371,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
                 context,
             );
 
-            None
+            Some(File)
         }
         (Node::Keyword(_) | Node::LocalIdentifier(_) | Node::Identifier(Identifier::Local(_)), _) => Some(place),
         (Node::Terminator(Terminator::Semicolon(_)), _) => Some(place),
@@ -375,6 +388,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             | Node::Namespace(_)
             | Node::NamespaceBody(_)
             | Node::NamespaceImplicitBody(_)
+            // A braced namespace's body, after its namespace was refused.
             | Node::Block(_)
             | Node::Identifier(Identifier::Dotted(_))
             | Node::DottedIdentifier(_)
@@ -436,15 +450,14 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
                 Some(Signature)
             }
-            Err((message, help)) => {
-                context.report(
-                    Issue::error(message)
-                        .with_annotation(Annotation::primary(method.name.span).with_message("Not supported yet."))
-                        .with_note(help),
-                );
-
-                None
-            }
+            Err((message, help)) => report_refusal(
+                Issue::error(message)
+                    .with_annotation(Annotation::primary(method.name.span).with_message("Not supported yet."))
+                    .with_note(help),
+                method.span(),
+                Signature,
+                context,
+            ),
         },
         // A body's block is not in the place, so `MethodBody` admits only `MethodAbstractBody`.
         (
@@ -491,11 +504,14 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
                     Some(FieldOrProperty)
                 }
-                Err(issue) => {
-                    context.report(*issue);
-
-                    None
-                }
+                // A refused initial value is skipped with its property, because the walk would check it as code and
+                // name other fixes, such as setting the member in the constructor.
+                Err(issue) => report_refusal(
+                    *issue,
+                    property.initial_value().map_or(property.span(), |value| value.span()),
+                    FieldOrProperty,
+                    context,
+                ),
             }
         }
         (Node::ClassLikeMember(ClassLikeMember::Constant(constant)), Class | Enum) => match is_slice_constant(constant) {
@@ -505,11 +521,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
                 Some(ClassConstant)
             }
-            Err(issue) => {
-                context.report(*issue);
-
-                None
-            }
+            Err(issue) => report_refusal(*issue, constant.span(), ClassConstant, context),
         },
         (
             Node::ClassLikeConstant(_)
@@ -552,18 +564,24 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             FieldOrProperty,
         ) => Some(FieldOrProperty),
         (Node::GenericHint(generic), FieldOrProperty | Method | Signature | Parameter | Body) => {
-            // The analyzer refuses a named key type without an `int` or `string` backing value.
+            // The analyzer refuses a named key type without an `int` or `string` backing value. A key type outside the
+            // slice, nullable or not, is refused once, by the walk, as that type.
             if let [key, _] = generic.arguments.as_slice()
                 && !matches!(key, Hint::Integer(_) | Hint::String(_) | Hint::Identifier(_))
+                && is_slice_type(match key {
+                    Hint::Nullable(nullable) => nullable.hint,
+                    key => key,
+                })
             {
-                context.report(
+                return report_refusal(
                     Issue::error(
                         "A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value.",
                     )
-                        .with_annotation(Annotation::primary(key.span()).with_message("Key type written here.")),
+                    .with_annotation(Annotation::primary(key.span()).with_message("Key type written here.")),
+                    generic.span(),
+                    place,
+                    context,
                 );
-
-                return None;
             }
 
             Some(place)
@@ -577,15 +595,16 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
                 && enclosing_class(context.program, method.span())
                     .is_some_and(|r#enum| r#enum.name.value.eq_ignore_ascii_case(method.name.value)) =>
         {
-            context.report(
+            report_refusal(
                 Issue::error("An enum has no constructor: its cases are its only values.")
                     .with_annotation(
                         Annotation::primary(method.name.span).with_message("Declared without a return type here."),
                     )
                     .with_help("Give the method a return type, as in `public string label()`."),
-            );
-
-            None
+                method.span(),
+                Method,
+                context,
+            )
         }
         (Node::Method(method), Class | Enum) => match is_slice_method(method, context.program) {
             Ok(()) => {
@@ -597,15 +616,14 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
                 Some(Method)
             }
-            Err((message, help)) => {
-                context.report(
-                    Issue::error(message)
-                        .with_annotation(Annotation::primary(method.name.span).with_message("Not supported yet."))
-                        .with_note(help),
-                );
-
-                None
-            }
+            Err((message, help)) => report_refusal(
+                Issue::error(message)
+                    .with_annotation(Annotation::primary(method.name.span).with_message("Not supported yet."))
+                    .with_note(help),
+                method.span(),
+                Method,
+                context,
+            ),
         },
 
         (
@@ -626,30 +644,34 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             | Node::MethodAbstractBody(_),
             Method,
         ) => Some(Method),
+        // Outside a constructor, PHP's own check reports a parameter with an access modifier.
         (Node::FunctionLikeParameter(parameter), Method)
             if parameter.hooks.is_none()
-                && let Some(public) = parameter.modifiers.get_public() =>
+                && let Some(public) = parameter.modifiers.get_public()
+                && is_constructor_parameter(parameter, context.program) =>
         {
-            context.report(
+            report_refusal(
                 Issue::error(
                     "A `public` constructor parameter needs accessors: a public member is a property, as in `public int id { get; }`.",
                 )
                 .with_annotation(Annotation::primary(public.span()).with_message("Declared `public` here."))
                 .with_note("Spec section 9 makes a `public` parameter without accessors an error, as a public field is."),
-            );
-
-            None
+                parameter.span(),
+                Parameter,
+                context,
+            )
         }
         (Node::FunctionLikeParameter(parameter), Method | Signature | Lambda)
             if let Some(ampersand) = parameter.ampersand =>
         {
-            context.report(
+            report_refusal(
                 Issue::error("A by-reference parameter is not supported yet in PHP#.")
                     .with_annotation(Annotation::primary(ampersand).with_message("Not supported yet."))
                     .with_note("The engine passes every PHP# argument by value."),
-            );
-
-            None
+                parameter.span(),
+                Parameter,
+                context,
+            )
         }
         (Node::FunctionLikeParameter(parameter), Method | Signature | Lambda) => {
             if let Some(accessors) = &parameter.hooks
@@ -832,13 +854,12 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
             None
         }
-        // Spec sections 27 and 29 remove PHP's superglobals and its `__Something__` names, written bare as well.
-        (
-            Node::Expression(
-                expression @ (Expression::ConstantAccess(_) | Expression::Variable(_) | Expression::ArrayAccess(_)),
-            ),
-            Body | Constant,
-        ) if let Some(span) = superglobal_span(expression, context) =>
+        // Spec sections 27 and 29 remove PHP's superglobals and its `__Something__` names, written bare as well. A
+        // method body walks an index of a superglobal and reports the superglobal at its name. A constant expression
+        // has no index, so it reports the superglobal over the whole index.
+        (Node::Expression(expression @ (Expression::ConstantAccess(_) | Expression::Variable(_))), Body | Constant)
+        | (Node::Expression(expression @ Expression::ArrayAccess(_)), Constant)
+            if let Some(span) = superglobal_span(expression, context) =>
         {
             report_superglobal(span, context);
 
@@ -857,7 +878,9 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             None
         }
         (Node::UnaryPrefix(unary_prefix), Body | Constant) if unary_prefix.operator.is_cast() => {
-            check_cast(unary_prefix, place, context)
+            check_cast(unary_prefix, place, context);
+
+            Some(place)
         }
         (
             Node::Expression(
@@ -914,9 +937,8 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
             None
         }
-        (Node::Expression(Expression::Conditional(conditional)), Body) => {
-            check_conditional(conditional, context).then_some(Body)
-        }
+        (Node::Expression(Expression::Conditional(_)), Body) => Some(Body),
+        (Node::Conditional(conditional), Body) => Some(check_conditional(conditional, context)),
         // Spec section 14.2: a lambda is a bare arrow, after one name or a parenthesized parameter list, and its body
         // is an expression or a block. The parser reads it into an arrow function or a closure without a keyword.
         (Node::Expression(Expression::ArrowFunction(_) | Expression::Closure(_)), Body) => Some(Body),
@@ -928,7 +950,6 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         (Node::FunctionLikeParameterList(_), Lambda) => Some(Lambda),
         (Node::Block(_), Lambda) => Some(Body),
         (Node::Expression(_), Lambda) => enter(node, Body, context),
-        (Node::Conditional(_), Body) => Some(Body),
         (Node::BinaryOperator(operator), Body | Constant) if is_slice_binary_operator(operator) => Some(place),
         // `check_cast` decided the cast at its `UnaryPrefix`.
         (Node::UnaryPrefixOperator(operator), Body | Constant) if operator.is_cast() => Some(place),
@@ -971,9 +992,12 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         {
             check_instantiation(instantiation, context)
         }
+        // `check_instantiation` reported PHP's `self` and `static`.
         (
             Node::Instantiation(_)
-            | Node::Expression(Expression::Identifier(Identifier::Local(_)) | Expression::Self_(_)),
+            | Node::Expression(
+                Expression::Identifier(Identifier::Local(_)) | Expression::Self_(_) | Expression::Static(_),
+            ),
             Instantiation,
         ) => Some(Instantiation),
         (Node::ArgumentList(_), Instantiation) => Some(Body),
@@ -983,13 +1007,11 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         (Node::MethodCall(call), Body) if matches!(call.object, Expression::Parent(_)) => Some(SuperCall),
         // `Self.make()` calls a static method of the class a static method is called on, spec section 25.
         (Node::MethodCall(call), Body) if let Expression::Self_(keyword) = call.object => {
-            if is_sharp_self(keyword) {
-                return Some(SelfCall);
+            if !is_sharp_self(keyword) {
+                report_php_self(keyword, true, context);
             }
 
-            report_php_self(keyword, true, context);
-
-            None
+            Some(SelfCall)
         }
         (Node::Expression(Expression::Parent(_)), SuperCall) | (Node::Expression(Expression::Self_(_)), SelfCall) => None,
         (Node::ClassLikeMemberSelector(_) | Node::ArgumentList(_), SuperCall | SelfCall) => {
@@ -1028,18 +1050,25 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             None
         }
         // PHP# never has top-level functions, `global`, `compact()`, `extract()` or a member called without `this.`:
-        // `check_function`, `check_global` and `check_function_call` report them.
-        (Node::Statement(Statement::Function(_)), File) | (Node::Statement(Statement::Global(_)), Body) => None,
+        // `check_function`, `check_global` and `check_function_call` report them. A function is reported at its name,
+        // so its parameters and body are checked as a method's. `global` holds only the names it declares, and
+        // `compact()` and `extract()` are reported over the whole call.
+        (Node::Statement(Statement::Function(_)), File) => Some(File),
+        (Node::Function(_), File) => Some(Method),
+        (Node::Statement(Statement::Global(_)), Body) => None,
         (Node::Expression(Expression::Call(Call::Function(function_call))), Body)
-            if is_checked_function_call(function_call, context) =>
+            if let Expression::Identifier(name) = function_call.function
+                && is_compact_or_extract(name.last_segment())
+                && context.names.binding(name) != Some(Binding::Member) =>
         {
             None
         }
         // Spec sections 8 and 29: plain PHP functions are called by their bare names. The analyzer refuses a call
         // that resolves to a namespaced function. Spec section 14: a local holding a function is called the same way.
+        // `check_function_call` reports a member called without `this.` at its name.
         (Node::Expression(Expression::Call(Call::Function(function_call))), Body)
             if let Expression::Identifier(name @ Identifier::Local(_)) = function_call.function
-                && matches!(context.names.binding(name), None | Some(Binding::Local(_))) =>
+                && matches!(context.names.binding(name), None | Some(Binding::Local(_) | Binding::Member)) =>
         {
             Some(FunctionCall)
         }
@@ -1484,9 +1513,18 @@ fn first_namespace<'ast, 'arena>(program: &'ast Program<'arena>) -> Option<&'ast
     })
 }
 
-/// Whether the slice has a ternary, reporting it when it does not. PHP#'s ternary is `c ? a : b`, and PHP's `a ?: b`
-/// does not exist, as spec section 21 says. A ternary as the condition of another needs parentheses, as in PHP 8.
-fn check_conditional(conditional: &Conditional, context: &mut Context<'_, '_, '_>) -> bool {
+/// The statements at file level of a PHP# file, and those of each of its namespaces, the ones the slice refuses too.
+fn file_statements<'ast, 'arena>(program: &'ast Program<'arena>) -> impl Iterator<Item = &'ast Statement<'arena>> {
+    program.statements.iter().flat_map(|statement| match statement {
+        Statement::Namespace(namespace) => namespace.statements().as_slice(),
+        statement => std::slice::from_ref(statement),
+    })
+}
+
+/// Checks a ternary, and returns the place of its parts. PHP#'s ternary is `c ? a : b`, and PHP's `a ?: b` does not
+/// exist, as spec section 21 says, so `?:` is reported between its two characters. A ternary as the condition of
+/// another needs parentheses, as in PHP 8, so it is reported over that condition, which the walk then skips.
+fn check_conditional(conditional: &Conditional, context: &mut Context<'_, '_, '_>) -> Place {
     if conditional.then.is_none() {
         context.report(
             Issue::error("PHP# has no `?:`: write `a ?? b` to replace null, or `c ? a : b` with a `bool` condition.")
@@ -1496,11 +1534,7 @@ fn check_conditional(conditional: &Conditional, context: &mut Context<'_, '_, '_
                 )
                 .with_note("`?:` tests truthiness, so it replaces `\"\"` and `\"0\"` along with null."),
         );
-
-        return false;
-    }
-
-    if let Expression::Conditional(nested @ Conditional { then: Some(_), .. }) = conditional.condition {
+    } else if let Expression::Conditional(nested @ Conditional { then: Some(_), .. }) = conditional.condition {
         context.report(
             Issue::error(
                 "Unparenthesized `a ? b : c ? d : e` is not supported. Use either `(a ? b : c) ? d : e` or `a ? b : (c ? d : e)`.",
@@ -1508,10 +1542,10 @@ fn check_conditional(conditional: &Conditional, context: &mut Context<'_, '_, '_
             .with_annotation(Annotation::primary(nested.span()).with_message("Nested here.")),
         );
 
-        return false;
+        return Place::RefusedPart(nested.span());
     }
 
-    true
+    Place::Body
 }
 
 /// The expression a node writes: the left side of an assignment, or the operand of `++` or `--`.
@@ -1679,18 +1713,19 @@ fn report_php_static(keyword: &Keyword, context: &mut Context<'_, '_, '_>) {
 }
 
 /// Decides `new` on a class written by its short name, on `Self`, or on PHP's `self` or `static`. `new Self(…)` needs
-/// the class's constructor marked `required`, spec section 25, because `Self` can be any subclass.
+/// the class's constructor marked `required`, spec section 25, because `Self` can be any subclass. PHP's `self` and
+/// `static` are reported at the keyword, so the arguments are still checked.
 fn check_instantiation(instantiation: &Instantiation, context: &mut Context<'_, '_, '_>) -> Option<Place> {
     match instantiation.class {
         Expression::Self_(keyword) if !is_sharp_self(keyword) => {
             report_php_self(keyword, true, context);
 
-            return None;
+            return Some(Place::Instantiation);
         }
         Expression::Static(keyword) => {
             report_php_static(keyword, context);
 
-            return None;
+            return Some(Place::Instantiation);
         }
         _ => {}
     }
@@ -1740,6 +1775,17 @@ fn has_required_constructor(class: &ClassLike) -> bool {
         matches!(member, ClassLikeMember::Method(method)
             if php_method_name(method) == b"__construct"
                 && method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Required(_))))
+    })
+}
+
+/// Whether a parameter belongs to a class's constructor, the one method where an access modifier declares a property.
+fn is_constructor_parameter(parameter: &FunctionLikeParameter, program: &Program) -> bool {
+    enclosing_class(program, parameter.span()).is_some_and(|class| {
+        class.members.iter().any(|member| {
+            matches!(member, ClassLikeMember::Method(method)
+                if php_method_name(method) == b"__construct"
+                    && method.parameter_list.span().contains(&parameter.span().start))
+        })
     })
 }
 
@@ -1823,11 +1869,11 @@ fn is_slice_prefix_operator(operator: &UnaryPrefixOperator, place: Place) -> boo
     }
 }
 
-/// Decides a cast at a place, reporting it when the slice does not have it. Spec section 24 keeps `(int)`, `(float)`
-/// and `(string)`, which the slice has in a method body, and removes PHP's other casts and its cast aliases. The
-/// refusal of `(array)` names an operand that is a local or a parameter, as the spec's `(array)row` does. Every cast is
-/// named, so a new one does not compile until it is decided.
-fn check_cast(unary_prefix: &UnaryPrefix, place: Place, context: &mut Context<'_, '_, '_>) -> Option<Place> {
+/// Checks a cast at a place, reporting it at its operator when the slice does not have it. Spec section 24 keeps
+/// `(int)`, `(float)` and `(string)`, which the slice has in a method body, and removes PHP's other casts and its cast
+/// aliases. The refusal of `(array)` names an operand that is a local or a parameter, as the spec's `(array)row` does.
+/// Every cast is named, so a new one does not compile until it is decided.
+fn check_cast(unary_prefix: &UnaryPrefix, place: Place, context: &mut Context<'_, '_, '_>) {
     let operator = &unary_prefix.operator;
     let compare = "compare the value instead, as in `count > 0` or `flag == \"1\"`.";
     let parse_or_wrap;
@@ -1835,16 +1881,14 @@ fn check_cast(unary_prefix: &UnaryPrefix, place: Place, context: &mut Context<'_
         UnaryPrefixOperator::IntCast(..) | UnaryPrefixOperator::FloatCast(..) | UnaryPrefixOperator::StringCast(..)
             if place == Place::Body =>
         {
-            return Some(Place::Body);
+            return;
         }
         UnaryPrefixOperator::IntCast(..)
         | UnaryPrefixOperator::FloatCast(..)
         | UnaryPrefixOperator::StringCast(..)
         | UnaryPrefixOperator::UnsetCast(..)
         | UnaryPrefixOperator::VoidCast(..) => {
-            report_not_supported(operator.span(), "operator", supported(place), context);
-
-            return None;
+            return report_not_supported(operator.span(), "operator", supported(place), context);
         }
         UnaryPrefixOperator::BoolCast(..) => ("(bool)", compare),
         UnaryPrefixOperator::BooleanCast(..) => ("(boolean)", compare),
@@ -1885,8 +1929,18 @@ fn check_cast(unary_prefix: &UnaryPrefix, place: Place, context: &mut Context<'_
         "Spec section 24 keeps `(int)`, `(float)` and `(string)` between numbers, and removes PHP's other casts and its cast aliases.",
         context,
     );
+}
 
-    None
+/// Reports a node's refusal, and returns the place of its children: none when the refusal's primary span covers
+/// `skipped`, the node or the part of it that holds its code, so the walk skips the children, and `place` when the
+/// refusal covers another part, such as a name or a modifier, so the walk still checks the rest.
+fn report_refusal(issue: Issue, skipped: Span, place: Place, context: &mut Context<'_, '_, '_>) -> Option<Place> {
+    let covers = issue.annotations.iter().any(|annotation| {
+        matches!(annotation.kind, AnnotationKind::Primary) && annotation.span.join(skipped) == annotation.span
+    });
+    context.report(issue);
+
+    (!covers).then_some(place)
 }
 
 /// Reports a PHP form that PHP# removes, with what to write instead and why.
@@ -2071,7 +2125,8 @@ const fn supported(place: Place) -> &'static str {
         | Place::FunctionCall
         | Place::TryCatchClause
         | Place::SuperCall
-        | Place::SelfCall => {
+        | Place::SelfCall
+        | Place::RefusedPart(_) => {
             "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, `break` and `continue` without a level, and `try` with `catch` and `finally`, with literals, list and map literals, index reads, templates, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, the ternary `c ? a : b`, `(int)`, `(float)` and `(string)`, `++` and `--`, method calls and property reads written with `.` or `?.`, lambdas as in `x => x.id`, `new Class(...)` and, with a `required` constructor, `new Self(...)`, calls of global functions and of a local that holds a lambda, `super.method(...)` and `Self.method(...)`, each with positional, named and spread arguments as in `max(...prices)`, `throw`, `exit(code)` and `typeof(Class)`."
         }
         Place::Attribute => {
@@ -2348,15 +2403,6 @@ pub fn check_function_call(function_call: &FunctionCall, context: &mut Context<'
                 .with_help("Pass the condition without `...`, or pass the description by name after the spread."),
         );
     }
-}
-
-/// Returns true when `check_function_call` reports the whole call: a bare member, `compact()` or `extract()`.
-fn is_checked_function_call(function_call: &FunctionCall, context: &Context<'_, '_, '_>) -> bool {
-    let Expression::Identifier(identifier) = function_call.function else {
-        return false;
-    };
-
-    context.names.binding(identifier) == Some(Binding::Member) || is_compact_or_extract(identifier.last_segment())
 }
 
 fn is_compact_or_extract(function: &[u8]) -> bool {
@@ -2691,21 +2737,23 @@ fn report_static_member_in_constant(
     );
 }
 
-/// The class or enum of a PHP# file whose body holds `span`.
+/// The class or enum of a PHP# file whose body holds `span`, in any of the file's namespaces, because the walk checks
+/// the classes of a namespace it refuses too.
 fn enclosing_class<'ast, 'arena>(program: &'ast Program<'arena>, span: Span) -> Option<ClassLike<'ast, 'arena>> {
-    declarations(program).0.into_iter().find(|class| class.span.contains(&span.start))
+    let mut classes = Vec::new();
+    for statement in file_statements(program) {
+        collect_declarations(statement, &mut classes, &mut Vec::new());
+    }
+
+    classes.into_iter().find(|class| class.span.contains(&span.start))
 }
 
-/// The name of the class, interface or enum of a PHP# file whose body holds `span`.
+/// The name of the class, interface or enum of a PHP# file whose body holds `span`, in any of the file's namespaces.
 fn enclosing_class_like_name<'arena>(program: &Program<'arena>, span: Span) -> Option<&'arena [u8]> {
-    program
-        .statements
-        .iter()
-        .chain(first_namespace(program).into_iter().flat_map(|namespace| namespace.statements().iter()))
-        .find_map(|statement| match statement {
-            Statement::Class(class) if class.span().contains(&span.start) => Some(class.name.value),
-            Statement::Interface(interface) if interface.span().contains(&span.start) => Some(interface.name.value),
-            Statement::Enum(r#enum) if r#enum.span().contains(&span.start) => Some(r#enum.name.value),
-            _ => None,
-        })
+    file_statements(program).find_map(|statement| match statement {
+        Statement::Class(class) if class.span().contains(&span.start) => Some(class.name.value),
+        Statement::Interface(interface) if interface.span().contains(&span.start) => Some(interface.name.value),
+        Statement::Enum(r#enum) if r#enum.span().contains(&span.start) => Some(r#enum.name.value),
+        _ => None,
+    })
 }

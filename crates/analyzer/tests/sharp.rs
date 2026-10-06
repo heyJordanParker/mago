@@ -1307,61 +1307,6 @@ fn exit_with_an_int_or_no_value_adds_no_issue() {
     assert_eq!(issues(("src/Demo/Shutdown.sharp", sharp), &[]), Vec::<String>::new());
 }
 
-/// The engine runs a `.sharp` file through the semantic checks but never the analyzer, so the semantic checks refuse
-/// `exit` with a string literal or a template, parenthesized or not, and the analyzer adds no second issue.
-#[test]
-fn exit_with_a_string_literal_is_left_to_the_semantic_checks() {
-    let sharp = "namespace Demo;\n\nclass Shutdown\n{\n    public void stop()\n    {\n        exit(\"m\");\n    }\n\n    public void template()\n    {\n        exit(`m`);\n    }\n\n    public void parenthesized()\n    {\n        exit((\"m\"));\n    }\n\n    public void nested()\n    {\n        exit(((\"m\")));\n    }\n}\n";
-
-    assert_eq!(issues(("src/Demo/Shutdown.sharp", sharp), &[]), Vec::<String>::new());
-}
-
-/// The semantic checks refuse a superglobal and a `__Something__` name in a `.sharp` file, so the analyzer adds no
-/// follow-on issue that would steer a moved file toward keeping them. A `.php` file keeps its issues.
-#[test]
-fn a_superglobal_or_magic_name_is_left_to_the_semantic_checks() {
-    let sharp = "namespace App;\n\nclass Request\n{\n    public void read()\n    {\n        const host = _SERVER[\"HTTP_HOST\"];\n        const all = GLOBALS;\n        const env = _ENV;\n        const magic = __Something__;\n        const dollar = $_SERVER[\"HTTP_HOST\"];\n    }\n}\n";
-    let php = "<?php\n\nnamespace App;\n\nclass Request\n{\n    public function read(): void\n    {\n        $host = _SERVER[\"HTTP_HOST\"];\n        $all = GLOBALS;\n        $env = _ENV;\n        $magic = __Something__;\n        $dollar = $_SERVER[\"HTTP_HOST\"];\n    }\n}\n";
-
-    assert_eq!(
-        issues(("src/App/Request.php", php), &[]),
-        [
-            "9:17 non-existent-constant",
-            "9:9 mixed-assignment",
-            "10:16 non-existent-constant",
-            "10:9 mixed-assignment",
-            "11:16 non-existent-constant",
-            "11:9 mixed-assignment",
-            "12:18 non-existent-constant",
-            "12:9 mixed-assignment",
-        ]
-    );
-    assert_eq!(
-        issues(("src/App/Request.sharp", sharp), &[]),
-        ["7:15 mixed-assignment", "8:15 mixed-assignment", "9:15 mixed-assignment", "10:15 mixed-assignment"]
-    );
-}
-
-/// The semantic checks refuse a superglobal or a `__Something__` name written before `.`, so the analyzer resolves no
-/// class for it and adds no follow-on issue. A `.php` file keeps its issues.
-#[test]
-fn a_member_of_a_superglobal_or_magic_name_is_left_to_the_semantic_checks() {
-    let sharp = "namespace App;\n\nclass Request\n{\n    public const int LIMIT = __Foo__.y;\n\n    public void read()\n    {\n        const a = _SERVER.x;\n        _SERVER.read();\n        __Foo__.bar();\n    }\n}\n";
-    let php = "<?php\n\nnamespace App;\n\nclass Request\n{\n    public const int LIMIT = __Foo__::y;\n\n    public function read(): void\n    {\n        $a = _SERVER::x;\n        _SERVER::read();\n        __Foo__::bar();\n    }\n}\n";
-
-    assert_eq!(
-        issues(("src/App/Request.php", php), &[]),
-        [
-            "7:30 non-existent-class-like",
-            "11:14 non-existent-class-like",
-            "11:9 impossible-assignment",
-            "12:18 non-existent-method",
-            "13:18 non-existent-method",
-        ]
-    );
-    assert_eq!(issues(("src/App/Request.sharp", sharp), &[]), Vec::<String>::new());
-}
-
 #[test]
 fn exit_checks_only_its_first_argument() {
     let sharp =
