@@ -21,9 +21,16 @@ pub fn php_sdk_is_available(repository: &std::path::Path, test: &str) -> bool {
 /// Runs `command` against an analysis server of its own, which stops once its runtime folder is
 /// removed after the command returns. The folder lies under `/tmp`, so the socket path stays within
 /// the Unix limit, and the cache folder cannot be created, so the server leaves no overlay behind.
+#[cfg(unix)]
 pub fn output_with_own_server(command: &mut Command) -> std::io::Result<Output> {
     let runtime = tempfile::Builder::new().prefix("mago").tempdir_in("/tmp")?;
     command.env("XDG_RUNTIME_DIR", runtime.path()).env("XDG_CACHE_HOME", "/dev/null").output()
+}
+
+/// Runs `command`, which analyzes in its own process: no analysis server runs off Unix.
+#[cfg(not(unix))]
+pub fn output_with_own_server(command: &mut Command) -> std::io::Result<Output> {
+    command.output()
 }
 
 pub fn database_configuration(

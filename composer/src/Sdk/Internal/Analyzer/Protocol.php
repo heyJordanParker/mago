@@ -220,7 +220,11 @@ final class Protocol
             $major = $version >> 16;
             $minor = $version & 0xffff;
             throw new ProtocolException(
-                'worker SDK speaks analyzer protocol ' . self::MAJOR . '.' . self::MINOR . ", Mago speaks {$major}.{$minor}",
+                'worker SDK speaks analyzer protocol '
+                . self::MAJOR
+                . '.'
+                . self::MINOR
+                . ", Mago speaks {$major}.{$minor}",
             );
         }
 
