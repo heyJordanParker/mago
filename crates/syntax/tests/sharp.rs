@@ -658,6 +658,42 @@ fn a_local_and_a_field_can_have_a_collection_type_written() {
 }
 
 #[test]
+fn a_local_can_have_a_nullable_type_argument_written() {
+    const CODE: &str = "class Report\n{\n    public void run()\n    {\n        List<Order?> orders = [];\n        Map<string, int?> prices = [:];\n        Map<string, List<int?>> sizes = [:];\n        List<(int|string)?> keys = [];\n        const List<Calc?> calcs = [];\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(ClassLikeMember::Method(run)) = class_members(program).first() else {
+        panic!("expected a method, got {:#?}", class_members(program));
+    };
+    let MethodBody::Concrete(body) = &run.body else {
+        panic!("expected a method body, got {:#?}", run.body);
+    };
+    let locals: Vec<(&str, Vec<&str>)> = body
+        .statements
+        .iter()
+        .map(|statement| {
+            let Statement::LocalDeclaration(local) = statement else {
+                panic!("expected a local, got {statement:#?}");
+            };
+
+            generic_type(CODE, local.hint.expect("a type"))
+        })
+        .collect();
+    assert_eq!(
+        locals,
+        [
+            ("List", vec!["Order?"]),
+            ("Map", vec!["string", "int?"]),
+            ("Map", vec!["string", "List<int?>"]),
+            ("List", vec!["(int|string)?"]),
+            ("List", vec!["Calc?"]),
+        ]
+    );
+}
+
+#[test]
 fn a_map_literal_writes_each_entry_as_key_colon_value() {
     const CODE: &str = "class Report\n{\n    public void run()\n    {\n        [line, other];\n        [\"pro\": pro, 2: team];\n        [:];\n        [];\n    }\n}\n";
     let arena = LocalArena::new();

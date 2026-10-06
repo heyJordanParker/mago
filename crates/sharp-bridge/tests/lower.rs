@@ -1730,6 +1730,54 @@ fn a_list_or_map_type_is_the_array_type() {
 }
 
 /// ```php
+/// public function group(array $sizes, array $calcs, array $keys): ?array { return null; }
+/// ```
+///
+/// A nullable type argument lowers as any other, so each collection is `array`: a `TYPE` with `IS_ARRAY`, which is
+/// 7, and `[263]` adds `ZEND_TYPE_NULLABLE` to the collection itself.
+#[test]
+fn a_collection_with_a_nullable_type_argument_is_the_array_type() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public Map<string, Any?>? group(List<int?> sizes, Map<string, List<Calc?>> calcs, List<(int|string)?> keys) { return null; }\n}\n",
+    );
+    let method = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a method");
+
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 0)),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                TYPE [7]
+                ZVAL "sizes"
+                null
+                null
+                null
+                null
+              PARAM
+                TYPE [7]
+                ZVAL "calcs"
+                null
+                null
+                null
+                null
+              PARAM
+                TYPE [7]
+                ZVAL "keys"
+                null
+                null
+                null
+                null
+        "#}
+    );
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 3)),
+        indoc! {"
+            TYPE [263]
+        "}
+    );
+}
+
+/// ```php
 /// $counts = [\Lib\Calc::Active => 1];
 /// $counts[\Lib\Calc::Closed] = 2;
 /// return $counts[\Lib\Calc::Active] ?? 0;

@@ -2791,6 +2791,16 @@ fn a_collection_method_takes_values_of_the_type_its_place_is_declared_with() {
     assert_eq!(issues(("src/Demo/Board.sharp", sharp), &[("src/Lib/Shape.php", shapes)]), ["26:24 invalid-argument"]);
 }
 
+#[test]
+fn a_list_of_a_nullable_type_takes_null_and_refuses_another_type() {
+    let sharp = "namespace Demo;\n\nimport Lib.Calc;\n\nclass Tray\n{\n    public void fill(List<int?> sizes, List<Calc?> calcs)\n    {\n        sizes.add(null);\n        sizes.add(1);\n        sizes.add(\"x\");\n        calcs.add(null);\n        calcs.add(Calc.make());\n        calcs.add(\"x\");\n        List<int?> held = [null, 2];\n        held.add(\"y\");\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tray.sharp", sharp), &[("src/Lib/Calc.php", CALC)]),
+        ["11:19 invalid-argument", "14:19 invalid-argument", "16:18 invalid-argument"]
+    );
+}
+
 /// The semantic checks refuse an empty literal declared without a type, so a method called on it reports nothing
 /// more, and never names the `Map<never, never>` the literal alone would give.
 #[test]
