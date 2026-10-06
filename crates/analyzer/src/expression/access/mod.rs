@@ -3,7 +3,6 @@ use mago_bytes::BytesDisplay;
 use mago_codex::ttype::add_optional_union_type;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::scalar::TScalar;
-use mago_codex::ttype::combine_union_types;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_never;
 use mago_names::binding::Binding;
@@ -30,6 +29,7 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::expression::binary::logical::merge_short_circuited_assignments;
 use crate::resolver::property::resolve_method_value;
 use crate::resolver::static_property::StaticProperty;
 use crate::resolver::static_property::StaticPropertyName;
@@ -451,8 +451,8 @@ where
 /// null-safe property read leaves out a receiver's `null` while it resolves instance members, and has no path that
 /// resolves a class value's static members, so the narrowing is this local's.
 ///
-/// A null receiver skips a call's arguments, so each local whose type the read changes, the narrowed receiver and any
-/// local an argument writes, afterwards also has the type it had before, as after a branch that may not run.
+/// A null receiver skips a call's arguments, so the locals afterwards are the ones from before, with each local an
+/// argument writes merged as the short-circuited right-hand side of `&&` merges it.
 pub(crate) fn analyze_null_safe_class_value<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
     block_context: &mut BlockContext<'ctx>,
@@ -469,6 +469,7 @@ where
     A: Arena,
 {
     let before = block_context.locals.clone();
+    let assigned_before = std::mem::take(&mut block_context.assigned_variable_ids);
     if let Expression::ConstantAccess(local) = object
         && let Some(local) = get_bare_name_variable_id(&local.name, context.resolved_names)
         && let Some(local_type) = block_context.locals.get(&local)
@@ -478,13 +479,10 @@ where
     }
 
     analyze(context, block_context, artifacts)?;
-    for (local, after) in &mut block_context.locals {
-        if let Some(before) = before.get(local)
-            && before != after
-        {
-            *after = Rc::new(combine_union_types(before, after, context.codebase, context.settings.combiner_options()));
-        }
-    }
+    let after = std::mem::replace(&mut block_context.locals, before.clone());
+    let assigned = std::mem::replace(&mut block_context.assigned_variable_ids, assigned_before);
+    merge_short_circuited_assignments(context, block_context, &before, &after, &assigned);
+    block_context.assigned_variable_ids.extend(assigned);
     let member_type = artifacts.get_expression_type(&span).cloned().unwrap_or_else(get_mixed);
     artifacts.set_expression_type(&span, member_type.as_nullable());
 
