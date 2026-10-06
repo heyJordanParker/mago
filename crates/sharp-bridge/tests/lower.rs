@@ -2173,6 +2173,374 @@ fn attributes_are_attribute_lists_of_attribute_groups_on_their_declarations() {
     );
 }
 
+/// ```php
+/// $a = $extra instanceof \Lib\Calc; $b = \is_int($extra); $c = \is_string($extra);
+/// $d = (${'match#1'} = $this->total()) instanceof \Lib\Calc;
+/// ```
+///
+/// A class is tested with `instanceof` on its full name, and a built-in type with the global `is_` function the
+/// engine compiles to `TYPE_CHECK`. A value that is not a local or a parameter is tested through a variable PHP#
+/// cannot name, so the analyzer never narrows a property.
+#[test]
+fn is_without_a_name_is_instanceof_or_a_type_check() {
+    assert_eq!(
+        body(
+            "        const a = extra is Calc;\n        const b = extra is int;\n        const c = extra is string;\n        const d = this.total() is Calc;\n        return extra;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "a"
+                INSTANCEOF
+                  VAR
+                    ZVAL "extra"
+                  ZVAL "Lib\\Calc"
+              ASSIGN
+                VAR
+                  ZVAL "b"
+                CALL
+                  ZVAL "is_int"
+                  ARG_LIST
+                    VAR
+                      ZVAL "extra"
+              ASSIGN
+                VAR
+                  ZVAL "c"
+                CALL
+                  ZVAL "is_string"
+                  ARG_LIST
+                    VAR
+                      ZVAL "extra"
+              ASSIGN
+                VAR
+                  ZVAL "d"
+                INSTANCEOF
+                  ASSIGN
+                    VAR
+                      ZVAL "match#1"
+                    METHOD_CALL
+                      VAR
+                        ZVAL "this"
+                      ZVAL "total"
+                      ARG_LIST
+                  ZVAL "Lib\\Calc"
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
+/// if (($calc = $extra) instanceof \Lib\Calc) { return 1; }
+/// if (!\is_int($count = $extra)) { return 0; }
+/// return $count;
+/// ```
+///
+/// A pattern's variable is assigned the tested value before the test. The binder lets code read it only where the
+/// test holds, so the assignment is never seen where it fails.
+#[test]
+fn is_with_a_name_assigns_the_name_before_the_test() {
+    assert_eq!(
+        body(
+            "        if (extra is Calc calc) {\n            return 1;\n        }\n        if (extra is not int count) {\n            return 0;\n        }\n        return count;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              IF
+                IF_ELEM
+                  INSTANCEOF
+                    ASSIGN
+                      VAR
+                        ZVAL "calc"
+                      VAR
+                        ZVAL "extra"
+                    ZVAL "Lib\\Calc"
+                  STMT_LIST
+                    RETURN
+                      ZVAL 1
+              IF
+                IF_ELEM
+                  UNARY_OP [14]
+                    CALL
+                      ZVAL "is_int"
+                      ARG_LIST
+                        ASSIGN
+                          VAR
+                            ZVAL "count"
+                          VAR
+                            ZVAL "extra"
+                  STMT_LIST
+                    RETURN
+                      ZVAL 0
+              RETURN
+                VAR
+                  ZVAL "count"
+        "#}
+    );
+}
+
+/// ```php
+/// $calc = $extra instanceof \Lib\Calc ? $extra : null;
+/// $made = (${'as#1'} = \Lib\Calc::make()) instanceof \Lib\Calc ? ${'as#1'} : null;
+/// ```
+///
+/// `as` reads a local or a parameter twice. Any other value is assigned to a variable PHP# cannot name, so it runs
+/// once.
+#[test]
+fn as_is_a_conditional_that_gives_the_value_or_null() {
+    assert_eq!(
+        body("        const calc = extra as Calc;\n        const made = Calc.make() as Calc;\n        return extra;\n"),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "calc"
+                CONDITIONAL
+                  INSTANCEOF
+                    VAR
+                      ZVAL "extra"
+                    ZVAL "Lib\\Calc"
+                  VAR
+                    ZVAL "extra"
+                  ZVAL null
+              ASSIGN
+                VAR
+                  ZVAL "made"
+                CONDITIONAL
+                  INSTANCEOF
+                    ASSIGN
+                      VAR
+                        ZVAL "as#1"
+                      STATIC_CALL
+                        ZVAL "Lib\\Calc"
+                        ZVAL "make"
+                        ARG_LIST
+                    ZVAL "Lib\\Calc"
+                  VAR
+                    ZVAL "as#1"
+                  ZVAL null
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
+/// $limit = 10;
+/// $a = $extra === 200;
+/// $b = $extra >= 1 && $extra < $limit || !($extra === -1);
+/// $c = $extra === $limit;
+/// $d = \is_object($extra) && (${'match#1'} = $extra->count) > 0 && \is_string($label = $extra->name);
+/// ```
+///
+/// A value is compared with `===`, a comparison keeps its operator, and `and`, `or` and `not` are `&&`, `||` and
+/// `!`. A bare name is the local's value when a local of that name is in scope. A properties pattern tests that the
+/// value is an object, then reads each property once.
+#[test]
+fn values_comparisons_and_properties_are_the_php_comparisons_they_name() {
+    assert_eq!(
+        body(
+            "        let limit = 10;\n        const a = extra is 200;\n        const b = extra is >= 1 and < limit or not -1;\n        const c = extra is limit;\n        const d = extra is { count: > 0, name: string label };\n        return extra;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "limit"
+                ZVAL 10
+              ASSIGN
+                VAR
+                  ZVAL "a"
+                BINARY_OP [16]
+                  VAR
+                    ZVAL "extra"
+                  ZVAL 200
+              ASSIGN
+                VAR
+                  ZVAL "b"
+                OR
+                  AND
+                    GREATER_EQUAL
+                      VAR
+                        ZVAL "extra"
+                      ZVAL 1
+                    BINARY_OP [20]
+                      VAR
+                        ZVAL "extra"
+                      VAR
+                        ZVAL "limit"
+                  UNARY_OP [14]
+                    BINARY_OP [16]
+                      VAR
+                        ZVAL "extra"
+                      UNARY_MINUS
+                        ZVAL 1
+              ASSIGN
+                VAR
+                  ZVAL "c"
+                BINARY_OP [16]
+                  VAR
+                    ZVAL "extra"
+                  VAR
+                    ZVAL "limit"
+              ASSIGN
+                VAR
+                  ZVAL "d"
+                AND
+                  AND
+                    CALL
+                      ZVAL "is_object"
+                      ARG_LIST
+                        VAR
+                          ZVAL "extra"
+                    GREATER
+                      ASSIGN
+                        VAR
+                          ZVAL "match#1"
+                        PROP
+                          VAR
+                            ZVAL "extra"
+                          ZVAL "count"
+                      ZVAL 0
+                  CALL
+                    ZVAL "is_string"
+                    ARG_LIST
+                      ASSIGN
+                        VAR
+                          ZVAL "label"
+                        PROP
+                          VAR
+                            ZVAL "extra"
+                          ZVAL "name"
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
+/// return match (true) {
+///     (${'match#1'} = $this->total()) === 0 => 1,
+///     \is_int($n = ${'match#1'}) && $n > 9 => $n,
+///     default => 2,
+/// };
+/// ```
+///
+/// A `match` that gives a value is PHP's `match (true)` with one condition per arm: its pattern's test, `&&` its
+/// `when` condition. The first test assigns the hidden variable.
+#[test]
+fn a_match_that_gives_a_value_is_a_match_of_true() {
+    assert_eq!(
+        body(
+            "        return match (this.total()) {\n            0 => 1,\n            int n when n > 9 => n,\n            default => 2,\n        };\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                MATCH
+                  ZVAL true
+                  MATCH_ARM_LIST
+                    MATCH_ARM
+                      EXPR_LIST
+                        BINARY_OP [16]
+                          ASSIGN
+                            VAR
+                              ZVAL "match#1"
+                            METHOD_CALL
+                              VAR
+                                ZVAL "this"
+                              ZVAL "total"
+                              ARG_LIST
+                          ZVAL 0
+                      ZVAL 1
+                    MATCH_ARM
+                      EXPR_LIST
+                        AND
+                          CALL
+                            ZVAL "is_int"
+                            ARG_LIST
+                              ASSIGN
+                                VAR
+                                  ZVAL "n"
+                                VAR
+                                  ZVAL "match#1"
+                          GREATER
+                            VAR
+                              ZVAL "n"
+                            ZVAL 9
+                      VAR
+                        ZVAL "n"
+                    MATCH_ARM
+                      null
+                      ZVAL 2
+        "#}
+    );
+}
+
+/// ```php
+/// if ($extra === 0) {
+///     return 1;
+/// } else if (\is_int($n = $extra) && $n > 9) $this->run($n); else {
+/// }
+/// ```
+///
+/// A `match` that starts a statement is `if`, `else if` per arm, and `else` for `default`. An arm that is an
+/// expression is its expression statement.
+#[test]
+fn a_match_that_starts_a_statement_is_an_if_list() {
+    assert_eq!(
+        body(
+            "        match (extra) {\n            0 => {\n                return 1;\n            },\n            int n when n > 9 => this.run(n),\n            default => {},\n        }\n        return extra;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              IF
+                IF_ELEM
+                  BINARY_OP [16]
+                    VAR
+                      ZVAL "extra"
+                    ZVAL 0
+                  STMT_LIST
+                    RETURN
+                      ZVAL 1
+                IF_ELEM
+                  null
+                  IF
+                    IF_ELEM
+                      AND
+                        CALL
+                          ZVAL "is_int"
+                          ARG_LIST
+                            ASSIGN
+                              VAR
+                                ZVAL "n"
+                              VAR
+                                ZVAL "extra"
+                        GREATER
+                          VAR
+                            ZVAL "n"
+                          ZVAL 9
+                      METHOD_CALL
+                        VAR
+                          ZVAL "this"
+                        ZVAL "run"
+                        ARG_LIST
+                          VAR
+                            ZVAL "n"
+                    IF_ELEM
+                      null
+                      STMT_LIST
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
 /// The child count `zend_ast_get_num_children` gives a fixed-size kind, or 5 for a declaration. `None` for a list.
 fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
     match kind {
@@ -2187,7 +2555,8 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_ATTRIBUTE_GROUP
         | sharp_kind::SHARP_AST_CATCH_LIST
         | sharp_kind::SHARP_AST_NAME_LIST
-        | sharp_kind::SHARP_AST_ENCAPS_LIST => None,
+        | sharp_kind::SHARP_AST_ENCAPS_LIST
+        | sharp_kind::SHARP_AST_MATCH_ARM_LIST => None,
         sharp_kind::SHARP_AST_ZVAL => Some(0),
         sharp_kind::SHARP_AST_VAR
         | sharp_kind::SHARP_AST_CONST
@@ -2223,7 +2592,10 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_DO_WHILE
         | sharp_kind::SHARP_AST_NEW
         | sharp_kind::SHARP_AST_ATTRIBUTE
-        | sharp_kind::SHARP_AST_CALL => Some(2),
+        | sharp_kind::SHARP_AST_CALL
+        | sharp_kind::SHARP_AST_INSTANCEOF
+        | sharp_kind::SHARP_AST_MATCH
+        | sharp_kind::SHARP_AST_MATCH_ARM => Some(2),
         sharp_kind::SHARP_AST_METHOD_CALL
         | sharp_kind::SHARP_AST_STATIC_CALL
         | sharp_kind::SHARP_AST_CONST_ELEM

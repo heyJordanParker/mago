@@ -17,6 +17,7 @@ use mago_syntax::cst::Argument;
 use mago_syntax::cst::ArgumentList;
 use mago_syntax::cst::AssignmentOperator;
 use mago_syntax::cst::AttributeList;
+use mago_syntax::cst::Binary;
 use mago_syntax::cst::BinaryOperator;
 use mago_syntax::cst::Block;
 use mago_syntax::cst::Call;
@@ -41,6 +42,7 @@ use mago_syntax::cst::InterpolatedString;
 use mago_syntax::cst::Literal;
 use mago_syntax::cst::LiteralStringPart;
 use mago_syntax::cst::LocalDeclaration;
+use mago_syntax::cst::MatchArm;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::MethodBody;
 use mago_syntax::cst::MethodCall;
@@ -48,6 +50,7 @@ use mago_syntax::cst::Modifier;
 use mago_syntax::cst::ModifierSequenceExt;
 use mago_syntax::cst::NamedArgument;
 use mago_syntax::cst::NamespaceBody;
+use mago_syntax::cst::Node;
 use mago_syntax::cst::PartialArgument;
 use mago_syntax::cst::PartialArgumentList;
 use mago_syntax::cst::PositionalArgument;
@@ -63,10 +66,13 @@ use mago_syntax::cst::Try;
 use mago_syntax::cst::TryCatchClause;
 use mago_syntax::cst::UnaryPostfixOperator;
 use mago_syntax::cst::UnaryPrefixOperator;
+use mago_syntax::cst::Variable;
 use mago_syntax::cst::WhileBody;
 use mago_syntax::dialect::Dialect;
 use mago_syntax::parser::parse_file_with_dialect;
 use mago_syntax::settings::ParserSettings;
+use mago_syntax::utils::pattern::PhpShape;
+use mago_syntax::utils::pattern::php_shape;
 use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_syntax_core::utils::parse_literal_integer_as_float;
 
@@ -104,6 +110,10 @@ use crate::sharp_kind::SHARP_AST_GREATER;
 use crate::sharp_kind::SHARP_AST_GREATER_EQUAL;
 use crate::sharp_kind::SHARP_AST_IF;
 use crate::sharp_kind::SHARP_AST_IF_ELEM;
+use crate::sharp_kind::SHARP_AST_INSTANCEOF;
+use crate::sharp_kind::SHARP_AST_MATCH;
+use crate::sharp_kind::SHARP_AST_MATCH_ARM;
+use crate::sharp_kind::SHARP_AST_MATCH_ARM_LIST;
 use crate::sharp_kind::SHARP_AST_METHOD;
 use crate::sharp_kind::SHARP_AST_METHOD_CALL;
 use crate::sharp_kind::SHARP_AST_NAME_LIST;
@@ -251,11 +261,13 @@ struct Lowering<'lowering, 'arena> {
     nodes: Vec<sharp_node>,
     children: Vec<u32>,
     texts: LocalArena,
+    /// How many hidden variables the pattern forms being lowered hold.
+    temporaries: u32,
 }
 
 impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     fn new(lines: &'lowering Lines, names: &'lowering ResolvedNames<'arena>) -> Self {
-        Self { lines, names, nodes: Vec::new(), children: Vec::new(), texts: LocalArena::new() }
+        Self { lines, names, nodes: Vec::new(), children: Vec::new(), texts: LocalArena::new(), temporaries: 0 }
     }
 
     /// `declare(strict_types=1);` first, then the namespaces and classes. Imports are not lowered: every class name
@@ -578,6 +590,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.node(SHARP_AST_DO_WHILE, 0, self.line(do_while), &[body, condition])
             }
             Statement::Try(r#try) => self.r#try(r#try),
+            Statement::PatternMatch(_) => self.pattern(Node::Statement(statement)),
             Statement::Break(r#break) => self.node(SHARP_AST_BREAK, 0, self.line(r#break), &[NULL]),
             Statement::Continue(r#continue) => self.node(SHARP_AST_CONTINUE, 0, self.line(r#continue), &[NULL]),
             _ => unreachable!("check_slice refuses the statement `{statement}`"),
@@ -707,6 +720,44 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.node(SHARP_AST_CONDITIONAL, 0, line, &[condition, then, r#else])
             }
             Expression::ConstantAccess(name) => self.name(name),
+            Expression::Is(_) | Expression::As(_) | Expression::PatternMatch(_) => {
+                self.pattern(Node::Expression(expression))
+            }
+            // Only the PHP of a pattern form has a `$` variable: a pattern's name, or a variable PHP# cannot name.
+            Expression::Variable(Variable::Direct(variable)) => {
+                self.variable(variable.span, variable.name.strip_prefix(b"$").unwrap_or(variable.name))
+            }
+            Expression::Binary(Binary {
+                lhs,
+                operator: BinaryOperator::Instanceof(_),
+                rhs: Expression::Identifier(class),
+            }) => {
+                let value = self.expression(lhs);
+                let class = self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class));
+
+                self.node(SHARP_AST_INSTANCEOF, 0, line, &[value, class])
+            }
+            Expression::Match(r#match) => {
+                let subject = self.expression(r#match.expression);
+                let mut arms = Vec::new();
+                for arm in r#match.arms.iter() {
+                    let (conditions, value) = match arm {
+                        MatchArm::Expression(arm) => {
+                            let conditions: Vec<u32> =
+                                arm.conditions.iter().map(|condition| self.expression(condition)).collect();
+
+                            (self.expression_list(&conditions), arm.expression)
+                        }
+                        MatchArm::Default(arm) => (NULL, arm.expression),
+                    };
+                    let value = self.expression(value);
+                    arms.push(self.node(SHARP_AST_MATCH_ARM, 0, self.line(arm), &[conditions, value]));
+                }
+
+                let arms = self.node(SHARP_AST_MATCH_ARM_LIST, 0, self.line(r#match.left_brace), &arms);
+
+                self.node(SHARP_AST_MATCH, 0, line, &[subject, arms])
+            }
             Expression::Binary(binary) => {
                 let (kind, attr) = binary_kind(binary.operator);
                 let lhs = self.expression(binary.lhs);
@@ -830,9 +881,32 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             Expression::ConstantAccess(name) if matches!(self.names.binding(&name.name), Some(Binding::Local(_))) => {
                 self.variable(name.span(), name.name.value())
             }
-            Expression::Access(Access::Property(_)) => self.expression(target),
+            Expression::Access(Access::Property(_)) | Expression::Variable(Variable::Direct(_)) => {
+                self.expression(target)
+            }
             _ => unreachable!("check_slice refuses writing to `{target}`"),
         }
+    }
+
+    /// An `is`, `as` or `match` is the PHP it runs as, which the analyzer analyzes too. Its hidden variables are
+    /// numbered after those of the forms around it, which may still hold their values.
+    fn pattern(&mut self, node: Node<'_, '_>) -> u32 {
+        let arena = LocalArena::new();
+        let names = self.names;
+        let is_local = |span: Span| matches!(names.binding(&span), Some(Binding::Local(_)));
+        let Some(PhpShape { php, temporaries, .. }) = php_shape(&arena, node, self.temporaries, &is_local) else {
+            unreachable!("check_slice refuses the pattern forms that have no PHP");
+        };
+
+        self.temporaries += temporaries;
+        let index = match php {
+            Node::Expression(expression) => self.expression(expression),
+            Node::Statement(statement) => self.statement(statement),
+            _ => unreachable!("`php_shape` builds an expression or a statement"),
+        };
+        self.temporaries -= temporaries;
+
+        index
     }
 
     /// A local, a parameter or `this` is a PHP variable of the same name. Any other bare name outside a call is a
@@ -1106,7 +1180,8 @@ fn binary_kind(operator: BinaryOperator) -> (sharp_kind, u32) {
         BinaryOperator::LessThanOrEqual(_) => (SHARP_AST_BINARY_OP, ZEND_IS_SMALLER_OR_EQUAL),
         BinaryOperator::GreaterThan(_) => (SHARP_AST_GREATER, 0),
         BinaryOperator::GreaterThanOrEqual(_) => (SHARP_AST_GREATER_EQUAL, 0),
-        BinaryOperator::And(_) => (SHARP_AST_AND, 0),
+        // check_slice refuses `and`, so only the `when` of a `match` arm runs as it.
+        BinaryOperator::And(_) | BinaryOperator::LowAnd(_) => (SHARP_AST_AND, 0),
         BinaryOperator::Or(_) => (SHARP_AST_OR, 0),
         BinaryOperator::NullCoalesce(_) => (SHARP_AST_COALESCE, 0),
         BinaryOperator::BitwiseAnd(_)
@@ -1118,7 +1193,6 @@ fn binary_kind(operator: BinaryOperator) -> (sharp_kind, u32) {
         | BinaryOperator::Spaceship(_)
         | BinaryOperator::StringConcat(_)
         | BinaryOperator::Instanceof(_)
-        | BinaryOperator::LowAnd(_)
         | BinaryOperator::LowOr(_)
         | BinaryOperator::LowXor(_) => unreachable!("check_slice refuses the operator `{operator}`"),
     }
