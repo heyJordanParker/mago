@@ -33,3 +33,8 @@ tracing = { workspace = true }
 indicatif = { workspace = true }
 rayon = { workspace = true }
 xxhash-rust = { workspace = true }
+serde = { workspace = true, features = ["rc"], optional = true }
+bincode = { workspace = true, optional = true }
+
+[features]
+serde = ["dep:serde", "dep:bincode", "mago-analyzer/serde", "mago-codex/serde", "mago-collector/serde"]

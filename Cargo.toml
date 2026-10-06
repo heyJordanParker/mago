@@ -189,6 +189,7 @@ mago-guard = { path = "crates/guard", version = "1.53.0-patch.2" }
 mago-orchestrator = { path = "crates/orchestrator", version = "1.53.0-patch.2" }
 mago-server = { path = "crates/server", version = "1.53.0-patch.2" }
 mago-extension = { path = "crates/extension", version = "1.53.0-patch.2" }
+mago-build-id = { path = "crates/build-id", version = "1.53.0-patch.2" }
 mago-sharp-bridge = { path = "crates/sharp-bridge", version = "1.53.0-patch.2" }
 tracing = { version = "0.1.40" }
 foldhash = "0.2"
@@ -261,8 +262,8 @@ mago-word = { workspace = true }
 mago-bytes = { workspace = true }
 mago-syntax = { workspace = true, features = ["serde"] }
 mago-syntax-core = { workspace = true }
-mago-reporting = { workspace = true, features = ["renderers"] }
-mago-database = { workspace = true, features = ["loader", "watcher"] }
+mago-reporting = { workspace = true, features = ["renderers", "serde"] }
+mago-database = { workspace = true, features = ["loader", "watcher", "serde"] }
 mago-linter = { workspace = true, features = ["serde"] }
 mago-names = { workspace = true }
 mago-formatter = { workspace = true, features = ["serde"] }
@@ -277,7 +278,11 @@ mago-guard = { workspace = true, features = ["serde"] }
 mago-orchestrator = { workspace = true }
 mago-server = { workspace = true }
 mago-extension = { workspace = true }
+mago-build-id = { workspace = true }
 serde = { workspace = true }
+bincode = { workspace = true }
+xxhash-rust = { workspace = true }
+walkdir = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 termtree = { workspace = true }

@@ -53,6 +53,7 @@ fn contains_ascii_whitespace(s: &[u8]) -> bool {
 
 /// Represents the kind of collector pragma.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[repr(u8)]
 #[allow(clippy::exhaustive_enums)]
 pub enum PragmaKind {

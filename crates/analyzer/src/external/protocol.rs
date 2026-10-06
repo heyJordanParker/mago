@@ -3164,9 +3164,9 @@ pub(super) fn message_reader(payload: &[u8], expected_kind: u16) -> Result<Paylo
     }
 
     let major = reader.read_u16("analyzer protocol major")?;
-    let _minor = reader.read_u16("analyzer protocol minor")?;
+    let minor = reader.read_u16("analyzer protocol minor")?;
     if major != ANALYZER_PROTOCOL_MAJOR {
-        return Err(protocol(format!("unsupported analyzer protocol major {major}")));
+        return Err(version_mismatch(major, minor));
     }
 
     let kind = reader.read_u16("analyzer message kind")?;
@@ -3179,6 +3179,12 @@ pub(super) fn message_reader(payload: &[u8], expected_kind: u16) -> Result<Paylo
     }
 
     Ok(reader)
+}
+
+fn version_mismatch(major: u16, minor: u16) -> ExternalAnalyzerError {
+    protocol(format!(
+        "worker SDK speaks analyzer protocol {major}.{minor}, Mago speaks {ANALYZER_PROTOCOL_MAJOR}.{ANALYZER_PROTOCOL_MINOR}"
+    ))
 }
 
 pub(super) fn message_kind(payload: &[u8]) -> Result<u16, ExternalAnalyzerError> {
@@ -3195,7 +3201,7 @@ pub(super) fn message_kind(payload: &[u8]) -> Result<u16, ExternalAnalyzerError>
     let major = reader.read_u16("analyzer protocol major version")?;
     let minor = reader.read_u16("analyzer protocol minor version")?;
     if major != ANALYZER_PROTOCOL_MAJOR || minor != ANALYZER_PROTOCOL_MINOR {
-        return Err(protocol(format!("unsupported analyzer protocol version {major}.{minor}")));
+        return Err(version_mismatch(major, minor));
     }
 
     let kind = reader.read_u16("analyzer message kind")?;

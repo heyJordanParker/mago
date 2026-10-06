@@ -1,6 +1,8 @@
 //! The single-workspace [`Server`]: the transport-agnostic core that owns one
 //! workspace's file database and analysis service, and answers queries against them.
 
+use std::path::Path;
+
 use foldhash::HashSet;
 
 use mago_analyzer::analysis_result::AnalysisResult;
@@ -13,6 +15,7 @@ use mago_database::membership::WorkspaceMatcher;
 use mago_orchestrator::error::OrchestratorError;
 use mago_orchestrator::service::incremental_analysis::IncrementalAnalysisService;
 use mago_reporting::Issue;
+use mago_reporting::IssueCollection;
 
 use crate::error::ServerError;
 use crate::settings::Settings;
@@ -48,6 +51,33 @@ impl Server {
         Self { database, service, scope: None }
     }
 
+    /// Build a server for one workspace that resumes from the state [`Server::encode`] returned,
+    /// so its next pass is incremental.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] when `state` does not decode or the extension workers refuse it.
+    pub fn restore(
+        database: Database<'static>,
+        prelude: fn() -> (CodebaseMetadata, SymbolReferences),
+        settings: Settings,
+        state: &[u8],
+    ) -> Result<Self, ServerError> {
+        let mut server = Self::new(database, prelude, settings);
+        server.service.restore(state)?;
+
+        Ok(server)
+    }
+
+    /// Encode the state of the last pass for [`Server::restore`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] before the first pass, or when encoding fails.
+    pub fn encode(&self) -> Result<Vec<u8>, ServerError> {
+        Ok(self.service.encode()?)
+    }
+
     /// Build the codebase and run the before-analysis hooks, then analyze no
     /// file: every analysis reports only the issues those hooks raise.
     #[must_use]
@@ -56,14 +86,13 @@ impl Server {
         self
     }
 
-    /// Analyze the whole workspace, but report only the issues in files `scope` contains, plus the
-    /// issues that name no file. An issue is reported in its primary annotation's file, else in its
-    /// first annotation's. The node-analysis hooks report only in the file they inspect, so they run
-    /// only in the files `scope` contains.
-    #[must_use]
-    pub fn scoped_to(mut self, scope: WorkspaceMatcher) -> Self {
-        self.scope = Some(scope);
-        self
+    /// From the next pass on, analyze the whole workspace but report only the issues in files `scope`
+    /// contains, plus the issues that name no file, or every issue with `None`. An issue is reported
+    /// in its primary annotation's file, else in its first annotation's. The node-analysis hooks
+    /// report only in the file they inspect, so they run only in the files `scope` contains: a pass
+    /// analyzes again each unchanged file that enters the scope after a pass skipped its hooks.
+    pub fn set_scope(&mut self, scope: Option<WorkspaceMatcher>) {
+        self.scope = scope;
     }
 
     /// Borrow the workspace file database.
@@ -104,25 +133,52 @@ impl Server {
         }
     }
 
+    /// The issues of the last pass reported in files `scope` contains, plus the issues that name no
+    /// file, or nothing before the first pass.
+    ///
+    /// The answer holds the node-analysis hooks' issues only in the files of the last pass's
+    /// [scope](Server::set_scope).
+    #[must_use]
+    pub fn issues_in(&self, scope: &WorkspaceMatcher) -> IssueCollection {
+        let files = self.files_in(scope);
+
+        self.service
+            .last_issues()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|issue| reported_file(issue).is_none_or(|file_id| files.contains(&file_id)))
+            .collect()
+    }
+
     /// Run one analysis pass with the node-analysis hooks only in the scope's files, and report
     /// only their issues. A failed pass resets the service.
     fn pass(
         &mut self,
         analyze: impl FnOnce(&mut IncrementalAnalysisService) -> Result<AnalysisResult, OrchestratorError>,
     ) -> Result<AnalysisResult, ServerError> {
-        let files = self.scope.as_ref().map(|scope| {
-            self.database
-                .files()
-                .filter(|file| file.path.as_deref().is_some_and(|path| scope.contains(path)))
-                .map(|file| file.id)
-                .collect::<HashSet<_>>()
-        });
+        let files = self.scope.as_ref().map(|scope| self.files_in(scope));
         self.service.set_node_analysis_files(files.clone());
 
         analyze(&mut self.service)
             .inspect_err(|_| self.service.reset())
             .map(|result| reported_in(result, files.as_ref()))
             .map_err(ServerError::from)
+    }
+
+    /// The workspace files whose path `scope` contains. Database paths are canonical, so a file
+    /// outside every root of `scope` is skipped before [`WorkspaceMatcher::contains`] resolves it.
+    fn files_in(&self, scope: &WorkspaceMatcher) -> HashSet<FileId> {
+        let roots: Vec<&Path> = scope.roots().collect();
+
+        self.database
+            .files()
+            .filter(|file| {
+                file.path
+                    .as_deref()
+                    .is_some_and(|path| roots.iter().any(|root| path.starts_with(root)) && scope.contains(path))
+            })
+            .map(|file| file.id)
+            .collect()
     }
 }
 
@@ -206,7 +262,9 @@ mod tests {
             vec![b"php"],
         ))
         .expect("the scope compiles");
-        let scoped = two_file_server().0.scoped_to(scope).analyze().expect("scoped analysis").issues;
+        let mut scoped = two_file_server().0;
+        scoped.set_scope(Some(scope));
+        let scoped = scoped.analyze().expect("scoped analysis").issues;
 
         let primary_file = |issue: &Issue| {
             issue
@@ -221,6 +279,54 @@ mod tests {
             scoped.iter().collect::<Vec<_>>(),
             all.iter().filter(|issue| primary_file(issue) == Some(b)).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn a_restored_server_answers_an_edit_like_a_fresh_analysis() {
+        let (mut warm, a, _) = two_file_server();
+        warm.analyze().expect("analysis");
+        let state = warm.encode().expect("the state encodes");
+
+        let (fresh, _, _) = two_file_server();
+        let settings = Settings {
+            parser: ParserSettings::default(),
+            analyzer: AnalyzerSettings::default(),
+            plugin_registry: Arc::new(PluginRegistry::with_library_providers()),
+            use_progress_bars: false,
+        };
+        let mut restored =
+            Server::restore(fresh.database().clone(), Default::default, settings, &state).expect("the state restores");
+        let edited = Cow::Borrowed("<?php\nfunction a(): string { return 'a'; }\n".as_bytes());
+        restored.database_mut().update(a, edited.clone());
+        let restored_issues = restored.analyze_incremental(&[a]).expect("incremental analysis").issues;
+
+        let (mut cold, _, _) = two_file_server();
+        cold.database_mut().update(a, edited);
+        let cold_issues = cold.analyze_incremental(&[]).expect("analysis from scratch").issues;
+
+        assert!(!cold_issues.is_empty());
+        assert_eq!(restored_issues, cold_issues);
+    }
+
+    #[test]
+    fn issues_in_answers_any_scope_from_one_unscoped_pass() {
+        let (mut server, a, b) = two_file_server();
+        let all = server.analyze().expect("analysis").issues;
+        let scope = |path: &'static [u8]| {
+            WorkspaceMatcher::from_configuration(&DatabaseConfiguration::new(
+                Path::new("/scope"),
+                vec![path],
+                vec![],
+                vec![],
+                vec![b"php"],
+            ))
+            .expect("the scope compiles")
+        };
+
+        for (file, path) in [(a, b"src/a.php".as_slice()), (b, b"src/b.php".as_slice())] {
+            let expected = all.iter().filter(|issue| reported_file(issue).is_none_or(|id| id == file));
+            assert_eq!(server.issues_in(&scope(path)).iter().collect::<Vec<_>>(), expected.collect::<Vec<_>>());
+        }
     }
 
     #[test]

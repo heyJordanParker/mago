@@ -291,6 +291,11 @@ pub enum Error {
     /// such as `--substitute ORIG=TEMP`. Semantic validation that depends on filesystem state
     /// or orchestrator context surfaces through [`Orchestrator`](Self::Orchestrator) instead.
     InvalidArgument(String),
+
+    /// The analysis server could not answer: it failed to start, refused the worktree, or failed
+    /// the analysis it ran.
+    #[cfg(unix)]
+    Server(String),
 }
 
 /// Formats the error for user-friendly display.
@@ -363,6 +368,8 @@ impl std::fmt::Display for Error {
                 write!(f, "Unknown formatter preset: `{preset}`. Available presets are: laravel, psr12, default")
             }
             Self::InvalidArgument(message) => write!(f, "{message}"),
+            #[cfg(unix)]
+            Self::Server(message) => f.write_str(message),
             Self::InvalidProjectVersionPin(error) => write!(f, "{error}"),
             Self::ProjectMajorVersionMismatch(pinned, installed) => {
                 write!(

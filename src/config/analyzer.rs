@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use clap::ColorChoice;
 use mago_algebra::DEFAULT_CONSENSUS_LIMIT;
 use mago_algebra::DEFAULT_DISJUNCTION_COMPLEXITY;
 use mago_algebra::DEFAULT_NEGATION_COMPLEXITY;
@@ -19,8 +18,6 @@ use mago_reporting::baseline::BaselineVariant;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
-
-use crate::utils::should_use_colors;
 
 /// Configuration options for the static analyzer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -435,7 +432,7 @@ impl Default for PerformanceConfiguration {
 }
 
 impl AnalyzerConfiguration {
-    pub fn to_settings(&self, php_version: PHPVersion, color_choice: ColorChoice, enable_diff: bool) -> Settings {
+    pub fn to_settings(&self, php_version: PHPVersion, enable_diff: bool) -> Settings {
         // Backwards compatibility: if perform_heuristic_checks is set, use it for both options
         let check_missing_override = self.perform_heuristic_checks.unwrap_or(self.check_missing_override);
         let find_unused_parameters = self.perform_heuristic_checks.unwrap_or(self.find_unused_parameters);
@@ -477,7 +474,6 @@ impl AnalyzerConfiguration {
             check_arrow_function_missing_type_hints: self.check_arrow_function_missing_type_hints,
             allow_implicit_pipe_callable_types: self.allow_implicit_pipe_callable_types,
             register_super_globals: self.register_super_globals,
-            use_colors: should_use_colors(color_choice),
             diff: enable_diff,
             trust_existence_checks: self.trust_existence_checks,
             class_initializers: self.class_initializers.iter().filter_map(|s| ClassInitializer::parse(s)).collect(),

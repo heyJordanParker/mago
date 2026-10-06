@@ -147,7 +147,7 @@ impl CstCommand {
             let config = DatabaseConfiguration::new(Path::new("/"), vec![], vec![], vec![], vec![]).into_static();
             let mut database = Database::single(file, config);
             let editor_url = configuration.editor_url.take();
-            let orchestrator = create_orchestrator(&configuration, color_choice, false, true, false);
+            let orchestrator = create_orchestrator(&configuration, false, true, false);
 
             let (exit_code, _) = self
                 .reporting
@@ -188,7 +188,7 @@ impl CstCommand {
                         DatabaseConfiguration::new(Path::new("/"), vec![], vec![], vec![], vec![]).into_static();
                     let mut database = Database::single(file, config);
                     let editor_url = configuration.editor_url.take();
-                    let orchestrator = create_orchestrator(&configuration, color_choice, false, true, false);
+                    let orchestrator = create_orchestrator(&configuration, false, true, false);
 
                     let (exit_code, _) = self
                         .reporting

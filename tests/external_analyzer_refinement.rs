@@ -183,6 +183,49 @@ fn codes(issues: &IssueCollection) -> BTreeMap<String, Vec<String>> {
 }
 
 #[test]
+fn a_refined_file_entering_the_node_analysis_files_keeps_its_refinement_issues() {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !common::php_sdk_is_available(repository, "the refinement coverage test") {
+        return;
+    }
+
+    let (mut refined, holder_id) = database(true);
+    let expected =
+        holder(true).replace("#[Refined]", "// @mago-expect analysis:declaration-refinement-proof/marker\n#[Refined]");
+    refined.update(holder_id, Cow::Owned(expected.into_bytes()));
+    let mut incremental = service(&refined, registry(repository));
+    incremental.set_node_analysis_files(Some([FileId::new(b"src/Box.php")].into_iter().collect()));
+    incremental.analyze().expect("scoped analysis should succeed");
+
+    incremental.set_node_analysis_files(None);
+    let covered = codes(&incremental.analyze_incremental(Some(&[])).expect("covering analysis").issues);
+    let fresh = codes(&service(&refined, registry(repository)).analyze().expect("fresh analysis").issues);
+    assert!(!fresh.contains_key("unfulfilled-expect"), "the pragma fulfils the refinement issue: {fresh:#?}");
+    assert_eq!(covered, fresh, "a covered file answers like a fresh analysis");
+}
+
+#[test]
+fn a_refinement_issue_survives_when_an_edit_elsewhere_analyzes_its_file_again() {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !common::php_sdk_is_available(repository, "the refinement cascade test") {
+        return;
+    }
+
+    let (mut refined, _) = database(true);
+    let mut incremental = service(&refined, registry(repository));
+    incremental.analyze().expect("refined analysis should succeed");
+
+    let box_id = FileId::new(b"src/Box.php");
+    let nullable = BOX.replace("public function get(): object", "public function get(): ?object");
+    refined.update(box_id, Cow::Owned(nullable.into_bytes()));
+    incremental.update_database(refined.read_only());
+    let edited = codes(&incremental.analyze_incremental(Some(&[box_id])).expect("incremental analysis").issues);
+    let fresh = codes(&service(&refined, registry(repository)).analyze().expect("fresh analysis").issues);
+    assert!(edited.contains_key("declaration-refinement-proof/marker"), "{edited:#?}");
+    assert_eq!(edited, fresh, "a signature edit elsewhere answers like a fresh analysis");
+}
+
+#[test]
 fn declaration_refinements_reach_declarations_bodies_and_incremental_removal() {
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
     if !common::php_sdk_is_available(repository, "the declaration refinement test") {

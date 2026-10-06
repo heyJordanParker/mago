@@ -17,6 +17,7 @@ use crate::Level;
 use crate::error::ReportingError;
 use crate::formatter::Formatter;
 use crate::formatter::FormatterConfig;
+use crate::formatter::utils::colored_note;
 use crate::formatter::utils::utf8_preserving_byte_offsets;
 
 /// Formatter that outputs issues using the Ariadne diagnostic library.
@@ -64,7 +65,7 @@ impl Formatter for AriadneFormatter {
             }
 
             for note in &issue.notes {
-                report = report.with_note(note.clone());
+                report = report.with_note(if use_colors { colored_note(note).into_owned() } else { note.clone() });
             }
 
             if let Some(link) = &issue.link {

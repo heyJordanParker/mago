@@ -373,7 +373,7 @@ pub fn verify_argument_type<'arena, A>(
             "Provide a value that more precisely matches `{parameter_type_str}` or adjust the parameter type."
         ));
 
-        if let Some(type_diff) = get_type_diff(context, parameter_type, input_type) {
+        if let Some(type_diff) = get_type_diff(parameter_type, input_type) {
             issue = issue.with_note(type_diff);
         }
 
@@ -449,7 +449,7 @@ pub fn verify_argument_type<'arena, A>(
             ));
         }
 
-        if let Some(type_diff) = get_type_diff(context, parameter_type, input_type) {
+        if let Some(type_diff) = get_type_diff(parameter_type, input_type) {
             issue = issue.with_note(type_diff);
         }
 

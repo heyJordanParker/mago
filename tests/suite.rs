@@ -16,6 +16,8 @@ use libtest_mimic::Failed;
 use libtest_mimic::Trial;
 use serde::Deserialize;
 
+mod common;
+
 #[derive(Deserialize)]
 struct VerifyOutput {
     new_issues: Vec<ChangeEntry>,
@@ -31,12 +33,13 @@ struct ChangeEntry {
 }
 
 fn invoke(bin: &Path, cmd: &str, dir: &Path, name: &str, extra_args: &[&str]) -> std::process::Output {
-    Command::new(bin)
-        .args(["--no-version-check", "--colors", "never", "--threads", "4", cmd])
-        .args(extra_args)
-        .current_dir(dir)
-        .output()
-        .unwrap_or_else(|e| panic!("[{name}] failed to spawn `mago {cmd}`: {e}"))
+    common::output_with_own_server(
+        Command::new(bin)
+            .args(["--no-version-check", "--colors", "never", "--threads", "4", cmd])
+            .args(extra_args)
+            .current_dir(dir),
+    )
+    .unwrap_or_else(|e| panic!("[{name}] failed to spawn `mago {cmd}`: {e}"))
 }
 
 fn generate_baseline(bin: &Path, cmd: &str, dir: &Path, name: &str) {

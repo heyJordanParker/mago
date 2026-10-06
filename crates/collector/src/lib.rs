@@ -82,6 +82,7 @@ where
 /// Owned pragma state retained while diagnostics may still arrive after a file's
 /// primary analysis has completed.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct DeferredPragmas {
     file_id: FileId,
     pragmas: std::vec::Vec<OwnedPragma>,
@@ -92,7 +93,68 @@ pub struct DeferredPragmas {
     skip_unfulfilled_expect: bool,
 }
 
+/// [`DeferredPragmas`] as it decodes, before its codes, aliases and link template become
+/// `&'static str` again. Those come from a fixed set, so each distinct text is leaked once per
+/// process.
+#[cfg(feature = "serde")]
+mod decoded {
+    use std::sync::LazyLock;
+    use std::sync::Mutex;
+
+    use foldhash::HashMap;
+    use foldhash::HashSet;
+
+    use mago_database::file::FileId;
+
+    use crate::DeferredPragmas;
+    use crate::OwnedPragma;
+
+    #[derive(serde::Deserialize)]
+    pub(super) struct DecodedPragmas {
+        file_id: FileId,
+        pragmas: Vec<OwnedPragma>,
+        disabled_codes: Vec<String>,
+        active_codes: Option<Vec<String>>,
+        aliases: HashMap<String, String>,
+        link_template: Option<String>,
+        skip_unfulfilled_expect: bool,
+    }
+
+    impl<'de> serde::Deserialize<'de> for DeferredPragmas {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let decoded = DecodedPragmas::deserialize(deserializer)?;
+
+            Ok(Self {
+                file_id: decoded.file_id,
+                pragmas: decoded.pragmas,
+                disabled_codes: decoded.disabled_codes.into_iter().map(intern).collect(),
+                active_codes: decoded.active_codes,
+                aliases: decoded.aliases.into_iter().map(|(alias, code)| (intern(alias), intern(code))).collect(),
+                link_template: decoded.link_template.map(intern),
+                skip_unfulfilled_expect: decoded.skip_unfulfilled_expect,
+            })
+        }
+    }
+
+    fn intern(text: String) -> &'static str {
+        static INTERNED: LazyLock<Mutex<HashSet<&'static str>>> = LazyLock::new(Mutex::default);
+
+        let mut interned = INTERNED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(existing) = interned.get(text.as_str()) {
+            return existing;
+        }
+
+        let leaked: &'static str = Box::leak(text.into_boxed_str());
+        interned.insert(leaked);
+        leaked
+    }
+}
+
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 struct OwnedPragma {
     kind: PragmaKind,
     span: Span,

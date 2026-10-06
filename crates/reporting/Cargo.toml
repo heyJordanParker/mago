@@ -24,6 +24,7 @@ termcolor = { workspace = true, optional = true }
 strum = { workspace = true }
 blake3 = { workspace = true }
 ariadne = { workspace = true, optional = true }
+diffy = { workspace = true, optional = true }
 serde-sarif = { workspace = true, optional = true }
 schemars = { workspace = true }
 tracing = { workspace = true }
@@ -31,7 +32,7 @@ regex = { workspace = true }
 
 [features]
 default = ["renderers"]
-renderers = ["dep:codespan-reporting", "dep:termcolor", "dep:ariadne"]
+renderers = ["dep:codespan-reporting", "dep:termcolor", "dep:ariadne", "dep:diffy"]
 serde = [
     "dep:serde",
     "dep:serde_json",

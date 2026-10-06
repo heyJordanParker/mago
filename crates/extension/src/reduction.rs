@@ -1,4 +1,7 @@
-//! Terminal worker-state reduction carried over ordinary extension requests.
+//! Worker management carried over ordinary extension requests: terminal worker-state reduction,
+//! and the PHP files a worker has loaded.
+
+use std::path::PathBuf;
 
 use crate::PayloadReader;
 use crate::PayloadWriter;
@@ -7,13 +10,34 @@ use crate::WorkerError;
 
 const MAGIC: [u8; 4] = *b"MEXT";
 const MAJOR: u16 = 1;
-const MINOR: u16 = 0;
+const MINOR: u16 = 1;
 const HEADER_LENGTH: usize = 12;
 const COLLECT_REQUEST: u16 = 1;
 const REDUCE_REQUEST: u16 = 2;
+const LOADED_FILES_REQUEST: u16 = 3;
 const COLLECT_RESPONSE: u16 = 0x8001;
 const REDUCE_RESPONSE: u16 = 0x8002;
+const LOADED_FILES_RESPONSE: u16 = 0x8003;
 const MAXIMUM_REDUCERS: usize = 0x0000_4000;
+const MAXIMUM_LOADED_FILES: usize = 0x0010_0000;
+
+pub(crate) fn loaded_files_request() -> Vec<u8> {
+    message_writer(LOADED_FILES_REQUEST, HEADER_LENGTH).finish()
+}
+
+pub(crate) fn decode_loaded_files_response(worker: usize, payload: &[u8]) -> Result<Vec<PathBuf>, WorkerError> {
+    let mut reader = message_reader(worker, payload, LOADED_FILES_RESPONSE)?;
+    let count =
+        reader.read_count("loaded files", MAXIMUM_LOADED_FILES).map_err(|error| invalid_response(worker, error))?;
+    let mut files = Vec::with_capacity(count);
+    for _ in 0..count {
+        let path = reader.read_bytes("loaded file path").map_err(|error| invalid_response(worker, error))?;
+        files.push(PathBuf::from(String::from_utf8_lossy(path).into_owned()));
+    }
+
+    reader.finish().map_err(|error| invalid_response(worker, error))?;
+    Ok(files)
+}
 
 pub(crate) fn collect_request() -> Vec<u8> {
     message_writer(COLLECT_REQUEST, HEADER_LENGTH).finish()

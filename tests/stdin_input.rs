@@ -9,6 +9,8 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
 
+mod common;
+
 /// Strip leading log lines (e.g. " INFO ...") so the remainder is JSON.
 fn strip_log_prefix(stdout: &str) -> &str {
     let s = stdout.trim();
@@ -291,7 +293,7 @@ function f($a, $b) {
             child.stdin.as_mut().unwrap().write_all(s.as_bytes()).unwrap();
             child.wait_with_output().unwrap()
         } else {
-            cmd.output().unwrap()
+            common::output_with_own_server(&mut cmd).unwrap()
         }
     };
 

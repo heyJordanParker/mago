@@ -35,14 +35,24 @@ require_once dirname(__DIR__, 4) . '/vendor/autoload.php';
 
 /**
  * The hooks the analysis server tests drive: a before-analysis issue, a node hook that reports
- * each function and fails in a file marked `node hook: fail`, a failing after-analysis hook, and a
- * cross-file rule that reports a route declared by two analyzed files.
+ * each function and fails in a file marked `node hook: fail`, a failing after-analysis hook, a
+ * cross-file rule that reports a route declared by two analyzed files, and how many times the
+ * after-analysis hook's instance ran when the codebase declares `PROOF_CALLS`.
  *
  * @mago-expect lint:cyclomatic-complexity
  * @mago-expect lint:file-name
  */
 final class ServerProofPlugin implements Plugin, BeforeAnalysisHook, NodeAnalysisHook, AfterAnalysisHook
 {
+    private int $calls = 0;
+
+    /**
+     * The file that first declared each route.
+     *
+     * @var array<string, string>
+     */
+    private array $owners = [];
+
     public function getDefinition(): PluginDefinition
     {
         return new PluginDefinition('server-proof', 'Server proof', 'Hooks the analysis server tests drive.');
@@ -88,10 +98,19 @@ final class ServerProofPlugin implements Plugin, BeforeAnalysisHook, NodeAnalysi
             throw new RuntimeException('The after-analysis hook was told to fail.');
         }
 
+        ++$this->calls;
+        $counted = $context->codebase->getConstant('PROOF_CALLS');
+        if ($counted !== null) {
+            $context->report(
+                Level::Warning,
+                'calls',
+                Issue::at("After-analysis call {$this->calls} of this hook.", $counted->location),
+            );
+        }
+
         $files = $context->analysis->files;
         usort($files, static fn(FileAnalysis $left, FileAnalysis $right): int => $left->file <=> $right->file);
 
-        $owners = [];
         foreach ($files as $file) {
             $contents = $file->getSourceFile()->contents;
             $marker = strpos($contents, 'route: ');
@@ -101,9 +120,9 @@ final class ServerProofPlugin implements Plugin, BeforeAnalysisHook, NodeAnalysi
                 $marker = strpos($contents, 'route: ', $end);
 
                 $route = substr($contents, $start, $end - $start);
-                $owner = $owners[$route] ?? null;
+                $owner = $this->owners[$route] ?? null;
                 if ($owner === null) {
-                    $owners[$route] = $file->file;
+                    $this->owners[$route] = $file->file;
                     continue;
                 }
 

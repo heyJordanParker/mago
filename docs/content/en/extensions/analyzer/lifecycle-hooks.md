@@ -123,6 +123,8 @@ Every before-analysis hook registered by an enabled plugin runs once before para
 
 This stage is appropriate for validating a framework model built during codebase scanning, reporting project-level setup problems, and registering references that are not owned by one analyzed file. It cannot add or replace codebase symbols; declarations must be supplied as initialization stubs.
 
+A before-analysis hook runs on the instance the plugin registered, in a worker that may have served earlier analyses, so state it keeps in its properties carries into the next analysis. Rebuild such state from the context on every call.
+
 ## After each file
 
 `AfterFileAnalysisHook` observes one completed file. In a full project run, Mago first merges all native file results, then dispatches after-file and targeted hooks in parallel lifecycle batches. The hook is therefore per-file in data, not an inline step inside that file's native analysis:
@@ -172,6 +174,8 @@ Mago sends one after-analysis callback per enabled plugin that registered at lea
 - the final merged `SymbolReferences` graph.
 
 This is the right place for project-wide checks such as unused framework declarations or type-coverage summaries. It may report new issues, but cannot retroactively alter types inferred during file analysis.
+
+A worker serves many analyses, for example under `mago analyze --watch` or the analysis server. Every analysis runs a fresh `clone` of each after-analysis hook, taken from the hook as the plugin registered it, before any analysis ran. Scalar and array properties therefore start as registered on every analysis, so findings a hook collects in them never reach the next analysis. The clone is shallow: an object property is shared by every copy, so a hook that keeps state in an object deep-copies that object in `__clone`.
 
 ## Shared lifecycle services
 

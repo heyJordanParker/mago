@@ -79,6 +79,9 @@ pub(crate) fn initialize_external_linter(
     Ok(Some(linter))
 }
 
+/// An external analyzer with the worker pool of every enabled host, in host order.
+pub(crate) type StartedAnalyzer = (ExternalAnalyzer, Vec<Arc<WorkerPool>>);
+
 /// Starts every enabled extension host and validates its analyzer registration.
 pub(crate) fn initialize_external_analyzer(
     extension_hosts: &BTreeMap<String, ExtensionHostConfiguration>,
@@ -86,7 +89,7 @@ pub(crate) fn initialize_external_analyzer(
     mago_threads: usize,
     enabled_plugins: &[String],
     disable_defaults: bool,
-) -> Result<Option<ExternalAnalyzer>, ExternalAnalyzerError> {
+) -> Result<Option<StartedAnalyzer>, ExternalAnalyzerError> {
     let trace_start = tracing::enabled!(tracing::Level::TRACE).then(Instant::now);
     tracing::trace!(
         configured_hosts = extension_hosts.len(),
@@ -137,7 +140,10 @@ pub(crate) fn initialize_external_analyzer(
         return Ok(None);
     }
 
-    let analyzer = ExternalAnalyzer::initialize(pools, php_version, enabled_plugins, disable_defaults)?;
+    let names =
+        extension_hosts.iter().filter(|(_, host)| host.enabled).map(|(name, _)| name.clone()).collect::<Vec<_>>();
+    let analyzer = ExternalAnalyzer::initialize(pools.iter().cloned(), php_version, enabled_plugins, disable_defaults)
+        .map_err(|error| error.with_host_names(&names))?;
     if let Some(start) = trace_start {
         tracing::trace!(
             extensions = analyzer.extensions().len(),
@@ -147,7 +153,7 @@ pub(crate) fn initialize_external_analyzer(
         );
     }
 
-    Ok(Some(analyzer))
+    Ok(Some((analyzer, pools)))
 }
 
 /// Starts external analyzer initialization without blocking the codebase pipeline.
@@ -182,6 +188,7 @@ pub(crate) fn start_external_analyzer(
                 &enabled_plugins,
                 disable_defaults,
             )?
+            .map(|(analyzer, _)| analyzer)
             .ok_or_else(|| ExternalAnalyzerError::protocol("external analyzer has no enabled hosts"));
             if let Some(start) = start {
                 tracing::trace!(elapsed = ?start.elapsed(), success = analyzer.is_ok(), "External analyzer initialization thread finished.");

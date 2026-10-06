@@ -21,7 +21,7 @@ use mago_syntax::settings::ParserSettings;
 ///
 /// The configuration is organized into three main categories:
 ///
-/// 1. **Global Settings**: PHP version, progress bars, colors
+/// 1. **Global Settings**: PHP version, progress bars
 /// 2. **File Discovery**: Paths, includes, excludes, extensions
 /// 3. **Tool Settings**: Linter, analyzer, guard, formatter configurations
 #[derive(Debug)]
@@ -142,12 +142,4 @@ pub struct OrchestratorConfiguration<'cfg> {
     ///
     /// **Default**: `false` (for library users)
     pub use_progress_bars: bool,
-
-    /// Whether to use colors in output.
-    ///
-    /// Color output improves readability in terminals but should be disabled when
-    /// piping to files or in environments that don't support ANSI color codes.
-    ///
-    /// **Default**: `false` (for library users)
-    pub use_colors: bool,
 }

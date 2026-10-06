@@ -30,6 +30,7 @@ use crate::Level;
 use crate::error::ReportingError;
 use crate::formatter::Formatter;
 use crate::formatter::FormatterConfig;
+use crate::formatter::utils::colored_note;
 use crate::formatter::utils::osc8_file_hyperlink;
 use crate::formatter::utils::utf8_preserving_byte_offsets;
 
@@ -102,7 +103,14 @@ pub(super) fn codespan_format_with_config(
             }
         }
 
-        let diagnostic: Diagnostic<FileId> = issue.into();
+        let mut diagnostic: Diagnostic<FileId> = issue.into();
+        if use_colors {
+            for note in &mut diagnostic.notes {
+                if let Cow::Owned(colored) = colored_note(note) {
+                    *note = colored;
+                }
+            }
+        }
 
         term::emit_to_write_style(&mut buffer, codespan_config, &files, &diagnostic)?;
     }

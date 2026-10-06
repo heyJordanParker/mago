@@ -95,7 +95,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for YieldValue<'arena> {
             .with_note("The type of the value yielded must be assignable to the value type declared in the Generator's return type hint.")
             .with_help("Ensure the yielded value matches the expected type, or adjust the Generator's return type hint.");
 
-            if let Some(type_diff) = get_type_diff(context, &v, &value_type) {
+            if let Some(type_diff) = get_type_diff(&v, &value_type) {
                 issue = issue.with_note(type_diff);
             }
 
@@ -123,7 +123,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for YieldValue<'arena> {
             .with_note("When `yield $value` is used, an implicit integer key is generated. This key must be assignable to the key type declared in the Generator's return type hint.")
             .with_help("Use `yield $key => $value;` to specify a key of the correct type, or adjust the Generator's key type hint.");
 
-            if let Some(type_diff) = get_type_diff(context, &k, &key_type) {
+            if let Some(type_diff) = get_type_diff(&k, &key_type) {
                 issue = issue.with_note(type_diff);
             }
 
@@ -195,7 +195,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for YieldPair<'arena> {
             .with_note("The type of the value yielded must be assignable to the value type declared in the Generator's return type hint.")
             .with_help("Ensure the yielded value matches the expected type, or adjust the Generator's return type hint.");
 
-            if let Some(type_diff) = get_type_diff(context, &v, &value_type) {
+            if let Some(type_diff) = get_type_diff(&v, &value_type) {
                 issue = issue.with_note(type_diff);
             }
 
@@ -223,7 +223,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for YieldPair<'arena> {
             .with_note("The type of the key yielded must be assignable to the key type declared in the Generator's return type hint.")
             .with_help("Ensure the yielded key matches the expected type, or adjust the Generator's key type hint.");
 
-            if let Some(type_diff) = get_type_diff(context, &k, &key_type) {
+            if let Some(type_diff) = get_type_diff(&k, &key_type) {
                 issue = issue.with_note(type_diff);
             }
 
@@ -352,7 +352,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for YieldFrom<'arena> {
                 .with_note("The value type yielded by the inner iterable (Tv') must be assignable to the value type of the current generator (Tv). This means `Tv' <: Tv`.")
                 .with_help("Ensure the inner iterable yields compatible value types, or adjust the current Generator's type hint.");
 
-                if let Some(type_diff) = get_type_diff(context, &v, &value) {
+                if let Some(type_diff) = get_type_diff(&v, &value) {
                     issue = issue.with_note(type_diff);
                 }
 
@@ -380,7 +380,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for YieldFrom<'arena> {
                 .with_note("The key type yielded by the inner iterable (Tk') must be assignable to the key type of the current generator (Tk). This means `Tk' <: Tk`.")
                 .with_help("Ensure the inner iterable yields compatible key types, or adjust the current Generator's type hint.");
 
-                if let Some(type_diff) = get_type_diff(context, &k, &key) {
+                if let Some(type_diff) = get_type_diff(&k, &key) {
                     issue = issue.with_note(type_diff);
                 }
 

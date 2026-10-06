@@ -407,7 +407,6 @@ fn orchestrator_loads_initialization_stubs_into_the_source_database() {
         disable_default_analyzer_plugins: false,
         analyzer_plugins: vec![],
         use_progress_bars: false,
-        use_colors: false,
     });
 
     orchestrator.set_external_analyzer(analyzer);

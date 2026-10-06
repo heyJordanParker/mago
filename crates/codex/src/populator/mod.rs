@@ -109,7 +109,11 @@ fn populate_codebase_inner(
     for class_like_name in &class_likes_to_repopulate {
         if let Some(classlike_info) = codebase.class_likes.get_mut(class_like_name) {
             classlike_info.flags &= !MetadataFlags::POPULATED;
-            classlike_info.declaring_property_ids.clear();
+            // The last population copied each used trait's properties in; this one copies them again.
+            let declaring_property_ids = std::mem::take(&mut classlike_info.declaring_property_ids);
+            classlike_info.properties.retain(|property_name, _| {
+                declaring_property_ids.get(property_name).is_none_or(|declaring| declaring == class_like_name)
+            });
             classlike_info.appearing_property_ids.clear();
             classlike_info.declaring_method_ids.clear();
             classlike_info.appearing_method_ids.clear();

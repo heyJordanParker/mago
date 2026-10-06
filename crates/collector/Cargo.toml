@@ -21,7 +21,8 @@ mago-syntax = { workspace = true }
 foldhash = { workspace = true }
 mago-allocator = { workspace = true }
 memchr = { workspace = true }
+serde = { workspace = true, optional = true }
 
 [features]
 default = []
-serde = []
+serde = ["dep:serde", "mago-database/serde", "mago-span/serde"]

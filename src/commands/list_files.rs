@@ -27,7 +27,6 @@
 
 use std::process::ExitCode;
 
-use clap::ColorChoice;
 use clap::Parser;
 use clap::ValueEnum;
 use mago_database::DatabaseReader;
@@ -97,7 +96,6 @@ impl ListFilesCommand {
     /// # Arguments
     ///
     /// * `configuration` - The configuration specifying paths and excludes
-    /// * `color_choice` - Color settings (not used by this command)
     ///
     /// # Returns
     ///
@@ -109,8 +107,8 @@ impl ListFilesCommand {
     /// Each file path is printed in the order discovered by the database loader.
     /// Paths are absolute and canonicalized. The terminator character is either
     /// newline (default) or NUL byte (`-0`).
-    pub fn execute(self, configuration: Configuration, color_choice: ColorChoice) -> Result<ExitCode, Error> {
-        let mut orchestrator = create_orchestrator(&configuration, color_choice, false, true, false);
+    pub fn execute(self, configuration: Configuration) -> Result<ExitCode, Error> {
+        let mut orchestrator = create_orchestrator(&configuration, false, true, false);
         if let Some(command) = self.command {
             match command {
                 Command::Linter => orchestrator.add_exclude_patterns(configuration.linter.excludes.iter()),

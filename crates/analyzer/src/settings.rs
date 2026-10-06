@@ -197,12 +197,6 @@ pub struct Settings {
     /// Defaults to `true`.
     pub register_super_globals: bool,
 
-    /// Enable colored output in terminal environments that support it. Defaults to `true`.
-    ///
-    /// This setting is primarily used for enabling/disabling colored diffs in
-    /// issue reports.
-    pub use_colors: bool,
-
     /// **Internal use only.**
     ///
     /// Enables a diffing mode for incremental analysis, used by integrations like LSPs.
@@ -402,7 +396,6 @@ impl Settings {
             check_throws: false,
             unchecked_exceptions: WordSet::default(),
             unchecked_exception_classes: WordSet::default(),
-            use_colors: true,
             check_missing_override: false,
             find_unused_parameters: false,
             strict_list_index_checks: false,

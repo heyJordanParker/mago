@@ -477,7 +477,7 @@ pub fn handle_return_value<'ctx, A>(
                     )
                 );
 
-                if let Some(type_diff) = get_type_diff(context, &expected_return_type, &inferred_return_type) {
+                if let Some(type_diff) = get_type_diff(&expected_return_type, &inferred_return_type) {
                     issue = issue.with_note(type_diff);
                 }
 
@@ -501,7 +501,7 @@ pub fn handle_return_value<'ctx, A>(
                     )
                );
 
-                if let Some(type_diff) = get_type_diff(context, &expected_return_type, &inferred_return_type) {
+                if let Some(type_diff) = get_type_diff(&expected_return_type, &inferred_return_type) {
                     issue = issue.with_note(type_diff);
                 }
 
@@ -526,7 +526,7 @@ pub fn handle_return_value<'ctx, A>(
                 )
             );
 
-            if let Some(type_diff) = get_type_diff(context, &expected_return_type, &inferred_return_type) {
+            if let Some(type_diff) = get_type_diff(&expected_return_type, &inferred_return_type) {
                 issue = issue.with_note(type_diff);
             }
 

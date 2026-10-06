@@ -1409,6 +1409,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 name = "mago"
 version = "1.53.0-patch.2"
 dependencies = [
+ "bincode",
  "clap",
  "clap_complete",
  "colored 3.1.1",
@@ -1423,6 +1424,7 @@ dependencies = [
  "mago-algebra",
  "mago-allocator",
  "mago-analyzer",
+ "mago-build-id",
  "mago-bytes",
  "mago-codex",
  "mago-composer",
@@ -1461,6 +1463,8 @@ dependencies = [
  "tracing-subscriber",
  "unicode-width",
  "ureq",
+ "walkdir",
+ "xxhash-rust",
  "zip",
 ]
 
@@ -1518,6 +1522,7 @@ dependencies = [
  "memchr",
  "regex",
  "ryu",
+ "serde",
  "tracing",
 ]
 
@@ -1575,6 +1580,7 @@ dependencies = [
  "mago-syntax",
  "mago-text-edit",
  "memchr",
+ "serde",
 ]
 
 [[package]]
@@ -1774,6 +1780,7 @@ dependencies = [
 name = "mago-orchestrator"
 version = "1.53.0-patch.2"
 dependencies = [
+ "bincode",
  "foldhash",
  "indicatif",
  "mago-allocator",
@@ -1792,6 +1799,7 @@ dependencies = [
  "mago-syntax",
  "mago-word",
  "rayon",
+ "serde",
  "tracing",
  "xxhash-rust",
 ]
@@ -1843,6 +1851,7 @@ dependencies = [
  "ariadne",
  "blake3",
  "codespan-reporting",
+ "diffy",
  "foldhash",
  "mago-database",
  "mago-span",

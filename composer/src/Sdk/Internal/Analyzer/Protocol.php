@@ -219,7 +219,13 @@ final class Protocol
         if ($version !== self::VERSION_U32) {
             $major = $version >> 16;
             $minor = $version & 0xffff;
-            throw new ProtocolException("Unsupported analyzer protocol version {$major}.{$minor}.");
+            throw new ProtocolException(
+                'worker SDK speaks analyzer protocol '
+                . self::MAJOR
+                . '.'
+                . self::MINOR
+                . ", Mago speaks {$major}.{$minor}",
+            );
         }
 
         $message = $header[3];

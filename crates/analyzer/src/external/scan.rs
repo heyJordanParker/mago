@@ -144,6 +144,7 @@ impl CodebaseScanPlan {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 struct CodebaseScanRoute {
     backend: u16,
     hooks: Box<[u16]>,
@@ -151,6 +152,7 @@ struct CodebaseScanRoute {
 
 /// The encoded declarations of one selected source file.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CodebaseScanFile {
     file: Arc<File>,
     declarations: Arc<[u8]>,
