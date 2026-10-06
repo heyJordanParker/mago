@@ -1,4 +1,4 @@
-version = "1"
+version = "0"
 php-version = "8.1"
 
 [source]

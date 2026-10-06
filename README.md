@@ -10,14 +10,12 @@
 
 <div align="center">
 
-[![CI Status](https://github.com/carthage-software/mago/actions/workflows/ci.yml/badge.svg)](https://github.com/carthage-software/mago/actions/workflows/ci.yml)
-[![CD Status](https://github.com/carthage-software/mago/actions/workflows/cd.yml/badge.svg)](https://github.com/carthage-software/mago/actions/workflows/cd.yml)
-[![CodeQL](https://github.com/carthage-software/mago/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/carthage-software/mago/actions/workflows/github-code-scanning/codeql)
-[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/carthage-software/mago?utm_source=badge)
+[![CI Status](https://github.com/heyJordanParker/mago-sharp/actions/workflows/ci.yml/badge.svg)](https://github.com/heyJordanParker/mago-sharp/actions/workflows/ci.yml)
+[![CD Status](https://github.com/heyJordanParker/mago-sharp/actions/workflows/cd.yml/badge.svg)](https://github.com/heyJordanParker/mago-sharp/actions/workflows/cd.yml)
 [![Crates.io](https://img.shields.io/crates/v/mago.svg)](https://crates.io/crates/mago)
-[![Latest Stable Version for PHP](https://poser.pugx.org/carthage-software/mago/v)](https://packagist.org/packages/carthage-software/mago)
-[![Total Composer Downloads](http://poser.pugx.org/carthage-software/mago/downloads)](https://packagist.org/packages/carthage-software/mago)
-[![License](https://img.shields.io/crates/l/mago.svg)](https://github.com/carthage-software/mago/blob/main/LICENSE-MIT)
+[![Latest Stable Version for PHP](https://poser.pugx.org/heyjordanparker/mago-sharp/v)](https://packagist.org/packages/heyjordanparker/mago-sharp)
+[![Total Composer Downloads](http://poser.pugx.org/heyjordanparker/mago-sharp/downloads)](https://packagist.org/packages/heyjordanparker/mago-sharp)
+[![License](https://img.shields.io/crates/l/mago.svg)](https://github.com/heyJordanParker/mago-sharp/blob/master/LICENSE-MIT)
 
 </div>
 
