@@ -845,9 +845,8 @@ fn a_property_with_accessors_over_a_php_parents_untyped_property_is_not_supporte
     );
 }
 
-/// A property over a plain PHP parent's attributes has no storage. PHP# has no conversion from the `mixed` that
-/// `getAttribute` returns to the property's type yet: spec section 21 writes it `as`, which is not built. So the `get`
-/// body reports `mixed` as the PHP twin's hook does.
+/// A property over a plain PHP parent's attributes has no storage. A `get` body that returns the `mixed` that
+/// `getAttribute` returns without converting it with `as` reports `mixed` as the PHP twin's hook does.
 #[test]
 fn a_property_over_a_php_parents_attributes_reports_its_mixed_get_as_in_php() {
     let sharp = "namespace Demo;\n\nimport Lib.Model;\n\nclass Order : Model\n{\n    public Address shipping { get => this.getAttribute(\"shipping\"); set => this.setAttribute(\"shipping\", value); }\n}\n\nclass Address\n{\n}\n";
@@ -861,7 +860,7 @@ fn a_property_over_a_php_parents_attributes_reports_its_mixed_get_as_in_php() {
 }
 
 /// A nullable property with accessor bodies has the issues of its PHP twin. Over a plain PHP parent's attributes it
-/// has no storage, so its `get` still reports `mixed` until spec section 21's `as` is built. One whose body uses
+/// has no storage, so its `get` reports `mixed` unless it converts the value with `as`. One whose body uses
 /// `field` starts as null, so it needs no constructor, and a get-only one without storage needs no initial value.
 #[test]
 fn nullable_properties_with_accessor_bodies_have_the_issues_of_their_php_twins() {
@@ -1886,6 +1885,43 @@ fn a_pattern_that_can_never_match_is_an_error_at_the_pattern() {
             "Square impossible-type-comparison This pattern never matches the value it tests.",
             "\"none\" impossible-type-comparison This pattern never matches the value it tests.",
         ]
+    );
+}
+
+#[test]
+fn a_get_body_that_converts_a_mixed_attribute_with_as_has_no_issues() {
+    let sharp = "namespace Demo;\n\nimport Lib.Model;\n\nclass Order : Model\n{\n    public Address? shipping { get => this.getAttribute(\"shipping\") as Address; set => this.setAttribute(\"shipping\", value); }\n}\n\nclass Address\n{\n}\n";
+
+    assert_eq!(issues(("src/Demo/Order.sharp", sharp), &[("src/Lib/Model.php", MODEL)]), Vec::<String>::new());
+}
+
+#[test]
+fn a_let_local_holding_a_mixed_attribute_reports_mixed_assignment_as_in_php() {
+    let sharp = "namespace Demo;\n\nimport Lib.Model;\n\nclass Order : Model\n{\n    public bool named()\n    {\n        let name = this.getAttribute(\"name\");\n        return name is string;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Model;\n\nclass Order extends Model\n{\n    public function named(): bool\n    {\n        $name = $this->getAttribute('name');\n        return \\is_string($name);\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Order.sharp", sharp), &[("src/Lib/Model.php", MODEL)]);
+    let php_issues = issues(("src/Demo/Order.php", php), &[("src/Lib/Model.php", MODEL)]);
+
+    assert_eq!(sharp_issues, ["9:13 mixed-assignment"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn is_and_match_over_a_mixed_attribute_have_no_issues() {
+    let sharp = "namespace Demo;\n\nimport Lib.Model;\n\nclass Order : Model\n{\n    public bool named() => this.getAttribute(\"name\") is string;\n\n    public int size() => match (this.getAttribute(\"size\")) {\n        int => 1,\n        string => 2,\n        default => 0,\n    };\n\n    public int count()\n    {\n        let total = 0;\n        match (this.getAttribute(\"count\")) {\n            int => total = 1,\n            default => {},\n        }\n        return total;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Order.sharp", sharp), &[("src/Lib/Model.php", MODEL)]), Vec::<String>::new());
+}
+
+#[test]
+fn a_never_subject_reports_its_value_and_no_assignment_the_user_never_wrote() {
+    let stop = "<?php\n\nnamespace Lib;\n\nfinal class Stop\n{\n    public static function now(): never\n    {\n        throw new \\RuntimeException();\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Stop;\n\nclass Order\n{\n    public static int size() => match (Stop.now()) {\n        int => 1,\n        default => 0,\n    };\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Order.sharp", sharp), &[("src/Lib/Stop.php", stop)]),
+        ["7:40 no-value", "8:9 redundant-type-comparison"]
     );
 }
 
