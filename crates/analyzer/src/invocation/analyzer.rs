@@ -54,6 +54,7 @@ use crate::invocation::InvocationTarget;
 use crate::invocation::InvocationTargetParameter;
 use crate::invocation::arguments::analyze_and_store_argument_type;
 use crate::invocation::arguments::get_unpacked_argument_type;
+use crate::invocation::arguments::report_non_list_spread;
 use crate::invocation::arguments::verify_argument_type;
 use crate::invocation::resolver::resolve_invocation_type;
 use crate::invocation::template_inference::infer_parameter_templates_from_argument;
@@ -555,7 +556,11 @@ where
             .cloned()
             .unwrap_or_else(|| (get_mixed(), argument_expression.span()));
 
-        let parameter_ref = get_parameter_of_argument(&invocation.target, argument, *argument_offset);
+        // Spec section 16: a named argument never fills a PHP# variadic, which spec section 7 makes a list.
+        let parameter_ref =
+            get_parameter_of_argument(&invocation.target, argument, *argument_offset).filter(|(_, parameter)| {
+                !(context.dialect.is_sharp() && argument.get_named_argument().is_some() && parameter.is_variadic())
+            });
         if let Some((parameter_offset, parameter_ref)) = parameter_ref {
             filled_parameter_offsets.insert(parameter_offset);
 
@@ -665,7 +670,7 @@ where
                 .and_then(|idx| invocation.target.get_parameter(idx))
                 .is_some_and(|parameter| parameter.is_variadic());
 
-            if !has_variadic_parameter {
+            if !has_variadic_parameter || context.dialect.is_sharp() {
                 has_named_argument_anomaly = true;
                 let target_name_str = invocation.target.guess_name(context);
 
@@ -674,10 +679,13 @@ where
                     Issue::error(format!(
                         "Invalid named argument `${argument_name}` for {target_kind_str} `{target_name_str}`"
                     ))
-                    .with_annotation(
-                        Annotation::primary(named_argument.name.span())
-                            .with_message(format!("Unknown argument name `${argument_name}`")),
-                    )
+                    .with_annotation(Annotation::primary(named_argument.name.span()).with_message(
+                        if has_variadic_parameter {
+                            "A variadic parameter takes no named argument in PHP#".to_string()
+                        } else {
+                            format!("Unknown argument name `${argument_name}`")
+                        },
+                    ))
                     .with_annotation(
                         Annotation::secondary(invocation.target.span())
                             .with_message(format!("Call to {target_kind_str} is here")),
@@ -685,6 +693,9 @@ where
                     .with_help({
                         if !invocation.target.allows_named_arguments() {
                             format!("The {target_kind_str} `{target_name_str}` does not support named arguments.")
+                        } else if has_variadic_parameter {
+                            "A named argument never fills a variadic parameter in PHP#: pass its values by position."
+                                .to_string()
                         } else if invocation.target.parameter_count() == 0 {
                             format!("The {target_kind_str} `{target_name_str}` has no parameters.")
                         } else {
@@ -809,8 +820,11 @@ where
                 let argument_value_type =
                     artifacts.get_expression_type(argument_expression).cloned().unwrap_or_else(get_mixed);
 
-                let unpacked_element_type =
-                    get_unpacked_argument_type(context, &argument_value_type, argument_expression.span());
+                let Some(unpacked_element_type) =
+                    get_unpacked_argument_type(context, &argument_value_type, argument_expression.span())
+                else {
+                    continue;
+                };
 
                 infer_parameter_templates_from_argument(
                     context,
@@ -907,7 +921,7 @@ where
                         base_variadic_parameter_type
                     };
 
-                for unpacked_argument in unpacked_arguments {
+                for unpacked_argument in &unpacked_arguments {
                     let Some(argument_expression) = unpacked_argument.value() else {
                         continue;
                     };
@@ -956,10 +970,10 @@ where
 
                     // Skip union-based validation for keyed arrays with named arguments.
                     // Individual elements are properly validated in validate_keyed_array_elements.
-                    if !has_keyed_array_with_named_args {
-                        let unpacked_element_type =
-                            get_unpacked_argument_type(context, &argument_value_type, argument_expression.span());
-
+                    if !has_keyed_array_with_named_args
+                        && let Some(unpacked_element_type) =
+                            get_unpacked_argument_type(context, &argument_value_type, argument_expression.span())
+                    {
                         verify_argument_type(
                             context,
                             &unpacked_element_type,
@@ -1049,6 +1063,14 @@ where
                 )
                 .with_help("Remove the argument unpacking (`...`)."),
             );
+        }
+    }
+
+    for unpacked_argument in &unpacked_arguments {
+        if let Some(argument_expression) = unpacked_argument.value()
+            && let Some(argument_value_type) = artifacts.get_expression_type(argument_expression)
+        {
+            report_non_list_spread(context, argument_value_type, argument_expression.span());
         }
     }
 

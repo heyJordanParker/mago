@@ -714,7 +714,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Enum<'arena> {
             self.span(),
             None,
             self.implements.as_ref(),
-            None,
+            self.inheritance.as_ref(),
             class_like_metadata,
             self.members.as_slice(),
         )?;
@@ -2208,6 +2208,7 @@ fn check_abstract_method_signatures<'ctx, A>(
                 class_like_metadata.name,
                 &substituted_appearing_method,
                 &substituted_overridden_method,
+                context.dialect,
             );
 
             if issues.is_empty() {
@@ -2296,6 +2297,7 @@ fn check_trait_method_conflicts<'ctx, 'ast, 'arena, A>(
                                 class_like_metadata.name,
                                 second_method,
                                 first_method,
+                                context.dialect,
                             );
 
                             for incompatibility in issues {
@@ -2356,6 +2358,7 @@ fn check_trait_method_conflicts<'ctx, 'ast, 'arena, A>(
                                     class_like_metadata.name,
                                     second_method,
                                     first_method,
+                                    context.dialect,
                                 );
 
                                 for incompatibility in issues {
@@ -2799,6 +2802,7 @@ fn check_interface_method_signatures<'ctx, A>(
             class_like_metadata.name,
             &substituted_class_method,
             &substituted_interface_method,
+            context.dialect,
         );
 
         for incompatibility in issues {
@@ -2919,6 +2923,31 @@ fn report_signature_compatibility_issue<'ctx, A>(
                 )
                 .with_note("Child methods must accept at least as many required parameters as the parent.")
                 .with_help("Add optional parameters or reduce the number of required parameters in the child method."),
+            );
+        }
+        SignatureCompatibilityIssue::MissingVariadicParameter { parameter_index } => {
+            // PHP# writes the names without `$`, and only a PHP# file reports this.
+            let param_name = parent_method
+                .parameters
+                .get(parameter_index)
+                .map_or_else(|| word("unknown"), |p| word(mago_bytes::trim_start_byte(p.name.0.as_bytes(), b'$')));
+
+            context.collector.report_with_code(
+                IssueCode::IncompatibleParameterCount,
+                Issue::error(format!(
+                    "`{child_name}::{method_name}()` must declare parameter `{param_name}` variadic like `{parent_name}::{method_name}()`"
+                ))
+                .with_annotation(
+                    Annotation::primary(primary_span).with_message("This method takes no variadic parameter"),
+                )
+                .with_annotation(Annotation::secondary(parent_class_span).with_message(format!(
+                    "Parent method `{parent_name}::{method_name}()` takes any number of `{param_name}`"
+                )))
+                .with_annotation(
+                    Annotation::secondary(child_class_span).with_message(format!("In class `{child_name}`")),
+                )
+                .with_note("PHP refuses an override that does not take every argument the overridden method takes.")
+                .with_help(format!("Declare `{param_name}` variadic, as in `int ...{param_name}`.")),
             );
         }
         SignatureCompatibilityIssue::IncompatibleParameterType { parameter_index, child_type, parent_type } => {

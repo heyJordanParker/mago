@@ -239,7 +239,7 @@ impl LintCommand {
         let mut orchestrator = create_orchestrator(&configuration, self.pedantic, true, false);
         orchestrator.add_exclude_patterns(configuration.linter.excludes.iter());
         orchestrator.add_exclude_patterns(substitution_excludes.iter());
-        skip_sharp_files(&mut orchestrator, "lint");
+        skip_sharp_files(&mut orchestrator);
         for substitution in &substitutions {
             orchestrator.config.paths.push(substitution.temporary.to_string_lossy().into_owned());
         }

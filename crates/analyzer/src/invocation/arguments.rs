@@ -445,12 +445,13 @@ pub fn verify_argument_type<'arena, A>(
     }
 }
 
-/// Gets the element type when unpacking an argument with the spread operator.
+/// Gets the element type when unpacking an argument with the spread operator. In PHP# a type that may not be iterable
+/// adds no element type, as `report_non_list_spread` reports it, so a value of only such types gives `None`.
 pub fn get_unpacked_argument_type<A>(
     context: &mut Context<'_, '_, A>,
     argument_value_type: &TUnion,
     span: Span,
-) -> TUnion
+) -> Option<TUnion>
 where
     A: Arena,
 {
@@ -468,6 +469,7 @@ where
             TAtomic::Never => {
                 potential_element_types.push(get_never());
             }
+            _ if context.dialect.is_sharp() => {}
             TAtomic::Mixed(_) => {
                 if !reported_an_error {
                     context.collector.report_with_code(
@@ -507,8 +509,35 @@ where
         }
     }
 
-    potential_element_types
+    let element_type = potential_element_types
         .into_iter()
-        .reduce(|acc, element_type| add_union_type(acc, &element_type, context.codebase, CombinerOptions::default()))
-        .unwrap_or_else(get_never)
+        .reduce(|acc, element_type| add_union_type(acc, &element_type, context.codebase, CombinerOptions::default()));
+
+    if context.dialect.is_sharp() { element_type } else { Some(element_type.unwrap_or_else(get_never)) }
+}
+
+/// Reports a spread, in a PHP# file, of a value that may not be a list, such as an `array<string, int>`, a
+/// `Traversable` or an `int`, whatever parameters it fills. Spec section 7 spreads an existing list.
+pub fn report_non_list_spread<A>(context: &mut Context<'_, '_, A>, argument_value_type: &TUnion, span: Span)
+where
+    A: Arena,
+{
+    if !context.dialect.is_sharp() {
+        return;
+    }
+
+    let Some(atomic_type) =
+        argument_value_type.types.iter().find(|atomic_type| !atomic_type.is_list() && !atomic_type.is_never())
+    else {
+        return;
+    };
+    let type_str = atomic_type.get_id();
+
+    context.collector.report_with_code(
+        IssueCode::InvalidArgument,
+        Issue::error(format!("Cannot spread a value of type `{type_str}`: PHP# spreads only a list."))
+            .with_annotation(Annotation::primary(span).with_message(format!("Type `{type_str}` is not a list")))
+            .with_note("Spec section 7 spreads an existing list into a call, as in `Money.sum(...prices)`.")
+            .with_help("Spread a list, such as a variadic parameter or a `list<int>` from plain PHP."),
+    );
 }

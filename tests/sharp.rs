@@ -79,6 +79,31 @@ fn analyze_finds_no_issues_once_the_argument_is_an_int() {
 }
 
 #[test]
+fn analyze_reports_a_sharp_error_without_an_extensions_setting() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(directory.path().join("src/Demo")).unwrap();
+    std::fs::create_dir_all(directory.path().join("src/Lib")).unwrap();
+    std::fs::write(directory.path().join("src/Lib/Calc.php"), include_str!("fixtures/sharp/Calc.php")).unwrap();
+    std::fs::write(
+        directory.path().join("src/Demo/Report.sharp"),
+        "namespace Demo;\n\nclass Report\n{\n    public static int total(int extra)\n    {\n        return $extra + 1;\n    }\n}\n",
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mago"))
+        .args(["--no-version-check", "--colors", "never", "analyze", "--reporting-format", "emacs"])
+        .env("HOME", directory.path())
+        .env("XDG_CONFIG_HOME", directory.path())
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(!output.status.success(), "{stdout}");
+    assert!(stdout.lines().any(|line| line.starts_with("src/Demo/Report.sharp:7:16:error - semantics:")), "{stdout}");
+}
+
+#[test]
 fn analyze_reports_only_the_scope_error_for_a_local_used_after_its_block_closes() {
     let directory = workspace(
         "namespace Demo;\n\nclass Report\n{\n    public static int total()\n    {\n        {\n            let inner = 1;\n        }\n        return inner;\n    }\n}\n",
@@ -185,22 +210,16 @@ fn messy_workspace() -> tempfile::TempDir {
     directory
 }
 
-/// Runs `mago` on a workspace holding `Report.sharp` and `messy.php`, checks that `tool` skipped the PHP# file,
+/// Runs `mago` on a workspace holding `Report.sharp` and `messy.php`, checks that the PHP# file is unchanged,
 /// and returns the output with the contents of `messy.php` afterwards.
-fn run_beside_messy_php(command: &str, arguments: &[&str], tool: &str) -> (Output, String) {
-    run_in_messy_workspace(&messy_workspace(), command, arguments, tool)
+fn run_beside_messy_php(command: &str, arguments: &[&str]) -> (Output, String) {
+    run_in_messy_workspace(&messy_workspace(), command, arguments)
 }
 
-fn run_in_messy_workspace(
-    directory: &tempfile::TempDir,
-    command: &str,
-    arguments: &[&str],
-    tool: &str,
-) -> (Output, String) {
+fn run_in_messy_workspace(directory: &tempfile::TempDir, command: &str, arguments: &[&str]) -> (Output, String) {
     let output = run(directory.path(), command, arguments);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    assert!(stderr.contains(&format!("`mago {tool}` skips PHP# files")), "{command} {arguments:?}: {stderr}");
     assert!(!stderr.contains("panicked"), "{command} {arguments:?}: {stderr}");
     assert_eq!(report(directory.path()), valid_report(), "{command} {arguments:?} changed the PHP# file");
 
@@ -209,7 +228,7 @@ fn run_in_messy_workspace(
 
 #[test]
 fn lint_reports_the_php_file_and_skips_the_sharp_file() {
-    let (output, _) = run_beside_messy_php("lint", &["--reporting-format", "emacs"], "lint");
+    let (output, _) = run_beside_messy_php("lint", &["--reporting-format", "emacs"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(output.status.success(), "{stdout}");
@@ -218,7 +237,7 @@ fn lint_reports_the_php_file_and_skips_the_sharp_file() {
 
 #[test]
 fn lint_fix_fixes_the_php_file_and_skips_the_sharp_file() {
-    let (output, messy) = run_beside_messy_php("lint", &["--fix", "--potentially-unsafe"], "lint");
+    let (output, messy) = run_beside_messy_php("lint", &["--fix", "--potentially-unsafe"]);
 
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert!(messy.contains("declare(strict_types=1);"), "{messy}");
@@ -226,7 +245,7 @@ fn lint_fix_fixes_the_php_file_and_skips_the_sharp_file() {
 
 #[test]
 fn format_formats_the_php_file_and_skips_the_sharp_file() {
-    let (output, messy) = run_beside_messy_php("fmt", &[], "format");
+    let (output, messy) = run_beside_messy_php("fmt", &[]);
 
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert!(messy.contains("function one(): int"), "{messy}");
@@ -234,7 +253,7 @@ fn format_formats_the_php_file_and_skips_the_sharp_file() {
 
 #[test]
 fn guard_checks_the_php_file_and_skips_the_sharp_file() {
-    let (output, _) = run_beside_messy_php("guard", &[], "guard");
+    let (output, _) = run_beside_messy_php("guard", &[]);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(output.status.success(), "{stderr}");
@@ -243,7 +262,7 @@ fn guard_checks_the_php_file_and_skips_the_sharp_file() {
 
 #[test]
 fn fix_formats_the_php_file_and_skips_the_sharp_file() {
-    let (output, messy) = run_beside_messy_php("fix", &[], "format");
+    let (output, messy) = run_beside_messy_php("fix", &[]);
 
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert!(messy.contains("function one(): int"), "{messy}");
@@ -256,15 +275,37 @@ fn lint_and_format_skip_a_staged_sharp_file() {
         assert!(Command::new("git").args(arguments).current_dir(directory.path()).status().unwrap().success());
     }
 
-    let (output, _) = run_in_messy_workspace(&directory, "lint", &["--staged", "--reporting-format", "emacs"], "lint");
+    let (output, _) = run_in_messy_workspace(&directory, "lint", &["--staged", "--reporting-format", "emacs"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}{}", String::from_utf8_lossy(&output.stderr));
     assert!(stdout.lines().any(|line| line.starts_with("src/Lib/messy.php:1:1:warning - strict-types:")), "{stdout}");
 
-    let (output, _) = run_in_messy_workspace(&directory, "fmt", &["--staged"], "format");
+    let (output, _) = run_in_messy_workspace(&directory, "fmt", &["--staged"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "{stderr}");
     assert!(stderr.contains("Formatted and re-staged 1 file(s)."), "{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn lint_format_and_guard_never_read_a_discovered_sharp_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = workspace(&valid_report());
+    let report = directory.path().join("src/Demo/Report.sharp");
+    std::fs::set_permissions(&report, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&report).is_ok() {
+        return;
+    }
+
+    for (command, arguments) in [("lint", &[][..]), ("fmt", &["--check"][..]), ("guard", &[][..])] {
+        let output = run(directory.path(), command, arguments);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(output.status.success(), "{command}: {stderr}");
+        assert!(!stderr.contains("Report.sharp"), "{command}: {stderr}");
+        assert!(!stderr.contains("ERROR"), "{command}: {stderr}");
+    }
 }
 
 #[test]

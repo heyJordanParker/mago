@@ -204,7 +204,7 @@ impl GuardCommand {
         let mut orchestrator = create_orchestrator(&configuration, false, true, false);
         orchestrator.add_exclude_patterns(configuration.guard.excludes.iter());
         orchestrator.add_exclude_patterns(substitution_excludes.iter());
-        skip_sharp_files(&mut orchestrator, "guard");
+        skip_sharp_files(&mut orchestrator);
         for substitution in &substitutions {
             orchestrator.config.paths.push(substitution.temporary.to_string_lossy().into_owned());
         }

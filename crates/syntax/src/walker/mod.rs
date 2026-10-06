@@ -789,6 +789,10 @@ generate_ast_walker! {
             walker.walk_enum_backing_type_hint(backing_type_hint, context);
         }
 
+        if let Some(inheritance) = &r#enum.inheritance {
+            walker.walk_inheritance(inheritance, context);
+        }
+
         if let Some(implements) = &r#enum.implements {
             walker.walk_implements(implements, context);
         }
