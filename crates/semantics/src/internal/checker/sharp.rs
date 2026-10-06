@@ -42,6 +42,9 @@ use mago_syntax::cst::Namespace;
 use mago_syntax::cst::NamespaceBody;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::PartialArgument;
+use mago_syntax::cst::Pattern;
+use mago_syntax::cst::PatternMatch;
+use mago_syntax::cst::PatternMatchArmBody;
 use mago_syntax::cst::Program;
 use mago_syntax::cst::Property;
 use mago_syntax::cst::PropertyHookBody;
@@ -52,6 +55,7 @@ use mago_syntax::cst::Statement;
 use mago_syntax::cst::StringPart;
 use mago_syntax::cst::Terminator;
 use mago_syntax::cst::TryCatchClause;
+use mago_syntax::cst::TypePattern;
 use mago_syntax::cst::UnaryPostfix;
 use mago_syntax::cst::UnaryPostfixOperator;
 use mago_syntax::cst::UnaryPrefix;
@@ -128,6 +132,13 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   `= += -= *= /= **= ??=`.
 /// - The ternary `c ? a : b` in a method body, as spec section 21 writes it. PHP's `a ?: b` is an error, and a ternary as the condition
 ///   of another needs parentheses, as in PHP 8.
+/// - Pattern matching in a method body, as spec section 21 writes it: `x is pattern`, `x as T` to a type that is not
+///   nullable or `void`, and `match`, whose arms are `pattern => value`, `pattern when condition => value` and one
+///   `default => value`, which every `match` has. A `match` statement's arm may be a block. A pattern is a type with
+///   an optional name, as in `int count`, a value, a comparison such as `< 10`, a properties pattern such as
+///   `{ total: > 0 }`, or patterns joined by `and`, `or` and `not`. A type pattern is never nullable, and a name under
+///   `or` or `not` is an error, as C#'s CS8780, except under the `not` that starts the pattern of `is`. The parser
+///   reports list and enum case patterns as not supported yet.
 /// - Casts: `(int)`, `(float)` and `(string)` in a method body, as spec section 24 writes them. PHP's other casts and
 ///   its cast aliases, such as `(bool)` and `(integer)`, are errors.
 /// - A bare `Int` or `Float` before `.` is the class `Sharp\Int` or `Sharp\Float` of the engine's standard library,
@@ -184,6 +195,8 @@ pub enum Place {
     Attribute,
     /// A constant expression: a parameter default or an attribute argument.
     Constant,
+    /// A pattern of `is` or of a `match` arm, whose values are the method body's.
+    Pattern,
 }
 
 /// How code uses a member access, which decides how the slice reports it.
@@ -437,6 +450,72 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             | Node::ForOfKeyValueTarget(_),
             Body,
         ) => Some(Body),
+
+        (Node::Statement(Statement::PatternMatch(pattern_match)), Body) => {
+            check_pattern_match(pattern_match, false, context).then_some(Body)
+        }
+        (Node::Expression(Expression::PatternMatch(pattern_match)), Body) => {
+            check_pattern_match(pattern_match, true, context).then_some(Body)
+        }
+        (Node::Is(is), Body) => {
+            // `is not T name` declares `name` where the test is false, so the outermost `not` hides no variable.
+            let tested = if let Pattern::Not(not) = is.pattern { not.pattern } else { is.pattern };
+            report_hidden_pattern_variables(tested, false, context);
+
+            Some(Body)
+        }
+        (Node::PatternMatchPatternArm(arm), Body) => {
+            report_hidden_pattern_variables(arm.pattern, false, context);
+
+            Some(Body)
+        }
+        (Node::As(r#as), Body) => match r#as.hint {
+            Hint::Nullable(_) | Hint::Void(_) => {
+                context.report(
+                    Issue::error("`as` converts to a type that is not nullable or `void`.")
+                        .with_annotation(Annotation::primary(r#as.hint.span()).with_message("Written here."))
+                        .with_note("`as T` already gives `T?`: the value as a `T`, or null when it is not one, as spec section 21 says."),
+                );
+
+                None
+            }
+            _ => Some(Body),
+        },
+        (
+            Node::Expression(Expression::Is(_) | Expression::As(_))
+            | Node::PatternMatch(_)
+            | Node::PatternMatchArm(_)
+            | Node::PatternMatchDefaultArm(_)
+            | Node::MatchGuard(_)
+            | Node::PatternMatchArmBody(_),
+            Body,
+        ) => Some(Body),
+        (Node::Pattern(_), Body | Place::Pattern) => Some(Place::Pattern),
+        (Node::Hint(Hint::Nullable(_)), Place::Pattern) => {
+            context.report(
+                Issue::error("A type pattern is never nullable: null never matches a type.")
+                    .with_annotation(Annotation::primary(node.span()).with_message("Written here."))
+                    .with_help("Test for null with its own pattern, as in `x is null`, or join both with `or`, as in `x is int or null`."),
+            );
+
+            None
+        }
+        (Node::Hint(hint), Place::Pattern) if is_slice_type(hint) && !matches!(hint, Hint::Void(_)) => {
+            Some(Place::Pattern)
+        }
+        (
+            Node::TypePattern(_)
+            | Node::ComparisonPattern(_)
+            | Node::NotPattern(_)
+            | Node::BinaryPattern(_)
+            | Node::ParenthesizedPattern(_)
+            | Node::PropertiesPattern(_)
+            | Node::PropertyPattern(_)
+            | Node::BinaryOperator(_),
+            Place::Pattern,
+        ) => Some(Place::Pattern),
+        // A value or a comparison's value is a method body's expression.
+        (Node::Expression(_), Place::Pattern) => enter(node, Body, context),
 
         // PHP refuses the file at compile time, so the engine would too.
         (Node::LiteralString(string), Body | Constant) if string.value.is_none() => {
@@ -871,6 +950,78 @@ fn has_braces(statement: &Statement) -> bool {
     }
 }
 
+/// Checks the arms of a `match`, and returns whether its children can be checked. Spec section 21 needs a `default`
+/// arm on a value that is not an enum with data, which are the only values the slice matches, and gives a block arm
+/// only to a `match` statement. The engine takes one `default` arm, as PHP's `match` does.
+fn check_pattern_match(pattern_match: &PatternMatch, is_expression: bool, context: &mut Context<'_, '_, '_>) -> bool {
+    let mut defaults = pattern_match.arms.iter().filter(|arm| arm.is_default());
+    let Some(default) = defaults.next() else {
+        context.report(
+            Issue::error("A `match` needs a `default` arm.")
+                .with_annotation(Annotation::primary(pattern_match.r#match.span).with_message("This `match` has none."))
+                .with_note("Spec section 21: only a `match` on an enum with data may leave out `default`, when its arms cover every case.")
+                .with_help("Add `default => …` as the last arm."),
+        );
+
+        return false;
+    };
+    if let Some(again) = defaults.next() {
+        context.report(
+            Issue::error("A `match` has one `default` arm.")
+                .with_annotation(Annotation::primary(again.span()).with_message("Written again here."))
+                .with_annotation(Annotation::secondary(default.span()).with_message("First written here.")),
+        );
+
+        return false;
+    }
+
+    let block = pattern_match.arms.iter().find_map(|arm| match arm.body() {
+        PatternMatchArmBody::Block(block) if is_expression => Some(block),
+        _ => None,
+    });
+    if let Some(block) = block {
+        context.report(
+            Issue::error("A block arm is only in a `match` statement: a `match` that gives a value gives an expression in each arm.")
+                .with_annotation(Annotation::primary(block.span()).with_message("Block written here."))
+                .with_help("Start the statement with `match`, or give a value in this arm."),
+        );
+
+        return false;
+    }
+
+    true
+}
+
+/// Reports each variable a pattern declares under `or` or `not`, which C# refuses as error CS8780: the variable would
+/// have no value where the pattern matches. `hidden` is whether an enclosing pattern already hides it.
+fn report_hidden_pattern_variables(pattern: &Pattern, hidden: bool, context: &mut Context<'_, '_, '_>) {
+    match pattern {
+        Pattern::Type(TypePattern { variable: Some(variable), .. }) if hidden => context.report(
+            Issue::error(format!(
+                "`{}` is declared under `or` or `not`, where the pattern can match without a value for it.",
+                BytesDisplay(variable.value)
+            ))
+            .with_annotation(Annotation::primary(variable.span).with_message("Declared here."))
+            .with_help("Declare the variable outside `or` and `not`, or test the value again where you use it."),
+        ),
+        Pattern::Type(_) | Pattern::Value(_) | Pattern::Comparison(_) => {}
+        Pattern::Not(not) => report_hidden_pattern_variables(not.pattern, true, context),
+        Pattern::Binary(binary) => {
+            let hidden = hidden || !binary.is_and();
+            report_hidden_pattern_variables(binary.left, hidden, context);
+            report_hidden_pattern_variables(binary.right, hidden, context);
+        }
+        Pattern::Parenthesized(parenthesized) => {
+            report_hidden_pattern_variables(parenthesized.pattern, hidden, context)
+        }
+        Pattern::Properties(properties) => {
+            for property in &properties.properties {
+                report_hidden_pattern_variables(property.pattern, hidden, context);
+            }
+        }
+    }
+}
+
 /// Whether the slice can write an expression: a local, a parameter, or a member written `object.name`.
 fn is_slice_target(target: &Expression, context: &Context<'_, '_, '_>) -> bool {
     match target {
@@ -1031,6 +1182,7 @@ fn report_unsupported(node: Node<'_, '_>, place: Place, context: &mut Context<'_
         Node::Expression(_) | Node::ConstantAccess(_) => "expression",
         Node::BinaryOperator(_) | Node::UnaryPrefixOperator(_) | Node::AssignmentOperator(_) => "operator",
         Node::Hint(_) | Node::NullableHint(_) => "type",
+        Node::Pattern(_) => "pattern",
         Node::Modifier(_) => "modifier",
         Node::IfStatementBodyElseIfClause(_) => {
             return report_not_supported(node.span(), "`elseif`", "PHP# writes `else if`.", context);
@@ -1063,13 +1215,16 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, a name, and an optional default."
         }
         Place::Body | Place::Instantiation | Place::FunctionCall | Place::TryCatchClause => {
-            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, `break` and `continue` without a level, and `try` with `catch` and `finally`, with literals, templates, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, the ternary `c ? a : b`, `(int)`, `(float)` and `(string)`, `++` and `--`, method calls and property reads written with `.` or `?.`, `new Class(...)`, calls of PHP's built-in functions and `throw`."
+            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, `break` and `continue` without a level, and `try` with `catch` and `finally`, with literals, templates, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, the ternary `c ? a : b`, `(int)`, `(float)` and `(string)`, `++` and `--`, method calls and property reads written with `.` or `?.`, `new Class(...)`, calls of PHP's built-in functions, `throw`, `is`, `as` and `match`."
         }
         Place::Attribute => {
             "A PHP# attribute is a class name with optional positional and named arguments, as in `[Field(\"Name\", searchable: true)]`."
         }
         Place::Constant => {
             "A parameter default or an attribute argument is a literal, a constant, or arithmetic, comparison, logical and `??` operators on them."
+        }
+        Place::Pattern => {
+            "A PHP# pattern is a type with an optional name, as in `int count`, a value, a comparison such as `< 10`, a properties pattern such as `{ total: > 0 }`, or patterns joined by `and`, `or` and `not`."
         }
     }
 }
@@ -1147,6 +1302,13 @@ pub fn check_for_of(for_of: &ForOf, context: &mut Context<'_, '_, '_>) {
 }
 
 #[inline]
+pub fn check_type_pattern(type_pattern: &TypePattern, context: &mut Context<'_, '_, '_>) {
+    if let Some(variable) = &type_pattern.variable {
+        check_local_name(variable.value, variable.span, "pattern variable", context);
+    }
+}
+
+#[inline]
 pub fn check_try_catch_clause(try_catch_clause: &TryCatchClause, context: &mut Context<'_, '_, '_>) {
     if let Some(variable) = &try_catch_clause.variable
         && !variable.name.starts_with(b"$")
@@ -1169,6 +1331,21 @@ pub fn check_parameter(parameter: &FunctionLikeParameter, context: &mut Context<
 pub fn check_binding_errors(context: &mut Context<'_, '_, '_>) {
     for error in context.names.binding_errors() {
         let issue = match *error {
+            BindingError::OutOfScope {
+                name,
+                local: Local { declaration, kind: LocalKind::Pattern { test, negated } },
+            } => {
+                let name_text = BytesDisplay(context.get_code_snippet(name));
+                let test_text = BytesDisplay(context.get_code_snippet(test));
+                let holds = if negated { "false" } else { "true" };
+
+                Issue::error(format!("`{name_text}` exists only where `{test_text}` is {holds}."))
+                    .with_annotation(Annotation::primary(name).with_message("Used here."))
+                    .with_annotation(Annotation::secondary(declaration).with_message("Declared here."))
+                    .with_help(format!(
+                        "A pattern variable holds a value only where its pattern matches. Test the value again here, or declare a local for `{name_text}` before the test."
+                    ))
+            }
             BindingError::OutOfScope { name, local } => {
                 let name_text = BytesDisplay(context.get_code_snippet(name));
 

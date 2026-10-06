@@ -7,6 +7,7 @@ use mago_allocator::prelude::*;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::ArrowFunction;
+use mago_syntax::cst::As;
 use mago_syntax::cst::Attribute;
 use mago_syntax::cst::Binary;
 use mago_syntax::cst::BinaryOperator;
@@ -15,6 +16,7 @@ use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassConstantAccess;
 use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::Closure;
+use mago_syntax::cst::Conditional;
 use mago_syntax::cst::Constant;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Enum;
@@ -28,27 +30,46 @@ use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::FunctionPartialApplication;
 use mago_syntax::cst::Hint;
 use mago_syntax::cst::Identifier;
+use mago_syntax::cst::If;
+use mago_syntax::cst::IfBody;
 use mago_syntax::cst::Implements;
 use mago_syntax::cst::Instantiation;
 use mago_syntax::cst::Interface;
+use mago_syntax::cst::Is;
 use mago_syntax::cst::LocalDeclaration;
+use mago_syntax::cst::LocalIdentifier;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::MethodCall;
 use mago_syntax::cst::MethodPartialApplication;
 use mago_syntax::cst::Namespace;
+use mago_syntax::cst::Node;
 use mago_syntax::cst::NullSafeMethodCall;
 use mago_syntax::cst::NullSafePropertyAccess;
+use mago_syntax::cst::Pattern;
+use mago_syntax::cst::PatternMatchPatternArm;
+use mago_syntax::cst::PropertiesPattern;
 use mago_syntax::cst::PropertyAccess;
 use mago_syntax::cst::Sequence;
+use mago_syntax::cst::Statement;
 use mago_syntax::cst::StaticMethodCall;
 use mago_syntax::cst::StaticMethodPartialApplication;
 use mago_syntax::cst::StaticPropertyAccess;
 use mago_syntax::cst::Trait;
 use mago_syntax::cst::TraitUse;
 use mago_syntax::cst::TryCatchClause;
+use mago_syntax::cst::TypePattern;
+use mago_syntax::cst::UnaryPrefix;
+use mago_syntax::cst::UnaryPrefixOperator;
 use mago_syntax::cst::Use;
 use mago_syntax::cst::UseItems;
+use mago_syntax::cst::While;
+use mago_syntax::cst::WhileBody;
+use mago_syntax::utils::pattern::called_function;
 use mago_syntax::walker::MutWalker;
+use mago_syntax::walker::walk_binary_mut;
+use mago_syntax::walker::walk_conditional_mut;
+use mago_syntax::walker::walk_if_mut;
+use mago_syntax::walker::walk_while_mut;
 
 use crate::ResolvedNames;
 use crate::binding::Binding;
@@ -79,6 +100,8 @@ pub struct NameWalker<'arena> {
     member_objects: HashSet<u32>,
     /// The member names of each class being walked, innermost last.
     class_members: std::vec::Vec<ClassMembers<'arena>>,
+    /// The kind of the variables each `is` or `match` arm being walked declares, innermost last.
+    pattern_kinds: std::vec::Vec<LocalKind>,
 }
 
 /// The member names of one class, compared as PHP compares them: method names ignoring case, and property and
@@ -139,6 +162,114 @@ impl<'arena> NameWalker<'arena> {
         self.class_members
             .last()
             .is_some_and(|members| members.others.contains(name) || members.methods.contains(&IgnoringCase(name)))
+    }
+
+    /// Records the function a pattern's PHP calls as the name resolved at its span, as a call's name is.
+    fn record_called_function(&mut self, node: Node<'_, 'arena>) {
+        if let Some(function) = called_function(node) {
+            self.resolved_names.insert_at(function.span, function.value, false);
+        }
+    }
+
+    /// Brings pattern variables into scope in the innermost open block, as the locals their declarations bound.
+    fn open(&mut self, variables: &[&LocalIdentifier<'arena>]) {
+        for variable in variables {
+            if let Some(Binding::Local(local)) = self.resolved_names.binding(&variable.span) {
+                self.locals.declare(variable.value, local);
+            }
+        }
+    }
+
+    /// Walks `node` in a block of its own, in which the pattern variables of `condition` are in scope where it is
+    /// `holds`.
+    fn walk_where<C>(
+        &mut self,
+        condition: &Expression<'arena>,
+        holds: bool,
+        context: &mut C,
+        walk: impl FnOnce(&mut Self, &mut C),
+    ) {
+        let mut variables = std::vec::Vec::new();
+        condition_variables(condition, holds, &mut variables);
+
+        self.locals.enter_block();
+        self.open(&variables);
+        walk(self, context);
+        self.locals.exit_block();
+    }
+}
+
+/// The variables a pattern declares.
+fn pattern_variables<'ast, 'arena>(
+    pattern: &'ast Pattern<'arena>,
+    variables: &mut std::vec::Vec<&'ast LocalIdentifier<'arena>>,
+) {
+    match pattern {
+        Pattern::Type(TypePattern { variable: Some(variable), .. }) => variables.push(variable),
+        Pattern::Type(_) | Pattern::Value(_) | Pattern::Comparison(_) => {}
+        Pattern::Not(not) => pattern_variables(not.pattern, variables),
+        Pattern::Binary(binary) => {
+            pattern_variables(binary.left, variables);
+            pattern_variables(binary.right, variables);
+        }
+        Pattern::Parenthesized(parenthesized) => pattern_variables(parenthesized.pattern, variables),
+        Pattern::Properties(properties) => {
+            for property in &properties.properties {
+                pattern_variables(property.pattern, variables);
+            }
+        }
+    }
+}
+
+/// The pattern variables a condition assigns when it is `holds`, as C#'s definite assignment finds them: `is` assigns
+/// its variables when it is true and `is not` when it is false, `!` swaps the two, `&&` assigns both sides' when it is
+/// true and `||` both sides' when it is false.
+fn condition_variables<'ast, 'arena>(
+    condition: &'ast Expression<'arena>,
+    holds: bool,
+    variables: &mut std::vec::Vec<&'ast LocalIdentifier<'arena>>,
+) {
+    match condition {
+        Expression::Parenthesized(parenthesized) => condition_variables(parenthesized.expression, holds, variables),
+        Expression::UnaryPrefix(UnaryPrefix { operator: UnaryPrefixOperator::Not(_), operand }) => {
+            condition_variables(operand, !holds, variables);
+        }
+        Expression::Binary(binary)
+            if (holds && matches!(binary.operator, BinaryOperator::And(_)))
+                || (!holds && matches!(binary.operator, BinaryOperator::Or(_))) =>
+        {
+            condition_variables(binary.lhs, holds, variables);
+            condition_variables(binary.rhs, holds, variables);
+        }
+        Expression::Is(is) => match is.pattern {
+            Pattern::Not(not) if !holds => pattern_variables(not.pattern, variables),
+            Pattern::Not(_) => {}
+            pattern if holds => pattern_variables(pattern, variables),
+            _ => {}
+        },
+        _ => {}
+    }
+}
+
+/// Whether every path through a statement ends in `return`, `throw`, `break` or `continue`, decision 020's rule for an
+/// `if` after which the variables of `is not` stay in scope.
+fn always_exits(statement: &Statement<'_>) -> bool {
+    match statement {
+        Statement::Return(_) | Statement::Break(_) | Statement::Continue(_) => true,
+        Statement::Expression(statement) => matches!(statement.expression.unparenthesized(), Expression::Throw(_)),
+        Statement::Block(block) => block.statements.iter().any(always_exits),
+        Statement::If(If { body: IfBody::Statement(body), .. }) => {
+            always_exits(body.statement)
+                && body.else_if_clauses.iter().all(|clause| always_exits(clause.statement))
+                && body.else_clause.as_ref().is_some_and(|clause| always_exits(clause.statement))
+        }
+        Statement::Try(r#try) => {
+            let block_exits = |block: &Block<'_>| block.statements.iter().any(always_exits);
+
+            (block_exits(&r#try.block) && r#try.catch_clauses.iter().all(|clause| block_exits(&clause.block)))
+                || r#try.finally_clause.as_ref().is_some_and(|finally| block_exits(&finally.block))
+        }
+        _ => false,
     }
 }
 
@@ -369,6 +500,159 @@ where
         }
 
         self.walk_statement(for_of.body, context);
+        self.locals.exit_block();
+    }
+
+    /// A pattern's variable is declared where the pattern is, and comes into scope only where its test holds:
+    /// `condition_variables` decides where.
+    ///
+    /// A bare name without a variable is the value of the local of that name when one is in scope, and a type
+    /// otherwise, as reading (a) of spec section 21 decides.
+    fn walk_in_type_pattern(
+        &mut self,
+        type_pattern: &'ast TypePattern<'arena>,
+        _context: &mut NameResolutionContext<'arena, A>,
+    ) {
+        self.record_called_function(Node::TypePattern(type_pattern));
+
+        let Some(variable) = &type_pattern.variable else {
+            if let Hint::Identifier(Identifier::Local(name)) = &type_pattern.hint
+                && let Some(local) = self.locals.lookup(name.value)
+            {
+                self.resolved_names.bind(name.span, Binding::Local(local));
+            }
+
+            return;
+        };
+
+        let Some(&kind) = self.pattern_kinds.last() else {
+            unreachable!("a type pattern is inside an `is` or a `match` arm");
+        };
+        let local = Local { declaration: variable.span, kind };
+        if let Some(earlier) = self.locals.declare_out_of_scope(variable.value, local) {
+            self.resolved_names.report_binding_error(BindingError::Redeclared { name: variable.span, earlier });
+        }
+
+        self.resolved_names.bind(variable.span, Binding::Local(local));
+    }
+
+    fn walk_in_is(&mut self, is: &'ast Is<'arena>, _context: &mut NameResolutionContext<'arena, A>) {
+        let negated = matches!(is.pattern, Pattern::Not(_));
+        self.pattern_kinds.push(LocalKind::Pattern { test: is.span(), negated });
+    }
+
+    fn walk_out_is(&mut self, _is: &'ast Is<'arena>, _context: &mut NameResolutionContext<'arena, A>) {
+        self.pattern_kinds.pop();
+    }
+
+    fn walk_in_as(&mut self, r#as: &'ast As<'arena>, _context: &mut NameResolutionContext<'arena, A>) {
+        self.record_called_function(Node::As(r#as));
+    }
+
+    fn walk_in_properties_pattern(
+        &mut self,
+        properties: &'ast PropertiesPattern<'arena>,
+        _context: &mut NameResolutionContext<'arena, A>,
+    ) {
+        self.record_called_function(Node::PropertiesPattern(properties));
+    }
+
+    /// The right side of `&&` sees the variables the left side assigns when it is true, and the right side of `||`
+    /// those it assigns when it is false.
+    fn walk_binary(&mut self, binary: &'ast Binary<'arena>, context: &mut NameResolutionContext<'arena, A>) {
+        let holds = match binary.operator {
+            BinaryOperator::And(_) => true,
+            BinaryOperator::Or(_) => false,
+            _ => return walk_binary_mut(self, binary, context),
+        };
+        if !self.sharp {
+            return walk_binary_mut(self, binary, context);
+        }
+
+        self.walk_expression(binary.lhs, context);
+        self.walk_where(binary.lhs, holds, context, |walker, context| walker.walk_expression(binary.rhs, context));
+    }
+
+    fn walk_conditional(
+        &mut self,
+        conditional: &'ast Conditional<'arena>,
+        context: &mut NameResolutionContext<'arena, A>,
+    ) {
+        let (true, Some(then)) = (self.sharp, conditional.then) else {
+            return walk_conditional_mut(self, conditional, context);
+        };
+
+        self.walk_expression(conditional.condition, context);
+        self.walk_where(conditional.condition, true, context, |walker, context| walker.walk_expression(then, context));
+        self.walk_where(conditional.condition, false, context, |walker, context| {
+            walker.walk_expression(conditional.r#else, context);
+        });
+    }
+
+    /// The `if` block sees the variables its condition assigns when it is true, and the `else` block those it
+    /// assigns when it is false. When the `if` block always exits, the code after the `if` runs only where the
+    /// condition is false, so those variables stay in scope until the enclosing block ends, as decision 020 says.
+    fn walk_if(&mut self, r#if: &'ast If<'arena>, context: &mut NameResolutionContext<'arena, A>) {
+        let (true, IfBody::Statement(body)) = (self.sharp, &r#if.body) else {
+            return walk_if_mut(self, r#if, context);
+        };
+
+        self.walk_expression(r#if.condition, context);
+        self.walk_where(r#if.condition, true, context, |walker, context| {
+            walker.walk_statement(body.statement, context)
+        });
+        for clause in &body.else_if_clauses {
+            self.walk_if_statement_body_else_if_clause(clause, context);
+        }
+        if let Some(clause) = &body.else_clause {
+            self.walk_where(r#if.condition, false, context, |walker, context| {
+                walker.walk_statement(clause.statement, context);
+            });
+        }
+
+        if always_exits(body.statement) {
+            let mut variables = std::vec::Vec::new();
+            condition_variables(r#if.condition, false, &mut variables);
+            self.open(&variables);
+        }
+    }
+
+    fn walk_while(&mut self, r#while: &'ast While<'arena>, context: &mut NameResolutionContext<'arena, A>) {
+        let (true, WhileBody::Statement(body)) = (self.sharp, &r#while.body) else {
+            return walk_while_mut(self, r#while, context);
+        };
+
+        self.walk_expression(r#while.condition, context);
+        self.walk_where(r#while.condition, true, context, |walker, context| walker.walk_statement(body, context));
+    }
+
+    /// An arm is a block of its own. Its `when` condition and its body see its pattern's variables, and its body also
+    /// sees the variables its `when` condition assigns when it is true.
+    fn walk_pattern_match_pattern_arm(
+        &mut self,
+        arm: &'ast PatternMatchPatternArm<'arena>,
+        context: &mut NameResolutionContext<'arena, A>,
+    ) {
+        self.locals.enter_block();
+        let negated = matches!(arm.pattern, Pattern::Not(_));
+        self.pattern_kinds.push(LocalKind::Pattern { test: arm.pattern.span(), negated });
+        self.walk_pattern(arm.pattern, context);
+        self.pattern_kinds.pop();
+        if !negated {
+            let mut variables = std::vec::Vec::new();
+            pattern_variables(arm.pattern, &mut variables);
+            self.open(&variables);
+        }
+
+        match &arm.guard {
+            Some(guard) => {
+                self.walk_expression(guard.condition, context);
+                self.walk_where(guard.condition, true, context, |walker, context| {
+                    walker.walk_pattern_match_arm_body(&arm.body, context);
+                });
+            }
+            None => self.walk_pattern_match_arm_body(&arm.body, context),
+        }
         self.locals.exit_block();
     }
 
