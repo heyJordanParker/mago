@@ -1118,10 +1118,13 @@ where
                 let prop_meta = first_property_name.and_then(|name| class_like_metadata.properties.get(&name));
                 missing_type_hints::check_imprecise_property_type_hint(context, property, prop_meta);
 
+                // A PHP# field's name has no `$`, and the codebase keys every property by its PHP name.
                 let property_names: Vec<Word> = match property {
-                    Property::Plain(plain) => plain.items.iter().map(|item| word(item.variable().name)).collect(),
+                    Property::Plain(plain) => {
+                        plain.items.iter().map(|item| php_variable_name(item.variable().name)).collect()
+                    }
                     Property::Hooked(_) | Property::Computed(_) => {
-                        vec![word(property.first_variable().name)]
+                        vec![php_variable_name(property.first_variable().name)]
                     }
                 };
 
