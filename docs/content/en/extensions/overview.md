@@ -8,7 +8,7 @@ nav_section = "Extensions"
 
 Mago extensions add project- and framework-specific behavior without rebuilding Mago. A configured extension host is an external program connected through Mago's language-neutral worker protocol. Each host worker advertises one or more logical extensions, and the host can be written in any language capable of implementing that protocol.
 
-Mago bundles a first-party PHP SDK with `carthage-software/mago`. The examples and API reference in this manual use that SDK, but the host architecture does not require PHP.
+Mago bundles a first-party PHP SDK with `heyjordanparker/mago-sharp`. The examples and API reference in this manual use that SDK, but the host architecture does not require PHP.
 
 An extension may contribute:
 

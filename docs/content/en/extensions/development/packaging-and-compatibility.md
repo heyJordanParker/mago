@@ -7,7 +7,7 @@ nav_subsection = "Development"
 +++
 # Packaging and compatibility
 
-The Mago Composer package contains both the executable installer and its version-matched PHP SDK. An extension package should depend on `carthage-software/mago`; users should not install a separate SDK package.
+The Mago Composer package contains both the executable installer and its version-matched PHP SDK. An extension package should depend on `heyjordanparker/mago-sharp`; users should not install a separate SDK package.
 
 ## Package layout
 
@@ -41,7 +41,7 @@ Example `composer.json`:
   "type": "library",
   "require": {
     "php": "^8.1",
-    "carthage-software/mago": "^1.47"
+    "heyjordanparker/mago-sharp": "^0.1"
   },
   "autoload": {
     "psr-4": {
@@ -51,7 +51,7 @@ Example `composer.json`:
 }
 ```
 
-Mago 1.47 is the first release that contains `Mago\Sdk`. Use the narrowest Mago constraint compatible with the SDK surface tested by the package.
+Every `heyjordanparker/mago-sharp` release contains `Mago\Sdk`. Use the narrowest constraint compatible with the SDK surface tested by the package.
 
 ## Expose a package-owned factory
 
