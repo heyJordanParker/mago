@@ -4,15 +4,20 @@ use mago_algebra::clause::Clause;
 use mago_algebra::find_satisfying_assignments;
 use mago_allocator::Arena;
 use mago_codex::ttype::get_literal_string;
+use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_named_object;
 use mago_codex::ttype::get_never;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
+use mago_reporting::Level;
 use mago_span::HasPosition;
 use mago_span::HasSpan;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::Parenthesized;
+use mago_syntax::cst::PropertiesPattern;
+use mago_syntax::utils::pattern::PhpShape;
+use mago_syntax::walker::Walker;
 use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_word::WordSet;
 use mago_word::word;
@@ -176,6 +181,9 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
                 Expression::Instantiation(expr) => expr.analyze(context, block_context, artifacts),
                 Expression::MagicConstant(expr) => expr.analyze(context, block_context, artifacts),
                 Expression::Pipe(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::Is(_) | Expression::As(_) | Expression::PatternMatch(_) => {
+                    analyze_php_shape(Node::Expression(self), context, block_context, artifacts)
+                }
                 Expression::List(list_expr) => {
                     context.collector.report_with_code(
                     IssueCode::ListUsedInReadContext,
@@ -269,6 +277,96 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
 
             Ok(())
         })
+    }
+}
+
+/// Analyzes a PHP# `is`, `as` or `match` as the PHP it runs as, which the engine's bridge lowers too, so the analyzer
+/// narrows on the code that runs. An expression's type is its PHP's. A form the slice refuses has no PHP, and its
+/// error is the semantic check's.
+pub(crate) fn analyze_php_shape<'ctx, 'arena, A>(
+    node: Node<'_, 'arena>,
+    context: &mut Context<'ctx, 'arena, A>,
+    block_context: &mut BlockContext<'ctx>,
+    artifacts: &mut AnalysisArtifacts,
+) -> Result<(), AnalysisError>
+where
+    A: Arena,
+{
+    let Some(PhpShape { php, temporaries, tests }) =
+        context.get_assertion_context_from_block(block_context).php_shape(node)
+    else {
+        if let Node::Expression(expression) = node {
+            artifacts.set_expression_type(expression, get_mixed());
+        }
+
+        return Ok(());
+    };
+
+    context.temporaries += temporaries;
+    let (result, issues) = context.record(|context| match php {
+        Node::Expression(expression) => expression.analyze(context, block_context, artifacts),
+        Node::Statement(statement) => statement.analyze(context, block_context, artifacts),
+        _ => Ok(()),
+    });
+    context.temporaries -= temporaries;
+
+    // A properties pattern's `is_object` is its null check, which a value that cannot be null makes redundant. C#
+    // reports nothing there, and no source the user wrote can drop the check.
+    let mut object_checks = Vec::new();
+    match node {
+        Node::Expression(expression) => ObjectChecks.walk_expression(expression, &mut object_checks),
+        Node::Statement(statement) => ObjectChecks.walk_statement(statement, &mut object_checks),
+        _ => {}
+    }
+    let is_code = |issue: &Issue, code: IssueCode| issue.code.as_deref() == Some(code.as_str());
+    let issues: Vec<Issue> = issues
+        .into_iter()
+        .filter(|issue| {
+            let redundant = is_code(issue, IssueCode::RedundantTypeComparison)
+                || is_code(issue, IssueCode::RedundantLogicalOperation);
+
+            !redundant || issue.primary_span().is_none_or(|span| !object_checks.contains(&span.start.offset))
+        })
+        .collect();
+
+    // Reading (g) of spec section 21: a pattern that can never match is an error, as C#'s CS8121 is. Its test is then
+    // `false`, unless an error at the pattern already says so.
+    for (pattern, test) in tests {
+        let reported = issues.iter().any(|issue| {
+            issue.level == Level::Error
+                && is_code(issue, IssueCode::ImpossibleTypeComparison)
+                && issue.primary_span().is_some_and(|span| pattern.contains(&span.start))
+        });
+        if reported || !artifacts.get_rc_expression_type(test).is_some_and(|test_type| test_type.is_false()) {
+            continue;
+        }
+
+        context.collector.report_with_code(
+            IssueCode::ImpossibleTypeComparison,
+            Issue::error("This pattern never matches the value it tests.")
+                .with_annotation(Annotation::primary(pattern).with_message("Never matches."))
+                .with_note("Spec section 21 makes a pattern that can never match an error, as C# does (CS8121).")
+                .with_help("Remove the pattern, or test a value that can match it."),
+        );
+    }
+    context.collector.extend(issues);
+    result?;
+
+    if let (Node::Expression(expression), Node::Expression(php)) = (node, php)
+        && let Some(php_type) = artifacts.get_rc_expression_type(php).cloned()
+    {
+        artifacts.set_rc_expression_type(expression, php_type);
+    }
+
+    Ok(())
+}
+
+/// Collects the offset of each properties pattern's `{`, where its PHP's `is_object` check starts.
+struct ObjectChecks;
+
+impl<'ast, 'arena> Walker<'ast, 'arena, Vec<u32>> for ObjectChecks {
+    fn walk_in_properties_pattern(&self, properties: &'ast PropertiesPattern<'arena>, offsets: &mut Vec<u32>) {
+        offsets.push(properties.left_brace.start.offset);
     }
 }
 

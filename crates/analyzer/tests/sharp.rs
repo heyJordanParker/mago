@@ -27,6 +27,7 @@ use mago_database::file::File;
 use mago_names::resolver::NameResolver;
 use mago_prelude::Prelude;
 use mago_reporting::Issue;
+use mago_reporting::Level;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::Call;
@@ -998,4 +999,111 @@ fn attribute_arguments_are_checked_against_the_attribute_constructor_as_in_php()
         ["8:19 invalid-argument", "10:26 invalid-argument", "11:26 too-few-arguments", "11:67 too-many-arguments"]
     );
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+const SHAPES: &str = "<?php\n\nnamespace Lib;\n\ninterface Shape\n{\n}\n\nfinal class Circle implements Shape\n{\n    public function __construct(public float $radius)\n    {\n    }\n}\n\nfinal class Square implements Shape\n{\n    public function __construct(public float $side)\n    {\n    }\n}\n";
+
+#[test]
+fn is_is_not_and_as_narrow_as_their_php_does() {
+    let sharp = "namespace Demo;\n\nimport Lib.Shape;\nimport Lib.Circle;\nimport Lib.Square;\n\nclass Report\n{\n    public static float area(Shape shape)\n    {\n        if (shape is Circle circle) {\n            return circle.radius;\n        }\n        if (shape is not Square square) {\n            return 0.0;\n        }\n        return square.side;\n    }\n\n    public static float side(Shape shape)\n    {\n        if (shape is Square) {\n            return shape.side;\n        }\n        return 0.0;\n    }\n\n    public static float radius(Shape shape)\n    {\n        const circle = shape as Circle;\n        return circle?.radius ?? 0.0;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Shape;\nuse Lib\\Circle;\nuse Lib\\Square;\n\nclass Report\n{\n    public static function area(Shape $shape): float\n    {\n        if (($circle = $shape) instanceof Circle) {\n            return $circle->radius;\n        }\n        if (!(($square = $shape) instanceof Square)) {\n            return 0.0;\n        }\n        return $square->side;\n    }\n\n    public static function side(Shape $shape): float\n    {\n        if ($shape instanceof Square) {\n            return $shape->side;\n        }\n        return 0.0;\n    }\n\n    public static function radius(Shape $shape): float\n    {\n        $circle = $shape instanceof Circle ? $shape : null;\n        return $circle?->radius ?? 0.0;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Shapes.php", SHAPES)]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[("src/Lib/Shapes.php", SHAPES)]);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn a_match_narrows_each_arm_as_its_php_does() {
+    let sharp = "namespace Demo;\n\nimport Lib.Shape;\nimport Lib.Circle;\nimport Lib.Square;\n\nclass Report\n{\n    public static string describe(Shape? shape) => match (shape) {\n        null => \"nothing\",\n        Circle c when c.radius > 10.0 => \"big\",\n        Circle => \"circle\",\n        default => \"other\",\n    };\n\n    public static string grade(int score) => match (score) {\n        < 0 => \"invalid\",\n        >= 90 => \"top\",\n        >= 50 and < 70 => \"pass\",\n        default => \"fail\",\n    };\n\n    public static float count(Shape? shape)\n    {\n        let total = 0.0;\n        match (shape) {\n            Circle c => {\n                total = c.radius;\n            },\n            Square s when s.side > 1.0 => total = s.side,\n            default => {},\n        }\n        return total;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Shape;\nuse Lib\\Circle;\nuse Lib\\Square;\n\nclass Report\n{\n    public static function describe(?Shape $shape): string { return match (true) {\n        $shape === null => \"nothing\",\n        ($c = $shape) instanceof Circle and $c->radius > 10.0 => \"big\",\n        $shape instanceof Circle => \"circle\",\n        default => \"other\",\n    }; }\n\n    public static function grade(int $score): string { return match (true) {\n        $score < 0 => \"invalid\",\n        $score >= 90 => \"top\",\n        $score >= 50 && $score < 70 => \"pass\",\n        default => \"fail\",\n    }; }\n\n    public static function count(?Shape $shape): float\n    {\n        $total = 0.0;\n        if (($c = $shape) instanceof Circle) {\n            $total = $c->radius;\n        } else if (($s = $shape) instanceof Square and $s->side > 1.0) {\n            $total = $s->side;\n        } else {\n        }\n        return $total;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Shapes.php", SHAPES)]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[("src/Lib/Shapes.php", SHAPES)]);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn a_default_arm_no_value_reaches_is_required_and_silent_in_sharp_and_reported_in_php() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static string kind(bool flag) => match (flag) {\n        true => \"yes\",\n        false => \"no\",\n        default => \"never\",\n    };\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function kind(bool $flag): string { return match (true) {\n        $flag === true => \"yes\",\n        $flag === false => \"no\",\n        default => \"never\",\n    }; }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[]);
+
+    assert!(!codes(&sharp_issues).contains(&"unreachable-match-default-arm"), "{sharp_issues:?}");
+    assert!(codes(&php_issues).contains(&"unreachable-match-default-arm"), "{php_issues:?}");
+}
+
+#[test]
+fn a_properties_pattern_on_a_value_that_cannot_be_null_reports_nothing_and_its_php_reports_the_object_check() {
+    let sharp = "namespace Demo;\n\nimport Lib.Circle;\n\nclass Report\n{\n    public static bool wide(Circle circle) => circle is { radius: >= 2.0 };\n\n    public static bool known(Circle? circle) => circle is { radius: >= 2.0 };\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Circle;\n\nclass Report\n{\n    public static function wide(Circle $circle): bool { return \\is_object($circle) && $circle->radius >= 2.0; }\n\n    public static function known(?Circle $circle): bool { return \\is_object($circle) && $circle->radius >= 2.0; }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Shapes.php", SHAPES)]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[("src/Lib/Shapes.php", SHAPES)]);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&php_issues), ["redundant-type-comparison", "redundant-logical-operation"]);
+}
+
+#[test]
+fn a_pattern_that_can_never_match_is_an_error_at_the_pattern() {
+    let sharp = "namespace Demo;\n\nimport Lib.Circle;\nimport Lib.Square;\n\nclass Report\n{\n    public static bool square(Circle circle) => circle is Square;\n\n    public static bool text(int count) => count is string;\n\n    public static bool named(int count) => count is \"none\";\n\n    public static Square? converted(Circle circle) => circle as Square;\n\n    public static int arm(Circle circle) => match (circle) {\n        Square => 1,\n        default => 0,\n    };\n\n    public static bool possible(int? count) => count is int and > 0;\n}\n";
+
+    let first =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Shapes.php", SHAPES)]);
+    let errors: Vec<String> = first
+        .iter()
+        .filter(|issue| issue.level == Level::Error)
+        .map(|issue| {
+            let span = issue.primary_span().expect("an error has a primary span");
+            format!(
+                "{} {} {}",
+                &sharp[span.start.offset as usize..span.end.offset as usize],
+                issue.code.as_deref().unwrap_or(""),
+                issue.message
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        errors,
+        [
+            "Square impossible-type-comparison This pattern never matches the value it tests.",
+            "string impossible-type-comparison Impossible type assertion: `$count` of type `int` can never be `string`.",
+            "\"none\" impossible-type-comparison This pattern never matches the value it tests.",
+            "Square impossible-type-comparison This pattern never matches the value it tests.",
+            "Square impossible-type-comparison This pattern never matches the value it tests.",
+        ]
+    );
+}
+
+#[test]
+fn a_pattern_the_parser_refuses_reports_only_its_parse_error() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static void count(int? count)\n    {\n        match (count) {\n            [int first] => {},\n            Shape.Circle => {},\n            default => {},\n        }\n    }\n}\n";
+
+    let issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[]);
+    let messages: Vec<&str> = issues.iter().map(|issue| issue.message.as_str()).collect();
+
+    assert_eq!(
+        messages,
+        ["A list pattern is not supported yet in PHP#.", "An enum case pattern is not supported yet in PHP#."]
+    );
+}
+
+#[test]
+fn a_when_condition_that_is_not_bool_is_an_invalid_operand_named_when() {
+    let sharp = "namespace Demo;\n\nimport Lib.Shape;\nimport Lib.Circle;\n\nclass Report\n{\n    public static string round(Shape shape) => match (shape) {\n        Circle c when c.radius => \"round\",\n        default => \"other\",\n    };\n}\n";
+
+    let first =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Shapes.php", SHAPES)])
+            .remove(0);
+
+    assert_eq!(first.code.as_deref(), Some("invalid-operand"));
+    assert_eq!(first.message, "`when` takes a `bool`, but this is `float`.");
 }

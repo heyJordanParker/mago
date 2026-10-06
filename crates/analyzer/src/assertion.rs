@@ -37,8 +37,10 @@ use mago_syntax::cst::Expression;
 use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::Literal;
 use mago_syntax::cst::LocalIdentifier;
+use mago_syntax::cst::Node;
 use mago_syntax::cst::UnaryPrefix;
 use mago_syntax::cst::UnaryPrefixOperator;
+use mago_syntax::utils::pattern::PhpShape;
 use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_word::Word;
 use mago_word::WordMap;
@@ -70,6 +72,14 @@ where
     A: Arena,
 {
     expression = unwrap_expression(expression);
+
+    // A PHP# `is` asserts what the PHP it runs as asserts.
+    if let Expression::Is(_) = expression
+        && let Some(PhpShape { php: Node::Expression(php), .. }) =
+            assertion_context.php_shape(Node::Expression(expression))
+    {
+        return scrape_assertions(php, artifacts, assertion_context);
+    }
 
     let mut if_types = WordMap::default();
 
