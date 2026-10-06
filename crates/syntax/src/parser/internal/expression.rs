@@ -244,7 +244,7 @@ where
             return Ok(self.arena.alloc(self.parse_ambiguous_clone_expression()?));
         }
 
-        if self.dialect.is_sharp() && self.is_at_lambda()? {
+        if self.dialect.is_sharp() && self.is_at_lambda(precedence)? {
             return self.parse_lambda();
         }
 
