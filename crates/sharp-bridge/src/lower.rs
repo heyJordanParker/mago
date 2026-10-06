@@ -18,6 +18,7 @@ use mago_syntax::cst::ArrayElement;
 use mago_syntax::cst::ArrowFunction;
 use mago_syntax::cst::AssignmentOperator;
 use mago_syntax::cst::AttributeList;
+use mago_syntax::cst::Binary;
 use mago_syntax::cst::BinaryOperator;
 use mago_syntax::cst::Block;
 use mago_syntax::cst::Call;
@@ -50,6 +51,7 @@ use mago_syntax::cst::InterpolatedString;
 use mago_syntax::cst::Literal;
 use mago_syntax::cst::LiteralStringPart;
 use mago_syntax::cst::LocalDeclaration;
+use mago_syntax::cst::MatchArm;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::MethodBody;
 use mago_syntax::cst::MethodCall;
@@ -72,10 +74,13 @@ use mago_syntax::cst::Try;
 use mago_syntax::cst::TryCatchClause;
 use mago_syntax::cst::UnaryPostfixOperator;
 use mago_syntax::cst::UnaryPrefixOperator;
+use mago_syntax::cst::Variable;
 use mago_syntax::cst::WhileBody;
 use mago_syntax::dialect::Dialect;
 use mago_syntax::parser::parse_file_with_dialect;
 use mago_syntax::settings::ParserSettings;
+use mago_syntax::utils::pattern::PhpShape;
+use mago_syntax::utils::pattern::php_shape;
 use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_syntax_core::utils::parse_literal_integer_as_float;
 
@@ -127,6 +132,10 @@ use crate::sharp_kind::SHARP_AST_GREATER;
 use crate::sharp_kind::SHARP_AST_GREATER_EQUAL;
 use crate::sharp_kind::SHARP_AST_IF;
 use crate::sharp_kind::SHARP_AST_IF_ELEM;
+use crate::sharp_kind::SHARP_AST_INSTANCEOF;
+use crate::sharp_kind::SHARP_AST_MATCH;
+use crate::sharp_kind::SHARP_AST_MATCH_ARM;
+use crate::sharp_kind::SHARP_AST_MATCH_ARM_LIST;
 use crate::sharp_kind::SHARP_AST_METHOD;
 use crate::sharp_kind::SHARP_AST_METHOD_CALL;
 use crate::sharp_kind::SHARP_AST_NAME_LIST;
@@ -302,6 +311,8 @@ struct Lowering<'lowering, 'arena> {
     nodes: Vec<sharp_node>,
     children: Vec<u32>,
     texts: LocalArena,
+    /// How many hidden variables the pattern forms being lowered hold.
+    temporaries: u32,
     /// The declaration offsets of the locals a lambda captures by reference: those code writes.
     by_reference: HashSet<u32>,
     /// How many loop bodies hold the statement being lowered, inside the innermost method or lambda.
@@ -318,6 +329,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             nodes: Vec::new(),
             children: Vec::new(),
             texts: LocalArena::new(),
+            temporaries: 0,
             by_reference: HashSet::default(),
             loop_depth: 0,
             in_constant_expression: false,
@@ -807,12 +819,38 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             Statement::ForOf(for_of) => {
                 let collection = self.expression(for_of.expression);
                 let (key, value) = match &for_of.target {
-                    ForOfTarget::Value(value) => (NULL, self.variable(value.span, value.value)),
-                    ForOfTarget::KeyValue(pair) => {
-                        (self.variable(pair.key.span, pair.key.value), self.variable(pair.value.span, pair.value.value))
-                    }
+                    ForOfTarget::Value(value) => (NULL, self.variable(value.name.span, value.name.value)),
+                    ForOfTarget::KeyValue(pair) => (
+                        self.variable(pair.key.name.span, pair.key.name.value),
+                        self.variable(pair.value.name.span, pair.value.name.value),
+                    ),
                 };
-                let body = self.loop_body(for_of.body);
+                let mut body = self.loop_body(for_of.body);
+
+                // A `Map` keyed by a backed enum holds each key as its backing value, and the analyzer requires a loop
+                // over one to name the enum as its key's type, so a key that names a class reads back as its case.
+                // PHP stores an all-digit `string` key as an `int`, so a key written `string` reads back through
+                // `(string)`, as spec section 12 reads a `Map<string, V>` key.
+                if let ForOfTarget::KeyValue(pair) = &for_of.target
+                    && let Some(hint @ (Hint::Identifier(_) | Hint::String(_))) = pair.key.hint
+                {
+                    let line = self.line(&pair.key);
+                    let stored_key = self.variable(pair.key.name.span, pair.key.name.value);
+                    let read_back = match hint {
+                        Hint::Identifier(class) => {
+                            let class = self.string(ZEND_NAME_FQ, line, self.names.get(class));
+                            let from = self.string(0, line, b"from");
+                            let arguments = self.node(SHARP_AST_ARG_LIST, 0, line, &[stored_key]);
+
+                            self.node(SHARP_AST_STATIC_CALL, 0, line, &[class, from, arguments])
+                        }
+                        _ => self.node(SHARP_AST_CAST, IS_STRING, line, &[stored_key]),
+                    };
+                    let key = self.variable(pair.key.name.span, pair.key.name.value);
+                    let assignment = self.node(SHARP_AST_ASSIGN, 0, line, &[key, read_back]);
+
+                    body = self.node(SHARP_AST_STMT_LIST, 0, line, &[assignment, body]);
+                }
 
                 self.node(SHARP_AST_FOREACH, 0, self.line(for_of), &[collection, value, key, body])
             }
@@ -832,6 +870,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.node(SHARP_AST_DO_WHILE, 0, self.line(do_while), &[body, condition])
             }
             Statement::Try(r#try) => self.r#try(r#try),
+            Statement::PatternMatch(_) => self.pattern(Node::Statement(statement)),
             Statement::Break(r#break) => self.node(SHARP_AST_BREAK, 0, self.line(r#break), &[NULL]),
             Statement::Continue(r#continue) => self.node(SHARP_AST_CONTINUE, 0, self.line(r#continue), &[NULL]),
             _ => unreachable!("check_slice refuses the statement `{statement}`"),
@@ -975,6 +1014,44 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.node(SHARP_AST_CONDITIONAL, 0, line, &[condition, then, r#else])
             }
             Expression::ConstantAccess(name) => self.name(name),
+            Expression::Is(_) | Expression::As(_) | Expression::PatternMatch(_) => {
+                self.pattern(Node::Expression(expression))
+            }
+            // Only the PHP of a pattern form has a `$` variable: a pattern's name, or a variable PHP# cannot name.
+            Expression::Variable(Variable::Direct(variable)) => {
+                self.variable(variable.span, variable.name.strip_prefix(b"$").unwrap_or(variable.name))
+            }
+            Expression::Binary(Binary {
+                lhs,
+                operator: BinaryOperator::Instanceof(_),
+                rhs: Expression::Identifier(class),
+            }) => {
+                let value = self.expression(lhs);
+                let class = self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class));
+
+                self.node(SHARP_AST_INSTANCEOF, 0, line, &[value, class])
+            }
+            Expression::Match(r#match) => {
+                let subject = self.expression(r#match.expression);
+                let mut arms = Vec::new();
+                for arm in r#match.arms.iter() {
+                    let (conditions, value) = match arm {
+                        MatchArm::Expression(arm) => {
+                            let conditions: Vec<u32> =
+                                arm.conditions.iter().map(|condition| self.expression(condition)).collect();
+
+                            (self.expression_list(&conditions), arm.expression)
+                        }
+                        MatchArm::Default(arm) => (NULL, arm.expression),
+                    };
+                    let value = self.expression(value);
+                    arms.push(self.node(SHARP_AST_MATCH_ARM, 0, self.line(arm), &[conditions, value]));
+                }
+
+                let arms = self.node(SHARP_AST_MATCH_ARM_LIST, 0, self.line(r#match.left_brace), &arms);
+
+                self.node(SHARP_AST_MATCH, 0, line, &[subject, arms])
+            }
             Expression::Binary(binary) => {
                 let (kind, attr) = binary_kind(binary.operator);
                 let lhs = self.expression(binary.lhs);
@@ -1190,19 +1267,20 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     /// A list or map literal is an `ARRAY` with `ZEND_ARRAY_SYNTAX_SHORT`, as php-src's grammar builds `[…]`. Each
-    /// element is an `ARRAY_ELEM` of its value and its key or null.
+    /// element is an `ARRAY_ELEM` of its value and its key or null, and a spread is an `UNPACK` of its value.
     fn array(&mut self, array: &Array) -> u32 {
         let mut elements = Vec::new();
         for element in &array.elements {
-            let value_and_key = match element {
-                ArrayElement::Value(element) => [self.expression(element.value), NULL],
-                ArrayElement::KeyValue(element) => [self.expression(element.value), self.expression(element.key)],
-                ArrayElement::Variadic(_) | ArrayElement::Missing(_) => {
-                    unreachable!("check_slice refuses a spread or missing literal element")
+            let (kind, value_and_key) = match element {
+                ArrayElement::Value(element) => (SHARP_AST_ARRAY_ELEM, vec![self.expression(element.value), NULL]),
+                ArrayElement::KeyValue(element) => {
+                    (SHARP_AST_ARRAY_ELEM, vec![self.expression(element.value), self.expression(element.key)])
                 }
+                ArrayElement::Variadic(element) => (SHARP_AST_UNPACK, vec![self.expression(element.value)]),
+                ArrayElement::Missing(_) => unreachable!("check_slice refuses a missing literal element"),
             };
 
-            elements.push(self.node(SHARP_AST_ARRAY_ELEM, 0, self.line(element), &value_and_key));
+            elements.push(self.node(kind, 0, self.line(element), &value_and_key));
         }
 
         self.node(SHARP_AST_ARRAY, ZEND_ARRAY_SYNTAX_SHORT, self.line(array), &elements)
@@ -1250,6 +1328,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             Expression::ConstantAccess(name) if matches!(self.names.binding(&name.name), Some(Binding::Local(_))) => {
                 self.variable(name.span(), name.name.value())
             }
+            // The hidden variable of an `is`, `as` or `match`, which `php_shape` writes.
+            Expression::Variable(Variable::Direct(_)) => self.expression(target),
             Expression::Access(Access::Property(access)) => match self.names.static_property_class(access) {
                 Some(class) => {
                     let line = self.line(target);
@@ -1268,6 +1348,27 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             }
             _ => unreachable!("check_slice refuses writing to `{target}`"),
         }
+    }
+
+    /// An `is`, `as` or `match` is the PHP it runs as, which the analyzer analyzes too. Its hidden variables are
+    /// numbered after those of the forms around it, which may still hold their values.
+    fn pattern(&mut self, node: Node<'_, '_>) -> u32 {
+        let arena = LocalArena::new();
+        let names = self.names;
+        let is_local = |span: Span| matches!(names.binding(&span), Some(Binding::Local(_)));
+        let Some(PhpShape { php, temporaries, .. }) = php_shape(&arena, node, self.temporaries, &is_local) else {
+            unreachable!("check_slice refuses the pattern forms that have no PHP");
+        };
+
+        self.temporaries += temporaries;
+        let index = match php {
+            Node::Expression(expression) => self.expression(expression),
+            Node::Statement(statement) => self.statement(statement),
+            _ => unreachable!("`php_shape` builds an expression or a statement"),
+        };
+        self.temporaries -= temporaries;
+
+        index
     }
 
     /// A local, a parameter or `this` is a PHP variable of the same name. Any other bare name outside a call is a
@@ -1583,7 +1684,8 @@ fn binary_kind(operator: BinaryOperator) -> (sharp_kind, u32) {
         BinaryOperator::LessThanOrEqual(_) => (SHARP_AST_BINARY_OP, ZEND_IS_SMALLER_OR_EQUAL),
         BinaryOperator::GreaterThan(_) => (SHARP_AST_GREATER, 0),
         BinaryOperator::GreaterThanOrEqual(_) => (SHARP_AST_GREATER_EQUAL, 0),
-        BinaryOperator::And(_) => (SHARP_AST_AND, 0),
+        // check_slice refuses `and`, so only the `when` of a `match` arm runs as it.
+        BinaryOperator::And(_) | BinaryOperator::LowAnd(_) => (SHARP_AST_AND, 0),
         BinaryOperator::Or(_) => (SHARP_AST_OR, 0),
         BinaryOperator::NullCoalesce(_) => (SHARP_AST_COALESCE, 0),
         BinaryOperator::BitwiseAnd(_)
@@ -1595,7 +1697,6 @@ fn binary_kind(operator: BinaryOperator) -> (sharp_kind, u32) {
         | BinaryOperator::Spaceship(_)
         | BinaryOperator::StringConcat(_)
         | BinaryOperator::Instanceof(_)
-        | BinaryOperator::LowAnd(_)
         | BinaryOperator::LowOr(_)
         | BinaryOperator::LowXor(_) => unreachable!("check_slice refuses the operator `{operator}`"),
     }

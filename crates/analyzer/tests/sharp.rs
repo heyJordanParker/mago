@@ -1544,6 +1544,97 @@ fn an_unchecked_any_is_refused_wherever_its_type_matters() {
     );
 }
 
+const SHAPES: &str = "<?php\n\nnamespace Lib;\n\ninterface Shape\n{\n}\n\nfinal class Circle implements Shape\n{\n    public function __construct(public float $radius)\n    {\n    }\n}\n\nfinal class Square implements Shape\n{\n    public function __construct(public float $side)\n    {\n    }\n}\n";
+
+#[test]
+fn is_is_not_and_as_narrow_as_their_php_does() {
+    let sharp = "namespace Demo;\n\nimport Lib.Shape;\nimport Lib.Circle;\nimport Lib.Square;\n\nclass Report\n{\n    public static float area(Shape shape)\n    {\n        if (shape is Circle circle) {\n            return circle.radius;\n        }\n        if (shape is not Square square) {\n            return 0.0;\n        }\n        return square.side;\n    }\n\n    public static float side(Shape shape)\n    {\n        if (shape is Square) {\n            return shape.side;\n        }\n        return 0.0;\n    }\n\n    public static float radius(Shape shape)\n    {\n        const circle = shape as Circle;\n        return circle?.radius ?? 0.0;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Shape;\nuse Lib\\Circle;\nuse Lib\\Square;\n\nclass Report\n{\n    public static function area(Shape $shape): float\n    {\n        if (($circle = $shape) instanceof Circle) {\n            return $circle->radius;\n        }\n        if (!(($square = $shape) instanceof Square)) {\n            return 0.0;\n        }\n        return $square->side;\n    }\n\n    public static function side(Shape $shape): float\n    {\n        if ($shape instanceof Square) {\n            return $shape->side;\n        }\n        return 0.0;\n    }\n\n    public static function radius(Shape $shape): float\n    {\n        $circle = $shape instanceof Circle ? $shape : null;\n        return $circle?->radius ?? 0.0;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Shapes.php", SHAPES)]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[("src/Lib/Shapes.php", SHAPES)]);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn a_match_narrows_each_arm_as_its_php_does() {
+    let sharp = "namespace Demo;\n\nimport Lib.Shape;\nimport Lib.Circle;\nimport Lib.Square;\n\nclass Report\n{\n    public static string describe(Shape? shape) => match (shape) {\n        null => \"nothing\",\n        Circle c when c.radius > 10.0 => \"big\",\n        Circle => \"circle\",\n        default => \"other\",\n    };\n\n    public static string grade(int score) => match (score) {\n        < 0 => \"invalid\",\n        >= 90 => \"top\",\n        >= 50 and < 70 => \"pass\",\n        default => \"fail\",\n    };\n\n    public static float count(Shape? shape)\n    {\n        let total = 0.0;\n        match (shape) {\n            Circle c => {\n                total = c.radius;\n            },\n            Square s when s.side > 1.0 => total = s.side,\n            default => {},\n        }\n        return total;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Shape;\nuse Lib\\Circle;\nuse Lib\\Square;\n\nclass Report\n{\n    public static function describe(?Shape $shape): string { return match (true) {\n        $shape === null => \"nothing\",\n        ($c = $shape) instanceof Circle and $c->radius > 10.0 => \"big\",\n        $shape instanceof Circle => \"circle\",\n        default => \"other\",\n    }; }\n\n    public static function grade(int $score): string { return match (true) {\n        $score < 0 => \"invalid\",\n        $score >= 90 => \"top\",\n        $score >= 50 && $score < 70 => \"pass\",\n        default => \"fail\",\n    }; }\n\n    public static function count(?Shape $shape): float\n    {\n        $total = 0.0;\n        if (($c = $shape) instanceof Circle) {\n            $total = $c->radius;\n        } else if (($s = $shape) instanceof Square and $s->side > 1.0) {\n            $total = $s->side;\n        } else {\n        }\n        return $total;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Shapes.php", SHAPES)]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[("src/Lib/Shapes.php", SHAPES)]);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn a_default_arm_no_value_reaches_is_required_and_silent_in_sharp_and_reported_in_php() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static string kind(bool flag) => match (flag) {\n        true => \"yes\",\n        false => \"no\",\n        default => \"never\",\n    };\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function kind(bool $flag): string { return match (true) {\n        $flag === true => \"yes\",\n        $flag === false => \"no\",\n        default => \"never\",\n    }; }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[]);
+
+    assert!(!codes(&sharp_issues).contains(&"unreachable-match-default-arm"), "{sharp_issues:?}");
+    assert!(codes(&php_issues).contains(&"unreachable-match-default-arm"), "{php_issues:?}");
+}
+
+#[test]
+fn a_properties_pattern_on_a_value_that_cannot_be_null_reports_nothing_and_its_php_reports_the_object_check() {
+    let sharp = "namespace Demo;\n\nimport Lib.Circle;\n\nclass Report\n{\n    public static bool wide(Circle circle) => circle is { radius: >= 2.0 };\n\n    public static bool known(Circle? circle) => circle is { radius: >= 2.0 };\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Circle;\n\nclass Report\n{\n    public static function wide(Circle $circle): bool { return \\is_object($circle) && $circle->radius >= 2.0; }\n\n    public static function known(?Circle $circle): bool { return \\is_object($circle) && $circle->radius >= 2.0; }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Shapes.php", SHAPES)]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[("src/Lib/Shapes.php", SHAPES)]);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&php_issues), ["redundant-type-comparison", "redundant-logical-operation"]);
+}
+
+#[test]
+fn a_pattern_that_can_never_match_is_an_error_at_the_pattern() {
+    let sharp = "namespace Demo;\n\nimport Lib.Circle;\nimport Lib.Square;\n\nclass Report\n{\n    public static bool square(Circle circle) => circle is Square;\n\n    public static bool text(int count) => count is string;\n\n    public static bool named(int count) => count is \"none\";\n\n    public static Square? converted(Circle circle) => circle as Square;\n\n    public static int arm(Circle circle) => match (circle) {\n        Square => 1,\n        default => 0,\n    };\n\n    public static int value(int count) => match (count) {\n        1 => 1,\n        \"none\" => 0,\n        default => 2,\n    };\n\n    public static bool possible(int? count) => count is int and > 0;\n}\n";
+
+    let first =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Shapes.php", SHAPES)]);
+    let errors: Vec<String> = first
+        .iter()
+        .filter(|issue| issue.level == Level::Error)
+        .map(|issue| {
+            let span = issue.primary_span().expect("an error has a primary span");
+            format!(
+                "{} {} {}",
+                &sharp[span.start.offset as usize..span.end.offset as usize],
+                issue.code.as_deref().unwrap_or(""),
+                issue.message
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        errors,
+        [
+            "Square impossible-type-comparison This pattern never matches the value it tests.",
+            "string impossible-type-comparison Impossible type assertion: `$count` of type `int` can never be `string`.",
+            "\"none\" impossible-type-comparison This pattern never matches the value it tests.",
+            "Square impossible-type-comparison This pattern never matches the value it tests.",
+            "Square impossible-type-comparison This pattern never matches the value it tests.",
+            "\"none\" impossible-type-comparison This pattern never matches the value it tests.",
+        ]
+    );
+}
+
+/// `is` and `match` check an `Any?`, so the value they narrow is used as its checked type, spec section 24.
+#[test]
+fn is_and_match_check_an_any_before_its_use() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public int size(Any? value)\n    {\n        if (value is string text) {\n            return strlen(text);\n        }\n        return match (value) {\n            int count => count + 1,\n            null => 0,\n            default => -1,\n        };\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Inbox.sharp", sharp), &[("src/Demo/Source.php", SOURCE)]), Vec::<String>::new());
+}
+
 /// An override of a plain PHP property of PHP's `mixed`, written or in `@var`, or of an untyped one, writes `Any?`, or
 /// `Any`, which lowers to the same `mixed`, spec sections 6.1 and 24.
 #[test]
@@ -1564,6 +1655,128 @@ fn a_let_local_that_starts_as_any_keeps_whether_it_takes_null() {
         issues(("src/Demo/Inbox.sharp", sharp), &[("src/Demo/Source.php", SOURCE)]),
         ["12:16 invalid-local-assignment-value"]
     );
+}
+
+const TICKETS: &str = "<?php\n\nnamespace Lib;\n\nenum Status\n{\n    case Open;\n    case Closed;\n    case Archived;\n}\n\nfinal class Ticket\n{\n    public function status(): Status\n    {\n        return Status::Open;\n    }\n}\n\nfinal class Limits\n{\n    public const LOW = 1;\n    public const HIGH = 2;\n}\n";
+
+/// Each error of `sharp` as its primary span's text, its code and its message.
+fn written_errors(sharp: &'static str, issues: &[Issue]) -> Vec<String> {
+    issues
+        .iter()
+        .filter(|issue| issue.level == Level::Error)
+        .map(|issue| {
+            let span = issue.primary_span().expect("an error has a primary span");
+            format!(
+                "{} {} {}",
+                &sharp[span.start.offset as usize..span.end.offset as usize],
+                issue.code.as_deref().unwrap_or(""),
+                issue.message
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_match_without_default_names_the_enum_cases_it_misses() {
+    let sharp = "namespace Demo;\n\nimport Lib.Limits;\nimport Lib.Status;\n\nclass Report\n{\n    public static string label(Status status) => match (status) {\n        Status.Open => \"open\",\n        Status.Closed => \"closed\",\n    };\n\n    public static void close(Status? status)\n    {\n        match (status) {\n            Status.Open when status !== null => {},\n            Status.Closed => {},\n        }\n    }\n\n    public static int level(int count) => match (count) {\n        Limits.LOW => 1,\n        Limits.HIGH => 2,\n    };\n}\n";
+
+    let issues =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Status.php", TICKETS)]);
+
+    assert_eq!(
+        written_errors(sharp, &issues),
+        [
+            "match match-not-exhaustive This `match` misses `Status.Archived`.",
+            "match match-not-exhaustive This `match` misses `Status.Open`, `Status.Archived` and `null`.",
+            "match match-not-exhaustive A `match` needs a `default` arm.",
+        ]
+    );
+}
+
+#[test]
+fn a_match_without_default_that_handles_every_enum_case_reports_nothing() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\nimport Lib.Ticket;\n\nclass Report\n{\n    public static string label(Status status) => match (status) {\n        Status.Open => \"open\",\n        Status.Closed or Status.Archived => \"done\",\n    };\n\n    public static void close(Status? status)\n    {\n        match (status) {\n            Status.Open => {},\n            Status.Closed or Status.Archived => {},\n            null => {},\n        }\n    }\n\n    public static string state(Ticket ticket) => match (ticket.status()) {\n        Status.Open => \"open\",\n        Status.Closed or Status.Archived => \"done\",\n    };\n}\n";
+
+    let issues =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Status.php", TICKETS)]);
+    let reported: Vec<&str> = issues
+        .iter()
+        .filter(|issue| matches!(issue.level, Level::Error | Level::Warning))
+        .map(|issue| issue.message.as_str())
+        .collect();
+
+    assert_eq!(reported, Vec::<&str>::new());
+}
+
+/// An enum declared in PHP# has its cases counted as a PHP enum's, inside its own methods too.
+#[test]
+fn a_match_without_default_over_a_sharp_enum_names_the_cases_it_misses() {
+    let sharp = "namespace Demo;\n\npublic enum Stage : string\n{\n    case Open = \"o\";\n    case Paid = \"p\";\n    case Closed = \"c\";\n\n    public string label() => match (this) {\n        Stage.Open => \"open\",\n        Stage.Paid or Stage.Closed => \"done\",\n    };\n}\n\nclass Orders\n{\n    public static string missing(Stage stage) => match (stage) {\n        Stage.Open => \"open\",\n        Stage.Paid => \"paid\",\n    };\n}\n";
+
+    let issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Orders.sharp", sharp), &[]);
+
+    assert_eq!(written_errors(sharp, &issues), ["match match-not-exhaustive This `match` misses `Stage.Closed`."]);
+}
+
+/// Only the last arm of a `match` takes what the arms before it leave, as `default` does. An arm before it that is
+/// always true leaves nothing for the arms after it.
+#[test]
+fn an_arm_that_is_always_true_before_the_last_is_reported_with_the_arms_it_hides() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Report\n{\n    public static string label(Status status) => match (status) {\n        Status.Open or Status.Closed or Status.Archived => \"any\",\n        Status.Open => \"open\",\n    };\n\n    public static string kind(Status status) => match (status) {\n        Status s => \"any\",\n        Status.Closed => \"closed\",\n        default => \"none\",\n    };\n}\n";
+
+    let issues =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Status.php", TICKETS)]);
+    let warnings: Vec<String> = issues
+        .iter()
+        .filter(|issue| matches!(issue.level, Level::Error | Level::Warning))
+        .map(|issue| {
+            let span = issue.primary_span().expect("a report has a primary span");
+            format!(
+                "{} {}",
+                &sharp[span.start.offset as usize..span.end.offset as usize],
+                issue.code.as_deref().unwrap_or("")
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        warnings,
+        [
+            "Status.Open or Status.Closed or Status.Archived => \"any\" match-arm-always-true",
+            "Status.Open => \"open\" unreachable-match-arm",
+            "Status s => \"any\" match-arm-always-true",
+            "Status.Closed => \"closed\" unreachable-match-arm",
+        ]
+    );
+    assert!(
+        issues.iter().any(|issue| issue.code.as_deref() == Some("redundant-logical-operation")),
+        "the arm before the last keeps its redundancy report: {issues:?}"
+    );
+}
+
+#[test]
+fn a_pattern_the_parser_refuses_reports_only_its_parse_error() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static void count(int? count)\n    {\n        match (count) {\n            [int first] => {},\n            Shape.Circle(radius) => {},\n            default => {},\n        }\n    }\n}\n";
+
+    let issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[]);
+    let messages: Vec<&str> = issues.iter().map(|issue| issue.message.as_str()).collect();
+
+    assert_eq!(
+        messages,
+        ["A list pattern is not supported yet in PHP#.", "An enum case pattern is not supported yet in PHP#."]
+    );
+}
+
+#[test]
+fn a_when_condition_that_is_not_bool_is_an_invalid_operand_named_when() {
+    let sharp = "namespace Demo;\n\nimport Lib.Shape;\nimport Lib.Circle;\n\nclass Report\n{\n    public static string round(Shape shape) => match (shape) {\n        Circle c when c.radius => \"round\",\n        default => \"other\",\n    };\n}\n";
+
+    let first =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Shapes.php", SHAPES)])
+            .remove(0);
+
+    assert_eq!(first.code.as_deref(), Some("invalid-operand"));
+    assert_eq!(first.message, "`when` takes a `bool`, but this is `float`.");
 }
 
 const PRICES: &str = "<?php\n\nnamespace Lib;\n\nfinal class Prices\n{\n    /** @return array<string, int> */\n    public static function named(): array\n    {\n        return ['a' => 1];\n    }\n\n    /** @return iterable<int, int> */\n    public static function stream(): iterable\n    {\n        yield 1;\n    }\n\n    /** @return list<int> */\n    public static function listed(): array\n    {\n        return [1, 2];\n    }\n}\n";
@@ -1976,9 +2189,9 @@ fn an_enum_header_reports_what_implements_reports_in_php() {
 /// and a lambda over a list of cases takes the enum as its element type.
 #[test]
 fn an_enum_static_method_is_a_function_value_and_a_lambda_takes_its_cases_from_a_list() {
-    let sharp = "namespace Demo;\n\nenum Status : string\n{\n    case Active = \"a\";\n\n    public static Status fallback() => Status.Active;\n}\n\nclass Report\n{\n    public int run(List<string> codes)\n    {\n        const Function<Status(string)> parse = Status.from;\n        const Function<Status()> fallback = Status.fallback;\n        List<Status> found = codes.map(parse);\n        List<Status> active = found.filter(s => s === Status.Active || s === fallback());\n        List<int> wrong = codes.map(Status.from);\n        return count(active) + count(wrong);\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nenum Status : string\n{\n    case Active = \"a\";\n    case Paused = \"p\";\n\n    public static Status fallback() => Status.Active;\n}\n\nclass Report\n{\n    public int run(List<string> codes)\n    {\n        const Function<Status(string)> parse = Status.from;\n        const Function<Status()> fallback = Status.fallback;\n        List<Status> found = codes.map(parse);\n        List<Status> active = found.filter(s => s === Status.Active || s === fallback());\n        List<int> wrong = codes.map(Status.from);\n        return count(active) + count(wrong);\n    }\n}\n";
 
-    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), ["18:27 invalid-local-assignment-value"]);
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), ["19:27 invalid-local-assignment-value"]);
 }
 
 /// A constant expression may be a list or map literal, which a backed enum's case value cannot be, so the analyzer
@@ -2288,4 +2501,222 @@ fn a_compound_assignment_or_increment_on_an_index_names_the_form_that_compiles()
     assert_eq!(issues.len(), 4, "{issues:?}");
     assert!(helps[..2].iter().all(|help| help.contains("m[k] = (m[k] ?? 0) + 1")), "{helps:?}");
     assert!(helps[2..].iter().all(|help| help.contains("list.set(i, list[i] + 1)")), "{helps:?}");
+}
+
+const STATUS: &str = "<?php\n\nnamespace Lib;\n\nenum Status: string\n{\n    case Active = 'active';\n    case Closed = 'closed';\n}\n\nenum Size: int\n{\n    case Small = 1;\n}\n\nenum Pure\n{\n    case One;\n}\n\nfinal class Line\n{\n}\n";
+
+/// Spec section 12 keys a `Map` by a backed enum, so every key position takes the case: an index write, `??`,
+/// `??=`, a nested write, a literal key and the key of `get` and `delete`.
+#[test]
+fn a_map_keyed_by_a_backed_enum_takes_the_case_in_every_key_position() {
+    let sharp = "namespace Demo;\n\nimport Lib.Size;\nimport Lib.Status;\n\nclass Tally\n{\n    private Map<Status, int> counts = [:];\n    private Map<Status, int> seeded = [Status.Active: 0];\n\n    public int count(Status status, Size size)\n    {\n        this.counts[status] = (this.counts[status] ?? 0) + 1;\n        this.counts[status] ??= 0;\n        Map<Status, Map<Size, int>> nested = [:];\n        nested[status] = [:];\n        nested[status][size] = 1;\n        Map<Status, int> built = [Status.Active: 1, status: 2];\n        built.delete(Status.Closed);\n        return (this.counts[status] ?? 0) + (built.get(status) ?? 0) + (this.seeded.get(status) ?? 0) + (nested[status][size] ?? 0);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]), Vec::<String>::new());
+}
+
+/// Inside PHP# a `Map<Status, int>` is keyed by `Status` alone, so its backing values, another enum and a
+/// `Map<string, int>` are refused where it takes a key. The runtime never meets a key the typed loop cannot read
+/// back as `Status`.
+#[test]
+fn a_map_keyed_by_a_backed_enum_takes_exactly_the_enum_as_a_key() {
+    let sharp = "namespace Demo;\n\nimport Lib.Size;\nimport Lib.Status;\n\nclass Tally\n{\n    public int wrong(Map<Status, int> counts, Map<string, int> named, Size size)\n    {\n        counts[\"active\"] = 1;\n        counts[size] = 2;\n        Map<Status, int> built = [\"active\": 1];\n        Map<Status, int> narrowed = named;\n        return (built.get(Status.Active) ?? 0) + (narrowed.get(Status.Active) ?? 0) + (counts.get(\"active\") ?? 0);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
+        [
+            "10:16 mismatched-array-index",
+            "11:16 invalid-array-index",
+            "12:34 invalid-local-assignment-value",
+            "13:37 invalid-local-assignment-value",
+            "14:99 invalid-argument"
+        ]
+    );
+}
+
+/// Plain PHP receives a `Map<Status, int>`'s backing values, so where the `Map` meets a plain PHP array it is an
+/// `array<string, int>`: an `array` parameter, an `iterable`, `count`, and a template such as `array_keys`' `K`.
+#[test]
+fn a_map_keyed_by_a_backed_enum_meets_plain_php_as_an_array_of_its_backing_values() {
+    let sharp = "namespace Demo;\n\nimport Lib.Sink;\nimport Lib.Status;\n\nclass Tally\n{\n    public int total(Map<Status, int> counts, Status status)\n    {\n        List<string> keys = array_keys(counts);\n        Map<string, int> named = counts;\n        return count(counts) + Sink.byName(counts) + Sink.plain(counts) + Sink.each(counts) + count(keys) + count(named) + (array_key_exists(status.value, counts) ? 1 : 0);\n    }\n}\n";
+    let sink = "<?php\n\nnamespace Lib;\n\nfinal class Sink\n{\n    /** @param array<string, int> $counts */\n    public static function byName(array $counts): int\n    {\n        return count($counts);\n    }\n\n    public static function plain(array $counts): int\n    {\n        return count($counts);\n    }\n\n    /** @param iterable<string, int> $counts */\n    public static function each(iterable $counts): int\n    {\n        return iterator_count($counts);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS), ("src/Lib/Sink.php", sink)]),
+        Vec::<String>::new()
+    );
+}
+
+/// Spec section 11 checks a value from plain PHP where it enters PHP#, so a plain PHP caller passes the backing
+/// values where PHP# takes a `Map<Status, int>`, and only those. That border check does not look inside a
+/// collection yet, so a key that is no case fails when PHP# reads it back as `Status`.
+#[test]
+fn a_plain_php_caller_passes_the_backing_values_where_php_sharp_takes_a_map_keyed_by_a_backed_enum() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Tally\n{\n    public int total(Map<Status, int> counts)\n    {\n        return count(counts);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Caller\n{\n    public function run(Tally $tally): int\n    {\n        return $tally->total(['active' => 1]) + $tally->total([1 => 1]);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Caller.php", php), &[("src/Demo/Tally.sharp", sharp), ("src/Lib/Status.php", STATUS)]),
+        ["9:63 possibly-invalid-argument"]
+    );
+}
+
+/// A plain PHP docblock may write `array<Status, int>`, a type PHP arrays cannot hold. It is the backing values'
+/// array, as a PHP# `Map` keyed by `Status` is where it meets plain PHP, so it agrees with the native `array`.
+#[test]
+fn a_php_docblock_array_keyed_by_a_backed_enum_agrees_with_the_native_array() {
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Status;\n\nfinal class Report\n{\n    /** @return array<Status, int> */\n    public static function counts(): array\n    {\n        return [];\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[("src/Lib/Status.php", STATUS)]), Vec::<String>::new());
+}
+
+/// Spec section 12 keys a `Map` by an `int`, a `string` or a type with an `int` or `string` backing value, so a
+/// class or a pure enum is refused where a `Map` type is written.
+#[test]
+fn a_map_key_type_without_a_backing_value_is_an_error() {
+    let sharp = "namespace Demo;\n\nimport Lib.Line;\nimport Lib.Pure;\n\nclass Tally\n{\n    public Map<Line, int> lines = [:];\n\n    public Map<Pure, int> count(Map<Line, int> counts)\n    {\n        Map<Pure, int> local = [:];\n        return local;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
+        [
+            "8:12 template-constraint-violation",
+            "10:12 template-constraint-violation",
+            "10:33 template-constraint-violation",
+            "12:9 template-constraint-violation"
+        ]
+    );
+}
+
+/// A PHP# field's written type is checked where it is written, as a parameter's is, though its name has no `$`.
+#[test]
+fn a_field_type_naming_a_missing_class_is_reported_as_a_parameter_type_is() {
+    let sharp = "namespace Demo;\n\nclass Tally\n{\n    public Missing? item = null;\n\n    public int count(Missing? other)\n    {\n        return 0;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tally.sharp", sharp), &[]),
+        ["5:12 non-existent-class-like", "7:22 non-existent-class-like"]
+    );
+}
+
+/// `keys()` and `entries()` would read a backed enum key back as its backing value, so a `Map` has neither until
+/// the loop's written key type reads it back as the case.
+#[test]
+fn a_map_has_no_keys_or_entries_method() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Tally\n{\n    public void read(Map<Status, int> counts)\n    {\n        counts.keys();\n        counts.entries();\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
+        ["9:16 non-existent-method", "10:16 non-existent-method"]
+    );
+}
+
+/// A loop over a `Map` keyed by a backed enum reads each key back as its case, through the key type the loop writes.
+/// The value's type may be written or left out, and a loop over the values alone needs no key type.
+#[test]
+fn a_loop_over_a_map_keyed_by_a_backed_enum_reads_the_key_as_the_case_it_writes() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Tally\n{\n    public int read(Map<Status, int> counts)\n    {\n        let total = 0;\n        for (const [Status status, int n] of counts) {\n            total = total + n + this.weight(status);\n        }\n        for (const [Status status, n] of counts) {\n            total = total + n + this.weight(status);\n        }\n        for (const int n of counts) {\n            total = total + n;\n        }\n\n        return total;\n    }\n\n    private int weight(Status status)\n    {\n        return 1;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]), Vec::<String>::new());
+}
+
+/// The engine holds a backed enum key as its backing value, and the loop reads it back as the case only through a
+/// written key type that names the enum. A written type that cannot hold the case is refused once, as a typed local's.
+#[test]
+fn a_loop_over_a_map_keyed_by_a_backed_enum_needs_the_key_type_written() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Tally\n{\n    public void read(Map<Status, int> counts)\n    {\n        for (const [status, n] of counts) {\n        }\n        for (const [Status? status, int n] of counts) {\n        }\n        for (const [string status, int n] of counts) {\n        }\n        for (const [Status status, string n] of counts) {\n        }\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
+        [
+            "9:21 invalid-foreach-key",
+            "11:21 invalid-foreach-key",
+            "13:28 invalid-local-assignment-value",
+            "15:43 invalid-local-assignment-value",
+        ]
+    );
+}
+
+/// The message writes the loop over again with the enum's name, the value's type and the collection.
+#[test]
+fn a_backed_key_without_its_type_names_the_loop_that_compiles() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Tally\n{\n    public void read(Map<Status, int> counts)\n    {\n        for (const [status, n] of counts) {\n        }\n    }\n}\n";
+
+    let issue =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)])
+            .remove(0);
+
+    assert_eq!(issue.message, "A `Status` key needs its type written: `for (const [Status status, int n] of counts)`.");
+}
+
+/// A written key or value type checks as a typed local's does. Spec section 12 reads a `Map<string, V>` key back as a
+/// `string`, even the key `"5"` PHP stores as an int, so a key written `string` reads back through `(string)`. An
+/// unwritten key stays `int|string` until typed compilation casts it, and so does a key written `string?`, which
+/// nothing casts.
+#[test]
+fn a_written_loop_variable_type_checks_as_a_typed_local_does() {
+    let sharp = "namespace Demo;\n\nimport Lib.Line;\n\nclass Tally\n{\n    public void read(Map<string, int> stock, List<Line> lines)\n    {\n        for (const [int|string sku, int n] of stock) {\n        }\n        for (const [string sku, int n] of stock) {\n            this.reserve(sku);\n        }\n        for (const [sku, n] of stock) {\n            this.reserve(sku);\n        }\n        for (const [string? sku, int n] of stock) {\n        }\n        for (const Line line of lines) {\n        }\n        for (const int line of lines) {\n        }\n    }\n\n    private void reserve(string sku)\n    {\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
+        [
+            "15:26 possibly-invalid-argument",
+            "17:29 invalid-local-assignment-value",
+            "21:24 invalid-local-assignment-value",
+        ]
+    );
+}
+
+/// A `List` spread appends, so a literal of values and `List` spreads is a `List`, a plain PHP `list<int>` included.
+#[test]
+fn a_list_spread_appends_into_a_list_literal() {
+    let sharp = "namespace Demo;\n\nimport Lib.Prices;\n\nclass Report\n{\n    public List<int> join(List<int> open, List<int> closed)\n    {\n        List<int> all = [...open, 0, ...closed, ...Prices.listed()];\n        List<string> names = [...open];\n        return all;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Prices.php", PRICES)]),
+        ["10:30 invalid-local-assignment-value"]
+    );
+}
+
+/// A `Map` spread copies the entries with their keys, which needs the literal's type when it runs, so it waits for
+/// typed compilation. A plain PHP `array<string, int>` is a `Map`.
+#[test]
+fn a_map_spread_is_not_supported_yet() {
+    let sharp = "namespace Demo;\n\nimport Lib.Prices;\n\nclass Report\n{\n    public void merge(Map<string, int> defaults, Map<string, int> overrides)\n    {\n        const merged = [...defaults, ...overrides];\n        const rooted = [...defaults, \"root\": 0];\n        const named = [...Prices.named()];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Prices.php", PRICES)]),
+        ["9:25 not-supported-yet", "10:25 not-supported-yet", "11:24 not-supported-yet"]
+    );
+}
+
+/// A literal is one collection, so a `List`'s values and a `Map`'s entries never share one.
+#[test]
+fn a_list_and_a_map_in_one_literal_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public void mix(List<int> open, Map<string, int> defaults)\n    {\n        const keyed = [...open, \"root\": 0];\n        const both = [...open, ...defaults];\n        const valued = [...defaults, 5];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[]),
+        ["7:33 invalid-array-element", "8:32 invalid-array-element", "9:38 invalid-array-element"]
+    );
+    assert_eq!(
+        messages(("src/Demo/Report.sharp", sharp), &[])[0],
+        "A literal cannot hold a `List`'s values and a `Map`'s entries together."
+    );
+
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    /**\n     * @param list<int> $open\n     * @param array<string, int> $defaults\n     */\n    public function mix(array $open, array $defaults): array\n    {\n        return [[...$open, 'root' => 0], [...$open, ...$defaults], [...$defaults, 5]];\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
+}
+
+/// Only a `List` or a `Map` spreads into a literal. A value that may not be iterable keeps PHP's own error alone.
+#[test]
+fn a_spread_of_a_value_that_is_neither_a_list_nor_a_map_is_an_error() {
+    let sharp = "namespace Demo;\n\nimport Lib.Prices;\n\nclass Report\n{\n    public void spread(int number)\n    {\n        const streamed = [...Prices.stream()];\n        const numbered = [...number];\n    }\n}\n";
+
+    assert_eq!(
+        messages(("src/Demo/Report.sharp", sharp), &[("src/Lib/Prices.php", PRICES)]),
+        [
+            "Cannot spread a value of type `iterable<int, int>`: PHP# spreads a `List` or a `Map`.",
+            "Cannot use spread operator on non-iterable type `int`.",
+        ]
+    );
 }

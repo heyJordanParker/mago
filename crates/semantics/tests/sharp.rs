@@ -1651,6 +1651,21 @@ fn a_typed_for_counter_takes_the_types_of_the_slice_but_not_void() {
 }
 
 #[test]
+fn a_typed_loop_variable_takes_the_types_of_the_slice_but_not_void() {
+    let code = leak(method(
+        "        for (const [Status status, int n] of Store.counts()) {\n        }\n        for (const Map<string, List<int>> group of Store.groups()) {\n        }\n        for (const void step of Store.values()) {\n        }\n        for (const iterable items of Store.values()) {\n        }\n        return 1;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "11:20 A local cannot be `void`: `void` is only a return type.",
+            "13:20 This type is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
 fn a_nullable_void_reports_only_the_php_error() {
     let code = "class Report\n{\n    public void? run()\n    {\n    }\n}\n";
 
@@ -1728,7 +1743,10 @@ fn a_type_argument_takes_a_question_mark_in_a_field() {
 fn an_interface_method_takes_and_returns_list_and_map_types() {
     let code = "interface Grouped\n{\n    List<int> sizes(Map<string, List<int>> groups);\n\n    Map<float, int> rounded();\n}\n";
 
-    assert_eq!(issues(code), ["5:9 A `Map`'s keys are `int` or `string`, as a PHP array's keys are."]);
+    assert_eq!(
+        issues(code),
+        ["5:9 A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value."]
+    );
 }
 
 #[test]
@@ -1771,17 +1789,17 @@ fn a_type_with_type_arguments_other_than_list_or_map_is_not_supported_yet() {
     );
 }
 
+/// A named key type may have a backing value, which only the analyzer knows, so it passes here.
 #[test]
-fn a_map_key_that_is_not_int_or_string_is_an_error() {
+fn a_map_key_that_is_not_int_string_or_a_named_type_is_an_error() {
     let code = "class Report\n{\n    public Map<float, int> run(Map<Line, int> a, Map<int?, int> b, Map<string, Map<bool, int>> c)\n    {\n        return [:];\n    }\n}\n";
 
     assert_eq!(
         issues(code),
         [
-            "3:16 A `Map`'s keys are `int` or `string`, as a PHP array's keys are.",
-            "3:36 A `Map`'s keys are `int` or `string`, as a PHP array's keys are.",
-            "3:54 A `Map`'s keys are `int` or `string`, as a PHP array's keys are.",
-            "3:84 A `Map`'s keys are `int` or `string`, as a PHP array's keys are.",
+            "3:16 A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value.",
+            "3:54 A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value.",
+            "3:84 A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value.",
         ]
     );
 }
@@ -1789,18 +1807,25 @@ fn a_map_key_that_is_not_int_or_string_is_an_error() {
 #[test]
 fn a_literal_element_outside_the_slice_is_not_supported_yet() {
     let code = leak(method(
-        "        const spread = [...extra];\n        const reference = [&extra];\n        const missing = [, extra];\n        let list = [1];\n        list[] = 2;\n        return 1;\n",
+        "        const reference = [&extra];\n        const missing = [, extra];\n        let list = [1];\n        list[] = 2;\n        return 1;\n",
     ));
 
     assert_eq!(
         issues(code),
         [
-            "7:25 This construct is not supported yet in PHP#.",
-            "8:28 This operator is not supported yet in PHP#.",
-            "9:26 This construct is not supported yet in PHP#.",
-            "11:9 This write target is not supported yet in PHP#.",
+            "7:28 This operator is not supported yet in PHP#.",
+            "8:26 This construct is not supported yet in PHP#.",
+            "10:9 This write target is not supported yet in PHP#.",
         ]
     );
+}
+
+/// The analyzer decides whether a spread is a `List`'s or a `Map`'s, since the spread value's type does.
+#[test]
+fn a_spread_in_a_literal_is_in_the_slice() {
+    let code = "class Report\n{\n    private List<int> all = [...Defaults.SMALL, 3, ...Defaults.LARGE];\n\n    public List<int> run(List<int> extra)\n    {\n        const all = [...extra, 1, ...this.all];\n        return all;\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
 }
 
 #[test]
@@ -2173,6 +2198,106 @@ fn an_enum_method_takes_collection_and_function_types_and_holds_lambdas_as_a_cla
     let code = "namespace App.Tenant;\n\nenum Status : string\n{\n    case Active = \"a\";\n\n    public static Map<string, Status> byValue(List<Status> all)\n    {\n        const Function<string(Status)> key = s => s.value;\n        return all.associateBy(key);\n    }\n\n    public List<Function<bool()>> checks(List<Status> all)\n    {\n        List<Function<bool()>> checks = [];\n        for (let other of all) {\n            other = Status.Active;\n            checks.add(() => other === this);\n        }\n        return checks;\n    }\n}\n";
 
     assert_eq!(issues(code), ["18:30 This capture of a loop variable that changes is not supported yet in PHP#."]);
+}
+
+#[test]
+fn is_as_and_match_with_their_patterns_are_in_the_slice() {
+    let code = leak(method(
+        "        if (extra is int count && count > 0) {\n            return count;\n        }\n        const small = extra is >= 1 and < 10 or 100 ? 1 : 0;\n        const report = this as Report;\n        const counted = this is { count: int total } && total > 0;\n        match (extra) {\n            0 => {\n                return 0;\n            },\n            int n when n < 0 => this.run(n),\n            default => {},\n        }\n        return match (extra) {\n            < 0 => -1,\n            not (0 or 1) => 2,\n            default => small,\n        };\n",
+    ));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_match_without_a_default_arm_is_an_error() {
+    let code =
+        leak(method("        match (extra) {\n            0 => this.run(1),\n        }\n        return extra;\n"));
+
+    assert_eq!(issues(code), ["7:9 A `match` needs a `default` arm."]);
+}
+
+#[test]
+fn a_match_whose_arms_name_class_values_leaves_its_default_to_the_analyzer() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Status;\n\nclass Report\n{\n    public string label(Status? status)\n    {\n        match (status) {\n            Status.Open when status !== null => {},\n            Status.Closed or null => {},\n        }\n        return match (status) {\n            Status.Open => \"open\",\n            0 => \"zero\",\n        };\n    }\n}\n";
+
+    assert_eq!(issues(code), ["13:16 A `match` needs a `default` arm."]);
+}
+
+#[test]
+fn a_second_default_arm_or_a_block_arm_in_a_match_that_gives_a_value_is_an_error() {
+    let code = leak(method(
+        "        const a = match (extra) {\n            default => 1,\n            default => 2,\n        };\n        return match (extra) {\n            0 => { return 1; },\n            default => 2,\n        };\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "9:13 A `match` has one `default` arm.",
+            "12:18 A block arm is only in a `match` statement: a `match` that gives a value gives an expression in each arm.",
+        ]
+    );
+}
+
+#[test]
+fn a_nullable_type_pattern_or_as_to_a_nullable_type_is_an_error() {
+    let code =
+        leak(method("        const a = extra is int? n;\n        const b = extra as int?;\n        return extra;\n"));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:28 A type pattern is never nullable: null never matches a type.",
+            "8:28 `as` converts to a type that is not nullable or `void`.",
+        ]
+    );
+}
+
+#[test]
+fn a_nullable_type_pattern_names_the_null_check_to_write() {
+    let code = leak(method("        const a = extra is int? n;\n        return extra;\n"));
+
+    let help: Vec<_> = check("src/Report.sharp", code).into_iter().filter_map(|issue| issue.help).collect();
+    assert_eq!(help, ["Test for null with `x == null`, or join both with `or`, as in `x is int or null`."]);
+}
+
+#[test]
+fn a_pattern_variable_under_or_or_not_is_an_error_but_under_the_not_that_starts_is() {
+    let code = leak(method(
+        "        const a = extra is int x or string y;\n        const b = extra is not (int z and > 0);\n        const c = match (extra) {\n            not int w => 1,\n            default => 0,\n        };\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:32 `x` is declared under `or` or `not`, where the pattern can match without a value for it.",
+            "7:44 `y` is declared under `or` or `not`, where the pattern can match without a value for it.",
+            "10:21 `w` is declared under `or` or `not`, where the pattern can match without a value for it.",
+        ]
+    );
+}
+
+#[test]
+fn a_pattern_variable_used_where_its_test_does_not_hold_names_its_test() {
+    let code = leak(method(
+        "        if (extra is int count) {\n        }\n        if (extra is not int other) {\n            return other;\n        }\n        const a = match (extra) {\n            int n => n,\n            default => n,\n        };\n        return count;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "10:20 `other` exists only where `extra is not int other` is false.",
+            "14:24 `n` exists only where `int n` is true.",
+            "16:16 `count` exists only where `extra is int count` is true.",
+        ]
+    );
+}
+
+#[test]
+fn a_pattern_variable_named_this_is_an_error() {
+    let code = leak(method("        if (extra is int this) {\n        }\n        return extra;\n"));
+
+    assert_eq!(issues(code), ["7:26 Cannot name a pattern variable `this`: `this` is the object the method runs on."]);
 }
 
 #[test]
