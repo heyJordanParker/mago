@@ -45,6 +45,7 @@ use mago_codex::ttype::get_never;
 use mago_codex::ttype::get_void;
 use mago_codex::ttype::union::TUnion;
 use mago_codex::ttype::wrap_atomic;
+use mago_codex::visibility::Visibility;
 use mago_names::binding::php_variable_name;
 use mago_php_version::feature::Feature;
 use mago_reporting::Annotation;
@@ -76,6 +77,7 @@ use crate::statement::r#static::infer_static_local_types;
 use crate::utils::expression::get_variable_id;
 
 pub mod function;
+pub mod rejected_nullable_parameter;
 pub mod unused_parameter;
 
 #[derive(Debug, Clone, Copy)]
@@ -1079,7 +1081,10 @@ fn check_return_type_width<'ctx, A>(
 ) where
     A: Arena,
 {
-    if !context.settings.find_overly_wide_return_types {
+    // Spec section 14.4 makes a `?` on a PHP# method that never returns null an error, so a PHP# file checks the
+    // `null` branch even when the setting is off.
+    let null_branch_only = !context.settings.find_overly_wide_return_types;
+    if null_branch_only && !context.dialect.is_sharp() {
         return;
     }
 
@@ -1094,12 +1099,22 @@ fn check_return_type_width<'ctx, A>(
         return;
     };
 
-    let is_overriding_method = function_like_metadata.kind.is_method()
-        && block_context.scope.get_class_like_name().is_some_and(|class_name| {
-            context.codebase.method_is_overriding(class_name.as_bytes(), function_like_metadata.name.as_bytes())
-        });
+    // A PHP# method keeps a `?` a subclass's override may need. A PHP method keeps Mago's rule, which skips the
+    // override itself.
+    let keeps_declared_type = if context.dialect.is_sharp() {
+        function_like_metadata
+            .method_metadata
+            .as_ref()
+            .is_some_and(|method| !method.is_final && method.visibility != Visibility::Private)
+            && block_context.scope.get_class_like().is_some_and(|class_like| !class_like.flags.is_final())
+    } else {
+        function_like_metadata.kind.is_method()
+            && block_context.scope.get_class_like_name().is_some_and(|class_name| {
+                context.codebase.method_is_overriding(class_name.as_bytes(), function_like_metadata.name.as_bytes())
+            })
+    };
 
-    if is_overriding_method {
+    if keeps_declared_type {
         return;
     }
 
@@ -1115,7 +1130,14 @@ fn check_return_type_width<'ctx, A>(
         return;
     }
 
-    check_return_type_metadata_width(context, block_context, artifacts, function_like_metadata, return_type_metadata);
+    check_return_type_metadata_width(
+        context,
+        block_context,
+        artifacts,
+        function_like_metadata,
+        return_type_metadata,
+        null_branch_only,
+    );
 
     // The effective (docblock) type and the native hint are separate declarations
     // with separate source spans, so each overly-wide one needs its own fix. When
@@ -1131,6 +1153,7 @@ fn check_return_type_width<'ctx, A>(
             artifacts,
             function_like_metadata,
             native_return_type_metadata,
+            null_branch_only,
         );
     }
 }
@@ -1141,6 +1164,7 @@ fn check_return_type_metadata_width<'ctx, A>(
     artifacts: &mut AnalysisArtifacts,
     function_like_metadata: &'ctx FunctionLikeMetadata,
     return_type_metadata: &TypeMetadata,
+    null_branch_only: bool,
 ) where
     A: Arena,
 {
@@ -1199,6 +1223,7 @@ fn check_return_type_metadata_width<'ctx, A>(
         .types
         .iter()
         .filter(|declared_atomic| !any_inferred_matches(declared_atomic))
+        .filter(|declared_atomic| !null_branch_only || declared_atomic.is_null())
         .collect::<Vec<_>>();
     if unused_atomics.is_empty() {
         return;
@@ -1233,6 +1258,10 @@ fn check_return_type_metadata_width<'ctx, A>(
         issue.with_help(format!("Remove `{unused_list}` from the return type, or add a branch that returns it."))
     };
 
+    if unused_atomics.iter().any(|unused_atomic| unused_atomic.is_null()) {
+        issue = context.as_null_check_error(issue);
+    }
+
     context.collector.propose_with_code(IssueCode::OverlyWideReturnType, issue, |edits| {
         if let Some(narrowed_type_text) = narrowed_type_text {
             edits.push(
@@ -1263,17 +1292,21 @@ where
     let end = return_span.end_offset() as usize;
     let source_text = std::str::from_utf8(context.source_file.contents.get(start..end)?).ok()?;
 
-    let (mut leading_nullable, rest) = match source_text.strip_prefix('?') {
-        Some(rest) => (true, rest),
-        None => (false, source_text),
+    // PHP writes a nullable type `?int`, and PHP# writes it `int?`.
+    let (mut nullable_marker, rest) = if let Some(rest) = source_text.strip_prefix('?') {
+        (Some(true), rest)
+    } else if let Some(rest) = source_text.strip_suffix('?') {
+        (Some(false), rest)
+    } else {
+        (None, source_text)
     };
 
     let mut segments = split_top_level_union_members(rest);
 
     for atomic in unused_atomics {
         if atomic.is_null() {
-            if leading_nullable {
-                leading_nullable = false;
+            if nullable_marker.is_some() {
+                nullable_marker = None;
                 continue;
             }
 
@@ -1287,16 +1320,19 @@ where
     }
 
     if segments.is_empty() {
-        // Everything but the implicit `null` from the `?` prefix was removed, so
+        // Everything but the implicit `null` from the `?` was removed, so
         // the narrowed type is spelled `null` rather than a bare, invalid `?`.
         // If nothing at all remains, give up.
-        return leading_nullable.then(|| "null".to_string());
+        return nullable_marker.map(|_| "null".to_string());
     }
 
-    let mut result = if leading_nullable { "?".to_string() } else { String::new() };
-    result.push_str(&segments.iter().map(|segment| segment.trim()).collect::<Vec<_>>().join("|"));
+    let narrowed = segments.iter().map(|segment| segment.trim()).collect::<Vec<_>>().join("|");
 
-    Some(result)
+    Some(match nullable_marker {
+        Some(true) => format!("?{narrowed}"),
+        Some(false) => format!("{narrowed}?"),
+        None => narrowed,
+    })
 }
 
 /// Whether a source-text `segment` denotes the same type as the canonical

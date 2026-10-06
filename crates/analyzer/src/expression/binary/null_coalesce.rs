@@ -104,8 +104,7 @@ where
         && !lhs_type.possibly_undefined_from_try()
         && !is_static_var
     {
-        context.collector.propose_with_code(
-            IssueCode::RedundantNullCoalesce,
+        let issue = context.as_null_check_error(
             Issue::help(
                 "Redundant null coalesce: left-hand side can never be `null` or undefined."
             )
@@ -120,12 +119,13 @@ where
                 "The null coalesce operator `??` only evaluates the right-hand side if the left-hand side is `null` or not set.",
             )
             .with_help("Consider removing the `??` operator and the right-hand side expression."),
-            |edits| {
-                edits.push(TextEdit::delete(
-                    binary.operator.span().join(binary.rhs.span())
-                ).with_safety(Safety::PotentiallyUnsafe));
-            },
         );
+
+        context.collector.propose_with_code(IssueCode::RedundantNullCoalesce, issue, |edits| {
+            edits.push(
+                TextEdit::delete(binary.operator.span().join(binary.rhs.span())).with_safety(Safety::PotentiallyUnsafe),
+            );
+        });
 
         result_type = (**lhs_type).clone();
 
