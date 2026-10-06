@@ -61,10 +61,10 @@ If you regenerate the schema in CI (for example, to validate config files progra
 
 ### Local schema with Composer
 
-When you install Mago through Composer (`carthage-software/mago`), a version-matched schema is written to `vendor/carthage-software/mago/schema.json` the first time you run `mago`. Reference it with a relative path so it always tracks the installed version — no manual URL bump when a Composer update bumps Mago:
+When you install Mago through Composer (`heyjordanparker/mago-sharp`), a version-matched schema is written to `vendor/heyjordanparker/mago-sharp/schema.json` the first time you run `mago`. Reference it with a relative path so it always tracks the installed version — no manual URL bump when a Composer update bumps Mago:
 
 ```toml
-#:schema vendor/carthage-software/mago/schema.json
+#:schema vendor/heyjordanparker/mago-sharp/schema.json
 version = "1"
 php-version = "8.3"
 ```
@@ -130,7 +130,7 @@ threads = 8
 excludes = ["build"]   # appended -> ["vendor", "node_modules", "build"]
 ```
 
-`extends` is part of the published JSON schema, so a file using it still validates against `vendor/carthage-software/mago/schema.json`.
+`extends` is part of the published JSON schema, so a file using it still validates against `vendor/heyjordanparker/mago-sharp/schema.json`.
 
 Cycles are detected via canonical-path tracking and surface a clear error rather than recursing forever. Diamond inheritance (A extends B and C, both extend D) processes D once and is fine. Layers can mix formats freely; each is parsed by its own driver and merged at a generic value level before the final document is validated against the schema.
 
