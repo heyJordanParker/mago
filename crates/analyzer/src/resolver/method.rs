@@ -26,6 +26,7 @@ use mago_codex::ttype::get_specialized_template_type;
 use mago_codex::ttype::template::GenericTemplate;
 use mago_codex::ttype::template::TemplateResult;
 use mago_codex::ttype::union::TUnion;
+use mago_names::binding::php_variable_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -42,7 +43,9 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::resolver::class_name::report_non_existent_class_like;
+use crate::resolver::property::DeclaredPropertyKind;
 use crate::resolver::property::localize_property_type;
+use crate::resolver::property::resolve_declared_property;
 use crate::resolver::selector::resolve_member_selector;
 use crate::utils::expression::analyze_member_object;
 use crate::utils::names::display_class_like_name;
@@ -50,6 +53,7 @@ use crate::utils::names::display_method_name;
 use crate::utils::names::display_sharp_collection;
 use crate::visibility::check_method_visibility;
 use crate::visibility::is_method_visible;
+use crate::visibility::is_visible_from_scope;
 
 #[derive(Debug, Clone)]
 pub struct ResolvedMethod {
@@ -106,6 +110,17 @@ pub struct UnresolvedMethod {
     pub class_type: StaticClassType,
 }
 
+/// A property whose function a PHP# call runs in place of a missing method.
+#[derive(Debug, Clone)]
+pub struct CalledProperty {
+    /// The class that declares the property.
+    pub declaring_class: Word,
+    /// The property's name, with its `$`.
+    pub property_name: Word,
+    /// The property's declared type, which the call is checked against.
+    pub property_type: TUnion,
+}
+
 /// Represents a method found in a mixin where the calling class lacks the required magic method.
 #[derive(Debug, Clone)]
 pub struct MixinWithoutMagicMethod {
@@ -146,6 +161,8 @@ pub struct MethodResolutionResult {
     pub undocumented_methods: Vec<UndocumentedMethod>,
     /// Missing methods that may be established by an external callable provider.
     pub unresolved_methods: Vec<UnresolvedMethod>,
+    /// The properties a PHP# call runs in place of a missing method, see [`resolve_called_property`].
+    pub called_properties: Vec<CalledProperty>,
     /// True if any selector was dynamic (e.g., from a generic string), making the method name unknown.
     pub has_dynamic_selector: bool,
     /// True if any resolution path involved an object with an ambiguous type (e.g., `mixed`, generic `object`).
@@ -318,6 +335,10 @@ where
                                     result.encountered_mixed |= has_incomplete_hierarchy;
                                 } else if has_incomplete_hierarchy {
                                     result.encountered_mixed = true;
+                                } else if let Some(property) =
+                                    resolve_called_property(context, block_context, classname, selector)
+                                {
+                                    result.called_properties.push(property);
                                 } else if let Some(collection) = display_sharp_collection(obj_type) {
                                     report_non_existent_collection_method(
                                         context,
@@ -409,6 +430,45 @@ where
     }
 
     Ok(result)
+}
+
+/// Spec section 14 calls a property that holds a function as a method: the PHP# call `x.priceOf(line)` of a class
+/// with no method `priceOf` runs the function its property `priceOf` holds, as `($x->priceOf)($line)` does, and
+/// reads the property where it is visible.
+fn resolve_called_property<A>(
+    context: &Context<'_, '_, A>,
+    block_context: &BlockContext<'_>,
+    classname: Word,
+    selector: &ClassLikeMemberSelector<'_>,
+) -> Option<CalledProperty>
+where
+    A: Arena,
+{
+    let ClassLikeMemberSelector::Identifier(name) = selector else {
+        return None;
+    };
+    if !context.dialect.is_sharp() {
+        return None;
+    }
+
+    let property_name = php_variable_name(name.value);
+    let scope = block_context.scope.get_class_like_name();
+    let class_metadata = context.codebase.get_class_like(classname.as_bytes())?;
+    let resolution = resolve_declared_property(context.codebase, class_metadata, property_name, true, scope)?;
+    let declaring_class = resolution.declaring_class.name;
+    if !matches!(resolution.kind, DeclaredPropertyKind::Real { .. })
+        || resolution.property.flags.is_static()
+        || !is_visible_from_scope(
+            context.codebase,
+            resolution.property.read_visibility,
+            declaring_class.as_bytes(),
+            scope,
+        )
+    {
+        return None;
+    }
+
+    Some(CalledProperty { declaring_class, property_name, property_type: resolution.declared_type(context.codebase) })
 }
 
 /// Resolves a magic call through the call an external provider says it forwards to.

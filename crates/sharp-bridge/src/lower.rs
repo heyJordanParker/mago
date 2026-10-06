@@ -560,8 +560,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     /// A built-in type is written unqualified, and a class by its full name. A `List` or `Map` is a PHP array, so its
-    /// type is `array`, as php-src's grammar builds it. A nullable type is its type with `ZEND_TYPE_NULLABLE`, as
-    /// php-src's grammar builds `?int`.
+    /// type is `array`, as php-src's grammar builds it. A function type runs as PHP's `\Closure`. A nullable type is
+    /// its type with `ZEND_TYPE_NULLABLE`, as php-src's grammar builds `?int`.
     fn hint(&mut self, hint: &Hint) -> u32 {
         match hint {
             Hint::Integer(name) | Hint::Float(name) | Hint::Bool(name) | Hint::String(name) | Hint::Void(name) => {
@@ -569,6 +569,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             }
             Hint::Identifier(class) => self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class)),
             Hint::Generic(generic) => self.node(SHARP_AST_TYPE, IS_ARRAY, self.line(generic), &[]),
+            Hint::Function(function) => self.string(ZEND_NAME_FQ, self.line(function), b"Closure"),
             Hint::Nullable(nullable) => {
                 let index = self.hint(nullable.hint);
                 self.nodes[index as usize].attr |= ZEND_TYPE_NULLABLE;

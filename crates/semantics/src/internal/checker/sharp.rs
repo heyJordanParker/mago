@@ -22,6 +22,7 @@ use mago_syntax::cst::CompositeString;
 use mago_syntax::cst::Conditional;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Continue;
+use mago_syntax::cst::DirectVariable;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::For;
 use mago_syntax::cst::ForBody;
@@ -99,7 +100,7 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   `static` computed property is not supported yet, because PHP has no hooks on a static property.
 /// - A method: `public`, `protected` or `private`, an optional `static`, parameters, a return type and a body. Its name
 ///   does not start with `__`, which PHP reserves for magic methods, and is not its class's name, compared ignoring
-///   case, which PHP# gives to the constructor.
+///   case, which PHP# gives to the constructor, nor, compared ignoring case, a property's of its class.
 /// - The constructor: a method named exactly after its class, without a return type and not `static`. A method
 ///   without a return type named otherwise is an error. A constructor parameter with an access modifier declares a
 ///   member: a field when `private` or `protected` without accessors, and a property with accessors, which follow the
@@ -108,7 +109,7 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   a constant expression: a literal, a constant, a list or map literal of them, or the operators below on them,
 ///   without `++` and `--`.
 /// - Types: `int`, `float`, `bool`, `string`, a class written by its short name, `List<T>` and `Map<TKey, TValue>`
-///   of these, and `void` as a return type. A `Map`'s key is `int` or `string`. PHP's own check reports a `void`
+///   of these, function types `Function<R(P1, P2)>` of these, and `void` as a return type, a function type's too. A `Map`'s key is `int` or `string`. PHP's own check reports a `void`
 ///   parameter. Each of them is nullable when written with `?` after it, as in `int?`, and PHP's own check reports
 ///   `void?`.
 /// - A method body: a block, or an expression body, `=> expr;`, which returns the expression, or runs it as a
@@ -150,14 +151,13 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// run on a file with a parse error, which is the one error to fix first. The constructs PHP# never has, such as `$`
 /// variables, `global` and top-level functions, keep their own errors.
 ///
-/// Five more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
+/// Four more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
 /// - `+` that may join a string with any other value, which spec section 18 makes an error, in
 ///   `analyze_arithmetic_operation`. `+` on two strings joins them.
 /// - a condition of `if`, `while`, `do … while`, `for` or `? :`, or an operand of `&&`, `||` or `!`, that is not
 ///   `bool`, which spec section 21 makes an error, in `Context::report_non_bool_condition`.
 /// - a cast of a value that is not an `int` or a `float`, which spec section 24 makes an error, in `UnaryPrefix`'s
 ///   `analyze`.
-/// - an instance method used as a value, such as `order.total` without a call, in `report_non_existent_property`.
 /// - a call that resolves to a namespaced function, in `report_namespaced_function_call`.
 #[inline]
 pub fn check_slice(node: Node<'_, '_>, context: &mut Context<'_, '_, '_>) {
@@ -270,7 +270,11 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             | Node::UseItem(_),
             File,
         ) => Some(File),
-        (Node::Class(_), File) => Some(Class),
+        (Node::Class(class), File) => {
+            report_methods_named_as_properties(class, context);
+
+            Some(Class)
+        }
         (Node::AttributeList(_), Class | Method | FieldOrProperty | Parameter) => Some(Attribute),
         (
             Node::Attribute(_)
@@ -330,6 +334,8 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
             Some(place)
         }
+        // A function type's return type may be `void`, as a method's may.
+        (Node::FunctionHint(_), FieldOrProperty | Method | Parameter | Body) => Some(Method),
         (Node::Method(method), Class) => match is_slice_method(method, context.program) {
             Ok(()) => Some(Method),
             Err((message, help)) => {
@@ -759,6 +765,47 @@ fn is_slice_property(property: &Property) -> Result<(), Box<Issue>> {
     }
 }
 
+/// Reports each method named as a property of its class, compared ignoring case as PHP finds a method. Spec section 14
+/// calls a property holding a function as `order.priceOf(line)`, and the engine calls the property only when the
+/// class has no method of that name, so one name declares one member, as in C#.
+fn report_methods_named_as_properties(class: &Class, context: &mut Context<'_, '_, '_>) {
+    let mut properties: Vec<&DirectVariable> = Vec::new();
+    for member in &class.members {
+        match member {
+            ClassLikeMember::Property(property) => properties.extend(property.variables()),
+            ClassLikeMember::Method(method) => properties.extend(
+                method
+                    .parameter_list
+                    .parameters
+                    .iter()
+                    .filter(|parameter| parameter.is_promoted_property())
+                    .map(|parameter| &parameter.variable),
+            ),
+            _ => {}
+        }
+    }
+
+    for member in &class.members {
+        let ClassLikeMember::Method(method) = member else {
+            continue;
+        };
+
+        if let Some(property) = properties.iter().find(|property| property.name.eq_ignore_ascii_case(method.name.value))
+        {
+            context.report(
+                Issue::error(format!(
+                    "The class `{}` declares a method and a property named `{}`.",
+                    BytesDisplay(class.name.value),
+                    BytesDisplay(method.name.value),
+                ))
+                .with_annotation(Annotation::primary(method.name.span).with_message("The method is declared here."))
+                .with_annotation(Annotation::secondary(property.span).with_message("The property is declared here."))
+                .with_help("Rename one of them: `x.name(…)` calls the method, or the function the property holds."),
+            );
+        }
+    }
+}
+
 /// Checks the accessors of an auto-property, declared in the class body or on a constructor parameter: `get;` once,
 /// and an optional `set;` once, which may take an access modifier narrower than the property's, as in C#. Accessor
 /// bodies, `init` and an access modifier on `get` are not supported yet.
@@ -931,7 +978,8 @@ fn is_slice_target(target: &Expression, context: &Context<'_, '_, '_>) -> bool {
 }
 
 /// Whether the slice has a type: the built-in types of spec section 24, or a class written by its short name, or a
-/// nullable type, or `List<T>` or `Map<TKey, TValue>` of spec section 12, whose inner types the walk checks next.
+/// nullable type, or `List<T>` or `Map<TKey, TValue>` of spec section 12, or a function type of spec section 14.1
+/// without a `void` parameter, whose inner types the walk checks next.
 fn is_slice_type(hint: &Hint) -> bool {
     match hint {
         Hint::Integer(_)
@@ -947,6 +995,7 @@ fn is_slice_type(hint: &Hint) -> bool {
             ((generic.name.value == b"List" && arguments == 1) || (generic.name.value == b"Map" && arguments == 2))
                 && !generic.arguments.iter().any(|argument| matches!(argument, Hint::Void(_)))
         }
+        Hint::Function(function) => !function.parameters.iter().any(|parameter| matches!(parameter, Hint::Void(_))),
         _ => false,
     }
 }

@@ -63,6 +63,9 @@ where
         if self.is_at_generic_hint()? {
             return Ok(hint.value.first().is_some_and(u8::is_ascii_uppercase));
         }
+        if self.is_at_function_hint()? {
+            return Ok(true);
+        }
 
         if hint.kind != T![Identifier] {
             return Ok(false);

@@ -27,6 +27,7 @@ use mago_codex::ttype::atomic::object::named::TNamedObject;
 use mago_codex::ttype::atomic::reference::TReference;
 use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::atomic::scalar::class_like_string::TClassLikeString;
+use mago_codex::ttype::combiner::CombinerOptions;
 use mago_codex::ttype::comparator::ComparisonResult;
 use mago_codex::ttype::comparator::atomic_comparator;
 use mago_codex::ttype::comparator::union_comparator;
@@ -186,6 +187,51 @@ pub fn capture_lambda_locals<A>(
 
         lambda_block_context.locals.insert(variable, variable_type);
         lambda_block_context.variables_possibly_in_scope.insert(variable);
+    }
+}
+
+/// The parameter types a closure takes from the callable types it is written for, by position, as a call's argument
+/// takes them from its parameter's type.
+pub fn closure_parameter_types<A>(context: &Context<'_, '_, A>, expected: &TUnion) -> HashMap<usize, TUnion>
+where
+    A: Arena,
+{
+    let mut parameter_types: HashMap<usize, TUnion> = HashMap::default();
+    let signatures = expected.types.iter().filter_map(|atomic| match atomic {
+        TAtomic::Callable(TCallable::Signature(signature)) => Some(signature),
+        _ => None,
+    });
+    for (index, parameter) in signatures.flat_map(|signature| signature.parameters.iter().enumerate()) {
+        let Some(parameter_type) = parameter.get_type_signature() else {
+            continue;
+        };
+
+        let parameter_type = match parameter_types.remove(&index) {
+            Some(existing) => add_union_type(existing, parameter_type, context.codebase, CombinerOptions::default()),
+            None => parameter_type.clone(),
+        };
+        parameter_types.insert(index, parameter_type);
+    }
+
+    parameter_types
+}
+
+/// Spec section 14.2: a PHP# lambda's parameter types are optional where its function type is known. Before a
+/// lambda written for `expected`, such as the value of a typed local or property, or a returned value, this gives
+/// the lambda the parameter types of `expected`, as a call does for a lambda passed to a function type.
+pub fn expect_function_type<A>(
+    context: &Context<'_, '_, A>,
+    artifacts: &mut AnalysisArtifacts,
+    expression: &Expression<'_>,
+    expected: Option<&TUnion>,
+) where
+    A: Arena,
+{
+    if context.dialect.is_sharp()
+        && matches!(expression.unparenthesized(), Expression::ArrowFunction(_) | Expression::Closure(_))
+        && let Some(expected) = expected
+    {
+        artifacts.inferred_parameter_types = Some(closure_parameter_types(context, expected));
     }
 }
 
@@ -349,6 +395,14 @@ where
                 analyze_statements(statements, context, block_context, &mut artifacts)?;
             }
             FunctionLikeBody::Expression(value) => {
+                let return_type = function_like_metadata.return_type_metadata.as_ref();
+                expect_function_type(
+                    context,
+                    &mut artifacts,
+                    value,
+                    return_type.map(|return_type| &return_type.type_union),
+                );
+
                 block_context.flags.set_inside_return(true);
                 value.analyze(context, block_context, &mut artifacts)?;
                 block_context.flags.set_inside_return(false);

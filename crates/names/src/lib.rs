@@ -20,6 +20,13 @@ pub mod scope;
 
 mod internal;
 
+/// The methods of a PHP# `List` or `Map` that change it.
+///
+/// Spec section 12 runs them on the collection a local holds, so a call of one on a local writes the local, as
+/// [`ResolvedNames::is_written`] reports. The binder knows no types, so a call of a method of these names on an object
+/// writes its local too, which captures it by reference, as harmless.
+pub const CHANGING_COLLECTION_METHODS: [&str; 3] = ["add", "set", "delete"];
+
 /// Stores the results of a name resolution pass over a PHP program.
 ///
 /// Maps the start byte offset of every identifier in the source to a tuple of
@@ -179,8 +186,8 @@ impl<'arena> ResolvedNames<'arena> {
         self.captures.get(&lambda.offset()).map_or(&[], Vec::as_slice)
     }
 
-    /// Returns whether code writes the PHP# local after its declaration, with `=`, a compound assignment, `++` or
-    /// `--`.
+    /// Returns whether code writes the PHP# local after its declaration: with `=`, a compound assignment, `++` or
+    /// `--` on it or an index of it, or a call of one of the [`CHANGING_COLLECTION_METHODS`] on it.
     #[must_use]
     pub fn is_written(&self, local: &Local) -> bool {
         self.written_locals.contains(&local.declaration.start.offset)

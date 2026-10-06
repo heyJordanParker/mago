@@ -44,6 +44,7 @@ pub enum Hint<'arena> {
     Mixed(LocalIdentifier<'arena>),
     Iterable(LocalIdentifier<'arena>),
     Generic(GenericHint<'arena>),
+    Function(FunctionHint<'arena>),
 }
 
 /// Represents a PHP# type with type arguments, as spec sections 11 and 12 write `List<Line>` and
@@ -60,6 +61,26 @@ pub struct GenericHint<'arena> {
     pub name: LocalIdentifier<'arena>,
     pub less_than: Span,
     pub arguments: TokenSeparatedSequence<'arena, Hint<'arena>>,
+    pub greater_than: Span,
+}
+
+/// Represents a PHP# function type, as spec section 14.1 writes it: the return type, then the parameter types in
+/// parentheses, in the order of a method declaration.
+///
+/// # Examples
+///
+/// ```csharp
+/// Function<Money?(Line, string)>
+/// ```
+#[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct FunctionHint<'arena> {
+    pub function: Keyword<'arena>,
+    pub less_than: Span,
+    pub return_type: &'arena Hint<'arena>,
+    pub left_parenthesis: Span,
+    pub parameters: TokenSeparatedSequence<'arena, Hint<'arena>>,
+    pub right_parenthesis: Span,
     pub greater_than: Span,
 }
 
@@ -296,6 +317,7 @@ impl HasSpan for Hint<'_> {
             | Hint::Mixed(identifier)
             | Hint::Iterable(identifier) => identifier.span(),
             Hint::Generic(generic) => generic.span(),
+            Hint::Function(function) => function.span(),
         }
     }
 }
@@ -303,6 +325,12 @@ impl HasSpan for Hint<'_> {
 impl HasSpan for GenericHint<'_> {
     fn span(&self) -> Span {
         self.name.span().join(self.greater_than)
+    }
+}
+
+impl HasSpan for FunctionHint<'_> {
+    fn span(&self) -> Span {
+        self.function.span().join(self.greater_than)
     }
 }
 

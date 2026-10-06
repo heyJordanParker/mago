@@ -83,6 +83,7 @@ use crate::cst::cst::FullOpeningTag;
 use crate::cst::cst::FullyQualifiedIdentifier;
 use crate::cst::cst::Function;
 use crate::cst::cst::FunctionCall;
+use crate::cst::cst::FunctionHint;
 use crate::cst::cst::FunctionLikeParameter;
 use crate::cst::cst::FunctionLikeParameterDefaultValue;
 use crate::cst::cst::FunctionLikeParameterList;
@@ -2476,6 +2477,9 @@ generate_ast_walker! {
             Hint::Generic(generic_hint) => {
                 walker.walk_generic_hint(generic_hint, context);
             }
+            Hint::Function(function_hint) => {
+                walker.walk_function_hint(function_hint, context);
+            }
         });
     }
 
@@ -2483,6 +2487,14 @@ generate_ast_walker! {
         walker.walk_local_identifier(&generic_hint.name, context);
         for argument in &generic_hint.arguments {
             walker.walk_hint(argument, context);
+        }
+    }
+
+    'arena FunctionHint as function_hint => {
+        walker.walk_keyword(&function_hint.function, context);
+        walker.walk_hint(function_hint.return_type, context);
+        for parameter in &function_hint.parameters {
+            walker.walk_hint(parameter, context);
         }
     }
 

@@ -435,6 +435,85 @@ fn a_collection_type_takes_its_type_arguments_in_angle_brackets() {
     assert_eq!(generic_type(CODE, depths.hint), ("Map", vec!["int", "List<List<int>>"]));
 }
 
+/// The return type and parameter types of a function type, as written.
+fn function_type<'a>(code: &'a str, hint: &Hint) -> (&'a str, Vec<&'a str>) {
+    let Hint::Function(function) = hint else {
+        panic!("expected a function type, got {hint:#?}");
+    };
+
+    (source(code, function.return_type), function.parameters.iter().map(|parameter| source(code, parameter)).collect())
+}
+
+#[test]
+fn a_function_type_writes_its_return_type_before_its_parameter_types() {
+    const CODE: &str = "class Report\n{\n    private Function<Money?(Line, string)> priceOf;\n    private Function<void(Order)>? onPaid = null;\n    public Function<bool(Order)> eligibleFor(Map<string, Function<int()>> counters, Function<List<int>(List<Line>)> ids) { return o => true; }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [
+        ClassLikeMember::Property(Property::Plain(price_of)),
+        ClassLikeMember::Property(Property::Plain(on_paid)),
+        ClassLikeMember::Method(method),
+    ] = class_members(program).as_slice()
+    else {
+        panic!("expected two fields and a method, got {:#?}", class_members(program));
+    };
+
+    let price_of = price_of.hint.as_ref().expect("a type");
+    assert_eq!(source(CODE, price_of), "Function<Money?(Line, string)>");
+    assert_eq!(function_type(CODE, price_of), ("Money?", vec!["Line", "string"]));
+    let Some(Hint::Nullable(on_paid)) = &on_paid.hint else {
+        panic!("expected a nullable type, got {:#?}", on_paid.hint);
+    };
+    assert_eq!(function_type(CODE, on_paid.hint), ("void", vec!["Order"]));
+    let return_type = &method.return_type_hint.as_ref().expect("a return type").hint;
+    assert_eq!(function_type(CODE, return_type), ("bool", vec!["Order"]));
+
+    let [counters, ids] = method.parameter_list.parameters.as_slice() else {
+        panic!("expected two parameters, got {:#?}", method.parameter_list.parameters);
+    };
+    let counters = counters.hint.as_ref().expect("a type");
+    assert_eq!(generic_type(CODE, counters), ("Map", vec!["string", "Function<int()>"]));
+    let Hint::Generic(counters) = counters else {
+        panic!("expected a generic type, got {counters:#?}");
+    };
+    assert_eq!(function_type(CODE, &counters.arguments.as_slice()[1]), ("int", vec![]));
+    assert_eq!(function_type(CODE, ids.hint.as_ref().expect("a type")), ("List<int>", vec!["List<Line>"]));
+}
+
+/// The lexer reads `(int)` as a cast, which in a function type is the parentheses around one parameter type.
+#[test]
+fn a_function_type_with_one_built_in_parameter_type_reads_the_cast_as_its_parentheses() {
+    const CODE: &str =
+        "class Report\n{\n    private Function<int(int)> twice;\n    private Function<bool( string )> blank;\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let types: Vec<(&str, Vec<&str>, &str, &str)> = class_members(program)
+        .iter()
+        .map(|member| {
+            let ClassLikeMember::Property(Property::Plain(field)) = member else {
+                panic!("expected a field, got {member:#?}");
+            };
+            let Some(Hint::Function(function)) = &field.hint else {
+                panic!("expected a function type, got {:#?}", field.hint);
+            };
+            let (_, parameters) = function_type(CODE, field.hint.as_ref().expect("a type"));
+
+            (
+                source(CODE, function.return_type),
+                parameters,
+                source(CODE, &function.left_parenthesis),
+                source(CODE, &function.right_parenthesis),
+            )
+        })
+        .collect();
+
+    assert_eq!(types, [("int", vec!["int"], "(", ")"), ("bool", vec!["string"], "(", ")")]);
+}
+
 #[test]
 fn a_local_and_a_field_can_have_a_collection_type_written() {
     const CODE: &str = "class Report\n{\n    private Map<string, int> counts = [:];\n    public void run()\n    {\n        List<Line> lines = [];\n        Map<string, List<int>>? groups = null;\n    }\n}\n";

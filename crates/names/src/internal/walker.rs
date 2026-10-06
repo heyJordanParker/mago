@@ -15,6 +15,7 @@ use mago_syntax::cst::Block;
 use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassConstantAccess;
 use mago_syntax::cst::ClassLikeMember;
+use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Closure;
 use mago_syntax::cst::Constant;
 use mago_syntax::cst::ConstantAccess;
@@ -53,6 +54,7 @@ use mago_syntax::cst::Use;
 use mago_syntax::cst::UseItems;
 use mago_syntax::walker::MutWalker;
 
+use crate::CHANGING_COLLECTION_METHODS;
 use crate::ResolvedNames;
 use crate::binding::Binding;
 use crate::binding::BindingError;
@@ -141,13 +143,29 @@ impl<'arena> NameWalker<'arena> {
         }
     }
 
-    /// Records a write to `target` when it is a bare name of a local whose block is open.
+    /// Records a write to `target` when it is a bare name of a local whose block is open, or an index of one, as in
+    /// `counts[key] = 1`, which changes the collection the local holds.
     fn record_write(&mut self, target: &Expression<'arena>) {
+        let mut target = target;
+        while let Expression::ArrayAccess(access) = target {
+            target = access.array;
+        }
+
         if self.sharp
             && let Expression::ConstantAccess(target) = target
             && let Some(local) = self.locals.lookup(target.name.value())
         {
             self.resolved_names.write(local);
+        }
+    }
+
+    /// Records a call of one of the [`CHANGING_COLLECTION_METHODS`] on `object` as a write to it. PHP finds a method
+    /// ignoring case, so the name is compared ignoring case.
+    fn record_changing_call(&mut self, object: &Expression<'arena>, method: &ClassLikeMemberSelector<'arena>) {
+        if let ClassLikeMemberSelector::Identifier(method) = method
+            && CHANGING_COLLECTION_METHODS.iter().any(|name| method.value.eq_ignore_ascii_case(name.as_bytes()))
+        {
+            self.record_write(object);
         }
     }
 
@@ -478,6 +496,7 @@ where
         _context: &mut NameResolutionContext<'arena, A>,
     ) {
         self.mark_member_object(method_call.object);
+        self.record_changing_call(method_call.object, &method_call.method);
     }
 
     fn walk_in_method_partial_application(
@@ -502,6 +521,7 @@ where
         _context: &mut NameResolutionContext<'arena, A>,
     ) {
         self.mark_member_object(null_safe_method_call.object);
+        self.record_changing_call(null_safe_method_call.object, &null_safe_method_call.method);
     }
 
     fn walk_in_null_safe_property_access(

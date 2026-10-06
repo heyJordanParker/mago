@@ -206,6 +206,7 @@ pub use crate::cst::cst::throw::Throw;
 pub use crate::cst::cst::r#try::Try;
 pub use crate::cst::cst::r#try::TryCatchClause;
 pub use crate::cst::cst::r#try::TryFinallyClause;
+pub use crate::cst::cst::type_hint::FunctionHint;
 pub use crate::cst::cst::type_hint::GenericHint;
 pub use crate::cst::cst::type_hint::Hint;
 pub use crate::cst::cst::type_hint::IntersectionHint;

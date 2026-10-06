@@ -359,13 +359,17 @@ fn a_lambda_binds_its_parameters_and_records_the_outer_locals_it_captures() {
 
 #[test]
 fn a_local_written_after_its_declaration_is_recorded_as_written() {
-    const CODE: &str = "class Report\n{\n    public int total(int extra)\n    {\n        let count = 0;\n        let other = 0;\n        let kept = 1;\n        count += 1;\n        other++;\n        extra = 2;\n        return count + other + kept + extra;\n    }\n}\n";
+    const CODE: &str = "class Report\n{\n    public int total(int extra)\n    {\n        let count = 0;\n        let other = 0;\n        let kept = 1;\n        let sizes = [:];\n        let lines = [];\n        let read = [];\n        count += 1;\n        other++;\n        extra = 2;\n        sizes[\"a\"][\"b\"] = 1;\n        lines.ADD(1);\n        read.get(0);\n        return count + other + kept + extra;\n    }\n}\n";
     let arena = LocalArena::new();
     let names = bind(&arena, CODE);
+
+    assert!(names.is_written(&declared(CODE, "lines", 0, LocalKind::Let)));
+    assert!(!names.is_written(&declared(CODE, "read", 0, LocalKind::Let)));
 
     assert!(names.is_written(&declared(CODE, "count", 0, LocalKind::Let)));
     assert!(names.is_written(&declared(CODE, "other", 0, LocalKind::Let)));
     assert!(names.is_written(&declared(CODE, "extra", 0, LocalKind::Parameter)));
+    assert!(names.is_written(&declared(CODE, "sizes", 0, LocalKind::Let)));
     assert!(!names.is_written(&declared(CODE, "kept", 0, LocalKind::Let)));
 }
 

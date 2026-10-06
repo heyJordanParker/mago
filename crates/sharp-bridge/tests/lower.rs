@@ -1016,6 +1016,46 @@ fn a_list_or_map_type_is_the_array_type() {
 }
 
 /// ```php
+/// public function apply(\Closure $step, ?\Closure $other = null): \Closure { return $step; }
+/// ```
+///
+/// A function type runs as PHP's `\Closure`, so its type is the full name `Closure` with `ZEND_NAME_FQ`, which is 0.
+#[test]
+fn a_function_type_is_the_closure_class() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public Function<bool(int)> apply(Function<int(string, int)> step, Function<void()>? other = null) { return step; }\n}\n",
+    );
+    let method = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a method");
+
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 0)),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                ZVAL "Closure"
+                ZVAL "step"
+                null
+                null
+                null
+                null
+              PARAM
+                ZVAL [256] "Closure"
+                ZVAL "other"
+                ZVAL null
+                null
+                null
+                null
+        "#}
+    );
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 3)),
+        indoc! {r#"
+            ZVAL "Closure"
+        "#}
+    );
+}
+
+/// ```php
 /// $numbers = [1, $extra];
 /// $named = ['a' => 1, 2 => $numbers[0]];
 /// $empty = [];
@@ -2569,7 +2609,7 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
         | sharp_kind::SHARP_AST_ENCAPS_LIST
         | sharp_kind::SHARP_AST_ARRAY
         | sharp_kind::SHARP_AST_CLOSURE_USES => None,
-        sharp_kind::SHARP_AST_ZVAL | sharp_kind::SHARP_AST_TYPE | sharp_kind::SHARP_AST_CALLABLE_CONVERT => Some(0),
+        sharp_kind::SHARP_AST_ZVAL | sharp_kind::SHARP_AST_TYPE => Some(0),
         sharp_kind::SHARP_AST_VAR
         | sharp_kind::SHARP_AST_CONST
         | sharp_kind::SHARP_AST_UNARY_PLUS

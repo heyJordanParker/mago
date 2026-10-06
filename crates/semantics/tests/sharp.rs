@@ -1316,6 +1316,36 @@ fn lambdas_with_an_expression_or_a_block_body_and_calls_of_function_locals_are_i
 }
 
 #[test]
+fn function_types_are_in_the_slice_as_field_parameter_local_and_return_types() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private Function<int?(Line, string)> priceOf;\n    private Function<void(Order)> onPaid;\n\n    public Function<bool(Order)> eligible(Map<string, Function<int()>> counters, Function<List<int>(List<Line>)> ids)\n    {\n        const Function<void()> log = () => {};\n        Function<int(int)> twice = n => n * 2;\n        return o => true;\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_void_parameter_of_a_function_type_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private Function<int(void)> priceOf;\n}\n";
+
+    assert_eq!(issues(code), ["5:13 This type is not supported yet in PHP#."]);
+}
+
+/// A call `x.priceOf(line)` runs the property's function only when the class has no method `priceOf`, and PHP finds
+/// a method ignoring case, so a method named as a field, a property or a constructor-declared member is an error.
+#[test]
+fn a_method_named_as_a_property_of_its_class_is_an_error() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private Function<int(int)> priceOf;\n    public int views { get; set; }\n\n    public Report(private Function<bool()> ready) {}\n\n    public int priceof(int amount) => amount;\n    public int views() => 1;\n    public bool ready() => true;\n    public int other() => 2;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "10:16 The class `Report` declares a method and a property named `priceof`.",
+            "11:16 The class `Report` declares a method and a property named `views`.",
+            "12:17 The class `Report` declares a method and a property named `ready`.",
+        ]
+    );
+}
+
+#[test]
 fn a_lambda_parameter_outside_the_slice_is_not_supported_yet() {
     let code = leak(method(
         "        const spread = (int ...values) => 1;\n        const marked = (readonly int value) => value;\n        return extra;\n",

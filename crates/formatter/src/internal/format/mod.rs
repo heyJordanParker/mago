@@ -1713,6 +1713,9 @@ where
                 Hint::Iterable(_) => Document::String(b"iterable"),
                 #[allow(clippy::unreachable)]
                 Hint::Generic(_) => unreachable!("the formatter refuses a PHP# file, the only one with type arguments"),
+                Hint::Function(_) => {
+                    unreachable!("the formatter refuses a PHP# file, the only one with function types")
+                }
             }
         })
     }
