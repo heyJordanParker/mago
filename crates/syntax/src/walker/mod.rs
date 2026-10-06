@@ -86,11 +86,13 @@ use crate::cst::cst::FullOpeningTag;
 use crate::cst::cst::FullyQualifiedIdentifier;
 use crate::cst::cst::Function;
 use crate::cst::cst::FunctionCall;
+use crate::cst::cst::FunctionHint;
 use crate::cst::cst::FunctionLikeParameter;
 use crate::cst::cst::FunctionLikeParameterDefaultValue;
 use crate::cst::cst::FunctionLikeParameterList;
 use crate::cst::cst::FunctionLikeReturnTypeHint;
 use crate::cst::cst::FunctionPartialApplication;
+use crate::cst::cst::GenericHint;
 use crate::cst::cst::Global;
 use crate::cst::cst::Goto;
 use crate::cst::cst::HaltCompiler;
@@ -2034,7 +2036,10 @@ generate_ast_walker! {
             walker.walk_keyword(keyword, context);
         }
 
-        walker.walk_keyword(&closure.function, context);
+        if let Some(keyword) = &closure.function {
+            walker.walk_keyword(keyword, context);
+        }
+
         walker.walk_function_like_parameter_list(&closure.parameter_list, context);
         if let Some(use_clause) = &closure.use_clause {
             walker.walk_closure_use_clause(use_clause, context);
@@ -2066,7 +2071,10 @@ generate_ast_walker! {
             walker.walk_keyword(keyword, context);
         }
 
-        walker.walk_keyword(&arrow_function.r#fn, context);
+        if let Some(keyword) = &arrow_function.r#fn {
+            walker.walk_keyword(keyword, context);
+        }
+
         walker.walk_function_like_parameter_list(&arrow_function.parameter_list, context);
 
         if let Some(return_type_hint) = &arrow_function.return_type_hint {
@@ -2625,7 +2633,28 @@ generate_ast_walker! {
             Hint::Iterable(local_identifier) => {
                 walker.walk_local_identifier(local_identifier, context);
             }
+            Hint::Generic(generic_hint) => {
+                walker.walk_generic_hint(generic_hint, context);
+            }
+            Hint::Function(function_hint) => {
+                walker.walk_function_hint(function_hint, context);
+            }
         });
+    }
+
+    'arena GenericHint as generic_hint => {
+        walker.walk_local_identifier(&generic_hint.name, context);
+        for argument in &generic_hint.arguments {
+            walker.walk_hint(argument, context);
+        }
+    }
+
+    'arena FunctionHint as function_hint => {
+        walker.walk_keyword(&function_hint.function, context);
+        walker.walk_hint(function_hint.return_type, context);
+        for parameter in &function_hint.parameters {
+            walker.walk_hint(parameter, context);
+        }
     }
 
     'arena ParenthesizedHint as parenthesized_hint => {

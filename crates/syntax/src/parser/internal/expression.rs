@@ -244,6 +244,10 @@ where
             return Ok(self.arena.alloc(self.parse_ambiguous_clone_expression()?));
         }
 
+        if self.dialect.is_sharp() && self.is_at_lambda()? {
+            return self.parse_lambda();
+        }
+
         if !self.state.within_string_interpolation
             && (matches!((token.kind, next), (T!["function" | "fn"], _))
                 || matches!((token.kind, next), (T!["static"], Some(T!["function" | "fn"]))))

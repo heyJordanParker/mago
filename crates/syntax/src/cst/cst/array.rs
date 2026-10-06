@@ -49,11 +49,15 @@ pub struct List<'arena> {
 ///
 /// $arr = ['apple', 'banana', 3 => 'orange'];
 /// ```
+///
+/// PHP# writes a map entry `"pro": pro`, a key-value element whose `double_arrow` is the colon, and the empty map
+/// `[:]`, an array without elements whose `colon` is set, as spec section 12 writes them.
 #[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Array<'arena> {
     pub left_bracket: Span,
     pub elements: TokenSeparatedSequence<'arena, ArrayElement<'arena>>,
+    pub colon: Option<Span>,
     pub right_bracket: Span,
 }
 

@@ -122,7 +122,11 @@ impl Lowered {
                     sharp_value::SHARP_STRING => write!(tree, " {:?}", text(node.text)),
                 };
             }
-            sharp_kind::SHARP_AST_CLASS | sharp_kind::SHARP_AST_METHOD | sharp_kind::SHARP_AST_PROPERTY_HOOK => {
+            sharp_kind::SHARP_AST_CLASS
+            | sharp_kind::SHARP_AST_METHOD
+            | sharp_kind::SHARP_AST_PROPERTY_HOOK
+            | sharp_kind::SHARP_AST_CLOSURE
+            | sharp_kind::SHARP_AST_ARROW_FUNC => {
                 let _ = write!(tree, " {:?} @{}-{}", text(node.text), node.line, node.end_line);
             }
             _ => {}
@@ -963,6 +967,163 @@ fn a_nullable_type_is_its_type_with_the_nullable_flag() {
         lowered.render(lowered.child(method as u32, 3)),
         indoc! {r#"
             ZVAL [256] "Lib\\Calc"
+        "#}
+    );
+}
+
+/// ```php
+/// public function group(array $items, ?array $sizes = ['a' => 1]): ?array { return null; }
+/// ```
+///
+/// A `List` or `Map` is a PHP array, so its type is `array`: a `TYPE` with `IS_ARRAY`, which is 7, as php-src's
+/// grammar builds it, and `[263]` adds `ZEND_TYPE_NULLABLE`.
+#[test]
+fn a_list_or_map_type_is_the_array_type() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public Map<string, List<int>>? group(List<int> items, Map<string, int>? sizes = [\"a\": 1]) { return null; }\n}\n",
+    );
+    let method = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a method");
+
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 0)),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                TYPE [7]
+                ZVAL "items"
+                null
+                null
+                null
+                null
+              PARAM
+                TYPE [263]
+                ZVAL "sizes"
+                ARRAY [3]
+                  ARRAY_ELEM
+                    ZVAL 1
+                    ZVAL "a"
+                null
+                null
+                null
+        "#}
+    );
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 3)),
+        indoc! {"
+            TYPE [263]
+        "}
+    );
+}
+
+/// ```php
+/// public function apply(\Closure $step, ?\Closure $other = null): \Closure { return $step; }
+/// ```
+///
+/// A function type runs as PHP's `\Closure`, so its type is the full name `Closure` with `ZEND_NAME_FQ`, which is 0.
+#[test]
+fn a_function_type_is_the_closure_class() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public Function<bool(int)> apply(Function<int(string, int)> step, Function<void()>? other = null) { return step; }\n}\n",
+    );
+    let method = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a method");
+
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 0)),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                ZVAL "Closure"
+                ZVAL "step"
+                null
+                null
+                null
+                null
+              PARAM
+                ZVAL [256] "Closure"
+                ZVAL "other"
+                ZVAL null
+                null
+                null
+                null
+        "#}
+    );
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 3)),
+        indoc! {r#"
+            ZVAL "Closure"
+        "#}
+    );
+}
+
+/// ```php
+/// $numbers = [1, $extra];
+/// $named = ['a' => 1, 2 => $numbers[0]];
+/// $empty = [];
+/// $numbers[0] = $named['a'];
+/// $this->sizes['a'] += 1;
+/// return $numbers[1];
+/// ```
+///
+/// A list or map literal is an `ARRAY` with `ZEND_ARRAY_SYNTAX_SHORT`, which is 3, of `ARRAY_ELEM`s that take the value
+/// before the key. An index is a `DIM` of the value and the key, read or written as its place in the tree decides.
+#[test]
+fn literals_are_short_arrays_and_an_index_is_a_dim() {
+    assert_eq!(
+        body(
+            "        List<int> numbers = [1, extra];\n        const named = [\"a\": 1, 2: numbers[0]];\n        const empty = [:];\n        numbers[0] = named[\"a\"];\n        this.sizes[\"a\"] += 1;\n        return numbers[1];\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "numbers"
+                ARRAY [3]
+                  ARRAY_ELEM
+                    ZVAL 1
+                    null
+                  ARRAY_ELEM
+                    VAR
+                      ZVAL "extra"
+                    null
+              ASSIGN
+                VAR
+                  ZVAL "named"
+                ARRAY [3]
+                  ARRAY_ELEM
+                    ZVAL 1
+                    ZVAL "a"
+                  ARRAY_ELEM
+                    DIM
+                      VAR
+                        ZVAL "numbers"
+                      ZVAL 0
+                    ZVAL 2
+              ASSIGN
+                VAR
+                  ZVAL "empty"
+                ARRAY [3]
+              ASSIGN
+                DIM
+                  VAR
+                    ZVAL "numbers"
+                  ZVAL 0
+                DIM
+                  VAR
+                    ZVAL "named"
+                  ZVAL "a"
+              ASSIGN_OP [1]
+                DIM
+                  PROP
+                    VAR
+                      ZVAL "this"
+                    ZVAL "sizes"
+                  ZVAL "a"
+                ZVAL 1
+              RETURN
+                DIM
+                  VAR
+                    ZVAL "numbers"
+                  ZVAL 1
         "#}
     );
 }
@@ -1970,6 +2131,40 @@ fn null_safe_calls_and_reads_are_nullsafe_kinds() {
 }
 
 /// ```php
+/// return ($extra[0] ?? null)?->value ?? ($extra[1] ?? null)?->total();
+/// ```
+///
+/// `?.` reads a missing key as null, as `??` does, so the index it reads from is the left side of a `COALESCE`.
+#[test]
+fn null_safe_access_on_an_index_coalesces_a_missing_key_to_null() {
+    assert_eq!(
+        body("        return extra[0]?.value ?? (extra[1])?.total();\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                COALESCE
+                  NULLSAFE_PROP
+                    COALESCE
+                      DIM
+                        VAR
+                          ZVAL "extra"
+                        ZVAL 0
+                      ZVAL null
+                    ZVAL "value"
+                  NULLSAFE_METHOD_CALL
+                    COALESCE
+                      DIM
+                        VAR
+                          ZVAL "extra"
+                        ZVAL 1
+                      ZVAL null
+                    ZVAL "total"
+                    ARG_LIST
+        "#}
+    );
+}
+
+/// ```php
 /// return ($extra + 1) * 2;
 /// ```
 #[test]
@@ -2452,6 +2647,229 @@ fn a_template_is_an_encaps_list_of_its_text_and_interpolations() {
                   ZVAL "extra"
         "#}
     );
+}
+
+/// ```php
+/// $twice = fn (int $a) => $a * $extra; $half = fn ($b) => $b / 2; return $twice($half(4));
+/// ```
+///
+/// A lambda that writes none of the locals it captures is PHP's `fn`, which captures by value what its body reads.
+/// php-src's grammar gives an arrow function no name, no `use` list and its expression as its body. A call of a local
+/// calls the closure the local holds.
+#[test]
+fn a_lambda_that_writes_no_capture_is_an_arrow_function() {
+    assert_eq!(
+        body(
+            "        const twice = (int a) => a * extra;\n        const half = b => b / 2;\n        return twice(half(4));\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "twice"
+                ARROW_FUNC "" @9-9
+                  PARAM_LIST
+                    PARAM
+                      ZVAL [1] "int"
+                      ZVAL "a"
+                      null
+                      null
+                      null
+                      null
+                  null
+                  BINARY_OP [3]
+                    VAR
+                      ZVAL "a"
+                    VAR
+                      ZVAL "extra"
+                  null
+                  null
+              ASSIGN
+                VAR
+                  ZVAL "half"
+                ARROW_FUNC "" @10-10
+                  PARAM_LIST
+                    PARAM
+                      null
+                      ZVAL "b"
+                      null
+                      null
+                      null
+                      null
+                  null
+                  BINARY_OP [4]
+                    VAR
+                      ZVAL "b"
+                    ZVAL 2
+                  null
+                  null
+              RETURN
+                CALL
+                  VAR
+                    ZVAL "twice"
+                  ARG_LIST
+                    CALL
+                      VAR
+                        ZVAL "half"
+                      ARG_LIST
+                        ZVAL 4
+        "#}
+    );
+}
+
+/// ```php
+/// $count = 0;
+/// $add = function (int $step) use (&$count, $extra) {
+///     $count += $step + $extra;
+/// };
+/// $bump = function () use (&$count) { return $count += 1; };
+/// $add(1);
+/// return $count;
+/// ```
+///
+/// Spec section 3: a lambda captures the variable itself. A lambda with a block body, or one that writes a local it
+/// captures, is PHP's `function` with a `use` list in first-use order, which captures a local that code writes by
+/// reference, `ZEND_BIND_REF`, which is 1, and any other by value. An expression body is the `return` of it.
+#[test]
+fn a_lambda_with_a_block_or_a_written_capture_is_a_closure_with_a_use_list() {
+    assert_eq!(
+        body(
+            "        let count = 0;\n        const add = (int step) => {\n            count += step + extra;\n        };\n        const bump = () => count += 1;\n        add(1);\n        return count;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "count"
+                ZVAL 0
+              ASSIGN
+                VAR
+                  ZVAL "add"
+                CLOSURE "" @10-12
+                  PARAM_LIST
+                    PARAM
+                      ZVAL [1] "int"
+                      ZVAL "step"
+                      null
+                      null
+                      null
+                      null
+                  CLOSURE_USES
+                    ZVAL [1] "count"
+                    ZVAL "extra"
+                  STMT_LIST
+                    ASSIGN_OP [1]
+                      VAR
+                        ZVAL "count"
+                      BINARY_OP [1]
+                        VAR
+                          ZVAL "step"
+                        VAR
+                          ZVAL "extra"
+                  null
+                  null
+              ASSIGN
+                VAR
+                  ZVAL "bump"
+                CLOSURE "" @13-13
+                  PARAM_LIST
+                  CLOSURE_USES
+                    ZVAL [1] "count"
+                  STMT_LIST
+                    RETURN
+                      ASSIGN_OP [1]
+                        VAR
+                          ZVAL "count"
+                        ZVAL 1
+                  null
+                  null
+              CALL
+                VAR
+                  ZVAL "add"
+                ARG_LIST
+                  ZVAL 1
+              RETURN
+                VAR
+                  ZVAL "count"
+        "#}
+    );
+}
+
+/// ```php
+/// while ($extra > 0) {
+///     { unset($seen); $seen = $extra; }
+///     $mark = function () use (&$seen) { $seen += 1; };
+///     $mark();
+///     $extra -= 1;
+/// }
+/// return $extra;
+/// ```
+///
+/// Spec section 3 gives each loop pass its own `let`. PHP reuses one variable across passes, so a `let` declared in a
+/// loop body that a lambda captures by reference is unset before its assignment, and the lambda of each pass keeps
+/// its own. php-src's grammar builds `unset($seen);` as a statement list of one `UNSET`.
+#[test]
+fn a_let_in_a_loop_captured_by_reference_is_unset_before_its_assignment() {
+    assert_eq!(
+        body(
+            "        while (extra > 0) {\n            let seen = extra;\n            const mark = () => {\n                seen += 1;\n            };\n            mark();\n            extra -= 1;\n        }\n        return extra;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              WHILE
+                GREATER
+                  VAR
+                    ZVAL "extra"
+                  ZVAL 0
+                STMT_LIST
+                  STMT_LIST
+                    STMT_LIST
+                      UNSET
+                        VAR
+                          ZVAL "seen"
+                    ASSIGN
+                      VAR
+                        ZVAL "seen"
+                      VAR
+                        ZVAL "extra"
+                  ASSIGN
+                    VAR
+                      ZVAL "mark"
+                    CLOSURE "" @11-13
+                      PARAM_LIST
+                      CLOSURE_USES
+                        ZVAL [1] "seen"
+                      STMT_LIST
+                        ASSIGN_OP [1]
+                          VAR
+                            ZVAL "seen"
+                          ZVAL 1
+                      null
+                      null
+                  CALL
+                    VAR
+                      ZVAL "mark"
+                    ARG_LIST
+                  ASSIGN_OP [2]
+                    VAR
+                      ZVAL "extra"
+                    ZVAL 1
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
+/// A `let` the lambda declares in its own body lives in each call's own frame, so it is never unset, even when the
+/// lambda sits in a loop.
+#[test]
+fn a_let_declared_inside_a_lambda_in_a_loop_is_not_unset() {
+    let tree = body(
+        "        while (extra > 0) {\n            const step = () => {\n                let inner = 1;\n                const again = () => {\n                    inner += 1;\n                };\n                again();\n            };\n            step();\n            extra -= 1;\n        }\n        return extra;\n",
+    );
+
+    assert!(!tree.contains("UNSET"), "{tree}");
 }
 
 /// php-src takes a list's line from its first child, and each piece of text's from where it starts.

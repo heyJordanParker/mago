@@ -8,6 +8,7 @@ use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::ArrowFunction;
 use mago_syntax::cst::As;
+use mago_syntax::cst::Assignment;
 use mago_syntax::cst::Attribute;
 use mago_syntax::cst::Binary;
 use mago_syntax::cst::BinaryOperator;
@@ -15,6 +16,7 @@ use mago_syntax::cst::Block;
 use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassConstantAccess;
 use mago_syntax::cst::ClassLikeMember;
+use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Closure;
 use mago_syntax::cst::Conditional;
 use mago_syntax::cst::Constant;
@@ -60,6 +62,7 @@ use mago_syntax::cst::TraitUse;
 use mago_syntax::cst::TryCatchClause;
 use mago_syntax::cst::TypeOf;
 use mago_syntax::cst::TypePattern;
+use mago_syntax::cst::UnaryPostfix;
 use mago_syntax::cst::UnaryPrefix;
 use mago_syntax::cst::UnaryPrefixOperator;
 use mago_syntax::cst::Use;
@@ -73,6 +76,7 @@ use mago_syntax::walker::walk_conditional_mut;
 use mago_syntax::walker::walk_if_mut;
 use mago_syntax::walker::walk_while_mut;
 
+use crate::CHANGING_COLLECTION_METHODS;
 use crate::ResolvedNames;
 use crate::binding::Binding;
 use crate::binding::BindingError;
@@ -104,6 +108,8 @@ pub struct NameWalker<'arena> {
     class_members: std::vec::Vec<ClassMembers<'arena>>,
     /// The kind of the variables each `is` or `match` arm being walked declares, innermost last.
     pattern_kinds: std::vec::Vec<LocalKind>,
+    /// The start offsets of the lambdas being walked, innermost last.
+    lambdas: std::vec::Vec<u32>,
 }
 
 /// The member names of one class, compared as PHP compares them: method names ignoring case, and property and
@@ -149,6 +155,56 @@ impl<'arena> NameWalker<'arena> {
         }
 
         self.resolved_names.bind(declaration, Binding::Local(local));
+    }
+
+    /// Binds a bare name to a local, which each lambda declared after the local captures.
+    fn bind_local(&mut self, name: &'arena [u8], span: Span, local: Local) {
+        self.resolved_names.bind(span, Binding::Local(local));
+        for &lambda in &self.lambdas {
+            if local.declaration.start.offset < lambda {
+                self.resolved_names.capture(lambda, name, local);
+            }
+        }
+    }
+
+    /// Records a write to `target` when it is a bare name of a local whose block is open, or an index of one, as in
+    /// `counts[key] = 1`, which changes the collection the local holds.
+    fn record_write(&mut self, target: &Expression<'arena>) {
+        let mut target = target;
+        while let Expression::ArrayAccess(access) = target {
+            target = access.array;
+        }
+
+        if self.sharp
+            && let Expression::ConstantAccess(target) = target
+            && let Some(local) = self.locals.lookup(target.name.value())
+        {
+            self.resolved_names.write(local);
+        }
+    }
+
+    /// Records a call of one of the [`CHANGING_COLLECTION_METHODS`] on `object` as a write to it. PHP finds a method
+    /// ignoring case, so the name is compared ignoring case.
+    fn record_changing_call(&mut self, object: &Expression<'arena>, method: &ClassLikeMemberSelector<'arena>) {
+        if let ClassLikeMemberSelector::Identifier(method) = method
+            && CHANGING_COLLECTION_METHODS.iter().any(|name| method.value.eq_ignore_ascii_case(name.as_bytes()))
+        {
+            self.record_write(object);
+        }
+    }
+
+    fn enter_lambda(&mut self, lambda: Span) {
+        if self.sharp {
+            self.lambdas.push(lambda.start.offset);
+            self.locals.enter_block();
+        }
+    }
+
+    fn exit_lambda(&mut self) {
+        if self.sharp {
+            self.lambdas.pop();
+            self.locals.exit_block();
+        }
     }
 
     /// Marks a bare name written before `.` or `?.`, which binds as a class unless it names a local or `this`.
@@ -433,26 +489,20 @@ where
         }
     }
 
-    fn walk_in_closure(&mut self, _closure: &'ast Closure<'arena>, _context: &mut NameResolutionContext<'arena, A>) {
-        if self.sharp {
-            self.locals.enter_block();
-        }
+    fn walk_in_closure(&mut self, closure: &'ast Closure<'arena>, _context: &mut NameResolutionContext<'arena, A>) {
+        self.enter_lambda(closure.span());
     }
 
     fn walk_out_closure(&mut self, _closure: &'ast Closure<'arena>, _context: &mut NameResolutionContext<'arena, A>) {
-        if self.sharp {
-            self.locals.exit_block();
-        }
+        self.exit_lambda();
     }
 
     fn walk_in_arrow_function(
         &mut self,
-        _arrow_function: &'ast ArrowFunction<'arena>,
+        arrow_function: &'ast ArrowFunction<'arena>,
         _context: &mut NameResolutionContext<'arena, A>,
     ) {
-        if self.sharp {
-            self.locals.enter_block();
-        }
+        self.enter_lambda(arrow_function.span());
     }
 
     fn walk_out_arrow_function(
@@ -460,9 +510,33 @@ where
         _arrow_function: &'ast ArrowFunction<'arena>,
         _context: &mut NameResolutionContext<'arena, A>,
     ) {
-        if self.sharp {
-            self.locals.exit_block();
+        self.exit_lambda();
+    }
+
+    fn walk_in_assignment(
+        &mut self,
+        assignment: &'ast Assignment<'arena>,
+        _context: &mut NameResolutionContext<'arena, A>,
+    ) {
+        self.record_write(assignment.lhs);
+    }
+
+    fn walk_in_unary_prefix(
+        &mut self,
+        unary_prefix: &'ast UnaryPrefix<'arena>,
+        _context: &mut NameResolutionContext<'arena, A>,
+    ) {
+        if unary_prefix.operator.is_increment_or_decrement() {
+            self.record_write(unary_prefix.operand);
         }
+    }
+
+    fn walk_in_unary_postfix(
+        &mut self,
+        unary_postfix: &'ast UnaryPostfix<'arena>,
+        _context: &mut NameResolutionContext<'arena, A>,
+    ) {
+        self.record_write(unary_postfix.operand);
     }
 
     fn walk_in_block(&mut self, _block: &'ast Block<'arena>, _context: &mut NameResolutionContext<'arena, A>) {
@@ -707,6 +781,7 @@ where
         _context: &mut NameResolutionContext<'arena, A>,
     ) {
         self.mark_member_object(method_call.object);
+        self.record_changing_call(method_call.object, &method_call.method);
     }
 
     fn walk_in_method_partial_application(
@@ -731,6 +806,7 @@ where
         _context: &mut NameResolutionContext<'arena, A>,
     ) {
         self.mark_member_object(null_safe_method_call.object);
+        self.record_changing_call(null_safe_method_call.object, &null_safe_method_call.method);
     }
 
     fn walk_in_null_safe_property_access(
@@ -836,7 +912,7 @@ where
             }
 
             if let Some(local) = self.locals.lookup(identifier.value()) {
-                self.resolved_names.bind(identifier.span(), Binding::Local(local));
+                self.bind_local(identifier.value(), identifier.span(), local);
             } else if self.is_member(identifier.value()) {
                 self.resolved_names.bind(identifier.span(), Binding::Member);
             }
@@ -946,7 +1022,7 @@ where
             }
 
             if let Some(local) = self.locals.lookup(name) {
-                self.resolved_names.bind(span, Binding::Local(local));
+                self.bind_local(name, span, local);
 
                 return;
             }
