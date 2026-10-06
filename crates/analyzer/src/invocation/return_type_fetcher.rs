@@ -1,16 +1,27 @@
 use mago_allocator::Arena;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
+use mago_codex::ttype::add_union_type;
+use mago_codex::ttype::atomic::TAtomic;
+use mago_codex::ttype::atomic::array::TArray;
+use mago_codex::ttype::combiner::CombinerOptions;
+use mago_codex::ttype::get_array_parameters;
+use mago_codex::ttype::get_list;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::template::TemplateResult;
 use mago_codex::ttype::union::TUnion;
+use mago_reporting::Annotation;
+use mago_reporting::Issue;
+use mago_span::HasSpan;
 use mago_word::WordMap;
 
 use crate::artifacts::AnalysisArtifacts;
+use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::invocation::Invocation;
 use crate::invocation::resolver::resolve_invocation_type;
+use crate::utils::names::display_sharp_type;
 
 pub fn fetch_invocation_return_type<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
@@ -23,11 +34,102 @@ pub fn fetch_invocation_return_type<'ctx, 'arena, A>(
 where
     A: Arena,
 {
+    if context.dialect.is_sharp()
+        && let Some(return_type) = fetch_list_wrap_return_type(context, artifacts, invocation)
+    {
+        return Ok(return_type);
+    }
+
     if let Some(return_type) = fetch_invocation_provider_return_type(context, block_context, artifacts, invocation) {
         return Ok(return_type);
     }
 
     Ok(fetch_declared_invocation_return_type(context, invocation, template_result, parameters))
+}
+
+/// Gives PHP#'s `List.wrap(value)` its type `List<T>`, and refuses it when `T` could itself be a list, as spec section
+/// 24 decides. `wrap` returns an array as the list it was asked for, and a `List` and a `Map` both run as PHP arrays,
+/// so it cannot tell a value that is a list from a list of values. `T` is the value's parts that are not lists plus the
+/// elements of its lists, or the value's whole type when every part of it is an array. A refused call keeps `List<T>`,
+/// so the code around it adds no second issue.
+fn fetch_list_wrap_return_type<A>(
+    context: &mut Context<'_, '_, A>,
+    artifacts: &AnalysisArtifacts,
+    invocation: &Invocation<'_, '_, '_>,
+) -> Option<TUnion>
+where
+    A: Arena,
+{
+    let Some(FunctionLikeIdentifier::Method(class, method)) = invocation.target.get_function_like_identifier() else {
+        return None;
+    };
+    if !class.as_bytes().eq_ignore_ascii_case(b"Sharp\\List") || !method.as_bytes().eq_ignore_ascii_case(b"wrap") {
+        return None;
+    }
+
+    let value = invocation.arguments_source.get_argument(0).filter(|argument| !argument.is_unpacked())?.value()?;
+    let value_type = artifacts.get_expression_type(value)?;
+    let codebase = context.codebase;
+
+    let element_type = if value_type.types.iter().all(TAtomic::is_array) {
+        value_type.clone()
+    } else {
+        value_type.types.iter().fold(None, |element_type: Option<TUnion>, atomic| {
+            let part = match atomic {
+                TAtomic::Array(list @ TArray::List(_)) => get_array_parameters(list, codebase).1,
+                _ => TUnion::from_atomic(atomic.clone()),
+            };
+
+            Some(match element_type {
+                Some(element_type) => add_union_type(element_type, &part, codebase, CombinerOptions::default()),
+                None => part,
+            })
+        })?
+    };
+
+    let source = String::from_utf8_lossy(
+        context
+            .source_file
+            .contents
+            .get(value.start_offset() as usize..value.end_offset() as usize)
+            .unwrap_or_default(),
+    );
+    let message = if value_type.has_mixed() {
+        format!(
+            "T is {}, which could itself be a list; check what `{source}` is with `is` first",
+            display_sharp_type(value_type, codebase)
+        )
+    } else {
+        let collections: Vec<TAtomic> = element_type.types.iter().filter(|atomic| atomic.is_array()).cloned().collect();
+        if collections.is_empty() {
+            return Some(get_list(element_type));
+        }
+
+        let kind = if collections.iter().any(|atomic| matches!(atomic, TAtomic::Array(TArray::List(_)))) {
+            "list"
+        } else {
+            "map"
+        };
+        let reason = if collections.len() == element_type.types.len() { "itself a" } else { "which can be a" };
+        let collection_type = display_sharp_type(&TUnion::from_vec(collections), codebase);
+
+        format!(
+            "T is {}, {reason} {kind}; write `{source} is {collection_type} one ? [one] : {source}`",
+            display_sharp_type(&element_type, codebase)
+        )
+    };
+
+    context.collector.report_with_code(
+        IssueCode::InvalidArgument,
+        Issue::error(message)
+            .with_annotation(
+                Annotation::primary(value.span())
+                    .with_message(format!("This is `{}`.", display_sharp_type(value_type, codebase))),
+            )
+            .with_note("`wrap` returns a `List` or a `Map` as it is, because both run as PHP arrays."),
+    );
+
+    Some(get_list(element_type))
 }
 
 /// Requests a custom return type from registered providers and reports provider issues.

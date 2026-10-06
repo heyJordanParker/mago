@@ -256,7 +256,7 @@ pub(crate) fn lower(path: Vec<u8>, source: Vec<u8>) -> Box<Unit> {
         }
     };
 
-    Lowering::new(&lines, checked.names()).program(&checked)
+    Lowering::new(&lines, &file.name, checked.names()).program(&checked)
 }
 
 /// The offset each line starts at, counted as the Zend scanner counts: `\n`, `\r\n` and a lone `\r` each end a line.
@@ -284,14 +284,17 @@ impl Lines {
         self.0.len() as u32
     }
 
-    /// A diagnostic at the start of `span`, with a 1-based line and byte column. Without a span it is at line 0,
-    /// column 0, which the ABI defines as no position.
-    fn diagnostic(&self, span: Option<Span>, severity: sharp_severity, message: String) -> Diagnostic {
-        let (line, column) = span.map_or((0, 0), |span| {
-            let line = self.line(span.start.offset);
+    /// The 1-based line and byte column `offset` is at.
+    fn line_and_column(&self, offset: u32) -> (u32, u32) {
+        let line = self.line(offset);
 
-            (line, span.start.offset - self.0[line as usize - 1] + 1)
-        });
+        (line, offset - self.0[line as usize - 1] + 1)
+    }
+
+    /// A diagnostic at the start of `span`. Without a span it is at line 0, column 0, which the ABI defines as no
+    /// position.
+    fn diagnostic(&self, span: Option<Span>, severity: sharp_severity, message: String) -> Diagnostic {
+        let (line, column) = span.map_or((0, 0), |span| self.line_and_column(span.start.offset));
 
         Diagnostic { line, column, severity, message }
     }
@@ -300,7 +303,13 @@ impl Lines {
 /// Lowers one checked file. Every node is pushed after its children, and each node's children are contiguous.
 struct Lowering<'lowering, 'arena> {
     lines: &'lowering Lines,
+    /// The path `sharp_lower` received, as given.
+    path: &'lowering [u8],
     names: &'lowering ResolvedNames<'arena>,
+    /// The full name of the class-like being lowered, as PHP writes it.
+    class: &'arena [u8],
+    /// The full dotted name of the method being lowered, which `Position.current()` gives as its `function`.
+    function: Vec<u8>,
     nodes: Vec<sharp_node>,
     children: Vec<u32>,
     texts: LocalArena,
@@ -313,10 +322,13 @@ struct Lowering<'lowering, 'arena> {
 }
 
 impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
-    fn new(lines: &'lowering Lines, names: &'lowering ResolvedNames<'arena>) -> Self {
+    fn new(lines: &'lowering Lines, path: &'lowering [u8], names: &'lowering ResolvedNames<'arena>) -> Self {
         Self {
             lines,
+            path,
             names,
+            class: b"",
+            function: Vec::new(),
             nodes: Vec::new(),
             children: Vec::new(),
             texts: LocalArena::new(),
@@ -395,6 +407,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// property, at the start of its constructor, in declaration order. A class without a constructor gets a public
     /// one that spans the class.
     fn class(&mut self, class: &Class) -> u32 {
+        self.class = self.names.get(&class.name);
+        self.enter(class.name.value);
         let mut initial_values = Vec::new();
         for member in &class.members {
             if let ClassLikeMember::Property(property) = member
@@ -467,6 +481,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// An interface is a class declaration with `ZEND_ACC_INTERFACE`, and its methods are `public`, as php-src's
     /// grammar builds `interface Measured { public function area(): float; }`.
     fn interface(&mut self, interface: &Interface) -> u32 {
+        self.class = self.names.get(&interface.name);
         let mut members = Vec::new();
         for member in &interface.members {
             let ClassLikeMember::Method(method) = member else {
@@ -493,6 +508,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// child, as php-src's grammar builds `enum Status: string implements HasLabel`. An enum has no parent, so its
     /// header needs no mark.
     fn r#enum(&mut self, r#enum: &Enum) -> u32 {
+        self.class = self.names.get(&r#enum.name);
         let mut members = Vec::new();
         for member in &r#enum.members {
             members.push(match member {
@@ -542,6 +558,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             unreachable!("check_slice refuses a method without an access modifier");
         }
 
+        self.enter(method.name.value);
         let mut parameters = Vec::new();
         for parameter in &method.parameter_list.parameters {
             parameters.push(self.parameter(parameter));
@@ -628,7 +645,11 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 &auto_property.attribute_lists,
                 NULL,
             ),
-            Property::Computed(computed) => (0, &computed.attribute_lists, self.get_hook(&computed.body)),
+            Property::Computed(computed) => {
+                self.enter(property.first_variable().name);
+
+                (0, &computed.attribute_lists, self.get_hook(&computed.body))
+            }
         };
         let Some(hint) = property.hint() else {
             unreachable!("the PHP# parser gives every field and property its type");
@@ -1326,10 +1347,13 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     /// `Class.m()` is a static call on the class's full name, `super.m()` one on `parent`, and `Self.m()` one on
-    /// `static`. Any other `object.m()` is an instance call.
+    /// `static`, except the standard library's `Position.current()`. Any other `object.m()` is an instance call.
     fn method_call(&mut self, call: &MethodCall) -> u32 {
         let line = self.line(call);
         let (kind, object) = match (self.names.static_call_class(call), call.object) {
+            (Some(class), _) if is_current_position(self.names.get(&class.name), call) => {
+                return self.current_position(class, call);
+            }
             (Some(class), _) => {
                 let class = self.string(ZEND_NAME_FQ, self.line(class), self.names.get(&class.name));
 
@@ -1347,6 +1371,32 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let arguments = self.arguments(&call.argument_list);
 
         self.node(kind, 0, line, &[object, method, arguments])
+    }
+
+    /// Spec section 27: `Position.current()` in a body is the position where it is written, a new `Position` of the
+    /// file, the line and byte column of `Position`, and the function, as
+    /// `new \Sharp\Position(__FILE__, 9, 22, 'App.Tenant.Report.run')`.
+    fn current_position(&mut self, class: &ConstantAccess, call: &MethodCall) -> u32 {
+        let (line, column) = self.lines.line_and_column(class.span().start.offset);
+        let name = self.string(ZEND_NAME_FQ, line, b"Sharp\\Position");
+        let file = self.string(0, line, self.path);
+        let line_number = self.zval(line, sharp_value::SHARP_LONG, |node| node.long_value = i64::from(line));
+        let column = self.zval(line, sharp_value::SHARP_LONG, |node| node.long_value = i64::from(column));
+        let function = self.function.clone();
+        let function = self.string(0, line, &function);
+        let arguments =
+            self.node(SHARP_AST_ARG_LIST, 0, self.line(&call.argument_list), &[file, line_number, column, function]);
+
+        self.node(SHARP_AST_NEW, 0, self.line(call), &[name, arguments])
+    }
+
+    /// Makes `name`, a member of the class-like being lowered, the function `Position.current()` gives, by its full
+    /// dotted name.
+    fn enter(&mut self, name: &[u8]) {
+        self.function.clear();
+        self.function.extend(self.class.iter().map(|&byte| if byte == b'\\' { b'.' } else { byte }));
+        self.function.push(b'.');
+        self.function.extend_from_slice(name);
     }
 
     fn member(&mut self, member: &ClassLikeMemberSelector) -> u32 {
@@ -1509,6 +1559,14 @@ fn union_members<'hint, 'arena>(hint: &'hint Hint<'arena>) -> Vec<&'hint Hint<'a
         }
         _ => vec![hint],
     }
+}
+
+/// Whether `call`, a static call on `class`, is the standard library's `Position.current()`. PHP compares class and
+/// method names ignoring case.
+fn is_current_position(class: &[u8], call: &MethodCall) -> bool {
+    class.eq_ignore_ascii_case(b"Sharp\\Position")
+        && matches!(call.method, ClassLikeMemberSelector::Identifier(method) if method.value.eq_ignore_ascii_case(b"current"))
+        && call.argument_list.arguments.is_empty()
 }
 
 /// The flags of a member's modifiers. Every modifier is named, so a new one does not compile until it is decided.
@@ -1700,7 +1758,7 @@ mod tests {
             let program = parse_file_with_dialect(&arena, &file, Dialect::Sharp, ParserSettings::default());
             let checked = CheckedProgram::unchecked(program, NameResolver::new(&arena).resolve(program));
 
-            Lowering::new(&Lines::new(&file.contents), checked.names()).program(&checked)
+            Lowering::new(&Lines::new(&file.contents), &file.name, checked.names()).program(&checked)
         });
 
         assert_eq!(unit.abi.node_count, 0, "{method}");

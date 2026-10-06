@@ -1342,6 +1342,105 @@ fn int_and_float_parse_have_the_types_of_the_sharp_library_classes() {
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
 }
 
+/// `Position.current()` replaces `__DIR__`, `__FILE__` and `__LINE__`, spec section 27.
+#[test]
+fn position_current_has_the_types_of_the_sharp_library_class() {
+    let sharp = "namespace Demo;\n\nclass Reports\n{\n    public string stubsFolder()\n    {\n        const stubs = Position.current().directory + \"/stubs\";\n        return stubs;\n    }\n\n    public int line() => Position.current().line;\n\n    public int wrong() => Position.current().directory;\n}\n";
+
+    assert_eq!(issues(("src/Demo/Reports.sharp", sharp), &[]), ["13:27 invalid-return-statement"]);
+}
+
+/// `Environment` replaces `$_ENV` and `getenv()`, spec section 29.
+#[test]
+fn an_environment_variable_is_a_nullable_string() {
+    let sharp = "namespace Demo;\n\nclass Deploy\n{\n    public Deploy(private Environment environment) { }\n\n    public static Deploy make() => new Deploy(new Environment());\n\n    public string region() => this.environment.variable(\"X\") ?? \"d\";\n\n    public int wrong() => this.environment.variable(\"X\") ?? \"d\";\n}\n";
+
+    assert_eq!(issues(("src/Demo/Deploy.sharp", sharp), &[]), ["11:27 invalid-return-statement"]);
+}
+
+/// `arguments` and `currentDirectory` are `{ get; }` properties, so the process environment is read, never written.
+#[test]
+fn the_environment_arguments_and_current_directory_are_read_only() {
+    let sharp = "namespace Demo;\n\nclass Deploy\n{\n    public Deploy(private Environment environment) { }\n\n    public List<string> arguments() => this.environment.arguments;\n\n    public string folder() => this.environment.currentDirectory;\n\n    public List<int> numbers() => this.environment.arguments;\n\n    public void change()\n    {\n        this.environment.arguments = [\"deploy\"];\n        this.environment.currentDirectory = \"/tmp\";\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Deploy.sharp", sharp), &[]),
+        ["11:35 invalid-return-statement", "15:26 invalid-property-write", "16:26 invalid-property-write"]
+    );
+    assert_eq!(
+        messages(("src/Demo/Deploy.sharp", sharp), &[])[1..],
+        [
+            "Cannot initialize readonly property `Sharp\\Environment::$arguments` from within `Demo\\Deploy`.",
+            "Cannot initialize readonly property `Sharp\\Environment::$currentDirectory` from within `Demo\\Deploy`.",
+        ]
+    );
+}
+
+/// `List.wrap` replaces `(array)value`, spec section 24: a value that is never itself a list wraps as one call.
+#[test]
+fn list_wrap_of_a_value_or_a_list_of_it_is_a_list_of_the_value() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public List<string> read(string|List<string> value)\n    {\n        List<string> tags = List.wrap(value);\n        return tags;\n    }\n\n    public List<int> wrong(string|List<string> value) => List.wrap(value);\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["11:58 invalid-return-statement"]);
+}
+
+/// A `List` runs as a PHP array, so `wrap` cannot tell a list of lists from a list to wrap. The refusal names the `is`
+/// form that decides it, and the call keeps the type the code asked for, so the assignment adds no second issue.
+#[test]
+fn list_wrap_of_a_list_is_refused_with_the_is_form_that_decides_it() {
+    let sharp = "namespace Demo;\n\nclass Rows\n{\n    public List<List<int>> read(List<int> numbers)\n    {\n        List<List<int>> rows = List.wrap(numbers);\n        return rows;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Rows.sharp", sharp), &[]), ["7:42 invalid-argument"]);
+    assert_eq!(
+        messages(("src/Demo/Rows.sharp", sharp), &[]),
+        ["T is List<int>, itself a list; write `numbers is List<int> one ? [one] : numbers`"]
+    );
+}
+
+/// A value from plain PHP typed `mixed` arrives as `Any?`, which could hold a list.
+#[test]
+fn list_wrap_of_a_value_of_any_type_is_refused() {
+    let settings = "<?php\n\nnamespace Lib;\n\nfinal class Settings\n{\n    public static function raw(string $key): mixed\n    {\n        return $key;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Settings;\n\nclass Plans\n{\n    public void read()\n    {\n        List.wrap(Settings.raw(\"plan\"));\n        List.wrap(Settings.raw(\"plan\") ?? \"free\");\n    }\n}\n";
+    let others = [("src/Lib/Settings.php", settings)];
+
+    assert_eq!(issues(("src/Demo/Plans.sharp", sharp), &others), ["9:19 invalid-argument", "10:19 invalid-argument"]);
+    assert_eq!(
+        messages(("src/Demo/Plans.sharp", sharp), &others),
+        [
+            "T is Any?, which could itself be a list; check what `Settings.raw(\"plan\")` is with `is` first",
+            "T is Any, which could itself be a list; check what `Settings.raw(\"plan\") ?? \"free\"` is with `is` first",
+        ]
+    );
+}
+
+/// A `Map` runs as a PHP array too, so `wrap` would return it as the list it was asked to build.
+#[test]
+fn list_wrap_of_a_map_or_a_list_of_lists_is_refused() {
+    let sharp = "namespace Demo;\n\nclass Rows\n{\n    public void read(Map<string, int> counts, List<List<int>> rows, string|Map<string, int> either)\n    {\n        List.wrap(counts);\n        List.wrap(rows);\n        List.wrap(either);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Rows.sharp", sharp), &[]),
+        ["7:19 invalid-argument", "8:19 invalid-argument", "9:19 invalid-argument"]
+    );
+    assert_eq!(
+        messages(("src/Demo/Rows.sharp", sharp), &[]),
+        [
+            "T is Map<string, int>, itself a map; write `counts is Map<string, int> one ? [one] : counts`",
+            "T is List<List<int>>, itself a list; write `rows is List<List<int>> one ? [one] : rows`",
+            "T is string|Map<string, int>, which can be a map; write `either is Map<string, int> one ? [one] : either`",
+        ]
+    );
+}
+
+/// Plain PHP calls `\Sharp\List::wrap` under PHP's rules, with no PHP# refusal.
+#[test]
+fn list_wrap_called_from_php_keeps_the_php_checks() {
+    let php = "<?php\n\nnamespace Demo;\n\nclass Rows\n{\n    /**\n     * @param list<int> $numbers\n     * @param array<string, int> $counts\n     */\n    public function read(array $numbers, array $counts, mixed $raw): void\n    {\n        \\Sharp\\List::wrap($numbers);\n        \\Sharp\\List::wrap($counts);\n        \\Sharp\\List::wrap($raw);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Rows.php", php), &[]), Vec::<String>::new());
+}
+
 #[test]
 fn expression_bodies_and_computed_properties_are_checked_as_php_checks_their_twins() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    private string name = \"\";\n    private int count = 0;\n\n    public Report(string name) => this.name = name;\n\n    public string slug => strtolower(this.name);\n    public int size => this.name;\n    public int total() => this.count + 1;\n    public string label() => this.count;\n    public void touch() => this.count++;\n    public void reset(int unused) => this.count = 0;\n    public void rename() => this.slug = \"x\";\n}\n";
@@ -2153,7 +2252,7 @@ fn a_collection_method_message_names_the_sharp_type() {
     assert_eq!(
         messages,
         [
-            "Invalid argument type for argument #1 of `List<Demo\\Line>.add`: expected `Demo\\Line`, but found `int(1)`.",
+            "Invalid argument type for argument #1 of `List<Line>.add`: expected `Demo\\Line`, but found `int(1)`.",
             "Invalid argument type for argument #1 of `List<int>.set`: expected `int`, but found `string('a')`.",
             "Method `add` does not exist on `Map<string, int>`.",
             "Method `delete` does not exist on `List<int>`.",

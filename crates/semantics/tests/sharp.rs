@@ -2471,6 +2471,73 @@ fn a_cast_or_a_ternary_in_a_parameter_default_is_not_supported_yet() {
     assert_eq!(issues(ternary), ["5:32 This expression is not supported yet in PHP#."]);
 }
 
+/// Spec section 27: as a parameter's default, `Position.current()` gives the caller's position, which waits for
+/// typed compilation. The engine would run it as the parameter's own position, so the checker refuses it, and PHP
+/// compares method names ignoring case.
+#[test]
+fn position_current_as_a_parameter_default_is_not_supported_yet() {
+    let code = "namespace App;\n\nclass Reports\n{\n    public static void logSlow(string message, Position caller = Position.current())\n    {\n    }\n}\n";
+    let shouted = leak(code.replace("Position.current()", "Position.CURRENT()"));
+    let signature = "namespace App;\n\ninterface Logs\n{\n    void log(Position caller = Position.current());\n}\n";
+    let lambda =
+        leak(method("        const log = (Position caller = Position.current()) => caller;\n        return extra;\n"));
+    let refusal = "A `Position.current()` default is not supported yet in PHP#.";
+
+    assert_eq!(issues(code), [format!("5:66 {refusal}")]);
+    assert_eq!(issues(shouted), [format!("5:66 {refusal}")]);
+    assert_eq!(issues(signature), [format!("5:32 {refusal}")]);
+    assert_eq!(issues(lambda), [format!("7:40 {refusal}")]);
+    assert_eq!(
+        check("src/Report.sharp", code).into_iter().map(|issue| issue.notes).collect::<Vec<_>>(),
+        [[
+            "As a parameter's default, `Position.current()` gives the caller's position, which waits for typed compilation."
+        ]]
+    );
+}
+
+/// In a body and in an initial value that runs in the constructor, `Position.current()` gives the position where it
+/// is written, which the bridge lowers.
+#[test]
+fn position_current_in_a_body_or_an_initial_value_is_in_the_slice() {
+    let code = "namespace App;\n\nclass Reports\n{\n    private Position created = Position.current();\n    public Position made { get; } = Position.current();\n\n    public string stubsFolder()\n    {\n        const stubs = Position.current().directory + \"/stubs\";\n        return stubs;\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+/// An imported or a declared `Position` is not the standard library's, so its `current()` default keeps the refusal
+/// of any call in a constant expression.
+#[test]
+fn a_current_default_of_an_imported_or_declared_position_keeps_the_constant_expression_refusal() {
+    let imported = "namespace App;\n\nimport App.Shared.Position;\n\nclass Reports\n{\n    public static void logSlow(Position caller = Position.current())\n    {\n    }\n}\n";
+    let declared = "namespace App;\n\nclass Reports\n{\n    public static void logSlow(Position caller = Position.current())\n    {\n    }\n}\n\nclass Position\n{\n}\n";
+
+    assert_eq!(issues(imported), ["7:50 This expression is not supported yet in PHP#."]);
+    assert_eq!(issues(declared), ["5:50 This expression is not supported yet in PHP#."]);
+}
+
+/// A class constant's value and an enum case's value are constant expressions as a default is, and keep the refusal of
+/// any call there. PHP's own check reports the constant's value too.
+#[test]
+fn position_current_as_a_constant_or_an_enum_case_value_keeps_the_constant_expression_refusal() {
+    let code = "namespace App;\n\nclass Reports\n{\n    public const Position HERE = Position.current();\n}\n\nenum Spot : string\n{\n    case Here = Position.current();\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:34 Constant `Reports::HERE` value contains a non-constant expression.",
+            "5:34 This expression is not supported yet in PHP#.",
+            "10:17 This expression is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn a_php_file_keeps_its_results_for_a_position_current_default() {
+    let code = "<?php\n\nnamespace App;\n\nclass Reports\n{\n    public static function logSlow(string $message, Position $caller = Position::current()): void\n    {\n    }\n}\n";
+
+    assert_eq!(issues_in("src/Report.php", code), Vec::<String>::new());
+}
+
 #[test]
 fn a_positional_argument_after_a_spread_or_a_spread_after_a_named_argument_is_an_error_as_in_php() {
     let code = leak(method(

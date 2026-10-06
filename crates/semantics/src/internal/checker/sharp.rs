@@ -148,7 +148,9 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   own checks report a variadic parameter that is not the last or has a default. `check_parameter_list` reports a
 ///   variadic parameter that declares a member or has a `void` type in a `.sharp` file only, as upstream Mago reports
 ///   neither. An optional parameter before a required one is an error, because PHP would make it required. A
-///   variadic parameter is not a required one, as in PHP.
+///   variadic parameter is not a required one, as in PHP. A default of `Position.current()` of the standard library is
+///   not supported yet, because as a default it gives the caller's position, spec section 27, which waits for typed
+///   compilation.
 /// - Types: `int`, `float`, `bool`, `string`, a class written by its short name, `List<T>` and `Map<TKey, TValue>`
 ///   of these, function types `Function<R(P1, P2)>` of these, and `void` as a return type, a function type's too. A
 ///   `Map`'s key is `int` or `string`. PHP's own check reports a `void` parameter and a `void` field. Each of them is
@@ -215,9 +217,10 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   ternary as the condition of another needs parentheses, as in PHP 8.
 /// - Casts: `(int)`, `(float)` and `(string)` in a method body, as spec section 24 writes them. PHP's other casts and
 ///   its cast aliases, such as `(bool)` and `(integer)`, are errors.
-/// - A bare `Int` or `Float` before `.` is the class `Sharp\Int` or `Sharp\Float` of the engine's standard library,
-///   unless the file imports the name, so `Int.parse(text)` and `Float.tryParse(text)` call it. PHP reserves both
-///   names, so no file declares a class of either.
+/// - A bare `Int`, `Float`, `Position`, `Environment` or `List` names the class `Sharp\<Name>` of the engine's standard
+///   library wherever a class is named, unless the file imports or declares a class-like of that name, spec section 23.
+///   So `Int.parse(text)`, `Position.current()`, `new Environment()` and `List.wrap(value)` call it. PHP reserves
+///   `Int`, `Float` and `List`, so no file declares a class of those.
 ///
 /// The check runs on every node the checking walk enters, and refuses any node, or any position of a node, that this
 /// list does not name. It reports each refusal once, at its outermost node, and skips the nodes inside the refusal's
@@ -738,6 +741,23 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             Parameter,
         ) => Some(Parameter),
         (Node::PropertyHookList(_), Parameter) => None,
+        (Node::FunctionLikeParameterDefaultValue(default), Parameter)
+            if let Expression::Call(Call::Method(call)) = default.value
+                && let Some(class) = context.names.static_call_class(call)
+                && context.names.get(&class.name).eq_ignore_ascii_case(b"Sharp\\Position")
+                && let ClassLikeMemberSelector::Identifier(method) = &call.method
+                && method.value.eq_ignore_ascii_case(b"current") =>
+        {
+            context.report(
+                Issue::error("A `Position.current()` default is not supported yet in PHP#.")
+                    .with_annotation(Annotation::primary(call.span()).with_message("Not supported yet."))
+                    .with_note(
+                        "As a parameter's default, `Position.current()` gives the caller's position, which waits for typed compilation.",
+                    ),
+            );
+
+            None
+        }
         (Node::FunctionLikeParameterDefaultValue(_), Parameter) => Some(Constant),
         (Node::Block(_), Method | Body) => Some(Body),
         (Node::MethodExpressionBody(_), Method) => Some(Body),

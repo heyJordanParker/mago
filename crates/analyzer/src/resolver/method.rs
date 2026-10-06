@@ -352,7 +352,7 @@ where
                                     resolve_called_property(context, block_context, classname, selector)
                                 {
                                     result.called_properties.push(property);
-                                } else if let Some(collection) = display_sharp_collection(obj_type) {
+                                } else if let Some(collection) = display_sharp_collection(obj_type, context.codebase) {
                                     report_non_existent_collection_method(
                                         context,
                                         object.span(),
