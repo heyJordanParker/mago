@@ -1068,7 +1068,7 @@ where
     if has_complete_hierarchy {
         check_unused_template_parameters(context, class_like_metadata);
     }
-    check_class_like_properties(context, class_like_metadata);
+    check_class_like_properties(context, class_like_metadata, members);
     check_docblock_declared_members(context, class_like_metadata, declaration_span);
 
     let mut scope = ScopeContext::new(ReferenceOrigin::Symbol((class_like_metadata.name, mago_word::empty_word())));
@@ -3172,10 +3172,30 @@ fn check_docblock_declared_members<A>(
     }
 }
 
+/// Whether the PHP# member named `property`, with its `$`, declares accessors, which make it a property, as a
+/// constructor parameter's can. A member without them is a field.
+fn has_accessors(members: &[ClassLikeMember<'_>], property: Word) -> bool {
+    members.iter().any(|member| match member {
+        ClassLikeMember::Property(Property::Hooked(hooked)) => {
+            php_variable_name(hooked.item.variable().name) == property
+        }
+        ClassLikeMember::Property(Property::Computed(computed)) => {
+            php_variable_name(computed.variable.name) == property
+        }
+        ClassLikeMember::Method(method) => method
+            .parameter_list
+            .parameters
+            .iter()
+            .any(|parameter| parameter.hooks.is_some() && php_variable_name(parameter.variable.name) == property),
+        _ => false,
+    })
+}
+
 #[allow(clippy::similar_names)]
 fn check_class_like_properties<'ctx, A>(
     context: &mut Context<'ctx, '_, A>,
     class_like_metadata: &'ctx ClassLikeMetadata,
+    members: &[ClassLikeMember<'_>],
 ) where
     A: Arena,
 {
@@ -3514,9 +3534,24 @@ fn check_class_like_properties<'ctx, A>(
                     let class_name = class_like_metadata.original_name;
 
                     // A PHP# field over an untyped PHP property writes a type the engine drops when the class links, so
-                    // it fits the parent's `@var` type, or any type without one, spec section 6.1.
+                    // it fits the parent's `@var` type, or any type without one, spec section 6.1. A property keeps its
+                    // written type, which PHP refuses there, so it cannot replace an untyped PHP property yet.
                     if context.dialect.is_sharp() {
-                        if let Some(parent_type) = parent_property.type_metadata.as_ref().filter(|t| t.from_docblock) {
+                        if has_accessors(members, property_name) {
+                            context.collector.report_with_code(
+                                IssueCode::NotSupportedYet,
+                                Issue::error(format!(
+                                    "A property that replaces the untyped PHP property `{parent_class_name}::{property_name}` is not supported yet."
+                                ))
+                                .with_annotation(
+                                    Annotation::primary(declaring_type.span)
+                                        .with_message("PHP refuses a type the parent property does not have."),
+                                )
+                                .with_help("Rename the property, or give the PHP property a type."),
+                            );
+                        } else if let Some(parent_type) =
+                            parent_property.type_metadata.as_ref().filter(|t| t.from_docblock)
+                        {
                             let parent_type_union = localize_parent_type(
                                 context.codebase,
                                 class_like_metadata,

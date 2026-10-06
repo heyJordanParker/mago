@@ -51,6 +51,7 @@ use crate::context::block::ReferenceConstraintSource;
 use crate::context::scope::var_has_root;
 use crate::context::scope::var_references_dynamic;
 use crate::error::AnalysisError;
+use crate::expression::constant_access::field_storage;
 use crate::expression::find_expression_logic_issues;
 use crate::formula::get_formula;
 use crate::resolver::static_property::StaticProperty;
@@ -376,6 +377,14 @@ where
         artifacts.record_loop_assignment_target(target_expression_id);
     }
 
+    // `field` is written as the property's storage, `$this->name`, which its accessor writes without calling `set`.
+    let target_expression = match target_expression {
+        Expression::ConstantAccess(field) if context.resolved_names.binding(&field.name) == Some(Binding::Field) => {
+            field_storage(field, context, block_context).unwrap_or(target_expression)
+        }
+        _ => target_expression,
+    };
+
     if let Some(source_expression) = source_expression {
         if source_expression.is_reference() != source_type.by_reference() {
             Rc::make_mut(&mut source_type).set_by_reference(source_expression.is_reference());
@@ -636,7 +645,7 @@ pub fn analyze_assignment_to_variable<'ctx, 'arena, A>(
             false,
             false,
             false,
-            &mut ComparisonResult::default(),
+            &mut ComparisonResult::with_strict_nonnull(context.dialect.is_sharp()),
         )
     {
         let variable_name = variable_id.to_string();
@@ -687,7 +696,11 @@ pub fn analyze_assignment_to_variable<'ctx, 'arena, A>(
         );
     }
 
-    if assigned_type.is_never() {
+    // `php_shape` holds the value a PHP# `is`, `as` or `match` tests in a hidden local named with a `#`, which no
+    // source can write. The user never wrote its assignment, so no issue judges it.
+    let is_hidden = variable_id.as_bytes().contains(&b'#');
+
+    if !is_hidden && assigned_type.is_never() {
         let mut issue =
             Issue::error("Invalid assignment: the right-hand side has type `never` and cannot produce a value.")
                 .with_annotation(
@@ -732,7 +745,14 @@ pub fn analyze_assignment_to_variable<'ctx, 'arena, A>(
         from_docblock = true;
     }
 
-    if !from_docblock && assigned_type.is_mixed() && !variable_id.as_bytes().starts_with(b"$_") {
+    // A PHP# local holds a value of unknown type as `Any?`, and spec section 24 refuses each use of it until it is
+    // checked, so storing it is not reported.
+    if !is_hidden
+        && !from_docblock
+        && assigned_type.is_mixed()
+        && !variable_id.as_bytes().starts_with(b"$_")
+        && !context.dialect.is_sharp()
+    {
         let assigned_type_str = assigned_type.get_id();
 
         let mut issue = Issue::warning(format!(

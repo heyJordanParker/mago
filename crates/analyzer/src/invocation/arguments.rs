@@ -303,7 +303,7 @@ pub fn verify_argument_type<'arena, A>(
         if context.dialect.is_sharp() { None } else { get_backing_array_type(parameter_type, context.codebase) };
     let parameter_type = backing_parameter_type.as_ref().unwrap_or(parameter_type);
 
-    let mut union_comparison_result = ComparisonResult::new();
+    let mut union_comparison_result = ComparisonResult::with_strict_nonnull(context.dialect.is_sharp());
     let type_match_found =
         is_contained_by(context.codebase, input_type, parameter_type, true, true, false, &mut union_comparison_result);
 

@@ -59,6 +59,7 @@ use crate::resolver::method::UnresolvedMethod;
 use crate::resolver::method::report_non_documented_method;
 use crate::resolver::method::report_non_existent_method;
 use crate::resolver::method::resolve_method_targets;
+use crate::resolver::property::check_redundant_nullsafe;
 use crate::utils::expression::get_block_expression_id;
 use crate::utils::expression::is_this;
 use crate::visibility::check_method_visibility;
@@ -154,6 +155,14 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for NullSafeMethodCall<'arena> {
             true, // is_nullsafe
             self.span(),
         )?;
+
+        // Mago reports a redundant `?->` only on a property. Spec section 14.4 rejects every null check that cannot
+        // matter, so a PHP# file checks the method call too.
+        if context.dialect.is_sharp()
+            && let Some(object_type) = artifacts.get_expression_type(self.object).cloned()
+        {
+            check_redundant_nullsafe(context, self.question_mark_arrow, self.object, &object_type);
+        }
 
         if context.plugin_registry.has_nullsafe_method_call_hooks() {
             let mut hook_context = HookContext::new(context, block_context, artifacts);
@@ -435,8 +444,9 @@ where
 }
 
 /// A method that changes a PHP# collection writes it back where it lives, as spec section 12 decides, so the
-/// collection is a place the caller can write: a local or a parameter, or a property whose `set` the caller reaches,
-/// which the property write check decides as it does for an index write.
+/// collection is a place the caller can write: a local or a parameter, `field`, which its accessor writes as the
+/// storage, or a property whose `set` the caller reaches, which the property write check decides as it does for an
+/// index write.
 fn check_changed_collection<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
     block_context: &mut BlockContext<'ctx>,
@@ -448,7 +458,7 @@ where
 {
     match collection.unparenthesized() {
         Expression::ConstantAccess(name)
-            if matches!(context.resolved_names.binding(&name.name), Some(Binding::Local(_))) =>
+            if matches!(context.resolved_names.binding(&name.name), Some(Binding::Local(_) | Binding::Field)) =>
         {
             Ok(())
         }

@@ -45,6 +45,7 @@ use mago_codex::ttype::get_never;
 use mago_codex::ttype::get_void;
 use mago_codex::ttype::union::TUnion;
 use mago_codex::ttype::wrap_atomic;
+use mago_codex::visibility::Visibility;
 use mago_names::binding::php_variable_name;
 use mago_php_version::feature::Feature;
 use mago_reporting::Annotation;
@@ -76,6 +77,7 @@ use crate::statement::r#static::infer_static_local_types;
 use crate::utils::expression::get_variable_id;
 
 pub mod function;
+pub mod rejected_nullable_parameter;
 pub mod unused_parameter;
 
 #[derive(Debug, Clone, Copy)]
@@ -433,31 +435,13 @@ where
         // A conditional return type whose branches are all `void`/`never` erases to `void`, which
         // the check above cannot see through since it only sees the unexpanded conditional.
         if !expanded_type.is_void() {
-            let expected_return_type_id = expanded_type.get_id();
-
-            let help_message = if expanded_type.is_nullable() {
-                "Ensure all code paths end with a `return` statement. You may need to add `return null;` to the paths that currently don't return a value.".to_string()
-            } else {
-                format!(
-                    "Add a `return` statement that provides a value of type '{expected_return_type_id}' to all paths, or change the function's return type to '{expected_return_type_id}|null' and return `null` explicitly."
-                )
-            };
-
-            context.collector.report_with_code(
-                IssueCode::MissingReturnStatement,
-                Issue::error(format!("Missing return statement in function `{}`", function_metadata.name))
-                    .with_annotation(
-                        Annotation::primary(function_metadata.name_span.unwrap_or(function_metadata.span))
-                            .with_message(format!(
-                                "This function is declared to return '{expected_return_type_id}'..."
-                            )),
-                    )
-                    .with_annotation(
-                        Annotation::secondary(body.span())
-                            .with_message("...but this path can exit without returning a value."),
-                    )
-                    .with_note("A function that does not explicitly return a value will implicitly return `null`.")
-                    .with_help(help_message),
+            report_missing_return(
+                context,
+                "function",
+                function_metadata.name,
+                function_metadata.name_span.unwrap_or(function_metadata.span),
+                body.span(),
+                &expanded_type,
             );
         }
     }
@@ -686,9 +670,10 @@ where
                 default_value.value.analyze(context, block_context, artifacts)
             })?;
 
+            // PHP# writes `mixed` as `Any`, which never holds null, so its default is checked too.
             if !parameter_metadata.flags.is_variadic()
                 && let Some(parameter_type_metadata) = parameter_metadata.get_type_metadata()
-                && !parameter_type_metadata.type_union.is_mixed()
+                && (context.dialect.is_sharp() || !parameter_type_metadata.type_union.is_mixed())
             {
                 let expected_type = expand_type_metadata(
                     context,
@@ -724,7 +709,7 @@ where
         if parameter_node.is_promoted_property()
             && let Some(hook_list) = &parameter_node.hooks
         {
-            let property_name = word(parameter_node.variable.name);
+            let property_name = php_variable_name(parameter_node.variable.name);
             for hook in &hook_list.hooks {
                 analyze_property_hook(hook, property_name, context, block_context, artifacts)?;
             }
@@ -732,6 +717,43 @@ where
     }
 
     Ok(())
+}
+
+/// Reports a body that can end without returning a value, though the `kind` named `name`, declared at `declaration`,
+/// returns `expected_type`: a function, or a PHP# `get` accessor, which returns its property's type.
+pub(crate) fn report_missing_return<A>(
+    context: &mut Context<'_, '_, A>,
+    kind: &str,
+    name: Word,
+    declaration: Span,
+    body: Span,
+    expected_type: &TUnion,
+) where
+    A: Arena,
+{
+    let expected_return_type_id = expected_type.get_id();
+
+    let help_message = if expected_type.is_nullable() {
+        "Ensure all code paths end with a `return` statement. You may need to add `return null;` to the paths that currently don't return a value.".to_string()
+    } else {
+        format!(
+            "Add a `return` statement that provides a value of type '{expected_return_type_id}' to all paths, or change the {kind}'s return type to '{expected_return_type_id}|null' and return `null` explicitly."
+        )
+    };
+
+    context.collector.report_with_code(
+        IssueCode::MissingReturnStatement,
+        Issue::error(format!("Missing return statement in {kind} `{name}`"))
+            .with_annotation(
+                Annotation::primary(declaration)
+                    .with_message(format!("This {kind} is declared to return '{expected_return_type_id}'...")),
+            )
+            .with_annotation(
+                Annotation::secondary(body).with_message("...but this path can exit without returning a value."),
+            )
+            .with_note(format!("A {kind} that does not explicitly return a value will implicitly return `null`."))
+            .with_help(help_message),
+    );
 }
 
 /// Checks if a type is a single unresolved template parameter with a mixed bound.
@@ -1060,7 +1082,10 @@ fn check_return_type_width<'ctx, A>(
 ) where
     A: Arena,
 {
-    if !context.settings.find_overly_wide_return_types {
+    // Spec section 14.4 makes a `?` on a PHP# method that never returns null an error, so a PHP# file checks the
+    // `null` branch even when the setting is off.
+    let null_branch_only = !context.settings.find_overly_wide_return_types;
+    if null_branch_only && !context.dialect.is_sharp() {
         return;
     }
 
@@ -1075,12 +1100,22 @@ fn check_return_type_width<'ctx, A>(
         return;
     };
 
-    let is_overriding_method = function_like_metadata.kind.is_method()
-        && block_context.scope.get_class_like_name().is_some_and(|class_name| {
-            context.codebase.method_is_overriding(class_name.as_bytes(), function_like_metadata.name.as_bytes())
-        });
+    // A PHP# method keeps a `?` a subclass's override may need. A PHP method keeps Mago's rule, which skips the
+    // override itself.
+    let keeps_declared_type = if context.dialect.is_sharp() {
+        function_like_metadata
+            .method_metadata
+            .as_ref()
+            .is_some_and(|method| !method.is_final && method.visibility != Visibility::Private)
+            && block_context.scope.get_class_like().is_some_and(|class_like| !class_like.flags.is_final())
+    } else {
+        function_like_metadata.kind.is_method()
+            && block_context.scope.get_class_like_name().is_some_and(|class_name| {
+                context.codebase.method_is_overriding(class_name.as_bytes(), function_like_metadata.name.as_bytes())
+            })
+    };
 
-    if is_overriding_method {
+    if keeps_declared_type {
         return;
     }
 
@@ -1096,7 +1131,14 @@ fn check_return_type_width<'ctx, A>(
         return;
     }
 
-    check_return_type_metadata_width(context, block_context, artifacts, function_like_metadata, return_type_metadata);
+    check_return_type_metadata_width(
+        context,
+        block_context,
+        artifacts,
+        function_like_metadata,
+        return_type_metadata,
+        null_branch_only,
+    );
 
     // The effective (docblock) type and the native hint are separate declarations
     // with separate source spans, so each overly-wide one needs its own fix. When
@@ -1112,6 +1154,7 @@ fn check_return_type_width<'ctx, A>(
             artifacts,
             function_like_metadata,
             native_return_type_metadata,
+            null_branch_only,
         );
     }
 }
@@ -1122,6 +1165,7 @@ fn check_return_type_metadata_width<'ctx, A>(
     artifacts: &mut AnalysisArtifacts,
     function_like_metadata: &'ctx FunctionLikeMetadata,
     return_type_metadata: &TypeMetadata,
+    null_branch_only: bool,
 ) where
     A: Arena,
 {
@@ -1180,6 +1224,7 @@ fn check_return_type_metadata_width<'ctx, A>(
         .types
         .iter()
         .filter(|declared_atomic| !any_inferred_matches(declared_atomic))
+        .filter(|declared_atomic| !null_branch_only || declared_atomic.is_null())
         .collect::<Vec<_>>();
     if unused_atomics.is_empty() {
         return;
@@ -1214,6 +1259,10 @@ fn check_return_type_metadata_width<'ctx, A>(
         issue.with_help(format!("Remove `{unused_list}` from the return type, or add a branch that returns it."))
     };
 
+    if unused_atomics.iter().any(|unused_atomic| unused_atomic.is_null()) {
+        issue = context.as_null_check_error(issue);
+    }
+
     context.collector.propose_with_code(IssueCode::OverlyWideReturnType, issue, |edits| {
         if let Some(narrowed_type_text) = narrowed_type_text {
             edits.push(
@@ -1244,17 +1293,21 @@ where
     let end = return_span.end_offset() as usize;
     let source_text = std::str::from_utf8(context.source_file.contents.get(start..end)?).ok()?;
 
-    let (mut leading_nullable, rest) = match source_text.strip_prefix('?') {
-        Some(rest) => (true, rest),
-        None => (false, source_text),
+    // PHP writes a nullable type `?int`, and PHP# writes it `int?`.
+    let (mut nullable_marker, rest) = if let Some(rest) = source_text.strip_prefix('?') {
+        (Some(true), rest)
+    } else if let Some(rest) = source_text.strip_suffix('?') {
+        (Some(false), rest)
+    } else {
+        (None, source_text)
     };
 
     let mut segments = split_top_level_union_members(rest);
 
     for atomic in unused_atomics {
         if atomic.is_null() {
-            if leading_nullable {
-                leading_nullable = false;
+            if nullable_marker.is_some() {
+                nullable_marker = None;
                 continue;
             }
 
@@ -1268,16 +1321,19 @@ where
     }
 
     if segments.is_empty() {
-        // Everything but the implicit `null` from the `?` prefix was removed, so
+        // Everything but the implicit `null` from the `?` was removed, so
         // the narrowed type is spelled `null` rather than a bare, invalid `?`.
         // If nothing at all remains, give up.
-        return leading_nullable.then(|| "null".to_string());
+        return nullable_marker.map(|_| "null".to_string());
     }
 
-    let mut result = if leading_nullable { "?".to_string() } else { String::new() };
-    result.push_str(&segments.iter().map(|segment| segment.trim()).collect::<Vec<_>>().join("|"));
+    let narrowed = segments.iter().map(|segment| segment.trim()).collect::<Vec<_>>().join("|");
 
-    Some(result)
+    Some(match nullable_marker {
+        Some(true) => format!("?{narrowed}"),
+        Some(false) => format!("{narrowed}?"),
+        None => narrowed,
+    })
 }
 
 /// Whether a source-text `segment` denotes the same type as the canonical
@@ -1567,7 +1623,14 @@ fn check_parameter_default_value<'ctx, 'arena, A>(
 ) where
     A: Arena,
 {
-    if declared_type.is_mixed() || declared_type.has_template_types() || declared_type.is_generic_parameter() {
+    // A PHP# type holds null only when it is written with `?`, so its `Any` is checked and it has no implicitly
+    // nullable parameter.
+    let is_sharp = context.dialect.is_sharp();
+
+    if (declared_type.is_mixed() && !is_sharp)
+        || declared_type.has_template_types()
+        || declared_type.is_generic_parameter()
+    {
         return;
     }
 
@@ -1579,11 +1642,11 @@ fn check_parameter_default_value<'ctx, 'arena, A>(
         return;
     }
 
-    let allow_implicit_null_default = default_type.is_null()
-        && context.settings.version.is_supported(Feature::ImplicitlyNullableParameterTypes)
-        && !context.dialect.is_sharp();
+    let allow_implicit_null_default = !is_sharp
+        && default_type.is_null()
+        && context.settings.version.is_supported(Feature::ImplicitlyNullableParameterTypes);
 
-    let mut comparison_result = ComparisonResult::new();
+    let mut comparison_result = ComparisonResult::with_strict_nonnull(is_sharp);
     if union_comparator::is_contained_by(
         context.codebase,
         default_type,

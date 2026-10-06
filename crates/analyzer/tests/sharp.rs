@@ -69,18 +69,16 @@ fn issues_in(
     analyzed: (&'static str, &'static str),
     others: &[(&'static str, &'static str)],
 ) -> Vec<String> {
-    let code = analyzed.1;
+    analyze(registry, settings, analyzed, others).iter().map(|issue| located(analyzed.1, issue)).collect()
+}
 
-    analyze(registry, settings, analyzed, others)
-        .iter()
-        .map(|issue| {
-            let offset = issue.primary_span().expect("a primary span").start.offset as usize;
-            let line = code[..offset].matches('\n').count() + 1;
-            let column = offset - code[..offset].rfind('\n').map_or(0, |newline| newline + 1) + 1;
+/// An issue of `code` as `line:column code`, at its primary span.
+fn located(code: &str, issue: &Issue) -> String {
+    let offset = issue.primary_span().expect("a primary span").start.offset as usize;
+    let line = code[..offset].matches('\n').count() + 1;
+    let column = offset - code[..offset].rfind('\n').map_or(0, |newline| newline + 1) + 1;
 
-            format!("{line}:{column} {}", issue.code.as_deref().unwrap_or("none"))
-        })
-        .collect()
+    format!("{line}:{column} {}", issue.code.as_deref().unwrap_or("none"))
 }
 
 /// Analyzes `analyzed` together with `others` under `settings` and the plugins of `registry`, and returns its issues.
@@ -125,12 +123,12 @@ fn analyze(
 
 #[test]
 fn adding_a_mixed_operand_reports_mixed_operand_as_in_php() {
-    let any = "<?php\n\nnamespace Lib;\n\nfinal class Any\n{\n    public static function value(): mixed\n    {\n        return 1;\n    }\n}\n";
-    let sharp = "namespace Demo;\n\nimport Lib.Any;\n\nclass Report\n{\n    public static int total()\n    {\n        return Any.value() + 1;\n    }\n}\n";
-    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Any;\n\nclass Report\n{\n    public static function total(): int\n    {\n        return Any::value() + 1;\n    }\n}\n";
+    let source = "<?php\n\nnamespace Lib;\n\nfinal class Source\n{\n    public static function value(): mixed\n    {\n        return 1;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Source;\n\nclass Report\n{\n    public static int total()\n    {\n        return Source.value() + 1;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Source;\n\nclass Report\n{\n    public static function total(): int\n    {\n        return Source::value() + 1;\n    }\n}\n";
 
-    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Any.php", any)]);
-    let php_issues = issues(("src/Demo/Report.php", php), &[("src/Lib/Any.php", any)]);
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Source.php", source)]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[("src/Lib/Source.php", source)]);
 
     assert!(codes(&sharp_issues).contains(&"mixed-operand"), "{sharp_issues:?}");
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
@@ -530,12 +528,13 @@ fn a_nullable_value_where_a_value_is_required_is_reported_as_in_php() {
         [
             "9:21 possible-method-access-on-null",
             "9:30 possibly-null-argument",
-            "9:15 mixed-assignment",
             "10:16 nullable-return-statement",
             "10:16 invalid-return-statement",
         ]
     );
-    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+    // PHP reports storing the `mixed` result of the call, and PHP# stores it as `Any?` without a report.
+    let php_codes: Vec<&str> = codes(&php_issues).into_iter().filter(|code| *code != "mixed-assignment").collect();
+    assert_eq!(codes(&sharp_issues), php_codes);
 }
 
 #[test]
@@ -726,6 +725,156 @@ fn a_get_only_property_is_readonly_and_set_once_in_the_constructor() {
     );
 }
 
+const NEGATIVE: &str = "<?php\n\nnamespace Lib;\n\nfinal class Negative extends \\Exception\n{\n}\n";
+
+/// Spec section 6.1: an accessor body reads and writes `field`, the storage, and a `set` body reads `value`, both of
+/// the property's type, as PHP's hooks read `$this->name` and `$value`.
+#[test]
+fn accessor_bodies_read_field_and_value_with_the_property_type() {
+    let sharp = "namespace Demo;\n\nimport Lib.Negative;\n\nclass Product\n{\n    public string name { get => field; set => field = trim(value); } = \"\";\n    public int stock { get; private set { if (value < 0) { throw new Negative(); } field = value; } } = 0;\n    public int doubled { get => this.stock * 2; }\n    public int hits { get => field; set { field += value; field++; } } = 0;\n    public List<string> seen { get => field; set { field = []; field.add(value[0]); } } = [];\n    public Map<string, int> counts { get => field; set { field = value; field[\"all\"] = 1; } } = [:];\n    public List<string> tags { get => field; set { field = value; } } = [];\n\n    public void tag(string tag)\n    {\n        this.tags.add(tag);\n        this.stock = this.doubled + 1;\n        this.name = tag;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Product.sharp", sharp), &[("src/Lib/Negative.php", NEGATIVE)]), Vec::<String>::new());
+}
+
+/// `field` has the property's type, so a value of another type assigned to it is the error assigning that value to
+/// the property is, as `$this->count = 'many'` is in the PHP twin's hook.
+#[test]
+fn a_value_of_the_wrong_type_assigned_to_field_is_reported_as_in_php() {
+    let sharp = "namespace Demo;\n\nclass Counter\n{\n    public int count { get => field; set => field = \"many\"; } = 0;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Counter\n{\n    public int $count = 0 {\n        get => $this->count;\n        set {\n            $this->count = 'many';\n        }\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Counter.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Counter.php", php), &[]);
+
+    assert_eq!(sharp_issues, ["5:53 invalid-property-assignment-value"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+/// `field` and `value` read as the property's type, and a `get` body returns it, as the PHP twin's hooks do.
+#[test]
+fn field_value_and_a_get_body_have_the_property_type_as_in_php() {
+    let sharp = "namespace Demo;\n\nclass Counter\n{\n    public int count { get => strlen(field); set => field = strlen(value); } = 0;\n    public string label { get { return 1; } }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Counter\n{\n    public int $count = 0 {\n        get => strlen($this->count);\n        set {\n            $this->count = strlen($value);\n        }\n    }\n    public string $label {\n        get {\n            return 1;\n        }\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Counter.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Counter.php", php), &[]);
+
+    assert_eq!(sharp_issues.len(), 3, "{sharp_issues:?}");
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+/// A property whose accessors all have bodies that never use `field` has no storage, so nothing initializes it, as
+/// PHP's virtual property. Every other property is backed, and is initialized as a field is.
+#[test]
+fn only_a_property_with_storage_needs_initializing_as_in_php() {
+    let sharp = "namespace Demo;\n\nclass Store\n{\n    public int open { get => 1; }\n    public int named { get => this.open; set => this.save(value); }\n    public int count { get => field; set => field = value; }\n    public int total { get; set => field = value; }\n\n    public void save(int value)\n    {\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Store\n{\n    public int $open {\n        get => 1;\n    }\n    public int $named {\n        get => $this->open;\n        set {\n            $this->save($value);\n        }\n    }\n    public int $count {\n        get => $this->count;\n        set {\n            $this->count = $value;\n        }\n    }\n    public int $total {\n        set {\n            $this->total = $value;\n        }\n    }\n\n    public function save(int $value): void\n    {\n    }\n}\n";
+
+    let settings = || Settings { check_property_initialization: true, ..settings() };
+    let sharp_issues = issues_with(settings(), ("src/Demo/Store.sharp", sharp), &[]);
+    let php_issues = issues_with(settings(), ("src/Demo/Store.php", php), &[]);
+
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+    assert!(!sharp_issues.is_empty(), "the backed properties need initializing: {php_issues:?}");
+}
+
+/// A get-only property whose `get` body uses `field` is set where a get-only auto-property is: once, in the
+/// constructor.
+#[test]
+fn a_get_only_property_with_a_get_body_is_set_only_where_readonly_allows() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public int count { get => field * 2; }\n\n    public Report(int start)\n    {\n        this.count = start;\n    }\n\n    public void reset()\n    {\n        this.count = 0;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), ["14:14 invalid-property-write"]);
+}
+
+/// An accessor body writes another property as a method of its class does, so a write to a get-only property there
+/// is the error the same write in a method is. Writing `field` writes the accessor's own storage, which its get-only
+/// property allows.
+#[test]
+fn a_write_to_a_get_only_property_from_another_accessor_is_reported_as_from_a_method() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public int id { get; }\n    public int code { get => field; set { field = value; this.id = value; } } = 0;\n    public int hits { get { field = field + 1; return field; } } = 0;\n\n    public Report(int id)\n    {\n        this.id = id;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), ["6:63 invalid-property-write"]);
+}
+
+/// The same write in a plain PHP hook stays unreported, as before PHP# accessors.
+#[test]
+fn a_write_to_a_readonly_property_from_a_php_hook_stays_unreported() {
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public readonly int $id;\n    public int $code = 0 {\n        get => $this->code;\n        set {\n            $this->code = $value;\n            $this->id = $value;\n        }\n    }\n\n    public function __construct(int $id)\n    {\n        $this->id = $id;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
+}
+
+/// A `get` block runs as PHP's `get` hook, which returns the property's type on every path, as a method with a return
+/// type does.
+#[test]
+fn a_get_block_with_a_path_that_ends_without_returning_is_reported() {
+    let sharp = "namespace Demo;\n\nimport Lib.Negative;\n\nclass Report\n{\n    public int open { get { if (this.ready()) { return 1; } } }\n    public int closed { get { if (this.ready()) { return 1; } throw new Negative(); } }\n\n    public bool ready()\n    {\n        return true;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Negative.php", NEGATIVE)]),
+        ["7:23 missing-return-statement"]
+    );
+}
+
+/// A property with accessors that redeclares a plain PHP parent's untyped property is refused as a field that does
+/// is, because PHP refuses a type the parent property does not have. The refusal names it a property.
+#[test]
+fn a_property_with_accessors_over_a_php_parents_untyped_property_is_not_supported_yet() {
+    let parent = "<?php\n\nnamespace Lib;\n\nclass Record\n{\n    public $label;\n    public $code;\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Record;\n\nclass Order : Record\n{\n    public string label { get => field; set => field = value; } = \"\";\n    public string code { get; set; } = \"\";\n}\n";
+    let others = [("src/Lib/Record.php", parent)];
+
+    assert_eq!(issues(("src/Demo/Order.sharp", sharp), &others), ["7:12 not-supported-yet", "8:12 not-supported-yet"]);
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Order.sharp", sharp), &others)
+            .into_iter()
+            .map(|issue| (issue.message, issue.help.unwrap_or_default()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                "A property that replaces the untyped PHP property `Lib\\Record::$label` is not supported yet."
+                    .to_owned(),
+                "Rename the property, or give the PHP property a type.".to_owned()
+            ),
+            (
+                "A property that replaces the untyped PHP property `Lib\\Record::$code` is not supported yet."
+                    .to_owned(),
+                "Rename the property, or give the PHP property a type.".to_owned()
+            ),
+        ]
+    );
+}
+
+/// A property over a plain PHP parent's attributes has no storage. A `get` body that returns the `mixed` that
+/// `getAttribute` returns without converting it with `as` reports `mixed` as the PHP twin's hook does.
+#[test]
+fn a_property_over_a_php_parents_attributes_reports_its_mixed_get_as_in_php() {
+    let sharp = "namespace Demo;\n\nimport Lib.Model;\n\nclass Order : Model\n{\n    public Address shipping { get => this.getAttribute(\"shipping\"); set => this.setAttribute(\"shipping\", value); }\n}\n\nclass Address\n{\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Model;\n\nclass Order extends Model\n{\n    public Address $shipping {\n        get => $this->getAttribute('shipping');\n        set {\n            $this->setAttribute('shipping', $value);\n        }\n    }\n}\n\nclass Address\n{\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Order.sharp", sharp), &[("src/Lib/Model.php", MODEL)]);
+    let php_issues = issues(("src/Demo/Order.php", php), &[("src/Lib/Model.php", MODEL)]);
+
+    assert_eq!(sharp_issues, ["7:38 mixed-return-statement"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+/// A nullable property with accessor bodies has the issues of its PHP twin. Over a plain PHP parent's attributes it
+/// has no storage, so its `get` reports `mixed` unless it converts the value with `as`. One whose body uses
+/// `field` starts as null, so it needs no constructor, and a get-only one without storage needs no initial value.
+#[test]
+fn nullable_properties_with_accessor_bodies_have_the_issues_of_their_php_twins() {
+    let sharp = "namespace Demo;\n\nimport Lib.Model;\n\nclass Order : Model\n{\n    public Address? shipping { get => this.getAttribute(\"shipping\"); set => this.setAttribute(\"shipping\", value); }\n    public string? note { get => field; set => field = value; }\n    public string? summary { get => this.note; }\n}\n\nclass Address\n{\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Model;\n\nclass Order extends Model\n{\n    public ?Address $shipping {\n        get => $this->getAttribute('shipping');\n        set {\n            $this->setAttribute('shipping', $value);\n        }\n    }\n    public ?string $note = null {\n        get => $this->note;\n        set {\n            $this->note = $value;\n        }\n    }\n    public ?string $summary {\n        get => $this->note;\n    }\n}\n\nclass Address\n{\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Order.sharp", sharp), &[("src/Lib/Model.php", MODEL)]);
+    let php_issues = issues(("src/Demo/Order.php", php), &[("src/Lib/Model.php", MODEL)]);
+
+    assert_eq!(sharp_issues, ["7:39 mixed-return-statement"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
 #[test]
 fn typeof_is_the_class_name_as_in_php() {
     let registry = "<?php\n\nnamespace Lib;\n\nfinal class Registry\n{\n    /** @param class-string<Calc> $class */\n    public static function keep(string $class): string\n    {\n        return $class;\n    }\n}\n";
@@ -866,8 +1015,9 @@ fn virtual_and_override_are_checked_as_final_and_the_override_attribute_in_php()
     assert_eq!(missing.message, "Missing `override` modifier on overriding method `Demo\\Child::size`.");
 }
 
-/// A plain PHP base class with untyped properties typed by `@var`, one declared in a trait, and typed properties.
-const MODEL: &str = "<?php\n\nnamespace Lib;\n\ntrait HasTimestamps\n{\n    /** @var bool */\n    public $timestamps = true;\n}\n\nabstract class Model\n{\n    use HasTimestamps;\n\n    /** @var string|null */\n    protected $table;\n\n    /** @var array<int, string> */\n    protected $fillable = [];\n\n    protected $with = [];\n\n    protected int $perPage = 15;\n\n    protected array $appends = [];\n\n    private $secret = 'model';\n}\n";
+/// A plain PHP base class with untyped properties typed by `@var`, one declared in a trait, typed properties, and
+/// attributes read and written through `getAttribute` and `setAttribute`.
+const MODEL: &str = "<?php\n\nnamespace Lib;\n\ntrait HasTimestamps\n{\n    /** @var bool */\n    public $timestamps = true;\n}\n\nabstract class Model\n{\n    use HasTimestamps;\n\n    /** @var string|null */\n    protected $table;\n\n    /** @var array<int, string> */\n    protected $fillable = [];\n\n    protected $with = [];\n\n    protected int $perPage = 15;\n\n    protected array $appends = [];\n\n    private $secret = 'model';\n\n    /** @var array<string, mixed> */\n    private array $attributes = [];\n\n    public function getAttribute(string $key): mixed\n    {\n        return $this->attributes[$key] ?? null;\n    }\n\n    public function setAttribute(string $key, mixed $value): static\n    {\n        $this->attributes[$key] = $value;\n\n        return $this;\n    }\n}\n";
 
 /// An override of a plain PHP parent's property writes a type that fits the parent's `@var`, or any type when the
 /// parent has none, and the type of a typed parent, with the parent's access level, spec section 6.1. Its PHP twin
@@ -1164,11 +1314,11 @@ fn a_ternary_with_a_bool_condition_has_the_type_it_has_in_php() {
 
 #[test]
 fn a_ternary_whose_condition_is_not_bool_is_an_invalid_operand() {
-    let any = "<?php\n\nnamespace Lib;\n\nfinal class Any\n{\n    public static function value(): mixed\n    {\n        return 1;\n    }\n}\n";
-    let sharp = "namespace Demo;\n\nimport Lib.Any;\n\nclass Report\n{\n    public static int pick(int count, string name, bool? maybe)\n    {\n        const a = count ? 1 : 2;\n        const b = name ? 1 : 2;\n        const c = maybe ? 1 : 2;\n        const d = Any.value() ? 1 : 2;\n        const e = count ?: 2;\n        return a + b + c + d + e;\n    }\n}\n";
+    let source = "<?php\n\nnamespace Lib;\n\nfinal class Source\n{\n    public static function value(): mixed\n    {\n        return 1;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Source;\n\nclass Report\n{\n    public static int pick(int count, string name, bool? maybe)\n    {\n        const a = count ? 1 : 2;\n        const b = name ? 1 : 2;\n        const c = maybe ? 1 : 2;\n        const d = Source.value() ? 1 : 2;\n        const e = count ?: 2;\n        return a + b + c + d + e;\n    }\n}\n";
 
     assert_eq!(
-        issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Any.php", any)]),
+        issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Source.php", source)]),
         ["9:19 invalid-operand", "10:19 invalid-operand", "11:19 invalid-operand", "12:19 invalid-operand"]
     );
 }
@@ -1221,11 +1371,11 @@ fn casts_between_numbers_have_the_types_they_have_in_php() {
 
 #[test]
 fn a_cast_of_a_value_that_is_not_a_number_is_an_invalid_operand() {
-    let any = "<?php\n\nnamespace Lib;\n\nfinal class Any\n{\n    public static function value(): mixed\n    {\n        return 1;\n    }\n}\n";
-    let sharp = "namespace Demo;\n\nimport Lib.Any;\n\nclass Report\n{\n    public static string pick(string name, bool flag, int? maybe)\n    {\n        const a = (int)name;\n        const b = (float)flag;\n        const c = (string)name;\n        const d = (int)maybe;\n        const e = (string)Any.value();\n        return `${a}${b}${c}${d}${e}`;\n    }\n}\n";
+    let source = "<?php\n\nnamespace Lib;\n\nfinal class Source\n{\n    public static function value(): mixed\n    {\n        return 1;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Source;\n\nclass Report\n{\n    public static string pick(string name, bool flag, int? maybe)\n    {\n        const a = (int)name;\n        const b = (float)flag;\n        const c = (string)name;\n        const d = (int)maybe;\n        const e = (string)Source.value();\n        return `${a}${b}${c}${d}${e}`;\n    }\n}\n";
 
     assert_eq!(
-        issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Any.php", any)]),
+        issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Source.php", source)]),
         [
             "9:19 invalid-operand",
             "10:19 invalid-operand",
@@ -1461,6 +1611,150 @@ fn plus_keeps_adding_numbers_and_rejecting_nothing_new_in_php() {
     let php = "<?php\n\nnamespace Demo;\n\nfunction total(int $count, string $name): int|float\n{\n    return $count + \"1\";\n}\n";
 
     assert_eq!(issues(("src/Demo/report.php", php), &[]), Vec::<String>::new());
+}
+
+const CUSTOMER: &str = "namespace Demo;\n\nclass Customer\n{\n    public string name { get; set; } = \"\";\n\n    public string label()\n    {\n        return this.name;\n    }\n}\n\nclass Plan\n{\n    public int price { get; set; } = 0;\n}\n";
+
+/// Analyzes `analyzed` together with `others`, and returns its errors as `line:column code`.
+fn errors(analyzed: (&'static str, &'static str), others: &[(&'static str, &'static str)]) -> Vec<String> {
+    analyze(&PLUGIN_REGISTRY, settings(), analyzed, others)
+        .iter()
+        .filter(|issue| issue.level == Level::Error)
+        .map(|issue| located(analyzed.1, issue))
+        .collect()
+}
+
+/// Spec section 14.4: a null check on a value whose type has no `?` is a compile error.
+#[test]
+fn a_null_check_on_a_value_that_is_never_null_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Billing\n{\n    public void renew(Customer customer, Plan plan, Plan? maybe)\n    {\n        const a = customer != null;\n        const b = customer == null;\n        const c = customer !== null;\n        const d = null === customer;\n        const price = plan.price ?? 0;\n        let total = plan.price;\n        total ??= 1;\n        const name = customer?.name;\n        const label = customer?.label();\n        const e = maybe ?? plan;\n        const f = maybe?.price;\n        const g = maybe !== null;\n    }\n}\n";
+
+    assert_eq!(
+        errors(("src/Demo/Billing.sharp", sharp), &[("src/Demo/Customer.sharp", CUSTOMER)]),
+        [
+            "7:19 redundant-comparison",
+            "8:19 redundant-comparison",
+            "9:19 redundant-comparison",
+            "10:28 redundant-comparison",
+            "11:23 redundant-null-coalesce",
+            "13:9 redundant-null-coalesce",
+            "14:30 redundant-nullsafe-operator",
+            "15:31 redundant-nullsafe-operator",
+        ]
+    );
+}
+
+#[test]
+fn a_null_check_on_a_value_that_is_never_null_keeps_its_php_report() {
+    let php = "<?php\n\nnamespace Demo;\n\nclass Billing\n{\n    public function renew(Customer $customer, Plan $plan, ?Plan $maybe): void\n    {\n        $a = $customer != null;\n        $b = $customer == null;\n        $c = $customer !== null;\n        $d = null === $customer;\n        $price = $plan->price ?? 0;\n        $total = $plan->price;\n        $total ??= 1;\n        $name = $customer?->name;\n        $label = $customer?->label();\n        $e = $maybe ?? $plan;\n        $f = $maybe?->price;\n        $g = $maybe !== null;\n    }\n}\n";
+
+    let levelled: Vec<_> =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Billing.php", php), &[("src/Demo/Customer.sharp", CUSTOMER)])
+            .iter()
+            .map(|issue| format!("{} {:?}", located(php, issue), issue.level))
+            .collect();
+
+    assert_eq!(
+        levelled,
+        [
+            "9:27 null-operand Error",
+            "9:14 impossible-null-type-comparison Warning",
+            "10:27 null-operand Error",
+            "10:14 impossible-null-type-comparison Warning",
+            "11:14 redundant-comparison Help",
+            "11:14 impossible-null-type-comparison Warning",
+            "12:14 redundant-comparison Help",
+            "12:14 impossible-null-type-comparison Warning",
+            "13:18 redundant-null-coalesce Help",
+            "15:9 redundant-null-coalesce Help",
+            "16:26 redundant-nullsafe-operator Help",
+        ]
+    );
+}
+
+/// `== null` and `!= null` run as PHP's `=== null` and `!== null`, so they test for null alone and are no loose
+/// comparison with `null`.
+#[test]
+fn equality_with_null_tests_for_null_with_no_operand_issue() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(int? extra)\n    {\n        if (extra != null) {\n            return extra;\n        }\n        return 0;\n    }\n\n    public static bool missing(int? extra)\n    {\n        return null == extra;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// Spec section 14.4: a method that never returns null drops the `?` from its return type. A method a subclass may
+/// override keeps it, because the override may return null.
+#[test]
+fn a_nullable_return_type_on_a_method_that_never_returns_null_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Ledger\n{\n    private Customer customer;\n\n    public Ledger(Customer customer)\n    {\n        this.customer = customer;\n    }\n\n    public Customer? owner(bool known)\n    {\n        if (known) {\n            return this.cached();\n        }\n        return this.find(known);\n    }\n\n    private Customer? cached()\n    {\n        return this.customer;\n    }\n\n    private Customer? find(bool known)\n    {\n        if (known) {\n            return this.customer;\n        }\n        return null;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Ledger\n{\n    public function __construct(private Customer $customer)\n    {\n    }\n\n    public function owner(): ?Customer\n    {\n        return $this->cached();\n    }\n\n    private function cached(): ?Customer\n    {\n        return $this->customer;\n    }\n}\n";
+
+    assert_eq!(
+        errors(("src/Demo/Ledger.sharp", sharp), &[("src/Demo/Customer.sharp", CUSTOMER)]),
+        ["20:13 overly-wide-return-type"]
+    );
+    assert_eq!(issues(("src/Demo/Ledger.php", php), &[("src/Demo/Customer.sharp", CUSTOMER)]), Vec::<String>::new());
+
+    let help = analyze(
+        &PLUGIN_REGISTRY,
+        settings(),
+        ("src/Demo/Ledger.sharp", sharp),
+        &[("src/Demo/Customer.sharp", CUSTOMER)],
+    )
+    .into_iter()
+    .find(|issue| issue.code.as_deref() == Some("overly-wide-return-type"))
+    .and_then(|issue| issue.help);
+    assert_eq!(help.as_deref(), Some("Remove `null` from the return type, giving `Customer`."));
+}
+
+/// A PHP# method is closed unless it is `virtual` or an `override`, spec section 22, so a public method drops a `?`
+/// that it never returns, as a `final override` does. A `virtual` method and an open `override` keep it.
+#[test]
+fn a_closed_method_drops_a_nullable_return_type_and_an_open_one_keeps_it() {
+    let sharp = "namespace Demo;\n\npublic class Source\n{\n    public Customer? owner(Customer customer)\n    {\n        return customer;\n    }\n\n    public Customer? first(Customer customer) => customer;\n\n    public virtual Customer? fallback(Customer customer)\n    {\n        return customer;\n    }\n}\n\npublic class Archive : Source\n{\n    public override Customer? fallback(Customer customer)\n    {\n        return customer;\n    }\n}\n\npublic class Vault : Archive\n{\n    public final override Customer? fallback(Customer customer)\n    {\n        return customer;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Source\n{\n    final public function owner(Customer $customer): ?Customer\n    {\n        return $customer;\n    }\n\n    final public function first(Customer $customer): ?Customer\n    {\n        return $customer;\n    }\n\n    public function fallback(Customer $customer): ?Customer\n    {\n        return $customer;\n    }\n}\n\nclass Archive extends Source\n{\n    #[\\Override]\n    public function fallback(Customer $customer): ?Customer\n    {\n        return $customer;\n    }\n}\n\nclass Vault extends Archive\n{\n    #[\\Override]\n    final public function fallback(Customer $customer): ?Customer\n    {\n        return $customer;\n    }\n}\n";
+
+    assert_eq!(
+        errors(("src/Demo/Source.sharp", sharp), &[("src/Demo/Customer.sharp", CUSTOMER)]),
+        ["5:12 overly-wide-return-type", "10:12 overly-wide-return-type", "28:27 overly-wide-return-type"]
+    );
+    assert_eq!(issues(("src/Demo/Source.php", php), &[("src/Demo/Customer.sharp", CUSTOMER)]), Vec::<String>::new());
+}
+
+#[test]
+fn an_abstract_method_keeps_its_nullable_return_type() {
+    let sharp = "namespace Demo;\n\nabstract class Source\n{\n    public abstract Customer? current();\n}\n";
+
+    assert_eq!(
+        errors(("src/Demo/Source.sharp", sharp), &[("src/Demo/Customer.sharp", CUSTOMER)]),
+        Vec::<String>::new()
+    );
+}
+
+/// Spec section 14.4: a nullable parameter that the method rejects on every path drops its `?`, and the caller checks.
+#[test]
+fn a_nullable_parameter_the_method_rejects_on_every_path_is_an_error() {
+    let sharp = "namespace Demo;\n\nimport RuntimeException;\n\nclass Billing\n{\n    public void notify(Customer? customer)\n    {\n        Customer c = customer ?? throw new RuntimeException(\"none\");\n    }\n\n    public string remind(Customer? customer)\n    {\n        if (customer === null) {\n            throw new RuntimeException(\"none\");\n        }\n        return customer.name;\n    }\n\n    public int discount(Plan? plan)\n    {\n        return plan?.price ?? 0;\n    }\n\n    public void log(Customer? customer, bool loud)\n    {\n        if (loud) {\n            Customer c = customer ?? throw new RuntimeException(\"none\");\n        }\n    }\n\n    public string greet(Customer? customer)\n    {\n        const name = customer?.name;\n        Customer c = customer ?? throw new RuntimeException(\"none\");\n        return c.name;\n    }\n\n    public Customer verify(Customer? customer) => customer ?? throw new RuntimeException(\"none\");\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse RuntimeException;\n\nclass Billing\n{\n    public function notify(?Customer $customer): void\n    {\n        $c = $customer ?? throw new RuntimeException(\"none\");\n    }\n}\n";
+
+    assert_eq!(
+        errors(("src/Demo/Billing.sharp", sharp), &[("src/Demo/Customer.sharp", CUSTOMER)]),
+        ["7:24 rejected-nullable-parameter", "12:26 rejected-nullable-parameter", "39:28 rejected-nullable-parameter"]
+    );
+    assert!(
+        !codes(&issues(("src/Demo/Billing.php", php), &[("src/Demo/Customer.sharp", CUSTOMER)]))
+            .contains(&"rejected-nullable-parameter")
+    );
+
+    let help = analyze(
+        &PLUGIN_REGISTRY,
+        settings(),
+        ("src/Demo/Billing.sharp", sharp),
+        &[("src/Demo/Customer.sharp", CUSTOMER)],
+    )
+    .into_iter()
+    .find(|issue| issue.code.as_deref() == Some("rejected-nullable-parameter"))
+    .and_then(|issue| issue.help);
+    assert_eq!(help.as_deref(), Some("Declare `customer` as `Customer`, and check for null where the value enters."));
 }
 
 /// Each hook event, with the spans of the call's class, method, arguments and whole call.
@@ -1702,6 +1996,327 @@ fn attribute_arguments_are_checked_against_the_attribute_constructor_as_in_php()
         ["8:19 invalid-argument", "10:26 invalid-argument", "11:26 too-few-arguments", "11:67 too-many-arguments"]
     );
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+/// A plain PHP class whose values arrive in PHP# as `Any?`: typed `mixed`, or not typed at all.
+const SOURCE: &str = "<?php\n\nnamespace Demo;\n\nfinal class Source\n{\n    public static function value(string $key): mixed\n    {\n        return $key;\n    }\n\n    public static function untyped(string $key)\n    {\n        return $key;\n    }\n\n    public static function take(mixed $value): void\n    {\n    }\n\n    public static function takeUntyped($value): void\n    {\n    }\n\n    public static function takeInt(int $value): void\n    {\n    }\n}\n";
+
+#[test]
+fn a_php_mixed_or_untyped_value_arrives_as_any_and_goes_back_to_php() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public Any? read(string key)\n    {\n        const value = Source.value(key);\n        Any? raw = Source.untyped(key);\n        Source.take(value);\n        Source.takeUntyped(raw);\n        return key == \"raw\" ? raw : value;\n    }\n\n    public Any keep(Any value)\n    {\n        const kept = value;\n        Source.take(kept);\n        return kept;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Inbox.sharp", sharp), &[("src/Demo/Source.php", SOURCE)]), Vec::<String>::new());
+}
+
+#[test]
+fn an_unchecked_any_is_refused_wherever_its_type_matters() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public int use(Any? value)\n    {\n        const a = value.name;\n        const b = value.run();\n        const c = value + 1;\n        const d = -value;\n        const e = value < 1;\n        Source.takeInt(value);\n        int f = value;\n        const g = (int)value;\n        if (value) {\n        }\n        return value;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Inbox.sharp", sharp), &[("src/Demo/Source.php", SOURCE)]),
+        [
+            "7:25 mixed-property-access",
+            "8:25 mixed-method-access",
+            "9:19 mixed-operand",
+            "10:20 mixed-operand",
+            "11:19 mixed-operand",
+            "12:24 mixed-argument",
+            "13:17 invalid-local-assignment-value",
+            "14:19 invalid-operand",
+            "15:13 invalid-operand",
+            "17:16 mixed-return-statement",
+        ]
+    );
+}
+
+const SHAPES: &str = "<?php\n\nnamespace Lib;\n\ninterface Shape\n{\n}\n\nfinal class Circle implements Shape\n{\n    public function __construct(public float $radius)\n    {\n    }\n}\n\nfinal class Square implements Shape\n{\n    public function __construct(public float $side)\n    {\n    }\n}\n";
+
+#[test]
+fn is_is_not_and_as_narrow_as_their_php_does() {
+    let sharp = "namespace Demo;\n\nimport Lib.Shape;\nimport Lib.Circle;\nimport Lib.Square;\n\nclass Report\n{\n    public static float area(Shape shape)\n    {\n        if (shape is Circle circle) {\n            return circle.radius;\n        }\n        if (shape is not Square square) {\n            return 0.0;\n        }\n        return square.side;\n    }\n\n    public static float side(Shape shape)\n    {\n        if (shape is Square) {\n            return shape.side;\n        }\n        return 0.0;\n    }\n\n    public static float radius(Shape shape)\n    {\n        const circle = shape as Circle;\n        return circle?.radius ?? 0.0;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Shape;\nuse Lib\\Circle;\nuse Lib\\Square;\n\nclass Report\n{\n    public static function area(Shape $shape): float\n    {\n        if (($circle = $shape) instanceof Circle) {\n            return $circle->radius;\n        }\n        if (!(($square = $shape) instanceof Square)) {\n            return 0.0;\n        }\n        return $square->side;\n    }\n\n    public static function side(Shape $shape): float\n    {\n        if ($shape instanceof Square) {\n            return $shape->side;\n        }\n        return 0.0;\n    }\n\n    public static function radius(Shape $shape): float\n    {\n        $circle = $shape instanceof Circle ? $shape : null;\n        return $circle?->radius ?? 0.0;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Shapes.php", SHAPES)]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[("src/Lib/Shapes.php", SHAPES)]);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn a_match_narrows_each_arm_as_its_php_does() {
+    let sharp = "namespace Demo;\n\nimport Lib.Shape;\nimport Lib.Circle;\nimport Lib.Square;\n\nclass Report\n{\n    public static string describe(Shape? shape) => match (shape) {\n        null => \"nothing\",\n        Circle c when c.radius > 10.0 => \"big\",\n        Circle => \"circle\",\n        default => \"other\",\n    };\n\n    public static string grade(int score) => match (score) {\n        < 0 => \"invalid\",\n        >= 90 => \"top\",\n        >= 50 and < 70 => \"pass\",\n        default => \"fail\",\n    };\n\n    public static float count(Shape? shape)\n    {\n        let total = 0.0;\n        match (shape) {\n            Circle c => {\n                total = c.radius;\n            },\n            Square s when s.side > 1.0 => total = s.side,\n            default => {},\n        }\n        return total;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Shape;\nuse Lib\\Circle;\nuse Lib\\Square;\n\nclass Report\n{\n    public static function describe(?Shape $shape): string { return match (true) {\n        $shape === null => \"nothing\",\n        ($c = $shape) instanceof Circle and $c->radius > 10.0 => \"big\",\n        $shape instanceof Circle => \"circle\",\n        default => \"other\",\n    }; }\n\n    public static function grade(int $score): string { return match (true) {\n        $score < 0 => \"invalid\",\n        $score >= 90 => \"top\",\n        $score >= 50 && $score < 70 => \"pass\",\n        default => \"fail\",\n    }; }\n\n    public static function count(?Shape $shape): float\n    {\n        $total = 0.0;\n        if (($c = $shape) instanceof Circle) {\n            $total = $c->radius;\n        } else if (($s = $shape) instanceof Square and $s->side > 1.0) {\n            $total = $s->side;\n        } else {\n        }\n        return $total;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Shapes.php", SHAPES)]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[("src/Lib/Shapes.php", SHAPES)]);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn a_default_arm_no_value_reaches_is_required_and_silent_in_sharp_and_reported_in_php() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static string kind(bool flag) => match (flag) {\n        true => \"yes\",\n        false => \"no\",\n        default => \"never\",\n    };\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function kind(bool $flag): string { return match (true) {\n        $flag === true => \"yes\",\n        $flag === false => \"no\",\n        default => \"never\",\n    }; }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[]);
+
+    assert!(!codes(&sharp_issues).contains(&"unreachable-match-default-arm"), "{sharp_issues:?}");
+    assert!(codes(&php_issues).contains(&"unreachable-match-default-arm"), "{php_issues:?}");
+}
+
+#[test]
+fn a_properties_pattern_on_a_value_that_cannot_be_null_reports_nothing_and_its_php_reports_the_object_check() {
+    let sharp = "namespace Demo;\n\nimport Lib.Circle;\n\nclass Report\n{\n    public static bool wide(Circle circle) => circle is { radius: >= 2.0 };\n\n    public static bool known(Circle? circle) => circle is { radius: >= 2.0 };\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Circle;\n\nclass Report\n{\n    public static function wide(Circle $circle): bool { return \\is_object($circle) && $circle->radius >= 2.0; }\n\n    public static function known(?Circle $circle): bool { return \\is_object($circle) && $circle->radius >= 2.0; }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Shapes.php", SHAPES)]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[("src/Lib/Shapes.php", SHAPES)]);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&php_issues), ["redundant-type-comparison", "redundant-logical-operation"]);
+}
+
+#[test]
+fn a_pattern_that_can_never_match_is_an_error_at_the_pattern() {
+    let sharp = "namespace Demo;\n\nimport Lib.Circle;\nimport Lib.Square;\n\nclass Report\n{\n    public static bool square(Circle circle) => circle is Square;\n\n    public static bool text(int count) => count is string;\n\n    public static bool named(int count) => count is \"none\";\n\n    public static Square? converted(Circle circle) => circle as Square;\n\n    public static int arm(Circle circle) => match (circle) {\n        Square => 1,\n        default => 0,\n    };\n\n    public static int value(int count) => match (count) {\n        1 => 1,\n        \"none\" => 0,\n        default => 2,\n    };\n\n    public static bool possible(int? count) => count is int and > 0;\n}\n";
+
+    let first =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Shapes.php", SHAPES)]);
+    let errors: Vec<String> = first
+        .iter()
+        .filter(|issue| issue.level == Level::Error)
+        .map(|issue| {
+            let span = issue.primary_span().expect("an error has a primary span");
+            format!(
+                "{} {} {}",
+                &sharp[span.start.offset as usize..span.end.offset as usize],
+                issue.code.as_deref().unwrap_or(""),
+                issue.message
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        errors,
+        [
+            "Square impossible-type-comparison This pattern never matches the value it tests.",
+            "string impossible-type-comparison Impossible type assertion: `$count` of type `int` can never be `string`.",
+            "\"none\" impossible-type-comparison This pattern never matches the value it tests.",
+            "Square impossible-type-comparison This pattern never matches the value it tests.",
+            "Square impossible-type-comparison This pattern never matches the value it tests.",
+            "\"none\" impossible-type-comparison This pattern never matches the value it tests.",
+        ]
+    );
+}
+
+/// `is` and `match` check an `Any?`, so the value they narrow is used as its checked type, spec section 24.
+#[test]
+fn is_and_match_check_an_any_before_its_use() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public int size(Any? value)\n    {\n        if (value is string text) {\n            return strlen(text);\n        }\n        return match (value) {\n            int count => count + 1,\n            null => 0,\n            default => -1,\n        };\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Inbox.sharp", sharp), &[("src/Demo/Source.php", SOURCE)]), Vec::<String>::new());
+}
+
+/// `== null` runs as `=== null` in PHP#, so it checks an `Any?`, and on an `Any`, which is never null, it is redundant.
+#[test]
+fn equality_with_null_checks_an_any_nullable_and_is_redundant_on_an_any() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public bool missing(Any? value) => value == null;\n\n    public bool gone(Any value) => value == null;\n}\n";
+
+    assert_eq!(issues(("src/Demo/Inbox.sharp", sharp), &[]), ["7:36 redundant-comparison"]);
+}
+
+/// An accessor of an `Any?` property takes and gives null, and one of an `Any` property gives any value but null.
+#[test]
+fn an_accessor_of_any_gives_no_null_and_of_any_nullable_does() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public Any? note { get => field; set => field = value; }\n\n    public Any label { get => this.note ?? \"none\"; }\n\n    public Any blank { get => null; }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Inbox.sharp", sharp), &[]), ["9:31 invalid-return-statement"]);
+}
+
+/// An override of a plain PHP property of PHP's `mixed`, written or in `@var`, or of an untyped one, writes `Any?`, or
+/// `Any`, which lowers to the same `mixed`, spec sections 6.1 and 24.
+#[test]
+fn an_override_of_a_plain_php_mixed_property_writes_any() {
+    let library = "<?php\n\nnamespace Lib;\n\nabstract class Message\n{\n    /** @var mixed */\n    protected $payload;\n\n    protected mixed $data = null;\n\n    protected $raw;\n\n    protected mixed $body = 1;\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Message;\n\npublic class Mail : Message\n{\n    protected override Any? payload = null;\n    protected override Any? data = null;\n    protected override Any raw = 1;\n    protected override Any body = \"text\";\n}\n";
+
+    assert_eq!(issues(("src/Demo/Mail.sharp", sharp), &[("src/Lib/Message.php", library)]), Vec::<String>::new());
+}
+
+/// A `let` takes its first value's type, so one that starts as `Any?` takes any value, null too, and one that starts
+/// as `Any` takes any value but null.
+#[test]
+fn a_let_local_that_starts_as_any_keeps_whether_it_takes_null() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public Any? keep(string key, Any value)\n    {\n        let raw = Source.untyped(key);\n        raw = 1;\n        raw = null;\n        let kept = value;\n        kept = \"one\";\n        kept = null;\n        return key == \"raw\" ? raw : kept;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Inbox.sharp", sharp), &[("src/Demo/Source.php", SOURCE)]),
+        ["12:16 invalid-local-assignment-value"]
+    );
+}
+
+#[test]
+fn a_get_body_that_converts_a_mixed_attribute_with_as_has_no_issues() {
+    let sharp = "namespace Demo;\n\nimport Lib.Model;\n\nclass Order : Model\n{\n    public Address? shipping { get => this.getAttribute(\"shipping\") as Address; set => this.setAttribute(\"shipping\", value); }\n}\n\nclass Address\n{\n}\n";
+
+    assert_eq!(issues(("src/Demo/Order.sharp", sharp), &[("src/Lib/Model.php", MODEL)]), Vec::<String>::new());
+}
+
+/// A `let` holding a `mixed` attribute is an `Any?` local, so storing it reports nothing in PHP#, where PHP reports
+/// `mixed-assignment`, and spec section 24 refuses its use instead, as `name.length` shows.
+#[test]
+fn a_let_local_holding_a_mixed_attribute_is_any_and_reports_nothing_where_php_reports_mixed_assignment() {
+    let sharp = "namespace Demo;\n\nimport Lib.Model;\n\nclass Order : Model\n{\n    public bool named()\n    {\n        let name = this.getAttribute(\"name\");\n        return name is string;\n    }\n\n    public Any? length()\n    {\n        let name = this.getAttribute(\"name\");\n        return name.length;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Model;\n\nclass Order extends Model\n{\n    public function named(): bool\n    {\n        $name = $this->getAttribute('name');\n        return \\is_string($name);\n    }\n\n    public function length(): mixed\n    {\n        $name = $this->getAttribute('name');\n        return $name->length;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Order.sharp", sharp), &[("src/Lib/Model.php", MODEL)]);
+    let php_issues = issues(("src/Demo/Order.php", php), &[("src/Lib/Model.php", MODEL)]);
+
+    assert_eq!(sharp_issues, ["16:21 mixed-property-access"]);
+    assert_eq!(codes(&php_issues), ["mixed-assignment", "mixed-assignment", "mixed-property-access"]);
+}
+
+#[test]
+fn is_and_match_over_a_mixed_attribute_have_no_issues() {
+    let sharp = "namespace Demo;\n\nimport Lib.Model;\n\nclass Order : Model\n{\n    public bool named() => this.getAttribute(\"name\") is string;\n\n    public int size() => match (this.getAttribute(\"size\")) {\n        int => 1,\n        string => 2,\n        default => 0,\n    };\n\n    public int count()\n    {\n        let total = 0;\n        match (this.getAttribute(\"count\")) {\n            int => total = 1,\n            default => {},\n        }\n        return total;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Order.sharp", sharp), &[("src/Lib/Model.php", MODEL)]), Vec::<String>::new());
+}
+
+#[test]
+fn a_never_subject_reports_its_value_and_no_assignment_the_user_never_wrote() {
+    let stop = "<?php\n\nnamespace Lib;\n\nfinal class Stop\n{\n    public static function now(): never\n    {\n        throw new \\RuntimeException();\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Stop;\n\nclass Order\n{\n    public static int size() => match (Stop.now()) {\n        int => 1,\n        default => 0,\n    };\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Order.sharp", sharp), &[("src/Lib/Stop.php", stop)]),
+        ["7:40 no-value", "8:9 redundant-type-comparison"]
+    );
+}
+
+const TICKETS: &str = "<?php\n\nnamespace Lib;\n\nenum Status\n{\n    case Open;\n    case Closed;\n    case Archived;\n}\n\nfinal class Ticket\n{\n    public function status(): Status\n    {\n        return Status::Open;\n    }\n}\n\nfinal class Limits\n{\n    public const LOW = 1;\n    public const HIGH = 2;\n}\n";
+
+/// Each error of `sharp` as its primary span's text, its code and its message.
+fn written_errors(sharp: &'static str, issues: &[Issue]) -> Vec<String> {
+    issues
+        .iter()
+        .filter(|issue| issue.level == Level::Error)
+        .map(|issue| {
+            let span = issue.primary_span().expect("an error has a primary span");
+            format!(
+                "{} {} {}",
+                &sharp[span.start.offset as usize..span.end.offset as usize],
+                issue.code.as_deref().unwrap_or(""),
+                issue.message
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_match_without_default_names_the_enum_cases_it_misses() {
+    let sharp = "namespace Demo;\n\nimport Lib.Limits;\nimport Lib.Status;\n\nclass Report\n{\n    public static string label(Status status) => match (status) {\n        Status.Open => \"open\",\n        Status.Closed => \"closed\",\n    };\n\n    public static void close(Status? status, bool forced)\n    {\n        match (status) {\n            Status.Open when forced == true => {},\n            Status.Closed => {},\n        }\n    }\n\n    public static int level(int count) => match (count) {\n        Limits.LOW => 1,\n        Limits.HIGH => 2,\n    };\n}\n";
+
+    let issues =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Status.php", TICKETS)]);
+
+    assert_eq!(
+        written_errors(sharp, &issues),
+        [
+            "match match-not-exhaustive This `match` misses `Status.Archived`.",
+            "match match-not-exhaustive This `match` misses `Status.Open`, `Status.Archived` and `null`.",
+            "match match-not-exhaustive A `match` needs a `default` arm.",
+        ]
+    );
+}
+
+#[test]
+fn a_match_without_default_that_handles_every_enum_case_reports_nothing() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\nimport Lib.Ticket;\n\nclass Report\n{\n    public static string label(Status status) => match (status) {\n        Status.Open => \"open\",\n        Status.Closed or Status.Archived => \"done\",\n    };\n\n    public static void close(Status? status)\n    {\n        match (status) {\n            Status.Open => {},\n            Status.Closed or Status.Archived => {},\n            null => {},\n        }\n    }\n\n    public static string state(Ticket ticket) => match (ticket.status()) {\n        Status.Open => \"open\",\n        Status.Closed or Status.Archived => \"done\",\n    };\n}\n";
+
+    let issues =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Status.php", TICKETS)]);
+    let reported: Vec<&str> = issues
+        .iter()
+        .filter(|issue| matches!(issue.level, Level::Error | Level::Warning))
+        .map(|issue| issue.message.as_str())
+        .collect();
+
+    assert_eq!(reported, Vec::<&str>::new());
+}
+
+/// An enum declared in PHP# has its cases counted as a PHP enum's, inside its own methods too.
+#[test]
+fn a_match_without_default_over_a_sharp_enum_names_the_cases_it_misses() {
+    let sharp = "namespace Demo;\n\npublic enum Stage : string\n{\n    case Open = \"o\";\n    case Paid = \"p\";\n    case Closed = \"c\";\n\n    public string label() => match (this) {\n        Stage.Open => \"open\",\n        Stage.Paid or Stage.Closed => \"done\",\n    };\n}\n\nclass Orders\n{\n    public static string missing(Stage stage) => match (stage) {\n        Stage.Open => \"open\",\n        Stage.Paid => \"paid\",\n    };\n}\n";
+
+    let issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Orders.sharp", sharp), &[]);
+
+    assert_eq!(written_errors(sharp, &issues), ["match match-not-exhaustive This `match` misses `Stage.Closed`."]);
+}
+
+/// Only the last arm of a `match` takes what the arms before it leave, as `default` does. An arm before it that is
+/// always true leaves nothing for the arms after it.
+#[test]
+fn an_arm_that_is_always_true_before_the_last_is_reported_with_the_arms_it_hides() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Report\n{\n    public static string label(Status status) => match (status) {\n        Status.Open or Status.Closed or Status.Archived => \"any\",\n        Status.Open => \"open\",\n    };\n\n    public static string kind(Status status) => match (status) {\n        Status s => \"any\",\n        Status.Closed => \"closed\",\n        default => \"none\",\n    };\n}\n";
+
+    let issues =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Status.php", TICKETS)]);
+    let warnings: Vec<String> = issues
+        .iter()
+        .filter(|issue| matches!(issue.level, Level::Error | Level::Warning))
+        .map(|issue| {
+            let span = issue.primary_span().expect("a report has a primary span");
+            format!(
+                "{} {}",
+                &sharp[span.start.offset as usize..span.end.offset as usize],
+                issue.code.as_deref().unwrap_or("")
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        warnings,
+        [
+            "Status.Open or Status.Closed or Status.Archived => \"any\" match-arm-always-true",
+            "Status.Open => \"open\" unreachable-match-arm",
+            "Status s => \"any\" match-arm-always-true",
+            "Status.Closed => \"closed\" unreachable-match-arm",
+        ]
+    );
+    assert!(
+        issues.iter().any(|issue| issue.code.as_deref() == Some("redundant-logical-operation")),
+        "the arm before the last keeps its redundancy report: {issues:?}"
+    );
+}
+
+#[test]
+fn a_pattern_the_parser_refuses_reports_only_its_parse_error() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static void count(int? count)\n    {\n        match (count) {\n            [int first] => {},\n            Shape.Circle(radius) => {},\n            default => {},\n        }\n    }\n}\n";
+
+    let issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[]);
+    let messages: Vec<&str> = issues.iter().map(|issue| issue.message.as_str()).collect();
+
+    assert_eq!(
+        messages,
+        ["A list pattern is not supported yet in PHP#.", "An enum case pattern is not supported yet in PHP#."]
+    );
+}
+
+#[test]
+fn a_when_condition_that_is_not_bool_is_an_invalid_operand_named_when() {
+    let sharp = "namespace Demo;\n\nimport Lib.Shape;\nimport Lib.Circle;\n\nclass Report\n{\n    public static string round(Shape shape) => match (shape) {\n        Circle c when c.radius => \"round\",\n        default => \"other\",\n    };\n}\n";
+
+    let first =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Shapes.php", SHAPES)])
+            .remove(0);
+
+    assert_eq!(first.code.as_deref(), Some("invalid-operand"));
+    assert_eq!(first.message, "`when` takes a `bool`, but this is `float`.");
 }
 
 const PRICES: &str = "<?php\n\nnamespace Lib;\n\nfinal class Prices\n{\n    /** @return array<string, int> */\n    public static function named(): array\n    {\n        return ['a' => 1];\n    }\n\n    /** @return iterable<int, int> */\n    public static function stream(): iterable\n    {\n        yield 1;\n    }\n\n    /** @return list<int> */\n    public static function listed(): array\n    {\n        return [1, 2];\n    }\n}\n";
@@ -2114,9 +2729,9 @@ fn an_enum_header_reports_what_implements_reports_in_php() {
 /// and a lambda over a list of cases takes the enum as its element type.
 #[test]
 fn an_enum_static_method_is_a_function_value_and_a_lambda_takes_its_cases_from_a_list() {
-    let sharp = "namespace Demo;\n\nenum Status : string\n{\n    case Active = \"a\";\n\n    public static Status fallback() => Status.Active;\n}\n\nclass Report\n{\n    public int run(List<string> codes)\n    {\n        const Function<Status(string)> parse = Status.from;\n        const Function<Status()> fallback = Status.fallback;\n        List<Status> found = codes.map(parse);\n        List<Status> active = found.filter(s => s === Status.Active || s === fallback());\n        List<int> wrong = codes.map(Status.from);\n        return count(active) + count(wrong);\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nenum Status : string\n{\n    case Active = \"a\";\n    case Paused = \"p\";\n\n    public static Status fallback() => Status.Active;\n}\n\nclass Report\n{\n    public int run(List<string> codes)\n    {\n        const Function<Status(string)> parse = Status.from;\n        const Function<Status()> fallback = Status.fallback;\n        List<Status> found = codes.map(parse);\n        List<Status> active = found.filter(s => s === Status.Active || s === fallback());\n        List<int> wrong = codes.map(Status.from);\n        return count(active) + count(wrong);\n    }\n}\n";
 
-    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), ["18:27 invalid-local-assignment-value"]);
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), ["19:27 invalid-local-assignment-value"]);
 }
 
 /// A constant expression may be a list or map literal, which a backed enum's case value cannot be, so the analyzer
@@ -2161,6 +2776,21 @@ fn a_wrong_element_type_is_reported_where_it_enters_the_collection() {
     );
 }
 
+#[test]
+fn any_never_holds_null_and_any_question_mark_may() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    private Any last = 0;\n\n    public Any keep(Any? value, Any sure)\n    {\n        this.keep(sure, sure);\n        this.keep(value, value);\n        Any held = value;\n        this.last = value;\n        this.keep(this.last, held);\n        return value;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Inbox.sharp", sharp), &[]),
+        [
+            "10:26 mixed-argument",
+            "11:20 invalid-local-assignment-value",
+            "12:21 invalid-property-assignment-value",
+            "14:16 mixed-return-statement",
+        ]
+    );
+}
+
 /// Spec section 12 writes a change to a collection in a property back through the property's `set`, so code that
 /// cannot reach the `set` cannot change the collection, as PHP refuses the same write when it runs.
 #[test]
@@ -2188,6 +2818,81 @@ fn a_bare_index_read_on_a_map_is_an_error() {
             "11:9 possibly-undefined-array-index",
             "13:24 possibly-undefined-array-index",
         ]
+    );
+}
+
+#[test]
+fn coalescing_an_unchecked_any_gives_a_value_that_is_never_null() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public Any pick(Any? maybe, Any sure) => maybe ?? sure;\n\n    public Any label(Any? maybe, string fallback)\n    {\n        Any shown = maybe ?? fallback;\n        return shown;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Inbox.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn a_template_shows_an_any_only_once_it_is_checked() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public string show(Any? value, Any sure, int count)\n    {\n        const a = `${value}`;\n        const b = `got ${sure}!`;\n        const c = `${count} items`;\n        return `${a}${b}${c}`;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Inbox\n{\n    public function show(mixed $value, int $count): string\n    {\n        return \"{$value} and {$count} items\";\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Inbox.sharp", sharp), &[]), ["7:20 mixed-operand", "8:24 mixed-operand"]);
+    assert_eq!(issues(("src/Demo/Inbox.php", php), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn a_null_default_needs_a_type_written_with_a_question_mark() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public Any first = null;\n    public string name = null;\n    public int? count = null;\n    public Any? maybe = null;\n\n    public Any keep(Any value = null) => value;\n\n    public string named(string value = null) => value;\n\n    public string? label(string? value = null) => value;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Inbox\n{\n    public mixed $first = null;\n\n    public function keep(mixed $value = null): mixed\n    {\n        return $value;\n    }\n\n    public function named(string $value = null): ?string\n    {\n        return $value;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Inbox.sharp", sharp), &[]),
+        [
+            "5:24 invalid-property-default-value",
+            "6:26 invalid-property-default-value",
+            "10:33 invalid-parameter-default-value",
+            "12:40 invalid-parameter-default-value",
+        ]
+    );
+    assert_eq!(issues(("src/Demo/Inbox.php", php), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn a_static_field_a_constant_and_a_computed_property_of_type_any_never_hold_null() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public const Any NONE = null;\n\n    private static Any last = 0;\n\n    public Any latest => Inbox.pick(null);\n\n    public static Any? pick(Any? value)\n    {\n        Inbox.last = value;\n        return Inbox.last;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Inbox.sharp", sharp), &[]),
+        ["5:29 invalid-constant-value", "9:26 mixed-return-statement", "13:9 invalid-property-assignment-value"]
+    );
+}
+
+#[test]
+fn a_collection_of_any_never_holds_null_and_a_collection_of_any_question_mark_may() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    private Map<string, Any> sure = [:];\n    private Map<string, Any?> maybe = [:];\n\n    public void keep(string key, Any? value, Any held, List<Any> items)\n    {\n        this.sure[key] = value;\n        this.sure = [key: value];\n        items.add(value);\n        items.set(0, value);\n        this.maybe[key] = value;\n        this.maybe = [key: value];\n        this.sure[key] = held;\n        items.add(held);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Inbox.sharp", sharp), &[]),
+        [
+            "10:9 invalid-property-assignment-value",
+            "11:21 invalid-property-assignment-value",
+            "12:19 mixed-argument",
+            "13:22 mixed-argument",
+        ]
+    );
+}
+
+#[test]
+fn a_php_non_null_mixed_keeps_accepting_a_value_that_may_be_null() {
+    let php = "<?php\n\nnamespace Demo;\n\nclass Inbox\n{\n    /** @var non-empty-mixed */\n    private mixed $last = 1;\n\n    /** @var non-empty-mixed */\n    private static mixed $first = 1;\n\n    /**\n     * @param non-empty-mixed $sure\n     *\n     * @return non-empty-mixed\n     */\n    public function keep(mixed $value, mixed $sure): mixed\n    {\n        $this->keep($value, $value);\n        $this->last = $value;\n        $this->keep($this->last, $sure);\n        self::$first = $value;\n        $this->keep(self::$first, $sure);\n        return $value;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Inbox.php", php), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn an_unchecked_any_compares_with_a_string_or_a_number_but_not_with_another_value() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public bool same(Any? value, Any? other, Inbox inbox)\n    {\n        const a = value == \"1\";\n        const b = value != 2;\n        const c = 1.5 == value;\n        const d = value == other;\n        const e = value == inbox;\n        return a && b && c && d && e;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Inbox.sharp", sharp), &[]),
+        ["10:19 mixed-operand", "10:28 mixed-operand", "11:19 mixed-operand"]
     );
 }
 
