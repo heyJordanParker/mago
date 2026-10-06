@@ -10,6 +10,7 @@ use foldhash::HashSet;
 use mago_allocator::LocalArena;
 use mago_analyzer::Analyzer;
 use mago_analyzer::analysis_result::AnalysisResult;
+use mago_analyzer::artifacts::AnalysisArtifacts;
 use mago_analyzer::plugin::PluginRegistry;
 use mago_analyzer::plugin::context::HookContext;
 use mago_analyzer::plugin::hook::ExpressionHook;
@@ -22,6 +23,7 @@ use mago_analyzer::plugin::provider::ProviderMeta;
 use mago_analyzer::settings::Settings;
 use mago_codex::populator::populate_codebase;
 use mago_codex::scanner::scan_program;
+use mago_codex::ttype::TType;
 use mago_database::DatabaseReader;
 use mago_database::file::File;
 use mago_names::CHANGING_COLLECTION_METHODS;
@@ -88,6 +90,17 @@ fn analyze(
     analyzed: (&'static str, &'static str),
     others: &[(&'static str, &'static str)],
 ) -> Vec<Issue> {
+    analyze_with_artifacts(registry, settings, analyzed, others).0
+}
+
+/// Analyzes `analyzed` together with `others` under `settings` and the plugins of `registry`, and returns its issues
+/// and the analysis artifacts.
+fn analyze_with_artifacts(
+    registry: &PluginRegistry,
+    settings: Settings,
+    analyzed: (&'static str, &'static str),
+    others: &[(&'static str, &'static str)],
+) -> (Vec<Issue>, AnalysisArtifacts) {
     let Prelude { mut database, mut metadata, mut symbol_references } = PRELUDE.clone();
 
     let file_ids: Vec<_> = std::iter::once(&analyzed)
@@ -113,12 +126,12 @@ fn analyze(
 
     let (file, program, names) = &programs[0];
     let mut result = AnalysisResult::new(symbol_references);
-    Analyzer::new(&arena, file, names, &metadata, registry, settings)
-        .analyze(program, &mut result)
+    let artifacts = Analyzer::new(&arena, file, names, &metadata, registry, settings)
+        .analyze_with_artifacts(program, &mut result)
         .expect("analysis succeeds");
 
     // The analyzed file's parse errors come first, as `mago analyze` reports them beside the analysis.
-    program.errors.iter().map(Issue::from).chain(result.issues).collect()
+    (program.errors.iter().map(Issue::from).chain(result.issues).collect(), artifacts)
 }
 
 #[test]
@@ -3067,4 +3080,108 @@ fn a_spread_of_a_value_that_is_neither_a_list_nor_a_map_is_an_error() {
             "Cannot use spread operator on non-iterable type `int`.",
         ]
     );
+}
+
+/// The checker's types reach the running program, inferred ones too (decision 029), so the analysis records the type
+/// arguments it inferred for each generic call and `new`, by the span of the call, one per template in declaration
+/// order.
+#[test]
+fn the_inferred_type_arguments_of_a_generic_call_and_a_generic_new_are_recorded_by_span() {
+    let sharp = "namespace Demo;\n\nimport Lib.Box;\nimport Lib.Pairs;\n\nclass Report\n{\n    public int run()\n    {\n        const pair = Pairs.of(5, \"tea\");\n        const box = new Box(2.5);\n        return count(pair) + (int)box.item;\n    }\n}\n";
+    let library = "<?php\n\nnamespace Lib;\n\n/** @template T */\nfinal class Box\n{\n    /** @param T $item */\n    public function __construct(public mixed $item) {}\n}\n\nfinal class Pairs\n{\n    /**\n     * @template K\n     * @template V\n     *\n     * @param K $key\n     * @param V $value\n     *\n     * @return list<K|V>\n     */\n    public static function of(mixed $key, mixed $value): array\n    {\n        return [$key, $value];\n    }\n}\n";
+    let call = sharp.find("Pairs.of").unwrap() as u32;
+    let instantiation = sharp.find("new Box").unwrap() as u32;
+    let end_of = |start: u32| start + sharp[start as usize..].find(')').unwrap() as u32 + 1;
+
+    let (issues, artifacts) = analyze_with_artifacts(
+        &PLUGIN_REGISTRY,
+        settings(),
+        ("src/Demo/Report.sharp", sharp),
+        &[("src/Lib/Box.php", library)],
+    );
+    let type_arguments = |start: u32| -> Vec<String> {
+        let span = (start, end_of(start));
+        let recorded = artifacts.inferred_type_arguments.get(&span);
+        let recorded = recorded.unwrap_or_else(|| panic!("{span:?} in {:?}", artifacts.inferred_type_arguments.keys()));
+
+        recorded.iter().map(|argument| argument.get_id().to_string()).collect()
+    };
+
+    assert!(issues.is_empty(), "{issues:?}");
+    assert_eq!(type_arguments(call), ["int", "string"]);
+    assert_eq!(type_arguments(instantiation), ["float"]);
+}
+
+/// The type arguments of the call in the analyzed file, with `library` beside it.
+fn recorded_type_arguments(analyzed: (&'static str, &'static str), library: &'static str, call: &str) -> Vec<String> {
+    let start = analyzed.1.find(call).unwrap() as u32;
+    let span = (start, start + call.len() as u32);
+    let (issues, artifacts) =
+        analyze_with_artifacts(&PLUGIN_REGISTRY, settings(), analyzed, &[("src/Lib/Library.php", library)]);
+    assert!(issues.is_empty(), "{issues:?}");
+
+    let recorded = artifacts.inferred_type_arguments.get(&span);
+    let recorded = recorded.unwrap_or_else(|| panic!("{span:?} in {:?}", artifacts.inferred_type_arguments.keys()));
+
+    recorded.iter().map(|argument| argument.get_id().to_string()).collect()
+}
+
+/// A template no argument binds has no type argument the code chose, so it is `mixed`, whatever its constraint.
+#[test]
+fn a_call_template_no_argument_binds_records_mixed() {
+    let sharp = "namespace Demo;\n\nimport Lib.Pairs;\n\nclass Report\n{\n    public int run()\n    {\n        const none = Pairs.none();\n        return count(none);\n    }\n}\n";
+    let library = "<?php\n\nnamespace Lib;\n\nfinal class Pairs\n{\n    /**\n     * @template T of int\n     *\n     * @return list<T>\n     */\n    public static function none(): array\n    {\n        return [];\n    }\n}\n";
+
+    assert_eq!(recorded_type_arguments(("src/Demo/Report.sharp", sharp), library, "Pairs.none()"), ["mixed"]);
+}
+
+/// A templated class without a constructor binds no template when it is created, so each type argument is `mixed`,
+/// `SplObjectStorage`'s too, though the analyzer types its object with `never` arguments.
+#[test]
+fn new_on_a_templated_class_without_a_constructor_records_mixed() {
+    let sharp = "namespace Demo;\n\nimport Lib.Bag;\n\nclass Report\n{\n    public Bag run()\n    {\n        return new Bag();\n    }\n}\n";
+    let library = "<?php\n\nnamespace Lib;\n\n/**\n * @template K\n * @template V\n */\nfinal class Bag\n{\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfunction storage(): \\SplObjectStorage\n{\n    return new \\SplObjectStorage();\n}\n";
+
+    assert_eq!(recorded_type_arguments(("src/Demo/Report.sharp", sharp), library, "new Bag()"), ["mixed", "mixed"]);
+    assert_eq!(
+        recorded_type_arguments(("src/Demo/storage.php", php), library, "new \\SplObjectStorage()"),
+        ["mixed", "mixed"]
+    );
+}
+
+/// A literal records its scalar type once, however many literals bind the template.
+#[test]
+fn a_template_bound_by_several_literals_records_their_scalar_type_once() {
+    let sharp = "namespace Demo;\n\nimport Lib.Lists;\n\nclass Report\n{\n    public int run()\n    {\n        const sizes = Lists.of(5, 6);\n        const flags = Lists.of(true, false);\n        return count(sizes) + count(flags);\n    }\n}\n";
+    let library = "<?php\n\nnamespace Lib;\n\nfinal class Lists\n{\n    /**\n     * @template T\n     *\n     * @param T ...$items\n     *\n     * @return list<T>\n     */\n    public static function of(mixed ...$items): array\n    {\n        return $items;\n    }\n}\n";
+    let analyzed = ("src/Demo/Report.sharp", sharp);
+
+    assert_eq!(recorded_type_arguments(analyzed, library, "Lists.of(5, 6)"), ["int"]);
+    assert_eq!(recorded_type_arguments(analyzed, library, "Lists.of(true, false)"), ["bool"]);
+}
+
+/// A template only a callback binds gets the callback's return type, as every `map` does.
+#[test]
+fn a_template_only_a_callback_binds_records_the_callback_return_type() {
+    let php = "<?php\n\nnamespace Demo;\n\n/**\n * @return list<string>\n */\nfunction labels(): array\n{\n    return \\Lib\\map([1, 2], fn (int $x): string => \"a\");\n}\n";
+    let library = "<?php\n\nnamespace Lib;\n\n/**\n * @template T\n * @template R\n *\n * @param list<T> $items\n * @param callable(T): R $f\n *\n * @return list<R>\n */\nfunction map(array $items, callable $f): array\n{\n    return array_map($f, $items);\n}\n";
+
+    assert_eq!(
+        recorded_type_arguments(
+            ("src/Demo/labels.php", php),
+            library,
+            "\\Lib\\map([1, 2], fn (int $x): string => \"a\")"
+        ),
+        ["int", "string"]
+    );
+}
+
+/// The record widens a copy of each bound, so a call's return type keeps the literal it inferred, and plain PHP that
+/// relies on it reports what it reported before.
+#[test]
+fn recording_type_arguments_leaves_the_issues_of_a_php_generic_call_unchanged() {
+    let php = "<?php\n\nnamespace Demo;\n\n/**\n * @template T\n *\n * @param T $value\n *\n * @return T\n */\nfunction same(mixed $value): mixed\n{\n    return $value;\n}\n\n/**\n * @param 5 $five\n */\nfunction takeFive(int $five): void\n{\n}\n\ntakeFive(same(5));\ntakeFive(same(6));\n";
+
+    assert_eq!(issues(("src/Demo/run.php", php), &[]), ["25:10 invalid-argument"]);
 }
