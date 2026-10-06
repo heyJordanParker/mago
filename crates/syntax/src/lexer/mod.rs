@@ -78,7 +78,7 @@ mod internal;
 /// The lexer is designed to be used in a streaming fashion, where it reads the input source code in chunks
 /// and produces tokens incrementally. This allows for efficient processing of large source files and
 /// minimizes memory usage.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Lexer<'input> {
     input: Input<'input>,
     settings: LexerSettings,

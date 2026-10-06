@@ -272,7 +272,10 @@ pub fn check_arrow_function(arrow_function: &ArrowFunction, context: &mut Contex
     }
 
     check_parameter_list_trailing_comma(&arrow_function.parameter_list, context);
-    check_for_promoted_properties_outside_constructor(&arrow_function.parameter_list, context);
+    // A modifier on a PHP# lambda's parameter promotes nothing, and `check_slice` refuses it.
+    if !context.program.dialect.is_sharp() {
+        check_for_promoted_properties_outside_constructor(&arrow_function.parameter_list, context);
+    }
 
     // Check for $this usage in static arrow functions
     if let Some(static_) = arrow_function.r#static.as_ref()
@@ -305,7 +308,7 @@ pub fn check_arrow_function(arrow_function: &ArrowFunction, context: &mut Contex
                                 .with_message("Return type `void` is not valid for an arrow function."),
                         )
                         .with_annotation(
-                            Annotation::secondary(arrow_function.r#fn.span)
+                            Annotation::secondary(arrow_function.r#fn.map_or(arrow_function.span(), |r#fn| r#fn.span))
                                 .with_message("Arrow function defined here."),
                         )
                         .with_help("Remove the `void` return type hint, or replace it with a valid type."),
@@ -319,7 +322,7 @@ pub fn check_arrow_function(arrow_function: &ArrowFunction, context: &mut Contex
                                 .with_message("Return type `never` is not valid for an arrow function."),
                         )
                         .with_annotation(
-                            Annotation::secondary(arrow_function.r#fn.span)
+                            Annotation::secondary(arrow_function.r#fn.map_or(arrow_function.span(), |r#fn| r#fn.span))
                                 .with_message("Arrow function defined here."),
                         ),
                 );
@@ -332,7 +335,10 @@ pub fn check_arrow_function(arrow_function: &ArrowFunction, context: &mut Contex
 #[inline]
 pub fn check_closure<'arena>(closure: &Closure<'arena>, context: &mut Context<'_, '_, 'arena>) {
     check_parameter_list_trailing_comma(&closure.parameter_list, context);
-    check_for_promoted_properties_outside_constructor(&closure.parameter_list, context);
+    // A modifier on a PHP# lambda's parameter promotes nothing, and `check_slice` refuses it.
+    if !context.program.dialect.is_sharp() {
+        check_for_promoted_properties_outside_constructor(&closure.parameter_list, context);
+    }
 
     // Check for $this usage in static closures
     if let Some(static_) = closure.r#static.as_ref()

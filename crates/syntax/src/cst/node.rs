@@ -88,6 +88,7 @@ use crate::cst::cst::FullOpeningTag;
 use crate::cst::cst::FullyQualifiedIdentifier;
 use crate::cst::cst::Function;
 use crate::cst::cst::FunctionCall;
+use crate::cst::cst::FunctionHint;
 use crate::cst::cst::FunctionLikeParameter;
 use crate::cst::cst::FunctionLikeParameterDefaultValue;
 use crate::cst::cst::FunctionLikeParameterList;
@@ -473,6 +474,7 @@ pub enum NodeKind {
     IntersectionHint,
     NullableHint,
     GenericHint,
+    FunctionHint,
     ParenthesizedHint,
     UnionHint,
     Unset,
@@ -716,6 +718,7 @@ pub enum Node<'ast, 'arena> {
     IntersectionHint(&'ast IntersectionHint<'arena>),
     NullableHint(&'ast NullableHint<'arena>),
     GenericHint(&'ast GenericHint<'arena>),
+    FunctionHint(&'ast FunctionHint<'arena>),
     ParenthesizedHint(&'ast ParenthesizedHint<'arena>),
     UnionHint(&'ast UnionHint<'arena>),
     Unset(&'ast Unset<'arena>),
@@ -1038,6 +1041,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Self::IntersectionHint(_) => NodeKind::IntersectionHint,
             Self::NullableHint(_) => NodeKind::NullableHint,
             Self::GenericHint(_) => NodeKind::GenericHint,
+            Self::FunctionHint(_) => NodeKind::FunctionHint,
             Self::ParenthesizedHint(_) => NodeKind::ParenthesizedHint,
             Self::UnionHint(_) => NodeKind::UnionHint,
             Self::Unset(_) => NodeKind::Unset,
@@ -1937,7 +1941,9 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 if let Some(r#static) = &node.r#static {
                     f(Node::Keyword(r#static));
                 }
-                f(Node::Keyword(&node.r#fn));
+                if let Some(r#fn) = &node.r#fn {
+                    f(Node::Keyword(r#fn));
+                }
                 f(Node::FunctionLikeParameterList(&node.parameter_list));
                 if let Some(return_type_hint) = &node.return_type_hint {
                     f(Node::FunctionLikeReturnTypeHint(return_type_hint));
@@ -1948,7 +1954,9 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 for item in node.attribute_lists.iter() {
                     f(Node::AttributeList(item));
                 }
-                f(Node::Keyword(&node.function));
+                if let Some(function) = &node.function {
+                    f(Node::Keyword(function));
+                }
                 f(Node::FunctionLikeParameterList(&node.parameter_list));
                 if let Some(use_clause) = &node.use_clause {
                     f(Node::ClosureUseClause(use_clause));
@@ -2471,11 +2479,19 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 | Hint::Mixed(local_identifier)
                 | Hint::Iterable(local_identifier) => f(Node::LocalIdentifier(local_identifier)),
                 Hint::Generic(generic_hint) => f(Node::GenericHint(generic_hint)),
+                Hint::Function(function_hint) => f(Node::FunctionHint(function_hint)),
             },
             Node::GenericHint(node) => {
                 f(Node::LocalIdentifier(&node.name));
                 for argument in node.arguments.iter() {
                     f(Node::Hint(argument));
+                }
+            }
+            Node::FunctionHint(node) => {
+                f(Node::Keyword(&node.function));
+                f(Node::Hint(node.return_type));
+                for parameter in node.parameters.iter() {
+                    f(Node::Hint(parameter));
                 }
             }
             Node::IntersectionHint(node) => {
@@ -2770,6 +2786,7 @@ impl HasSpan for Node<'_, '_> {
             Self::IntersectionHint(node) => node.span(),
             Self::NullableHint(node) => node.span(),
             Self::GenericHint(node) => node.span(),
+            Self::FunctionHint(node) => node.span(),
             Self::ParenthesizedHint(node) => node.span(),
             Self::UnionHint(node) => node.span(),
             Self::Unset(node) => node.span(),

@@ -101,6 +101,11 @@ impl LintRule for PreferArrowFunctionRule {
             return;
         };
 
+        // `mago lint` skips PHP# files, the only ones with a closure without `function`.
+        let Some(function) = &closure.function else {
+            return;
+        };
+
         if ctx.is_in_constant_expression() {
             return;
         }
@@ -134,7 +139,7 @@ impl LintRule for PreferArrowFunctionRule {
             Issue::new(self.cfg.level(), "This closure can be simplified to a more concise arrow function.")
                 .with_code(self.meta.code)
                 .with_annotation(
-                    Annotation::primary(closure.function.span).with_message("This traditional closure..."),
+                    Annotation::primary(function.span).with_message("This traditional closure..."),
                 )
                 .with_annotation(
                     Annotation::secondary(value.span())
@@ -145,7 +150,7 @@ impl LintRule for PreferArrowFunctionRule {
                 .with_help("Consider rewriting this as an arrow function to improve readability.");
 
         ctx.collector.propose(issue, |edits| {
-            let function_span = closure.function.span;
+            let function_span = function.span;
             let to_replace_with_n = function_span.from_start(function_span.start.forward(1));
             let to_replace_with_arrow = match &closure.use_clause {
                 Some(use_clause) => use_clause.span().join(keyword.span),

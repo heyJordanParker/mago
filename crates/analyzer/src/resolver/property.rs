@@ -1,8 +1,8 @@
 use foldhash::HashMap;
 use indexmap::IndexMap;
 use mago_allocator::Arena;
-use mago_bytes::BytesDisplay;
 use mago_bytes::trim_start_byte;
+use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::identifier::method::MethodIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
@@ -11,6 +11,7 @@ use mago_codex::metadata::ttype::TypeMetadata;
 use mago_codex::misc::GenericParent;
 use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
+use mago_codex::ttype::atomic::callable::TCallable;
 use mago_codex::ttype::atomic::generic::TGenericParameter;
 use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::atomic::object::r#enum::TEnum;
@@ -21,7 +22,9 @@ use mago_codex::ttype::comparator::union_comparator;
 use mago_codex::ttype::expander;
 use mago_codex::ttype::expander::StaticClassType;
 use mago_codex::ttype::expander::TypeExpansionOptions;
+use mago_codex::ttype::expander::get_signature_of_function_like_identifier;
 use mago_codex::ttype::get_mixed;
+use mago_codex::ttype::get_never;
 use mago_codex::ttype::template::TemplateResult;
 use mago_codex::ttype::template::inferred_type_replacer;
 use mago_codex::ttype::union::TUnion;
@@ -34,6 +37,7 @@ use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
 use mago_text_edit::TextEdit;
 use mago_word::Word;
+use mago_word::ascii_lowercase_word;
 use mago_word::concat_word;
 use mago_word::word;
 
@@ -50,6 +54,7 @@ use crate::utils::expression::analyze_member_object;
 use crate::utils::expression::is_this;
 use crate::utils::names::display_class_like_name;
 use crate::utils::template::get_template_types_for_class_member;
+use crate::visibility::check_method_visibility;
 use crate::visibility::check_resolved_property_read_visibility;
 use crate::visibility::check_resolved_property_write_visibility;
 use crate::visibility::effective_write_visibility;
@@ -969,6 +974,20 @@ where
             return None;
         }
 
+        if !for_assignment
+            && let Some(method_type) =
+                resolve_method_value(context, block_context, artifacts, class_id, prop_name_without_dollar, access_span)
+        {
+            return Some(ResolvedProperty {
+                property_span: None,
+                property_name: prop_name,
+                declaring_class_id: None,
+                property_type: method_type,
+                is_magic: false,
+                read_type: None,
+            });
+        }
+
         result.has_invalid_path = true;
 
         if !class_metadata.flags.is_final() || class_metadata.kind.is_interface() || class_metadata.kind.is_trait() {
@@ -1469,6 +1488,53 @@ fn report_possibly_non_existent_property<A>(
     );
 }
 
+/// Spec section 14.3: a PHP# read `x.name` of a class with no property `name` gives its method `name` as a closure,
+/// as PHP's `$x->name(...)` does, and `Class.name` gives its static method, as `Class::name(...)` does. The engine
+/// runs both on the read's missing-member path. Reports a method the read cannot reach, as the call would. Returns
+/// the closure's type.
+pub(crate) fn resolve_method_value<A>(
+    context: &mut Context<'_, '_, A>,
+    block_context: &BlockContext<'_>,
+    artifacts: &mut AnalysisArtifacts,
+    class_id: Word,
+    method_name: Word,
+    access_span: Span,
+) -> Option<TUnion>
+where
+    A: Arena,
+{
+    if !context.dialect.is_sharp() || !context.codebase.method_exists(class_id.as_bytes(), method_name.as_bytes()) {
+        return None;
+    }
+
+    let method = context.codebase.get_declaring_method_identifier(&MethodIdentifier::new(class_id, method_name));
+    let class_name = method.get_class_name();
+    if !check_method_visibility(
+        context,
+        block_context.scope.get_class_like_name(),
+        class_name.as_bytes(),
+        method.get_method_name().as_bytes(),
+        access_span,
+        None,
+    ) {
+        return Some(get_never());
+    }
+
+    artifacts.symbol_references.add_reference_to_class_member(
+        &block_context.scope,
+        (ascii_lowercase_word(class_name.as_bytes()), method.get_method_name()),
+        false,
+    );
+
+    let mut signature = get_signature_of_function_like_identifier(
+        &FunctionLikeIdentifier::Method(class_name, method.get_method_name()),
+        context.codebase,
+    )?;
+    signature.is_closure = true;
+
+    Some(TUnion::from_atomic(TAtomic::Callable(TCallable::Signature(signature))))
+}
+
 fn report_non_existent_property<A>(
     context: &mut Context<'_, '_, A>,
     classname: Word,
@@ -1479,28 +1545,6 @@ fn report_non_existent_property<A>(
 ) where
     A: Arena,
 {
-    let method_name = trim_start_byte(prop_name.as_bytes(), b'$');
-    if context.dialect.is_sharp() && context.codebase.method_exists(classname.as_bytes(), method_name) {
-        let classname = display_class_like_name(context, classname);
-        let method_name = BytesDisplay(method_name);
-        let object = BytesDisplay(
-            &context.source_file.contents[object_span.start.offset as usize..object_span.end.offset as usize],
-        );
-
-        context.collector.report_with_code(
-            IssueCode::NotSupportedYet,
-            Issue::error(format!("Using the method `{classname}.{method_name}` as a value is not supported yet."))
-                .with_annotation(Annotation::primary(selector_span).with_message("Method named here without a call."))
-                .with_annotation(
-                    Annotation::secondary(object_span).with_message(format!("On instance of `{classname}`")),
-                )
-                .with_help(format!("Call the method: `{object}.{method_name}()`."))
-                .with_note("The engine does not run a method used as a value yet."),
-        );
-
-        return;
-    }
-
     let class_kind_str = context.codebase.get_class_like(classname.as_bytes()).map_or("class", |m| m.kind.as_str());
     let classname = display_class_like_name(context, classname);
 
