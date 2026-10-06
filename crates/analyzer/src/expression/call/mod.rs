@@ -30,6 +30,7 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::context::scope::control_action::ControlAction;
 use crate::error::AnalysisError;
+use crate::expression::access::report_full_name;
 use crate::invocation::Invocation;
 use crate::invocation::InvocationArgumentsSource;
 use crate::invocation::InvocationTarget;
@@ -112,6 +113,10 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Call<'arena> {
     {
         match self {
             Call::Function(call) => call.analyze(context, block_context, artifacts),
+            // As a call with an invalid target, it gets no type, and only its arguments are analyzed.
+            Call::Method(call) if report_full_name(context, call.object, None) => {
+                call.argument_list.analyze(context, block_context, artifacts)
+            }
             // PHP# writes the static call `Class::m()` as `Class.m()`, with a bare name the binder bound to a class.
             Call::Method(call)
                 if context.dialect.is_sharp()

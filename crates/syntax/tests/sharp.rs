@@ -308,6 +308,45 @@ fn spec_syntax_outside_the_slice_is_one_not_supported_error_where_it_starts() {
     }
 }
 
+/// A case that carries data, spec section 20, is one error from its name to its closing parenthesis. The case stays
+/// in the enum, and the members after it still parse. PHP keeps its own parse error at the parenthesis.
+#[test]
+fn a_case_that_carries_data_is_one_not_supported_error_and_the_enum_parses_on() {
+    const CODE: &str = "enum PaymentResult\n{\n    case Open;\n    case Paid(string transactionId, int cents);\n\n    public int run() { return 1; }\n}\n";
+    let arena = LocalArena::new();
+
+    let php_code: &'static str = Box::leak(format!("<?php {CODE}").into_boxed_str());
+    let php = parse(&arena, "src/PaymentResult.php", php_code);
+    let Some(php_error) = php.errors.first() else {
+        panic!("expected a PHP error, got none");
+    };
+    assert_eq!(source(php_code, php_error), "(");
+    assert!(
+        !php.errors.iter().any(|error| matches!(error, ParseError::NotSupportedYetInSharp(..))),
+        "{:#?}",
+        php.errors
+    );
+
+    let program = parse(&arena, "src/PaymentResult.sharp", CODE);
+    let [error] = program.errors else {
+        panic!("expected one error, got {:#?}", program.errors);
+    };
+    assert_eq!(error.to_string(), "A case that carries data is not supported yet in PHP#.");
+    assert_eq!(source(CODE, error), "Paid(string transactionId, int cents)");
+    let Some(Statement::Enum(payment_result)) = program.statements.first() else {
+        panic!("expected an enum, got {:#?}", program.statements);
+    };
+    let [ClassLikeMember::EnumCase(open), ClassLikeMember::EnumCase(paid), ClassLikeMember::Method(run)] =
+        payment_result.members.as_slice()
+    else {
+        panic!("expected the cases `Open` and `Paid` and the method `run`, got {:#?}", payment_result.members);
+    };
+    assert_eq!(open.item.name().value, b"Open");
+    assert!(matches!(paid.item, EnumCaseItem::Unit(_)), "{:#?}", paid.item);
+    assert_eq!(paid.item.name().value, b"Paid");
+    assert_eq!(run.name.value, b"run");
+}
+
 /// A PHP#-only parse error is its own message, so `mago analyze` shows the rule as the issue's title.
 #[test]
 fn a_sharp_parse_error_shows_its_message_as_the_issue_title() {
@@ -399,6 +438,203 @@ fn a_question_mark_after_a_type_makes_it_nullable() {
         .collect();
 
     assert_eq!(nullable, [("Calc?", "Calc", "?"), ("int?", "int", "?"), ("string?", "string", "?")]);
+}
+
+/// The name and type arguments of a generic type, as written.
+fn generic_type<'a>(code: &'a str, hint: &Hint) -> (&'a str, Vec<&'a str>) {
+    let Hint::Generic(generic) = hint else {
+        panic!("expected a generic type, got {hint:#?}");
+    };
+
+    (source(code, &generic.name), generic.arguments.iter().map(|argument| source(code, argument)).collect())
+}
+
+#[test]
+fn a_collection_type_takes_its_type_arguments_in_angle_brackets() {
+    const CODE: &str = "class Report\n{\n    public Map<string, List<Line>> group(List<Line> lines, Map<int, List<List<int>>>? depths) { return [:]; }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(ClassLikeMember::Method(method)) = class_members(program).first() else {
+        panic!("expected a method, got {:#?}", class_members(program));
+    };
+    let return_type = &method.return_type_hint.as_ref().expect("a return type").hint;
+    assert_eq!(source(CODE, return_type), "Map<string, List<Line>>");
+    assert_eq!(generic_type(CODE, return_type), ("Map", vec!["string", "List<Line>"]));
+
+    let [lines, depths] = method.parameter_list.parameters.as_slice() else {
+        panic!("expected two parameters, got {:#?}", method.parameter_list.parameters);
+    };
+    assert_eq!(generic_type(CODE, lines.hint.as_ref().expect("a type")), ("List", vec!["Line"]));
+    let Some(Hint::Nullable(depths)) = &depths.hint else {
+        panic!("expected a nullable type, got {:#?}", depths.hint);
+    };
+    assert_eq!(source(CODE, depths.hint), "Map<int, List<List<int>>>");
+    assert_eq!(generic_type(CODE, depths.hint), ("Map", vec!["int", "List<List<int>>"]));
+}
+
+/// The return type and parameter types of a function type, as written.
+fn function_type<'a>(code: &'a str, hint: &Hint) -> (&'a str, Vec<&'a str>) {
+    let Hint::Function(function) = hint else {
+        panic!("expected a function type, got {hint:#?}");
+    };
+
+    (source(code, function.return_type), function.parameters.iter().map(|parameter| source(code, parameter)).collect())
+}
+
+#[test]
+fn a_function_type_writes_its_return_type_before_its_parameter_types() {
+    const CODE: &str = "class Report\n{\n    private Function<Money?(Line, string)> priceOf;\n    private Function<void(Order)>? onPaid = null;\n    public Function<bool(Order)> eligibleFor(Map<string, Function<int()>> counters, Function<List<int>(List<Line>)> ids) { return o => true; }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [
+        ClassLikeMember::Property(Property::Plain(price_of)),
+        ClassLikeMember::Property(Property::Plain(on_paid)),
+        ClassLikeMember::Method(method),
+    ] = class_members(program).as_slice()
+    else {
+        panic!("expected two fields and a method, got {:#?}", class_members(program));
+    };
+
+    let price_of = price_of.hint.as_ref().expect("a type");
+    assert_eq!(source(CODE, price_of), "Function<Money?(Line, string)>");
+    assert_eq!(function_type(CODE, price_of), ("Money?", vec!["Line", "string"]));
+    let Some(Hint::Nullable(on_paid)) = &on_paid.hint else {
+        panic!("expected a nullable type, got {:#?}", on_paid.hint);
+    };
+    assert_eq!(function_type(CODE, on_paid.hint), ("void", vec!["Order"]));
+    let return_type = &method.return_type_hint.as_ref().expect("a return type").hint;
+    assert_eq!(function_type(CODE, return_type), ("bool", vec!["Order"]));
+
+    let [counters, ids] = method.parameter_list.parameters.as_slice() else {
+        panic!("expected two parameters, got {:#?}", method.parameter_list.parameters);
+    };
+    let counters = counters.hint.as_ref().expect("a type");
+    assert_eq!(generic_type(CODE, counters), ("Map", vec!["string", "Function<int()>"]));
+    let Hint::Generic(counters) = counters else {
+        panic!("expected a generic type, got {counters:#?}");
+    };
+    assert_eq!(function_type(CODE, &counters.arguments.as_slice()[1]), ("int", vec![]));
+    assert_eq!(function_type(CODE, ids.hint.as_ref().expect("a type")), ("List<int>", vec!["List<Line>"]));
+}
+
+/// The lexer reads `(int)` as a cast, which in a function type is the parentheses around one parameter type.
+#[test]
+fn a_function_type_with_one_built_in_parameter_type_reads_the_cast_as_its_parentheses() {
+    const CODE: &str =
+        "class Report\n{\n    private Function<int(int)> twice;\n    private Function<bool( string )> blank;\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let types: Vec<(&str, Vec<&str>, &str, &str)> = class_members(program)
+        .iter()
+        .map(|member| {
+            let ClassLikeMember::Property(Property::Plain(field)) = member else {
+                panic!("expected a field, got {member:#?}");
+            };
+            let Some(Hint::Function(function)) = &field.hint else {
+                panic!("expected a function type, got {:#?}", field.hint);
+            };
+            let (_, parameters) = function_type(CODE, field.hint.as_ref().expect("a type"));
+
+            (
+                source(CODE, function.return_type),
+                parameters,
+                source(CODE, &function.left_parenthesis),
+                source(CODE, &function.right_parenthesis),
+            )
+        })
+        .collect();
+
+    assert_eq!(types, [("int", vec!["int"], "(", ")"), ("bool", vec!["string"], "(", ")")]);
+}
+
+#[test]
+fn a_local_and_a_field_can_have_a_collection_type_written() {
+    const CODE: &str = "class Report\n{\n    private Map<string, int> counts = [:];\n    public void run()\n    {\n        List<Line> lines = [];\n        Map<string, List<int>>? groups = null;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [ClassLikeMember::Property(Property::Plain(field)), ClassLikeMember::Method(run)] =
+        class_members(program).as_slice()
+    else {
+        panic!("expected a field and a method, got {:#?}", class_members(program));
+    };
+    assert_eq!(generic_type(CODE, field.hint.as_ref().expect("a type")), ("Map", vec!["string", "int"]));
+    let MethodBody::Concrete(body) = &run.body else {
+        panic!("expected a method body, got {:#?}", run.body);
+    };
+    let locals: Vec<(&str, &str)> = body
+        .statements
+        .iter()
+        .map(|statement| {
+            let Statement::LocalDeclaration(local) = statement else {
+                panic!("expected a local, got {statement:#?}");
+            };
+
+            (source(CODE, local.hint.expect("a type")), source(CODE, &local.name))
+        })
+        .collect();
+    assert_eq!(locals, [("List<Line>", "lines"), ("Map<string, List<int>>?", "groups")]);
+}
+
+#[test]
+fn a_map_literal_writes_each_entry_as_key_colon_value() {
+    const CODE: &str = "class Report\n{\n    public void run()\n    {\n        [line, other];\n        [\"pro\": pro, 2: team];\n        [:];\n        [];\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let arrays: Vec<&Array> = method_body(program)
+        .iter()
+        .map(|statement| {
+            let Expression::Array(array) = expression(statement) else {
+                panic!("expected a literal, got {statement:#?}");
+            };
+
+            array
+        })
+        .collect();
+    let [list, map, empty_map, empty_list] = arrays.as_slice() else {
+        panic!("expected four literals, got {arrays:#?}");
+    };
+
+    assert!(list.elements.iter().all(|element| matches!(element, ArrayElement::Value(_))), "{list:#?}");
+    let entries: Vec<(&str, &str, &str)> = map
+        .elements
+        .iter()
+        .map(|element| {
+            let ArrayElement::KeyValue(entry) = element else {
+                panic!("expected a map entry, got {element:#?}");
+            };
+
+            (source(CODE, entry.key), source(CODE, &entry.double_arrow), source(CODE, entry.value))
+        })
+        .collect();
+    assert_eq!(entries, [("\"pro\"", ":", "pro"), ("2", ":", "team")]);
+    assert_eq!(empty_map.colon.map(|colon| source(CODE, &colon)), Some(":"));
+    assert_eq!(source(CODE, *empty_map), "[:]");
+    assert!(empty_map.elements.is_empty());
+    assert_eq!(empty_list.colon, None);
+}
+
+#[test]
+fn a_php_double_arrow_in_a_literal_is_a_php_syntax_error() {
+    const CODE: &str = "class Report\n{\n    public void run()\n    {\n        [\"pro\" => pro];\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    let messages: Vec<String> = program.errors.iter().map(ToString::to_string).collect();
+    assert_eq!(messages.len(), 1, "{messages:#?}");
+    let Some(ParseError::PhpSyntaxInSharp(_, span)) = program.errors.first() else {
+        panic!("expected a PHP-syntax error, got {:#?}", program.errors);
+    };
+    assert_eq!(source(CODE, span), "=>");
 }
 
 #[test]
@@ -567,6 +803,27 @@ fn a_local_can_be_declared_with_a_union_type_written() {
         .collect();
 
     assert_eq!(types, ["int|string", "Calc|int?|float", "int|bool"]);
+}
+
+#[test]
+fn a_local_union_type_may_hold_collection_and_function_types() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        List<int>|string items = [];\n        Function<int()>|int make = 1;\n        (List<int>|string)? maybe = null;\n        (Function<int()>|int)? later = null;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let types: Vec<&str> = method_body(program)
+        .iter()
+        .map(|statement| {
+            let Statement::LocalDeclaration(local) = statement else {
+                panic!("expected a local declaration, got {statement:#?}");
+            };
+
+            source(CODE, local.hint.as_ref().expect("a type"))
+        })
+        .collect();
+
+    assert_eq!(types, ["List<int>|string", "Function<int()>|int", "(List<int>|string)?", "(Function<int()>|int)?"]);
 }
 
 #[test]
@@ -877,6 +1134,164 @@ fn question_mark_dot_reads_as_null_safe_member_access() {
     assert_eq!(source(CODE, total), "this?.total");
 }
 
+/// The expression the `n`th statement of the first method evaluates: a local's value, or the statement's expression.
+fn statement_expression<'arena>(program: &'arena Program<'arena>, n: usize) -> &'arena Expression<'arena> {
+    match &method_body(program)[n] {
+        Statement::LocalDeclaration(local) => local.value,
+        statement => expression(statement),
+    }
+}
+
+#[test]
+fn a_lambda_with_an_expression_body_is_an_arrow_function_without_fn() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        lines.filter(l => !l.refunded);\n        const add = (a, b) => a + b;\n        const check = (Order order, int minimum = 1) => order.total >= minimum;\n        const one = () => 1;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Expression::Call(Call::Method(filter)) = statement_expression(program, 0) else {
+        panic!("expected `lines.filter(…)`, got {:#?}", method_body(program));
+    };
+    let mut lambdas = vec![filter.argument_list.arguments.first().expect("one argument").value()];
+    lambdas.extend((1..4).map(|n| statement_expression(program, n)));
+
+    /// A parameter's name and type.
+    type Parameter<'a> = (&'a str, Option<&'a str>);
+
+    let lambdas: Vec<(&str, Vec<Parameter>, &str, &str)> = lambdas
+        .into_iter()
+        .map(|lambda| {
+            let Expression::ArrowFunction(lambda) = lambda else {
+                panic!("expected a lambda, got {lambda:#?}");
+            };
+            assert!(lambda.r#fn.is_none());
+            let parameters = lambda
+                .parameter_list
+                .parameters
+                .iter()
+                .map(|parameter| {
+                    (source(CODE, &parameter.variable), parameter.hint.as_ref().map(|hint| source(CODE, hint)))
+                })
+                .collect();
+
+            (source(CODE, lambda), parameters, source(CODE, &lambda.arrow), source(CODE, lambda.expression))
+        })
+        .collect();
+
+    assert_eq!(
+        lambdas,
+        [
+            ("l => !l.refunded", vec![("l", None)], "=>", "!l.refunded"),
+            ("(a, b) => a + b", vec![("a", None), ("b", None)], "=>", "a + b"),
+            (
+                "(Order order, int minimum = 1) => order.total >= minimum",
+                vec![("order", Some("Order")), ("minimum", Some("int"))],
+                "=>",
+                "order.total >= minimum"
+            ),
+            ("() => 1", vec![], "=>", "1"),
+        ]
+    );
+}
+
+#[test]
+fn a_lambda_with_a_block_body_is_a_closure_without_function_or_use() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        const increment = () => { count += 1; };\n        const price = (Line line, string currency) => {\n            return line.priceIn(currency);\n        };\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let lambdas: Vec<(&str, &str, &str, usize)> = (0..2)
+        .map(|n| {
+            let Expression::Closure(lambda) = statement_expression(program, n) else {
+                panic!("expected a block lambda, got {:#?}", method_body(program));
+            };
+            assert!(lambda.function.is_none());
+            assert!(lambda.use_clause.is_none());
+
+            (
+                source(CODE, lambda),
+                source(CODE, &lambda.parameter_list),
+                source(CODE, &lambda.arrow.expect("an arrow")),
+                lambda.body.statements.len(),
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        lambdas,
+        [
+            ("() => { count += 1; }", "()", "=>", 1),
+            (
+                "(Line line, string currency) => {\n            return line.priceIn(currency);\n        }",
+                "(Line line, string currency)",
+                "=>",
+                1
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_lambda_body_takes_the_whole_expression_and_stops_at_a_comma() {
+    const CODE: &str =
+        "class Report\n{\n    void run()\n    {\n        retry(3, () => client.send(a ?? b), 100);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Expression::Call(Call::Function(retry)) = statement_expression(program, 0) else {
+        panic!("expected `retry(…)`, got {:#?}", method_body(program));
+    };
+    let arguments: Vec<&str> =
+        retry.argument_list.arguments.iter().map(|argument| source(CODE, argument.value())).collect();
+    assert_eq!(arguments, ["3", "() => client.send(a ?? b)", "100"]);
+}
+
+#[test]
+fn a_parenthesized_expression_is_not_a_lambda() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        return (a + b) * (c);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Expression::Binary(product) = statement_expression(program, 0) else {
+        panic!("expected a product, got {:#?}", method_body(program));
+    };
+    assert!(matches!(product.lhs, Expression::Parenthesized(_)), "{:#?}", product.lhs);
+    assert!(matches!(product.rhs, Expression::Parenthesized(_)), "{:#?}", product.rhs);
+}
+
+#[test]
+fn a_php_closure_or_arrow_function_is_php_syntax_that_names_the_lambda() {
+    for (lambda, start) in [("fn (int x) => x", "fn"), ("function (int x) { return x; }", "function")] {
+        let arena = LocalArena::new();
+        let code: &'static str = Box::leak(
+            format!("class Report\n{{\n    void run()\n    {{\n        const f = {lambda};\n    }}\n}}\n")
+                .into_boxed_str(),
+        );
+        let program = parse(&arena, "src/Report.sharp", code);
+
+        let [error] = program.errors else {
+            panic!("expected one error for `{lambda}`, got {:#?}", program.errors);
+        };
+        assert_eq!(
+            Issue::from(error).message,
+            "PHP# writes a lambda as a bare arrow without `fn` or `function`, as in `x => x.id` or `(a, b) => { … }`",
+            "{lambda}"
+        );
+        assert_eq!(source(code, error), start, "{lambda}");
+    }
+}
+
+#[test]
+fn php_keeps_its_arrow_functions_and_closures() {
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.php", "<?php $f = fn($x) => $x; $g = function () use ($f) { return 1; };");
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+}
+
 #[test]
 fn a_question_mark_apart_from_the_dot_is_not_null_safe_access() {
     let arena = LocalArena::new();
@@ -925,7 +1340,6 @@ fn the_use_keyword_is_a_parse_error_in_every_form() {
         "use function Lib\\{make, total};\n",
         "class Report\n{\n    use Shared;\n}\n",
         "class Report\n{\n    use Lib\\Shared { Lib\\Shared::run as start; }\n}\n",
-        "class Report\n{\n    void run()\n    {\n        const total = function () use ($count) { return 1; };\n    }\n}\n",
     ] {
         let arena = LocalArena::new();
         let program = parse(&arena, "src/Report.sharp", code);
@@ -933,6 +1347,25 @@ fn the_use_keyword_is_a_parse_error_in_every_form() {
         let messages: Vec<String> = program.errors.iter().map(ToString::to_string).collect();
         assert_eq!(messages, ["`use` is PHP syntax: PHP# imports a class with `import`"], "{code}");
     }
+}
+
+#[test]
+fn a_php_closure_reports_its_function_and_its_use_clause() {
+    let arena = LocalArena::new();
+    let program = parse(
+        &arena,
+        "src/Report.sharp",
+        "class Report\n{\n    void run()\n    {\n        const total = function () use ($count) { return 1; };\n    }\n}\n",
+    );
+
+    let messages: Vec<String> = program.errors.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        messages,
+        [
+            "PHP# writes a lambda as a bare arrow without `fn` or `function`, as in `x => x.id` or `(a, b) => { … }`",
+            "`use` is PHP syntax: PHP# imports a class with `import`",
+        ]
+    );
 }
 
 #[test]
@@ -1347,7 +1780,59 @@ fn a_class_or_an_interface_names_its_base_class_and_interfaces_after_a_colon() {
     assert_eq!(source(CODE, class), "public class Page : Entity, Linkable\n{\n}");
 }
 
-/// An enum or a trait takes `public` as a class does, so the checker refuses the whole declaration where it starts.
+/// An enum's header holds a backing type, `int` or `string`, first, and then its interfaces. After a backing type, the
+/// `,` opens the interfaces as the `:` does without one, so each token belongs to one node.
+#[test]
+fn an_enum_names_its_backing_type_then_its_interfaces_after_a_colon() {
+    const CODE: &str = "public enum Status : string, HasLabel, Sorted\n{\n}\n\nenum Suit : HasLabel\n{\n}\n\nenum Retry : string\n{\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Status.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let headers: Vec<_> = program
+        .statements
+        .iter()
+        .map(|statement| {
+            let Statement::Enum(r#enum) = statement else {
+                panic!("expected an enum, got {statement:#?}");
+            };
+
+            (
+                r#enum.backing_type_hint.as_ref().map(|backing_type| source(CODE, backing_type)),
+                r#enum.inheritance.as_ref().map(|inheritance| source(CODE, inheritance)),
+                r#enum
+                    .inheritance
+                    .iter()
+                    .flat_map(|inheritance| inheritance.types.iter().map(Identifier::value))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        headers,
+        [
+            (Some(": string"), Some(", HasLabel, Sorted"), vec![&b"HasLabel"[..], b"Sorted"]),
+            (None, Some(": HasLabel"), vec![&b"HasLabel"[..]]),
+            (Some(": string"), None, vec![]),
+        ]
+    );
+}
+
+#[test]
+fn a_php_enum_keeps_its_implements_clause_and_has_no_header() {
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Status.php", "<?php enum Status: string implements HasLabel {}");
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::OpeningTag(_), Statement::Enum(r#enum)] = program.statements.as_slice() else {
+        panic!("expected an enum, got {:#?}", program.statements);
+    };
+    assert!(r#enum.backing_type_hint.is_some());
+    assert!(r#enum.implements.is_some());
+    assert!(r#enum.inheritance.is_none());
+}
+
+/// An enum or a trait takes `public` as a class does, so the checker refuses a trait where it starts.
 #[test]
 fn an_enum_or_a_trait_starts_with_its_modifiers() {
     const CODE: &str = "public enum Suit\n{\n}\n\npublic trait Tagged\n{\n}\n";

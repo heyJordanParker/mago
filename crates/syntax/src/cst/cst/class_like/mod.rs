@@ -154,6 +154,9 @@ pub struct Enum<'arena> {
     pub r#enum: Keyword<'arena>,
     pub name: LocalIdentifier<'arena>,
     pub backing_type_hint: Option<EnumBackingTypeHint<'arena>>,
+    /// PHP#'s interfaces in the `: string, Interface` header. Always `None` in PHP. After a backing type, its `colon` is
+    /// the `,` that opens the interfaces.
+    pub inheritance: Option<Inheritance<'arena>>,
     pub implements: Option<Implements<'arena>>,
     pub left_brace: Span,
     pub members: Sequence<'arena, ClassLikeMember<'arena>>,

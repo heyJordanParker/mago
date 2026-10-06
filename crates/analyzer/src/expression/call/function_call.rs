@@ -6,6 +6,7 @@ use mago_codex::ttype::atomic::callable::TCallableSignature;
 use mago_codex::ttype::cast::cast_atomic_to_callable;
 use mago_codex::ttype::expander::contains_parameter_variable;
 use mago_codex::ttype::template::TemplateResult;
+use mago_codex::ttype::union::TUnion;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -25,10 +26,12 @@ use crate::error::AnalysisError;
 use crate::expression::call::analyze_invocation_targets;
 use crate::expression::call::get_function_like_target;
 use crate::expression::call::get_function_like_target_with_skip;
+use crate::expression::variable::read_variable;
 use crate::invocation::InvocationArgumentsSource;
 use crate::invocation::InvocationTarget;
 use crate::plugin::ExpressionHookResult;
 use crate::plugin::context::HookContext;
+use crate::utils::expression::get_bare_name_variable_id;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for FunctionCall<'arena> {
     fn analyze<'ctx, A>(
@@ -100,7 +103,13 @@ pub(super) fn resolve_targets<'ctx, 'arena, A>(
 where
     A: Arena,
 {
-    if let Expression::Identifier(function_name) = expression {
+    if let Expression::Identifier(function_name) = expression
+        && let Some(variable_id) = get_bare_name_variable_id(function_name, context.resolved_names)
+    {
+        // A PHP# call of a local, `f(x)`, calls the closure the local holds, as PHP's `$f($x)` does.
+        let local_type = read_variable(context, block_context, artifacts, variable_id.as_bytes(), function_name.span());
+        artifacts.set_rc_expression_type(expression, local_type);
+    } else if let Expression::Identifier(function_name) = expression {
         let name = word(context.resolved_names.get(function_name));
         let unqualified_name = word(function_name.value());
 
@@ -138,16 +147,31 @@ where
         }
 
         return Ok(if let Some(t) = target { (vec![t], false) } else { (vec![], false) });
+    } else {
+        let was_inside_call = block_context.flags.inside_call();
+        block_context.flags.set_inside_call(true);
+        expression.analyze(context, block_context, artifacts)?;
+        block_context.flags.set_inside_call(was_inside_call);
     }
 
-    let was_inside_call = block_context.flags.inside_call();
-    block_context.flags.set_inside_call(true);
-    expression.analyze(context, block_context, artifacts)?;
-    block_context.flags.set_inside_call(was_inside_call);
     let Some(expression_type) = artifacts.get_expression_type(expression) else {
         return Ok((vec![], false));
     };
 
+    Ok(resolve_callable_targets(context, &expression_type.clone(), expression.span(), template_result))
+}
+
+/// The targets a call of a value of `expression_type` runs: the function a closure or a callable names, or the
+/// callable's signature. Reports a value that cannot be called, and returns whether one was found.
+pub(super) fn resolve_callable_targets<'ctx, A>(
+    context: &mut Context<'ctx, '_, A>,
+    expression_type: &TUnion,
+    span: Span,
+    template_result: &mut TemplateResult,
+) -> (Vec<InvocationTarget<'ctx>>, bool)
+where
+    A: Arena,
+{
     let mut encountered_invalid_targets = false;
     let mut targets = vec![];
     for atomic in expression_type.types.as_ref() {
@@ -165,7 +189,7 @@ where
                             context,
                             id,
                             None,
-                            expression.span(),
+                            span,
                             if context
                                 .codebase
                                 .get_function_like(&id)
@@ -185,12 +209,12 @@ where
                     targets.push(InvocationTarget::Callable {
                         signature: callable_signature.clone(),
                         effective_signature: None,
-                        span: expression.span(),
+                        span,
                         source: callable_signature.get_source(),
                     });
                 }
                 TCallable::Alias(id) => {
-                    if let Some(t) = get_function_like_target(context, *id, None, expression.span(), None) {
+                    if let Some(t) = get_function_like_target(context, *id, None, span, None) {
                         targets.push(t);
                     } else {
                         encountered_invalid_targets = true;
@@ -201,7 +225,7 @@ where
             targets.push(InvocationTarget::Callable {
                 signature: TCallableSignature::mixed(false),
                 effective_signature: None,
-                span: expression.span(),
+                span,
                 source: None,
             });
         } else {
@@ -213,7 +237,7 @@ where
                     "Expression of type `{type_name}` cannot be called as a function or method.",
                 ))
                 .with_annotation(
-                    Annotation::primary(expression.span())
+                    Annotation::primary(span)
                         .with_message(format!("This expression (type `{type_name}` ) is not a valid callable"))
                 )
                 .with_note("To be callable, an expression must resolve to a function name (string), a Closure, an invocable object (object with `__invoke` method), or an array representing a static/instance method.")
@@ -224,7 +248,7 @@ where
         }
     }
 
-    Ok((targets, encountered_invalid_targets))
+    (targets, encountered_invalid_targets)
 }
 
 /// Spec sections 8 and 29 let PHP# call any plain PHP function, and the engine calls a bare name as the global

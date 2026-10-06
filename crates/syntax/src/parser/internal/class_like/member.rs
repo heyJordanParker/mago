@@ -32,7 +32,7 @@ where
             T!["const"] => ClassLikeMember::Constant(
                 self.parse_class_like_constant_with_attributes_and_modifiers(Sequence::empty(), Sequence::empty())?,
             ),
-            T!["function"] => ClassLikeMember::Method(
+            T!["function"] if !self.is_at_function_hint()? => ClassLikeMember::Method(
                 self.parse_method_with_attributes_and_modifiers(Sequence::empty(), Sequence::empty())?,
             ),
             T!["case"] => ClassLikeMember::EnumCase(self.parse_enum_case_with_attributes(Sequence::empty())?),
@@ -61,7 +61,7 @@ where
             T!["const"] => ClassLikeMember::Constant(
                 self.parse_class_like_constant_with_attributes_and_modifiers(attributes, Sequence::empty())?,
             ),
-            T!["function"] => {
+            T!["function"] if !self.is_at_function_hint()? => {
                 ClassLikeMember::Method(self.parse_method_with_attributes_and_modifiers(attributes, Sequence::empty())?)
             }
             _ if self.dialect.is_sharp() => {
@@ -83,7 +83,8 @@ where
             T!["const"] => ClassLikeMember::Constant(
                 self.parse_class_like_constant_with_attributes_and_modifiers(attributes, modifiers)?,
             ),
-            T!["function"] => {
+            // PHP#'s `Function<…>` starts a member's type, not PHP's `function` keyword.
+            T!["function"] if !self.is_at_function_hint()? => {
                 ClassLikeMember::Method(self.parse_method_with_attributes_and_modifiers(attributes, modifiers)?)
             }
             _ if self.dialect.is_sharp() => {

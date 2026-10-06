@@ -155,7 +155,7 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingW
         checker::class_like::check_class(class, context);
 
         if context.program.dialect.is_sharp() {
-            checker::sharp::check_class_name(class, context);
+            checker::sharp::check_class_name(&class.name, context);
         }
     }
 
@@ -181,6 +181,10 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Context<'_, 'ast, 'arena>> for CheckingW
     #[inline]
     fn walk_in_enum(&self, r#enum: &'ast Enum<'arena>, context: &mut Context<'_, 'ast, 'arena>) {
         checker::class_like::check_enum(r#enum, context);
+
+        if context.program.dialect.is_sharp() {
+            checker::sharp::check_class_name(&r#enum.name, context);
+        }
     }
 
     #[inline]

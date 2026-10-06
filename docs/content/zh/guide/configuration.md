@@ -184,7 +184,7 @@ Mago 区分你的代码、第三方代码,以及完全要忽略的代码:
 paths     = ["src", "tests"]
 includes  = ["vendor"]
 excludes  = ["cache/**", "build/**", "var/**"]
-extensions = ["php"]
+extensions = ["php", "sharp"]
 ```
 
 三种列表都支持 glob 模式:
@@ -207,7 +207,9 @@ excludes = [
 | `paths` | string list | `[]` | 你源码的目录或 glob。为空时扫描整个工作区。 |
 | `includes` | string list | `[]` | Mago 应解析但不修改的第三方代码的目录或 glob。 |
 | `excludes` | string list | `[]` | 在所有工具中都被排除的 glob 或路径。 |
-| `extensions` | string list | `["php"]` | 视为 PHP 的文件扩展名。 |
+| `extensions` | string list | `["php", "sharp"]` | Mago 读取的 PHP 和 PHP# 文件的扩展名。 |
+
+`mago lint`、`mago fmt` 和 `mago guard` 暂不读取 PHP# 文件:它们会跳过找到的每个 `.sharp` 文件,并拒绝在命令行中指定的 `.sharp` 文件。
 
 ### Glob 设置
 

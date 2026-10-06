@@ -714,7 +714,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Enum<'arena> {
             self.span(),
             None,
             self.implements.as_ref(),
-            None,
+            self.inheritance.as_ref(),
             class_like_metadata,
             self.members.as_slice(),
         )?;

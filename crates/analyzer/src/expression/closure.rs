@@ -5,7 +5,6 @@ use foldhash::HashMap;
 use mago_allocator::Arena;
 use mago_bytes::BytesDisplay;
 use mago_codex::context::ScopeContext;
-use mago_codex::ttype::add_union_type;
 use mago_codex::ttype::get_mixed;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -21,6 +20,8 @@ use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::statement::function_like::FunctionLikeBody;
 use crate::statement::function_like::analyze_function_like;
+use crate::statement::function_like::capture_lambda_locals;
+use crate::statement::function_like::merge_captured_references;
 use crate::statement::function_like::receiver_class;
 use crate::statement::function_like::resolve_closure_like_type;
 use crate::statement::function_like::unused_parameter;
@@ -151,6 +152,10 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Closure<'arena> {
             }
         }
 
+        if context.dialect.is_sharp() {
+            capture_lambda_locals(context, s, block_context, &mut inner_block_context);
+        }
+
         if !context.settings.allow_implicit_pipe_callable_types || !block_context.flags.inside_pipe_callable() {
             for parameter in &self.parameter_list.parameters {
                 crate::utils::missing_type_hints::check_parameter_type_hint(
@@ -199,31 +204,10 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Closure<'arena> {
             inferred_parameter_types,
         )?;
 
-        for referenced_variable in inner_block_context.references_to_external_scope {
-            let Some(inner_type) = inner_block_context.locals.remove(&referenced_variable) else {
-                continue;
-            };
+        let has_returned = inner_block_context.flags.has_returned();
+        merge_captured_references(context, block_context, inner_block_context);
 
-            let variable_type = match block_context.locals.remove(&referenced_variable) {
-                Some(existing_type) => Rc::new(add_union_type(
-                    Rc::unwrap_or_clone(inner_type),
-                    &existing_type,
-                    context.codebase,
-                    context.settings.combiner_options(),
-                )),
-                None => inner_type,
-            };
-
-            block_context.locals.insert(referenced_variable, variable_type);
-        }
-
-        let resulting_closure = resolve_closure_like_type(
-            context,
-            s,
-            function_metadata,
-            inner_block_context.flags.has_returned(),
-            inner_artifacts,
-        );
+        let resulting_closure = resolve_closure_like_type(context, s, function_metadata, has_returned, inner_artifacts);
 
         artifacts.set_expression_type(self, resulting_closure);
 

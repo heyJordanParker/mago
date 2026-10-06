@@ -53,8 +53,15 @@ where
             cst::Hint::Null(_) => TypeKind::Null,
             cst::Hint::True(_) => TypeKind::Bool(Some(true)),
             cst::Hint::False(_) => TypeKind::Bool(Some(false)),
-            cst::Hint::Array(_) => TypeKind::Array,
+            cst::Hint::Array(_) | cst::Hint::Generic(_) => TypeKind::Array,
             cst::Hint::Callable(_) => TypeKind::Callable,
+            // Spec section 14.1: a PHP# function type runs as `\Closure`.
+            cst::Hint::Function(function) => TypeKind::Named(Identifier {
+                span: function.function.span(),
+                imported: false,
+                value: b"Closure",
+                kind: IdentifierKind::FullyQualified,
+            }),
             cst::Hint::Static(keyword) => TypeKind::Static(self.enclosing_class_or_static(keyword.span())),
             cst::Hint::Self_(keyword) => TypeKind::Self_(self.enclosing_class_or_static(keyword.span())),
             cst::Hint::Parent(keyword) => TypeKind::Parent(Identifier {
