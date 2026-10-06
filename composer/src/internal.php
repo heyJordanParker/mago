@@ -108,7 +108,7 @@ function locked(string $lockFile, \Closure $callback): mixed
  */
 function get_version(): string
 {
-    $version = InstalledVersions::getPrettyVersion('carthage-software/mago');
+    $version = InstalledVersions::getPrettyVersion('heyjordanparker/mago-sharp');
     if ($version === null) {
         throw new RuntimeException('Could not determine mago package version.');
     }
@@ -596,11 +596,11 @@ function ensure_binary(
 /**
  * Ensure the editor JSON schema is available next to the package.
  *
- * Writes `schema.json` to the package root (`vendor/carthage-software/mago/schema.json`
+ * Writes `schema.json` to the package root (`vendor/heyjordanparker/mago-sharp/schema.json`
  * once installed) so a project can reference a local, version-matched schema instead of a
  * version-pinned URL:
  *
- *     #:schema vendor/carthage-software/mago/schema.json
+ *     #:schema vendor/heyjordanparker/mago-sharp/schema.json
  *
  * The schema is produced by the just-installed binary, so it always matches the version in
  * use. Generation is best-effort: any failure (read-only vendor dir, binary error, ...) is

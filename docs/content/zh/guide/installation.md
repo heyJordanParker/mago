@@ -48,21 +48,21 @@ curl --proto '=https' --tlsv1.2 -sSf https://carthage.software/mago.sh | bash -s
 
 Windows 上的推荐方式,也是任何没有 `bash` 的系统上的不错备选。
 
-1. 打开 [发布页面](https://github.com/carthage-software/mago/releases)。
+1. 打开 [发布页面](https://github.com/heyJordanParker/mago-sharp/releases)。
 2. 下载对应你操作系统的归档。命名遵循 `mago-<version>-<target>.tar.gz` (Windows 上是 `.zip`)。
 3. 解压归档,把二进制放到 PATH 上的某个位置。
 
 如果你保留了归档文件,可以在解压前自行校验。
 
 ```sh
-VERSION=1.51.0
+VERSION=0.1.0
 TARGET=x86_64-unknown-linux-gnu  # 请根据你的平台调整
 ASSET=mago-${VERSION}-${TARGET}.tar.gz
 
-gh release download "$VERSION" --repo carthage-software/mago --pattern "$ASSET"
+gh release download "$VERSION" --repo heyJordanParker/mago-sharp --pattern "$ASSET"
 gh attestation verify "$ASSET" \
-  --repo carthage-software/mago \
-  --signer-workflow carthage-software/mago/.github/workflows/cd.yml
+  --repo heyJordanParker/mago-sharp \
+  --signer-workflow heyJordanParker/mago-sharp/.github/workflows/cd.yml
 
 tar -xzf "$ASSET"
 sudo mv "mago-${VERSION}-${TARGET}/mago" /usr/local/bin/
@@ -91,7 +91,7 @@ docker run --rm -v $(pwd):/app -w /app ghcr.io/carthage-software/mago lint
 适用于 PHP 项目:
 
 ```sh
-composer require --dev "carthage-software/mago:^1.51.0"
+composer require --dev "heyjordanparker/mago-sharp:^0.1.0"
 ```
 
 Composer 包是一个轻量封装。第一次调用 `vendor/bin/mago` 会从 GitHub 发布下载对应的预构建二进制并缓存。后续调用复用缓存,不再发起任何网络请求。
@@ -138,8 +138,8 @@ shell 安装脚本会根据你传入的参数,在三种模式之间选择。
 
 ```sh
 gh attestation verify <archive> \
-  --repo carthage-software/mago \
-  --signer-workflow carthage-software/mago/.github/workflows/cd.yml
+  --repo heyJordanParker/mago-sharp \
+  --signer-workflow heyJordanParker/mago-sharp/.github/workflows/cd.yml
 ```
 
 `--signer-workflow` 这一项很关键。它把证明绑定到具体的发布工作流文件。即便有人通过泄露的 GitHub Actions token 在同一仓库内触发了另一个工作流,校验也会失败。
@@ -157,7 +157,7 @@ gh attestation verify <archive> \
 ```sh
 COMMIT=cd4cf4dfdbc72bd028ad26d11bcc815a49e27e9a  # 替换为你已审阅过的提交哈希
 curl --proto '=https' --tlsv1.2 -sSf \
-  "https://raw.githubusercontent.com/carthage-software/mago/${COMMIT}/scripts/install.sh" \
+  "https://raw.githubusercontent.com/heyJordanParker/mago-sharp/${COMMIT}/scripts/install.sh" \
   | bash -s -- --always-verify
 ```
 

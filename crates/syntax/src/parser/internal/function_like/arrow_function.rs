@@ -9,6 +9,7 @@ use crate::cst::sequence::Sequence;
 use crate::cst::sequence::TokenSeparatedSequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
+use crate::token::Precedence;
 use mago_allocator::prelude::*;
 use mago_span::Span;
 
@@ -32,8 +33,14 @@ where
         })
     }
 
-    /// Whether a PHP# lambda starts here: a bare name, or a parenthesized list, followed by `=>`.
-    pub(crate) fn is_at_lambda(&mut self) -> Result<bool, ParseError> {
+    /// Whether a PHP# lambda starts here: a bare name, or a parenthesized list, followed by `=>`. A lambda binds as
+    /// loosely as assignment, as in C#, so it starts only where a whole value, an assignment's value or a branch of
+    /// `? :` goes. After any other operator, `=>` belongs to what holds the expression, such as a `match` arm.
+    pub(crate) fn is_at_lambda(&mut self, precedence: Precedence) -> Result<bool, ParseError> {
+        if precedence > Precedence::ElvisOrConditional {
+            return Ok(false);
+        }
+
         Ok(match self.stream.peek_kind(0)? {
             Some(T![Identifier]) => self.stream.peek_kind(1)? == Some(T!["=>"]),
             Some(T!["("]) => self.stream.peek_kind_after_parentheses()? == Some(T!["=>"]),
