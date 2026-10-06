@@ -1,6 +1,7 @@
 use std::hash::Hash;
 
 use mago_names::ResolvedNames;
+use mago_syntax::cst::FunctionHint;
 use mago_syntax::cst::GenericHint;
 use mago_syntax::cst::Hint;
 use mago_syntax::cst::IntersectionHint;
@@ -47,6 +48,25 @@ impl Fingerprintable for Hint<'_> {
             Hint::Mixed(_) => "mixed".hash(hasher),
             Hint::Iterable(_) => "iterable".hash(hasher),
             Hint::Generic(g) => g.fingerprint_with_hasher(hasher, resolved_names, options),
+            Hint::Function(f) => f.fingerprint_with_hasher(hasher, resolved_names, options),
+        }
+    }
+}
+
+impl Fingerprintable for FunctionHint<'_> {
+    #[inline]
+    fn fingerprint_with_hasher<H>(
+        &self,
+        hasher: &mut H,
+        resolved_names: &ResolvedNames,
+        options: &FingerprintOptions<'_>,
+    ) where
+        H: std::hash::Hasher,
+    {
+        "function".hash(hasher);
+        self.return_type.fingerprint_with_hasher(hasher, resolved_names, options);
+        for parameter in &self.parameters {
+            parameter.fingerprint_with_hasher(hasher, resolved_names, options);
         }
     }
 }

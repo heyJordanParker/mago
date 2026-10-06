@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use mago_allocator::Arena;
 use mago_names::ResolvedNames;
 use mago_names::scope::NamespaceScope;
@@ -15,6 +17,7 @@ use crate::ttype::TType;
 use crate::ttype::atomic::TAtomic;
 use crate::ttype::atomic::callable::TCallable;
 use crate::ttype::atomic::callable::TCallableSignature;
+use crate::ttype::atomic::callable::parameter::TCallableParameter;
 use crate::ttype::atomic::object::TObject;
 use crate::ttype::atomic::object::named::TNamedObject;
 use crate::ttype::atomic::reference::TReference;
@@ -190,6 +193,28 @@ pub fn get_union_from_hint(hint: &Hint<'_>, classname: Option<Word>, resolved_na
                 (b"Map", Some(key), Some(value), None) => get_keyed_array(key, value),
                 _ => get_mixed_keyed_array(),
             }
+        }
+        // Spec section 14.1: `Function<R(P)>` is PHP's `Closure(P): R`, the only function value PHP# makes.
+        Hint::Function(function) => {
+            let parameters = function
+                .parameters
+                .iter()
+                .map(|parameter| {
+                    TCallableParameter::new(
+                        Some(Arc::new(get_union_from_hint(parameter, classname, resolved_names))),
+                        false,
+                        false,
+                        false,
+                    )
+                })
+                .collect();
+            let return_type = get_union_from_hint(function.return_type, classname, resolved_names);
+
+            wrap_atomic(TAtomic::Callable(TCallable::Signature(
+                TCallableSignature::new(false, true)
+                    .with_parameters(parameters)
+                    .with_return_type(Some(Arc::new(return_type))),
+            )))
         }
     }
 }

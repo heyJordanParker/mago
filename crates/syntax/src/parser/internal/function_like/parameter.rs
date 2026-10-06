@@ -34,7 +34,23 @@ where
         })
     }
 
+    /// Parses a PHP# lambda's parameters, which may leave out their types: `(a, b)` or `(Order order)`.
+    pub(crate) fn parse_lambda_parameter_list(&mut self) -> Result<FunctionLikeParameterList<'arena>, ParseError> {
+        let result = self.parse_comma_separated_sequence(T!["("], T![")"], |parser| parser.parse_parameter(false))?;
+
+        Ok(FunctionLikeParameterList {
+            left_parenthesis: result.open,
+            parameters: result.sequence,
+            right_parenthesis: result.close,
+        })
+    }
+
     pub(crate) fn parse_function_like_parameter(&mut self) -> Result<FunctionLikeParameter<'arena>, ParseError> {
+        self.parse_parameter(true)
+    }
+
+    /// Parses a parameter. A PHP# method's parameter must have a type, and a lambda's may leave it out.
+    fn parse_parameter(&mut self, typed: bool) -> Result<FunctionLikeParameter<'arena>, ParseError> {
         let attribute_lists = self.parse_attribute_list_sequence()?;
         let modifiers = self.parse_modifier_sequence()?;
         let hint = self.parse_optional_type_hint()?;
@@ -45,7 +61,9 @@ where
                 if self.dialect.is_sharp()
                     && matches!(self.stream.peek_kind(0)?, Some(T![","] | T![")"] | T!["="])) =>
             {
-                self.errors.push(ParseError::UntypedParameterInSharp(name.span));
+                if typed {
+                    self.errors.push(ParseError::UntypedParameterInSharp(name.span));
+                }
 
                 Some(DirectVariable { span: name.span, name: name.value })
             }
