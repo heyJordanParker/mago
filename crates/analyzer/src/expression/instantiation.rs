@@ -420,10 +420,7 @@ where
         }
 
         if !resolved_template_types.is_empty() {
-            artifacts.inferred_type_arguments.insert(
-                (instantiation_span.start.offset, instantiation_span.end.offset),
-                resolved_template_types.clone(),
-            );
+            artifacts.record_type_arguments(instantiation_span, resolved_template_types.iter().cloned().map(Some));
             type_parameters = Some(resolved_template_types);
         }
     } else if let Some(argument_list) = &argument_list
@@ -446,13 +443,13 @@ where
 
         argument_list.analyze(context, block_context, artifacts)?;
     } else if !metadata.template_types.is_empty() {
-        type_parameters = Some(
-            metadata
-                .template_types
-                .iter()
-                .map(|(_, _)| if is_spl_object_storage { get_never() } else { wrap_atomic(TAtomic::Placeholder) })
-                .collect(),
-        );
+        let unbound_types: Vec<TUnion> = metadata
+            .template_types
+            .iter()
+            .map(|(_, _)| if is_spl_object_storage { get_never() } else { wrap_atomic(TAtomic::Placeholder) })
+            .collect();
+        artifacts.record_type_arguments(instantiation_span, unbound_types.iter().cloned().map(Some));
+        type_parameters = Some(unbound_types);
     }
 
     let skip_constructor_warning =

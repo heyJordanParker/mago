@@ -840,6 +840,7 @@ where
         }
     }
 
+    let mut unbound_templates = WordSet::default();
     if let Some(template_types) = function_template_types {
         for (template_name, template) in template_types {
             if template_result.has_lower_bound(*template_name, &template.defining_entity) {
@@ -852,6 +853,7 @@ where
                 template.constraint.clone()
             };
 
+            unbound_templates.insert(*template_name);
             template_result.add_lower_bound(*template_name, template.defining_entity, fallback);
         }
     }
@@ -871,19 +873,18 @@ where
     if let Some(template_types) = function_template_types
         && !template_types.is_empty()
     {
-        let type_arguments = template_types
-            .iter()
-            .map(|(template_name, template)| {
-                template_result
-                    .lower_bounds
-                    .get(template_name)
-                    .and_then(|bounds| bounds.get(&template.defining_entity))
-                    .map_or_else(get_mixed, |bounds| get_most_specific_type_from_bounds(bounds, context.codebase))
-            })
-            .collect();
-        artifacts
-            .inferred_type_arguments
-            .insert((invocation.span.start.offset, invocation.span.end.offset), type_arguments);
+        let type_arguments = template_types.iter().map(|(template_name, template)| {
+            let fallbacks = usize::from(unbound_templates.contains(template_name));
+
+            template_result
+                .lower_bounds
+                .get(template_name)
+                .and_then(|bounds| bounds.get(&template.defining_entity))
+                .and_then(|bounds| bounds.get(fallbacks..))
+                .filter(|bounds| !bounds.is_empty())
+                .map(|bounds| get_most_specific_type_from_bounds(bounds, context.codebase))
+        });
+        artifacts.record_type_arguments(invocation.span, type_arguments);
     }
 
     let max_params = invocation.target.parameter_count();

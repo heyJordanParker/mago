@@ -3108,6 +3108,51 @@ fn the_inferred_type_arguments_of_a_generic_call_and_a_generic_new_are_recorded_
     };
 
     assert!(issues.is_empty(), "{issues:?}");
-    assert_eq!(type_arguments(call), ["int(5)", "string('tea')"]);
+    assert_eq!(type_arguments(call), ["int", "string"]);
     assert_eq!(type_arguments(instantiation), ["float"]);
+}
+
+/// The type arguments of the call in `sharp`, with `library` beside it.
+fn recorded_type_arguments(sharp: &'static str, library: &'static str, call: &str) -> Vec<String> {
+    let start = sharp.find(call).unwrap() as u32;
+    let span = (start, start + call.len() as u32);
+    let (issues, artifacts) = analyze_with_artifacts(
+        &PLUGIN_REGISTRY,
+        settings(),
+        ("src/Demo/Report.sharp", sharp),
+        &[("src/Lib/Library.php", library)],
+    );
+    assert!(issues.is_empty(), "{issues:?}");
+
+    let recorded = artifacts.inferred_type_arguments.get(&span);
+    let recorded = recorded.unwrap_or_else(|| panic!("{span:?} in {:?}", artifacts.inferred_type_arguments.keys()));
+
+    recorded.iter().map(|argument| argument.get_id().to_string()).collect()
+}
+
+/// A template no argument binds has no type argument the code chose, so it is `mixed`, whatever its constraint.
+#[test]
+fn a_call_template_no_argument_binds_records_mixed() {
+    let sharp = "namespace Demo;\n\nimport Lib.Pairs;\n\nclass Report\n{\n    public int run()\n    {\n        const none = Pairs.none();\n        return count(none);\n    }\n}\n";
+    let library = "<?php\n\nnamespace Lib;\n\nfinal class Pairs\n{\n    /**\n     * @template T of int\n     *\n     * @return list<T>\n     */\n    public static function none(): array\n    {\n        return [];\n    }\n}\n";
+
+    assert_eq!(recorded_type_arguments(sharp, library, "Pairs.none()"), ["mixed"]);
+}
+
+/// A templated class without a constructor binds no template when it is created, so each type argument is `mixed`.
+#[test]
+fn new_on_a_templated_class_without_a_constructor_records_mixed() {
+    let sharp = "namespace Demo;\n\nimport Lib.Bag;\n\nclass Report\n{\n    public Bag run()\n    {\n        return new Bag();\n    }\n}\n";
+    let library = "<?php\n\nnamespace Lib;\n\n/**\n * @template K\n * @template V\n */\nfinal class Bag\n{\n}\n";
+
+    assert_eq!(recorded_type_arguments(sharp, library, "new Bag()"), ["mixed", "mixed"]);
+}
+
+/// The record widens a copy of each bound, so a call's return type keeps the literal it inferred, and plain PHP that
+/// relies on it reports what it reported before.
+#[test]
+fn recording_type_arguments_leaves_the_issues_of_a_php_generic_call_unchanged() {
+    let php = "<?php\n\nnamespace Demo;\n\n/**\n * @template T\n *\n * @param T $value\n *\n * @return T\n */\nfunction same(mixed $value): mixed\n{\n    return $value;\n}\n\n/**\n * @param 5 $five\n */\nfunction takeFive(int $five): void\n{\n}\n\ntakeFive(same(5));\ntakeFive(same(6));\n";
+
+    assert_eq!(issues(("src/Demo/run.php", php), &[]), ["25:10 invalid-argument"]);
 }
