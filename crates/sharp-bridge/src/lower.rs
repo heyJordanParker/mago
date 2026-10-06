@@ -320,7 +320,7 @@ struct Lowering<'lowering, 'arena> {
     names: &'lowering ResolvedNames<'arena>,
     /// The full name of the class-like being lowered, as PHP writes it.
     class: &'arena [u8],
-    /// The full dotted name of the method being lowered, which `Position.current()` gives as its `function`.
+    /// The full dotted name of the method or property being lowered, which `Position.current()` gives as its `function`.
     function: Vec<u8>,
     nodes: Vec<sharp_node>,
     children: Vec<u32>,
@@ -669,10 +669,11 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.hooks(hooked.item.variable().name, &hooked.hook_list),
             ),
             Property::Computed(computed) => {
-                self.enter(property.first_variable().name);
+                let hook = self.accessor_bodies(computed.variable.name, |lowering| {
+                    let body = lowering.short_body(b"get", &computed.body);
 
-                let body = self.short_body(b"get", &computed.body);
-                let hook = self.hook(b"get", computed.body.arrow, &computed.body, body);
+                    lowering.hook(b"get", computed.body.arrow, &computed.body, body)
+                });
 
                 (
                     0,
@@ -714,22 +715,35 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         }
 
         let uses_field = self.names.uses_field(accessors);
-        self.property = property.to_vec();
-        let mut hooks = Vec::new();
-        for accessor in &accessors.hooks {
-            let body = match &accessor.body {
-                PropertyHookBody::Concrete(PropertyHookConcreteBody::Block(block)) => self.block(block),
-                PropertyHookBody::Concrete(PropertyHookConcreteBody::Expression(body)) => {
-                    self.short_body(accessor.name.value, body)
-                }
-                PropertyHookBody::Abstract(_) if uses_field => continue,
-                PropertyHookBody::Abstract(_) => self.storage_body(accessor),
-            };
-            hooks.push(self.hook(accessor.name.value, accessor.name, accessor, body));
-        }
-        self.property.clear();
+        self.accessor_bodies(property, |lowering| {
+            let mut hooks = Vec::new();
+            for accessor in &accessors.hooks {
+                let body = match &accessor.body {
+                    PropertyHookBody::Concrete(PropertyHookConcreteBody::Block(block)) => lowering.block(block),
+                    PropertyHookBody::Concrete(PropertyHookConcreteBody::Expression(body)) => {
+                        lowering.short_body(accessor.name.value, body)
+                    }
+                    PropertyHookBody::Abstract(_) if uses_field => continue,
+                    PropertyHookBody::Abstract(_) => lowering.storage_body(accessor),
+                };
+                hooks.push(lowering.hook(accessor.name.value, accessor.name, accessor, body));
+            }
 
-        self.node(SHARP_AST_STMT_LIST, 0, self.line(accessors), &hooks)
+            lowering.node(SHARP_AST_STMT_LIST, 0, lowering.line(accessors), &hooks)
+        })
+    }
+
+    /// Lowers a property's accessor bodies, in which `field` is the property's storage and `Position.current()` names
+    /// the property. The member around the property is the function again after them.
+    fn accessor_bodies(&mut self, property: &[u8], lower: impl FnOnce(&mut Self) -> u32) -> u32 {
+        let function = std::mem::take(&mut self.function);
+        self.property = property.to_vec();
+        self.enter(property);
+        let index = lower(self);
+        self.property.clear();
+        self.function = function;
+
+        index
     }
 
     /// A hook named `get` or `set` with its body, as php-src's grammar declares every hook.

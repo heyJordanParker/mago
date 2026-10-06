@@ -3294,19 +3294,91 @@ fn position_current_in_a_computed_property_or_an_enum_method_names_its_member() 
     let lowered = Lowered::new(
         "namespace App.Tenant;\n\nclass Report\n{\n    public string folder => Position.current().directory;\n}\n\nenum Status\n{\n    case Active;\n\n    public int line() => Position.current().line;\n}\n",
     );
-    let positions: Vec<(u32, String)> = lowered
+
+    assert_eq!(positions(&lowered), ["5:29 App.Tenant.Report.folder", "12:26 App.Tenant.Status.line"]);
+}
+
+/// ```php
+/// public string $slug { get { return (new \Sharp\Position(__FILE__, 5, 39, 'App.Tenant.Report.slug'))->function; } }
+/// ```
+///
+/// A `get` body names its property, as C#'s `[CallerMemberName]` names a property for code in its accessors.
+#[test]
+fn position_current_in_a_get_body_names_its_property() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public string slug { get { return Position.current().function; } }\n}\n",
+    );
+
+    assert_eq!(positions(&lowered), ["5:39 App.Tenant.Report.slug"]);
+}
+
+/// ```php
+/// public string $folder { get => (new \Sharp\Position(__FILE__, 5, 29, 'App.Tenant.Report.folder'))->directory; }
+/// public string $title { set { $this->title = (new \Sharp\Position(__FILE__, 6, 46, 'App.Tenant.Report.title'))->function; } }
+/// ```
+///
+/// A `set` body names its property, and the computed property before it does not leak its name into it.
+#[test]
+fn position_current_in_a_set_body_names_its_property() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public string folder => Position.current().directory;\n    public string title { get; set { field = Position.current().function; } }\n}\n",
+    );
+
+    assert_eq!(positions(&lowered), ["5:29 App.Tenant.Report.folder", "6:46 App.Tenant.Report.title"]);
+}
+
+/// ```php
+/// public function __construct(
+///     public string $code { get { return (new \Sharp\Position(__FILE__, 5, 53, 'App.Tenant.Report.code'))->function; } set { $this->code = $value; } },
+/// ) {
+///     $here = new \Sharp\Position(__FILE__, 7, 22, 'App.Tenant.Report.Report');
+/// }
+/// ```
+///
+/// A property declared on a constructor parameter names itself in its bodies, and the constructor's body after it
+/// names the constructor again.
+#[test]
+fn position_current_in_a_constructor_parameters_get_body_names_its_property_and_the_body_after_names_the_constructor() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public Report(public string code { get { return Position.current().function; } set => field = value; })\n    {\n        const here = Position.current();\n    }\n}\n",
+    );
+
+    assert_eq!(positions(&lowered), ["5:53 App.Tenant.Report.code", "7:22 App.Tenant.Report.Report"]);
+}
+
+/// ```php
+/// public function __construct()
+/// {
+///     $this->created = new \Sharp\Position(__FILE__, 6, 32, 'App.Tenant.Report.Report');
+/// }
+/// ```
+///
+/// An initial value declared after a computed property still runs in the constructor, so it names the constructor.
+#[test]
+fn position_current_in_an_initial_value_after_a_computed_property_names_the_constructor() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public string folder => Position.current().directory;\n    private Position created = Position.current();\n}\n",
+    );
+
+    assert_eq!(positions(&lowered), ["6:32 App.Tenant.Report.Report", "5:29 App.Tenant.Report.folder"]);
+}
+
+/// Each `Position.current()` as `line:column function`, in the order the bridge lowers them.
+fn positions(lowered: &Lowered) -> Vec<String> {
+    assert_eq!(lowered.diagnostics(), Vec::<String>::new(), "the source lowers");
+
+    lowered
         .nodes()
         .iter()
         .enumerate()
         .filter(|(_, node)| node.kind == sharp_kind::SHARP_AST_NEW)
         .map(|(index, node)| {
             let arguments = lowered.child(index as u32, 1);
+            let argument = |index| &lowered.nodes()[lowered.child(arguments, index) as usize];
 
-            (node.line, text(lowered.nodes()[lowered.child(arguments, 3) as usize].text))
+            format!("{}:{} {}", node.line, argument(2).long_value, text(argument(3).text))
         })
-        .collect();
-
-    assert_eq!(positions, [(5, "App.Tenant.Report.folder".to_owned()), (12, "App.Tenant.Status.line".to_owned())]);
+        .collect()
 }
 
 /// ```php
