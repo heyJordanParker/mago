@@ -52,10 +52,21 @@ where
 
     /// Returns `true` when the next tokens read as a type, a name and `=`: a name, an optional `?` written
     /// right after it, another name and `=`. A spaced `?` is the conditional operator.
+    ///
+    /// A capitalized name followed by `<` starts a type with type arguments, as in `List<Line> lines = [];`, because
+    /// spec section 24 capitalizes every type but the built-in ones. Its arguments can be longer than the parser
+    /// looks ahead.
     fn is_at_typed_local(&mut self) -> Result<bool, ParseError> {
         let Some(hint) = self.stream.lookahead(0)? else {
             return Ok(false);
         };
+        if self.is_at_generic_hint()? {
+            return Ok(hint.value.first().is_some_and(u8::is_ascii_uppercase));
+        }
+        if self.is_at_function_hint()? {
+            return Ok(true);
+        }
+
         if hint.kind != T![Identifier] {
             return Ok(false);
         }

@@ -48,7 +48,7 @@ fn the_slice_fixture_has_no_semantic_issues() {
 
 #[test]
 fn every_construct_outside_the_slice_is_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\nenum Suit\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        switch (extra) {\n            default: return 1;\n        }\n        echo extra;\n        const made = new Report;\n        const arrow = fn() => 1;\n        const closure = function () { return 1; };\n        const partial = this.run(...);\n        const text = <<<TEXT\ntotal\nTEXT;\n        return extra;\n    }\n}\n";
+    let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\nenum Suit\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        switch (extra) {\n            default: return 1;\n        }\n        echo extra;\n        const made = new Report;\n        const partial = this.run(...);\n        const text = <<<TEXT\ntotal\nTEXT;\n        return extra;\n    }\n}\n";
 
     assert_eq!(
         issues(code),
@@ -59,10 +59,8 @@ fn every_construct_outside_the_slice_is_not_supported_yet() {
             "18:9 This statement is not supported yet in PHP#.",
             "21:9 This statement is not supported yet in PHP#.",
             "22:22 This `new` without arguments is not supported yet in PHP#.",
-            "23:23 This expression is not supported yet in PHP#.",
-            "24:25 This expression is not supported yet in PHP#.",
-            "25:25 This expression is not supported yet in PHP#.",
-            "26:22 This expression is not supported yet in PHP#.",
+            "23:25 This expression is not supported yet in PHP#.",
+            "24:22 This expression is not supported yet in PHP#.",
         ]
     );
 }
@@ -112,7 +110,7 @@ fn a_template_is_in_the_slice_with_any_slice_expression_in_its_interpolations() 
 
 #[test]
 fn an_interpolation_outside_the_slice_is_not_supported_yet() {
-    let code = leak(method("        const label = `made ${fn() => 1}`;\n        return extra;\n"));
+    let code = leak(method("        const label = `made ${this.run(...)}`;\n        return extra;\n"));
 
     assert_eq!(issues(code), ["7:31 This expression is not supported yet in PHP#."]);
 }
@@ -447,7 +445,7 @@ fn a_function_called_by_its_bare_name_is_in_the_slice() {
 #[test]
 fn a_construct_outside_the_slice_is_not_supported_yet_in_a_catch_block_or_a_call_argument() {
     let code = leak(method(
-        "        try {\n        } catch (Missing failure) {\n            extra = extra & 1;\n        }\n        return count(fn() => 1);\n",
+        "        try {\n        } catch (Missing failure) {\n            extra = extra & 1;\n        }\n        return count(this.run(...));\n",
     ));
 
     assert_eq!(
@@ -458,9 +456,9 @@ fn a_construct_outside_the_slice_is_not_supported_yet_in_a_catch_block_or_a_call
 
 #[test]
 fn a_function_called_through_an_expression_is_not_supported_yet() {
-    let code = leak(method("        const call = this.callback();\n        return call(extra);\n"));
+    let code = leak(method("        return this.callback()(extra);\n"));
 
-    assert_eq!(issues(code), ["8:16 This expression is not supported yet in PHP#."]);
+    assert_eq!(issues(code), ["7:16 This expression is not supported yet in PHP#."]);
 }
 
 #[test]
@@ -780,13 +778,13 @@ fn attributes_on_a_class_its_members_and_their_parameters_are_in_the_slice() {
 
 #[test]
 fn attribute_arguments_outside_the_slice_are_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nclass Report\n{\n    [Field(typeof(Report).name)]\n    [Field(Mode.Write)]\n    [Field([\"a\"])]\n    [Field(label: new Report())]\n    public int run(int extra)\n    {\n        return extra;\n    }\n}\n";
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    [Field(typeof(Report).name)]\n    [Field(Mode.Write)]\n    [Field([this.run(1)])]\n    [Field(label: new Report())]\n    public int run(int extra)\n    {\n        return extra;\n    }\n}\n";
 
     assert_eq!(
         issues(code),
         [
             "5:12 This expression is not supported yet in PHP#.",
-            "7:12 This expression is not supported yet in PHP#.",
+            "7:13 This expression is not supported yet in PHP#.",
             "8:19 This expression is not supported yet in PHP#.",
         ]
     );
@@ -1051,7 +1049,6 @@ fn a_class_constant_outside_the_slice_is_not_supported_yet() {
             "7:5 This modifier is not supported yet in PHP#.",
             "8:24 This operator is not supported yet in PHP#.",
             "9:18 This type is not supported yet in PHP#.",
-            "9:31 This expression is not supported yet in PHP#.",
         ]
     );
 }
@@ -1312,6 +1309,68 @@ fn a_write_goes_only_to_a_local_a_parameter_or_a_member() {
 }
 
 #[test]
+fn list_and_map_types_literals_and_indexes_are_in_the_slice() {
+    let code = "class Report\n{\n    private Map<string, int> counts = [:];\n    public List<Line> lines { get; private set; } = [];\n\n    public Map<int, List<string>>? group(List<Line> items, Map<string, int> sizes = [\"a\": 1], List<int> none = [])\n    {\n        List<int> numbers = [1, 2];\n        const named = [\"a\": 1, 2: numbers[0]];\n        numbers[0] = items[1].size;\n        this.counts[\"a\"] += sizes[\"a\"];\n        this.lines[0] = items[0];\n        const nested = [[1], [2]];\n        nested[0][0]++;\n        return null;\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn an_interface_method_takes_and_returns_list_and_map_types() {
+    let code = "interface Grouped\n{\n    List<int> sizes(Map<string, List<int>> groups);\n\n    Map<float, int> rounded();\n}\n";
+
+    assert_eq!(issues(code), ["5:9 A `Map`'s keys are `int` or `string`, as a PHP array's keys are."]);
+}
+
+#[test]
+fn a_type_with_type_arguments_other_than_list_or_map_is_not_supported_yet() {
+    let code = "class Report\n{\n    public List<void> run(Set<string> a, List<int, int> b, Map<string> c, Paged<Line> d)\n    {\n        return [];\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "3:12 This type is not supported yet in PHP#.",
+            "3:27 This type is not supported yet in PHP#.",
+            "3:42 This type is not supported yet in PHP#.",
+            "3:60 This type is not supported yet in PHP#.",
+            "3:75 This type is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn a_map_key_that_is_not_int_or_string_is_an_error() {
+    let code = "class Report\n{\n    public Map<float, int> run(Map<Line, int> a, Map<int?, int> b, Map<string, Map<bool, int>> c)\n    {\n        return [:];\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "3:16 A `Map`'s keys are `int` or `string`, as a PHP array's keys are.",
+            "3:36 A `Map`'s keys are `int` or `string`, as a PHP array's keys are.",
+            "3:54 A `Map`'s keys are `int` or `string`, as a PHP array's keys are.",
+            "3:84 A `Map`'s keys are `int` or `string`, as a PHP array's keys are.",
+        ]
+    );
+}
+
+#[test]
+fn a_literal_element_outside_the_slice_is_not_supported_yet() {
+    let code = leak(method(
+        "        const spread = [...extra];\n        const reference = [&extra];\n        const missing = [, extra];\n        let list = [1];\n        list[] = 2;\n        return 1;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:25 This construct is not supported yet in PHP#.",
+            "8:28 This operator is not supported yet in PHP#.",
+            "9:26 This construct is not supported yet in PHP#.",
+            "11:9 This write target is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
 fn a_second_namespace_is_not_supported_yet() {
     let code = "namespace A;\n\nclass Y\n{\n}\n\nnamespace B;\n\nimport B.X;\n\nclass X\n{\n}\n";
 
@@ -1469,4 +1528,80 @@ fn a_spread_argument_is_not_supported_yet() {
     let code = leak(method("        const parts = this.parts();\n        return this.total(...parts);\n"));
 
     assert_eq!(issues(code), ["8:27 This spread argument is not supported yet in PHP#."]);
+}
+
+#[test]
+fn lambdas_with_an_expression_or_a_block_body_and_calls_of_function_locals_are_in_the_slice() {
+    let code = leak(method(
+        "        let count = 0;\n        const add = (a, b) => a + b;\n        const check = (int value) => value > extra;\n        const increment = () => { count += 1; };\n        increment();\n        return add(count, check(1) ? 1 : 0);\n",
+    ));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn function_types_are_in_the_slice_as_field_parameter_local_and_return_types() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private Function<int?(Line, string)> priceOf;\n    private Function<void(Order)> onPaid;\n\n    public Function<bool(Order)> eligible(Map<string, Function<int()>> counters, Function<List<int>(List<Line>)> ids)\n    {\n        const Function<void()> log = () => {};\n        Function<int(int)> twice = n => n * 2;\n        return o => true;\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_void_parameter_of_a_function_type_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private Function<int(void)> priceOf;\n}\n";
+
+    assert_eq!(issues(code), ["5:13 This type is not supported yet in PHP#."]);
+}
+
+/// A call `x.priceOf(line)` runs the property's function only when the class has no method `priceOf`, and PHP finds
+/// a method ignoring case, so a method named as a field, a property or a constructor-declared member is an error.
+#[test]
+fn a_method_named_as_a_property_of_its_class_is_an_error() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private Function<int(int)> priceOf;\n    public int views { get; set; }\n\n    public Report(private Function<bool()> ready) {}\n\n    public int priceof(int amount) => amount;\n    public int views() => 1;\n    public bool ready() => true;\n    public int other() => 2;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "10:16 The class `Report` declares a method and a property named `priceof`.",
+            "11:16 The class `Report` declares a method and a property named `views`.",
+            "12:17 The class `Report` declares a method and a property named `ready`.",
+        ]
+    );
+}
+
+#[test]
+fn a_lambda_parameter_outside_the_slice_is_not_supported_yet() {
+    let code = leak(method(
+        "        const spread = (int ...values) => 1;\n        const marked = (readonly int value) => value;\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:29 This variadic parameter is not supported yet in PHP#.",
+            "8:25 This modifier is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn a_lambda_parameter_named_like_an_enclosing_local_is_an_error() {
+    let code = leak(method("        const twice = (extra) => extra * 2;\n        return twice(1);\n"));
+
+    assert_eq!(issues(code), ["7:24 `extra` is already declared in an enclosing block of this method."]);
+}
+
+#[test]
+fn a_lambda_capturing_a_loop_variable_that_changes_is_not_supported_yet() {
+    let code = leak(method(
+        "        for (let step = 0; step < extra; step++) {\n            const show = () => step;\n        }\n        for (let value of Store.values()) {\n            value += 1;\n            const read = () => value;\n        }\n        for (const item of Store.values()) {\n            const keep = () => item;\n        }\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "8:32 This capture of a loop variable that changes is not supported yet in PHP#.",
+            "12:32 This capture of a loop variable that changes is not supported yet in PHP#.",
+        ]
+    );
 }

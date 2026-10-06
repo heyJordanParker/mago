@@ -14,8 +14,12 @@ use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_never;
 use mago_codex::ttype::template::TemplateResult;
 use mago_codex::ttype::union::TUnion;
+use mago_names::binding::Binding;
+use mago_reporting::Annotation;
+use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
+use mago_syntax::cst::Access;
 use mago_syntax::cst::ArgumentList;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::ClassLikeMemberSelector;
@@ -26,10 +30,14 @@ use mago_syntax_core::stack::ensure_sufficient_stack;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
+use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::expression::assignment::PropertyWriteKind;
+use crate::expression::assignment::property_assignment;
 use crate::expression::call::analyze_invocation_targets;
+use crate::expression::call::function_call::resolve_callable_targets;
 use crate::expression::call::record_external_method_call;
 use crate::expression::call::record_external_method_call_targets;
 use crate::invocation::Invocation;
@@ -325,6 +333,13 @@ where
         );
         crate::utils::availability::check_method_availability(context, method_metadata, &method_display, span);
 
+        if (metadata.name.as_bytes().eq_ignore_ascii_case(b"Sharp\\ListMethods")
+            || metadata.name.as_bytes().eq_ignore_ascii_case(b"Sharp\\MapMethods"))
+            && !method_metadata.flags.is_mutation_free()
+        {
+            check_changed_collection(context, block_context, artifacts, object)?;
+        }
+
         let method_target_context = MethodTargetContext {
             invocation_kind: MethodInvocationKind::Instance,
             declaring_method_id: Some(resolved_method.method_identifier),
@@ -356,6 +371,19 @@ where
             MethodInvocationKind::Instance,
             &mut invocation_targets,
         )?;
+    }
+
+    for property in std::mem::take(&mut method_resolution.called_properties) {
+        artifacts.symbol_references.add_reference_for_property_read(
+            &block_context.scope,
+            property.declaring_class,
+            property.property_name,
+        );
+
+        let (targets, has_invalid_target) =
+            resolve_callable_targets(context, &property.property_type, span, &mut method_resolution.template_result);
+        invocation_targets.extend(targets);
+        method_resolution.has_invalid_target |= has_invalid_target;
     }
 
     let has_resolved_methods = !invocation_targets.is_empty();
@@ -413,6 +441,52 @@ where
     }
 
     Ok(())
+}
+
+/// A method that changes a PHP# collection writes it back where it lives, as spec section 12 decides, so the
+/// collection is a place the caller can write: a local or a parameter, or a property whose `set` the caller reaches,
+/// which the property write check decides as it does for an index write.
+fn check_changed_collection<'ctx, 'arena, A>(
+    context: &mut Context<'ctx, 'arena, A>,
+    block_context: &mut BlockContext<'ctx>,
+    artifacts: &mut AnalysisArtifacts,
+    collection: &Expression<'arena>,
+) -> Result<(), AnalysisError>
+where
+    A: Arena,
+{
+    match collection.unparenthesized() {
+        Expression::ConstantAccess(name)
+            if matches!(context.resolved_names.binding(&name.name), Some(Binding::Local(_))) =>
+        {
+            Ok(())
+        }
+        Expression::Access(Access::Property(access)) => {
+            let collection_type = artifacts.get_expression_type(collection).cloned().unwrap_or_else(get_mixed);
+
+            property_assignment::analyze(
+                context,
+                block_context,
+                artifacts,
+                access,
+                &collection_type,
+                None,
+                PropertyWriteKind::Mutation,
+            )
+        }
+        _ => {
+            context.collector.report_with_code(
+                IssueCode::InvalidPassByReference,
+                Issue::error("This method changes the collection, which has no place to be written back to.")
+                    .with_annotation(
+                        Annotation::primary(collection.span()).with_message("This collection is a value, not a place."),
+                    )
+                    .with_help("Store the collection in a local or a property, then call the method on it."),
+            );
+
+            Ok(())
+        }
+    }
 }
 
 /// Gives external callable-signature providers an opportunity to establish

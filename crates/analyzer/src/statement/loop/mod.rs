@@ -34,6 +34,7 @@ use mago_codex::ttype::combine_union_types_rc;
 use mago_codex::ttype::combiner::CombinerOptions;
 use mago_codex::ttype::get_array_parameters;
 use mago_codex::ttype::get_arraykey;
+use mago_codex::ttype::get_int;
 use mago_codex::ttype::get_iterable_parameters;
 use mago_codex::ttype::get_literal_string;
 use mago_codex::ttype::get_mixed;
@@ -1539,7 +1540,27 @@ where
                     always_enters_loop = false;
                 }
 
-                let (k, v) = get_array_parameters(array, context.codebase);
+                let (mut k, v) = get_array_parameters(array, context.codebase);
+
+                // Spec section 12 reads a PHP# `List`'s indexes from `entries()`, so `[k, v]` reads a `Map`. PHP stores
+                // an all-digit string key as an `int`, so a `Map`'s `string` key reads back as `int|string`.
+                if context.dialect.is_sharp() {
+                    if let TArray::List(_) = array
+                        && let Some(key) = foreach.target.key()
+                    {
+                        context.collector.report_with_code(
+                            IssueCode::InvalidIterator,
+                            Issue::error("`for (const [k, v] of x)` reads the keys of a `Map`, and this is a `List`.")
+                                .with_annotation(Annotation::primary(iterator.span()).with_message("This is a `List`."))
+                                .with_annotation(
+                                    Annotation::secondary(key.span()).with_message("Its key is read here."),
+                                )
+                                .with_help("Loop over `list.entries()` to read each index with its value."),
+                        );
+                    } else if k.has_string() {
+                        k = add_optional_union_type(get_int(), Some(&k), context.codebase);
+                    }
+                }
 
                 key_type = Some(add_optional_union_type(k, key_type.as_ref(), context.codebase));
                 value_type = Some(add_optional_union_type(v, value_type.as_ref(), context.codebase));

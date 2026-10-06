@@ -128,7 +128,10 @@ impl LintRule for PreferStaticClosureRule {
                     return;
                 }
 
-                self.report_issue(ctx, closure.function.span(), "closure");
+                // `mago lint` skips PHP# files, the only ones with a closure without `function`.
+                if let Some(function) = &closure.function {
+                    self.report_issue(ctx, function.span(), "closure");
+                }
             }
             Node::ArrowFunction(arrow) => {
                 // Already static - skip
@@ -141,7 +144,9 @@ impl LintRule for PreferStaticClosureRule {
                     return;
                 }
 
-                self.report_issue(ctx, arrow.r#fn.span(), "arrow function");
+                if let Some(r#fn) = &arrow.r#fn {
+                    self.report_issue(ctx, r#fn.span(), "arrow function");
+                }
             }
             _ => {}
         }

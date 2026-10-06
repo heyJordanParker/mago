@@ -22,6 +22,8 @@ public class Report
     public int id { get; }
     private Calc calc = new Calc(Calc.make(), rate: 2);
     public string slug => strtolower(this.name);
+    private Map<string, int> sizes = [:];
+    public List<Calc> lines { get; private set; } = [];
 
     [Entity(true)]
     public Report(int start, private Calc helper, [Field(-1.5)] public int total { get; private set; })
@@ -221,6 +223,46 @@ public class Report
             total += key * value;
         }
         return total;
+    }
+
+    [Entity(["a", "b"], ["x": 1])]
+    public Map<string, List<int>>? collect(List<Calc> items, Map<string, int> sizes = ["a": 1], List<int> none = [])
+    {
+        List<int> numbers = [1, 2];
+        const named = ["a": 1, 2: numbers[0]];
+        const empty = [:];
+        Map<int, string>? labels = null;
+        sizes["a"] = (sizes["a"] ?? 0) + numbers[1];
+        this.sizes["b"] = array_sum(numbers);
+        const nested = ["x": ["a": 1]];
+        nested["x"]["a"] = items[0]?.rate ?? items[1].rate;
+        for (const [name, size] of sizes) {
+            this.sizes[name] = size;
+        }
+        return ["all": numbers];
+    }
+
+    public Function<int(int)> lambdas(int extra, Function<bool(string, int)> check)
+    {
+        let count = 0;
+        Function<int(int)> twice = a => a * extra;
+        const half = b => b / 2;
+        const add = (int step, int by = 1) => {
+            count += step * by;
+            const inner = () => count + extra;
+            return inner();
+        };
+        const bump = () => count++;
+        while (extra > 0) {
+            let seen = extra;
+            const mark = () => {
+                seen += 1;
+            };
+            mark();
+            extra -= 1;
+        }
+        count += twice(half(4)) + add(1, by: 2) + bump() + array_sum(array_map(x => x * 2, [1, 2]));
+        return n => check("n", n) ? n + count : n;
     }
 }
 
