@@ -2184,6 +2184,69 @@ fn dot_keeps_concatenating_in_php() {
     assert!(matches!(statement.expression, Expression::Binary(binary) if binary.operator.is_concatenation()));
 }
 
+/// The expression's source with every binary operation wrapped in parentheses, showing how the parser grouped it.
+fn grouping(code: &str, expression: &Expression) -> String {
+    match expression {
+        Expression::Binary(binary) => format!(
+            "({} {} {})",
+            grouping(code, binary.lhs),
+            source(code, &binary.operator),
+            grouping(code, binary.rhs)
+        ),
+        _ => source(code, expression).to_owned(),
+    }
+}
+
+#[test]
+fn bitwise_operators_bind_tighter_than_comparisons() {
+    const CODE: &str = "class Report\n{\n    bool run()\n    {\n        return permissions & WRITE != 0;\n        return a | b == c ^ d;\n        return a & b < c | d;\n        return a == b & c;\n        return a << 1 & b;\n        return a | b ^ c & d;\n        return a < b == c;\n        return a && b | c;\n        return a + b << c;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let groupings: Vec<String> =
+        method_body(program).iter().map(|statement| grouping(CODE, expression(statement))).collect();
+    assert_eq!(
+        groupings,
+        [
+            "((permissions & WRITE) != 0)",
+            "((a | b) == (c ^ d))",
+            "((a & b) < (c | d))",
+            "(a == (b & c))",
+            "((a << 1) & b)",
+            "(a | (b ^ (c & d)))",
+            "((a < b) == c)",
+            "(a && (b | c))",
+            "((a + b) << c)",
+        ]
+    );
+}
+
+#[test]
+fn php_keeps_bitwise_operators_looser_than_comparisons() {
+    const CODE: &str = "<?php\n$permissions & $WRITE != 0;\n$a | $b == $c ^ $d;\n$a & $b < $c | $d;\n$a == $b & $c;\n$a << 1 & $b;\n$a | $b ^ $c & $d;\n$a < $b == $c;\n$a && $b | $c;\n$a + $b << $c;\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.php", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let groupings: Vec<String> =
+        program.statements.iter().skip(1).map(|statement| grouping(CODE, expression(statement))).collect();
+    assert_eq!(
+        groupings,
+        [
+            "($permissions & ($WRITE != 0))",
+            "($a | (($b == $c) ^ $d))",
+            "(($a & ($b < $c)) | $d)",
+            "(($a == $b) & $c)",
+            "(($a << 1) & $b)",
+            "($a | ($b ^ ($c & $d)))",
+            "(($a < $b) == $c)",
+            "($a && ($b | $c))",
+            "(($a + $b) << $c)",
+        ]
+    );
+}
+
 #[test]
 fn php_file_starts_in_inline_text() {
     let arena = LocalArena::new();
