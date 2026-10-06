@@ -173,10 +173,10 @@ impl FormatCommand {
     /// - **Staged** (`--staged`): Formats staged files and re-stages them
     pub fn execute(self, configuration: Configuration, color_choice: ColorChoice) -> Result<CommandOutcome, Error> {
         if self.staged {
-            return self.execute_staged(configuration, color_choice).map(CommandOutcome::from);
+            return self.execute_staged(configuration).map(CommandOutcome::from);
         }
 
-        let mut orchestrator = create_orchestrator(&configuration, color_choice, false, true, false);
+        let mut orchestrator = create_orchestrator(&configuration, false, true, false);
         orchestrator.add_exclude_patterns(configuration.formatter.excludes.iter());
         skip_sharp_files(&mut orchestrator, "format");
         if !self.path.is_empty() {
@@ -299,16 +299,15 @@ impl FormatCommand {
     /// # Arguments
     ///
     /// * `configuration` - The configuration containing formatter settings
-    /// * `color_choice` - Whether to use colored output
     ///
     /// # Returns
     ///
     /// - `Ok(ExitCode::SUCCESS)` if formatting succeeded
     /// - `Err(Error::NotAGitRepository)` if not in a git repository
-    fn execute_staged(self, configuration: Configuration, color_choice: ColorChoice) -> Result<ExitCode, Error> {
+    fn execute_staged(self, configuration: Configuration) -> Result<ExitCode, Error> {
         let workspace = &configuration.source.workspace;
 
-        let mut orchestrator = create_orchestrator(&configuration, color_choice, false, true, false);
+        let mut orchestrator = create_orchestrator(&configuration, false, true, false);
         orchestrator.add_exclude_patterns(configuration.formatter.excludes.iter());
         skip_sharp_files(&mut orchestrator, "format");
 

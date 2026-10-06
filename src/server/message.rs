@@ -35,7 +35,6 @@ pub(crate) enum Request {
 pub(crate) struct Check {
     pub configuration: Box<Configuration>,
     pub config_file: Option<PathBuf>,
-    pub colors: bool,
     pub stubs: bool,
     pub paths: Vec<PathBuf>,
 }
@@ -43,10 +42,10 @@ pub(crate) struct Check {
 impl Check {
     /// A check of `configuration`'s worktree. The configuration file travels as an absolute path,
     /// because the daemon resolves extension host commands from its folder.
-    pub(crate) fn new(configuration: Configuration, colors: bool, stubs: bool, paths: Vec<PathBuf>) -> Self {
+    pub(crate) fn new(configuration: Configuration, stubs: bool, paths: Vec<PathBuf>) -> Self {
         let config_file = configuration.config_file.as_deref().map(|file| CURRENT_DIR.join(file));
 
-        Self { configuration: Box::new(configuration), config_file, colors, stubs, paths }
+        Self { configuration: Box::new(configuration), config_file, stubs, paths }
     }
 }
 

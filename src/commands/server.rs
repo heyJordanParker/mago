@@ -3,7 +3,6 @@
 
 use std::process::ExitCode;
 
-use clap::ColorChoice;
 use clap::Parser;
 use clap::Subcommand;
 
@@ -11,7 +10,6 @@ use crate::config::Configuration;
 use crate::error::Error;
 use crate::server;
 use crate::server::Check;
-use crate::utils::should_use_colors;
 
 /// Manage the analysis server that answers `mago analyze`.
 ///
@@ -41,7 +39,7 @@ enum ServerAction {
 }
 
 impl ServerCommand {
-    pub fn execute(self, configuration: Configuration, color_choice: ColorChoice) -> Result<ExitCode, Error> {
+    pub fn execute(self, configuration: Configuration) -> Result<ExitCode, Error> {
         match self.action {
             ServerAction::Start { foreground: true } => server::run().map(|()| ExitCode::SUCCESS),
             ServerAction::Start { foreground: false } => server::start().map(|()| ExitCode::SUCCESS),
@@ -63,8 +61,7 @@ impl ServerCommand {
                 }
             },
             ServerAction::Verify => {
-                let colors = should_use_colors(color_choice);
-                let verification = server::verify(Check::new(configuration, colors, true, Vec::new()))?;
+                let verification = server::verify(Check::new(configuration, true, Vec::new()))?;
 
                 if verification.only_warm.is_empty() && verification.only_fresh.is_empty() {
                     println!("The warm analysis equals a fresh one: {} issue(s).", verification.issues);

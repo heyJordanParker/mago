@@ -84,8 +84,6 @@ use crate::server::Analyzed;
 use crate::server::Check;
 use crate::utils::create_orchestrator;
 use crate::utils::git;
-#[cfg(unix)]
-use crate::utils::should_use_colors;
 
 /// The outcome of a watch mode session.
 enum WatchOutcome {
@@ -297,7 +295,7 @@ impl AnalyzeCommand {
         let substitution_excludes: Vec<String> =
             substitutions.iter().map(|s| s.original.to_string_lossy().into_owned()).collect();
 
-        let mut orchestrator = create_orchestrator(&configuration, color_choice, false, true, false);
+        let mut orchestrator = create_orchestrator(&configuration, false, true, false);
         analyze_the_whole_workspace_without_paths(&mut orchestrator);
         orchestrator.add_exclude_patterns(configuration.analyzer.excludes.iter());
         orchestrator.add_exclude_patterns(substitution_excludes.iter());
@@ -429,7 +427,7 @@ impl AnalyzeCommand {
             self.path.clone()
         };
 
-        let mut orchestrator = create_orchestrator(configuration, color_choice, false, true, false);
+        let mut orchestrator = create_orchestrator(configuration, false, true, false);
         analyze_the_whole_workspace_without_paths(&mut orchestrator);
         orchestrator.add_exclude_patterns(configuration.analyzer.excludes.iter());
         let sources = WorkspaceMatcher::from_configuration(&orchestrator.database_configuration(workspace, true))?;
@@ -441,8 +439,7 @@ impl AnalyzeCommand {
         }
         checked.source.paths.extend(outside.into_iter().map(|path| path.to_string_lossy().into_owned()));
 
-        let colors = should_use_colors(color_choice);
-        let Analyzed { issues, files } = server::analyze(Check::new(checked, colors, !self.no_stubs, named))?;
+        let Analyzed { issues, files } = server::analyze(Check::new(checked, !self.no_stubs, named))?;
 
         let mut database =
             Database::new(DatabaseConfiguration::new(workspace, vec![], vec![], vec![], vec![]).into_static());
@@ -522,7 +519,7 @@ impl AnalyzeCommand {
         loop {
             let database = self.prelude_database();
 
-            let mut orchestrator = create_orchestrator(&configuration, color_choice, false, false, true);
+            let mut orchestrator = create_orchestrator(&configuration, false, false, true);
             analyze_the_whole_workspace_without_paths(&mut orchestrator);
             orchestrator.add_exclude_patterns(configuration.analyzer.excludes.iter());
 

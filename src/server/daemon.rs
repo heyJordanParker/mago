@@ -206,7 +206,7 @@ impl Daemon {
 
     fn worktree(self: &Arc<Self>, check: Check) -> Result<(Worktree, Vec<PathBuf>), Error> {
         let fingerprint = fingerprint::of(&check)?;
-        let Check { mut configuration, config_file, colors, stubs, paths } = check;
+        let Check { mut configuration, config_file, stubs, paths } = check;
         configuration.config_file = config_file;
         configuration.normalize()?;
         let workspace = configuration.source.workspace.clone();
@@ -221,7 +221,6 @@ impl Daemon {
             self.runtime.clone(),
             *configuration,
             fingerprint,
-            colors,
             stubs,
             siblings,
             Arc::clone(&self.cold_starts),

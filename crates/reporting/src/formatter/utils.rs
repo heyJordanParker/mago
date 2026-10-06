@@ -1,6 +1,8 @@
 use std::borrow::Cow;
 use std::cmp::Ordering;
 
+use diffy::PatchFormatter;
+
 use crate::Issue;
 use crate::IssueCollection;
 use crate::Level;
@@ -131,6 +133,21 @@ fn compare_issues(a: &&Issue, b: &&Issue) -> Ordering {
             },
         },
     }
+}
+
+/// Colors `note` when it is a unified diff, such as the analyzer's type diffs, and leaves any other note as written.
+pub(crate) fn colored_note(note: &str) -> Cow<'_, str> {
+    if !note.starts_with("--- ") {
+        return Cow::Borrowed(note);
+    }
+
+    let Ok(patch) = diffy::Patch::from_str(note) else {
+        return Cow::Borrowed(note);
+    };
+
+    let formatter = PatchFormatter::new().missing_newline_message(false).suppress_blank_empty(false).with_color();
+
+    Cow::Owned(formatter.fmt_patch(&patch).to_string())
 }
 
 /// XML-encode a string by escaping special characters.
@@ -289,6 +306,8 @@ fn strip_windows_verbatim_prefix(path: &str) -> std::borrow::Cow<'_, str> {
 
 #[cfg(test)]
 mod tests {
+    use super::PatchFormatter;
+    use super::colored_note;
     use super::osc8_file_hyperlink;
     use super::strip_windows_verbatim_prefix;
     use super::utf8_preserving_byte_offsets;
@@ -366,5 +385,25 @@ mod tests {
             ),
             "\x1b]8;;editor:///workspace/%line%/Foo.php?relative=src/%column%/Foo.php\x1b\\src/Foo.php\x1b]8;;\x1b\\",
         );
+    }
+
+    #[test]
+    fn a_unified_diff_note_is_colored_as_the_analyzer_colored_it_before() {
+        let patch = diffy::create_patch("list<\n    int|string|float|bool\n>", "list<\n    int|string|float|null\n>");
+        let formatter = PatchFormatter::new().missing_newline_message(false).suppress_blank_empty(false);
+        let plain = formatter.fmt_patch(&patch).to_string();
+        let colored = formatter.with_color().fmt_patch(&patch).to_string();
+
+        assert_ne!(plain, colored);
+        assert_eq!(colored_note(&plain), colored);
+    }
+
+    #[test]
+    fn a_note_that_is_not_a_unified_diff_is_left_as_written() {
+        assert_eq!(
+            colored_note("--- a line that only looks like a header"),
+            "--- a line that only looks like a header"
+        );
+        assert_eq!(colored_note("The property is declared here."), "The property is declared here.");
     }
 }

@@ -152,7 +152,7 @@ where
                     )));
                 }
 
-                if let Some(type_diff) = get_type_diff(context, &resolved_property.property_type, assigned_value_type) {
+                if let Some(type_diff) = get_type_diff(&resolved_property.property_type, assigned_value_type) {
                     issue = issue.with_note(type_diff);
                 }
 
@@ -187,7 +187,7 @@ where
                     )));
                 }
 
-                if let Some(type_diff) = get_type_diff(context, &resolved_property.property_type, assigned_value_type) {
+                if let Some(type_diff) = get_type_diff(&resolved_property.property_type, assigned_value_type) {
                     issue = issue.with_note(type_diff);
                 }
 

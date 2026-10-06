@@ -139,3 +139,68 @@ pub(crate) fn dispatch_format(
         ReportingFormat::Sarif => sarif::SarifFormatter.format(writer, issues, database, config),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+    use std::path::Path;
+    use std::path::PathBuf;
+
+    use diffy::PatchFormatter;
+    use mago_database::Database;
+    use mago_database::DatabaseConfiguration;
+    use mago_database::file::File;
+    use mago_database::file::FileType;
+    use mago_span::Position;
+    use mago_span::Span;
+
+    use crate::Annotation;
+    use crate::Issue;
+    use crate::IssueCollection;
+    use crate::color::ColorChoice;
+
+    use super::FormatterConfig;
+    use super::ReportingFormat;
+    use super::dispatch_format;
+
+    #[test]
+    fn the_renderers_that_show_notes_color_a_type_diff_note_when_colors_are_on() {
+        let file = File::new(
+            Cow::Borrowed(b"src/Foo.php"),
+            FileType::Host,
+            Some(PathBuf::from("/workspace/src/Foo.php")),
+            Cow::Borrowed(b"<?php\ntake([]);\n"),
+        );
+        let span = Span::new(file.id, Position::new(6), Position::new(14));
+        let configuration =
+            DatabaseConfiguration::new(Path::new("/workspace"), vec![], vec![], vec![], vec![]).into_static();
+        let database = Database::single(file, configuration).read_only();
+
+        let patch = diffy::create_patch("list<\n    int|string|float|bool\n>", "list<\n    int|string|float|null\n>");
+        let formatter = PatchFormatter::new().missing_newline_message(false).suppress_blank_empty(false);
+        let plain = formatter.fmt_patch(&patch).to_string();
+        let colored = formatter.with_color().fmt_patch(&patch).to_string();
+        let issues = IssueCollection::from(vec![
+            Issue::error("Argument type mismatch.").with_annotation(Annotation::primary(span)).with_note(plain),
+        ]);
+        let config = FormatterConfig {
+            color_choice: ColorChoice::Always,
+            sort: false,
+            minimum_level: None,
+            filter_fixable: false,
+            editor_url: None,
+        };
+
+        for format in [ReportingFormat::Rich, ReportingFormat::Medium, ReportingFormat::Ariadne] {
+            let mut output = Vec::new();
+            let Ok(()) = dispatch_format(format, &mut output, &issues, &database, &config) else {
+                panic!("{format} should format the issue");
+            };
+            let output = String::from_utf8_lossy(&output);
+
+            for line in colored.lines().filter(|line| line.contains('\x1b')) {
+                assert!(output.contains(line), "{format} output lacks the colored line {line:?}:\n{output}");
+            }
+        }
+    }
+}

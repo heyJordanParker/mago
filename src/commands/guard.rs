@@ -201,7 +201,7 @@ impl GuardCommand {
         let substitution_excludes: Vec<String> =
             substitutions.iter().map(|s| s.original.to_string_lossy().into_owned()).collect();
 
-        let mut orchestrator = create_orchestrator(&configuration, color_choice, false, true, false);
+        let mut orchestrator = create_orchestrator(&configuration, false, true, false);
         orchestrator.add_exclude_patterns(configuration.guard.excludes.iter());
         orchestrator.add_exclude_patterns(substitution_excludes.iter());
         skip_sharp_files(&mut orchestrator, "guard");

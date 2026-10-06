@@ -280,7 +280,7 @@ pub fn run(main_start: Instant) -> Result<ExitCode, Error> {
         MagoCommand::Init(cmd) => cmd.execute(configuration, None),
         MagoCommand::Config(cmd) => cmd.execute(configuration),
         MagoCommand::Extension(cmd) => cmd.execute(configuration),
-        MagoCommand::ListFiles(cmd) => cmd.execute(configuration, arguments.colors),
+        MagoCommand::ListFiles(cmd) => cmd.execute(configuration),
         MagoCommand::Lint(cmd) => cmd.execute(configuration, arguments.colors).map(|outcome| outcome.exit_code),
         MagoCommand::Format(cmd) => cmd.execute(configuration, arguments.colors).map(|outcome| outcome.exit_code),
         MagoCommand::Fix(cmd) => cmd.execute(configuration, arguments.colors),
@@ -288,7 +288,7 @@ pub fn run(main_start: Instant) -> Result<ExitCode, Error> {
         MagoCommand::Analyze(cmd) => cmd.execute(configuration, arguments.colors).map(|outcome| outcome.exit_code),
         MagoCommand::Guard(cmd) => cmd.execute(configuration, arguments.colors).map(|outcome| outcome.exit_code),
         #[cfg(unix)]
-        MagoCommand::Server(cmd) => cmd.execute(configuration, arguments.colors),
+        MagoCommand::Server(cmd) => cmd.execute(configuration),
         MagoCommand::InspectBaseline(cmd) => cmd.execute(configuration, arguments.colors),
         MagoCommand::GenerateCompletions(cmd) => cmd.execute(),
         MagoCommand::SelfUpdate(_) => {

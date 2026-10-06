@@ -9,8 +9,6 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 use std::time::Instant;
 
-use clap::ColorChoice;
-
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::reference::SymbolReferences;
 use mago_database::DatabaseConfiguration;
@@ -82,7 +80,6 @@ impl Worktree {
         runtime: Runtime,
         configuration: Configuration,
         fingerprint: Fingerprint,
-        colors: bool,
         stubs: bool,
         siblings: Siblings,
         cold_starts: ColdStarts,
@@ -93,7 +90,6 @@ impl Worktree {
             runtime,
             configuration,
             fingerprint,
-            colors,
             stubs,
             siblings,
             cold_starts,
@@ -124,7 +120,6 @@ struct Writer {
     runtime: Runtime,
     configuration: Configuration,
     fingerprint: Fingerprint,
-    colors: bool,
     stubs: bool,
     siblings: Siblings,
     cold_starts: ColdStarts,
@@ -300,8 +295,7 @@ impl Writer {
         let workspace = self.configuration.source.workspace.clone();
 
         self.progress("starting the extension workers");
-        let color_choice = if self.colors { ColorChoice::Always } else { ColorChoice::Never };
-        let mut orchestrator = create_orchestrator(&self.configuration, color_choice, false, false, false);
+        let mut orchestrator = create_orchestrator(&self.configuration, false, false, false);
         analyze_the_whole_workspace_without_paths(&mut orchestrator);
         orchestrator.add_exclude_patterns(self.configuration.analyzer.excludes.iter());
         let pools = match initialize_external_analyzer(

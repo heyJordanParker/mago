@@ -69,7 +69,6 @@ pub fn configure_colors(color_choice: ColorChoice) {
 
 pub(crate) fn create_orchestrator<'a>(
     configuration: &'a Configuration,
-    color_choice: ColorChoice,
     pedantic_linter: bool,
     use_progress_bars: bool,
     enable_diff: bool,
@@ -94,14 +93,13 @@ pub(crate) fn create_orchestrator<'a>(
     let orchestrator_config = OrchestratorConfiguration {
         php_version: configuration.php_version,
         parser_settings: configuration.parser.to_settings(),
-        analyzer_settings: configuration.analyzer.to_settings(configuration.php_version, color_choice, enable_diff),
+        analyzer_settings: configuration.analyzer.to_settings(configuration.php_version, enable_diff),
         linter_settings,
         guard_settings: configuration.guard.settings.clone(),
         formatter_settings: configuration.formatter.settings,
         disable_default_analyzer_plugins: configuration.analyzer.disable_default_plugins,
         analyzer_plugins: configuration.analyzer.plugins.clone(),
         use_progress_bars,
-        use_colors: should_use_colors(color_choice),
         paths: configuration.source.paths.clone(),
         excludes: configuration.source.excludes.iter().map(|p| p.as_ref()).collect(),
         extensions: configuration.source.extensions.iter().map(|e| e.as_ref()).collect(),

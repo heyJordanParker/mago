@@ -1851,6 +1851,7 @@ dependencies = [
  "ariadne",
  "blake3",
  "codespan-reporting",
+ "diffy",
  "foldhash",
  "mago-database",
  "mago-span",

@@ -122,9 +122,13 @@ impl Server {
     }
 
     fn mago(&self, workspace: &Path, arguments: &[&str]) -> Command {
+        self.mago_with_colors(workspace, "never", arguments)
+    }
+
+    fn mago_with_colors(&self, workspace: &Path, colors: &str, arguments: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_mago"));
         command
-            .args(["--no-version-check", "--colors", "never"])
+            .args(["--no-version-check", "--colors", colors])
             .args(arguments)
             .env("XDG_RUNTIME_DIR", self.runtime.path())
             .env("XDG_CACHE_HOME", self.cache.path())
@@ -611,6 +615,26 @@ fn a_check_runs_the_node_hooks_of_the_files_it_names_once() {
     for file in ["src/First.php", "src/Second.php"] {
         assert!(String::from_utf8_lossy(&server.check(workspace, &[file]).stdout).contains("message"));
     }
+}
+
+#[test]
+fn checks_with_and_without_colors_share_one_warm_worktree() {
+    if !available() {
+        return;
+    }
+
+    let server = Server::new();
+    let workspace = project("");
+    let workspace = workspace.path();
+    let plain = server.check(workspace, &[]);
+    let colored = server
+        .mago_with_colors(workspace, "always", &["analyze", "--reporting-format", "emacs"])
+        .output()
+        .expect("mago runs");
+
+    assert_eq!(String::from_utf8_lossy(&colored.stdout), String::from_utf8_lossy(&plain.stdout));
+    assert_eq!(colored.status.code(), plain.status.code(), "{}", String::from_utf8_lossy(&colored.stderr));
+    assert_eq!(server.occurrences("will analyze from scratch"), 1, "{}", server.log());
 }
 
 #[test]

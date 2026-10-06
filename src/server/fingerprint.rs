@@ -20,7 +20,7 @@ pub(crate) fn of(check: &Check) -> Result<Fingerprint, Error> {
     let mut hasher = Xxh3::new();
     hash(&mut hasher, &serde_json::to_value(&check.configuration)?, &workspace);
     hash(&mut hasher, &config_file.unwrap_or(Value::Null), &workspace);
-    hasher.update(&[u8::from(check.colors), u8::from(check.stubs)]);
+    hasher.update(&[u8::from(check.stubs)]);
 
     Ok(Fingerprint(hasher.digest128()))
 }
@@ -70,7 +70,6 @@ mod tests {
         Check {
             configuration: Box::new(Configuration::from_workspace(PathBuf::from(workspace))),
             config_file: config_file.map(PathBuf::from),
-            colors: false,
             stubs: true,
             paths: Vec::new(),
         }
@@ -87,11 +86,9 @@ mod tests {
 
         let mut excluded = check("/worktrees/first", None);
         excluded.configuration.source.excludes.push("cache".to_string());
-        let mut colored = check("/worktrees/first", None);
-        colored.colors = true;
         let mut bare = check("/worktrees/first", None);
         bare.stubs = false;
-        for changed in [excluded, colored, bare, check("/worktrees/first", Some("/worktrees/first/mago.dist.toml"))] {
+        for changed in [excluded, bare, check("/worktrees/first", Some("/worktrees/first/mago.dist.toml"))] {
             assert_ne!(fingerprint, of(&changed).unwrap(), "{changed:?}");
         }
     }
