@@ -3363,6 +3363,24 @@ fn check_class_like_properties<'ctx, A>(
                         .with_note("The access level of an overridden property must not be more restrictive than the parent property.")
                         .with_help("Adjust the access level of the property in the child class to match or be less restrictive than the parent class."),
                     );
+            } else if context.dialect.is_sharp() && property_metadata.read_visibility < parent_property.read_visibility
+            {
+                let (visibility, parent_visibility) =
+                    (property_metadata.read_visibility, parent_property.read_visibility);
+
+                context.collector.report_with_code(
+                    IssueCode::IncompatiblePropertyAccess,
+                    Issue::error(format!(
+                        "The override `{declaring_class_name}::{property_name}` is `{visibility}`, but `{parent_class_name}::{property_name}` is `{parent_visibility}`."
+                    ))
+                    .with_annotation(Annotation::primary(property_span).with_message(format!("Declared `{visibility}` here.")))
+                    .with_annotation(
+                        Annotation::secondary(parent_property_span)
+                            .with_message(format!("Declared `{parent_visibility}` here.")),
+                    )
+                    .with_note("An override keeps the access level of the property it replaces, as spec section 6.1 says.")
+                    .with_help(format!("Declare the override `{parent_visibility}`.")),
+                );
             }
 
             if (property_metadata.write_visibility != property_metadata.read_visibility
@@ -3495,19 +3513,39 @@ fn check_class_like_properties<'ctx, A>(
                     let property_name = property_metadata.name.0;
                     let class_name = class_like_metadata.original_name;
 
-                    // Every PHP# field has a type, so it cannot replace an untyped PHP property yet.
+                    // A PHP# field over an untyped PHP property writes a type the engine drops when the class links, so
+                    // it fits the parent's `@var` type, or any type without one, spec section 6.1.
                     if context.dialect.is_sharp() {
-                        context.collector.report_with_code(
-                            IssueCode::NotSupportedYet,
-                            Issue::error(format!(
-                                "A field that replaces the untyped PHP property `{parent_class_name}::{property_name}` is not supported yet."
-                            ))
-                            .with_annotation(
-                                Annotation::primary(declaring_type.span)
-                                    .with_message("PHP refuses a type the parent property does not have."),
-                            )
-                            .with_help("Rename the field, or give the PHP property a type."),
-                        );
+                        if let Some(parent_type) = parent_property.type_metadata.as_ref().filter(|t| t.from_docblock) {
+                            let parent_type_union = localize_parent_type(
+                                context.codebase,
+                                class_like_metadata,
+                                parent_metadata.name,
+                                &parent_type.type_union,
+                            );
+
+                            if !is_type_compatible(context.codebase, &declaring_type.type_union, &parent_type_union) {
+                                let declaring_type_id = declaring_type.type_union.get_id();
+                                let parent_type_id = parent_type_union.get_id();
+
+                                context.collector.report_with_code(
+                                    IssueCode::IncompatiblePropertyType,
+                                    Issue::error(format!(
+                                        "The override `{class_name}::{property_name}` has type `{declaring_type_id}`, which does not fit `{parent_type_id}`, the type of `{parent_class_name}::{property_name}`."
+                                    ))
+                                    .with_annotation(
+                                        Annotation::primary(declaring_type.span)
+                                            .with_message(format!("`{declaring_type_id}` is written here.")),
+                                    )
+                                    .with_annotation(
+                                        Annotation::secondary(parent_type.span)
+                                            .with_message(format!("`{parent_type_id}` is the parent's `@var` type.")),
+                                    )
+                                    .with_note("PHP does not check this property's type, so the override's type must fit the one the parent's code relies on.")
+                                    .with_help(format!("Write a type that fits `{parent_type_id}`.")),
+                                );
+                            }
+                        }
 
                         continue;
                     }

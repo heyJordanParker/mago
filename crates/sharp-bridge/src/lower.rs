@@ -215,6 +215,9 @@ const ZEND_IS_SMALLER_OR_EQUAL: u32 = 21;
 const ZEND_FETCH_CLASS_MEMBER_SYNTAX: u32 = 1 << 15;
 /// php-sharp's own class flag from `zend_compile.h`: the class's parent, if any, is in its interface list.
 const ZEND_ACC_PARENT_IN_INTERFACES: u32 = 1 << 31;
+/// php-sharp's own property flag from `zend_compile.h`: the property loses its type when the class links if the
+/// property it overrides has none.
+const ZEND_ACC_TYPE_FOLLOWS_PARENT: u32 = 1 << 13;
 
 /// A null child.
 const NULL: u32 = u32::MAX;
@@ -612,7 +615,9 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// builds `private int $count = 0;`, `public private(set) int $views = 0;`, `public readonly int $id;` and
     /// `public string $slug { get => expr; }`. A constant initial value is its default, unless the property is
     /// `readonly`. A member that starts as null without an initial value takes the default `null` on the line of its
-    /// name, as php-src builds `private ?int $total = null;`.
+    /// name, as php-src builds `private ?int $total = null;`. An override is a field with `#[\Override]` whose type
+    /// follows the parent's property: PHP refuses a type on a property whose parent has none, and only the engine knows
+    /// the parent when the class links.
     fn property(&mut self, property: &Property) -> u32 {
         let (accessor_flags, attribute_lists, hooks) = match property {
             Property::Plain(field) => (0, &field.attribute_lists, NULL),
@@ -639,8 +644,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         };
         let element = self.node(SHARP_AST_PROP_ELEM, 0, line, &[name, default, NULL, hooks]);
         let declaration = self.node(SHARP_AST_PROP_DECL, 0, line, &[element]);
-        let flags = modifier_flags(property.modifiers()) | accessor_flags;
-        let attributes = self.attributes(attribute_lists, None);
+        let r#override = property.modifiers().iter().find(|modifier| matches!(modifier, Modifier::Override(_)));
+        let follows_parent = if r#override.is_some() { ZEND_ACC_TYPE_FOLLOWS_PARENT } else { 0 };
+        let flags = modifier_flags(property.modifiers()) | accessor_flags | follows_parent;
+        let attributes = self.attributes(attribute_lists, r#override);
 
         self.node(SHARP_AST_PROP_GROUP, flags, self.line(property), &[hint, declaration, attributes])
     }
@@ -664,8 +671,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     /// A declaration's attributes are one `ATTRIBUTE_LIST` with an `ATTRIBUTE_GROUP` per `[...]`, as php-src's grammar
-    /// builds `#[...]`, or null without attributes. Each attribute names its class by its full name. A method's
-    /// `override` adds a last group of `#[\Override]`.
+    /// builds `#[...]`, or null without attributes. Each attribute names its class by its full name. A method's or a
+    /// field's `override` adds a last group of `#[\Override]`.
     fn attributes(&mut self, lists: &Sequence<AttributeList>, r#override: Option<&Modifier>) -> u32 {
         let line = match (lists.first(), r#override) {
             (Some(first), _) => self.line(first),
