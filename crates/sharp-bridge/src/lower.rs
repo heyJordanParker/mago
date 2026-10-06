@@ -423,7 +423,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         for name in &inheritance.types {
             let full_name = self.names.get(name);
             let index = self.string(ZEND_NAME_FQ, self.line(name), full_name);
-            match self.types.declaration_kind(full_name, None) {
+            match self.types.class_declaration(full_name).kind {
                 DeclarationKind::Class => parent = index,
                 DeclarationKind::Interface => interfaces.push(index),
                 kind => unreachable!("the checker refuses a {kind:?} in a class header"),
@@ -1160,7 +1160,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                     };
                     let member = self.member(&access.property);
 
-                    match self.types.declaration_kind(full_name, Some(name.value)) {
+                    match self.types.member_declaration(full_name, name.value).kind {
                         DeclarationKind::Constant | DeclarationKind::EnumCase => {
                             self.node(SHARP_AST_CLASS_CONST, 0, line, &[class, member])
                         }

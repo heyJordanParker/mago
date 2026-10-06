@@ -9,7 +9,13 @@ pub struct Types<'analysis> {
     codebase: &'analysis CodebaseMetadata,
 }
 
-/// What a declaration the lowering names is, as the checker found it.
+/// The declaration a class or member name resolves to, as the checker found it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Declaration {
+    pub(crate) kind: DeclarationKind,
+}
+
+/// What a declaration is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DeclarationKind {
     Class,
@@ -26,25 +32,27 @@ impl<'analysis> Types<'analysis> {
         Self { artifacts, codebase }
     }
 
-    /// The kind of the class-like named `class`, a fully qualified name, or of its `member` that PHP# names as
-    /// `Class.member`. A member is found as the engine finds `Class::member` would: a constant or enum case first,
-    /// then a static property, then a static method.
-    pub(crate) fn declaration_kind(&self, class: &[u8], member: Option<&[u8]>) -> DeclarationKind {
+    /// The declaration the fully qualified class name `class` resolves to.
+    pub(crate) fn class_declaration(&self, class: &[u8]) -> Declaration {
         let metadata = self.codebase.get_class_like(class).unwrap_or_else(|| {
             unreachable!("the checker refuses the unknown class `{}`", String::from_utf8_lossy(class))
         });
 
-        let Some(member) = member else {
-            return if metadata.kind.is_interface() {
-                DeclarationKind::Interface
-            } else if metadata.kind.is_enum() {
-                DeclarationKind::Enum
-            } else {
-                DeclarationKind::Class
-            };
+        let kind = if metadata.kind.is_interface() {
+            DeclarationKind::Interface
+        } else if metadata.kind.is_enum() {
+            DeclarationKind::Enum
+        } else {
+            DeclarationKind::Class
         };
 
-        if self.codebase.get_enum_case(class, member).is_some() {
+        Declaration { kind }
+    }
+
+    /// The declaration `member` of the fully qualified class name `class` resolves to, found as the engine finds
+    /// `Class::member`: a constant or enum case first, then a static property, then a static method.
+    pub(crate) fn member_declaration(&self, class: &[u8], member: &[u8]) -> Declaration {
+        let kind = if self.codebase.get_enum_case(class, member).is_some() {
             DeclarationKind::EnumCase
         } else if self.codebase.class_constant_exists(class, member) {
             DeclarationKind::Constant
@@ -67,6 +75,8 @@ impl<'analysis> Types<'analysis> {
                 String::from_utf8_lossy(class),
                 String::from_utf8_lossy(member)
             )
-        }
+        };
+
+        Declaration { kind }
     }
 }
