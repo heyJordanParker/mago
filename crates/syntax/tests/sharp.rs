@@ -363,6 +363,7 @@ fn a_sharp_parse_error_shows_its_message_as_the_issue_title() {
             "class Report\n{\n    public int run(extra) { return 1; }\n}\n",
             "A PHP# parameter needs a type, as in `int extra`.",
         ),
+        ("class Report\n{\n    private count = 0;\n}\n", "A PHP# field needs a type, as in `private int count = 0;`."),
         (
             "class Report\n{\n    public required int count { get; set; }\n}\n",
             "`required` is not supported yet in PHP#.",
@@ -396,6 +397,32 @@ fn a_parameter_without_a_type_is_a_parse_error_that_names_the_rule() {
         };
         assert_eq!(error.to_string(), "A PHP# parameter needs a type, as in `int extra`.", "{parameters}");
         assert_eq!(source(code, error), "extra", "{parameters}");
+    }
+}
+
+/// A field always has a type, an override of a plain PHP parent's property too, spec section 6.1. A bare name before
+/// `=` or `;` is the field's name, and the class keeps parsing.
+#[test]
+fn a_field_without_a_type_is_a_parse_error_that_names_the_rule() {
+    for (field, name) in [("protected override table = \"orders\";", "table"), ("private count;", "count")] {
+        let arena = LocalArena::new();
+        let code: &'static str = Box::leak(
+            format!("class Order\n{{\n    {field}\n\n    public int run() {{ return 1; }}\n}}\n").into_boxed_str(),
+        );
+        let program = parse(&arena, "src/Order.sharp", code);
+
+        let [error] = program.errors else {
+            panic!("expected one error for `{field}`, got {:#?}", program.errors);
+        };
+        assert_eq!(error.to_string(), "A PHP# field needs a type, as in `private int count = 0;`.", "{field}");
+        assert_eq!(source(code, error), name, "{field}");
+        let [ClassLikeMember::Property(Property::Plain(untyped)), ClassLikeMember::Method(run)] =
+            class_members(program).as_slice()
+        else {
+            panic!("expected a field and a method for `{field}`, got {:#?}", class_members(program));
+        };
+        assert!(untyped.hint.is_none(), "{field}");
+        assert_eq!(run.name.value, b"run", "{field}");
     }
 }
 
