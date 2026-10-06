@@ -3,6 +3,7 @@ use mago_bytes::BytesDisplay;
 use mago_codex::ttype::add_optional_union_type;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::scalar::TScalar;
+use mago_codex::ttype::combine_union_types;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_never;
 use mago_names::binding::Binding;
@@ -449,9 +450,12 @@ where
 /// as `if (type !== null)` narrows it, and the result at `span` can also be the `null` the read stops at. Mago's
 /// null-safe property read leaves out a receiver's `null` while it resolves instance members, and has no path that
 /// resolves a class value's static members, so the narrowing is this local's.
+///
+/// A null receiver skips a call's arguments, so each local whose type the read changes, the narrowed receiver and any
+/// local an argument writes, afterwards also has the type it had before, as after a branch that may not run.
 pub(crate) fn analyze_null_safe_class_value<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
-    block_context: &BlockContext<'ctx>,
+    block_context: &mut BlockContext<'ctx>,
     artifacts: &mut AnalysisArtifacts,
     object: &Expression<'arena>,
     span: Span,
@@ -464,16 +468,23 @@ pub(crate) fn analyze_null_safe_class_value<'ctx, 'arena, A>(
 where
     A: Arena,
 {
-    let mut narrowed = block_context.clone();
+    let before = block_context.locals.clone();
     if let Expression::ConstantAccess(local) = object
         && let Some(local) = get_bare_name_variable_id(&local.name, context.resolved_names)
-        && let Some(local_type) = narrowed.locals.get(&local)
+        && let Some(local_type) = block_context.locals.get(&local)
     {
         let class_values = local_type.to_non_nullable();
-        narrowed.locals.insert(local, Rc::new(class_values));
+        block_context.locals.insert(local, Rc::new(class_values));
     }
 
-    analyze(context, &mut narrowed, artifacts)?;
+    analyze(context, block_context, artifacts)?;
+    for (local, after) in &mut block_context.locals {
+        if let Some(before) = before.get(local)
+            && before != after
+        {
+            *after = Rc::new(combine_union_types(before, after, context.codebase, context.settings.combiner_options()));
+        }
+    }
     let member_type = artifacts.get_expression_type(&span).cloned().unwrap_or_else(get_mixed);
     artifacts.set_expression_type(&span, member_type.as_nullable());
 

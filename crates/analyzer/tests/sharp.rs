@@ -1263,6 +1263,21 @@ fn a_null_safe_member_read_through_a_class_value_is_the_member_or_null() {
     assert_eq!(type_at("type?.tag()").as_deref(), Some("null|string"));
 }
 
+/// A null receiver skips a null-safe call's arguments, so a local an argument writes may keep its value from before.
+#[test]
+fn a_local_a_null_safe_call_through_a_class_value_writes_may_keep_its_value() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static string make(int? value) => \"made\";\n\n    public int? last(bool flag)\n    {\n        let seen = null;\n        const type = flag ? typeof(Report) : null;\n        type?.make(seen = 5);\n        return seen;\n    }\n}\n";
+    let (issues, artifacts) =
+        analyze_with_artifacts(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[]);
+    let start = sharp.rfind("seen;").unwrap() as u32;
+
+    assert!(issues.is_empty(), "{issues:?}");
+    assert_eq!(
+        artifacts.expression_types.get(&(start, start + 4)).map(|r#type| r#type.get_id().to_string()).as_deref(),
+        Some("int(5)|null")
+    );
+}
+
 /// A class value that may be null is refused before a member read, as PHP's `$type::MAX` throws "Cannot use null as
 /// class" when `$type` is null.
 #[test]
