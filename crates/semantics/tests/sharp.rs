@@ -1115,6 +1115,57 @@ fn a_public_field_is_an_error() {
     assert_eq!(issues(code), ["5:5 A PHP# field cannot be `public`: a field is `private` or `protected`."]);
 }
 
+/// A field written `override` replaces a plain PHP parent's property, spec section 6.1, with the parent's access
+/// level, `public` included. The analyzer checks it against the parent.
+#[test]
+fn a_field_may_override_a_parent_property_with_its_access_level_and_a_constant_value() {
+    let code = "namespace App.Store;\n\nimport Lib.Model;\n\npublic class Order : Model\n{\n    protected override List<string> fillable = [\"number\", \"total\"];\n    public override bool timestamps = false;\n    protected override string table = \"orders\";\n    protected static override int count = 1 + 2;\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+/// An override replaces the default of the parent's property, so it writes one: without it, the engine would give the
+/// property PHP's default for an untyped one, `null`, which its written type may not hold.
+#[test]
+fn an_override_without_an_initial_value_is_an_error() {
+    let code = "namespace App.Store;\n\nimport Lib.Model;\n\npublic class Order : Model\n{\n    protected override List<string> hidden;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["7:37 An override needs an initial value: it replaces the default of the parent's property."]
+    );
+}
+
+/// The parent's constructor may read an overridden property before this class's code runs, so an override's initial
+/// value is constant, which PHP stores as the default.
+#[test]
+fn an_override_whose_initial_value_is_not_constant_is_an_error() {
+    let code = "namespace App.Store;\n\nimport Lib.Calc;\nimport Lib.Model;\n\npublic class Order : Model\n{\n    protected override List<string> fillable = this.columns();\n    protected override int perPage = Calc.make();\n\n    public List<string> columns() => [\"number\"];\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "8:48 The initial value of an override must be constant: the parent's constructor may read it before this class's code runs.",
+            "9:38 The initial value of an override must be constant: the parent's constructor may read it before this class's code runs.",
+        ]
+    );
+}
+
+/// `override` takes a field, the one member that replaces a plain PHP parent's property. A PHP# parent's property is
+/// overridden as a property, spec section 6.1, which is not supported yet.
+#[test]
+fn an_overriding_property_is_not_supported_yet() {
+    let code = "namespace App.Store;\n\nimport Lib.Model;\n\npublic class Order : Model\n{\n    public override int views { get; set; } = 0;\n    public override string slug => \"order\";\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:25 Overriding a property is not supported yet in PHP#.",
+            "8:28 Overriding a property is not supported yet in PHP#.",
+        ]
+    );
+}
+
 #[test]
 fn a_field_without_an_access_modifier_is_not_supported_yet() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    int count = 0;\n}\n";
@@ -1600,6 +1651,21 @@ fn a_typed_for_counter_takes_the_types_of_the_slice_but_not_void() {
 }
 
 #[test]
+fn a_typed_loop_variable_takes_the_types_of_the_slice_but_not_void() {
+    let code = leak(method(
+        "        for (const [Status status, int n] of Store.counts()) {\n        }\n        for (const Map<string, List<int>> group of Store.groups()) {\n        }\n        for (const void step of Store.values()) {\n        }\n        for (const iterable items of Store.values()) {\n        }\n        return 1;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "11:20 A local cannot be `void`: `void` is only a return type.",
+            "13:20 This type is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
 fn a_nullable_void_reports_only_the_php_error() {
     let code = "class Report\n{\n    public void? run()\n    {\n    }\n}\n";
 
@@ -1669,7 +1735,34 @@ fn list_and_map_types_literals_and_indexes_are_in_the_slice() {
 fn an_interface_method_takes_and_returns_list_and_map_types() {
     let code = "interface Grouped\n{\n    List<int> sizes(Map<string, List<int>> groups);\n\n    Map<float, int> rounded();\n}\n";
 
-    assert_eq!(issues(code), ["5:9 A `Map`'s keys are `int` or `string`, as a PHP array's keys are."]);
+    assert_eq!(
+        issues(code),
+        ["5:9 A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value."]
+    );
+}
+
+#[test]
+fn an_empty_literal_needs_a_type() {
+    let code = leak(method(
+        "        let names = [];\n        const sizes = [:];\n        List<string> kept = [];\n        const Map<string, int> counts = [:];\n        let filled = [1];\n        names = [];\n        return 1;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:21 An empty literal needs a type: write `List<T> names = []`.",
+            "8:23 An empty literal needs a type: write `const Map<TKey, TValue> sizes = [:]`.",
+        ]
+    );
+}
+
+#[test]
+fn a_null_start_needs_a_type() {
+    let code = leak(method(
+        "        let value = null;\n        const other = null;\n        string? kept = null;\n        let either = extra > 1 ? null : 1;\n        return 1;\n",
+    ));
+
+    assert_eq!(issues(code), ["7:21 A null start needs a type: write `T? value = null`."]);
 }
 
 #[test]
@@ -1688,17 +1781,17 @@ fn a_type_with_type_arguments_other_than_list_or_map_is_not_supported_yet() {
     );
 }
 
+/// A named key type may have a backing value, which only the analyzer knows, so it passes here.
 #[test]
-fn a_map_key_that_is_not_int_or_string_is_an_error() {
+fn a_map_key_that_is_not_int_string_or_a_named_type_is_an_error() {
     let code = "class Report\n{\n    public Map<float, int> run(Map<Line, int> a, Map<int?, int> b, Map<string, Map<bool, int>> c)\n    {\n        return [:];\n    }\n}\n";
 
     assert_eq!(
         issues(code),
         [
-            "3:16 A `Map`'s keys are `int` or `string`, as a PHP array's keys are.",
-            "3:36 A `Map`'s keys are `int` or `string`, as a PHP array's keys are.",
-            "3:54 A `Map`'s keys are `int` or `string`, as a PHP array's keys are.",
-            "3:84 A `Map`'s keys are `int` or `string`, as a PHP array's keys are.",
+            "3:16 A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value.",
+            "3:54 A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value.",
+            "3:84 A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value.",
         ]
     );
 }
@@ -1706,18 +1799,25 @@ fn a_map_key_that_is_not_int_or_string_is_an_error() {
 #[test]
 fn a_literal_element_outside_the_slice_is_not_supported_yet() {
     let code = leak(method(
-        "        const spread = [...extra];\n        const reference = [&extra];\n        const missing = [, extra];\n        let list = [1];\n        list[] = 2;\n        return 1;\n",
+        "        const reference = [&extra];\n        const missing = [, extra];\n        let list = [1];\n        list[] = 2;\n        return 1;\n",
     ));
 
     assert_eq!(
         issues(code),
         [
-            "7:25 This construct is not supported yet in PHP#.",
-            "8:28 This operator is not supported yet in PHP#.",
-            "9:26 This construct is not supported yet in PHP#.",
-            "11:9 This write target is not supported yet in PHP#.",
+            "7:28 This operator is not supported yet in PHP#.",
+            "8:26 This construct is not supported yet in PHP#.",
+            "10:9 This write target is not supported yet in PHP#.",
         ]
     );
+}
+
+/// The analyzer decides whether a spread is a `List`'s or a `Map`'s, since the spread value's type does.
+#[test]
+fn a_spread_in_a_literal_is_in_the_slice() {
+    let code = "class Report\n{\n    private List<int> all = [...Defaults.SMALL, 3, ...Defaults.LARGE];\n\n    public List<int> run(List<int> extra)\n    {\n        const all = [...extra, 1, ...this.all];\n        return all;\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
 }
 
 #[test]

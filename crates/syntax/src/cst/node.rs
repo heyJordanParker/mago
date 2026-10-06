@@ -81,6 +81,7 @@ use crate::cst::cst::ForColonDelimitedBody;
 use crate::cst::cst::ForOf;
 use crate::cst::cst::ForOfKeyValueTarget;
 use crate::cst::cst::ForOfTarget;
+use crate::cst::cst::ForOfVariable;
 use crate::cst::cst::Foreach;
 use crate::cst::cst::ForeachBody;
 use crate::cst::cst::ForeachColonDelimitedBody;
@@ -444,6 +445,7 @@ pub enum NodeKind {
     ForOf,
     ForOfKeyValueTarget,
     ForOfTarget,
+    ForOfVariable,
     While,
     WhileBody,
     WhileColonDelimitedBody,
@@ -704,6 +706,7 @@ pub enum Node<'ast, 'arena> {
     ForOf(&'ast ForOf<'arena>),
     ForOfKeyValueTarget(&'ast ForOfKeyValueTarget<'arena>),
     ForOfTarget(&'ast ForOfTarget<'arena>),
+    ForOfVariable(&'ast ForOfVariable<'arena>),
     While(&'ast While<'arena>),
     WhileBody(&'ast WhileBody<'arena>),
     WhileColonDelimitedBody(&'ast WhileColonDelimitedBody<'arena>),
@@ -1043,6 +1046,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Self::ForOf(_) => NodeKind::ForOf,
             Self::ForOfKeyValueTarget(_) => NodeKind::ForOfKeyValueTarget,
             Self::ForOfTarget(_) => NodeKind::ForOfTarget,
+            Self::ForOfVariable(_) => NodeKind::ForOfVariable,
             Self::While(_) => NodeKind::While,
             Self::WhileBody(_) => NodeKind::WhileBody,
             Self::WhileColonDelimitedBody(_) => NodeKind::WhileColonDelimitedBody,
@@ -2343,13 +2347,19 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 f(Node::Statement(node.body));
             }
             Node::ForOfKeyValueTarget(node) => {
-                f(Node::LocalIdentifier(&node.key));
-                f(Node::LocalIdentifier(&node.value));
+                f(Node::ForOfVariable(&node.key));
+                f(Node::ForOfVariable(&node.value));
             }
             Node::ForOfTarget(node) => match node {
-                ForOfTarget::Value(value) => f(Node::LocalIdentifier(value)),
+                ForOfTarget::Value(value) => f(Node::ForOfVariable(value)),
                 ForOfTarget::KeyValue(key_value) => f(Node::ForOfKeyValueTarget(key_value)),
             },
+            Node::ForOfVariable(node) => {
+                if let Some(hint) = node.hint {
+                    f(Node::Hint(hint));
+                }
+                f(Node::LocalIdentifier(&node.name));
+            }
             Node::While(node) => {
                 f(Node::Keyword(&node.r#while));
                 f(Node::Expression(node.condition));
@@ -2890,6 +2900,7 @@ impl HasSpan for Node<'_, '_> {
             Self::ForOf(node) => node.span(),
             Self::ForOfKeyValueTarget(node) => node.span(),
             Self::ForOfTarget(node) => node.span(),
+            Self::ForOfVariable(node) => node.span(),
             Self::While(node) => node.span(),
             Self::WhileBody(node) => node.span(),
             Self::WhileColonDelimitedBody(node) => node.span(),

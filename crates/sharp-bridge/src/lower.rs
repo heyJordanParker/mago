@@ -224,6 +224,9 @@ const ZEND_IS_SMALLER_OR_EQUAL: u32 = 21;
 const ZEND_FETCH_CLASS_MEMBER_SYNTAX: u32 = 1 << 15;
 /// php-sharp's own class flag from `zend_compile.h`: the class's parent, if any, is in its interface list.
 const ZEND_ACC_PARENT_IN_INTERFACES: u32 = 1 << 31;
+/// php-sharp's own property flag from `zend_compile.h`: the property loses its type when the class links if the
+/// property it overrides has none.
+const ZEND_ACC_TYPE_FOLLOWS_PARENT: u32 = 1 << 13;
 
 /// A null child.
 const NULL: u32 = u32::MAX;
@@ -624,7 +627,9 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// builds `private int $count = 0;`, `public private(set) int $views = 0;`, `public readonly int $id;` and
     /// `public string $slug { get => expr; }`. A constant initial value is its default, unless the property is
     /// `readonly`. A member that starts as null without an initial value takes the default `null` on the line of its
-    /// name, as php-src builds `private ?int $total = null;`.
+    /// name, as php-src builds `private ?int $total = null;`. An override is a field with `#[\Override]` whose type
+    /// follows the parent's property: PHP refuses a type on a property whose parent has none, and only the engine knows
+    /// the parent when the class links.
     fn property(&mut self, property: &Property) -> u32 {
         let (accessor_flags, attribute_lists, hooks) = match property {
             Property::Plain(field) => (0, &field.attribute_lists, NULL),
@@ -651,8 +656,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         };
         let element = self.node(SHARP_AST_PROP_ELEM, 0, line, &[name, default, NULL, hooks]);
         let declaration = self.node(SHARP_AST_PROP_DECL, 0, line, &[element]);
-        let flags = modifier_flags(property.modifiers()) | accessor_flags;
-        let attributes = self.attributes(attribute_lists, None);
+        let r#override = property.modifiers().iter().find(|modifier| matches!(modifier, Modifier::Override(_)));
+        let follows_parent = if r#override.is_some() { ZEND_ACC_TYPE_FOLLOWS_PARENT } else { 0 };
+        let flags = modifier_flags(property.modifiers()) | accessor_flags | follows_parent;
+        let attributes = self.attributes(attribute_lists, r#override);
 
         self.node(SHARP_AST_PROP_GROUP, flags, self.line(property), &[hint, declaration, attributes])
     }
@@ -676,8 +683,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     /// A declaration's attributes are one `ATTRIBUTE_LIST` with an `ATTRIBUTE_GROUP` per `[...]`, as php-src's grammar
-    /// builds `#[...]`, or null without attributes. Each attribute names its class by its full name. A method's
-    /// `override` adds a last group of `#[\Override]`.
+    /// builds `#[...]`, or null without attributes. Each attribute names its class by its full name. A method's or a
+    /// field's `override` adds a last group of `#[\Override]`.
     fn attributes(&mut self, lists: &Sequence<AttributeList>, r#override: Option<&Modifier>) -> u32 {
         let line = match (lists.first(), r#override) {
             (Some(first), _) => self.line(first),
@@ -809,12 +816,38 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             Statement::ForOf(for_of) => {
                 let collection = self.expression(for_of.expression);
                 let (key, value) = match &for_of.target {
-                    ForOfTarget::Value(value) => (NULL, self.variable(value.span, value.value)),
-                    ForOfTarget::KeyValue(pair) => {
-                        (self.variable(pair.key.span, pair.key.value), self.variable(pair.value.span, pair.value.value))
-                    }
+                    ForOfTarget::Value(value) => (NULL, self.variable(value.name.span, value.name.value)),
+                    ForOfTarget::KeyValue(pair) => (
+                        self.variable(pair.key.name.span, pair.key.name.value),
+                        self.variable(pair.value.name.span, pair.value.name.value),
+                    ),
                 };
-                let body = self.loop_body(for_of.body);
+                let mut body = self.loop_body(for_of.body);
+
+                // A `Map` keyed by a backed enum holds each key as its backing value, and the analyzer requires a loop
+                // over one to name the enum as its key's type, so a key that names a class reads back as its case.
+                // PHP stores an all-digit `string` key as an `int`, so a key written `string` reads back through
+                // `(string)`, as spec section 12 reads a `Map<string, V>` key.
+                if let ForOfTarget::KeyValue(pair) = &for_of.target
+                    && let Some(hint @ (Hint::Identifier(_) | Hint::String(_))) = pair.key.hint
+                {
+                    let line = self.line(&pair.key);
+                    let stored_key = self.variable(pair.key.name.span, pair.key.name.value);
+                    let read_back = match hint {
+                        Hint::Identifier(class) => {
+                            let class = self.string(ZEND_NAME_FQ, line, self.names.get(class));
+                            let from = self.string(0, line, b"from");
+                            let arguments = self.node(SHARP_AST_ARG_LIST, 0, line, &[stored_key]);
+
+                            self.node(SHARP_AST_STATIC_CALL, 0, line, &[class, from, arguments])
+                        }
+                        _ => self.node(SHARP_AST_CAST, IS_STRING, line, &[stored_key]),
+                    };
+                    let key = self.variable(pair.key.name.span, pair.key.name.value);
+                    let assignment = self.node(SHARP_AST_ASSIGN, 0, line, &[key, read_back]);
+
+                    body = self.node(SHARP_AST_STMT_LIST, 0, line, &[assignment, body]);
+                }
 
                 self.node(SHARP_AST_FOREACH, 0, self.line(for_of), &[collection, value, key, body])
             }
@@ -1231,19 +1264,20 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     /// A list or map literal is an `ARRAY` with `ZEND_ARRAY_SYNTAX_SHORT`, as php-src's grammar builds `[…]`. Each
-    /// element is an `ARRAY_ELEM` of its value and its key or null.
+    /// element is an `ARRAY_ELEM` of its value and its key or null, and a spread is an `UNPACK` of its value.
     fn array(&mut self, array: &Array) -> u32 {
         let mut elements = Vec::new();
         for element in &array.elements {
-            let value_and_key = match element {
-                ArrayElement::Value(element) => [self.expression(element.value), NULL],
-                ArrayElement::KeyValue(element) => [self.expression(element.value), self.expression(element.key)],
-                ArrayElement::Variadic(_) | ArrayElement::Missing(_) => {
-                    unreachable!("check_slice refuses a spread or missing literal element")
+            let (kind, value_and_key) = match element {
+                ArrayElement::Value(element) => (SHARP_AST_ARRAY_ELEM, vec![self.expression(element.value), NULL]),
+                ArrayElement::KeyValue(element) => {
+                    (SHARP_AST_ARRAY_ELEM, vec![self.expression(element.value), self.expression(element.key)])
                 }
+                ArrayElement::Variadic(element) => (SHARP_AST_UNPACK, vec![self.expression(element.value)]),
+                ArrayElement::Missing(_) => unreachable!("check_slice refuses a missing literal element"),
             };
 
-            elements.push(self.node(SHARP_AST_ARRAY_ELEM, 0, self.line(element), &value_and_key));
+            elements.push(self.node(kind, 0, self.line(element), &value_and_key));
         }
 
         self.node(SHARP_AST_ARRAY, ZEND_ARRAY_SYNTAX_SHORT, self.line(array), &elements)

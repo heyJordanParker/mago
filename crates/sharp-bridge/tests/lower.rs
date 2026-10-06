@@ -1126,6 +1126,52 @@ fn a_list_or_map_type_is_the_array_type() {
 }
 
 /// ```php
+/// $counts = [\Lib\Calc::Active => 1];
+/// $counts[\Lib\Calc::Closed] = 2;
+/// return $counts[\Lib\Calc::Active] ?? 0;
+/// ```
+///
+/// A `Map` keyed by a backed enum lowers as any `Map` does. The engine stores each case as its backing value, because
+/// `ext/sharp` marks every PHP# index and literal.
+#[test]
+fn a_map_keyed_by_a_backed_enum_lowers_as_any_map() {
+    assert_eq!(
+        body(
+            "        Map<Calc, int> counts = [Calc.Active: 1];\n        counts[Calc.Closed] = 2;\n        return counts[Calc.Active] ?? 0;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "counts"
+                ARRAY [3]
+                  ARRAY_ELEM
+                    ZVAL 1
+                    CLASS_CONST [32768]
+                      ZVAL "Lib\\Calc"
+                      ZVAL "Active"
+              ASSIGN
+                DIM
+                  VAR
+                    ZVAL "counts"
+                  CLASS_CONST [32768]
+                    ZVAL "Lib\\Calc"
+                    ZVAL "Closed"
+                ZVAL 2
+              RETURN
+                COALESCE
+                  DIM
+                    VAR
+                      ZVAL "counts"
+                    CLASS_CONST [32768]
+                      ZVAL "Lib\\Calc"
+                      ZVAL "Active"
+                  ZVAL 0
+        "#}
+    );
+}
+
+/// ```php
 /// public function apply(\Closure $step, ?\Closure $other = null): \Closure { return $step; }
 /// ```
 ///
@@ -1180,7 +1226,7 @@ fn a_function_type_is_the_closure_class() {
 fn literals_are_short_arrays_and_an_index_is_a_dim() {
     assert_eq!(
         body(
-            "        List<int> numbers = [1, extra];\n        const named = [\"a\": 1, 2: numbers[0]];\n        const empty = [:];\n        numbers[0] = named[\"a\"];\n        this.sizes[\"a\"] += 1;\n        return numbers[1];\n"
+            "        List<int> numbers = [1, extra];\n        const named = [\"a\": 1, 2: numbers[0]];\n        const Map<string, int> empty = [:];\n        numbers[0] = named[\"a\"];\n        this.sizes[\"a\"] += 1;\n        return numbers[1];\n"
         ),
         indoc! {r#"
             STMT_LIST
@@ -1564,6 +1610,39 @@ fn a_lambda_takes_union_and_variadic_parameters_and_a_spread_call() {
 }
 
 /// ```php
+/// $all = [...$extra, 1, ...\Lib\Calc::make()];
+/// ```
+///
+/// A spread in a literal is an `UNPACK` of its value among the literal's elements, as php-src's grammar builds
+/// `[...$extra]`.
+#[test]
+fn a_spread_in_a_literal_is_an_unpack_among_its_elements() {
+    assert_eq!(
+        body("        const all = [...extra, 1, ...Calc.make()];\n        return 1;\n"),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "all"
+                ARRAY [3]
+                  UNPACK
+                    VAR
+                      ZVAL "extra"
+                  ARRAY_ELEM
+                    ZVAL 1
+                    null
+                  UNPACK
+                    STATIC_CALL
+                      ZVAL "Lib\\Calc"
+                      ZVAL "make"
+                      ARG_LIST
+              RETURN
+                ZVAL 1
+        "#}
+    );
+}
+
+/// ```php
 /// \Lib\Calc::sum(...$extra);
 /// $this->run(1, ...$extra);
 /// $made = new \Lib\Calc(...$extra);
@@ -1830,6 +1909,56 @@ fn virtual_lowers_to_nothing_and_override_to_the_override_attribute() {
                           null
                 null
                 null
+        "#}
+    );
+}
+
+/// ```php
+/// #[\Override] protected string $table = 'orders';   // runs as `protected $table` when Model's $table has no type
+/// #[\Override] public bool $timestamps = false;
+/// ```
+///
+/// An override is a field with `#[\Override]`, so PHP checks at link time that the parent has the property, and with
+/// php-sharp's `ZEND_ACC_TYPE_FOLLOWS_PARENT`, `1 << 13`. One file cannot tell whether the parent's property has a
+/// type, so the engine drops the written type when the class links if it has none. `[8194]` is
+/// `ZEND_ACC_PROTECTED | ZEND_ACC_TYPE_FOLLOWS_PARENT`, and `[8193]` is `ZEND_ACC_PUBLIC | ZEND_ACC_TYPE_FOLLOWS_PARENT`.
+#[test]
+fn an_override_is_a_field_marked_to_follow_the_parent_type() {
+    let lowered = Lowered::new(
+        "class Order : Model\n{\n    protected override string table = \"orders\";\n    public override bool timestamps = false;\n}\n",
+    );
+    let class = lowered.child(lowered.unit().root, 1);
+
+    assert_eq!(
+        lowered.render(lowered.child(class, 2)),
+        indoc! {r#"
+            STMT_LIST
+              PROP_GROUP [8194]
+                ZVAL [1] "string"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "table"
+                    ZVAL "orders"
+                    null
+                    null
+                ATTRIBUTE_LIST
+                  ATTRIBUTE_GROUP
+                    ATTRIBUTE
+                      ZVAL "Override"
+                      null
+              PROP_GROUP [8193]
+                ZVAL [1] "bool"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "timestamps"
+                    ZVAL false
+                    null
+                    null
+                ATTRIBUTE_LIST
+                  ATTRIBUTE_GROUP
+                    ATTRIBUTE
+                      ZVAL "Override"
+                      null
         "#}
     );
 }
@@ -2401,7 +2530,7 @@ fn a_call_on_a_static_call_result_is_an_instance_call() {
 fn literals_are_zvals_of_their_php_value() {
     assert_eq!(
         body(
-            "        let a = \"line\\n\";\n        let b = 'raw\\n';\n        let c = 1.5;\n        let d = 0x10;\n        let e = 9223372036854775808;\n        let f = true;\n        let g = false;\n        let h = null;\n        return 1;\n"
+            "        let a = \"line\\n\";\n        let b = 'raw\\n';\n        let c = 1.5;\n        let d = 0x10;\n        let e = 9223372036854775808;\n        let f = true;\n        let g = false;\n        string? h = null;\n        return 1;\n"
         ),
         indoc! {r#"
             STMT_LIST
@@ -3071,6 +3200,85 @@ fn for_of_loops_are_foreach_nodes_with_the_value_before_the_key() {
               RETURN
                 VAR
                   ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
+/// foreach ($extra as $status => $n) {
+///     $status = \Lib\Calc::from($status);
+///     {
+///         $extra += $n;
+///     }
+/// }
+/// foreach ($extra as $sku => $n) {
+///     $sku = (string) $sku;
+///     {
+///     }
+/// }
+/// foreach ($extra as $key => $n) {
+/// }
+/// ```
+///
+/// A `Map` keyed by a backed enum holds each key as its backing value, so a loop whose key names a class reads the key
+/// back as that class's case, through `from` on the class as it runs. PHP stores an all-digit `string` key as an
+/// `int`, so a key written `string` reads back through `(string)`. An `int` key type changes nothing.
+#[test]
+fn a_loop_key_written_as_a_class_or_string_reads_back_through_from_or_a_cast() {
+    assert_eq!(
+        body(
+            "        for (const [Calc status, int n] of extra) {\n            extra += n;\n        }\n        for (const [string sku, n] of extra) {\n        }\n        for (const [int key, n] of extra) {\n        }\n        return 1;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              FOREACH
+                VAR
+                  ZVAL "extra"
+                VAR
+                  ZVAL "n"
+                VAR
+                  ZVAL "status"
+                STMT_LIST
+                  ASSIGN
+                    VAR
+                      ZVAL "status"
+                    STATIC_CALL
+                      ZVAL "Lib\\Calc"
+                      ZVAL "from"
+                      ARG_LIST
+                        VAR
+                          ZVAL "status"
+                  STMT_LIST
+                    ASSIGN_OP [1]
+                      VAR
+                        ZVAL "extra"
+                      VAR
+                        ZVAL "n"
+              FOREACH
+                VAR
+                  ZVAL "extra"
+                VAR
+                  ZVAL "n"
+                VAR
+                  ZVAL "sku"
+                STMT_LIST
+                  ASSIGN
+                    VAR
+                      ZVAL "sku"
+                    CAST [6]
+                      VAR
+                        ZVAL "sku"
+                  STMT_LIST
+              FOREACH
+                VAR
+                  ZVAL "extra"
+                VAR
+                  ZVAL "n"
+                VAR
+                  ZVAL "key"
+                STMT_LIST
+              RETURN
+                ZVAL 1
         "#}
     );
 }

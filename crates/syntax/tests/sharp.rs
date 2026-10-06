@@ -363,6 +363,7 @@ fn a_sharp_parse_error_shows_its_message_as_the_issue_title() {
             "class Report\n{\n    public int run(extra) { return 1; }\n}\n",
             "A PHP# parameter needs a type, as in `int extra`.",
         ),
+        ("class Report\n{\n    private count = 0;\n}\n", "A PHP# field needs a type, as in `private int count = 0;`."),
         (
             "class Report\n{\n    public required int count { get; set; }\n}\n",
             "`required` is not supported yet in PHP#.",
@@ -396,6 +397,32 @@ fn a_parameter_without_a_type_is_a_parse_error_that_names_the_rule() {
         };
         assert_eq!(error.to_string(), "A PHP# parameter needs a type, as in `int extra`.", "{parameters}");
         assert_eq!(source(code, error), "extra", "{parameters}");
+    }
+}
+
+/// A field always has a type, an override of a plain PHP parent's property too, spec section 6.1. A bare name before
+/// `=` or `;` is the field's name, and the class keeps parsing.
+#[test]
+fn a_field_without_a_type_is_a_parse_error_that_names_the_rule() {
+    for (field, name) in [("protected override table = \"orders\";", "table"), ("private count;", "count")] {
+        let arena = LocalArena::new();
+        let code: &'static str = Box::leak(
+            format!("class Order\n{{\n    {field}\n\n    public int run() {{ return 1; }}\n}}\n").into_boxed_str(),
+        );
+        let program = parse(&arena, "src/Order.sharp", code);
+
+        let [error] = program.errors else {
+            panic!("expected one error for `{field}`, got {:#?}", program.errors);
+        };
+        assert_eq!(error.to_string(), "A PHP# field needs a type, as in `private int count = 0;`.", "{field}");
+        assert_eq!(source(code, error), name, "{field}");
+        let [ClassLikeMember::Property(Property::Plain(untyped)), ClassLikeMember::Method(run)] =
+            class_members(program).as_slice()
+        else {
+            panic!("expected a field and a method for `{field}`, got {:#?}", class_members(program));
+        };
+        assert!(untyped.hint.is_none(), "{field}");
+        assert_eq!(run.name.value, b"run", "{field}");
     }
 }
 
@@ -984,7 +1011,8 @@ fn for_of_declares_its_loop_variable_or_key_and_value() {
     let ForOfTarget::Value(line) = &values.target else {
         panic!("expected one loop variable, got {:#?}", values.target);
     };
-    assert_eq!(line.value, b"line");
+    assert_eq!(line.name.value, b"line");
+    assert!(line.hint.is_none());
     assert_eq!(bare_name(values.expression), b"lines");
     assert_eq!(source(CODE, &values.of), "of");
     assert_eq!(source(CODE, values), "for (const line of lines) {\n        }");
@@ -993,9 +1021,68 @@ fn for_of_declares_its_loop_variable_or_key_and_value() {
     let ForOfTarget::KeyValue(pair) = &entries.target else {
         panic!("expected a key and a value, got {:#?}", entries.target);
     };
-    assert_eq!((pair.key.value, pair.value.value), (&b"key"[..], &b"plan"[..]));
+    assert_eq!((pair.key.name.value, pair.value.name.value), (&b"key"[..], &b"plan"[..]));
     assert_eq!(source(CODE, &entries.target), "[key, plan]");
     assert!(matches!(entries.expression, Expression::Call(Call::Method(_))));
+}
+
+#[test]
+fn a_const_loop_variable_can_have_its_type_written() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        for (const [Status status, int n] of counts) {\n        }\n        for (const [Status status, n] of counts) {\n        }\n        for (const Map<string, List<int>> group of groups) {\n        }\n        for (const (int|string)? id of ids) {\n        }\n        for (const List<int> counter = []; ; ) {\n        }\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [
+        Statement::ForOf(typed),
+        Statement::ForOf(key_typed),
+        Statement::ForOf(group),
+        Statement::ForOf(id),
+        Statement::For(counted),
+    ] = method_body(program)
+    else {
+        panic!("expected four for … of loops and a for loop, got {:#?}", method_body(program));
+    };
+
+    let ForOfTarget::KeyValue(pair) = &typed.target else {
+        panic!("expected a key and a value, got {:#?}", typed.target);
+    };
+    assert_eq!(source(CODE, pair.key.hint.expect("a key type")), "Status");
+    assert_eq!(source(CODE, &pair.key), "Status status");
+    assert_eq!(source(CODE, pair.value.hint.expect("a value type")), "int");
+    assert_eq!(pair.value.name.value, b"n");
+    assert_eq!(source(CODE, &typed.target), "[Status status, int n]");
+
+    let ForOfTarget::KeyValue(pair) = &key_typed.target else {
+        panic!("expected a key and a value, got {:#?}", key_typed.target);
+    };
+    assert_eq!(source(CODE, pair.key.hint.expect("a key type")), "Status");
+    assert!(pair.value.hint.is_none());
+
+    let ForOfTarget::Value(group) = &group.target else {
+        panic!("expected one loop variable, got {:#?}", group.target);
+    };
+    assert_eq!(source(CODE, group.hint.expect("a type")), "Map<string, List<int>>");
+    assert_eq!(group.name.value, b"group");
+
+    let ForOfTarget::Value(id) = &id.target else {
+        panic!("expected one loop variable, got {:#?}", id.target);
+    };
+    assert_eq!(source(CODE, id.hint.expect("a type")), "(int|string)?");
+
+    let declaration = counted.declaration.as_ref().expect("a declaration");
+    assert_eq!(source(CODE, declaration.hint.expect("a type")), "List<int>");
+}
+
+/// A typed local never takes `let`, so neither does a typed loop variable.
+#[test]
+fn a_let_loop_variable_with_its_type_written_is_a_parse_error() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        for (let [Status status, int n] of counts) {\n        }\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    let first = program.errors.first().expect("a parse error");
+    assert_eq!(source(CODE, first), "status");
 }
 
 #[test]

@@ -211,16 +211,37 @@ fn correct_sharp_code_has_no_issues() {
     assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Calc.php", CALC)]), Vec::<String>::new());
 }
 
+/// A `let` without a written type takes its first value's type, as C#'s `var` and TypeScript's `let` do, so a value
+/// of another type is an error where it is assigned. A plain PHP variable still takes any value.
 #[test]
-fn assigning_to_a_let_local_changes_its_type_as_in_php() {
+fn a_let_local_keeps_the_type_of_its_first_value_where_php_changes_it() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total()\n    {\n        let value = 1;\n        value = \"one\";\n        return value;\n    }\n}\n";
     let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function total(): int\n    {\n        $value = 1;\n        $value = \"one\";\n        return $value;\n    }\n}\n";
 
-    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
-    let php_issues = issues(("src/Demo/Report.php", php), &[]);
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), ["8:17 invalid-local-assignment-value"]);
+    assert_eq!(issues(("src/Demo/Report.php", php), &[]), ["11:16 invalid-return-statement"]);
+}
 
-    assert_eq!(sharp_issues, ["9:16 invalid-return-statement"]);
-    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+/// The semantic checks refuse a `let` that starts as `null` without a written type, so a later value adds no second
+/// error naming the `null` type.
+#[test]
+fn a_later_value_of_an_untyped_null_start_adds_no_issue() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total()\n    {\n        let value = null;\n        value = 5;\n        return value;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// A `let`'s first value fixes its general type: a literal widens to its scalar type, and a list or map literal to a
+/// `List<T>` or `Map<TKey, TValue>` of any length, so the local takes any value of that type and a collection method
+/// checks its arguments against it.
+#[test]
+fn a_let_local_takes_any_value_of_its_first_values_general_type() {
+    let sharp = "namespace Demo;\n\nclass Tally\n{\n    public int run()\n    {\n        let total = 0;\n        total = 5;\n        let sizes = [5];\n        sizes = [];\n        sizes.add(6);\n        sizes.add(\"six\");\n        let rows = [[1]];\n        rows = [[2, 3], []];\n        let prices = [\"a\": 1];\n        prices = [\"b\": 2, \"c\": 3];\n        prices = [1.5];\n        return total + count(sizes) + count(rows) + count(prices);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tally.sharp", sharp), &[]),
+        ["12:19 invalid-argument", "17:18 invalid-local-assignment-value"]
+    );
 }
 
 #[test]
@@ -362,7 +383,7 @@ fn a_private_method_read_as_a_value_from_outside_its_class_is_an_error() {
 #[test]
 fn a_local_passed_by_reference_to_a_php_method_changes_as_in_php() {
     let counter = "<?php\n\nnamespace Lib;\n\nfinal class Counter\n{\n    public static function make(): self\n    {\n        return new self();\n    }\n\n    public function fill(?string &$value): void\n    {\n        $value = 'filled';\n    }\n}\n";
-    let sharp = "namespace Demo;\n\nimport Lib.Counter;\n\nclass Report\n{\n    public static int total()\n    {\n        let value = null;\n        const counter = Counter.make();\n        counter.fill(value);\n        return value;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Counter;\n\nclass Report\n{\n    public static int total()\n    {\n        string? value = null;\n        const counter = Counter.make();\n        counter.fill(value);\n        return value;\n    }\n}\n";
     let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Counter;\n\nclass Report\n{\n    public static function total(): int\n    {\n        $value = null;\n        $counter = Counter::make();\n        $counter->fill($value);\n        return $value;\n    }\n}\n";
 
     let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Counter.php", counter)]);
@@ -424,13 +445,13 @@ fn a_parameter_read_only_by_a_for_counter_is_used() {
 #[test]
 fn for_of_loop_variables_have_the_key_and_value_types_as_in_php() {
     let store = "<?php\n\nnamespace Demo;\n\nclass Store\n{\n    /** @return array<int, string> */\n    public static function names(): array\n    {\n        return ['a'];\n    }\n}\n";
-    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int last()\n    {\n        let found = 0;\n        for (const [key, name] of Store.names()) {\n            found = key;\n            found = name;\n        }\n        return found;\n    }\n}\n";
-    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function last(): int\n    {\n        $found = 0;\n        foreach (Store::names() as $key => $name) {\n            $found = $key;\n            $found = $name;\n        }\n        return $found;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int last()\n    {\n        let found = 0;\n        for (const [key, name] of Store.names()) {\n            found = key;\n            return name;\n        }\n        return found;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function last(): int\n    {\n        $found = 0;\n        foreach (Store::names() as $key => $name) {\n            $found = $key;\n            return $name;\n        }\n        return $found;\n    }\n}\n";
 
     let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Demo/Store.php", store)]);
     let php_issues = issues(("src/Demo/Report.php", php), &[("src/Demo/Store.php", store)]);
 
-    assert_eq!(sharp_issues, ["12:16 invalid-return-statement"]);
+    assert_eq!(sharp_issues, ["10:20 invalid-return-statement"]);
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
 }
 
@@ -845,22 +866,91 @@ fn virtual_and_override_are_checked_as_final_and_the_override_attribute_in_php()
     assert_eq!(missing.message, "Missing `override` modifier on overriding method `Demo\\Child::size`.");
 }
 
-/// Every PHP# field has a type, so a field cannot replace an untyped PHP property yet: PHP refuses the added type.
+/// A plain PHP base class with untyped properties typed by `@var`, one declared in a trait, and typed properties.
+const MODEL: &str = "<?php\n\nnamespace Lib;\n\ntrait HasTimestamps\n{\n    /** @var bool */\n    public $timestamps = true;\n}\n\nabstract class Model\n{\n    use HasTimestamps;\n\n    /** @var string|null */\n    protected $table;\n\n    /** @var array<int, string> */\n    protected $fillable = [];\n\n    protected $with = [];\n\n    protected int $perPage = 15;\n\n    protected array $appends = [];\n\n    private $secret = 'model';\n}\n";
+
+/// An override of a plain PHP parent's property writes a type that fits the parent's `@var`, or any type when the
+/// parent has none, and the type of a typed parent, with the parent's access level, spec section 6.1. Its PHP twin
+/// declares the untyped properties without a type.
 #[test]
-fn a_field_that_replaces_an_untyped_php_property_is_not_supported_yet() {
-    let library = "<?php\n\nnamespace Lib;\n\nclass Entity\n{\n    protected $label = 'entity';\n}\n";
-    let sharp = "namespace Demo;\n\nimport Lib.Entity;\n\npublic class Post : Entity\n{\n    protected string label = \"post\";\n}\n";
+fn a_field_overrides_a_plain_php_property_with_a_type_that_fits_the_parent() {
+    let sharp = "namespace Demo;\n\nimport Lib.Model;\n\npublic class Order : Model\n{\n    protected override string? table = \"orders\";\n    protected override List<string> fillable = [\"number\", \"total\"];\n    protected override List<string> with = [\"customer\"];\n    public override bool timestamps = false;\n    protected override int perPage = 20;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Model;\n\nclass Order extends Model\n{\n    #[\\Override]\n    protected $table = 'orders';\n    #[\\Override]\n    protected $fillable = ['number', 'total'];\n    #[\\Override]\n    protected $with = ['customer'];\n    #[\\Override]\n    public $timestamps = false;\n    #[\\Override]\n    protected int $perPage = 20;\n}\n";
+    let others = [("src/Lib/Model.php", MODEL)];
+
+    assert_eq!(issues(("src/Demo/Order.sharp", sharp), &others), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Order.php", php), &others), Vec::<String>::new());
+}
+
+/// An override whose type does not fit the parent's, whose access level differs, that overrides nothing, or a field
+/// that replaces a parent's property without `override`, is an error, spec section 6.1.
+#[test]
+fn an_override_that_does_not_match_the_plain_php_property_is_an_error() {
+    let sharp = "namespace Demo;\n\nimport Lib.Model;\n\npublic class Order : Model\n{\n    public override List<string> fillable = [\"number\"];\n    protected override string? table = 5;\n    public override int timestamps = 0;\n    protected override List<string> appends = [];\n    protected string with = \"customer\";\n    protected override string missing = \"none\";\n    protected override string secret = \"order\";\n}\n";
 
     let issues =
-        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Post.sharp", sharp), &[("src/Lib/Entity.php", library)]);
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Order.sharp", sharp), &[("src/Lib/Model.php", MODEL)]);
+    let reported: Vec<(&str, &str)> =
+        issues.iter().map(|issue| (issue.code.as_deref().unwrap_or("none"), issue.message.as_str())).collect();
+
+    for expected in [
+        (
+            "incompatible-property-access",
+            "The override `Demo\\Order::$fillable` is `public`, but `Lib\\Model::$fillable` is `protected`.",
+        ),
+        (
+            "invalid-property-default-value",
+            "Default value for property `Demo\\Order::table` is not assignable to its declared type.",
+        ),
+        (
+            "incompatible-property-type",
+            "The override `Demo\\Order::$timestamps` has type `int`, which does not fit `bool`, the type of `Lib\\Model::$timestamps`.",
+        ),
+        ("incompatible-property-type", "Property `Demo\\Order::$appends` has an incompatible type declaration."),
+        ("missing-override-attribute", "Missing `override` modifier on overriding field `Demo\\Order::$with`."),
+        ("invalid-override-attribute", "Invalid `override` modifier on `Demo\\Order::$missing`."),
+        ("invalid-override-attribute", "Invalid `override` modifier on `Demo\\Order::$secret`."),
+    ] {
+        assert!(reported.contains(&expected), "{expected:?} is missing from {reported:#?}");
+    }
+    assert_eq!(reported.len(), 7, "{reported:#?}");
+}
+
+/// An override keeps its written type instead of inheriting the parent's `@var` type, so a type that does not fit is
+/// one issue, not a second one for its initial value against the inherited type.
+#[test]
+fn an_override_whose_type_does_not_fit_the_parent_is_reported_once() {
+    let sharp = "namespace Demo;\n\nimport Lib.Model;\n\npublic class Order : Model\n{\n    protected override int table = 5;\n}\n";
+
+    let issues =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Order.sharp", sharp), &[("src/Lib/Model.php", MODEL)]);
 
     assert_eq!(
-        issues.iter().map(|issue| issue.code.as_deref().unwrap_or("none")).collect::<Vec<_>>(),
-        ["not-supported-yet"]
+        issues
+            .iter()
+            .map(|issue| (issue.code.as_deref().unwrap_or("none"), issue.message.as_str()))
+            .collect::<Vec<_>>(),
+        [(
+            "incompatible-property-type",
+            "The override `Demo\\Order::$table` has type `int`, which does not fit `null|string`, the type of `Lib\\Model::$table`.",
+        )]
     );
+}
+
+/// A PHP# parent's property is overridden as a property, spec section 6.1, which is not supported yet. A field that
+/// replaces one without `override` keeps PHP's own checks.
+#[test]
+fn overriding_a_sharp_property_is_not_supported_yet() {
+    let sharp = "namespace Demo;\n\npublic class Base\n{\n    protected string label = \"base\";\n    protected int size = 1;\n}\n\npublic class Child : Base\n{\n    protected override string label = \"child\";\n    protected int size = 2;\n}\n";
+
+    let issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Base.sharp", sharp), &[]);
+
     assert_eq!(
-        issues[0].message,
-        "A field that replaces the untyped PHP property `Lib\\Entity::$label` is not supported yet."
+        issues
+            .iter()
+            .map(|issue| (issue.code.as_deref().unwrap_or("none"), issue.message.as_str()))
+            .collect::<Vec<_>>(),
+        [("not-supported-yet", "Overriding the PHP# property `Demo\\Base::$label` is not supported yet.")]
     );
 }
 
@@ -1505,7 +1595,7 @@ fn a_pattern_that_can_never_match_is_an_error_at_the_pattern() {
     );
 }
 
-const STATUS: &str = "<?php\n\nnamespace Lib;\n\nenum Status\n{\n    case Open;\n    case Closed;\n    case Archived;\n}\n\nfinal class Ticket\n{\n    public function status(): Status\n    {\n        return Status::Open;\n    }\n}\n\nfinal class Limits\n{\n    public const LOW = 1;\n    public const HIGH = 2;\n}\n";
+const TICKETS: &str = "<?php\n\nnamespace Lib;\n\nenum Status\n{\n    case Open;\n    case Closed;\n    case Archived;\n}\n\nfinal class Ticket\n{\n    public function status(): Status\n    {\n        return Status::Open;\n    }\n}\n\nfinal class Limits\n{\n    public const LOW = 1;\n    public const HIGH = 2;\n}\n";
 
 /// Each error of `sharp` as its primary span's text, its code and its message.
 fn written_errors(sharp: &'static str, issues: &[Issue]) -> Vec<String> {
@@ -1529,7 +1619,7 @@ fn a_match_without_default_names_the_enum_cases_it_misses() {
     let sharp = "namespace Demo;\n\nimport Lib.Limits;\nimport Lib.Status;\n\nclass Report\n{\n    public static string label(Status status) => match (status) {\n        Status.Open => \"open\",\n        Status.Closed => \"closed\",\n    };\n\n    public static void close(Status? status)\n    {\n        match (status) {\n            Status.Open when status !== null => {},\n            Status.Closed => {},\n        }\n    }\n\n    public static int level(int count) => match (count) {\n        Limits.LOW => 1,\n        Limits.HIGH => 2,\n    };\n}\n";
 
     let issues =
-        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Status.php", STATUS)]);
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Status.php", TICKETS)]);
 
     assert_eq!(
         written_errors(sharp, &issues),
@@ -1546,7 +1636,7 @@ fn a_match_without_default_that_handles_every_enum_case_reports_nothing() {
     let sharp = "namespace Demo;\n\nimport Lib.Status;\nimport Lib.Ticket;\n\nclass Report\n{\n    public static string label(Status status) => match (status) {\n        Status.Open => \"open\",\n        Status.Closed or Status.Archived => \"done\",\n    };\n\n    public static void close(Status? status)\n    {\n        match (status) {\n            Status.Open => {},\n            Status.Closed or Status.Archived => {},\n            null => {},\n        }\n    }\n\n    public static string state(Ticket ticket) => match (ticket.status()) {\n        Status.Open => \"open\",\n        Status.Closed or Status.Archived => \"done\",\n    };\n}\n";
 
     let issues =
-        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Status.php", STATUS)]);
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Status.php", TICKETS)]);
     let reported: Vec<&str> = issues
         .iter()
         .filter(|issue| matches!(issue.level, Level::Error | Level::Warning))
@@ -1573,7 +1663,7 @@ fn an_arm_that_is_always_true_before_the_last_is_reported_with_the_arms_it_hides
     let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Report\n{\n    public static string label(Status status) => match (status) {\n        Status.Open or Status.Closed or Status.Archived => \"any\",\n        Status.Open => \"open\",\n    };\n\n    public static string kind(Status status) => match (status) {\n        Status s => \"any\",\n        Status.Closed => \"closed\",\n        default => \"none\",\n    };\n}\n";
 
     let issues =
-        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Status.php", STATUS)]);
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Status.php", TICKETS)]);
     let warnings: Vec<String> = issues
         .iter()
         .filter(|issue| matches!(issue.level, Level::Error | Level::Warning))
@@ -2201,6 +2291,15 @@ fn a_collection_method_takes_values_of_the_type_its_place_is_declared_with() {
     assert_eq!(issues(("src/Demo/Board.sharp", sharp), &[("src/Lib/Shape.php", shapes)]), ["26:24 invalid-argument"]);
 }
 
+/// The semantic checks refuse an empty literal declared without a type, so a method called on it reports nothing
+/// more, and never names the `Map<never, never>` the literal alone would give.
+#[test]
+fn a_method_on_an_untyped_empty_literal_adds_no_issue() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public int run()\n    {\n        let messages = [];\n        messages.add(\"a\");\n        const totals = [:];\n        totals.set(\"a\", 1);\n        return count(messages);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Inbox.sharp", sharp), &[]), Vec::<String>::new());
+}
+
 /// A PHP# collection holds any value of its element type, as a `List<int>` holds any int, so a method takes one
 /// even where the analyzer knows the elements are literals, as TypeScript's `let a = [5]` is a `number[]`.
 #[test]
@@ -2250,4 +2349,222 @@ fn a_compound_assignment_or_increment_on_an_index_names_the_form_that_compiles()
     assert_eq!(issues.len(), 4, "{issues:?}");
     assert!(helps[..2].iter().all(|help| help.contains("m[k] = (m[k] ?? 0) + 1")), "{helps:?}");
     assert!(helps[2..].iter().all(|help| help.contains("list.set(i, list[i] + 1)")), "{helps:?}");
+}
+
+const STATUS: &str = "<?php\n\nnamespace Lib;\n\nenum Status: string\n{\n    case Active = 'active';\n    case Closed = 'closed';\n}\n\nenum Size: int\n{\n    case Small = 1;\n}\n\nenum Pure\n{\n    case One;\n}\n\nfinal class Line\n{\n}\n";
+
+/// Spec section 12 keys a `Map` by a backed enum, so every key position takes the case: an index write, `??`,
+/// `??=`, a nested write, a literal key and the key of `get` and `delete`.
+#[test]
+fn a_map_keyed_by_a_backed_enum_takes_the_case_in_every_key_position() {
+    let sharp = "namespace Demo;\n\nimport Lib.Size;\nimport Lib.Status;\n\nclass Tally\n{\n    private Map<Status, int> counts = [:];\n    private Map<Status, int> seeded = [Status.Active: 0];\n\n    public int count(Status status, Size size)\n    {\n        this.counts[status] = (this.counts[status] ?? 0) + 1;\n        this.counts[status] ??= 0;\n        Map<Status, Map<Size, int>> nested = [:];\n        nested[status] = [:];\n        nested[status][size] = 1;\n        Map<Status, int> built = [Status.Active: 1, status: 2];\n        built.delete(Status.Closed);\n        return (this.counts[status] ?? 0) + (built.get(status) ?? 0) + (this.seeded.get(status) ?? 0) + (nested[status][size] ?? 0);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]), Vec::<String>::new());
+}
+
+/// Inside PHP# a `Map<Status, int>` is keyed by `Status` alone, so its backing values, another enum and a
+/// `Map<string, int>` are refused where it takes a key. The runtime never meets a key the typed loop cannot read
+/// back as `Status`.
+#[test]
+fn a_map_keyed_by_a_backed_enum_takes_exactly_the_enum_as_a_key() {
+    let sharp = "namespace Demo;\n\nimport Lib.Size;\nimport Lib.Status;\n\nclass Tally\n{\n    public int wrong(Map<Status, int> counts, Map<string, int> named, Size size)\n    {\n        counts[\"active\"] = 1;\n        counts[size] = 2;\n        Map<Status, int> built = [\"active\": 1];\n        Map<Status, int> narrowed = named;\n        return (built.get(Status.Active) ?? 0) + (narrowed.get(Status.Active) ?? 0) + (counts.get(\"active\") ?? 0);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
+        [
+            "10:16 mismatched-array-index",
+            "11:16 invalid-array-index",
+            "12:34 invalid-local-assignment-value",
+            "13:37 invalid-local-assignment-value",
+            "14:99 invalid-argument"
+        ]
+    );
+}
+
+/// Plain PHP receives a `Map<Status, int>`'s backing values, so where the `Map` meets a plain PHP array it is an
+/// `array<string, int>`: an `array` parameter, an `iterable`, `count`, and a template such as `array_keys`' `K`.
+#[test]
+fn a_map_keyed_by_a_backed_enum_meets_plain_php_as_an_array_of_its_backing_values() {
+    let sharp = "namespace Demo;\n\nimport Lib.Sink;\nimport Lib.Status;\n\nclass Tally\n{\n    public int total(Map<Status, int> counts, Status status)\n    {\n        List<string> keys = array_keys(counts);\n        Map<string, int> named = counts;\n        return count(counts) + Sink.byName(counts) + Sink.plain(counts) + Sink.each(counts) + count(keys) + count(named) + (array_key_exists(status.value, counts) ? 1 : 0);\n    }\n}\n";
+    let sink = "<?php\n\nnamespace Lib;\n\nfinal class Sink\n{\n    /** @param array<string, int> $counts */\n    public static function byName(array $counts): int\n    {\n        return count($counts);\n    }\n\n    public static function plain(array $counts): int\n    {\n        return count($counts);\n    }\n\n    /** @param iterable<string, int> $counts */\n    public static function each(iterable $counts): int\n    {\n        return iterator_count($counts);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS), ("src/Lib/Sink.php", sink)]),
+        Vec::<String>::new()
+    );
+}
+
+/// Spec section 11 checks a value from plain PHP where it enters PHP#, so a plain PHP caller passes the backing
+/// values where PHP# takes a `Map<Status, int>`, and only those. That border check does not look inside a
+/// collection yet, so a key that is no case fails when PHP# reads it back as `Status`.
+#[test]
+fn a_plain_php_caller_passes_the_backing_values_where_php_sharp_takes_a_map_keyed_by_a_backed_enum() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Tally\n{\n    public int total(Map<Status, int> counts)\n    {\n        return count(counts);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Caller\n{\n    public function run(Tally $tally): int\n    {\n        return $tally->total(['active' => 1]) + $tally->total([1 => 1]);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Caller.php", php), &[("src/Demo/Tally.sharp", sharp), ("src/Lib/Status.php", STATUS)]),
+        ["9:63 possibly-invalid-argument"]
+    );
+}
+
+/// A plain PHP docblock may write `array<Status, int>`, a type PHP arrays cannot hold. It is the backing values'
+/// array, as a PHP# `Map` keyed by `Status` is where it meets plain PHP, so it agrees with the native `array`.
+#[test]
+fn a_php_docblock_array_keyed_by_a_backed_enum_agrees_with_the_native_array() {
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Status;\n\nfinal class Report\n{\n    /** @return array<Status, int> */\n    public static function counts(): array\n    {\n        return [];\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[("src/Lib/Status.php", STATUS)]), Vec::<String>::new());
+}
+
+/// Spec section 12 keys a `Map` by an `int`, a `string` or a type with an `int` or `string` backing value, so a
+/// class or a pure enum is refused where a `Map` type is written.
+#[test]
+fn a_map_key_type_without_a_backing_value_is_an_error() {
+    let sharp = "namespace Demo;\n\nimport Lib.Line;\nimport Lib.Pure;\n\nclass Tally\n{\n    public Map<Line, int> lines = [:];\n\n    public Map<Pure, int> count(Map<Line, int> counts)\n    {\n        Map<Pure, int> local = [:];\n        return local;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
+        [
+            "8:12 template-constraint-violation",
+            "10:12 template-constraint-violation",
+            "10:33 template-constraint-violation",
+            "12:9 template-constraint-violation"
+        ]
+    );
+}
+
+/// A PHP# field's written type is checked where it is written, as a parameter's is, though its name has no `$`.
+#[test]
+fn a_field_type_naming_a_missing_class_is_reported_as_a_parameter_type_is() {
+    let sharp = "namespace Demo;\n\nclass Tally\n{\n    public Missing? item = null;\n\n    public int count(Missing? other)\n    {\n        return 0;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tally.sharp", sharp), &[]),
+        ["5:12 non-existent-class-like", "7:22 non-existent-class-like"]
+    );
+}
+
+/// `keys()` and `entries()` would read a backed enum key back as its backing value, so a `Map` has neither until
+/// the loop's written key type reads it back as the case.
+#[test]
+fn a_map_has_no_keys_or_entries_method() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Tally\n{\n    public void read(Map<Status, int> counts)\n    {\n        counts.keys();\n        counts.entries();\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
+        ["9:16 non-existent-method", "10:16 non-existent-method"]
+    );
+}
+
+/// A loop over a `Map` keyed by a backed enum reads each key back as its case, through the key type the loop writes.
+/// The value's type may be written or left out, and a loop over the values alone needs no key type.
+#[test]
+fn a_loop_over_a_map_keyed_by_a_backed_enum_reads_the_key_as_the_case_it_writes() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Tally\n{\n    public int read(Map<Status, int> counts)\n    {\n        let total = 0;\n        for (const [Status status, int n] of counts) {\n            total = total + n + this.weight(status);\n        }\n        for (const [Status status, n] of counts) {\n            total = total + n + this.weight(status);\n        }\n        for (const int n of counts) {\n            total = total + n;\n        }\n\n        return total;\n    }\n\n    private int weight(Status status)\n    {\n        return 1;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]), Vec::<String>::new());
+}
+
+/// The engine holds a backed enum key as its backing value, and the loop reads it back as the case only through a
+/// written key type that names the enum. A written type that cannot hold the case is refused once, as a typed local's.
+#[test]
+fn a_loop_over_a_map_keyed_by_a_backed_enum_needs_the_key_type_written() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Tally\n{\n    public void read(Map<Status, int> counts)\n    {\n        for (const [status, n] of counts) {\n        }\n        for (const [Status? status, int n] of counts) {\n        }\n        for (const [string status, int n] of counts) {\n        }\n        for (const [Status status, string n] of counts) {\n        }\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
+        [
+            "9:21 invalid-foreach-key",
+            "11:21 invalid-foreach-key",
+            "13:28 invalid-local-assignment-value",
+            "15:43 invalid-local-assignment-value",
+        ]
+    );
+}
+
+/// The message writes the loop over again with the enum's name, the value's type and the collection.
+#[test]
+fn a_backed_key_without_its_type_names_the_loop_that_compiles() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Tally\n{\n    public void read(Map<Status, int> counts)\n    {\n        for (const [status, n] of counts) {\n        }\n    }\n}\n";
+
+    let issue =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)])
+            .remove(0);
+
+    assert_eq!(issue.message, "A `Status` key needs its type written: `for (const [Status status, int n] of counts)`.");
+}
+
+/// A written key or value type checks as a typed local's does. Spec section 12 reads a `Map<string, V>` key back as a
+/// `string`, even the key `"5"` PHP stores as an int, so a key written `string` reads back through `(string)`. An
+/// unwritten key stays `int|string` until typed compilation casts it, and so does a key written `string?`, which
+/// nothing casts.
+#[test]
+fn a_written_loop_variable_type_checks_as_a_typed_local_does() {
+    let sharp = "namespace Demo;\n\nimport Lib.Line;\n\nclass Tally\n{\n    public void read(Map<string, int> stock, List<Line> lines)\n    {\n        for (const [int|string sku, int n] of stock) {\n        }\n        for (const [string sku, int n] of stock) {\n            this.reserve(sku);\n        }\n        for (const [sku, n] of stock) {\n            this.reserve(sku);\n        }\n        for (const [string? sku, int n] of stock) {\n        }\n        for (const Line line of lines) {\n        }\n        for (const int line of lines) {\n        }\n    }\n\n    private void reserve(string sku)\n    {\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
+        [
+            "15:26 possibly-invalid-argument",
+            "17:29 invalid-local-assignment-value",
+            "21:24 invalid-local-assignment-value",
+        ]
+    );
+}
+
+/// A `List` spread appends, so a literal of values and `List` spreads is a `List`, a plain PHP `list<int>` included.
+#[test]
+fn a_list_spread_appends_into_a_list_literal() {
+    let sharp = "namespace Demo;\n\nimport Lib.Prices;\n\nclass Report\n{\n    public List<int> join(List<int> open, List<int> closed)\n    {\n        List<int> all = [...open, 0, ...closed, ...Prices.listed()];\n        List<string> names = [...open];\n        return all;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Prices.php", PRICES)]),
+        ["10:30 invalid-local-assignment-value"]
+    );
+}
+
+/// A `Map` spread copies the entries with their keys, which needs the literal's type when it runs, so it waits for
+/// typed compilation. A plain PHP `array<string, int>` is a `Map`.
+#[test]
+fn a_map_spread_is_not_supported_yet() {
+    let sharp = "namespace Demo;\n\nimport Lib.Prices;\n\nclass Report\n{\n    public void merge(Map<string, int> defaults, Map<string, int> overrides)\n    {\n        const merged = [...defaults, ...overrides];\n        const rooted = [...defaults, \"root\": 0];\n        const named = [...Prices.named()];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Prices.php", PRICES)]),
+        ["9:25 not-supported-yet", "10:25 not-supported-yet", "11:24 not-supported-yet"]
+    );
+}
+
+/// A literal is one collection, so a `List`'s values and a `Map`'s entries never share one.
+#[test]
+fn a_list_and_a_map_in_one_literal_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public void mix(List<int> open, Map<string, int> defaults)\n    {\n        const keyed = [...open, \"root\": 0];\n        const both = [...open, ...defaults];\n        const valued = [...defaults, 5];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[]),
+        ["7:33 invalid-array-element", "8:32 invalid-array-element", "9:38 invalid-array-element"]
+    );
+    assert_eq!(
+        messages(("src/Demo/Report.sharp", sharp), &[])[0],
+        "A literal cannot hold a `List`'s values and a `Map`'s entries together."
+    );
+
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    /**\n     * @param list<int> $open\n     * @param array<string, int> $defaults\n     */\n    public function mix(array $open, array $defaults): array\n    {\n        return [[...$open, 'root' => 0], [...$open, ...$defaults], [...$defaults, 5]];\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
+}
+
+/// Only a `List` or a `Map` spreads into a literal. A value that may not be iterable keeps PHP's own error alone.
+#[test]
+fn a_spread_of_a_value_that_is_neither_a_list_nor_a_map_is_an_error() {
+    let sharp = "namespace Demo;\n\nimport Lib.Prices;\n\nclass Report\n{\n    public void spread(int number)\n    {\n        const streamed = [...Prices.stream()];\n        const numbered = [...number];\n    }\n}\n";
+
+    assert_eq!(
+        messages(("src/Demo/Report.sharp", sharp), &[("src/Lib/Prices.php", PRICES)]),
+        [
+            "Cannot spread a value of type `iterable<int, int>`: PHP# spreads a `List` or a `Map`.",
+            "Cannot use spread operator on non-iterable type `int`.",
+        ]
+    );
 }
