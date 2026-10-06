@@ -136,6 +136,7 @@ use crate::sharp_kind::SHARP_AST_STATIC_PROP;
 use crate::sharp_kind::SHARP_AST_STMT_LIST;
 use crate::sharp_kind::SHARP_AST_THROW;
 use crate::sharp_kind::SHARP_AST_TRY;
+use crate::sharp_kind::SHARP_AST_TYPE;
 use crate::sharp_kind::SHARP_AST_TYPE_UNION;
 use crate::sharp_kind::SHARP_AST_UNARY_MINUS;
 use crate::sharp_kind::SHARP_AST_UNARY_OP;
@@ -167,6 +168,7 @@ const ZEND_ACC_READONLY: u32 = 1 << 7;
 const ZEND_ACC_PROTECTED_SET: u32 = 1 << 11;
 const ZEND_ACC_PRIVATE_SET: u32 = 1 << 12;
 const ZEND_TYPE_NULLABLE: u32 = 1 << 8;
+const IS_STATIC: u32 = 15;
 const ZEND_PARAM_VARIADIC: u32 = 1 << 4;
 const ZEND_PARENTHESIZED_CONDITIONAL: u32 = 1;
 const IS_LONG: u32 = 4;
@@ -636,14 +638,16 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_ASSIGN, 0, line, &[property, value])
     }
 
-    /// A built-in type is written unqualified, and a class by its full name. A nullable type is its type with
-    /// `ZEND_TYPE_NULLABLE`, as php-src's grammar builds `?int`.
+    /// A built-in type is written unqualified, and a class by its full name. `Self` is a `TYPE` node of `IS_STATIC`, as
+    /// php-src's grammar builds `static`. A nullable type is its type with `ZEND_TYPE_NULLABLE`, as php-src's grammar
+    /// builds `?int`.
     fn hint(&mut self, hint: &Hint) -> u32 {
         match hint {
             Hint::Integer(name) | Hint::Float(name) | Hint::Bool(name) | Hint::String(name) | Hint::Void(name) => {
                 self.string(ZEND_NAME_NOT_FQ, self.line(name.span), name.value)
             }
             Hint::Identifier(class) => self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class)),
+            Hint::Self_(keyword) => self.node(SHARP_AST_TYPE, IS_STATIC, self.line(keyword), &[]),
             Hint::Nullable(NullableHint { question_mark, hint: Hint::Parenthesized(parenthesized) }) => {
                 self.union(parenthesized.hint, Some(*question_mark))
             }
@@ -900,6 +904,17 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 self.node(SHARP_AST_NEW, 0, line, &[class, arguments])
             }
+            // `new Self(…)` is `new static(…)`, the name php-src's grammar writes with `ZEND_NAME_NOT_FQ`.
+            Expression::Instantiation(Instantiation {
+                class: Expression::Self_(keyword),
+                argument_list: Some(arguments),
+                ..
+            }) => {
+                let class = self.string(ZEND_NAME_NOT_FQ, self.line(keyword), b"static");
+                let arguments = self.arguments(arguments);
+
+                self.node(SHARP_AST_NEW, 0, line, &[class, arguments])
+            }
             // Spec section 4 looks up the kind of `Class.y` when it runs, so the read is a class constant fetch
             // marked to fall back to the static property of the same name. A constant expression reads only
             // constants and enum cases, as PHP's does, so its fetch is unmarked.
@@ -1024,8 +1039,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_VAR, 0, line, &[name])
     }
 
-    /// `Class.m()` is a static call on the class's full name, and `super.m()` one on `parent`. Any other `object.m()`
-    /// is an instance call.
+    /// `Class.m()` is a static call on the class's full name, `super.m()` one on `parent`, and `Self.m()` one on
+    /// `static`. Any other `object.m()` is an instance call.
     fn method_call(&mut self, call: &MethodCall) -> u32 {
         let line = self.line(call);
         let (kind, object) = match (self.names.static_call_class(call), call.object) {
@@ -1036,6 +1051,9 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             }
             (None, Expression::Parent(keyword)) => {
                 (SHARP_AST_STATIC_CALL, self.string(ZEND_NAME_NOT_FQ, self.line(keyword), b"parent"))
+            }
+            (None, Expression::Self_(keyword)) => {
+                (SHARP_AST_STATIC_CALL, self.string(ZEND_NAME_NOT_FQ, self.line(keyword), b"static"))
             }
             (None, object) => (SHARP_AST_METHOD_CALL, self.expression(object)),
         };
@@ -1217,8 +1235,9 @@ fn modifier_flags(modifiers: &Sequence<Modifier>) -> u32 {
             Modifier::Private(_) => ZEND_ACC_PRIVATE,
             Modifier::Static(_) => ZEND_ACC_STATIC,
             Modifier::Abstract(_) => ZEND_ACC_ABSTRACT,
-            // PHP methods are open to overriding, and `method` lowers `override` to `#[\Override]`.
-            Modifier::Virtual(_) | Modifier::Override(_) => 0,
+            // PHP methods are open to overriding, and `method` lowers `override` to `#[\Override]`. PHP has no
+            // `required` constructor, and the checker proves every subclass keeps one `new Self(…)` can call.
+            Modifier::Virtual(_) | Modifier::Override(_) | Modifier::Required(_) => 0,
             Modifier::Final(_)
             | Modifier::Readonly(_)
             | Modifier::PublicSet(_)
@@ -1246,7 +1265,8 @@ fn class_flags(modifiers: &Sequence<Modifier>) -> u32 {
             | Modifier::ProtectedSet(_)
             | Modifier::PrivateSet(_)
             | Modifier::Virtual(_)
-            | Modifier::Override(_) => unreachable!("check_slice refuses the class modifier `{modifier}`"),
+            | Modifier::Override(_)
+            | Modifier::Required(_) => unreachable!("check_slice refuses the class modifier `{modifier}`"),
         };
     }
 

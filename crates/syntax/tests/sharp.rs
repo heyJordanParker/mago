@@ -1416,6 +1416,88 @@ fn super_without_a_dot_is_a_name() {
     assert_eq!(bare_name(expression(statement)), b"super");
 }
 
+/// `required` on a constructor is a modifier, spec section 25, and stays a name elsewhere. The parser keeps its own
+/// "not supported yet" error for `required` on any other member.
+#[test]
+fn required_is_a_constructor_modifier_and_stays_a_name_elsewhere() {
+    const CODE: &str = "class Entity\n{\n    public required Entity(Row row)\n    {\n        required(row);\n    }\n\n    required Entity(int count) {}\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Entity.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let modifiers: Vec<Vec<String>> = class_members(program)
+        .iter()
+        .map(|member| {
+            let ClassLikeMember::Method(method) = member else {
+                panic!("expected a method, got {member:#?}");
+            };
+
+            method.modifiers.iter().map(ToString::to_string).collect()
+        })
+        .collect();
+    assert_eq!(modifiers, [vec!["Public", "Required"], vec!["Required"]]);
+    let Some(ClassLikeMember::Method(constructor)) = class_members(program).first() else {
+        panic!("expected a method, got {:#?}", class_members(program));
+    };
+    assert_eq!(constructor.return_type_hint, None);
+    assert_eq!(source(CODE, &constructor.modifiers.as_slice()[1]), "required");
+}
+
+#[test]
+fn required_on_a_method_with_a_return_type_is_not_supported_yet() {
+    for member in ["public required int run() { return 1; }", "public required static int make() { return 1; }"] {
+        let arena = LocalArena::new();
+        let code: &'static str = Box::leak(
+            format!("class Report\n{{\n    {member}\n\n    public int other() {{ return 1; }}\n}}\n").into_boxed_str(),
+        );
+        let program = parse(&arena, "src/Report.sharp", code);
+
+        let [error] = program.errors else {
+            panic!("expected one error for `{member}`, got {:#?}", program.errors);
+        };
+        assert_eq!(error.to_string(), "`required` is not supported yet in PHP#.", "{member}");
+        assert_eq!(source(code, error), "required", "{member}");
+    }
+}
+
+/// The lexer reads `Self` and `self` as one keyword. The checker tells them apart by how the keyword is written.
+#[test]
+fn self_is_a_return_type_an_instantiated_class_and_the_class_of_a_static_call() {
+    const CODE: &str =
+        "class Entity\n{\n    public static Self make()\n    {\n        return new Self(Self.count());\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Entity.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(ClassLikeMember::Method(make)) = class_members(program).first() else {
+        panic!("expected a method, got {:#?}", class_members(program));
+    };
+    let Some(FunctionLikeReturnTypeHint { hint: Hint::Self_(keyword), .. }) = &make.return_type_hint else {
+        panic!("expected a `Self` return type, got {:#?}", make.return_type_hint);
+    };
+    assert_eq!(keyword.value, b"Self");
+    let [statement] = method_body(program) else {
+        panic!("expected one statement, got {:#?}", method_body(program));
+    };
+    let Expression::Instantiation(Instantiation {
+        class: Expression::Self_(class),
+        argument_list: Some(arguments),
+        ..
+    }) = expression(statement)
+    else {
+        panic!("expected `new Self(…)`, got {statement:#?}");
+    };
+    assert_eq!(class.value, b"Self");
+    let [Argument::Positional(argument)] = arguments.arguments.as_slice() else {
+        panic!("expected one argument, got {arguments:#?}");
+    };
+    let Expression::Call(Call::Method(count)) = argument.value else {
+        panic!("expected a method call, got {:#?}", argument.value);
+    };
+    assert!(matches!(count.object, Expression::Self_(keyword) if keyword.value == b"Self"), "{:#?}", count.object);
+    assert_eq!(source(CODE, count), "Self.count()");
+}
+
 #[test]
 fn typeof_in_php_is_a_function_call() {
     let arena = LocalArena::new();

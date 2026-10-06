@@ -139,6 +139,12 @@ pub fn merge_metadata_from_parent_class_like(
     if parent_metadata.flags.has_consistent_templates() {
         metadata.flags |= MetadataFlags::CONSISTENT_TEMPLATES;
     }
+
+    // `new Self(…)` can create any descendant of a PHP# class whose constructor is `required`, spec section 25, so
+    // each descendant's constructor is compared with its parent's. PHP's `@consistent-constructor` stays on its class.
+    if parent_metadata.flags.has_consistent_constructor() && parent_metadata.flags.is_sharp() {
+        metadata.flags |= MetadataFlags::CONSISTENT_CONSTRUCTOR;
+    }
 }
 
 /// Merges class-like data inherited from a required class.

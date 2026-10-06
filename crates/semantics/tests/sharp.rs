@@ -77,15 +77,18 @@ fn every_construct_outside_the_slice_is_not_supported_yet() {
     );
 }
 
-/// The bridge writes every class type by its full name, so the engine never sees a `self` or `parent` type in a class
-/// whose parent its header names.
+/// The bridge writes every class type by its full name, so the engine never sees a `parent` type in a class whose
+/// parent its header names. PHP's `self` is not part of PHP#, spec section 25.
 #[test]
-fn self_and_parent_types_are_not_supported_yet() {
+fn a_parent_type_is_not_supported_yet_and_a_self_type_is_an_error() {
     let code = "namespace App.Tenant;\n\nimport Lib.Entity;\n\nclass Report : Entity\n{\n    public parent copy(self other)\n    {\n        return other;\n    }\n}\n";
 
     assert_eq!(
         issues(code),
-        ["7:12 This type is not supported yet in PHP#.", "7:24 This type is not supported yet in PHP#."]
+        [
+            "7:12 This type is not supported yet in PHP#.",
+            "7:24 PHP# has no `self`: write the class's own name, `Report`, for the declaring class.",
+        ]
     );
 }
 
@@ -545,6 +548,114 @@ fn super_calls_the_parent_method() {
     let code = "namespace App.Tenant;\n\npublic class Thumbnail : Image\n{\n    public override int size()\n    {\n        let base = super.count;\n        return super.size() + base;\n    }\n}\n";
 
     assert_eq!(issues(code), ["7:20 This expression is not supported yet in PHP#."]);
+}
+
+/// Spec section 25's example: `Self` is the class a static method is called on, and `new Self(…)` needs a `required`
+/// constructor. A subclass calls its parent's constructor with `super.__construct(…)`, because `: super(…)` does not
+/// parse yet.
+#[test]
+fn self_is_a_return_type_creates_with_a_required_constructor_and_calls_static_methods() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Row;\nimport Lib.Clock;\n\npublic abstract class DatabaseEntity\n{\n    public required DatabaseEntity(Row row)\n    {\n    }\n\n    public static Self fromSchema(Row row)\n    {\n        return new Self(row);\n    }\n\n    public static Self? find(Row row) => Self.fromSchema(row);\n\n    public static Self|int counted(Row row) => Self.fromSchema(row);\n\n    public static (Self|int)? either(Row row) => null;\n}\n\npublic class Order : DatabaseEntity\n{\n    public Order(Row row, Clock? clock = null)\n    {\n        super.__construct(row);\n    }\n}\n\npublic interface Copyable\n{\n    Self copy();\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn self_is_only_a_return_type() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private Self owner;\n    public Self? next { get; set; }\n    public const Self SAME = 1;\n\n    public required Report(Self other, int|Self either)\n    {\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:13 `Self` is only a return type in PHP#.",
+            "6:12 `Self` is only a return type in PHP#.",
+            "7:18 `Self` is only a return type in PHP#.",
+            "9:28 `Self` is only a return type in PHP#.",
+            "9:44 `Self` is only a return type in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn new_self_needs_a_required_constructor() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public Report(int count)\n    {\n    }\n\n    public static Self make() => new Self(1);\n}\n\nclass Total\n{\n    public static Self make() => new Self();\n}\n\nclass Entity\n{\n    public required Entity(int count)\n    {\n    }\n\n    public static Self make() => new Self;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "9:34 `new Self(…)` needs a `required` constructor: `Self` can be any subclass, so every subclass must keep a constructor that `new Self(…)` can call.",
+            "14:34 `new Self(…)` needs a `required` constructor: `Self` can be any subclass, so every subclass must keep a constructor that `new Self(…)` can call.",
+            "23:34 This `new` without arguments is not supported yet in PHP#.",
+        ]
+    );
+    let help: Vec<_> = check("src/Report.sharp", code).into_iter().filter_map(|issue| issue.help).collect();
+    assert_eq!(
+        help,
+        [
+            "Declare the constructor of `Report` `required`, as in `public required Report(…)`.",
+            "Declare the constructor of `Total` `required`, as in `public required Total(…)`.",
+        ]
+    );
+}
+
+/// `Self.y` is not ruled yet, as `super.y` is not.
+#[test]
+fn a_member_of_self_read_or_written_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private static int count = 0;\n\n    public static int run()\n    {\n        Self.count = 1;\n        return Self.count + Self;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "9:9 This expression is not supported yet in PHP#.",
+            "10:16 This expression is not supported yet in PHP#.",
+            "10:29 This expression is not supported yet in PHP#.",
+        ]
+    );
+}
+
+/// PHP's `self` is removed, spec section 25: a class writes its own name, or `Self` where `Self` goes.
+#[test]
+fn self_names_the_class_and_self_where_it_goes() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private static int count = 0;\n    private self other;\n\n    public required Report(self copy)\n    {\n    }\n\n    public static self make()\n    {\n        self.count = 1;\n        let made = self.make();\n        return new self(self.count);\n    }\n}\n\ninterface Copyable\n{\n    self copy();\n}\n";
+    let without_self = "PHP# has no `self`: write the class's own name, `Report`, for the declaring class.";
+    let with_self = "PHP# has no `self`: write the class's own name, `Report`, for the declaring class, or `Self` for the class a static method is called on.";
+
+    assert_eq!(
+        issues(code),
+        [
+            format!("6:13 {without_self}"),
+            format!("8:28 {without_self}"),
+            format!("12:19 {with_self}"),
+            format!("14:9 {without_self}"),
+            format!("15:20 {with_self}"),
+            format!("16:20 {with_self}"),
+            "22:5 PHP# has no `self`: write the class's own name, `Copyable`, for the declaring class, or `Self` for the class a static method is called on.".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn static_is_written_self() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private static int count = 0;\n\n    public required Report(int|static copy)\n    {\n    }\n\n    public static int|static make()\n    {\n        let count = static.count;\n        let made = static.make();\n        return new static(static.count);\n    }\n}\n";
+    let message = "PHP# writes `Self` for PHP's `static`.";
+
+    assert_eq!(
+        issues(code),
+        [
+            format!("7:32 {message}"),
+            format!("11:23 {message}"),
+            format!("13:21 {message}"),
+            format!("14:20 {message}"),
+            format!("15:20 {message}"),
+        ]
+    );
+}
+
+#[test]
+fn required_is_a_modifier_of_the_constructor_only() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public required const int MAX = 1;\n\n    public required Report(int count)\n    {\n    }\n}\n";
+
+    assert_eq!(issues(code), ["5:12 This modifier is not supported yet in PHP#."]);
 }
 
 #[test]
@@ -1150,13 +1261,25 @@ fn a_constant_or_static_member_named_without_its_class_is_an_error_that_names_th
     );
 }
 
+/// Spec section 24 writes a union anywhere a type goes, and PHP 8.3 types a class constant with one.
 #[test]
-fn a_union_typed_class_constant_is_not_supported_yet() {
+fn a_class_constant_may_have_a_union_type_or_a_nullable_union_type() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    public const int|string KEY = 1;\n    public const (int|string)? CODE = null;\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_union_typed_class_constant_follows_the_union_rules() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public const int|null NONE = null;\n    public const int|iterable ITEMS = 1;\n    public const int|string|int TWICE = 1;\n}\n";
 
     assert_eq!(
         issues(code),
-        ["5:18 This type is not supported yet in PHP#.", "6:18 This type is not supported yet in PHP#."]
+        [
+            "5:22 This union that holds null is not supported yet in PHP#.",
+            "6:22 This type is not supported yet in PHP#.",
+            "7:29 Duplicate type `int` is redundant.",
+        ]
     );
 }
 
@@ -1441,7 +1564,7 @@ fn types_outside_the_slice_are_not_supported_yet() {
             "3:63 This type is not supported yet in PHP#.",
             "3:75 This type is not supported yet in PHP#.",
             "3:87 This union that holds null is not supported yet in PHP#.",
-            "8:12 This type is not supported yet in PHP#.",
+            "8:12 PHP# has no `self`: write the class's own name, `Report`, for the declaring class, or `Self` for the class a static method is called on.",
         ]
     );
 }

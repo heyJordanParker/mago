@@ -1690,6 +1690,123 @@ fn super_calls_are_static_calls_on_parent() {
 }
 
 /// ```php
+/// public function __construct(\Lib\Row $row) {}
+/// public static function fromSchema(\Lib\Row $row): static { return new static($row); }
+/// public static function find(\Lib\Row $row): ?static { return static::fromSchema($row); }
+/// public static function counted(\Lib\Row $row): static|int { return static::fromSchema($row); }
+/// ```
+///
+/// `Self` is `static`. As a return type it is a `TYPE` node with `IS_STATIC`, which is 15, and `Self?` adds
+/// `ZEND_TYPE_NULLABLE`, which is 256. As a class it is the name `static` with `ZEND_NAME_NOT_FQ`, which is 1, as
+/// php-src's grammar builds `new static` and `static::`. `required` adds no flag, as PHP has no `required`.
+#[test]
+fn self_is_static_and_required_adds_no_flag() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Row;\n\npublic abstract class DatabaseEntity\n{\n    public required DatabaseEntity(Row row)\n    {\n    }\n\n    public static Self fromSchema(Row row)\n    {\n        return new Self(row);\n    }\n\n    public static Self? find(Row row) => Self.fromSchema(row);\n\n    public static Self|int counted(Row row) => Self.fromSchema(row);\n}\n",
+    );
+
+    assert_eq!(
+        lowered.render(lowered.child(lowered.child(lowered.unit().root, 2), 2)),
+        indoc! {r#"
+            STMT_LIST
+              METHOD [1] "__construct" @7-9
+                PARAM_LIST
+                  PARAM
+                    ZVAL "Lib\\Row"
+                    ZVAL "row"
+                    null
+                    null
+                    null
+                    null
+                null
+                STMT_LIST
+                null
+                null
+              METHOD [17] "fromSchema" @11-14
+                PARAM_LIST
+                  PARAM
+                    ZVAL "Lib\\Row"
+                    ZVAL "row"
+                    null
+                    null
+                    null
+                    null
+                null
+                STMT_LIST
+                  RETURN
+                    NEW
+                      ZVAL [1] "static"
+                      ARG_LIST
+                        VAR
+                          ZVAL "row"
+                TYPE [15]
+                null
+              METHOD [17] "find" @16-16
+                PARAM_LIST
+                  PARAM
+                    ZVAL "Lib\\Row"
+                    ZVAL "row"
+                    null
+                    null
+                    null
+                    null
+                null
+                STMT_LIST
+                  RETURN
+                    STATIC_CALL
+                      ZVAL [1] "static"
+                      ZVAL "fromSchema"
+                      ARG_LIST
+                        VAR
+                          ZVAL "row"
+                TYPE [271]
+                null
+              METHOD [17] "counted" @18-18
+                PARAM_LIST
+                  PARAM
+                    ZVAL "Lib\\Row"
+                    ZVAL "row"
+                    null
+                    null
+                    null
+                    null
+                null
+                STMT_LIST
+                  RETURN
+                    STATIC_CALL
+                      ZVAL [1] "static"
+                      ZVAL "fromSchema"
+                      ARG_LIST
+                        VAR
+                          ZVAL "row"
+                TYPE_UNION
+                  TYPE [15]
+                  ZVAL [1] "int"
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// return static::make(2);
+/// ```
+#[test]
+fn self_calls_are_static_calls_on_static() {
+    assert_eq!(
+        body("        return Self.make(2);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                STATIC_CALL
+                  ZVAL [1] "static"
+                  ZVAL "make"
+                  ARG_LIST
+                    ZVAL 2
+        "#}
+    );
+}
+
+/// ```php
 /// return \Lib\Calc::class;
 /// ```
 ///
@@ -1774,6 +1891,48 @@ fn a_class_constant_is_a_class_constant_group_of_one_constant() {
                     null
                 null
                 null
+        "#}
+    );
+}
+
+/// ```php
+/// public const int|string KEY = 1;
+/// public const int|string|null CODE = null;
+/// ```
+///
+/// A constant's union type is the type union a parameter's is.
+#[test]
+fn a_union_typed_class_constant_has_its_type_union() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public const int|string KEY = 1;\n    public const (int|string)? CODE = null;\n}\n",
+    );
+    let class = lowered.child(lowered.unit().root, 2);
+
+    assert_eq!(
+        lowered.render(lowered.child(class, 2)),
+        indoc! {r#"
+            STMT_LIST
+              CLASS_CONST_GROUP [1]
+                CLASS_CONST_DECL
+                  CONST_ELEM
+                    ZVAL "KEY"
+                    ZVAL 1
+                    null
+                null
+                TYPE_UNION
+                  ZVAL [1] "int"
+                  ZVAL [1] "string"
+              CLASS_CONST_GROUP [1]
+                CLASS_CONST_DECL
+                  CONST_ELEM
+                    ZVAL "CODE"
+                    ZVAL null
+                    null
+                null
+                TYPE_UNION
+                  ZVAL [1] "int"
+                  ZVAL [1] "string"
+                  ZVAL [1] "null"
         "#}
     );
 }

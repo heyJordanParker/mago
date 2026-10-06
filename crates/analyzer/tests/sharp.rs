@@ -1389,3 +1389,85 @@ fn a_nullable_field_returned_as_a_value_is_reported_as_its_php_twin_is() {
     assert_eq!(sharp_issues, ["9:16 nullable-return-statement", "9:16 invalid-return-statement"]);
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
 }
+
+const ROW: &str = "<?php\n\nnamespace Lib;\n\nfinal class Row\n{\n}\n";
+const CLOCK: &str = "<?php\n\nnamespace Lib;\n\nfinal class Clock\n{\n}\n";
+
+/// Spec section 25's example: `Self` is PHP's `static`, and a `required` constructor is the one every subclass keeps,
+/// as PHP's `@consistent-constructor`. So `Order.fromSchema(row)` returns an `Order`, and a subclass constructor that
+/// adds a parameter without a default is an error, as in PHP.
+#[test]
+fn self_and_a_required_constructor_are_checked_as_static_and_a_consistent_constructor_in_php() {
+    let sharp = "namespace Demo;\n\nimport Lib.Clock;\nimport Lib.Row;\n\npublic abstract class DatabaseEntity\n{\n    public required DatabaseEntity(Row row)\n    {\n    }\n\n    public static Self fromSchema(Row row)\n    {\n        return new Self(row);\n    }\n}\n\npublic class Order : DatabaseEntity\n{\n    public Order(Row row, Clock? clock = null)\n    {\n        super.__construct(row);\n    }\n\n    public static Order make(Row row) => Order.fromSchema(row);\n\n    public static Invoice wrong(Row row) => Order.fromSchema(row);\n}\n\npublic class Invoice : DatabaseEntity\n{\n    public Invoice(Row row, Clock clock)\n    {\n        super.__construct(row);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Clock;\nuse Lib\\Row;\n\n/** @consistent-constructor */\nabstract class DatabaseEntity\n{\n    public function __construct(Row $row)\n    {\n    }\n\n    public static function fromSchema(Row $row): static\n    {\n        return new static($row);\n    }\n}\n\nclass Order extends DatabaseEntity\n{\n    public function __construct(Row $row, ?Clock $clock = null)\n    {\n        parent::__construct($row);\n    }\n\n    public static function make(Row $row): Order\n    {\n        return Order::fromSchema($row);\n    }\n\n    public static function wrong(Row $row): Invoice\n    {\n        return Order::fromSchema($row);\n    }\n}\n\nclass Invoice extends DatabaseEntity\n{\n    public function __construct(Row $row, Clock $clock)\n    {\n        parent::__construct($row);\n    }\n}\n";
+    let others = [("src/Lib/Row.php", ROW), ("src/Lib/Clock.php", CLOCK)];
+
+    let sharp_issues = issues(("src/Demo/DatabaseEntity.sharp", sharp), &others);
+    let php_issues = issues(("src/Demo/DatabaseEntity.php", php), &others);
+
+    assert_eq!(sharp_issues, ["27:45 invalid-return-statement", "32:12 incompatible-parameter-count"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{php_issues:?}");
+}
+
+/// `Self` can be any descendant, so a grandchild's constructor is compared with its parent's as a child's is, spec
+/// section 25.
+#[test]
+fn every_descendant_of_a_required_constructor_keeps_a_matching_constructor() {
+    let sharp = "namespace Demo;\n\nimport Lib.Clock;\nimport Lib.Row;\n\npublic abstract class DatabaseEntity\n{\n    public required DatabaseEntity(Row row)\n    {\n    }\n\n    public static Self fromSchema(Row row) => new Self(row);\n}\n\npublic class Order : DatabaseEntity\n{\n    public Order(Row row, Clock? clock = null)\n    {\n        super.__construct(row);\n    }\n}\n\npublic class Shipment : Order\n{\n    public Shipment()\n    {\n        super.__construct(new Row());\n    }\n}\n\npublic class LineItem : Order\n{\n    public LineItem(Row row, Clock clock)\n    {\n        super.__construct(row, clock);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/DatabaseEntity.sharp", sharp), &[("src/Lib/Row.php", ROW), ("src/Lib/Clock.php", CLOCK)]),
+        ["25:12 incompatible-parameter-count", "33:12 incompatible-parameter-count"]
+    );
+}
+
+/// Only a `required` constructor binds the subclasses' constructors, so without one a subclass constructor may add a
+/// parameter without a default, as in PHP.
+#[test]
+fn a_subclass_constructor_of_a_class_without_a_required_constructor_may_add_parameters() {
+    let sharp = "namespace Demo;\n\nimport Lib.Clock;\nimport Lib.Row;\n\npublic abstract class DatabaseEntity\n{\n    public DatabaseEntity(Row row)\n    {\n        row;\n    }\n}\n\npublic class Invoice : DatabaseEntity\n{\n    public Invoice(Row row, Clock clock)\n    {\n        super.__construct(row);\n        clock;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/DatabaseEntity.sharp", sharp), &[("src/Lib/Row.php", ROW), ("src/Lib/Clock.php", CLOCK)]),
+        ["10:9 unused-statement", "19:9 unused-statement"]
+    );
+}
+
+/// `Self.count()` is PHP's `static::count()`.
+#[test]
+fn self_calls_a_static_method_as_static_does_in_php() {
+    let sharp = "namespace Demo;\n\npublic class Counter\n{\n    public static int count() => 1;\n\n    public static int twice() => Self.count() + Self.count();\n\n    public static int missing() => Self.absent();\n\n    public static Self make() => new Self(Self.count());\n\n    public required Counter(int start)\n    {\n        start;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\n/** @consistent-constructor */\nclass Counter\n{\n    public static function count(): int\n    {\n        return 1;\n    }\n\n    public static function twice(): int\n    {\n        return static::count() + static::count();\n    }\n\n    public static function missing(): int\n    {\n        return static::absent();\n    }\n\n    public static function make(): static\n    {\n        return new static(static::count());\n    }\n\n    public function __construct(int $start)\n    {\n        $start;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Counter.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Counter.php", php), &[]);
+
+    assert_eq!(sharp_issues, ["9:41 non-existent-method", "9:36 mixed-return-statement", "15:9 unused-statement"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{php_issues:?}");
+}
+
+/// PHP reads `Self->count()` as an instance call on `self`, and only a `.sharp` file reads `Self.count()` as a
+/// static call.
+#[test]
+fn a_php_self_arrow_call_keeps_its_upstream_issue() {
+    let php = "<?php\n\nnamespace Demo;\n\nclass Counter\n{\n    public static function count(): int\n    {\n        return Self->count();\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Counter.php", php), &[]),
+        ["9:16 invalid-scope-keyword-context", "9:16 mixed-return-statement"]
+    );
+}
+
+/// An override of a method whose parameter is variadic declares it variadic too, spec section 7, as PHP refuses
+/// otherwise when it links the class. Upstream Mago misses it, so a `.php` file keeps reporting nothing.
+#[test]
+fn an_override_of_a_variadic_parameter_is_variadic() {
+    let sharp = "namespace Demo;\n\npublic class Base\n{\n    public virtual int sum(int ...values) => count(values);\n}\n\npublic class Child : Base\n{\n    public override int sum(int values) => values;\n}\n\npublic class Fine : Base\n{\n    public override int sum(int ...values) => count(values) + 1;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Base\n{\n    public function sum(int ...$values): int\n    {\n        return count($values);\n    }\n}\n\nclass Child extends Base\n{\n    #[\\Override]\n    public function sum(int $values): int\n    {\n        return $values;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Base.sharp", sharp), &[]), ["10:25 incompatible-parameter-count"]);
+    assert_eq!(issues(("src/Demo/Base.php", php), &[]), Vec::<String>::new());
+
+    let issue = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Base.sharp", sharp), &[]).remove(0);
+    assert_eq!(issue.message, "`Demo\\Child::sum()` must declare parameter `values` variadic like `Demo\\Base::sum()`");
+}
