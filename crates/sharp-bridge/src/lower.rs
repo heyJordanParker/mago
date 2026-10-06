@@ -99,6 +99,7 @@ use crate::sharp_kind::SHARP_AST_ATTRIBUTE_LIST;
 use crate::sharp_kind::SHARP_AST_BINARY_OP;
 use crate::sharp_kind::SHARP_AST_BREAK;
 use crate::sharp_kind::SHARP_AST_CALL;
+use crate::sharp_kind::SHARP_AST_CALLABLE_CONVERT;
 use crate::sharp_kind::SHARP_AST_CAST;
 use crate::sharp_kind::SHARP_AST_CATCH;
 use crate::sharp_kind::SHARP_AST_CATCH_LIST;
@@ -217,9 +218,6 @@ const ZEND_IS_EQUAL: u32 = 18;
 const ZEND_IS_NOT_EQUAL: u32 = 19;
 const ZEND_IS_SMALLER: u32 = 20;
 const ZEND_IS_SMALLER_OR_EQUAL: u32 = 21;
-/// php-sharp's own attr from `zend_compile.h`: a class constant fetch that falls back to the static property. It sits
-/// above the fetch flags a constant expression passes in the same attr.
-const ZEND_FETCH_CLASS_MEMBER_SYNTAX: u32 = 1 << 15;
 /// php-sharp's own property flag from `zend_compile.h`: the property loses its type when the class links if the
 /// property it overrides has none.
 const ZEND_ACC_TYPE_FOLLOWS_PARENT: u32 = 1 << 13;
@@ -275,8 +273,6 @@ struct Lowering<'lowering, 'arena> {
     by_reference: HashSet<u32>,
     /// How many loop bodies hold the statement being lowered, inside the innermost method or lambda.
     loop_depth: u32,
-    /// Whether the lowering is inside a constant expression, which PHP evaluates without opcodes.
-    in_constant_expression: bool,
     /// The name of the property whose accessor body is being lowered, which `field` reads and writes.
     property: Vec<u8>,
 }
@@ -297,18 +293,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             temporaries: 0,
             by_reference: HashSet::default(),
             loop_depth: 0,
-            in_constant_expression: false,
             property: Vec::new(),
         }
-    }
-
-    /// Lowers a constant expression: a constant's value, a default or an attribute's arguments.
-    fn constant_expression(&mut self, lower: impl FnOnce(&mut Self) -> u32) -> u32 {
-        self.in_constant_expression = true;
-        let index = lower(self);
-        self.in_constant_expression = false;
-
-        index
     }
 
     /// `declare(strict_types=1);` first, then the namespaces and classes. Imports are not lowered: every class name
@@ -437,10 +423,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         for name in &inheritance.types {
             let full_name = self.names.get(name);
             let index = self.string(ZEND_NAME_FQ, self.line(name), full_name);
-            match self.types.declaration_kind(full_name) {
+            match self.types.declaration_kind(full_name, None) {
                 DeclarationKind::Class => parent = index,
                 DeclarationKind::Interface => interfaces.push(index),
-                DeclarationKind::Enum => unreachable!("the checker refuses an enum in a class header"),
+                kind => unreachable!("the checker refuses a {kind:?} in a class header"),
             }
         }
 
@@ -526,7 +512,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let name = self.string(0, line, name.value);
         let value = match &case.item {
             EnumCaseItem::Unit(_) => NULL,
-            EnumCaseItem::Backed(item) => self.constant_expression(|lowering| lowering.expression(item.value)),
+            EnumCaseItem::Backed(item) => self.expression(item.value),
         };
         let attributes = self.attributes(&case.attribute_lists, None);
 
@@ -600,10 +586,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// A parameter with its lowered type, or with a null type, as a lambda's parameter can be.
     fn parameter_of_type(&mut self, parameter: &FunctionLikeParameter, hint: u32) -> u32 {
         let name = self.string(0, self.line(parameter.variable.span), parameter.variable.name);
-        let default = parameter
-            .default_value
-            .as_ref()
-            .map_or(NULL, |default| self.constant_expression(|lowering| lowering.expression(default.value)));
+        let default = parameter.default_value.as_ref().map_or(NULL, |default| self.expression(default.value));
         let (accessor_flags, hooks) = match &parameter.hooks {
             Some(accessors) => (
                 accessor_flags(&parameter.modifiers, accessors, self.names),
@@ -652,9 +635,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let line = self.line(variable);
         let name = self.string(0, line, variable.name);
         let default = match property.initial_value() {
-            Some(value) if is_default(property, value) => {
-                self.constant_expression(|lowering| lowering.expression(value))
-            }
+            Some(value) if is_default(property, value) => self.expression(value),
             None if is_null_by_default(property, self.names) => self.zval(line, sharp_value::SHARP_NULL, |_| {}),
             _ => NULL,
         };
@@ -751,10 +732,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             for attribute in &list.attributes {
                 let line = self.line(attribute.name);
                 let name = self.string(ZEND_NAME_FQ, line, self.names.get(&attribute.name));
-                let arguments = attribute
-                    .argument_list
-                    .as_ref()
-                    .map_or(NULL, |list| self.constant_expression(|lowering| lowering.attribute_arguments(list)));
+                let arguments = attribute.argument_list.as_ref().map_or(NULL, |list| self.attribute_arguments(list));
 
                 attributes.push(self.node(SHARP_AST_ATTRIBUTE, 0, line, &[name, arguments]));
             }
@@ -778,7 +756,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let item = constant.first_item();
         let line = self.line(item.name);
         let name = self.string(0, line, item.name.value);
-        let value = self.constant_expression(|lowering| lowering.expression(item.value));
+        let value = self.expression(item.value);
         let element = self.node(SHARP_AST_CONST_ELEM, 0, line, &[name, value, NULL]);
         let declaration = self.node(SHARP_AST_CLASS_CONST_DECL, 0, line, &[element]);
         let hint = constant.hint.as_ref().map_or(NULL, |hint| self.hint(hint));
@@ -1171,16 +1149,29 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 self.node(SHARP_AST_NEW, 0, line, &[class, arguments])
             }
-            // Spec section 4 looks up the kind of `Class.y` when it runs, so the read is a class constant fetch
-            // marked to fall back to the static property of the same name. A constant expression reads only
-            // constants and enum cases, as PHP's does, so its fetch is unmarked.
+            // `Class.y` is the fetch of the member the checker found: a constant or enum case, a static property, or
+            // a static method as a first-class callable.
             Expression::Access(Access::Property(access)) => match self.names.static_property_class(access) {
                 Some(class) => {
-                    let class = self.string(ZEND_NAME_FQ, self.line(class), self.names.get(&class.name));
+                    let full_name = self.names.get(&class.name);
+                    let class = self.string(ZEND_NAME_FQ, self.line(class), full_name);
+                    let ClassLikeMemberSelector::Identifier(name) = &access.property else {
+                        unreachable!("check_slice refuses the member name `{}`", access.property);
+                    };
                     let member = self.member(&access.property);
-                    let attr = if self.in_constant_expression { 0 } else { ZEND_FETCH_CLASS_MEMBER_SYNTAX };
 
-                    self.node(SHARP_AST_CLASS_CONST, attr, line, &[class, member])
+                    match self.types.declaration_kind(full_name, Some(name.value)) {
+                        DeclarationKind::Constant | DeclarationKind::EnumCase => {
+                            self.node(SHARP_AST_CLASS_CONST, 0, line, &[class, member])
+                        }
+                        DeclarationKind::StaticProperty => self.node(SHARP_AST_STATIC_PROP, 0, line, &[class, member]),
+                        DeclarationKind::StaticMethod => {
+                            let callable = self.node(SHARP_AST_CALLABLE_CONVERT, 0, line, &[]);
+
+                            self.node(SHARP_AST_STATIC_CALL, 0, line, &[class, member, callable])
+                        }
+                        kind => unreachable!("`Class.y` names a member, not a {kind:?}"),
+                    }
                 }
                 None => {
                     let object = self.expression(access.object);

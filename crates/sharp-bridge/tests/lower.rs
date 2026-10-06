@@ -1757,14 +1757,14 @@ fn a_map_keyed_by_a_backed_enum_lowers_as_any_map() {
                 ARRAY [3]
                   ARRAY_ELEM
                     ZVAL 1
-                    CLASS_CONST [32768]
+                    CLASS_CONST
                       ZVAL "Lib\\Calc"
                       ZVAL "Active"
               ASSIGN
                 DIM
                   VAR
                     ZVAL "counts"
-                  CLASS_CONST [32768]
+                  CLASS_CONST
                     ZVAL "Lib\\Calc"
                     ZVAL "Closed"
                 ZVAL 2
@@ -1773,7 +1773,7 @@ fn a_map_keyed_by_a_backed_enum_lowers_as_any_map() {
                   DIM
                     VAR
                       ZVAL "counts"
-                    CLASS_CONST [32768]
+                    CLASS_CONST
                       ZVAL "Lib\\Calc"
                       ZVAL "Active"
                   ZVAL 0
@@ -3060,10 +3060,10 @@ fn a_static_member_written_through_its_class_is_a_static_property() {
 /// public function run(\Lib\Mode $extra = \Lib\Mode::Read)
 /// ```
 ///
-/// PHP evaluates a constant expression without the static property fallback, so a class member read in a constant's
-/// value, a constant initial value, a parameter default and an attribute argument is an unmarked class constant.
+/// A constant expression reads only constants and enum cases, as PHP's does, so a class member read in a constant's
+/// value, a constant initial value, a parameter default and an attribute argument is a class constant fetch.
 #[test]
-fn a_class_member_read_in_a_constant_expression_is_an_unmarked_class_constant() {
+fn a_class_member_read_in_a_constant_expression_is_a_class_constant() {
     let lowered = Lowered::with(
         "namespace App.Tenant;\n\nimport Lib.Calc;\nimport Lib.Field;\nimport Lib.Mode;\n\nclass Report\n{\n    public const int MAX = Calc.MAX;\n    private Mode mode = Mode.Read;\n\n    [Field(Mode.Write)]\n    public int run(Mode extra = Mode.Read)\n    {\n        return 1;\n    }\n}\n",
         &[
@@ -3073,43 +3073,75 @@ fn a_class_member_read_in_a_constant_expression_is_an_unmarked_class_constant() 
         ],
     );
 
-    let class_constants = lowered
-        .nodes()
-        .iter()
-        .filter(|node| node.kind == sharp_kind::SHARP_AST_CLASS_CONST)
-        .map(|node| node.attr)
-        .collect::<Vec<_>>();
+    let class_constants = lowered.nodes().iter().filter(|node| node.kind == sharp_kind::SHARP_AST_CLASS_CONST).count();
 
     assert_eq!(lowered.diagnostics(), Vec::<String>::new());
-    assert_eq!(class_constants, [0, 0, 0, 0]);
+    assert_eq!(class_constants, 4);
 }
 
 /// ```php
-/// return \Lib\Calc::rate->cents;
+/// $limit = \Lib\Calc::MAX;
+/// $status = \App\Tenant\Status::Active;
+/// $cents = \Lib\Calc::$rate->cents;
+/// $twice = \Lib\Calc::twice(...);
+/// return $limit + $cents;
 /// ```
 ///
-/// A class member read is a class constant fetch that the engine falls back from to the static property of the same
-/// name, as spec section 4 decides. `[32768]` is php-sharp's `ZEND_FETCH_CLASS_MEMBER_SYNTAX`, `1 << 15`, which marks
-/// the fallback above the fetch flags a constant expression passes in the same attr.
+/// A class member read is the fetch of the member the checker found: a class constant fetch for a constant or an enum
+/// case, a static property fetch for a static property, and a first-class callable of the static method for a method.
 #[test]
-fn a_class_member_read_is_a_class_constant_marked_to_fall_back_to_the_static_property() {
+fn a_class_member_read_is_the_fetch_of_the_member_kind_the_checker_found() {
     assert_eq!(
         body_in(
             RUN,
-            "        return Calc.rate.cents;\n",
+            "        const limit = Calc.MAX;\n        const status = Status.Active;\n        const cents = Calc.rate.cents;\n        const twice = Calc.twice;\n        return limit + cents;\n",
             &[
                 ("src/Lib/Money.php", "<?php namespace Lib; final class Money { public int $cents = 0; }"),
-                ("src/Lib/Calc.php", "<?php namespace Lib; final class Calc { public static Money $rate; }"),
+                (
+                    "src/Lib/Calc.php",
+                    "<?php namespace Lib; final class Calc { public const int MAX = 3; public static Money $rate; public static function twice(int $value): int { return $value * 2; } }",
+                ),
+                (
+                    "src/App/Tenant/Status.php",
+                    "<?php namespace App\\Tenant; enum Status: string { case Active = 'a'; }"
+                ),
             ]
         ),
         indoc! {r#"
             STMT_LIST
-              RETURN
+              ASSIGN
+                VAR
+                  ZVAL "limit"
+                CLASS_CONST
+                  ZVAL "Lib\\Calc"
+                  ZVAL "MAX"
+              ASSIGN
+                VAR
+                  ZVAL "status"
+                CLASS_CONST
+                  ZVAL "App\\Tenant\\Status"
+                  ZVAL "Active"
+              ASSIGN
+                VAR
+                  ZVAL "cents"
                 PROP
-                  CLASS_CONST [32768]
+                  STATIC_PROP
                     ZVAL "Lib\\Calc"
                     ZVAL "rate"
                   ZVAL "cents"
+              ASSIGN
+                VAR
+                  ZVAL "twice"
+                STATIC_CALL
+                  ZVAL "Lib\\Calc"
+                  ZVAL "twice"
+                  CALLABLE_CONVERT
+              RETURN
+                BINARY_OP [1]
+                  VAR
+                    ZVAL "limit"
+                  VAR
+                    ZVAL "cents"
         "#}
     );
 }
@@ -5305,10 +5337,10 @@ fn an_enum_header_is_the_interface_name_list() {
 /// }
 /// ```
 ///
-/// An enum's constant is a class constant group of one constant, as a class's is. Its value is a constant expression,
-/// so its read of a case is an unmarked class constant.
+/// An enum's constant is a class constant group of one constant, as a class's is, and its read of a case is a class
+/// constant fetch.
 #[test]
-fn an_enum_constant_is_a_class_constant_group_that_reads_a_case_unmarked() {
+fn an_enum_constant_is_a_class_constant_group_that_reads_a_case() {
     let lowered = Lowered::new(
         "namespace App.Tenant;\n\nenum Status : string\n{\n    case Active = \"a\";\n\n    public const Status Default = Status.Active;\n}\n",
     );
@@ -5346,33 +5378,32 @@ fn an_enum_constant_is_a_class_constant_group_that_reads_a_case_unmarked() {
 /// return \App\Tenant\Status::Default->label();
 /// ```
 ///
-/// A case read is a class constant fetch in every place: unmarked in a case's value, a constant and a parameter
-/// default, which are constant expressions, and marked with `[32768]`, `1 << 15`, to fall back to the static property
-/// in a method body. A method called on a case is an instance call on that fetch.
+/// A case read is a class constant fetch in every place: a case's value, a constant and a parameter default, which are
+/// constant expressions, and a method body. A method called on a case is an instance call on that fetch.
 #[test]
 fn a_case_read_is_a_class_constant_in_every_place() {
     let lowered = Lowered::with(
         "namespace App.Tenant;\n\nimport Lib.Registry;\n\npublic enum Status : string\n{\n    case Active = \"a\";\n    case Paused = Registry.PAUSED;\n\n    public const Status Default = Status.Active;\n\n    public bool active() => this === Status.Active;\n\n    public string label() => this.name;\n}\n\nclass Report\n{\n    public string run(Status status = Status.Active)\n    {\n        if (status === Status.Active) {\n            return Status.Active.label();\n        }\n        return Status.Default.label();\n    }\n}\n",
         &[("src/Lib/Registry.php", "<?php namespace Lib; final class Registry { public const string PAUSED = 'p'; }")],
     );
-    let reads: Vec<(u32, String)> = lowered
+    let reads: Vec<String> = lowered
         .nodes()
         .iter()
         .enumerate()
         .filter(|(_, node)| node.kind == sharp_kind::SHARP_AST_CLASS_CONST)
-        .map(|(index, node)| (node.attr, lowered.render(lowered.child(index as u32, 1)).trim_end().to_owned()))
+        .map(|(index, _)| lowered.render(lowered.child(index as u32, 1)).trim_end().to_owned())
         .collect();
 
     assert_eq!(
         reads,
         [
-            (0, "ZVAL \"PAUSED\"".to_owned()),
-            (0, "ZVAL \"Active\"".to_owned()),
-            (1 << 15, "ZVAL \"Active\"".to_owned()),
-            (0, "ZVAL \"Active\"".to_owned()),
-            (1 << 15, "ZVAL \"Active\"".to_owned()),
-            (1 << 15, "ZVAL \"Active\"".to_owned()),
-            (1 << 15, "ZVAL \"Default\"".to_owned()),
+            "ZVAL \"PAUSED\"",
+            "ZVAL \"Active\"",
+            "ZVAL \"Active\"",
+            "ZVAL \"Active\"",
+            "ZVAL \"Active\"",
+            "ZVAL \"Active\"",
+            "ZVAL \"Default\"",
         ]
     );
     assert_eq!(
@@ -5384,45 +5415,26 @@ fn a_case_read_is_a_class_constant_in_every_place() {
                   BINARY_OP [16]
                     VAR
                       ZVAL "status"
-                    CLASS_CONST [32768]
+                    CLASS_CONST
                       ZVAL "App\\Tenant\\Status"
                       ZVAL "Active"
                   STMT_LIST
                     RETURN
                       METHOD_CALL
-                        CLASS_CONST [32768]
+                        CLASS_CONST
                           ZVAL "App\\Tenant\\Status"
                           ZVAL "Active"
                         ZVAL "label"
                         ARG_LIST
               RETURN
                 METHOD_CALL
-                  CLASS_CONST [32768]
+                  CLASS_CONST
                     ZVAL "App\\Tenant\\Status"
                     ZVAL "Default"
                   ZVAL "label"
                   ARG_LIST
         "#}
     );
-}
-
-/// An enum case's value is a constant expression, so a class member read there is an unmarked class constant, while a
-/// read of the enum's own case in a method is marked to fall back to the static property, as in a class.
-#[test]
-fn a_class_member_read_in_an_enum_case_value_is_an_unmarked_class_constant() {
-    let lowered = Lowered::with(
-        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nenum Rank : int\n{\n    case Top = Calc.MAX;\n\n    public static Rank first() => Rank.Top;\n}\n",
-        &[("src/Lib/Calc.php", "<?php namespace Lib; final class Calc { public const int MAX = 3; }")],
-    );
-    let class_constants = lowered
-        .nodes()
-        .iter()
-        .filter(|node| node.kind == sharp_kind::SHARP_AST_CLASS_CONST)
-        .map(|node| node.attr)
-        .collect::<Vec<_>>();
-
-    assert_eq!(lowered.diagnostics(), Vec::<String>::new());
-    assert_eq!(class_constants, [0, 1 << 15]);
 }
 
 /// ```php
@@ -5442,7 +5454,7 @@ fn a_class_member_read_in_an_enum_case_value_is_an_unmarked_class_constant() {
 /// ```
 ///
 /// An enum's method lowers a list literal, a function type and a lambda as a class's method does, so a case read in
-/// either is the marked class constant of any method body.
+/// either is the class constant fetch of any method body.
 #[test]
 fn an_enum_method_lowers_a_list_literal_a_function_type_and_a_lambda_as_a_class_method_does() {
     let lowered = Lowered::new(
@@ -5481,12 +5493,12 @@ fn an_enum_method_lowers_a_list_literal_a_function_type_and_a_lambda_as_a_class_
                       RETURN
                         ARRAY [3]
                           ARRAY_ELEM
-                            CLASS_CONST [32768]
+                            CLASS_CONST
                               ZVAL "Suit"
                               ZVAL "Hearts"
                             null
                           ARRAY_ELEM
-                            CLASS_CONST [32768]
+                            CLASS_CONST
                               ZVAL "Suit"
                               ZVAL "Spades"
                             null
@@ -5499,7 +5511,7 @@ fn an_enum_method_lowers_a_list_literal_a_function_type_and_a_lambda_as_a_class_
                       ASSIGN
                         VAR
                           ZVAL "first"
-                        CLASS_CONST [32768]
+                        CLASS_CONST
                           ZVAL "Suit"
                           ZVAL "Hearts"
                       RETURN
@@ -5581,7 +5593,7 @@ fn an_enum_returns_self_and_holds_a_union_typed_constant() {
                   null
                   STMT_LIST
                     RETURN
-                      CLASS_CONST [32768]
+                      CLASS_CONST
                         ZVAL "App\\Status"
                         ZVAL "Active"
                   TYPE [15]
