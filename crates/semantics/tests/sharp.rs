@@ -2437,6 +2437,70 @@ fn a_pattern_variable_named_this_is_an_error() {
     assert_eq!(issues(code), ["7:26 Cannot name a pattern variable `this`: `this` is the object the method runs on."]);
 }
 
+/// Spec section 19 groups `< <= > >= is as` in one row and `== != === <=>` in the next, and neither row chains.
+#[test]
+fn comparisons_and_equalities_do_not_chain_and_name_both_groupings() {
+    let code = leak(method(
+        "        const a = extra < 1 < 2;\n        const b = extra == 1 != 2;\n        const c = extra is int is bool;\n        const d = extra < 1 is bool;\n        const e = extra is > 1 < 2;\n        const f = extra < 1 == true;\n        const g = extra == 1 is bool;\n        const h = (extra < 1) < 2;\n        match (extra) {\n            > 1 < 2 => this.run(1),\n            default => this.run(2),\n        }\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:19 Comparisons do not chain: write `(extra < 1) < 2` or `extra < (1 < 2)`.",
+            "8:19 Comparisons do not chain: write `(extra == 1) != 2` or `extra == (1 != 2)`.",
+            "9:19 Comparisons do not chain: write `(extra is int) is bool`.",
+            "10:19 Comparisons do not chain: write `(extra < 1) is bool` or `extra < (1 is bool)`.",
+            "11:19 Comparisons do not chain: write `extra is > (1 < 2)`.",
+            "16:13 Comparisons do not chain: write `> (1 < 2)`.",
+        ]
+    );
+}
+
+/// Decision 044: `is` binds with the comparisons, so `!entity is HasDesign` reads as `(!entity) is HasDesign`.
+#[test]
+fn not_before_is_is_an_error_that_writes_is_not() {
+    let code = leak(method(
+        "        if (!extra is int) {\n        }\n        if ((!extra) is bool) {\n        }\n        if (!(extra is int)) {\n        }\n        if (extra is not int) {\n        }\n        return extra;\n",
+    ));
+
+    assert_eq!(issues(code), ["7:13 Write `extra is not int`: `!` applies to `extra` before `is` tests it."]);
+}
+
+/// Decision 045: `not` beside `or` reads two ways, and `not` beside `and` reads the way it binds.
+#[test]
+fn not_beside_or_in_a_pattern_needs_parentheses_and_not_beside_and_does_not() {
+    let code = leak(method(
+        "        const a = extra is not Paid or Refunded;\n        const b = extra is Paid or not Refunded;\n        const c = match (extra) {\n            not Paid or Refunded => 1,\n            default => 0,\n        };\n        const d = extra is not (Paid or Refunded);\n        const e = extra is (not Paid) or Refunded;\n        const f = extra is not null and not \"\";\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:28 Write `not (Paid or Refunded)`, or `(not Paid) or Refunded`.",
+            "8:28 Write `not (Paid or Refunded)`, or `Paid or (not Refunded)`.",
+            "10:13 Write `not (Paid or Refunded)`, or `(not Paid) or Refunded`.",
+        ]
+    );
+}
+
+#[test]
+fn a_binary_operation_as_a_statement_has_no_effect() {
+    let code = leak(method(
+        "        let flags = extra;\n        flags | 4;\n        extra + 1;\n        extra == 1;\n        1 - extra;\n        extra ?? 1;\n        this.run(1);\n        return flags;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "8:9 This statement has no effect: write `flags |= 4` to keep its result.",
+            "9:9 This statement has no effect: write `extra += 1` to keep its result.",
+            "10:9 This statement has no effect: use the result of `extra == 1`, or remove the statement.",
+            "11:9 This statement has no effect: use the result of `1 - extra`, or remove the statement.",
+        ]
+    );
+}
+
 #[test]
 fn lambdas_with_an_expression_or_a_block_body_and_calls_of_function_locals_are_in_the_slice() {
     let code = leak(method(

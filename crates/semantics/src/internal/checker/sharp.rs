@@ -16,13 +16,16 @@ use mago_syntax::cst::Argument;
 use mago_syntax::cst::ArrayElement;
 use mago_syntax::cst::Assignment;
 use mago_syntax::cst::AssignmentOperator;
+use mago_syntax::cst::Binary;
 use mago_syntax::cst::BinaryOperator;
+use mago_syntax::cst::BinaryPattern;
 use mago_syntax::cst::Block;
 use mago_syntax::cst::Break;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::ClassLikeConstant;
 use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::ClassLikeMemberSelector;
+use mago_syntax::cst::ComparisonPattern;
 use mago_syntax::cst::CompositeString;
 use mago_syntax::cst::Conditional;
 use mago_syntax::cst::ConstantAccess;
@@ -83,6 +86,8 @@ use mago_syntax::cst::UseItems;
 use mago_syntax::cst::Variable;
 use mago_syntax::cst::While;
 use mago_syntax::cst::WhileBody;
+use mago_syntax::token::GetPrecedence;
+use mago_syntax::token::Precedence;
 use mago_syntax_core::stack::ensure_sufficient_stack;
 
 use crate::internal::consts::RESERVED_CLASS_NAMES;
@@ -196,7 +201,9 @@ const ANY: &[u8] = b"Any";
 ///   The body of `if`, `else` and each loop is a block in braces. A catch clause names one or more classes separated
 ///   by `|`, and an optional variable written without `$`, which lives until the clause's block ends. A local
 ///   statement can have its type written, as in `Money? total = null;` or `const int base = 2;`, from the types
-///   above but `void`.
+///   above but `void`. An expression statement whose operator is binary, as in `flags | MASK;`, is an error that
+///   names its compound assignment or its result, because the result is never used, except `??` and an assignment
+///   that PHP's `and`, `or` and `xor` bind looser than.
 /// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter, a member written
 ///   `object.name` or, when static, `Class.name`, or an index of one of them written `target[key]`. The analyzer,
 ///   which knows the types, allows an index write only on a `Map`, and a read not under `??` or `?.` only on a `List`,
@@ -228,7 +235,10 @@ const ANY: &[u8] = b"Any";
 ///   variable that code changes, whose capture is not supported yet. A call of a local by its bare name, `f(x)`,
 ///   calls the lambda the local holds, with positional, named and spread arguments.
 /// - Operators: `+ - * / % **`, `== != === !== < > <= >=`, `&& || !`, `??`, unary `-` and `+`, `++` and `--`, and
-///   `= += -= *= /= **= ??=`.
+///   `= += -= *= /= **= ??=`. Spec section 19 puts `<`, `<=`, `>`, `>=`, `is` and `as` in one row and `==`, `!=`,
+///   `===` and `<=>` in the next, and an operator of either row that takes an operand of its own row without
+///   parentheses, as in `a < b < c` or `a is T is U`, is an error that names the groupings to write. So is a comparison
+///   in the value of a comparison or value pattern, as in `x is > a < b`.
 /// - The ternary `c ? a : b` in a method body, as spec section 21 writes it. PHP's `a ?: b` is an error, and a
 ///   ternary as the condition of another needs parentheses, as in PHP 8.
 /// - Pattern matching in a method body, as spec section 21 writes it: `x is pattern`, `x as T` to a type that is not
@@ -238,8 +248,9 @@ const ANY: &[u8] = b"Any";
 ///   block. A pattern is a type with an optional name, as in `int count`, a value, a comparison such as `< 10`, a
 ///   properties pattern such as `{ total: > 0 }`, or patterns joined by `and`, `or` and `not`. A type pattern is never
 ///   nullable, and a name under `or` or `not` is an error, as C#'s CS8780, except under the `not` that starts the
-///   pattern of `is`. The parser reports list patterns, and enum case patterns with fields or a name, as not supported
-///   yet.
+///   pattern of `is`. `not` beside `or` is an error that names both readings, as decision 045 decides, and `!x is T`,
+///   which reads as `(!x) is T`, is an error that writes `x is not T`, as decision 044 decides. The parser reports list
+///   patterns, and enum case patterns with fields or a name, as not supported yet.
 /// - Casts: `(int)`, `(float)` and `(string)` in a method body, as spec section 24 writes them. PHP's other casts and
 ///   its cast aliases, such as `(bool)` and `(integer)`, are errors.
 /// - A bare `Int` or `Float` before `.` is the class `Sharp\Int` or `Sharp\Float` of the engine's standard library,
@@ -749,6 +760,17 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
             None
         }
+        // `??` runs its right side only for null, so `value ?? throw …` is a statement with an effect, and so is an
+        // assignment PHP's `and`, `or` and `xor` bind looser than, as in `a = b or c`.
+        (Node::ExpressionStatement(statement), Body)
+            if let Expression::Binary(binary) = statement.expression
+                && !binary.operator.is_null_coalesce()
+                && ![binary.lhs, binary.rhs].iter().any(|operand| matches!(operand, Expression::Assignment(_))) =>
+        {
+            report_no_effect(binary, context);
+
+            None
+        }
         (
             Node::Statement(
                 Statement::Block(_)
@@ -787,11 +809,38 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             Body,
         ) => Some(Body),
 
+        (
+            Node::Expression(expression @ (Expression::Binary(_) | Expression::Is(_) | Expression::As(_))),
+            Body | Constant,
+        ) if let Some(groupings) = comparison_chain(expression, context) => {
+            report_comparison_chain(expression.span(), &groupings, context);
+
+            None
+        }
         (Node::Statement(Statement::PatternMatch(pattern_match)), Body) => {
             check_pattern_match(pattern_match, false, context).then_some(Body)
         }
         (Node::Expression(Expression::PatternMatch(pattern_match)), Body) => {
             check_pattern_match(pattern_match, true, context).then_some(Body)
+        }
+        (Node::Is(is), Body)
+            if let Expression::UnaryPrefix(UnaryPrefix { operator: UnaryPrefixOperator::Not(_), operand }) = is.value =>
+        {
+            let operand = BytesDisplay(context.get_code_snippet(operand));
+            let pattern = BytesDisplay(context.get_code_snippet(is.pattern));
+            context.report(
+                Issue::error(format!(
+                    "Write `{operand} is not {pattern}`: `!` applies to `{operand}` before `is` tests it."
+                ))
+                .with_annotation(Annotation::primary(is.span()).with_message("`!` takes the value before `is` tests it."))
+                .with_note("Spec section 21: `is` binds with the comparisons, so `!entity is HasDesign` reads as `(!entity) is HasDesign`, and a negative test is written `is not`."),
+            );
+
+            None
+        }
+        (Node::Is(is), Body) if report_chained_pattern(is.span(), is.pattern, context) => None,
+        (Node::PatternMatchPatternArm(arm), Body) if report_chained_pattern(arm.pattern.span(), arm.pattern, context) => {
+            None
         }
         (Node::Is(is), Body) => {
             // `is not T name` declares `name` where the test is false, so the outermost `not` hides no variable.
@@ -838,6 +887,13 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         }
         (Node::Hint(hint), Place::Pattern) if is_slice_type(hint) && !matches!(hint, Hint::Void(_)) => {
             Some(Place::Pattern)
+        }
+        (Node::BinaryPattern(binary), Place::Pattern)
+            if !binary.is_and() && [binary.left, binary.right].iter().any(|side| matches!(side, Pattern::Not(_))) =>
+        {
+            report_not_beside_or(binary, context);
+
+            None
         }
         (
             Node::TypePattern(_)
@@ -1626,6 +1682,157 @@ fn check_conditional(conditional: &Conditional, context: &mut Context<'_, '_, '_
     }
 
     true
+}
+
+/// The row of spec section 19's precedence table a comparison or an equality sits on, with the operand it tests and,
+/// for a binary operator, the operand it tests against. `is` and `as` test against a pattern and a type, which hold
+/// no comparison of their own.
+fn comparison_operands<'ast, 'arena>(
+    expression: &'ast Expression<'arena>,
+) -> Option<(Precedence, &'ast Expression<'arena>, Option<&'ast Expression<'arena>>)> {
+    let (row, tested, against) = match expression {
+        Expression::Binary(binary) => (binary.operator.precedence(), binary.lhs, Some(binary.rhs)),
+        Expression::Is(is) => (Precedence::Comparison, is.value, None),
+        Expression::As(r#as) => (Precedence::Comparison, r#as.value, None),
+        _ => return None,
+    };
+
+    matches!(row, Precedence::Comparison | Precedence::Equality).then_some((row, tested, against))
+}
+
+/// The groupings to choose from when a comparison or an equality takes an operand of its own row without parentheses,
+/// which spec section 19 makes an error, as in `a < b < c`: the first operator grouped first, then the second. A
+/// grouping that would put a value inside a pattern or a type, as `a is (T is U)` would, is left out.
+fn comparison_chain(expression: &Expression, context: &Context<'_, '_, '_>) -> Option<Vec<String>> {
+    let (row, tested, against) = comparison_operands(expression)?;
+    let span = expression.span();
+    let written = |span: Span| BytesDisplay(context.get_code_snippet(span)).to_string();
+
+    if let Some(against) = against
+        && let Some((inner_row, inner_tested, _)) = comparison_operands(against)
+        && inner_row == row
+    {
+        let middle = inner_tested.end_position();
+
+        return Some(vec![
+            format!("({}){}", written(span.to_end(middle)), written(span.from_start(middle))),
+            format!("{}({})", written(span.to_end(against.start_position())), written(against.span())),
+        ]);
+    }
+
+    let (inner_row, _, inner_against) = comparison_operands(tested)?;
+    if inner_row != row {
+        return None;
+    }
+
+    let grouped = format!("({}){}", written(tested.span()), written(span.from_start(tested.end_position())));
+    let other = inner_against.map(|inner_against| {
+        let middle = inner_against.start_position();
+
+        format!("{}({})", written(span.to_end(middle)), written(span.from_start(middle)))
+    });
+
+    Some(std::iter::once(grouped).chain(other).collect())
+}
+
+/// Reports a test whose pattern holds a comparison in the value of a comparison or value pattern, as `x is > 1 < 2`,
+/// which chains because the value reads up to the comparison row. The grouping is the whole test as written, each such
+/// value in parentheses. Returns whether it reported.
+fn report_chained_pattern(test: Span, pattern: &Pattern, context: &mut Context<'_, '_, '_>) -> bool {
+    fn chained_values<'ast, 'arena>(pattern: &'ast Pattern<'arena>, values: &mut Vec<&'ast Expression<'arena>>) {
+        match pattern {
+            Pattern::Comparison(ComparisonPattern { value, .. }) | Pattern::Value(value) => {
+                if comparison_operands(value).is_some() {
+                    values.push(value);
+                }
+            }
+            Pattern::Type(_) => {}
+            Pattern::Not(not) => chained_values(not.pattern, values),
+            Pattern::Binary(binary) => {
+                chained_values(binary.left, values);
+                chained_values(binary.right, values);
+            }
+            Pattern::Parenthesized(parenthesized) => chained_values(parenthesized.pattern, values),
+            Pattern::Properties(properties) => {
+                for property in &properties.properties {
+                    chained_values(property.pattern, values);
+                }
+            }
+        }
+    }
+
+    let mut values = Vec::new();
+    chained_values(pattern, &mut values);
+    if values.is_empty() {
+        return false;
+    }
+
+    let written = |span: Span| BytesDisplay(context.get_code_snippet(span)).to_string();
+    let mut grouping = String::new();
+    let mut written_to = test.start;
+    for value in values {
+        grouping.push_str(&written(Span::new(test.file_id, written_to, value.start_position())));
+        grouping.push('(');
+        grouping.push_str(&written(value.span()));
+        grouping.push(')');
+        written_to = value.end_position();
+    }
+    grouping.push_str(&written(test.from_start(written_to)));
+    report_comparison_chain(test, &[grouping], context);
+
+    true
+}
+
+fn report_comparison_chain(span: Span, groupings: &[String], context: &mut Context<'_, '_, '_>) {
+    let groupings: Vec<String> = groupings.iter().map(|grouping| format!("`{grouping}`")).collect();
+
+    context.report(
+        Issue::error(format!("Comparisons do not chain: write {}.", groupings.join(" or ")))
+            .with_annotation(Annotation::primary(span).with_message("Chained here."))
+            .with_note("Spec section 19 puts `<`, `<=`, `>`, `>=`, `is` and `as` in one row and `==`, `!=`, `===` and `<=>` in the next, and an operator takes an operand of its own row only in parentheses."),
+    );
+}
+
+/// Reports `not` beside `or` in a pattern, which decision 045 makes an error, naming both readings: `not` over the
+/// whole `or`, and each `not` over its own side.
+fn report_not_beside_or(binary: &BinaryPattern, context: &mut Context<'_, '_, '_>) {
+    let written = |pattern: &Pattern| BytesDisplay(context.get_code_snippet(pattern)).to_string();
+    let (whole, own): (Vec<String>, Vec<String>) = [binary.left, binary.right]
+        .into_iter()
+        .map(|side| match side {
+            Pattern::Not(not) => (written(not.pattern), format!("({})", written(side))),
+            _ => (written(side), written(side)),
+        })
+        .unzip();
+    let or = BytesDisplay(binary.operator.value);
+
+    context.report(
+        Issue::error(format!("Write `not ({} {or} {})`, or `{} {or} {}`.", whole[0], whole[1], own[0], own[1]))
+            .with_annotation(Annotation::primary(binary.span()).with_message("`not` beside `or`."))
+            .with_note("Spec section 21: in a pattern, `not` beside `or` needs parentheses. C# reads `not Paid or Refunded` as `(not Paid) or Refunded`, where `or Refunded` adds nothing."),
+    );
+}
+
+/// Reports an expression statement whose top operator is a binary one other than `??`, without an assignment for an
+/// operand: its result is never used. An arithmetic or bitwise operator on a write target names its compound
+/// assignment.
+fn report_no_effect(binary: &Binary, context: &mut Context<'_, '_, '_>) {
+    let fix =
+        if (binary.operator.is_arithmetic() || binary.operator.is_bitwise()) && is_slice_target(binary.lhs, context) {
+            format!(
+                "write `{} {}= {}` to keep its result",
+                BytesDisplay(context.get_code_snippet(binary.lhs)),
+                BytesDisplay(binary.operator.as_bytes()),
+                BytesDisplay(context.get_code_snippet(binary.rhs))
+            )
+        } else {
+            format!("use the result of `{}`, or remove the statement", BytesDisplay(context.get_code_snippet(binary)))
+        };
+
+    context.report(
+        Issue::error(format!("This statement has no effect: {fix}."))
+            .with_annotation(Annotation::primary(binary.span()).with_message("Its result is never used.")),
+    );
 }
 
 /// The expression a node writes: the left side of an assignment, or the operand of `++` or `--`.

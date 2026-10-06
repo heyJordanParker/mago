@@ -165,7 +165,7 @@ where
             }
 
             if self.is_at_is_or_as()? {
-                if Precedence::Comparison <= precedence {
+                if Precedence::SharpComparison <= precedence {
                     break;
                 }
 

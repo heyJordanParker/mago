@@ -1042,6 +1042,35 @@ fn a_spaced_question_mark_after_a_name_is_not_a_typed_local() {
 }
 
 #[test]
+fn a_statement_starting_with_a_name_and_a_bar_is_a_typed_local_only_when_a_name_follows_the_type() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        flags | MASK;\n        a | b == c;\n        (flags | 1);\n        int|string key = 1;\n        Calc|List<int>|Report? found = null;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let statements: Vec<String> = method_body(program)
+        .iter()
+        .map(|statement| match statement {
+            Statement::LocalDeclaration(local) => {
+                format!("local {}", source(CODE, local.hint.as_ref().expect("a type")))
+            }
+            Statement::Expression(statement) => format!("expression {}", grouping(CODE, statement.expression)),
+            _ => panic!("expected a local or an expression statement, got {statement:#?}"),
+        })
+        .collect();
+    assert_eq!(
+        statements,
+        [
+            "expression (flags | MASK)",
+            "expression ((a | b) == c)",
+            "expression (flags | 1)",
+            "local int|string",
+            "local Calc|List<int>|Report?",
+        ]
+    );
+}
+
+#[test]
 fn a_for_loop_declares_its_counter_with_let_or_const() {
     const CODE: &str = "class Report\n{\n    void run()\n    {\n        for (let i = 0; i < 3; i++) {\n        }\n        for (const j = 0; ; ) {\n        }\n    }\n}\n";
     let arena = LocalArena::new();
@@ -2184,7 +2213,8 @@ fn dot_keeps_concatenating_in_php() {
     assert!(matches!(statement.expression, Expression::Binary(binary) if binary.operator.is_concatenation()));
 }
 
-/// The expression's source with every binary operation wrapped in parentheses, showing how the parser grouped it.
+/// The expression's source with every binary operation, `is` and `as` wrapped in parentheses, and the value of a
+/// comparison or value pattern grouped the same way, showing how the parser grouped it.
 fn grouping(code: &str, expression: &Expression) -> String {
     match expression {
         Expression::Binary(binary) => format!(
@@ -2193,6 +2223,18 @@ fn grouping(code: &str, expression: &Expression) -> String {
             source(code, &binary.operator),
             grouping(code, binary.rhs)
         ),
+        Expression::Is(is) => {
+            let pattern = match is.pattern {
+                Pattern::Comparison(comparison) => {
+                    format!("{} {}", source(code, &comparison.operator), grouping(code, comparison.value))
+                }
+                Pattern::Value(value) => grouping(code, value),
+                pattern => source(code, pattern).to_owned(),
+            };
+
+            format!("({} is {pattern})", grouping(code, is.value))
+        }
+        Expression::As(r#as) => format!("({} as {})", grouping(code, r#as.value), source(code, r#as.hint)),
         _ => source(code, expression).to_owned(),
     }
 }
@@ -2243,6 +2285,29 @@ fn php_keeps_bitwise_operators_looser_than_comparisons() {
             "(($a < $b) == $c)",
             "($a && ($b | $c))",
             "(($a + $b) << $c)",
+        ]
+    );
+}
+
+#[test]
+fn is_and_as_bind_with_the_comparisons_below_the_bitwise_operators() {
+    const CODE: &str = "class Report\n{\n    bool run()\n    {\n        return flags is > 1 | 2;\n        return flags is 1 | 2;\n        return a & b is int;\n        return a | b as Calc;\n        return a == b is Calc;\n        return a < b is Calc;\n        return a is Calc is Report;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let groupings: Vec<String> =
+        method_body(program).iter().map(|statement| grouping(CODE, expression(statement))).collect();
+    assert_eq!(
+        groupings,
+        [
+            "(flags is > (1 | 2))",
+            "(flags is (1 | 2))",
+            "((a & b) is int)",
+            "((a | b) as Calc)",
+            "(a == (b is Calc))",
+            "((a < b) is Calc)",
+            "((a is Calc) is Report)",
         ]
     );
 }

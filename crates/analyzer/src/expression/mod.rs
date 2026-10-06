@@ -28,6 +28,7 @@ use mago_syntax::cst::PatternMatch;
 use mago_syntax::cst::PatternMatchArm;
 use mago_syntax::cst::PropertiesPattern;
 use mago_syntax::cst::Statement;
+use mago_syntax::cst::UnaryPrefixOperator;
 use mago_syntax::utils::pattern::PhpShape;
 use mago_syntax::walker::Walker;
 use mago_syntax_core::stack::ensure_sufficient_stack;
@@ -193,7 +194,9 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
                 Expression::Construct(expr) => expr.analyze(context, block_context, artifacts),
                 Expression::Throw(expr) => expr.analyze(context, block_context, artifacts),
                 Expression::Clone(expr) => expr.analyze(context, block_context, artifacts),
-                Expression::Error(_) | Expression::Access(_) | Expression::Call(_) if is_refused(self) => {
+                Expression::Error(_) | Expression::Access(_) | Expression::Call(_) | Expression::Is(_)
+                    if is_refused(self) =>
+                {
                     artifacts.set_expression_type(&self, get_never());
 
                     Ok(())
@@ -595,10 +598,14 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Parenthesized<'arena> {
 }
 
 /// Whether an error already refuses `expression`: it failed to parse, or it reads or calls a member of `typeof(X)`
-/// through any chain of property reads, which `check_slice` refuses. Its type is `never`, and it adds no issue.
+/// through any chain of property reads, or it is `!x is T`, each of which `check_slice` refuses. Its type is `never`,
+/// and it adds no issue.
 pub(crate) fn is_refused(expression: &Expression<'_>) -> bool {
     let mut object = match expression {
         Expression::Error(_) => return true,
+        Expression::Is(is) => {
+            return matches!(is.value, Expression::UnaryPrefix(prefix) if matches!(prefix.operator, UnaryPrefixOperator::Not(_)));
+        }
         Expression::Access(Access::Property(access)) => access.object,
         Expression::Call(Call::Method(call)) => call.object,
         _ => return false,

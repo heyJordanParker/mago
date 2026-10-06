@@ -3233,46 +3233,44 @@ fn literals_are_zvals_of_their_php_value() {
 }
 
 /// ```php
-/// $a + $a - $a * $a / $a % $a;
+/// return $a + $a - $a * $a / $a % $a;
 /// ```
 ///
 /// `[1]` to `[5]` are `ZEND_ADD`, `ZEND_SUB`, `ZEND_MUL`, `ZEND_DIV` and `ZEND_MOD`.
 #[test]
 fn arithmetic_operators_are_binary_ops() {
     assert_eq!(
-        body("        let a = 1;\n        a + a - a * a / a % a;\n        return a;\n"),
+        body("        let a = 1;\n        return a + a - a * a / a % a;\n"),
         indoc! {r#"
             STMT_LIST
               ASSIGN
                 VAR
                   ZVAL "a"
                 ZVAL 1
-              BINARY_OP [2]
-                BINARY_OP [1]
-                  VAR
-                    ZVAL "a"
-                  VAR
-                    ZVAL "a"
-                BINARY_OP [5]
-                  BINARY_OP [4]
-                    BINARY_OP [3]
-                      VAR
-                        ZVAL "a"
+              RETURN
+                BINARY_OP [2]
+                  BINARY_OP [1]
+                    VAR
+                      ZVAL "a"
+                    VAR
+                      ZVAL "a"
+                  BINARY_OP [5]
+                    BINARY_OP [4]
+                      BINARY_OP [3]
+                        VAR
+                          ZVAL "a"
+                        VAR
+                          ZVAL "a"
                       VAR
                         ZVAL "a"
                     VAR
                       ZVAL "a"
-                  VAR
-                    ZVAL "a"
-              RETURN
-                VAR
-                  ZVAL "a"
         "#}
     );
 }
 
 /// ```php
-/// $a == $a; $a != $a; $a === $a; $a !== $a; $a < $a; $a <= $a; $a > $a; $a >= $a;
+/// $b = $a == $a; $b = $a != $a; $b = $a === $a; $b = $a !== $a; $b = $a < $a; $b = $a <= $a; $b = $a > $a; $b = $a >= $a;
 /// ```
 ///
 /// `[18]`, `[19]`, `[16]`, `[17]`, `[20]` and `[21]` are `ZEND_IS_EQUAL`, `ZEND_IS_NOT_EQUAL`, `ZEND_IS_IDENTICAL`,
@@ -3280,67 +3278,72 @@ fn arithmetic_operators_are_binary_ops() {
 #[test]
 fn comparison_operators_are_the_kinds_php_gives_them() {
     let tree = body(
-        "        let a = 1;\n        a == a;\n        a != a;\n        a === a;\n        a !== a;\n        a < a;\n        a <= a;\n        a > a;\n        a >= a;\n        return a;\n",
+        "        let a = 1;\n        let b = a == a;\n        b = a != a;\n        b = a === a;\n        b = a !== a;\n        b = a < a;\n        b = a <= a;\n        b = a > a;\n        b = a >= a;\n        return a;\n",
     );
-    let operators: Vec<&str> = tree.lines().filter(|line| line.starts_with("  ") && !line.starts_with("   ")).collect();
 
     assert_eq!(
-        operators,
+        assigned_values(&tree),
         [
-            "  ASSIGN",
-            "  BINARY_OP [18]",
-            "  BINARY_OP [19]",
-            "  BINARY_OP [16]",
-            "  BINARY_OP [17]",
-            "  BINARY_OP [20]",
-            "  BINARY_OP [21]",
-            "  GREATER",
-            "  GREATER_EQUAL",
-            "  RETURN",
+            "ZVAL 1",
+            "BINARY_OP [18]",
+            "BINARY_OP [19]",
+            "BINARY_OP [16]",
+            "BINARY_OP [17]",
+            "BINARY_OP [20]",
+            "BINARY_OP [21]",
+            "GREATER",
+            "GREATER_EQUAL",
         ]
     );
 }
 
+/// The kind of the value each top-level assignment of a body's tree assigns, in order.
+fn assigned_values(tree: &str) -> Vec<&str> {
+    let lines: Vec<&str> = tree.lines().collect();
+
+    lines.windows(4).filter(|window| window[0] == "  ASSIGN").map(|window| window[3].trim_start()).collect()
+}
+
 /// ```php
-/// $a === null; null !== $a; $a == $a;
+/// $b = $a === null; $b = null !== $a; $b = $a == $a;
 /// ```
 ///
 /// `== null` and `!= null` test for null alone, so `0 == null` is false. `[16]` and `[17]` are `ZEND_IS_IDENTICAL` and
 /// `ZEND_IS_NOT_IDENTICAL`, and `==` between two values stays `ZEND_IS_EQUAL`, `[18]`.
 #[test]
 fn equality_with_null_is_identity() {
-    let tree = body("        let a = 1;\n        a == null;\n        null != a;\n        a == a;\n        return a;\n");
-    let operators: Vec<&str> = tree.lines().filter(|line| line.starts_with("  ") && !line.starts_with("   ")).collect();
+    let tree = body(
+        "        let a = 1;\n        let b = a == null;\n        b = null != a;\n        b = a == a;\n        return a;\n",
+    );
 
-    assert_eq!(operators, ["  ASSIGN", "  BINARY_OP [16]", "  BINARY_OP [17]", "  BINARY_OP [18]", "  RETURN"]);
+    assert_eq!(assigned_values(&tree), ["ZVAL 1", "BINARY_OP [16]", "BINARY_OP [17]", "BINARY_OP [18]"]);
 }
 
 /// ```php
-/// $a && $a || !$a;
+/// return $a && $a || !$a;
 /// ```
 ///
 /// `[14]` is `ZEND_BOOL_NOT`.
 #[test]
 fn logical_operators_are_and_or_and_bool_not() {
     assert_eq!(
-        body("        let a = true;\n        a && a || !a;\n        return 1;\n"),
+        body("        let a = true;\n        return a && a || !a;\n"),
         indoc! {r#"
             STMT_LIST
               ASSIGN
                 VAR
                   ZVAL "a"
                 ZVAL true
-              OR
-                AND
-                  VAR
-                    ZVAL "a"
-                  VAR
-                    ZVAL "a"
-                UNARY_OP [14]
-                  VAR
-                    ZVAL "a"
               RETURN
-                ZVAL 1
+                OR
+                  AND
+                    VAR
+                      ZVAL "a"
+                    VAR
+                      ZVAL "a"
+                  UNARY_OP [14]
+                    VAR
+                      ZVAL "a"
         "#}
     );
 }
@@ -4662,7 +4665,7 @@ fn as_is_a_conditional_that_gives_the_value_or_null() {
 fn values_comparisons_and_properties_are_the_php_comparisons_they_name() {
     assert_eq!(
         body(
-            "        let limit = 10;\n        const a = extra is 200;\n        const b = extra is >= 1 and < limit or not -1;\n        const c = extra is limit;\n        const d = extra is { count: > 0, name: string label };\n        return extra;\n"
+            "        let limit = 10;\n        const a = extra is 200;\n        const b = extra is >= 1 and < limit or (not -1);\n        const c = extra is limit;\n        const d = extra is { count: > 0, name: string label };\n        return extra;\n"
         ),
         indoc! {r#"
             STMT_LIST

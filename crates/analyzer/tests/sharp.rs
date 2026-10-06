@@ -1357,6 +1357,22 @@ fn a_condition_that_is_not_bool_is_an_invalid_operand_everywhere() {
     );
 }
 
+/// `check_slice` refuses `!entity is HasDesign` and writes `entity is not HasDesign`, so the analyzer adds no issue on
+/// it, while `!` on any other value that is not `bool` keeps its report.
+#[test]
+fn not_before_is_adds_no_issue_and_not_of_a_value_that_is_not_bool_keeps_its_report() {
+    let design = "<?php\n\nnamespace Demo;\n\ninterface HasDesign\n{\n}\n";
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static bool run(Any entity, int done)\n    {\n        if (!entity is HasDesign) {\n            return true;\n        }\n        if (!done) {\n            return false;\n        }\n        return true;\n    }\n}\n";
+
+    let issues: Vec<String> =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Demo/HasDesign.php", design)])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect();
+
+    assert_eq!(issues, ["10:14 invalid-operand `!` takes a `bool`, but this is `int`."]);
+}
+
 #[test]
 fn casts_between_numbers_have_the_types_they_have_in_php() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    public static string cents(float price, int count)\n    {\n        const cents = (int)(price * 100);\n        const share = (float)count / 3;\n        return (string)cents + (string)share + (string)(int)share;\n    }\n}\n";

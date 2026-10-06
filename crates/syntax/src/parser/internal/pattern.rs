@@ -125,7 +125,7 @@ where
 
                 Pattern::Comparison(ComparisonPattern {
                     operator,
-                    value: self.parse_expression_with_precedence(Precedence::Comparison)?,
+                    value: self.parse_expression_with_precedence(Precedence::SharpComparison)?,
                 })
             }
             T!["["] => {
@@ -134,8 +134,10 @@ where
 
                 Pattern::Value(self.arena.alloc(Expression::Error(span)))
             }
-            T!["-" | "+"] => Pattern::Value(self.parse_expression_with_precedence(Precedence::Comparison)?),
-            kind if kind.is_literal() => Pattern::Value(self.parse_expression_with_precedence(Precedence::Comparison)?),
+            T!["-" | "+"] => Pattern::Value(self.parse_expression_with_precedence(Precedence::SharpComparison)?),
+            kind if kind.is_literal() => {
+                Pattern::Value(self.parse_expression_with_precedence(Precedence::SharpComparison)?)
+            }
             T![Identifier] if self.stream.peek_kind(1)? == Some(T!["."]) => {
                 if self.is_at_case_with_data()? {
                     let span = self.skip_case_pattern()?;
@@ -144,7 +146,7 @@ where
                     Pattern::Value(self.arena.alloc(Expression::Error(span)))
                 } else {
                     // A case without fields or a name, as in `Status.Open`, is the value `Class.y` reads.
-                    Pattern::Value(self.parse_expression_with_precedence(Precedence::Comparison)?)
+                    Pattern::Value(self.parse_expression_with_precedence(Precedence::SharpComparison)?)
                 }
             }
             _ => Pattern::Type(TypePattern { hint: self.parse_type_hint()?, variable: self.parse_pattern_variable()? }),
@@ -153,10 +155,11 @@ where
         Ok(self.arena.alloc(pattern))
     }
 
-    /// The name a type pattern declares, as in `int count`. `when`, which starts an arm's condition, is no name.
+    /// The name a type pattern declares, as in `int count`. `when`, which starts an arm's condition, and `is`, which
+    /// starts another test, are no names.
     fn parse_pattern_variable(&mut self) -> Result<Option<LocalIdentifier<'arena>>, ParseError> {
         match self.stream.lookahead(0)? {
-            Some(token) if token.kind == T![Identifier] && token.value != b"when" => {
+            Some(token) if token.kind == T![Identifier] && !matches!(token.value, b"when" | b"is") => {
                 Ok(Some(self.parse_local_identifier()?))
             }
             _ => Ok(None),
@@ -167,7 +170,7 @@ where
     fn is_at_case_with_data(&mut self) -> Result<bool, ParseError> {
         Ok(match self.stream.lookahead(3)? {
             Some(token) if token.kind == T!["("] => true,
-            Some(token) => token.kind == T![Identifier] && token.value != b"when",
+            Some(token) => token.kind == T![Identifier] && !matches!(token.value, b"when" | b"is"),
             None => false,
         })
     }
