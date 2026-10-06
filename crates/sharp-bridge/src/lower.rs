@@ -14,6 +14,7 @@ use mago_syntax::cst::ArgumentList;
 use mago_syntax::cst::Array;
 use mago_syntax::cst::ArrayElement;
 use mago_syntax::cst::ArrowFunction;
+use mago_syntax::cst::Assignment;
 use mago_syntax::cst::AssignmentOperator;
 use mago_syntax::cst::AttributeList;
 use mago_syntax::cst::Binary;
@@ -211,6 +212,7 @@ const ZEND_SUB: u32 = 2;
 const ZEND_MUL: u32 = 3;
 const ZEND_DIV: u32 = 4;
 const ZEND_MOD: u32 = 5;
+const ZEND_CONCAT: u32 = 8;
 const ZEND_POW: u32 = 12;
 const ZEND_BOOL_NOT: u32 = 14;
 const ZEND_IS_IDENTICAL: u32 = 16;
@@ -225,6 +227,14 @@ const ZEND_ACC_TYPE_FOLLOWS_PARENT: u32 = 1 << 13;
 
 /// A null child.
 const NULL: u32 = u32::MAX;
+
+/// What the operands of an operator are, where spec section 24 makes the operator differ from PHP's.
+#[derive(Clone, Copy)]
+enum Operands {
+    Strings,
+    Ints,
+    Other,
+}
 
 /// Lowers a program the checker accepted into the tree php-src builds for the equivalent PHP.
 #[must_use]
@@ -1095,12 +1105,28 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 self.node(SHARP_AST_MATCH, 0, line, &[subject, arms])
             }
+            // Spec section 24: `+` on two strings joins them, and `/` on two ints divides toward zero.
             Expression::Binary(binary) => {
-                let (kind, attr) = binary_kind(binary.operator);
+                let operands = match binary.operator {
+                    BinaryOperator::Addition(_) | BinaryOperator::Division(_) => {
+                        self.operand_types(binary.lhs, binary.rhs)
+                    }
+                    _ => Operands::Other,
+                };
                 let lhs = self.expression(binary.lhs);
                 let rhs = self.expression(binary.rhs);
 
-                self.node(kind, attr, line, &[lhs, rhs])
+                match (binary.operator, operands) {
+                    (BinaryOperator::Addition(_), Operands::Strings) => {
+                        self.node(SHARP_AST_BINARY_OP, ZEND_CONCAT, line, &[lhs, rhs])
+                    }
+                    (BinaryOperator::Division(_), Operands::Ints) => self.intdiv(line, lhs, rhs),
+                    (operator, _) => {
+                        let (kind, attr) = binary_kind(operator);
+
+                        self.node(kind, attr, line, &[lhs, rhs])
+                    }
+                }
             }
             Expression::UnaryPrefix(unary) => {
                 let (kind, attr) = prefix_kind(&unary.operator);
@@ -1121,13 +1147,22 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 self.node(kind, 0, line, &[operand])
             }
-            Expression::Assignment(assignment) => {
-                let (kind, attr) = assignment_kind(&assignment.operator);
-                let lhs = self.target(assignment.lhs);
-                let rhs = self.expression(assignment.rhs);
+            Expression::Assignment(assignment) => match (&assignment.operator, self.operand_types_of(assignment)) {
+                (AssignmentOperator::Addition(_), Operands::Strings) => {
+                    let lhs = self.target(assignment.lhs);
+                    let rhs = self.expression(assignment.rhs);
 
-                self.node(kind, attr, line, &[lhs, rhs])
-            }
+                    self.node(SHARP_AST_ASSIGN_OP, ZEND_CONCAT, line, &[lhs, rhs])
+                }
+                (AssignmentOperator::Division(_), Operands::Ints) => self.intdiv_assignment(line, assignment),
+                (operator, _) => {
+                    let (kind, attr) = assignment_kind(operator);
+                    let lhs = self.target(assignment.lhs);
+                    let rhs = self.expression(assignment.rhs);
+
+                    self.node(kind, attr, line, &[lhs, rhs])
+                }
+            },
             Expression::Call(Call::Method(call)) => self.method_call(expression, call),
             Expression::Call(Call::Function(FunctionCall {
                 function: Expression::Identifier(function),
@@ -1268,6 +1303,84 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             && self.types.call_target(call).kind == DeclarationKind::Property
     }
 
+    /// Whether both operands of an operator are strings or both ints, the two cases where spec section 24's operators
+    /// differ from PHP's.
+    fn operand_types(&self, lhs: &Expression, rhs: &Expression) -> Operands {
+        let (lhs, rhs) = (self.types.expression_type(lhs), self.types.expression_type(rhs));
+        if lhs.is_string() && rhs.is_string() {
+            Operands::Strings
+        } else if lhs.is_int() && rhs.is_int() {
+            Operands::Ints
+        } else {
+            Operands::Other
+        }
+    }
+
+    /// The operand types of `+=` and `/=`, the compound assignments whose operator differs from PHP's.
+    fn operand_types_of(&self, assignment: &Assignment) -> Operands {
+        match assignment.operator {
+            AssignmentOperator::Addition(_) | AssignmentOperator::Division(_) => {
+                self.operand_types(assignment.lhs, assignment.rhs)
+            }
+            _ => Operands::Other,
+        }
+    }
+
+    /// `\intdiv(lhs, rhs)`, which divides two ints toward zero.
+    fn intdiv(&mut self, line: u32, lhs: u32, rhs: u32) -> u32 {
+        let function = self.string(ZEND_NAME_FQ, line, b"intdiv");
+        let arguments = self.node(SHARP_AST_ARG_LIST, 0, line, &[lhs, rhs]);
+
+        self.node(SHARP_AST_CALL, 0, line, &[function, arguments])
+    }
+
+    /// `target /= value` on ints, as `target = \intdiv(target, value)`. The target's receiver runs once: one that is
+    /// not a local or `this` goes into a hidden `$receiver#N`, which the write sets and the read reads, as php-src
+    /// compiles a property's object before the value assigned to it.
+    fn intdiv_assignment(&mut self, line: u32, assignment: &Assignment) -> u32 {
+        let receiver = match assignment.lhs {
+            Expression::Access(Access::Property(access))
+                if self.names.static_property_class(access).is_none() && !self.is_local_or_this(access.object) =>
+            {
+                Some(access)
+            }
+            _ => None,
+        };
+
+        let (target, read) = match receiver {
+            Some(access) => {
+                self.temporaries += 1;
+                let name = format!("receiver#{}", self.temporaries).into_bytes();
+                let variable = self.variable(access.object.span(), &name);
+                let object = self.expression(access.object);
+                let object = self.node(SHARP_AST_ASSIGN, 0, line, &[variable, object]);
+                let member = self.member(&access.property);
+                let target = self.node(SHARP_AST_PROP, 0, line, &[object, member]);
+
+                let variable = self.variable(access.object.span(), &name);
+                let member = self.member(&access.property);
+                let read = self.node(SHARP_AST_PROP, 0, line, &[variable, member]);
+                self.temporaries -= 1;
+
+                (target, read)
+            }
+            None => (self.target(assignment.lhs), self.expression(assignment.lhs)),
+        };
+        let value = self.expression(assignment.rhs);
+        let quotient = self.intdiv(line, read, value);
+
+        self.node(SHARP_AST_ASSIGN, 0, line, &[target, quotient])
+    }
+
+    /// Whether `expression` is a local, a parameter or `this`, which reading twice runs nothing twice.
+    fn is_local_or_this(&self, expression: &Expression) -> bool {
+        matches!(
+            expression,
+            Expression::ConstantAccess(name)
+                if matches!(self.names.binding(&name.name), Some(Binding::Local(_) | Binding::This))
+        )
+    }
+
     /// `$object->member(...)`, the method as a first-class callable.
     fn method_value(&mut self, line: u32, object: u32, member: u32) -> u32 {
         let callable = self.node(SHARP_AST_CALLABLE_CONVERT, 0, line, &[]);
@@ -1319,10 +1432,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// tested and read as itself.
     fn null_safe_chain(&mut self, chain: &Expression, untested: &Expression, receiver: &Expression) -> u32 {
         let line = self.line(chain);
-        let is_local = matches!(
-            receiver,
-            Expression::ConstantAccess(name) if matches!(self.names.binding(&name.name), Some(Binding::Local(_)))
-        );
+        let is_local = self.is_local_or_this(receiver);
         let tested = if is_local {
             self.null_safe_object(receiver)
         } else {
@@ -1996,7 +2106,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "check_slice refuses writing to `ConstantAccess`")]
     fn a_compound_assignment_to_a_constant_panics() {
-        lower_method("public void run() { PHP_INT_MAX += 1; }");
+        lower_method("public void run() { PHP_INT_MAX -= 1; }");
     }
 
     #[test]

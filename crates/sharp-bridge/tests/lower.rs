@@ -3394,6 +3394,129 @@ fn nested_null_safe_property_calls_each_get_their_own_hidden_variable() {
 }
 
 /// ```php
+/// $greeting = 'Hi ' . $name;
+/// $greeting .= '!';
+/// $half = \intdiv($count, 2);
+/// $total = $count;
+/// $total = \intdiv($total, 2);
+/// $ratio = $rate / 2;
+/// return $greeting;
+/// ```
+///
+/// `+` on two strings joins them, as PHP's `.` does. `/` on two ints divides toward zero, as `\intdiv` does, and
+/// `/=` on an int writes that quotient back. Any other `/` is PHP's.
+#[test]
+fn string_plus_is_a_concatenation_and_int_division_is_intdiv() {
+    assert_eq!(
+        body_in(
+            "string run(string name, int count, float rate)",
+            "        string greeting = \"Hi \" + name;\n        greeting += \"!\";\n        const half = count / 2;\n        int total = count;\n        total /= 2;\n        const ratio = rate / 2;\n        return greeting;\n",
+            &[]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "greeting"
+                BINARY_OP [8]
+                  ZVAL "Hi "
+                  VAR
+                    ZVAL "name"
+              ASSIGN_OP [8]
+                VAR
+                  ZVAL "greeting"
+                ZVAL "!"
+              ASSIGN
+                VAR
+                  ZVAL "half"
+                CALL
+                  ZVAL "intdiv"
+                  ARG_LIST
+                    VAR
+                      ZVAL "count"
+                    ZVAL 2
+              ASSIGN
+                VAR
+                  ZVAL "total"
+                VAR
+                  ZVAL "count"
+              ASSIGN
+                VAR
+                  ZVAL "total"
+                CALL
+                  ZVAL "intdiv"
+                  ARG_LIST
+                    VAR
+                      ZVAL "total"
+                    ZVAL 2
+              ASSIGN
+                VAR
+                  ZVAL "ratio"
+                BINARY_OP [4]
+                  VAR
+                    ZVAL "rate"
+                  ZVAL 2
+              RETURN
+                VAR
+                  ZVAL "greeting"
+        "#}
+    );
+}
+
+/// ```php
+/// $this->total = \intdiv($this->total, 2);
+/// ($receiver#1 = $this->next())->total = \intdiv($receiver#1->total, 2);
+/// ```
+///
+/// `/=` on an int property reads and writes the property once each. A receiver that is not a local or `this` goes
+/// into a hidden variable, which the write sets before the read, so the receiver runs once.
+#[test]
+fn int_division_assignment_to_a_property_runs_its_receiver_once() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public int total { get => field; set => field = value; } = 8;\n\n    public void run()\n    {\n        this.total /= 2;\n        this.next().total /= 2;\n    }\n\n    private Report next() => this;\n}\n",
+    );
+
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                PROP
+                  VAR
+                    ZVAL "this"
+                  ZVAL "total"
+                CALL
+                  ZVAL "intdiv"
+                  ARG_LIST
+                    PROP
+                      VAR
+                        ZVAL "this"
+                      ZVAL "total"
+                    ZVAL 2
+              ASSIGN
+                PROP
+                  ASSIGN
+                    VAR
+                      ZVAL "receiver#1"
+                    METHOD_CALL
+                      VAR
+                        ZVAL "this"
+                      ZVAL "next"
+                      ARG_LIST
+                  ZVAL "total"
+                CALL
+                  ZVAL "intdiv"
+                  ARG_LIST
+                    PROP
+                      VAR
+                        ZVAL "receiver#1"
+                      ZVAL "total"
+                    ZVAL 2
+        "#}
+    );
+}
+
+/// ```php
 /// return \App\Tenant\Report::make();
 /// ```
 #[test]
@@ -3554,10 +3677,10 @@ fn literals_are_zvals_of_their_php_value() {
 }
 
 /// ```php
-/// $a + $a - $a * $a / $a % $a;
+/// $a + $a - \intdiv($a * $a, $a) % $a;
 /// ```
 ///
-/// `[1]` to `[5]` are `ZEND_ADD`, `ZEND_SUB`, `ZEND_MUL`, `ZEND_DIV` and `ZEND_MOD`.
+/// `[1]`, `[2]`, `[3]` and `[5]` are `ZEND_ADD`, `ZEND_SUB`, `ZEND_MUL` and `ZEND_MOD`. `/` on two ints is `\intdiv`.
 #[test]
 fn arithmetic_operators_are_binary_ops() {
     assert_eq!(
@@ -3575,14 +3698,16 @@ fn arithmetic_operators_are_binary_ops() {
                   VAR
                     ZVAL "a"
                 BINARY_OP [5]
-                  BINARY_OP [4]
-                    BINARY_OP [3]
+                  CALL
+                    ZVAL "intdiv"
+                    ARG_LIST
+                      BINARY_OP [3]
+                        VAR
+                          ZVAL "a"
+                        VAR
+                          ZVAL "a"
                       VAR
                         ZVAL "a"
-                      VAR
-                        ZVAL "a"
-                    VAR
-                      ZVAL "a"
                   VAR
                     ZVAL "a"
               RETURN
@@ -3669,10 +3794,10 @@ fn unary_operators_are_the_kinds_php_gives_them() {
 }
 
 /// ```php
-/// $a -= 1; $a *= 2; $a /= 3; $a **= 4;
+/// $a -= 1; $a *= 2; $a = \intdiv($a, 3); $a **= 4;
 /// ```
 ///
-/// `[2]`, `[3]`, `[4]` and `[12]` are `ZEND_SUB`, `ZEND_MUL`, `ZEND_DIV` and `ZEND_POW`.
+/// `[2]`, `[3]` and `[12]` are `ZEND_SUB`, `ZEND_MUL` and `ZEND_POW`. `/=` on an int assigns the `\intdiv` quotient.
 #[test]
 fn compound_assignments_are_assign_ops() {
     let tree = body(
@@ -3682,7 +3807,7 @@ fn compound_assignments_are_assign_ops() {
 
     assert_eq!(
         operators,
-        ["  ASSIGN", "  ASSIGN_OP [2]", "  ASSIGN_OP [3]", "  ASSIGN_OP [4]", "  ASSIGN_OP [12]", "  RETURN"]
+        ["  ASSIGN", "  ASSIGN_OP [2]", "  ASSIGN_OP [3]", "  ASSIGN", "  ASSIGN_OP [12]", "  RETURN"]
     );
 }
 
@@ -4488,7 +4613,7 @@ fn a_template_is_an_encaps_list_of_its_text_and_interpolations() {
 }
 
 /// ```php
-/// $twice = fn (int $a) => $a * $extra; $half = fn ($b) => $b / 2; return $twice($half(4));
+/// $twice = fn (int $a) => $a * $extra; $half = fn ($b) => \intdiv($b, 2); return $twice($half(4));
 /// ```
 ///
 /// A lambda that writes none of the locals it captures is PHP's `fn`, which captures by value what its body reads.
@@ -4537,10 +4662,12 @@ fn a_lambda_that_writes_no_capture_is_an_arrow_function() {
                       null
                       null
                   null
-                  BINARY_OP [4]
-                    VAR
-                      ZVAL "b"
-                    ZVAL 2
+                  CALL
+                    ZVAL "intdiv"
+                    ARG_LIST
+                      VAR
+                        ZVAL "b"
+                      ZVAL 2
                   null
                   null
               RETURN
