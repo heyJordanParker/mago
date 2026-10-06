@@ -5,11 +5,8 @@ use mago_database::file::File;
 use mago_names::ResolvedNames;
 use mago_names::binding::Binding;
 use mago_names::binding::php_method_name;
-use mago_names::resolver::NameResolver;
 use mago_names::scope::php_name;
 use mago_php_version::PHPVersion;
-use mago_reporting::Level;
-use mago_semantics::SemanticsChecker;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::Access;
@@ -54,7 +51,6 @@ use mago_syntax::cst::NamespaceBody;
 use mago_syntax::cst::PartialArgument;
 use mago_syntax::cst::PartialArgumentList;
 use mago_syntax::cst::PositionalArgument;
-use mago_syntax::cst::Program;
 use mago_syntax::cst::Property;
 use mago_syntax::cst::PropertyHookConcreteExpressionBody;
 use mago_syntax::cst::PropertyHookList;
@@ -74,6 +70,8 @@ use mago_syntax_core::utils::parse_literal_integer_as_float;
 
 use crate::Diagnostic;
 use crate::Unit;
+use crate::lower::checked::CheckedProgram;
+use crate::lower::checked::check;
 use crate::sharp_kind;
 use crate::sharp_kind::SHARP_AST_AND;
 use crate::sharp_kind::SHARP_AST_ARG_LIST;
@@ -149,6 +147,8 @@ use crate::sharp_str;
 use crate::sharp_value;
 use crate::store_text;
 
+mod checked;
+
 /// The values php-src gives the attrs the lowering emits, from `zend_compile.h` and `zend_vm_opcodes.h`.
 const ZEND_NAME_FQ: u32 = 0;
 const ZEND_NAME_NOT_FQ: u32 = 1;
@@ -208,18 +208,21 @@ pub(crate) fn lower(path: Vec<u8>, source: Vec<u8>) -> Box<Unit> {
         );
     }
 
-    let names = NameResolver::new(&arena).resolve(program);
-    let errors: Vec<Diagnostic> = SemanticsChecker::new(PHPVersion::PHP85)
-        .check(&file, program, &names)
-        .iter()
-        .filter(|issue| issue.level == Level::Error)
-        .map(|issue| lines.diagnostic(issue.primary_span(), sharp_severity::SHARP_COMPILE_ERROR, issue.message.clone()))
-        .collect();
-    if !errors.is_empty() {
-        return Unit::failed(errors);
-    }
+    let checked = match check(&arena, &file, program) {
+        Ok(checked) => checked,
+        Err(errors) => {
+            return Unit::failed(
+                errors
+                    .into_iter()
+                    .map(|issue| {
+                        lines.diagnostic(issue.primary_span(), sharp_severity::SHARP_COMPILE_ERROR, issue.message)
+                    })
+                    .collect(),
+            );
+        }
+    };
 
-    Lowering::new(&lines, &names).program(program)
+    Lowering::new(&lines, checked.names()).program(&checked)
 }
 
 /// The offset each line starts at, counted as the Zend scanner counts: `\n`, `\r\n` and a lone `\r` each end a line.
@@ -294,9 +297,9 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
     /// `declare(strict_types=1);` first, then the namespaces and classes. Imports are not lowered: every class name
     /// in the tree is fully qualified.
-    fn program(mut self, program: &Program) -> Box<Unit> {
+    fn program(mut self, checked: &CheckedProgram) -> Box<Unit> {
         let mut statements = vec![self.strict_types()];
-        for statement in &program.statements {
+        for statement in &checked.program().statements {
             self.file_statement(statement, &mut statements);
         }
 
@@ -1324,6 +1327,8 @@ fn assignment_kind(operator: &AssignmentOperator) -> (sharp_kind, u32) {
 
 #[cfg(test)]
 mod tests {
+    use mago_names::resolver::NameResolver;
+
     use super::*;
     use crate::catch_panic;
 
@@ -1336,9 +1341,9 @@ mod tests {
             let file = File::ephemeral(Cow::Borrowed(b"src/Report.sharp"), Cow::Owned(source.into_bytes()));
             let arena = LocalArena::new();
             let program = parse_file_with_dialect(&arena, &file, Dialect::Sharp, ParserSettings::default());
-            let names = NameResolver::new(&arena).resolve(program);
+            let checked = CheckedProgram::unchecked(program, NameResolver::new(&arena).resolve(program));
 
-            Lowering::new(&Lines::new(&file.contents), &names).program(program)
+            Lowering::new(&Lines::new(&file.contents), checked.names()).program(&checked)
         });
 
         assert_eq!(unit.abi.node_count, 0, "{method}");
