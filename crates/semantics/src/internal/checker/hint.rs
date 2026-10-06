@@ -37,11 +37,16 @@ pub fn check_hint(hint: &Hint, context: &mut Context<'_, '_, '_>) {
                 );
             }
 
-            // PHP# writes a union that holds null as `(int|string)?`, and `check_slice` checks it.
-            let is_sharp_nullable_union = context.program.dialect.is_sharp()
-                && matches!(nullable_hint.hint, Hint::Parenthesized(parenthesized) if parenthesized.hint.is_union());
+            // PHP# writes `Any?` for PHP's `mixed` and `(int|string)?` for a union that holds null, and `check_slice`
+            // checks both.
+            let is_sharp_nullable = context.program.dialect.is_sharp()
+                && match nullable_hint.hint {
+                    Hint::Mixed(_) => true,
+                    Hint::Parenthesized(parenthesized) => parenthesized.hint.is_union(),
+                    _ => false,
+                };
 
-            if !is_sharp_nullable_union && (nullable_hint.hint.is_standalone() || nullable_hint.hint.is_complex()) {
+            if !is_sharp_nullable && (nullable_hint.hint.is_standalone() || nullable_hint.hint.is_complex()) {
                 let val = BytesDisplay(context.get_code_snippet(nullable_hint.hint));
 
                 context.report(

@@ -3,6 +3,8 @@ use std::rc::Rc;
 use mago_allocator::Arena;
 use mago_bytes::BytesDisplay;
 use mago_codex::ttype::TType;
+use mago_codex::ttype::atomic::TAtomic;
+use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::get_bool;
 use mago_codex::ttype::get_false;
 use mago_codex::ttype::get_mixed;
@@ -72,8 +74,8 @@ where
     let runs_as_identity =
         binary.operator.is_identity() || (context.dialect.is_sharp() && binary.is_equality_with_null());
     if !runs_as_identity {
-        check_comparison_operand(context, binary.lhs, lhs_type, "Left", &binary.operator);
-        check_comparison_operand(context, binary.rhs, rhs_type, "Right", &binary.operator);
+        check_comparison_operand(context, binary.lhs, lhs_type, rhs_type, "Left", &binary.operator);
+        check_comparison_operand(context, binary.rhs, rhs_type, lhs_type, "Right", &binary.operator);
     }
 
     if context.settings.no_boolean_literal_comparison
@@ -541,11 +543,12 @@ fn involves_external_reference(expr: &Expression<'_>, block_context: &BlockConte
     matches!(unwrap_expression(expr), Expression::Variable(Variable::Direct(var)) if block_context.references_to_external_scope.contains(&word(var.name)))
 }
 
-/// Checks a single operand of a comparison operation for problematic types.
+/// Checks a single operand of a comparison operation for problematic types. `other_type` is the other operand's.
 fn check_comparison_operand<'ast, 'arena, A>(
     context: &mut Context<'_, 'arena, A>,
     operand: &'ast Expression<'arena>,
     operand_type: &TUnion,
+    other_type: &TUnion,
     side: &'static str,
     operator: &'ast BinaryOperator<'arena>,
 ) where
@@ -574,7 +577,9 @@ fn check_comparison_operand<'ast, 'arena, A>(
             .with_note(format!("If this operand is `null` at runtime, PHP's specific comparison rules for `null` with `{op_str}` will apply."))
             .with_help("Ensure this operand is non-null or that comparison with `null` is intended and handled safely."),
         );
-    } else if operand_type.is_mixed() {
+    } else if operand_type.is_mixed()
+        && !(context.dialect.is_sharp() && operator.is_equality() && other_type.types.iter().all(compares_by_value))
+    {
         context.collector.report_with_code(
             IssueCode::MixedOperand,
             Issue::error(format!("{side} operand in `{op_str}` comparison has `mixed` type."))
@@ -606,6 +611,13 @@ fn check_comparison_operand<'ast, 'arena, A>(
             .with_help("Ensure this operand is non-false or that comparison with `false` is intended and handled safely."),
         );
     }
+}
+
+/// Whether a PHP# `Any?` compares with a value of this type by value, as spec section 19 decides for a string, a
+/// number, an enum and a collection. Any other value must be checked with `is`, `as` or `match` first.
+fn compares_by_value(atomic: &TAtomic) -> bool {
+    matches!(atomic, TAtomic::Scalar(TScalar::String(_) | TScalar::Integer(_) | TScalar::Float(_)) | TAtomic::Array(_))
+        || atomic.is_enum()
 }
 
 /// The operand that `==`, `!=`, `===` or `!==` compares with `null` when its type cannot be `null`, as in

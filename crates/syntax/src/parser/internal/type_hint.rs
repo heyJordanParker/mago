@@ -91,6 +91,8 @@ where
                 val if val.eq_ignore_ascii_case(b"string") => Hint::String(self.parse_local_identifier()?),
                 val if val.eq_ignore_ascii_case(b"object") => Hint::Object(self.parse_local_identifier()?),
                 val if val.eq_ignore_ascii_case(b"mixed") => Hint::Mixed(self.parse_local_identifier()?),
+                // PHP# writes PHP's `mixed` as `Any`, as spec section 24 decides.
+                b"Any" if self.dialect.is_sharp() => Hint::Mixed(self.parse_local_identifier()?),
                 val if val.eq_ignore_ascii_case(b"iterable") => Hint::Iterable(self.parse_local_identifier()?),
                 _ => Hint::Identifier(self.parse_identifier()?),
             },

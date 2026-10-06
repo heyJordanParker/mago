@@ -670,9 +670,10 @@ where
                 default_value.value.analyze(context, block_context, artifacts)
             })?;
 
+            // PHP# writes `mixed` as `Any`, which never holds null, so its default is checked too.
             if !parameter_metadata.flags.is_variadic()
                 && let Some(parameter_type_metadata) = parameter_metadata.get_type_metadata()
-                && !parameter_type_metadata.type_union.is_mixed()
+                && (context.dialect.is_sharp() || !parameter_type_metadata.type_union.is_mixed())
             {
                 let expected_type = expand_type_metadata(
                     context,
@@ -1622,7 +1623,14 @@ fn check_parameter_default_value<'ctx, 'arena, A>(
 ) where
     A: Arena,
 {
-    if declared_type.is_mixed() || declared_type.has_template_types() || declared_type.is_generic_parameter() {
+    // A PHP# type holds null only when it is written with `?`, so its `Any` is checked and it has no implicitly
+    // nullable parameter.
+    let is_sharp = context.dialect.is_sharp();
+
+    if (declared_type.is_mixed() && !is_sharp)
+        || declared_type.has_template_types()
+        || declared_type.is_generic_parameter()
+    {
         return;
     }
 
@@ -1634,11 +1642,11 @@ fn check_parameter_default_value<'ctx, 'arena, A>(
         return;
     }
 
-    let allow_implicit_null_default = default_type.is_null()
-        && context.settings.version.is_supported(Feature::ImplicitlyNullableParameterTypes)
-        && !context.dialect.is_sharp();
+    let allow_implicit_null_default = !is_sharp
+        && default_type.is_null()
+        && context.settings.version.is_supported(Feature::ImplicitlyNullableParameterTypes);
 
-    let mut comparison_result = ComparisonResult::new();
+    let mut comparison_result = ComparisonResult::with_strict_nonnull(is_sharp);
     if union_comparator::is_contained_by(
         context.codebase,
         default_type,

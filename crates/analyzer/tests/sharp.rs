@@ -123,12 +123,12 @@ fn analyze(
 
 #[test]
 fn adding_a_mixed_operand_reports_mixed_operand_as_in_php() {
-    let any = "<?php\n\nnamespace Lib;\n\nfinal class Any\n{\n    public static function value(): mixed\n    {\n        return 1;\n    }\n}\n";
-    let sharp = "namespace Demo;\n\nimport Lib.Any;\n\nclass Report\n{\n    public static int total()\n    {\n        return Any.value() + 1;\n    }\n}\n";
-    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Any;\n\nclass Report\n{\n    public static function total(): int\n    {\n        return Any::value() + 1;\n    }\n}\n";
+    let source = "<?php\n\nnamespace Lib;\n\nfinal class Source\n{\n    public static function value(): mixed\n    {\n        return 1;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Source;\n\nclass Report\n{\n    public static int total()\n    {\n        return Source.value() + 1;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Source;\n\nclass Report\n{\n    public static function total(): int\n    {\n        return Source::value() + 1;\n    }\n}\n";
 
-    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Any.php", any)]);
-    let php_issues = issues(("src/Demo/Report.php", php), &[("src/Lib/Any.php", any)]);
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Source.php", source)]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[("src/Lib/Source.php", source)]);
 
     assert!(codes(&sharp_issues).contains(&"mixed-operand"), "{sharp_issues:?}");
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
@@ -528,12 +528,13 @@ fn a_nullable_value_where_a_value_is_required_is_reported_as_in_php() {
         [
             "9:21 possible-method-access-on-null",
             "9:30 possibly-null-argument",
-            "9:15 mixed-assignment",
             "10:16 nullable-return-statement",
             "10:16 invalid-return-statement",
         ]
     );
-    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+    // PHP reports storing the `mixed` result of the call, and PHP# stores it as `Any?` without a report.
+    let php_codes: Vec<&str> = codes(&php_issues).into_iter().filter(|code| *code != "mixed-assignment").collect();
+    assert_eq!(codes(&sharp_issues), php_codes);
 }
 
 #[test]
@@ -1313,11 +1314,11 @@ fn a_ternary_with_a_bool_condition_has_the_type_it_has_in_php() {
 
 #[test]
 fn a_ternary_whose_condition_is_not_bool_is_an_invalid_operand() {
-    let any = "<?php\n\nnamespace Lib;\n\nfinal class Any\n{\n    public static function value(): mixed\n    {\n        return 1;\n    }\n}\n";
-    let sharp = "namespace Demo;\n\nimport Lib.Any;\n\nclass Report\n{\n    public static int pick(int count, string name, bool? maybe)\n    {\n        const a = count ? 1 : 2;\n        const b = name ? 1 : 2;\n        const c = maybe ? 1 : 2;\n        const d = Any.value() ? 1 : 2;\n        const e = count ?: 2;\n        return a + b + c + d + e;\n    }\n}\n";
+    let source = "<?php\n\nnamespace Lib;\n\nfinal class Source\n{\n    public static function value(): mixed\n    {\n        return 1;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Source;\n\nclass Report\n{\n    public static int pick(int count, string name, bool? maybe)\n    {\n        const a = count ? 1 : 2;\n        const b = name ? 1 : 2;\n        const c = maybe ? 1 : 2;\n        const d = Source.value() ? 1 : 2;\n        const e = count ?: 2;\n        return a + b + c + d + e;\n    }\n}\n";
 
     assert_eq!(
-        issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Any.php", any)]),
+        issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Source.php", source)]),
         ["9:19 invalid-operand", "10:19 invalid-operand", "11:19 invalid-operand", "12:19 invalid-operand"]
     );
 }
@@ -1370,11 +1371,11 @@ fn casts_between_numbers_have_the_types_they_have_in_php() {
 
 #[test]
 fn a_cast_of_a_value_that_is_not_a_number_is_an_invalid_operand() {
-    let any = "<?php\n\nnamespace Lib;\n\nfinal class Any\n{\n    public static function value(): mixed\n    {\n        return 1;\n    }\n}\n";
-    let sharp = "namespace Demo;\n\nimport Lib.Any;\n\nclass Report\n{\n    public static string pick(string name, bool flag, int? maybe)\n    {\n        const a = (int)name;\n        const b = (float)flag;\n        const c = (string)name;\n        const d = (int)maybe;\n        const e = (string)Any.value();\n        return `${a}${b}${c}${d}${e}`;\n    }\n}\n";
+    let source = "<?php\n\nnamespace Lib;\n\nfinal class Source\n{\n    public static function value(): mixed\n    {\n        return 1;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Source;\n\nclass Report\n{\n    public static string pick(string name, bool flag, int? maybe)\n    {\n        const a = (int)name;\n        const b = (float)flag;\n        const c = (string)name;\n        const d = (int)maybe;\n        const e = (string)Source.value();\n        return `${a}${b}${c}${d}${e}`;\n    }\n}\n";
 
     assert_eq!(
-        issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Any.php", any)]),
+        issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Source.php", source)]),
         [
             "9:19 invalid-operand",
             "10:19 invalid-operand",
@@ -1805,6 +1806,37 @@ fn attribute_arguments_are_checked_against_the_attribute_constructor_as_in_php()
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
 }
 
+/// A plain PHP class whose values arrive in PHP# as `Any?`: typed `mixed`, or not typed at all.
+const SOURCE: &str = "<?php\n\nnamespace Demo;\n\nfinal class Source\n{\n    public static function value(string $key): mixed\n    {\n        return $key;\n    }\n\n    public static function untyped(string $key)\n    {\n        return $key;\n    }\n\n    public static function take(mixed $value): void\n    {\n    }\n\n    public static function takeUntyped($value): void\n    {\n    }\n\n    public static function takeInt(int $value): void\n    {\n    }\n}\n";
+
+#[test]
+fn a_php_mixed_or_untyped_value_arrives_as_any_and_goes_back_to_php() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public Any? read(string key)\n    {\n        const value = Source.value(key);\n        Any? raw = Source.untyped(key);\n        Source.take(value);\n        Source.takeUntyped(raw);\n        return key == \"raw\" ? raw : value;\n    }\n\n    public Any keep(Any value)\n    {\n        const kept = value;\n        Source.take(kept);\n        return kept;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Inbox.sharp", sharp), &[("src/Demo/Source.php", SOURCE)]), Vec::<String>::new());
+}
+
+#[test]
+fn an_unchecked_any_is_refused_wherever_its_type_matters() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public int use(Any? value)\n    {\n        const a = value.name;\n        const b = value.run();\n        const c = value + 1;\n        const d = -value;\n        const e = value < 1;\n        Source.takeInt(value);\n        int f = value;\n        const g = (int)value;\n        if (value) {\n        }\n        return value;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Inbox.sharp", sharp), &[("src/Demo/Source.php", SOURCE)]),
+        [
+            "7:25 mixed-property-access",
+            "8:25 mixed-method-access",
+            "9:19 mixed-operand",
+            "10:20 mixed-operand",
+            "11:19 mixed-operand",
+            "12:24 mixed-argument",
+            "13:17 invalid-local-assignment-value",
+            "14:19 invalid-operand",
+            "15:13 invalid-operand",
+            "17:16 mixed-return-statement",
+        ]
+    );
+}
+
 const SHAPES: &str = "<?php\n\nnamespace Lib;\n\ninterface Shape\n{\n}\n\nfinal class Circle implements Shape\n{\n    public function __construct(public float $radius)\n    {\n    }\n}\n\nfinal class Square implements Shape\n{\n    public function __construct(public float $side)\n    {\n    }\n}\n";
 
 #[test]
@@ -1888,6 +1920,52 @@ fn a_pattern_that_can_never_match_is_an_error_at_the_pattern() {
     );
 }
 
+/// `is` and `match` check an `Any?`, so the value they narrow is used as its checked type, spec section 24.
+#[test]
+fn is_and_match_check_an_any_before_its_use() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public int size(Any? value)\n    {\n        if (value is string text) {\n            return strlen(text);\n        }\n        return match (value) {\n            int count => count + 1,\n            null => 0,\n            default => -1,\n        };\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Inbox.sharp", sharp), &[("src/Demo/Source.php", SOURCE)]), Vec::<String>::new());
+}
+
+/// `== null` runs as `=== null` in PHP#, so it checks an `Any?`, and on an `Any`, which is never null, it is redundant.
+#[test]
+fn equality_with_null_checks_an_any_nullable_and_is_redundant_on_an_any() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public bool missing(Any? value) => value == null;\n\n    public bool gone(Any value) => value == null;\n}\n";
+
+    assert_eq!(issues(("src/Demo/Inbox.sharp", sharp), &[]), ["7:36 redundant-comparison"]);
+}
+
+/// An accessor of an `Any?` property takes and gives null, and one of an `Any` property gives any value but null.
+#[test]
+fn an_accessor_of_any_gives_no_null_and_of_any_nullable_does() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public Any? note { get => field; set => field = value; }\n\n    public Any label { get => this.note ?? \"none\"; }\n\n    public Any blank { get => null; }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Inbox.sharp", sharp), &[]), ["9:31 invalid-return-statement"]);
+}
+
+/// An override of a plain PHP property of PHP's `mixed`, written or in `@var`, or of an untyped one, writes `Any?`, or
+/// `Any`, which lowers to the same `mixed`, spec sections 6.1 and 24.
+#[test]
+fn an_override_of_a_plain_php_mixed_property_writes_any() {
+    let library = "<?php\n\nnamespace Lib;\n\nabstract class Message\n{\n    /** @var mixed */\n    protected $payload;\n\n    protected mixed $data = null;\n\n    protected $raw;\n\n    protected mixed $body = 1;\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Message;\n\npublic class Mail : Message\n{\n    protected override Any? payload = null;\n    protected override Any? data = null;\n    protected override Any raw = 1;\n    protected override Any body = \"text\";\n}\n";
+
+    assert_eq!(issues(("src/Demo/Mail.sharp", sharp), &[("src/Lib/Message.php", library)]), Vec::<String>::new());
+}
+
+/// A `let` takes its first value's type, so one that starts as `Any?` takes any value, null too, and one that starts
+/// as `Any` takes any value but null.
+#[test]
+fn a_let_local_that_starts_as_any_keeps_whether_it_takes_null() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public Any? keep(string key, Any value)\n    {\n        let raw = Source.untyped(key);\n        raw = 1;\n        raw = null;\n        let kept = value;\n        kept = \"one\";\n        kept = null;\n        return key == \"raw\" ? raw : kept;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Inbox.sharp", sharp), &[("src/Demo/Source.php", SOURCE)]),
+        ["12:16 invalid-local-assignment-value"]
+    );
+}
+
 #[test]
 fn a_get_body_that_converts_a_mixed_attribute_with_as_has_no_issues() {
     let sharp = "namespace Demo;\n\nimport Lib.Model;\n\nclass Order : Model\n{\n    public Address? shipping { get => this.getAttribute(\"shipping\") as Address; set => this.setAttribute(\"shipping\", value); }\n}\n\nclass Address\n{\n}\n";
@@ -1895,16 +1973,18 @@ fn a_get_body_that_converts_a_mixed_attribute_with_as_has_no_issues() {
     assert_eq!(issues(("src/Demo/Order.sharp", sharp), &[("src/Lib/Model.php", MODEL)]), Vec::<String>::new());
 }
 
+/// A `let` holding a `mixed` attribute is an `Any?` local, so storing it reports nothing in PHP#, where PHP reports
+/// `mixed-assignment`, and spec section 24 refuses its use instead, as `name.length` shows.
 #[test]
-fn a_let_local_holding_a_mixed_attribute_reports_mixed_assignment_as_in_php() {
-    let sharp = "namespace Demo;\n\nimport Lib.Model;\n\nclass Order : Model\n{\n    public bool named()\n    {\n        let name = this.getAttribute(\"name\");\n        return name is string;\n    }\n}\n";
-    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Model;\n\nclass Order extends Model\n{\n    public function named(): bool\n    {\n        $name = $this->getAttribute('name');\n        return \\is_string($name);\n    }\n}\n";
+fn a_let_local_holding_a_mixed_attribute_is_any_and_reports_nothing_where_php_reports_mixed_assignment() {
+    let sharp = "namespace Demo;\n\nimport Lib.Model;\n\nclass Order : Model\n{\n    public bool named()\n    {\n        let name = this.getAttribute(\"name\");\n        return name is string;\n    }\n\n    public Any? length()\n    {\n        let name = this.getAttribute(\"name\");\n        return name.length;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Model;\n\nclass Order extends Model\n{\n    public function named(): bool\n    {\n        $name = $this->getAttribute('name');\n        return \\is_string($name);\n    }\n\n    public function length(): mixed\n    {\n        $name = $this->getAttribute('name');\n        return $name->length;\n    }\n}\n";
 
     let sharp_issues = issues(("src/Demo/Order.sharp", sharp), &[("src/Lib/Model.php", MODEL)]);
     let php_issues = issues(("src/Demo/Order.php", php), &[("src/Lib/Model.php", MODEL)]);
 
-    assert_eq!(sharp_issues, ["9:13 mixed-assignment"]);
-    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+    assert_eq!(sharp_issues, ["16:21 mixed-property-access"]);
+    assert_eq!(codes(&php_issues), ["mixed-assignment", "mixed-assignment", "mixed-property-access"]);
 }
 
 #[test]
@@ -2504,6 +2584,21 @@ fn a_wrong_element_type_is_reported_where_it_enters_the_collection() {
     );
 }
 
+#[test]
+fn any_never_holds_null_and_any_question_mark_may() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    private Any last = 0;\n\n    public Any keep(Any? value, Any sure)\n    {\n        this.keep(sure, sure);\n        this.keep(value, value);\n        Any held = value;\n        this.last = value;\n        this.keep(this.last, held);\n        return value;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Inbox.sharp", sharp), &[]),
+        [
+            "10:26 mixed-argument",
+            "11:20 invalid-local-assignment-value",
+            "12:21 invalid-property-assignment-value",
+            "14:16 mixed-return-statement",
+        ]
+    );
+}
+
 /// Spec section 12 writes a change to a collection in a property back through the property's `set`, so code that
 /// cannot reach the `set` cannot change the collection, as PHP refuses the same write when it runs.
 #[test]
@@ -2531,6 +2626,81 @@ fn a_bare_index_read_on_a_map_is_an_error() {
             "11:9 possibly-undefined-array-index",
             "13:24 possibly-undefined-array-index",
         ]
+    );
+}
+
+#[test]
+fn coalescing_an_unchecked_any_gives_a_value_that_is_never_null() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public Any pick(Any? maybe, Any sure) => maybe ?? sure;\n\n    public Any label(Any? maybe, string fallback)\n    {\n        Any shown = maybe ?? fallback;\n        return shown;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Inbox.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn a_template_shows_an_any_only_once_it_is_checked() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public string show(Any? value, Any sure, int count)\n    {\n        const a = `${value}`;\n        const b = `got ${sure}!`;\n        const c = `${count} items`;\n        return `${a}${b}${c}`;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Inbox\n{\n    public function show(mixed $value, int $count): string\n    {\n        return \"{$value} and {$count} items\";\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Inbox.sharp", sharp), &[]), ["7:20 mixed-operand", "8:24 mixed-operand"]);
+    assert_eq!(issues(("src/Demo/Inbox.php", php), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn a_null_default_needs_a_type_written_with_a_question_mark() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public Any first = null;\n    public string name = null;\n    public int? count = null;\n    public Any? maybe = null;\n\n    public Any keep(Any value = null) => value;\n\n    public string named(string value = null) => value;\n\n    public string? label(string? value = null) => value;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Inbox\n{\n    public mixed $first = null;\n\n    public function keep(mixed $value = null): mixed\n    {\n        return $value;\n    }\n\n    public function named(string $value = null): ?string\n    {\n        return $value;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Inbox.sharp", sharp), &[]),
+        [
+            "5:24 invalid-property-default-value",
+            "6:26 invalid-property-default-value",
+            "10:33 invalid-parameter-default-value",
+            "12:40 invalid-parameter-default-value",
+        ]
+    );
+    assert_eq!(issues(("src/Demo/Inbox.php", php), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn a_static_field_a_constant_and_a_computed_property_of_type_any_never_hold_null() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public const Any NONE = null;\n\n    private static Any last = 0;\n\n    public Any latest => Inbox.pick(null);\n\n    public static Any? pick(Any? value)\n    {\n        Inbox.last = value;\n        return Inbox.last;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Inbox.sharp", sharp), &[]),
+        ["5:29 invalid-constant-value", "9:26 mixed-return-statement", "13:9 invalid-property-assignment-value"]
+    );
+}
+
+#[test]
+fn a_collection_of_any_never_holds_null_and_a_collection_of_any_question_mark_may() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    private Map<string, Any> sure = [:];\n    private Map<string, Any?> maybe = [:];\n\n    public void keep(string key, Any? value, Any held, List<Any> items)\n    {\n        this.sure[key] = value;\n        this.sure = [key: value];\n        items.add(value);\n        items.set(0, value);\n        this.maybe[key] = value;\n        this.maybe = [key: value];\n        this.sure[key] = held;\n        items.add(held);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Inbox.sharp", sharp), &[]),
+        [
+            "10:9 invalid-property-assignment-value",
+            "11:21 invalid-property-assignment-value",
+            "12:19 mixed-argument",
+            "13:22 mixed-argument",
+        ]
+    );
+}
+
+#[test]
+fn a_php_non_null_mixed_keeps_accepting_a_value_that_may_be_null() {
+    let php = "<?php\n\nnamespace Demo;\n\nclass Inbox\n{\n    /** @var non-empty-mixed */\n    private mixed $last = 1;\n\n    /** @var non-empty-mixed */\n    private static mixed $first = 1;\n\n    /**\n     * @param non-empty-mixed $sure\n     *\n     * @return non-empty-mixed\n     */\n    public function keep(mixed $value, mixed $sure): mixed\n    {\n        $this->keep($value, $value);\n        $this->last = $value;\n        $this->keep($this->last, $sure);\n        self::$first = $value;\n        $this->keep(self::$first, $sure);\n        return $value;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Inbox.php", php), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn an_unchecked_any_compares_with_a_string_or_a_number_but_not_with_another_value() {
+    let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public bool same(Any? value, Any? other, Inbox inbox)\n    {\n        const a = value == \"1\";\n        const b = value != 2;\n        const c = 1.5 == value;\n        const d = value == other;\n        const e = value == inbox;\n        return a && b && c && d && e;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Inbox.sharp", sharp), &[]),
+        ["10:19 mixed-operand", "10:28 mixed-operand", "11:19 mixed-operand"]
     );
 }
 

@@ -94,6 +94,9 @@ use crate::internal::context::Context;
 const SUPERGLOBALS: [&[u8]; 9] =
     [b"GLOBALS", b"_SERVER", b"_GET", b"_POST", b"_FILES", b"_COOKIE", b"_SESSION", b"_REQUEST", b"_ENV"];
 
+/// How PHP# writes PHP's `mixed`. The parser reads both as `Hint::Mixed`, and only `Any` is PHP#.
+const ANY: &[u8] = b"Any";
+
 /// Checks a PHP# file against the slice: the only constructs a `.sharp` file may use, and the contract the
 /// engine's lowering implements.
 ///
@@ -164,10 +167,11 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   variadic parameter that declares a member or has a `void` type in a `.sharp` file only, as upstream Mago reports
 ///   neither. An optional parameter before a required one is an error, because PHP would make it required. A
 ///   variadic parameter is not a required one, as in PHP.
-/// - Types: `int`, `float`, `bool`, `string`, a class written by its short name, `List<T>` and `Map<TKey, TValue>`
-///   of these, function types `Function<R(P1, P2)>` of these, and `void` as a return type, a function type's too. A
-///   `Map`'s key is `int` or `string`. PHP's own check reports a `void` parameter and a `void` field. Each of them is
-///   nullable when written with `?` after it, as in `int?`, and PHP's own check reports `void?`. A union of them but
+/// - Types: `int`, `float`, `bool`, `string`, `Any`, a class written by its short name, `List<T>` and
+///   `Map<TKey, TValue>` of these, function types `Function<R(P1, P2)>` of these, and `void` as a return type, a
+///   function type's too. A `Map`'s key is `int` or `string`. PHP's own check reports a `void` parameter and a `void`
+///   field. Each of them is nullable when written with `?` after it, as in `int?` or `Map<string, Any?>`, and PHP's
+///   own check reports `void?`. PHP's `mixed` is an error, because spec section 24 writes it `Any?`. A union of them but
 ///   `void`, written inline as spec section 24 writes it, as in `int|string` or `List<int>|string`, goes wherever a
 ///   type goes. PHP's own check reports `void` and a nullable type, as in `int?|string`, in a union, and
 ///   `check_union` reports a type written twice, which the engine refuses. A union holds null only when written in
@@ -556,6 +560,17 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             ),
             FieldOrProperty,
         ) => Some(FieldOrProperty),
+        (Node::Hint(Hint::Mixed(mixed)), FieldOrProperty | ClassConstant | Method | Signature | Parameter | Body)
+            if mixed.value != ANY =>
+        {
+            context.report(
+                Issue::error("PHP# has no `mixed`: write `Any?`, or `Any` for a value that is never null.")
+                    .with_annotation(Annotation::primary(mixed.span).with_message("Written here."))
+                    .with_note("Spec section 24 removes PHP's `mixed`: `Any` holds a value of any type but null, and `Any?` also allows null."),
+            );
+
+            None
+        }
         (Node::GenericHint(generic), FieldOrProperty | Method | Signature | Parameter | Body) => {
             // The analyzer refuses a named key type without an `int` or `string` backing value.
             if let [key, _] = generic.arguments.as_slice()
@@ -1773,6 +1788,7 @@ fn is_slice_type(hint: &Hint) -> bool {
         | Hint::Void(_)
         | Hint::Identifier(Identifier::Local(_))
         | Hint::Nullable(_) => true,
+        Hint::Mixed(any) => any.value == ANY,
         Hint::Generic(generic) => {
             let arguments = generic.arguments.len();
 
@@ -2125,22 +2141,22 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# interface has an optional `public`, a name, an optional `: Interface` header and methods, with no attributes, other modifiers, `extends`, constants or properties."
         }
         Place::Signature => {
-            "A PHP# interface method has no modifier, parameters, a return type of `int`, `float`, `bool`, `string`, `void`, a class, `List<T>`, `Map<TKey, TValue>` or `Self`, each but `void` nullable as in `int?`, or a union of them but `void`, as in `int|string`, and no body."
+            "A PHP# interface method has no modifier, parameters, a return type of `int`, `float`, `bool`, `string`, `Any`, `void`, a class, `List<T>`, `Map<TKey, TValue>` or `Self`, each but `void` nullable as in `int?`, or a union of them but `void`, as in `int|string`, and no body."
         }
         Place::Enum => {
             "A PHP# enum has attributes, an optional `public`, a name, an optional `: string, Interface` header whose `int` or `string` comes first, constants, cases and methods, with no other modifiers or `implements`."
         }
         Place::FieldOrProperty => {
-            "A PHP# field is `private` or `protected`, and a property has the accessors `get` and an optional `set`, each `;`, `=> expr;` or a block. Both may be `static`, and have a type of `int`, `float`, `bool`, `string`, a class, `List<T>`, `Map<TKey, TValue>` or `Function<R(P)>`, nullable as in `int?` or not, or a union of them as in `int|string`, a name, and an optional initial value."
+            "A PHP# field is `private` or `protected`, and a property has the accessors `get` and an optional `set`, each `;`, `=> expr;` or a block. Both may be `static`, and have a type of `int`, `float`, `bool`, `string`, `Any`, a class, `List<T>`, `Map<TKey, TValue>` or `Function<R(P)>`, nullable as in `int?` or not, or a union of them as in `int|string`, a name, and an optional initial value."
         }
         Place::ClassConstant => {
-            "A PHP# constant has `public`, `protected` or `private`, an optional type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, or a union of them as in `int|string`, one name, and a constant value."
+            "A PHP# constant has `public`, `protected` or `private`, an optional type of `int`, `float`, `bool`, `string`, `Any` or a class, nullable as in `int?` or not, or a union of them as in `int|string`, one name, and a constant value."
         }
         Place::Method => {
-            "A PHP# method takes `public`, `protected`, `private`, `static`, `abstract`, `virtual` and `override`, a constructor also `required`, parameters, and a return type of `int`, `float`, `bool`, `string`, `void`, a class, `List<T>`, `Map<TKey, TValue>`, `Function<R(P)>` or `Self`, each but `void` nullable as in `int?`, or a union of them but `void`, as in `int|string`."
+            "A PHP# method takes `public`, `protected`, `private`, `static`, `abstract`, `virtual` and `override`, a constructor also `required`, parameters, and a return type of `int`, `float`, `bool`, `string`, `Any`, `void`, a class, `List<T>`, `Map<TKey, TValue>`, `Function<R(P)>` or `Self`, each but `void` nullable as in `int?`, or a union of them but `void`, as in `int|string`."
         }
         Place::Parameter => {
-            "A PHP# parameter has a type of `int`, `float`, `bool`, `string`, a class, `List<T>`, `Map<TKey, TValue>` or `Function<R(P)>`, nullable as in `int?` or not, or a union of them as in `int|string`, a name, and an optional default. The last parameter can be variadic, as in `int ...values`."
+            "A PHP# parameter has a type of `int`, `float`, `bool`, `string`, `Any`, a class, `List<T>`, `Map<TKey, TValue>` or `Function<R(P)>`, nullable as in `int?` or not, or a union of them as in `int|string`, a name, and an optional default. The last parameter can be variadic, as in `int ...values`."
         }
         Place::Lambda => {
             "A PHP# lambda is a bare arrow after one name or parenthesized parameters, each with an optional type, and its body is an expression or a block, as in `(a, b) => a + b`. The last parameter can be variadic, as in `(int ...values) => count(values)`."
@@ -2347,7 +2363,7 @@ pub fn check_class_name(class_name: &LocalIdentifier, context: &mut Context<'_, 
         context.report(
             Issue::error(format!("Cannot use `{name}` as a class name: it is reserved."))
                 .with_annotation(Annotation::primary(class_name.span).with_message("Class declared here."))
-                .with_note("PHP reserves this name for a type."),
+                .with_note("PHP# reserves this name for a type."),
         );
     }
 }
@@ -2367,7 +2383,7 @@ pub fn check_declarations(program: &Program, context: &mut Context<'_, '_, '_>) 
 
             context.report(
                 Issue::error(format!(
-                    "Cannot import `{full_name}` as `{short_name}`: PHP reserves `{short_name}` for a type."
+                    "Cannot import `{full_name}` as `{short_name}`: PHP# reserves `{short_name}` for a type."
                 ))
                 .with_annotation(Annotation::primary(import.name.span()).with_message("Imported here."))
                 .with_help("Import a class with another name."),
@@ -2590,8 +2606,9 @@ fn check_local_name(name: &[u8], span: Span, kind: &str, context: &mut Context<'
     }
 }
 
+/// PHP# reserves PHP's type names and `Any`, its name for `mixed`.
 fn is_reserved_class_name(name: &[u8]) -> bool {
-    RESERVED_CLASS_NAMES.iter().any(|reserved| reserved.eq_ignore_ascii_case(name))
+    RESERVED_CLASS_NAMES.iter().chain(&[ANY]).any(|reserved| reserved.eq_ignore_ascii_case(name))
 }
 
 /// Returns true when the PHP name `full_name` is the class `class_name` declared in `namespace`.

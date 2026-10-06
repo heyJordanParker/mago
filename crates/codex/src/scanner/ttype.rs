@@ -19,6 +19,7 @@ use crate::ttype::atomic::TAtomic;
 use crate::ttype::atomic::callable::TCallable;
 use crate::ttype::atomic::callable::TCallableSignature;
 use crate::ttype::atomic::callable::parameter::TCallableParameter;
+use crate::ttype::atomic::mixed::TMixed;
 use crate::ttype::atomic::object::TObject;
 use crate::ttype::atomic::object::named::TNamedObject;
 use crate::ttype::atomic::reference::TReference;
@@ -149,6 +150,8 @@ fn union_from_hint(
         Hint::Integer(_) => get_int(),
         Hint::String(_) => get_string(),
         Hint::Object(_) => get_object(),
+        // PHP# writes `mixed` as `Any?`, so its `Any` never holds null.
+        Hint::Mixed(any) if any.value == b"Any" => wrap_atomic(TAtomic::Mixed(TMixed::new().with_is_non_null(true))),
         Hint::Mixed(_) => get_mixed(),
         Hint::Parent(_) => wrap_atomic(TAtomic::Object(TObject::Named(TNamedObject::new(word("parent"))))),
         Hint::Intersection(intersection) => {
