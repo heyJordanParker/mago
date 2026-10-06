@@ -1,9 +1,13 @@
+use mago_span::Span;
+
 use crate::T;
+use crate::cst::cst::GenericHint;
 use crate::cst::cst::Hint;
 use crate::cst::cst::IntersectionHint;
 use crate::cst::cst::NullableHint;
 use crate::cst::cst::ParenthesizedHint;
 use crate::cst::cst::UnionHint;
+use crate::cst::sequence::TokenSeparatedSequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use mago_allocator::prelude::*;
@@ -14,6 +18,10 @@ where
     A: Arena,
 {
     pub(crate) fn is_at_type_hint(&mut self) -> Result<bool, ParseError> {
+        if self.is_at_generic_hint()? {
+            return Ok(true);
+        }
+
         Ok(matches!(
             self.stream.peek_kind(0)?,
             Some(T!["?"
@@ -64,6 +72,7 @@ where
             T!["static"] => Hint::Static(self.expect_any_keyword()?),
             T!["self"] => Hint::Self_(self.expect_any_keyword()?),
             T!["parent"] => Hint::Parent(self.expect_any_keyword()?),
+            T![Identifier | "list"] if self.is_at_generic_hint()? => Hint::Generic(self.parse_generic_hint()?),
             T!["enum" | "from" | QualifiedIdentifier | FullyQualifiedIdentifier] => {
                 Hint::Identifier(self.parse_identifier()?)
             }
@@ -103,6 +112,11 @@ where
             }
         };
 
+        // A `>>` that closed this type's arguments also closed the enclosing list, so nothing after it belongs here.
+        if self.state.closing_angle.is_some() {
+            return Ok(hint);
+        }
+
         // PHP# writes a nullable type with `?` after it, as in `int?`.
         let hint = if self.dialect.is_sharp() && self.stream.is_at(T!["?"])? {
             let question_mark = self.stream.eat_span(T!["?"])?;
@@ -134,6 +148,52 @@ where
             }
             _ => hint,
         })
+    }
+
+    /// Whether a PHP# type with type arguments starts here: a name, which may be `List`, followed by `<`.
+    pub(crate) fn is_at_generic_hint(&mut self) -> Result<bool, ParseError> {
+        Ok(self.dialect.is_sharp()
+            && matches!(self.stream.peek_kind(0)?, Some(T![Identifier | "list"]))
+            && self.stream.peek_kind(1)? == Some(T!["<"]))
+    }
+
+    /// Parses a PHP# type with type arguments, as in `Map<string, List<Line>>`.
+    fn parse_generic_hint(&mut self) -> Result<GenericHint<'arena>, ParseError> {
+        let name = self.parse_local_identifier()?;
+        let less_than = self.stream.eat_span(T!["<"])?;
+        let mut arguments = Vec::new_in(self.arena);
+        let mut commas = Vec::new_in(self.arena);
+        loop {
+            arguments.push(self.parse_type_hint()?);
+            if self.state.closing_angle.is_some() || !self.stream.is_at(T![","])? {
+                break;
+            }
+
+            commas.push(self.stream.consume()?);
+        }
+
+        Ok(GenericHint {
+            name,
+            less_than,
+            arguments: TokenSeparatedSequence::new(arguments, commas),
+            greater_than: self.parse_closing_angle()?,
+        })
+    }
+
+    /// Consumes the `>` that closes a type argument list. A `>>` closes this list and the enclosing one.
+    fn parse_closing_angle(&mut self) -> Result<Span, ParseError> {
+        if let Some(span) = self.state.closing_angle.take() {
+            return Ok(span);
+        }
+
+        if self.stream.is_at(T![">>"])? {
+            let span = self.stream.consume_span()?;
+            self.state.closing_angle = Some(span.subspan(1, 2));
+
+            return Ok(span.subspan(0, 1));
+        }
+
+        self.stream.eat_span(T![">"])
     }
 
     pub(crate) fn parse_nullable_type_hint(&mut self) -> Result<NullableHint<'arena>, ParseError> {

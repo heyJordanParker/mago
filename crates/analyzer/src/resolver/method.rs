@@ -10,6 +10,7 @@ use mago_codex::metadata::ttype::TypeMetadata;
 use mago_codex::misc::GenericParent;
 use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
+use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::generic::TGenericParameter;
 use mago_codex::ttype::atomic::mixed::TMixed;
 use mago_codex::ttype::atomic::object::TObject;
@@ -19,6 +20,7 @@ use mago_codex::ttype::comparator::union_comparator::is_contained_by;
 use mago_codex::ttype::expander;
 use mago_codex::ttype::expander::StaticClassType;
 use mago_codex::ttype::expander::TypeExpansionOptions;
+use mago_codex::ttype::get_array_parameters;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_specialized_template_type;
 use mago_codex::ttype::template::GenericTemplate;
@@ -28,13 +30,14 @@ use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
+use mago_syntax::cst::Access;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
 use mago_word::Word;
 use mago_word::ascii_lowercase_word;
+use mago_word::concat_word;
 use mago_word::word;
 
-use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
 use crate::code::IssueCode;
 use crate::context::Context;
@@ -43,8 +46,12 @@ use crate::error::AnalysisError;
 use crate::resolver::class_name::report_non_existent_class_like;
 use crate::resolver::property::localize_property_type;
 use crate::resolver::selector::resolve_member_selector;
+use crate::utils::expression::analyze_member_object;
+use crate::utils::expression::get_bare_name_variable_id;
+use crate::utils::expression::is_this;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_method_name;
+use crate::utils::names::display_sharp_collection;
 use crate::visibility::check_method_visibility;
 use crate::visibility::is_method_visible;
 
@@ -178,10 +185,7 @@ where
     let mut result = MethodResolutionResult::default();
     let mut asserted_descendant_method_references = Vec::new();
 
-    let was_inside_general_use = block_context.flags.inside_general_use();
-    block_context.flags.set_inside_general_use(true);
-    object.analyze(context, block_context, artifacts)?;
-    block_context.flags.set_inside_general_use(was_inside_general_use);
+    analyze_member_object(context, block_context, artifacts, object, is_null_safe)?;
 
     let resolved_selectors = resolve_member_selector(context, block_context, artifacts, selector, false)?;
     let mut method_names = Vec::new();
@@ -234,11 +238,17 @@ where
             }
 
             let closure_object;
+            let collection_methods;
             let obj_type = match object_atomic {
                 TAtomic::Object(obj_type) => obj_type,
                 TAtomic::Callable(callable) if callable.is_closure() => {
                     closure_object = TObject::new_named(word("Closure"));
                     &closure_object
+                }
+                TAtomic::Array(array) if context.dialect.is_sharp() => {
+                    let declared = get_declared_collection(context, block_context, artifacts, object);
+                    collection_methods = get_collection_methods(declared.as_ref().unwrap_or(array), context.codebase);
+                    &collection_methods
                 }
                 _ => {
                     if object_atomic.is_mixed() {
@@ -313,6 +323,17 @@ where
                                     result.encountered_mixed |= has_incomplete_hierarchy;
                                 } else if has_incomplete_hierarchy {
                                     result.encountered_mixed = true;
+                                } else if let Some(collection) = display_sharp_collection(obj_type) {
+                                    report_non_existent_collection_method(
+                                        context,
+                                        object.span(),
+                                        selector.span(),
+                                        classname,
+                                        &collection,
+                                        method_name,
+                                    );
+
+                                    result.has_invalid_target = true;
                                 } else {
                                     report_non_existent_method(
                                         context,
@@ -1045,6 +1066,76 @@ where
     true
 }
 
+/// The collection type the place a PHP# collection method is called on is declared with: a typed local, a parameter,
+/// or a property. The method takes values of that type, as `$list[] = $x` is checked against the declared property,
+/// so a value the analyzer saw assigned last, such as `[]` or a list of one implementation, narrows nothing.
+fn get_declared_collection<A>(
+    context: &Context<'_, '_, A>,
+    block_context: &BlockContext<'_>,
+    artifacts: &AnalysisArtifacts,
+    object: &Expression<'_>,
+) -> Option<TArray>
+where
+    A: Arena,
+{
+    let declared = match object.unparenthesized() {
+        Expression::ConstantAccess(access) => {
+            let variable_id = get_bare_name_variable_id(&access.name, context.resolved_names)?;
+
+            match block_context.local_types.get(&variable_id) {
+                Some((local_type, _)) => local_type.as_ref().clone(),
+                None => block_context
+                    .scope
+                    .get_function_like()?
+                    .parameters
+                    .iter()
+                    .find(|parameter| parameter.get_name().0 == variable_id)?
+                    .get_type_metadata()?
+                    .type_union
+                    .clone(),
+            }
+        }
+        Expression::Access(Access::Property(access)) => {
+            let ClassLikeMemberSelector::Identifier(property) = &access.property else {
+                return None;
+            };
+            let property_name = concat_word!(b"$", property.value);
+            let property_type =
+                |class: Word| context.codebase.get_property_type(class.as_bytes(), property_name.as_bytes());
+
+            // `this` keeps no expression type: its class is the scope's.
+            if is_this(access.object, context.resolved_names) {
+                property_type(block_context.scope.get_class_like_name()?)?.clone()
+            } else {
+                artifacts.get_expression_type(access.object)?.types.iter().find_map(|atomic| match atomic {
+                    TAtomic::Object(object) => property_type(object.get_name()?).cloned(),
+                    _ => None,
+                })?
+            }
+        }
+        _ => return None,
+    };
+
+    declared.types.iter().find_map(|atomic| match atomic {
+        TAtomic::Array(array) => Some(array.clone()),
+        _ => None,
+    })
+}
+
+/// The class whose methods a PHP# collection has, as spec section 12 writes them: a `List<T>` is called as
+/// `Sharp\ListMethods<T>` and a `Map<K, V>` as `Sharp\MapMethods<K, V>`, so each method is typed by the elements.
+/// A PHP# element type is never narrower than `int` or `string`, so a literal the analyzer knows widens to it.
+fn get_collection_methods(array: &TArray, codebase: &CodebaseMetadata) -> TObject {
+    let (mut key, mut value) = get_array_parameters(array, codebase);
+    key.widen_scalars();
+    value.widen_scalars();
+
+    TObject::Named(match array {
+        TArray::List(_) => TNamedObject::new_with_type_parameters(word("Sharp\\ListMethods"), Some(vec![value])),
+        TArray::Keyed(_) => TNamedObject::new_with_type_parameters(word("Sharp\\MapMethods"), Some(vec![key, value])),
+    })
+}
+
 fn report_call_on_non_object<A>(
     context: &mut Context<'_, '_, A>,
     atomic_type: &TAtomic,
@@ -1099,6 +1190,36 @@ pub(crate) fn report_non_existent_method<A>(
                 Annotation::secondary(obj_span).with_message(format!("This expression has type `{classname}`")),
             )
             .with_help(format!("Ensure the `{method_name}` method is defined in the `{classname}` class-like.")),
+    );
+}
+
+/// Reports a method a PHP# `List` or `Map` does not have, naming the collection type the code wrote and the methods
+/// `classname`, its `Sharp\ListMethods` or `Sharp\MapMethods`, gives it.
+fn report_non_existent_collection_method<A>(
+    context: &mut Context<'_, '_, A>,
+    obj_span: Span,
+    selector_span: Span,
+    classname: Word,
+    collection: &str,
+    method_name: Word,
+) where
+    A: Arena,
+{
+    let mut methods = context
+        .codebase
+        .get_class_like(classname.as_bytes())
+        .map(|metadata| metadata.methods.iter().map(|method| format!("`{method}`")).collect::<Vec<_>>())
+        .unwrap_or_default();
+    methods.sort();
+
+    context.collector.report_with_code(
+        IssueCode::NonExistentMethod,
+        Issue::error(format!("Method `{method_name}` does not exist on `{collection}`."))
+            .with_annotation(Annotation::primary(selector_span).with_message("This method selection is invalid"))
+            .with_annotation(
+                Annotation::secondary(obj_span).with_message(format!("This expression has type `{collection}`")),
+            )
+            .with_help(format!("A `{collection}` has the methods {}.", methods.join(", "))),
     );
 }
 

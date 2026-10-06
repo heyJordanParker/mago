@@ -968,6 +968,123 @@ fn a_nullable_type_is_its_type_with_the_nullable_flag() {
 }
 
 /// ```php
+/// public function group(array $items, ?array $sizes = ['a' => 1]): ?array { return null; }
+/// ```
+///
+/// A `List` or `Map` is a PHP array, so its type is `array`: a `TYPE` with `IS_ARRAY`, which is 7, as php-src's
+/// grammar builds it, and `[263]` adds `ZEND_TYPE_NULLABLE`.
+#[test]
+fn a_list_or_map_type_is_the_array_type() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public Map<string, List<int>>? group(List<int> items, Map<string, int>? sizes = [\"a\": 1]) { return null; }\n}\n",
+    );
+    let method = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a method");
+
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 0)),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                TYPE [7]
+                ZVAL "items"
+                null
+                null
+                null
+                null
+              PARAM
+                TYPE [263]
+                ZVAL "sizes"
+                ARRAY [3]
+                  ARRAY_ELEM
+                    ZVAL 1
+                    ZVAL "a"
+                null
+                null
+                null
+        "#}
+    );
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 3)),
+        indoc! {"
+            TYPE [263]
+        "}
+    );
+}
+
+/// ```php
+/// $numbers = [1, $extra];
+/// $named = ['a' => 1, 2 => $numbers[0]];
+/// $empty = [];
+/// $numbers[0] = $named['a'];
+/// $this->sizes['a'] += 1;
+/// return $numbers[1];
+/// ```
+///
+/// A list or map literal is an `ARRAY` with `ZEND_ARRAY_SYNTAX_SHORT`, which is 3, of `ARRAY_ELEM`s that take the value
+/// before the key. An index is a `DIM` of the value and the key, read or written as its place in the tree decides.
+#[test]
+fn literals_are_short_arrays_and_an_index_is_a_dim() {
+    assert_eq!(
+        body(
+            "        List<int> numbers = [1, extra];\n        const named = [\"a\": 1, 2: numbers[0]];\n        const empty = [:];\n        numbers[0] = named[\"a\"];\n        this.sizes[\"a\"] += 1;\n        return numbers[1];\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "numbers"
+                ARRAY [3]
+                  ARRAY_ELEM
+                    ZVAL 1
+                    null
+                  ARRAY_ELEM
+                    VAR
+                      ZVAL "extra"
+                    null
+              ASSIGN
+                VAR
+                  ZVAL "named"
+                ARRAY [3]
+                  ARRAY_ELEM
+                    ZVAL 1
+                    ZVAL "a"
+                  ARRAY_ELEM
+                    DIM
+                      VAR
+                        ZVAL "numbers"
+                      ZVAL 0
+                    ZVAL 2
+              ASSIGN
+                VAR
+                  ZVAL "empty"
+                ARRAY [3]
+              ASSIGN
+                DIM
+                  VAR
+                    ZVAL "numbers"
+                  ZVAL 0
+                DIM
+                  VAR
+                    ZVAL "named"
+                  ZVAL "a"
+              ASSIGN_OP [1]
+                DIM
+                  PROP
+                    VAR
+                      ZVAL "this"
+                    ZVAL "sizes"
+                  ZVAL "a"
+                ZVAL 1
+              RETURN
+                DIM
+                  VAR
+                    ZVAL "numbers"
+                  ZVAL 1
+        "#}
+    );
+}
+
+/// ```php
 /// public function run(): void
 /// {
 ///     return;
@@ -1965,6 +2082,40 @@ fn null_safe_calls_and_reads_are_nullsafe_kinds() {
                           ZVAL "extra"
                     ZVAL "value"
                   ZVAL "cents"
+        "#}
+    );
+}
+
+/// ```php
+/// return ($extra[0] ?? null)?->value ?? ($extra[1] ?? null)?->total();
+/// ```
+///
+/// `?.` reads a missing key as null, as `??` does, so the index it reads from is the left side of a `COALESCE`.
+#[test]
+fn null_safe_access_on_an_index_coalesces_a_missing_key_to_null() {
+    assert_eq!(
+        body("        return extra[0]?.value ?? (extra[1])?.total();\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                COALESCE
+                  NULLSAFE_PROP
+                    COALESCE
+                      DIM
+                        VAR
+                          ZVAL "extra"
+                        ZVAL 0
+                      ZVAL null
+                    ZVAL "value"
+                  NULLSAFE_METHOD_CALL
+                    COALESCE
+                      DIM
+                        VAR
+                          ZVAL "extra"
+                        ZVAL 1
+                      ZVAL null
+                    ZVAL "total"
+                    ARG_LIST
         "#}
     );
 }
