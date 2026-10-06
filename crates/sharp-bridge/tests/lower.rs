@@ -1180,7 +1180,7 @@ fn a_function_type_is_the_closure_class() {
 fn literals_are_short_arrays_and_an_index_is_a_dim() {
     assert_eq!(
         body(
-            "        List<int> numbers = [1, extra];\n        const named = [\"a\": 1, 2: numbers[0]];\n        const empty = [:];\n        numbers[0] = named[\"a\"];\n        this.sizes[\"a\"] += 1;\n        return numbers[1];\n"
+            "        List<int> numbers = [1, extra];\n        const named = [\"a\": 1, 2: numbers[0]];\n        const Map<string, int> empty = [:];\n        numbers[0] = named[\"a\"];\n        this.sizes[\"a\"] += 1;\n        return numbers[1];\n"
         ),
         indoc! {r#"
             STMT_LIST
@@ -2456,7 +2456,7 @@ fn a_call_on_a_static_call_result_is_an_instance_call() {
 fn literals_are_zvals_of_their_php_value() {
     assert_eq!(
         body(
-            "        let a = \"line\\n\";\n        let b = 'raw\\n';\n        let c = 1.5;\n        let d = 0x10;\n        let e = 9223372036854775808;\n        let f = true;\n        let g = false;\n        let h = null;\n        return 1;\n"
+            "        let a = \"line\\n\";\n        let b = 'raw\\n';\n        let c = 1.5;\n        let d = 0x10;\n        let e = 9223372036854775808;\n        let f = true;\n        let g = false;\n        string? h = null;\n        return 1;\n"
         ),
         indoc! {r#"
             STMT_LIST

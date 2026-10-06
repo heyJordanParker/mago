@@ -42,6 +42,7 @@ use mago_syntax::cst::IfBody;
 use mago_syntax::cst::Inheritance;
 use mago_syntax::cst::Instantiation;
 use mago_syntax::cst::Keyword;
+use mago_syntax::cst::Literal;
 use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::LocalIdentifier;
 use mago_syntax::cst::Method;
@@ -1860,9 +1861,35 @@ fn check_const_write(target: &Expression, write: &str, context: &mut Context<'_,
     }
 }
 
+/// Checks a local's name, and reports an empty literal, or a `let` that starts as `null`, declared without a type,
+/// which has no type to give the local. Swift refuses an empty collection literal or `nil` without a type for the same
+/// reason.
 #[inline]
 pub fn check_local_declaration(local_declaration: &LocalDeclaration, context: &mut Context<'_, '_, '_>) {
     check_local_name(local_declaration.name.value, local_declaration.name.span, "local", context);
+
+    if local_declaration.hint.is_some() {
+        return;
+    }
+
+    let (start, hint, value) = match local_declaration.value {
+        Expression::Array(literal) if literal.elements.is_empty() && literal.colon.is_some() => {
+            ("An empty literal", "Map<TKey, TValue>", "[:]")
+        }
+        Expression::Array(literal) if literal.elements.is_empty() => ("An empty literal", "List<T>", "[]"),
+        // A `const` never takes another value, so `null` is all of its type.
+        Expression::Literal(Literal::Null(_)) if !local_declaration.is_const() => ("A null start", "T?", "null"),
+        _ => return,
+    };
+
+    let keyword = if local_declaration.is_const() { "const " } else { "" };
+    let name = BytesDisplay(local_declaration.name.value);
+
+    context.report(
+        Issue::error(format!("{start} needs a type: write `{keyword}{hint} {name} = {value}`.")).with_annotation(
+            Annotation::primary(local_declaration.value.span()).with_message("Declared without a type."),
+        ),
+    );
 }
 
 #[inline]

@@ -253,7 +253,7 @@ public class Report
     {
         List<int> numbers = [1, 2];
         const named = ["a": 1, 2: numbers[0]];
-        const empty = [:];
+        const Map<string, int> empty = [:];
         Map<int, string>? labels = null;
         sizes["a"] = (sizes["a"] ?? 0) + numbers[1];
         this.sizes["b"] = array_sum(numbers);

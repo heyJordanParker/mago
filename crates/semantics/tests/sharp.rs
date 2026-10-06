@@ -1681,6 +1681,30 @@ fn an_interface_method_takes_and_returns_list_and_map_types() {
 }
 
 #[test]
+fn an_empty_literal_needs_a_type() {
+    let code = leak(method(
+        "        let names = [];\n        const sizes = [:];\n        List<string> kept = [];\n        const Map<string, int> counts = [:];\n        let filled = [1];\n        names = [];\n        return 1;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:21 An empty literal needs a type: write `List<T> names = []`.",
+            "8:23 An empty literal needs a type: write `const Map<TKey, TValue> sizes = [:]`.",
+        ]
+    );
+}
+
+#[test]
+fn a_null_start_needs_a_type() {
+    let code = leak(method(
+        "        let value = null;\n        const other = null;\n        string? kept = null;\n        let either = extra > 1 ? null : 1;\n        return 1;\n",
+    ));
+
+    assert_eq!(issues(code), ["7:21 A null start needs a type: write `T? value = null`."]);
+}
+
+#[test]
 fn a_type_with_type_arguments_other_than_list_or_map_is_not_supported_yet() {
     let code = "class Report\n{\n    public List<void> run(Set<string> a, List<int, int> b, Map<string> c, Paged<Line> d)\n    {\n        return [];\n    }\n}\n";
 
