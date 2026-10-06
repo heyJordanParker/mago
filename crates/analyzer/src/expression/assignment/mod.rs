@@ -696,7 +696,11 @@ pub fn analyze_assignment_to_variable<'ctx, 'arena, A>(
         );
     }
 
-    if assigned_type.is_never() {
+    // `php_shape` holds the value a PHP# `is`, `as` or `match` tests in a hidden local named with a `#`, which no
+    // source can write. The user never wrote its assignment, so no issue judges it.
+    let is_hidden = variable_id.as_bytes().contains(&b'#');
+
+    if !is_hidden && assigned_type.is_never() {
         let mut issue =
             Issue::error("Invalid assignment: the right-hand side has type `never` and cannot produce a value.")
                 .with_annotation(
@@ -741,7 +745,7 @@ pub fn analyze_assignment_to_variable<'ctx, 'arena, A>(
         from_docblock = true;
     }
 
-    if !from_docblock && assigned_type.is_mixed() && !variable_id.as_bytes().starts_with(b"$_") {
+    if !is_hidden && !from_docblock && assigned_type.is_mixed() && !variable_id.as_bytes().starts_with(b"$_") {
         let assigned_type_str = assigned_type.get_id();
 
         let mut issue = Issue::warning(format!(
