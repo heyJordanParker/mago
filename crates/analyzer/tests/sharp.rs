@@ -867,22 +867,91 @@ fn virtual_and_override_are_checked_as_final_and_the_override_attribute_in_php()
     assert_eq!(missing.message, "Missing `override` modifier on overriding method `Demo\\Child::size`.");
 }
 
-/// Every PHP# field has a type, so a field cannot replace an untyped PHP property yet: PHP refuses the added type.
+/// A plain PHP base class with untyped properties typed by `@var`, one declared in a trait, and typed properties.
+const MODEL: &str = "<?php\n\nnamespace Lib;\n\ntrait HasTimestamps\n{\n    /** @var bool */\n    public $timestamps = true;\n}\n\nabstract class Model\n{\n    use HasTimestamps;\n\n    /** @var string|null */\n    protected $table;\n\n    /** @var array<int, string> */\n    protected $fillable = [];\n\n    protected $with = [];\n\n    protected int $perPage = 15;\n\n    protected array $appends = [];\n\n    private $secret = 'model';\n}\n";
+
+/// An override of a plain PHP parent's property writes a type that fits the parent's `@var`, or any type when the
+/// parent has none, and the type of a typed parent, with the parent's access level, spec section 6.1. Its PHP twin
+/// declares the untyped properties without a type.
 #[test]
-fn a_field_that_replaces_an_untyped_php_property_is_not_supported_yet() {
-    let library = "<?php\n\nnamespace Lib;\n\nclass Entity\n{\n    protected $label = 'entity';\n}\n";
-    let sharp = "namespace Demo;\n\nimport Lib.Entity;\n\npublic class Post : Entity\n{\n    protected string label = \"post\";\n}\n";
+fn a_field_overrides_a_plain_php_property_with_a_type_that_fits_the_parent() {
+    let sharp = "namespace Demo;\n\nimport Lib.Model;\n\npublic class Order : Model\n{\n    protected override string? table = \"orders\";\n    protected override List<string> fillable = [\"number\", \"total\"];\n    protected override List<string> with = [\"customer\"];\n    public override bool timestamps = false;\n    protected override int perPage = 20;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Model;\n\nclass Order extends Model\n{\n    #[\\Override]\n    protected $table = 'orders';\n    #[\\Override]\n    protected $fillable = ['number', 'total'];\n    #[\\Override]\n    protected $with = ['customer'];\n    #[\\Override]\n    public $timestamps = false;\n    #[\\Override]\n    protected int $perPage = 20;\n}\n";
+    let others = [("src/Lib/Model.php", MODEL)];
+
+    assert_eq!(issues(("src/Demo/Order.sharp", sharp), &others), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Order.php", php), &others), Vec::<String>::new());
+}
+
+/// An override whose type does not fit the parent's, whose access level differs, that overrides nothing, or a field
+/// that replaces a parent's property without `override`, is an error, spec section 6.1.
+#[test]
+fn an_override_that_does_not_match_the_plain_php_property_is_an_error() {
+    let sharp = "namespace Demo;\n\nimport Lib.Model;\n\npublic class Order : Model\n{\n    public override List<string> fillable = [\"number\"];\n    protected override string? table = 5;\n    public override int timestamps = 0;\n    protected override List<string> appends = [];\n    protected string with = \"customer\";\n    protected override string missing = \"none\";\n    protected override string secret = \"order\";\n}\n";
 
     let issues =
-        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Post.sharp", sharp), &[("src/Lib/Entity.php", library)]);
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Order.sharp", sharp), &[("src/Lib/Model.php", MODEL)]);
+    let reported: Vec<(&str, &str)> =
+        issues.iter().map(|issue| (issue.code.as_deref().unwrap_or("none"), issue.message.as_str())).collect();
+
+    for expected in [
+        (
+            "incompatible-property-access",
+            "The override `Demo\\Order::$fillable` is `public`, but `Lib\\Model::$fillable` is `protected`.",
+        ),
+        (
+            "invalid-property-default-value",
+            "Default value for property `Demo\\Order::table` is not assignable to its declared type.",
+        ),
+        (
+            "incompatible-property-type",
+            "The override `Demo\\Order::$timestamps` has type `int`, which does not fit `bool`, the type of `Lib\\Model::$timestamps`.",
+        ),
+        ("incompatible-property-type", "Property `Demo\\Order::$appends` has an incompatible type declaration."),
+        ("missing-override-attribute", "Missing `override` modifier on overriding field `Demo\\Order::$with`."),
+        ("invalid-override-attribute", "Invalid `override` modifier on `Demo\\Order::$missing`."),
+        ("invalid-override-attribute", "Invalid `override` modifier on `Demo\\Order::$secret`."),
+    ] {
+        assert!(reported.contains(&expected), "{expected:?} is missing from {reported:#?}");
+    }
+    assert_eq!(reported.len(), 7, "{reported:#?}");
+}
+
+/// An override keeps its written type instead of inheriting the parent's `@var` type, so a type that does not fit is
+/// one issue, not a second one for its initial value against the inherited type.
+#[test]
+fn an_override_whose_type_does_not_fit_the_parent_is_reported_once() {
+    let sharp = "namespace Demo;\n\nimport Lib.Model;\n\npublic class Order : Model\n{\n    protected override int table = 5;\n}\n";
+
+    let issues =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Order.sharp", sharp), &[("src/Lib/Model.php", MODEL)]);
 
     assert_eq!(
-        issues.iter().map(|issue| issue.code.as_deref().unwrap_or("none")).collect::<Vec<_>>(),
-        ["not-supported-yet"]
+        issues
+            .iter()
+            .map(|issue| (issue.code.as_deref().unwrap_or("none"), issue.message.as_str()))
+            .collect::<Vec<_>>(),
+        [(
+            "incompatible-property-type",
+            "The override `Demo\\Order::$table` has type `int`, which does not fit `null|string`, the type of `Lib\\Model::$table`.",
+        )]
     );
+}
+
+/// A PHP# parent's property is overridden as a property, spec section 6.1, which is not supported yet. A field that
+/// replaces one without `override` keeps PHP's own checks.
+#[test]
+fn overriding_a_sharp_property_is_not_supported_yet() {
+    let sharp = "namespace Demo;\n\npublic class Base\n{\n    protected string label = \"base\";\n    protected int size = 1;\n}\n\npublic class Child : Base\n{\n    protected override string label = \"child\";\n    protected int size = 2;\n}\n";
+
+    let issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Base.sharp", sharp), &[]);
+
     assert_eq!(
-        issues[0].message,
-        "A field that replaces the untyped PHP property `Lib\\Entity::$label` is not supported yet."
+        issues
+            .iter()
+            .map(|issue| (issue.code.as_deref().unwrap_or("none"), issue.message.as_str()))
+            .collect::<Vec<_>>(),
+        [("not-supported-yet", "Overriding the PHP# property `Demo\\Base::$label` is not supported yet.")]
     );
 }
 
@@ -1473,6 +1542,16 @@ fn an_unchecked_any_is_refused_wherever_its_type_matters() {
             "17:16 mixed-return-statement",
         ]
     );
+}
+
+/// An override of a plain PHP property of PHP's `mixed`, written or in `@var`, or of an untyped one, writes `Any?`, or
+/// `Any`, which lowers to the same `mixed`, spec sections 6.1 and 24.
+#[test]
+fn an_override_of_a_plain_php_mixed_property_writes_any() {
+    let library = "<?php\n\nnamespace Lib;\n\nabstract class Message\n{\n    /** @var mixed */\n    protected $payload;\n\n    protected mixed $data = null;\n\n    protected $raw;\n\n    protected mixed $body = 1;\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Message;\n\npublic class Mail : Message\n{\n    protected override Any? payload = null;\n    protected override Any? data = null;\n    protected override Any raw = 1;\n    protected override Any body = \"text\";\n}\n";
+
+    assert_eq!(issues(("src/Demo/Mail.sharp", sharp), &[("src/Lib/Message.php", library)]), Vec::<String>::new());
 }
 
 /// A `let` takes its first value's type, so one that starts as `Any?` takes any value, null too, and one that starts
