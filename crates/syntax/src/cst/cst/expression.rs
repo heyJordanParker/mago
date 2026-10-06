@@ -41,6 +41,7 @@ use crate::cst::cst::pipe::Pipe;
 use crate::cst::cst::string::CompositeString;
 use crate::cst::cst::string::StringPart;
 use crate::cst::cst::throw::Throw;
+use crate::cst::cst::type_of::TypeOf;
 use crate::cst::cst::unary::UnaryPostfix;
 use crate::cst::cst::unary::UnaryPrefix;
 use crate::cst::cst::variable::Variable;
@@ -93,6 +94,7 @@ pub enum Expression<'arena> {
     Instantiation(Instantiation<'arena>),
     MagicConstant(MagicConstant<'arena>),
     Pipe(Pipe<'arena>),
+    TypeOf(TypeOf<'arena>),
     Error(Span),
 }
 
@@ -114,6 +116,7 @@ impl<'arena> Expression<'arena> {
             Self::Literal(_) => true,
             Self::Identifier(_) => true,
             Self::MagicConstant(_) => true,
+            Self::TypeOf(_) => true,
             Self::ConstantAccess(_) => true,
             Self::Self_(_) => true,
             Self::Parent(_) => true,
@@ -450,6 +453,7 @@ impl<'arena> Expression<'arena> {
             Expression::Static(_) => NodeKind::Keyword,
             Expression::Self_(_) => NodeKind::Keyword,
             Expression::Pipe(_) => NodeKind::Pipe,
+            Expression::TypeOf(_) => NodeKind::TypeOf,
             Expression::Error(_) => NodeKind::Error,
         }
     }
@@ -497,6 +501,7 @@ impl HasSpan for Expression<'_> {
             Expression::Instantiation(expression) => expression.span(),
             Expression::MagicConstant(expression) => expression.span(),
             Expression::Pipe(expression) => expression.span(),
+            Expression::TypeOf(expression) => expression.span(),
             Expression::Error(span) => *span,
         })
     }
