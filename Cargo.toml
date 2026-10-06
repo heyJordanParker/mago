@@ -190,6 +190,7 @@ mago-orchestrator = { path = "crates/orchestrator", version = "1.53.0-patch.2" }
 mago-server = { path = "crates/server", version = "1.53.0-patch.2" }
 mago-extension = { path = "crates/extension", version = "1.53.0-patch.2" }
 mago-sharp-bridge = { path = "crates/sharp-bridge", version = "1.53.0-patch.2" }
+mago-build-id = { path = "crates/build-id", version = "1.53.0-patch.2" }
 tracing = { version = "0.1.40" }
 foldhash = "0.2"
 serde_json = { version = "1.0.138" }

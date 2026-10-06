@@ -14,7 +14,9 @@ use std::slice;
 
 mod kind;
 mod lower;
+pub mod unit;
 
+pub use kind::SHARP_UNIT_ABI;
 pub use kind::sharp_kind;
 
 /// `len` bytes of UTF-8 at `offset` in the unit's texts, not NUL-terminated.
@@ -131,7 +133,7 @@ pub unsafe extern "C" fn sharp_unit_free(unit: *mut sharp_unit) {
 
 /// A lowered file and every byte its `sharp_unit` points to, which the bridge owns until `sharp_unit_free`.
 #[repr(C)]
-struct Unit {
+pub struct Unit {
     abi: sharp_unit,
     nodes: Vec<sharp_node>,
     children: Vec<u32>,
