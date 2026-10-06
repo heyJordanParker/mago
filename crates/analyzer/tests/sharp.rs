@@ -1245,6 +1245,20 @@ fn an_arrow_read_of_a_class_string_stays_an_error_in_php() {
     assert_eq!(issues(("src/Demo/Report.php", php), &[]), ["12:23 invalid-property-access"]);
 }
 
+/// A class value that may be null is refused before a member read, as PHP's `$type::MAX` throws "Cannot use null as
+/// class" when `$type` is null.
+#[test]
+fn a_member_read_through_a_class_value_that_may_be_null_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public const int MAX = 3;\n\n    public int? read(bool flag)\n    {\n        const type = flag ? typeof(Report) : null;\n        return type.MAX;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public const int MAX = 3;\n\n    public function read(bool $flag): ?int\n    {\n        $type = $flag ? Report::class : null;\n        return $type::MAX;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+
+    assert_eq!(codes(&sharp_issues), codes(&issues(("src/Demo/Report.php", php), &[])));
+    assert_eq!(messages(("src/Demo/Report.sharp", sharp), &[]), ["Attempting static access on a possibly `null` value."]);
+    assert_eq!(sharp_issues.len(), 1, "{sharp_issues:?}");
+}
+
 #[test]
 fn a_catch_variable_has_the_caught_classes_as_its_type_as_in_php() {
     let sharp = "namespace Demo;\n\nimport RuntimeException;\nimport LogicException;\n\nclass Report\n{\n    public static int total(int extra)\n    {\n        try {\n            if (extra < 0) {\n                throw new RuntimeException(\"negative\");\n            }\n        } catch (RuntimeException | LogicException failure) {\n            return failure.getLine();\n        } finally {\n            extra += 1;\n        }\n        return extra;\n    }\n}\n";
