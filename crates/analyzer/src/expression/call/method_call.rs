@@ -37,6 +37,7 @@ use crate::error::AnalysisError;
 use crate::expression::assignment::PropertyWriteKind;
 use crate::expression::assignment::property_assignment;
 use crate::expression::call::analyze_invocation_targets;
+use crate::expression::call::function_call::resolve_callable_targets;
 use crate::expression::call::record_external_method_call;
 use crate::expression::call::record_external_method_call_targets;
 use crate::invocation::Invocation;
@@ -361,6 +362,19 @@ where
             MethodInvocationKind::Instance,
             &mut invocation_targets,
         )?;
+    }
+
+    for property in std::mem::take(&mut method_resolution.called_properties) {
+        artifacts.symbol_references.add_reference_for_property_read(
+            &block_context.scope,
+            property.declaring_class,
+            property.property_name,
+        );
+
+        let (targets, has_invalid_target) =
+            resolve_callable_targets(context, &property.property_type, span, &mut method_resolution.template_result);
+        invocation_targets.extend(targets);
+        method_resolution.has_invalid_target |= has_invalid_target;
     }
 
     let has_resolved_methods = !invocation_targets.is_empty();

@@ -936,9 +936,11 @@ where
                 contents.push(Document::space());
             }
 
-            contents.push(self.r#fn.format(f));
-            if f.settings.space_before_arrow_function_parameter_list_parenthesis {
-                contents.push(Document::space());
+            if let Some(r#fn) = &self.r#fn {
+                contents.push(r#fn.format(f));
+                if f.settings.space_before_arrow_function_parameter_list_parenthesis {
+                    contents.push(Document::space());
+                }
             }
 
             if self.ampersand.is_some() {
