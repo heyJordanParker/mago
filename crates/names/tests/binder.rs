@@ -417,6 +417,102 @@ fn a_local_written_after_its_declaration_is_recorded_as_written() {
     assert!(!names.is_written(&declared(CODE, "kept", 0, LocalKind::Let)));
 }
 
+/// Spec section 6.1: an accessor body uses `field` for the property's storage and, in `set`, `value` for the incoming
+/// value. The `set` accessor declares `value` as its parameter, and the property declares `field`. Outside an
+/// accessor body both are bare names like any other.
+#[test]
+fn value_and_field_bind_inside_accessor_bodies_and_not_outside_them() {
+    const CODE: &str = "class Report\n{\n    public string name { get => field + value; set { const trimmed = value; field = trimmed; } }\n\n    public int count { get; set => field = (() => field + value)(); }\n\n    public string run()\n    {\n        return value + field;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+    let value = Binding::Local(Local { declaration: span(CODE, "set", 0), kind: LocalKind::Parameter });
+
+    assert_eq!(binding(&names, CODE, "field", 0), Some(Binding::Field));
+    assert_eq!(binding(&names, CODE, "value", 0), Some(Binding::Constant));
+    assert_eq!(binding(&names, CODE, "value", 1), Some(value));
+    assert_eq!(binding(&names, CODE, "field", 1), Some(Binding::Field));
+    assert_eq!(binding(&names, CODE, "field", 2), Some(Binding::Field));
+    assert_eq!(binding(&names, CODE, "field", 3), Some(Binding::Field));
+    assert_eq!(
+        binding(&names, CODE, "value", 2),
+        Some(Binding::Local(Local { declaration: span(CODE, "set", 1), kind: LocalKind::Parameter }))
+    );
+    assert_eq!(
+        names.captures(&span(CODE, "() => field + value", 0)),
+        [(&b"value"[..], Local { declaration: span(CODE, "set", 1), kind: LocalKind::Parameter })]
+    );
+    assert_eq!(binding(&names, CODE, "value", 3), Some(Binding::Constant));
+    assert_eq!(binding(&names, CODE, "field", 4), Some(Binding::Constant));
+    assert_eq!(names.binding_errors(), []);
+}
+
+/// An accessor body declares `value` and `field`, so a local of either name redeclares it.
+#[test]
+fn a_local_named_value_or_field_in_an_accessor_body_is_redeclared() {
+    const CODE: &str = "class Report\n{\n    public int count { get; set { let value = 1; let field = value; } }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(
+        names.binding_errors(),
+        [
+            BindingError::Redeclared {
+                name: span(CODE, "value", 0),
+                earlier: Local { declaration: span(CODE, "set", 0), kind: LocalKind::Parameter }
+            },
+            BindingError::Redeclared {
+                name: span(CODE, "field", 0),
+                earlier: Local {
+                    declaration: span(CODE, "{ get; set { let value = 1; let field = value; } }", 0),
+                    kind: LocalKind::Parameter
+                }
+            },
+        ]
+    );
+}
+
+/// `field` outside an accessor body is an ordinary name, so a method may declare a local named `field`.
+#[test]
+fn a_local_named_field_outside_an_accessor_body_is_an_ordinary_local() {
+    const CODE: &str = "class Report\n{\n    public int count { get => field; }\n\n    public int run()\n    {\n        let field = 1;\n        return field;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "field", 0), Some(Binding::Field));
+    assert_eq!(binding(&names, CODE, "field", 2), Some(local(CODE, "field", 1, LocalKind::Let)));
+    assert_eq!(names.binding_errors(), []);
+}
+
+/// `field` in the accessor of a property a constructor parameter declares is the property's storage, not the
+/// parameter, so writing `field` leaves the parameter unwritten and a lambda in the constructor captures it by value.
+#[test]
+fn field_in_a_promoted_property_accessor_is_not_the_constructor_parameter() {
+    const CODE: &str = "class Report\n{\n    public Report(public int count { get => field; set => field = value; })\n    {\n        const read = () => count;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "field", 1), Some(Binding::Field));
+    assert!(!names.is_written(&declared(CODE, "count", 0, LocalKind::Parameter)));
+}
+
+/// A property uses `field` when an accessor body names it outside a lambda, as php-src finds `$this->name` in a hook
+/// outside a closure, including in a nested block. `field` in a lambda is a separate function's, which PHP reads by
+/// calling the accessor again, so it does not count.
+#[test]
+fn a_property_uses_field_when_a_body_names_it_outside_a_lambda() {
+    const CODE: &str = "class Report\n{\n    public int a { get; }\n    public int b { get => 1; }\n    public int c { get { if (true) { return field; } return 0; } }\n    public int d { get { const read = () => field; return read(); } }\n    public int e { get => 1; set { const write = () => { field = value; }; write(); } }\n}\n";
+    let arena = LocalArena::new();
+    let file = File::ephemeral(Cow::Borrowed(FILE_NAME), Cow::Borrowed(CODE.as_bytes()));
+    let program = parse_file(&arena, &file);
+    let names = NameResolver::new(&arena).resolve(program);
+    let uses_field = Node::Program(program).filter_map(|node| match node {
+        Node::PropertyHookList(accessors) => Some(names.uses_field(accessors)),
+        _ => None,
+    });
+
+    assert_eq!(uses_field, [false, false, true, false, false]);
+}
+
 #[test]
 fn php_variable_name_adds_a_dollar_only_to_a_bare_name() {
     assert_eq!(php_variable_name(b"total").as_bytes(), b"$total");

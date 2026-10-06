@@ -52,6 +52,8 @@ use mago_syntax::cst::Pattern;
 use mago_syntax::cst::PatternMatchPatternArm;
 use mago_syntax::cst::PropertiesPattern;
 use mago_syntax::cst::PropertyAccess;
+use mago_syntax::cst::PropertyHook;
+use mago_syntax::cst::PropertyHookList;
 use mago_syntax::cst::Sequence;
 use mago_syntax::cst::Statement;
 use mago_syntax::cst::StaticMethodCall;
@@ -110,6 +112,8 @@ pub struct NameWalker<'arena> {
     pattern_kinds: std::vec::Vec<LocalKind>,
     /// The start offsets of the lambdas being walked, innermost last.
     lambdas: std::vec::Vec<u32>,
+    /// The accessor list being walked in PHP#, which declares `field`, its property's storage.
+    accessors: Option<Span>,
 }
 
 /// The member names of one class, compared as PHP compares them: method names ignoring case, and property and
@@ -157,8 +161,15 @@ impl<'arena> NameWalker<'arena> {
         self.resolved_names.bind(declaration, Binding::Local(local));
     }
 
-    /// Binds a bare name to a local, which each lambda declared after the local captures.
+    /// Binds a bare name to a local, which each lambda declared after the local captures. `field`, which the accessor
+    /// list declares, binds to the property's storage instead, which no lambda captures.
     fn bind_local(&mut self, name: &'arena [u8], span: Span, local: Local) {
+        if self.accessors == Some(local.declaration) {
+            self.resolved_names.bind(span, Binding::Field);
+
+            return;
+        }
+
         self.resolved_names.bind(span, Binding::Local(local));
         for &lambda in &self.lambdas {
             if local.declaration.start.offset < lambda {
@@ -488,6 +499,53 @@ where
         _context: &mut NameResolutionContext<'arena, A>,
     ) {
         if self.sharp {
+            self.locals.exit_method();
+        }
+    }
+
+    fn walk_in_property_hook_list(
+        &mut self,
+        property_hook_list: &'ast PropertyHookList<'arena>,
+        _context: &mut NameResolutionContext<'arena, A>,
+    ) {
+        if self.sharp {
+            self.accessors = Some(property_hook_list.span());
+        }
+    }
+
+    fn walk_out_property_hook_list(
+        &mut self,
+        _property_hook_list: &'ast PropertyHookList<'arena>,
+        _context: &mut NameResolutionContext<'arena, A>,
+    ) {
+        self.accessors = None;
+    }
+
+    /// A PHP# accessor runs as a function of its own, as PHP runs a hook. Its accessor list declares `field`, the
+    /// storage, apart from any constructor parameter that declares the same property, and `set` declares `value`, the
+    /// incoming value, as PHP's `set` hook declares `$value`.
+    fn walk_in_property_hook(
+        &mut self,
+        hook: &'ast PropertyHook<'arena>,
+        _context: &mut NameResolutionContext<'arena, A>,
+    ) {
+        let Some(accessors) = self.accessors else {
+            return;
+        };
+
+        self.locals.enter_method();
+        self.locals.declare(b"field", Local { declaration: accessors, kind: LocalKind::Parameter });
+        if hook.name.value == b"set" && hook.parameter_list.is_none() {
+            self.locals.declare(b"value", Local { declaration: hook.name.span, kind: LocalKind::Parameter });
+        }
+    }
+
+    fn walk_out_property_hook(
+        &mut self,
+        _hook: &'ast PropertyHook<'arena>,
+        _context: &mut NameResolutionContext<'arena, A>,
+    ) {
+        if self.accessors.is_some() {
             self.locals.exit_method();
         }
     }
