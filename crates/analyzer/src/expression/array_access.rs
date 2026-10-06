@@ -1,14 +1,19 @@
 use mago_allocator::Arena;
 use std::rc::Rc;
 
+use mago_codex::ttype::atomic::TAtomic;
+use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::get_arraykey;
 use mago_codex::ttype::get_mixed;
+use mago_reporting::Annotation;
+use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_syntax::cst::ArrayAccess;
 use mago_syntax::cst::Expression;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
+use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
@@ -119,6 +124,37 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ArrayAccess<'arena> {
         }
 
         Ok(())
+    }
+}
+
+/// Spec section 12 types a PHP# `Map` read `V?`, because a key is often missing. A bare read throws on a missing
+/// key, so a `Map` is read only where the read is handled: `??` and `?.` read a missing key as null, as `isset`
+/// does. A refused bare read keeps the type `V` it would have when it runs, so it is reported once. A `List` read
+/// stays bare, because a `List`'s keys run without gaps.
+pub(crate) fn check_sharp_map_read<A>(
+    access: &ArrayAccess<'_>,
+    context: &mut Context<'_, '_, A>,
+    block_context: &BlockContext<'_>,
+    artifacts: &mut AnalysisArtifacts,
+) where
+    A: Arena,
+{
+    let is_map = artifacts.get_expression_type(access.array).is_some_and(|container| {
+        container.types.iter().any(|atomic| matches!(atomic, TAtomic::Array(TArray::Keyed(_))))
+    });
+    if !is_map {
+        return;
+    }
+
+    if !block_context.flags.inside_isset() {
+        context.collector.report_with_code(
+            IssueCode::PossiblyUndefinedArrayIndex,
+            Issue::error("A `Map` is not read by a bare index, because its key may be missing.")
+                .with_annotation(Annotation::primary(access.span()).with_message("This read throws when the key is missing."))
+                .with_help("Read it with `??`, as in `map[key] ?? fallback`, or with `map.get(key)`, which gives null for a missing key. `+=`, `++` and `--` read first, so write `m[k] = (m[k] ?? 0) + 1`."),
+        );
+    } else if let Some(read) = artifacts.get_expression_type(access).cloned() {
+        artifacts.set_expression_type(access, read.as_nullable());
     }
 }
 

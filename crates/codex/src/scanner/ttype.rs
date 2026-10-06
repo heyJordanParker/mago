@@ -24,6 +24,8 @@ use crate::ttype::get_bool;
 use crate::ttype::get_false;
 use crate::ttype::get_float;
 use crate::ttype::get_int;
+use crate::ttype::get_keyed_array;
+use crate::ttype::get_list;
 use crate::ttype::get_mixed;
 use crate::ttype::get_mixed_callable;
 use crate::ttype::get_mixed_iterable;
@@ -179,6 +181,16 @@ pub fn get_union_from_hint(hint: &Hint<'_>, classname: Option<Word>, resolved_na
             TUnion::from_vec(intersection_types)
         }
         Hint::Iterable(_) => get_mixed_iterable(),
+        Hint::Generic(generic) => {
+            let mut arguments =
+                generic.arguments.iter().map(|argument| get_union_from_hint(argument, classname, resolved_names));
+
+            match (generic.name.value, arguments.next(), arguments.next(), arguments.next()) {
+                (b"List", Some(element), None, None) => get_list(element),
+                (b"Map", Some(key), Some(value), None) => get_keyed_array(key, value),
+                _ => get_mixed_keyed_array(),
+            }
+        }
     }
 }
 

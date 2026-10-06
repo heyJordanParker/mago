@@ -1711,6 +1711,8 @@ where
                 Hint::Object(_) => Document::String(b"object"),
                 Hint::Mixed(_) => Document::String(b"mixed"),
                 Hint::Iterable(_) => Document::String(b"iterable"),
+                #[allow(clippy::unreachable)]
+                Hint::Generic(_) => unreachable!("the formatter refuses a PHP# file, the only one with type arguments"),
             }
         })
     }
