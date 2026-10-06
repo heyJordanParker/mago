@@ -804,12 +804,38 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             Statement::ForOf(for_of) => {
                 let collection = self.expression(for_of.expression);
                 let (key, value) = match &for_of.target {
-                    ForOfTarget::Value(value) => (NULL, self.variable(value.span, value.value)),
-                    ForOfTarget::KeyValue(pair) => {
-                        (self.variable(pair.key.span, pair.key.value), self.variable(pair.value.span, pair.value.value))
-                    }
+                    ForOfTarget::Value(value) => (NULL, self.variable(value.name.span, value.name.value)),
+                    ForOfTarget::KeyValue(pair) => (
+                        self.variable(pair.key.name.span, pair.key.name.value),
+                        self.variable(pair.value.name.span, pair.value.name.value),
+                    ),
                 };
-                let body = self.loop_body(for_of.body);
+                let mut body = self.loop_body(for_of.body);
+
+                // A `Map` keyed by a backed enum holds each key as its backing value, and the analyzer requires a loop
+                // over one to name the enum as its key's type, so a key that names a class reads back as its case.
+                // PHP stores an all-digit `string` key as an `int`, so a key written `string` reads back through
+                // `(string)`, as spec section 12 reads a `Map<string, V>` key.
+                if let ForOfTarget::KeyValue(pair) = &for_of.target
+                    && let Some(hint @ (Hint::Identifier(_) | Hint::String(_))) = pair.key.hint
+                {
+                    let line = self.line(&pair.key);
+                    let stored_key = self.variable(pair.key.name.span, pair.key.name.value);
+                    let read_back = match hint {
+                        Hint::Identifier(class) => {
+                            let class = self.string(ZEND_NAME_FQ, line, self.names.get(class));
+                            let from = self.string(0, line, b"from");
+                            let arguments = self.node(SHARP_AST_ARG_LIST, 0, line, &[stored_key]);
+
+                            self.node(SHARP_AST_STATIC_CALL, 0, line, &[class, from, arguments])
+                        }
+                        _ => self.node(SHARP_AST_CAST, IS_STRING, line, &[stored_key]),
+                    };
+                    let key = self.variable(pair.key.name.span, pair.key.name.value);
+                    let assignment = self.node(SHARP_AST_ASSIGN, 0, line, &[key, read_back]);
+
+                    body = self.node(SHARP_AST_STMT_LIST, 0, line, &[assignment, body]);
+                }
 
                 self.node(SHARP_AST_FOREACH, 0, self.line(for_of), &[collection, value, key, body])
             }
@@ -1187,19 +1213,20 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     /// A list or map literal is an `ARRAY` with `ZEND_ARRAY_SYNTAX_SHORT`, as php-src's grammar builds `[…]`. Each
-    /// element is an `ARRAY_ELEM` of its value and its key or null.
+    /// element is an `ARRAY_ELEM` of its value and its key or null, and a spread is an `UNPACK` of its value.
     fn array(&mut self, array: &Array) -> u32 {
         let mut elements = Vec::new();
         for element in &array.elements {
-            let value_and_key = match element {
-                ArrayElement::Value(element) => [self.expression(element.value), NULL],
-                ArrayElement::KeyValue(element) => [self.expression(element.value), self.expression(element.key)],
-                ArrayElement::Variadic(_) | ArrayElement::Missing(_) => {
-                    unreachable!("check_slice refuses a spread or missing literal element")
+            let (kind, value_and_key) = match element {
+                ArrayElement::Value(element) => (SHARP_AST_ARRAY_ELEM, vec![self.expression(element.value), NULL]),
+                ArrayElement::KeyValue(element) => {
+                    (SHARP_AST_ARRAY_ELEM, vec![self.expression(element.value), self.expression(element.key)])
                 }
+                ArrayElement::Variadic(element) => (SHARP_AST_UNPACK, vec![self.expression(element.value)]),
+                ArrayElement::Missing(_) => unreachable!("check_slice refuses a missing literal element"),
             };
 
-            elements.push(self.node(SHARP_AST_ARRAY_ELEM, 0, self.line(element), &value_and_key));
+            elements.push(self.node(kind, 0, self.line(element), &value_and_key));
         }
 
         self.node(SHARP_AST_ARRAY, ZEND_ARRAY_SYNTAX_SHORT, self.line(array), &elements)

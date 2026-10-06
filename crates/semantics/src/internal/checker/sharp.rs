@@ -183,7 +183,7 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   class. A constant expression, which is a parameter default, an attribute argument, a constant's value, a
 ///   constant initial value or an enum case's value, reads only a constant or an enum case this way, as PHP does: a
 ///   static field or property there is an error when this file declares it, and the analyzer reports it otherwise.
-/// - In expressions: literals, list literals `[a, b]`, map literals `["key": value]` and `[:]`, index reads
+/// - In expressions: literals, list literals `[a, b]` and `[...a, b]`, map literals `["key": value]` and `[:]`, index reads
 ///   `value[key]`, templates, parentheses, bare names, assignment, the operators below, and method calls and property
 ///   reads written with `.` or `?.` and a member name, `new Class(...)` on a class written by its short name,
 ///   `new Self(...)` in a class whose constructor is `required`, calls of a function by its bare name,
@@ -515,11 +515,14 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             FieldOrProperty,
         ) => Some(FieldOrProperty),
         (Node::GenericHint(generic), FieldOrProperty | Method | Signature | Parameter | Body) => {
+            // The analyzer refuses a named key type without an `int` or `string` backing value.
             if let [key, _] = generic.arguments.as_slice()
-                && !matches!(key, Hint::Integer(_) | Hint::String(_))
+                && !matches!(key, Hint::Integer(_) | Hint::String(_) | Hint::Identifier(_))
             {
                 context.report(
-                    Issue::error("A `Map`'s keys are `int` or `string`, as a PHP array's keys are.")
+                    Issue::error(
+                        "A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value.",
+                    )
                         .with_annotation(Annotation::primary(key.span()).with_message("Key type written here.")),
                 );
 
@@ -719,7 +722,8 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             | Node::ForBody(ForBody::Statement(_))
             | Node::ForOf(_)
             | Node::ForOfTarget(_)
-            | Node::ForOfKeyValueTarget(_),
+            | Node::ForOfKeyValueTarget(_)
+            | Node::ForOfVariable(_),
             Body,
         ) => Some(Body),
 
@@ -753,9 +757,10 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         (
             Node::Expression(Expression::Array(_))
             | Node::Array(_)
-            | Node::ArrayElement(ArrayElement::Value(_) | ArrayElement::KeyValue(_))
+            | Node::ArrayElement(ArrayElement::Value(_) | ArrayElement::KeyValue(_) | ArrayElement::Variadic(_))
             | Node::ValueArrayElement(_)
-            | Node::KeyValueArrayElement(_),
+            | Node::KeyValueArrayElement(_)
+            | Node::VariadicArrayElement(_),
             Body | Constant,
         ) => Some(place),
         (Node::Expression(Expression::ArrayAccess(_)) | Node::ArrayAccess(_), Body) => Some(Body),

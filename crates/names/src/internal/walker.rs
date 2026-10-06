@@ -444,8 +444,12 @@ where
         self.walk_expression(for_of.expression, context);
 
         let kind = if for_of.is_const() { LocalKind::Const } else { LocalKind::Let };
-        for name in for_of.target.names() {
-            self.declare(name.value, name.span, kind);
+        for variable in for_of.target.variables() {
+            if let Some(hint) = variable.hint {
+                self.walk_hint(hint, context);
+            }
+
+            self.declare(variable.name.value, variable.name.span, kind);
         }
 
         self.walk_statement(for_of.body, context);
