@@ -16,7 +16,10 @@ use std::slice;
 use mago_allocator::Arena;
 use mago_allocator::LocalArena;
 
+mod kind;
 mod lower;
+
+pub use kind::sharp_kind;
 
 /// UTF-8, not NUL-terminated.
 #[repr(C)]
@@ -24,80 +27,6 @@ mod lower;
 pub struct sharp_str {
     pub ptr: *const c_char,
     pub len: usize,
-}
-
-/// One value per `zend_ast_kind` the lowering emits, named as that kind without `ZEND_`. C maps them by table.
-#[repr(u16)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum sharp_kind {
-    SHARP_AST_ZVAL,
-    SHARP_AST_METHOD,
-    SHARP_AST_CLASS,
-    SHARP_AST_ARG_LIST,
-    SHARP_AST_STMT_LIST,
-    SHARP_AST_PARAM_LIST,
-    SHARP_AST_CONST_DECL,
-    SHARP_AST_VAR,
-    SHARP_AST_CONST,
-    SHARP_AST_UNARY_PLUS,
-    SHARP_AST_UNARY_MINUS,
-    SHARP_AST_UNARY_OP,
-    SHARP_AST_PRE_INC,
-    SHARP_AST_PRE_DEC,
-    SHARP_AST_POST_INC,
-    SHARP_AST_POST_DEC,
-    SHARP_AST_RETURN,
-    SHARP_AST_PROP,
-    SHARP_AST_ASSIGN,
-    SHARP_AST_ASSIGN_OP,
-    SHARP_AST_BINARY_OP,
-    SHARP_AST_GREATER,
-    SHARP_AST_GREATER_EQUAL,
-    SHARP_AST_AND,
-    SHARP_AST_OR,
-    SHARP_AST_DECLARE,
-    SHARP_AST_NAMESPACE,
-    SHARP_AST_NAMED_ARG,
-    SHARP_AST_METHOD_CALL,
-    SHARP_AST_STATIC_CALL,
-    SHARP_AST_CONST_ELEM,
-    SHARP_AST_PARAM,
-    SHARP_AST_COALESCE,
-    SHARP_AST_ASSIGN_COALESCE,
-    SHARP_AST_NULLSAFE_PROP,
-    SHARP_AST_NULLSAFE_METHOD_CALL,
-    SHARP_AST_IF,
-    SHARP_AST_IF_ELEM,
-    SHARP_AST_WHILE,
-    SHARP_AST_DO_WHILE,
-    SHARP_AST_BREAK,
-    SHARP_AST_CONTINUE,
-    SHARP_AST_FOR,
-    SHARP_AST_EXPR_LIST,
-    SHARP_AST_FOREACH,
-    SHARP_AST_PROP_GROUP,
-    SHARP_AST_PROP_DECL,
-    SHARP_AST_PROP_ELEM,
-    SHARP_AST_NEW,
-    SHARP_AST_ATTRIBUTE_LIST,
-    SHARP_AST_ATTRIBUTE_GROUP,
-    SHARP_AST_ATTRIBUTE,
-    SHARP_AST_THROW,
-    SHARP_AST_TRY,
-    SHARP_AST_CATCH_LIST,
-    SHARP_AST_CATCH,
-    SHARP_AST_NAME_LIST,
-    SHARP_AST_CALL,
-    SHARP_AST_ENCAPS_LIST,
-    SHARP_AST_CONDITIONAL,
-    SHARP_AST_CAST,
-    SHARP_AST_PROPERTY_HOOK,
-    SHARP_AST_PROPERTY_HOOK_SHORT_BODY,
-    SHARP_AST_CLASS_NAME,
-    SHARP_AST_CLASS_CONST_GROUP,
-    SHARP_AST_CLASS_CONST_DECL,
-    SHARP_AST_STATIC_PROP,
-    SHARP_AST_CLASS_CONST,
 }
 
 #[repr(u8)]

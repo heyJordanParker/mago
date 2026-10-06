@@ -1,6 +1,7 @@
 #![allow(clippy::expect_used)]
 
 use std::env;
+use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -17,12 +18,14 @@ fn main() {
     let crate_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR"));
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
     let abi = crate_dir.join("src/lib.rs");
+    let kinds = crate_dir.join("src/kind.rs");
 
     let config = Config {
         language: Language::C,
         style: Style::Type,
         usize_is_size_t: true,
         include_guard: Some("SHARP_BRIDGE_H".to_owned()),
+        after_includes: Some(kinds_macro(&kinds)),
         documentation_style: DocumentationStyle::C99,
         ..Config::default()
     };
@@ -35,6 +38,7 @@ fn main() {
         .write_to_file(out_dir.join("sharp_bridge.h"));
 
     println!("cargo:rerun-if-changed={}", abi.display());
+    println!("cargo:rerun-if-changed={}", kinds.display());
     println!("cargo:include={}", out_dir.display());
 
     println!("cargo:rustc-env=SHARP_MAGO_COMMIT={}", git(&crate_dir, &["rev-parse", "HEAD"]));
@@ -43,6 +47,18 @@ fn main() {
     if branch != "HEAD" {
         println!("cargo:rerun-if-changed={}", git_path(&crate_dir, &branch));
     }
+}
+
+/// `SHARP_KINDS(X)` calls `X(KIND)` once per `sharp_kind`, so `ext/sharp` asserts that each equals its `zend_ast_kind`.
+fn kinds_macro(kinds: &Path) -> String {
+    let source = fs::read_to_string(kinds).expect("the generated sharp_kind is readable");
+    let calls: Vec<String> = source
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("SHARP_AST_")?.split_once(" = "))
+        .map(|(kind, _)| format!("  X({kind})"))
+        .collect();
+
+    format!("\n#define SHARP_KINDS(X) \\\n{}\n", calls.join(" \\\n"))
 }
 
 /// The absolute path of a file in the repository's git folder, such as `HEAD` or a branch ref.
