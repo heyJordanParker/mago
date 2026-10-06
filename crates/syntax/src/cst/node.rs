@@ -18,12 +18,14 @@ use crate::cst::cst::ArrayAccess;
 use crate::cst::cst::ArrayAppend;
 use crate::cst::cst::ArrayElement;
 use crate::cst::cst::ArrowFunction;
+use crate::cst::cst::As;
 use crate::cst::cst::Assignment;
 use crate::cst::cst::AssignmentOperator;
 use crate::cst::cst::Attribute;
 use crate::cst::cst::AttributeList;
 use crate::cst::cst::Binary;
 use crate::cst::cst::BinaryOperator;
+use crate::cst::cst::BinaryPattern;
 use crate::cst::cst::Block;
 use crate::cst::cst::BracedExpressionStringPart;
 use crate::cst::cst::Break;
@@ -41,6 +43,7 @@ use crate::cst::cst::ClosingTag;
 use crate::cst::cst::Closure;
 use crate::cst::cst::ClosureUseClause;
 use crate::cst::cst::ClosureUseClauseVariable;
+use crate::cst::cst::ComparisonPattern;
 use crate::cst::cst::CompositeString;
 use crate::cst::cst::ComputedProperty;
 use crate::cst::cst::Conditional;
@@ -116,6 +119,7 @@ use crate::cst::cst::Instantiation;
 use crate::cst::cst::Interface;
 use crate::cst::cst::InterpolatedString;
 use crate::cst::cst::IntersectionHint;
+use crate::cst::cst::Is;
 use crate::cst::cst::IssetConstruct;
 use crate::cst::cst::KeyValueArrayElement;
 use crate::cst::cst::Keyword;
@@ -134,6 +138,7 @@ use crate::cst::cst::Match;
 use crate::cst::cst::MatchArm;
 use crate::cst::cst::MatchDefaultArm;
 use crate::cst::cst::MatchExpressionArm;
+use crate::cst::cst::MatchGuard;
 use crate::cst::cst::MaybeTypedUseItem;
 use crate::cst::cst::Method;
 use crate::cst::cst::MethodAbstractBody;
@@ -150,20 +155,29 @@ use crate::cst::cst::Namespace;
 use crate::cst::cst::NamespaceBody;
 use crate::cst::cst::NamespaceImplicitBody;
 use crate::cst::cst::NestedVariable;
+use crate::cst::cst::NotPattern;
 use crate::cst::cst::NullSafeMethodCall;
 use crate::cst::cst::NullSafePropertyAccess;
 use crate::cst::cst::NullableHint;
 use crate::cst::cst::OpeningTag;
 use crate::cst::cst::Parenthesized;
 use crate::cst::cst::ParenthesizedHint;
+use crate::cst::cst::ParenthesizedPattern;
 use crate::cst::cst::PartialApplication;
 use crate::cst::cst::PartialArgument;
 use crate::cst::cst::PartialArgumentList;
+use crate::cst::cst::Pattern;
+use crate::cst::cst::PatternMatch;
+use crate::cst::cst::PatternMatchArm;
+use crate::cst::cst::PatternMatchArmBody;
+use crate::cst::cst::PatternMatchDefaultArm;
+use crate::cst::cst::PatternMatchPatternArm;
 use crate::cst::cst::Pipe;
 use crate::cst::cst::PlaceholderArgument;
 use crate::cst::cst::PlainProperty;
 use crate::cst::cst::PositionalArgument;
 use crate::cst::cst::PrintConstruct;
+use crate::cst::cst::PropertiesPattern;
 use crate::cst::cst::Property;
 use crate::cst::cst::PropertyAbstractItem;
 use crate::cst::cst::PropertyAccess;
@@ -175,6 +189,7 @@ use crate::cst::cst::PropertyHookConcreteBody;
 use crate::cst::cst::PropertyHookConcreteExpressionBody;
 use crate::cst::cst::PropertyHookList;
 use crate::cst::cst::PropertyItem;
+use crate::cst::cst::PropertyPattern;
 use crate::cst::cst::QualifiedIdentifier;
 use crate::cst::cst::RequireConstruct;
 use crate::cst::cst::RequireOnceConstruct;
@@ -213,6 +228,7 @@ use crate::cst::cst::TraitUseSpecification;
 use crate::cst::cst::Try;
 use crate::cst::cst::TryCatchClause;
 use crate::cst::cst::TryFinallyClause;
+use crate::cst::cst::TypePattern;
 use crate::cst::cst::TypedUseItemList;
 use crate::cst::cst::TypedUseItemSequence;
 use crate::cst::cst::UnaryPostfix;
@@ -471,6 +487,22 @@ pub enum NodeKind {
     UnionHint,
     Unset,
     LocalDeclaration,
+    Is,
+    As,
+    Pattern,
+    TypePattern,
+    ComparisonPattern,
+    NotPattern,
+    BinaryPattern,
+    ParenthesizedPattern,
+    PropertiesPattern,
+    PropertyPattern,
+    PatternMatch,
+    PatternMatchArm,
+    PatternMatchPatternArm,
+    PatternMatchDefaultArm,
+    MatchGuard,
+    PatternMatchArmBody,
     DirectVariable,
     IndirectVariable,
     NestedVariable,
@@ -712,6 +744,22 @@ pub enum Node<'ast, 'arena> {
     UnionHint(&'ast UnionHint<'arena>),
     Unset(&'ast Unset<'arena>),
     LocalDeclaration(&'ast LocalDeclaration<'arena>),
+    Is(&'ast Is<'arena>),
+    As(&'ast As<'arena>),
+    Pattern(&'ast Pattern<'arena>),
+    TypePattern(&'ast TypePattern<'arena>),
+    ComparisonPattern(&'ast ComparisonPattern<'arena>),
+    NotPattern(&'ast NotPattern<'arena>),
+    BinaryPattern(&'ast BinaryPattern<'arena>),
+    ParenthesizedPattern(&'ast ParenthesizedPattern<'arena>),
+    PropertiesPattern(&'ast PropertiesPattern<'arena>),
+    PropertyPattern(&'ast PropertyPattern<'arena>),
+    PatternMatch(&'ast PatternMatch<'arena>),
+    PatternMatchArm(&'ast PatternMatchArm<'arena>),
+    PatternMatchPatternArm(&'ast PatternMatchPatternArm<'arena>),
+    PatternMatchDefaultArm(&'ast PatternMatchDefaultArm<'arena>),
+    MatchGuard(&'ast MatchGuard<'arena>),
+    PatternMatchArmBody(&'ast PatternMatchArmBody<'arena>),
     DirectVariable(&'ast DirectVariable<'arena>),
     IndirectVariable(&'ast IndirectVariable<'arena>),
     NestedVariable(&'ast NestedVariable<'arena>),
@@ -799,6 +847,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 | Self::HaltCompiler(_)
                 | Self::Unset(_)
                 | Self::LocalDeclaration(_)
+                | Self::PatternMatch(_)
         )
     }
 
@@ -1031,6 +1080,22 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Self::UnionHint(_) => NodeKind::UnionHint,
             Self::Unset(_) => NodeKind::Unset,
             Self::LocalDeclaration(_) => NodeKind::LocalDeclaration,
+            Self::Is(_) => NodeKind::Is,
+            Self::As(_) => NodeKind::As,
+            Self::Pattern(_) => NodeKind::Pattern,
+            Self::TypePattern(_) => NodeKind::TypePattern,
+            Self::ComparisonPattern(_) => NodeKind::ComparisonPattern,
+            Self::NotPattern(_) => NodeKind::NotPattern,
+            Self::BinaryPattern(_) => NodeKind::BinaryPattern,
+            Self::ParenthesizedPattern(_) => NodeKind::ParenthesizedPattern,
+            Self::PropertiesPattern(_) => NodeKind::PropertiesPattern,
+            Self::PropertyPattern(_) => NodeKind::PropertyPattern,
+            Self::PatternMatch(_) => NodeKind::PatternMatch,
+            Self::PatternMatchArm(_) => NodeKind::PatternMatchArm,
+            Self::PatternMatchPatternArm(_) => NodeKind::PatternMatchPatternArm,
+            Self::PatternMatchDefaultArm(_) => NodeKind::PatternMatchDefaultArm,
+            Self::MatchGuard(_) => NodeKind::MatchGuard,
+            Self::PatternMatchArmBody(_) => NodeKind::PatternMatchArmBody,
             Self::DirectVariable(_) => NodeKind::DirectVariable,
             Self::IndirectVariable(_) => NodeKind::IndirectVariable,
             Self::NestedVariable(_) => NodeKind::NestedVariable,
@@ -1723,6 +1788,84 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 f(Node::Keyword(&node.default));
                 f(Node::Expression(node.expression));
             }
+            Node::Is(node) => {
+                f(Node::Expression(node.value));
+                f(Node::Keyword(&node.is));
+                f(Node::Pattern(node.pattern));
+            }
+            Node::As(node) => {
+                f(Node::Expression(node.value));
+                f(Node::Keyword(&node.r#as));
+                f(Node::Hint(node.hint));
+            }
+            Node::Pattern(node) => match node {
+                Pattern::Type(pattern) => f(Node::TypePattern(pattern)),
+                Pattern::Value(value) => f(Node::Expression(value)),
+                Pattern::Comparison(pattern) => f(Node::ComparisonPattern(pattern)),
+                Pattern::Not(pattern) => f(Node::NotPattern(pattern)),
+                Pattern::Binary(pattern) => f(Node::BinaryPattern(pattern)),
+                Pattern::Parenthesized(pattern) => f(Node::ParenthesizedPattern(pattern)),
+                Pattern::Properties(pattern) => f(Node::PropertiesPattern(pattern)),
+            },
+            Node::TypePattern(node) => {
+                f(Node::Hint(&node.hint));
+                if let Some(variable) = &node.variable {
+                    f(Node::LocalIdentifier(variable));
+                }
+            }
+            Node::ComparisonPattern(node) => {
+                f(Node::BinaryOperator(&node.operator));
+                f(Node::Expression(node.value));
+            }
+            Node::NotPattern(node) => {
+                f(Node::Keyword(&node.not));
+                f(Node::Pattern(node.pattern));
+            }
+            Node::BinaryPattern(node) => {
+                f(Node::Pattern(node.left));
+                f(Node::Keyword(&node.operator));
+                f(Node::Pattern(node.right));
+            }
+            Node::ParenthesizedPattern(node) => f(Node::Pattern(node.pattern)),
+            Node::PropertiesPattern(node) => {
+                for property in node.properties.iter() {
+                    f(Node::PropertyPattern(property));
+                }
+            }
+            Node::PropertyPattern(node) => {
+                f(Node::LocalIdentifier(&node.name));
+                f(Node::Pattern(node.pattern));
+            }
+            Node::PatternMatch(node) => {
+                f(Node::Keyword(&node.r#match));
+                f(Node::Expression(node.expression));
+                for arm in node.arms.iter() {
+                    f(Node::PatternMatchArm(arm));
+                }
+            }
+            Node::PatternMatchArm(node) => match node {
+                PatternMatchArm::Pattern(arm) => f(Node::PatternMatchPatternArm(arm)),
+                PatternMatchArm::Default(arm) => f(Node::PatternMatchDefaultArm(arm)),
+            },
+            Node::PatternMatchPatternArm(node) => {
+                f(Node::Pattern(node.pattern));
+                if let Some(guard) = &node.guard {
+                    f(Node::MatchGuard(guard));
+                }
+                f(Node::PatternMatchArmBody(&node.body));
+            }
+            Node::PatternMatchDefaultArm(node) => {
+                f(Node::Keyword(&node.default));
+                f(Node::PatternMatchArmBody(&node.body));
+            }
+            Node::MatchGuard(node) => {
+                f(Node::Keyword(&node.when));
+                f(Node::Expression(node.condition));
+            }
+            Node::PatternMatchArmBody(node) => match node {
+                PatternMatchArmBody::Expression(expression) => f(Node::Expression(expression)),
+                PatternMatchArmBody::Block(block) => f(Node::Block(block)),
+            },
             Node::Switch(node) => {
                 f(Node::Keyword(&node.switch));
                 f(Node::Expression(node.expression));
@@ -1848,6 +1991,9 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                     Expression::Instantiation(node) => Node::Instantiation(node),
                     Expression::MagicConstant(node) => Node::MagicConstant(node),
                     Expression::Pipe(node) => Node::Pipe(node),
+                    Expression::Is(node) => Node::Is(node),
+                    Expression::As(node) => Node::As(node),
+                    Expression::PatternMatch(node) => Node::PatternMatch(node),
                     Expression::Error(span) => Node::Error(*span),
                 };
                 f(child);
@@ -2357,6 +2503,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 Statement::HaltCompiler(node) => f(Node::HaltCompiler(node)),
                 Statement::Unset(node) => f(Node::Unset(node)),
                 Statement::LocalDeclaration(node) => f(Node::LocalDeclaration(node)),
+                Statement::PatternMatch(node) => f(Node::PatternMatch(node)),
                 Statement::Noop(_) => {}
             },
             Node::ExpressionStatement(node) => {
@@ -2726,6 +2873,22 @@ impl HasSpan for Node<'_, '_> {
             Self::UnionHint(node) => node.span(),
             Self::Unset(node) => node.span(),
             Self::LocalDeclaration(node) => node.span(),
+            Self::Is(node) => node.span(),
+            Self::As(node) => node.span(),
+            Self::Pattern(node) => node.span(),
+            Self::TypePattern(node) => node.span(),
+            Self::ComparisonPattern(node) => node.span(),
+            Self::NotPattern(node) => node.span(),
+            Self::BinaryPattern(node) => node.span(),
+            Self::ParenthesizedPattern(node) => node.span(),
+            Self::PropertiesPattern(node) => node.span(),
+            Self::PropertyPattern(node) => node.span(),
+            Self::PatternMatch(node) => node.span(),
+            Self::PatternMatchArm(node) => node.span(),
+            Self::PatternMatchPatternArm(node) => node.span(),
+            Self::PatternMatchDefaultArm(node) => node.span(),
+            Self::MatchGuard(node) => node.span(),
+            Self::PatternMatchArmBody(node) => node.span(),
             Self::DirectVariable(node) => node.span(),
             Self::IndirectVariable(node) => node.span(),
             Self::NestedVariable(node) => node.span(),
