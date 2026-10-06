@@ -2786,6 +2786,26 @@ fn the_inferred_type_arguments_of_a_generic_call_and_a_generic_new_are_recorded_
     assert_eq!(type_arguments(instantiation), ["float"]);
 }
 
+/// The lowering reads the type of a property read's receiver to tell a property from a method value, so the analysis
+/// types the receiver when it already knows the property's type, as it does after a write or for a property of `this`.
+#[test]
+fn the_receiver_of_a_property_read_the_analysis_already_knows_is_typed() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public int count = 0;\n\n    public int total() => this.count + 1;\n\n    public int copy(Report other)\n    {\n        other.count = 2;\n        return other.count;\n    }\n}\n";
+    let this = sharp.find("this.count").unwrap() as u32;
+    let other = sharp.rfind("other.count").unwrap() as u32;
+
+    let (issues, artifacts) =
+        analyze_with_artifacts(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[]);
+    let receiver = |start: u32, name: &str| {
+        let span = (start, start + name.len() as u32);
+        artifacts.expression_types.get(&span).map(|r#type| r#type.get_id().to_string())
+    };
+
+    assert!(issues.is_empty(), "{issues:?}");
+    assert_eq!(receiver(this, "this"), Some("$this(Demo\\Report)".to_owned()));
+    assert_eq!(receiver(other, "other"), Some("Demo\\Report".to_owned()));
+}
+
 /// The type arguments of the call in the analyzed file, with `library` beside it.
 fn recorded_type_arguments(analyzed: (&'static str, &'static str), library: &'static str, call: &str) -> Vec<String> {
     let start = analyzed.1.find(call).unwrap() as u32;
