@@ -1451,6 +1451,24 @@ fn list_and_enum_case_patterns_are_not_supported_yet() {
 }
 
 #[test]
+fn a_case_without_fields_or_a_name_is_a_value_pattern() {
+    const CODE: &str =
+        "class Report\n{\n    void run()\n    {\n        status is Status.Open or Status.Closed;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Expression::Is(Is { pattern: Pattern::Binary(or), .. }) = expression(&method_body(program)[0]) else {
+        panic!("expected an `or` pattern, got {:#?}", method_body(program)[0]);
+    };
+    let (Pattern::Value(open), Pattern::Value(closed)) = (or.left, or.right) else {
+        panic!("expected two value patterns, got {or:#?}");
+    };
+    assert!(matches!(open, Expression::Access(Access::Property(_))), "{open:#?}");
+    assert_eq!([source(CODE, *open), source(CODE, *closed)], ["Status.Open", "Status.Closed"]);
+}
+
+#[test]
 fn match_takes_patterns_when_conditions_and_a_default_arm() {
     const CODE: &str = "class Report\n{\n    string run()\n    {\n        return match (count) {\n            0 => \"none\",\n            int n when n > 100 => \"many\",\n            default => \"some\",\n        };\n    }\n}\n";
     let arena = LocalArena::new();

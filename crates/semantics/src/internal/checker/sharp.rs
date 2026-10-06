@@ -36,6 +36,7 @@ use mago_syntax::cst::Hint;
 use mago_syntax::cst::Identifier;
 use mago_syntax::cst::If;
 use mago_syntax::cst::IfBody;
+use mago_syntax::cst::Literal;
 use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::LocalIdentifier;
 use mago_syntax::cst::Method;
@@ -47,6 +48,7 @@ use mago_syntax::cst::Node;
 use mago_syntax::cst::PartialArgument;
 use mago_syntax::cst::Pattern;
 use mago_syntax::cst::PatternMatch;
+use mago_syntax::cst::PatternMatchArm;
 use mago_syntax::cst::PatternMatchArmBody;
 use mago_syntax::cst::Program;
 use mago_syntax::cst::Property;
@@ -1167,28 +1169,35 @@ fn has_braces(statement: &Statement) -> bool {
 }
 
 /// Checks the arms of a `match`, and returns whether its children can be checked. Spec section 21 needs a `default`
-/// arm on a value that is not an enum with data, which are the only values the slice matches, and gives a block arm
-/// only to a `match` statement. The engine takes one `default` arm, as PHP's `match` does.
+/// arm on a value that is not an enum, and section 20 lets a `match` on an enum leave it out when its arms cover every
+/// case. Only the analyzer knows the value's type, so a `match` whose arms all name `Class.y` values or `null` may
+/// leave out `default`, and the analyzer reports the cases it misses. A block arm is only in a `match` statement. The
+/// engine takes one `default` arm, as PHP's `match` does.
 fn check_pattern_match(pattern_match: &PatternMatch, is_expression: bool, context: &mut Context<'_, '_, '_>) -> bool {
     let mut defaults = pattern_match.arms.iter().filter(|arm| arm.is_default());
-    let Some(default) = defaults.next() else {
-        context.report(
-            Issue::error("A `match` needs a `default` arm.")
-                .with_annotation(Annotation::primary(pattern_match.r#match.span).with_message("This `match` has none."))
-                .with_note("Spec section 21: only a `match` on an enum with data may leave out `default`, when its arms cover every case.")
-                .with_help("Add `default => …` as the last arm."),
-        );
+    match defaults.next() {
+        None if !pattern_match.arms.iter().all(|arm| names_class_values(arm, context)) => {
+            context.report(
+                Issue::error("A `match` needs a `default` arm.")
+                    .with_annotation(Annotation::primary(pattern_match.r#match.span).with_message("This `match` has none."))
+                    .with_note("Spec section 21: only a `match` on an enum may leave out `default`, when its arms cover every case.")
+                    .with_help("Add `default => …` as the last arm."),
+            );
 
-        return false;
-    };
-    if let Some(again) = defaults.next() {
-        context.report(
-            Issue::error("A `match` has one `default` arm.")
-                .with_annotation(Annotation::primary(again.span()).with_message("Written again here."))
-                .with_annotation(Annotation::secondary(default.span()).with_message("First written here.")),
-        );
+            return false;
+        }
+        None => {}
+        Some(default) => {
+            if let Some(again) = defaults.next() {
+                context.report(
+                    Issue::error("A `match` has one `default` arm.")
+                        .with_annotation(Annotation::primary(again.span()).with_message("Written again here."))
+                        .with_annotation(Annotation::secondary(default.span()).with_message("First written here.")),
+                );
 
-        return false;
+                return false;
+            }
+        }
     }
 
     let block = pattern_match.arms.iter().find_map(|arm| match arm.body() {
@@ -1206,6 +1215,29 @@ fn check_pattern_match(pattern_match: &PatternMatch, is_expression: bool, contex
     }
 
     true
+}
+
+/// Whether an arm's pattern names only `Class.y` values or `null`, joined by `or`, as the arms of a `match` on an enum
+/// do.
+fn names_class_values(arm: &PatternMatchArm, context: &Context<'_, '_, '_>) -> bool {
+    fn is_class_value(pattern: &Pattern, context: &Context<'_, '_, '_>) -> bool {
+        match pattern {
+            Pattern::Value(Expression::Access(Access::Property(access))) => {
+                context.names.static_property_class(access).is_some()
+            }
+            Pattern::Value(Expression::Literal(Literal::Null(_))) => true,
+            Pattern::Binary(binary) if !binary.is_and() => {
+                is_class_value(binary.left, context) && is_class_value(binary.right, context)
+            }
+            Pattern::Parenthesized(parenthesized) => is_class_value(parenthesized.pattern, context),
+            _ => false,
+        }
+    }
+
+    match arm {
+        PatternMatchArm::Pattern(arm) => is_class_value(arm.pattern, context),
+        PatternMatchArm::Default(_) => true,
+    }
 }
 
 /// Reports each variable a pattern declares under `or` or `not`, which C# refuses as error CS8780: the variable would

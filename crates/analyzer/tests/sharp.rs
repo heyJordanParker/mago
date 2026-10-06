@@ -1316,7 +1316,7 @@ fn a_properties_pattern_on_a_value_that_cannot_be_null_reports_nothing_and_its_p
 
 #[test]
 fn a_pattern_that_can_never_match_is_an_error_at_the_pattern() {
-    let sharp = "namespace Demo;\n\nimport Lib.Circle;\nimport Lib.Square;\n\nclass Report\n{\n    public static bool square(Circle circle) => circle is Square;\n\n    public static bool text(int count) => count is string;\n\n    public static bool named(int count) => count is \"none\";\n\n    public static Square? converted(Circle circle) => circle as Square;\n\n    public static int arm(Circle circle) => match (circle) {\n        Square => 1,\n        default => 0,\n    };\n\n    public static bool possible(int? count) => count is int and > 0;\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Circle;\nimport Lib.Square;\n\nclass Report\n{\n    public static bool square(Circle circle) => circle is Square;\n\n    public static bool text(int count) => count is string;\n\n    public static bool named(int count) => count is \"none\";\n\n    public static Square? converted(Circle circle) => circle as Square;\n\n    public static int arm(Circle circle) => match (circle) {\n        Square => 1,\n        default => 0,\n    };\n\n    public static int value(int count) => match (count) {\n        1 => 1,\n        \"none\" => 0,\n        default => 2,\n    };\n\n    public static bool possible(int? count) => count is int and > 0;\n}\n";
 
     let first =
         analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Shapes.php", SHAPES)]);
@@ -1342,13 +1342,65 @@ fn a_pattern_that_can_never_match_is_an_error_at_the_pattern() {
             "\"none\" impossible-type-comparison This pattern never matches the value it tests.",
             "Square impossible-type-comparison This pattern never matches the value it tests.",
             "Square impossible-type-comparison This pattern never matches the value it tests.",
+            "\"none\" impossible-type-comparison This pattern never matches the value it tests.",
+        ]
+    );
+}
+
+const STATUS: &str = "<?php\n\nnamespace Lib;\n\nenum Status\n{\n    case Open;\n    case Closed;\n    case Archived;\n}\n\nfinal class Ticket\n{\n    public function status(): Status\n    {\n        return Status::Open;\n    }\n}\n\nfinal class Limits\n{\n    public const LOW = 1;\n    public const HIGH = 2;\n}\n";
+
+/// Each error of `sharp` as its primary span's text, its code and its message.
+fn written_errors(sharp: &'static str, issues: &[Issue]) -> Vec<String> {
+    issues
+        .iter()
+        .filter(|issue| issue.level == Level::Error)
+        .map(|issue| {
+            let span = issue.primary_span().expect("an error has a primary span");
+            format!(
+                "{} {} {}",
+                &sharp[span.start.offset as usize..span.end.offset as usize],
+                issue.code.as_deref().unwrap_or(""),
+                issue.message
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_match_without_default_names_the_enum_cases_it_misses() {
+    let sharp = "namespace Demo;\n\nimport Lib.Limits;\nimport Lib.Status;\n\nclass Report\n{\n    public static string label(Status status) => match (status) {\n        Status.Open => \"open\",\n        Status.Closed => \"closed\",\n    };\n\n    public static void close(Status? status)\n    {\n        match (status) {\n            Status.Open when status !== null => {},\n            Status.Closed => {},\n        }\n    }\n\n    public static int level(int count) => match (count) {\n        Limits.LOW => 1,\n        Limits.HIGH => 2,\n    };\n}\n";
+
+    let issues =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Status.php", STATUS)]);
+
+    assert_eq!(
+        written_errors(sharp, &issues),
+        [
+            "match match-not-exhaustive This `match` misses `Status.Archived`.",
+            "match match-not-exhaustive This `match` misses `Status.Open`, `Status.Archived` and `null`.",
+            "match match-not-exhaustive A `match` needs a `default` arm.",
         ]
     );
 }
 
 #[test]
+fn a_match_without_default_that_handles_every_enum_case_reports_nothing() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\nimport Lib.Ticket;\n\nclass Report\n{\n    public static string label(Status status) => match (status) {\n        Status.Open => \"open\",\n        Status.Closed or Status.Archived => \"done\",\n    };\n\n    public static void close(Status? status)\n    {\n        match (status) {\n            Status.Open => {},\n            Status.Closed or Status.Archived => {},\n            null => {},\n        }\n    }\n\n    public static string state(Ticket ticket) => match (ticket.status()) {\n        Status.Open => \"open\",\n        Status.Closed or Status.Archived => \"done\",\n    };\n}\n";
+
+    let issues =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Status.php", STATUS)]);
+    let reported: Vec<&str> = issues
+        .iter()
+        .filter(|issue| matches!(issue.level, Level::Error | Level::Warning))
+        .map(|issue| issue.message.as_str())
+        .collect();
+
+    assert_eq!(reported, Vec::<&str>::new());
+}
+
+#[test]
 fn a_pattern_the_parser_refuses_reports_only_its_parse_error() {
-    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static void count(int? count)\n    {\n        match (count) {\n            [int first] => {},\n            Shape.Circle => {},\n            default => {},\n        }\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static void count(int? count)\n    {\n        match (count) {\n            [int first] => {},\n            Shape.Circle(radius) => {},\n            default => {},\n        }\n    }\n}\n";
 
     let issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[]);
     let messages: Vec<&str> = issues.iter().map(|issue| issue.message.as_str()).collect();

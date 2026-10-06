@@ -2950,6 +2950,24 @@ fn a_match_that_starts_a_statement_is_an_if_list() {
     );
 }
 
+/// php-src gives the jump after a branch the line of its `IF_ELEM`, so each arm's `if` is on its pattern's line, as
+/// its PHP twin's is, and coverage never counts the line of the arm before it.
+#[test]
+fn each_arm_of_a_match_that_starts_a_statement_is_on_its_pattern_line() {
+    let lowered = Lowered::new(&method(
+        "        match (extra) {\n            0 => {},\n            1 => {},\n            default => {},\n        }\n        return extra;\n",
+    ));
+    let mut lines: Vec<u32> = lowered
+        .nodes()
+        .iter()
+        .filter(|node| node.kind == sharp_kind::SHARP_AST_IF_ELEM)
+        .map(|node| node.line)
+        .collect();
+    lines.sort_unstable();
+
+    assert_eq!(lines, [10, 11, 11, 12]);
+}
+
 /// The child count `zend_ast_get_num_children` gives a fixed-size kind, or 5 for a declaration. `None` for a list.
 fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
     const IS_LIST: u32 = 1 << 7;

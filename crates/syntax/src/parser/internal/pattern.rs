@@ -137,10 +137,15 @@ where
             T!["-" | "+"] => Pattern::Value(self.parse_expression_with_precedence(Precedence::Comparison)?),
             kind if kind.is_literal() => Pattern::Value(self.parse_expression_with_precedence(Precedence::Comparison)?),
             T![Identifier] if self.stream.peek_kind(1)? == Some(T!["."]) => {
-                let span = self.skip_case_pattern()?;
-                self.errors.push(ParseError::NotSupportedYetInSharp("An enum case pattern", span));
+                if self.is_at_case_with_data()? {
+                    let span = self.skip_case_pattern()?;
+                    self.errors.push(ParseError::NotSupportedYetInSharp("An enum case pattern", span));
 
-                Pattern::Value(self.arena.alloc(Expression::Error(span)))
+                    Pattern::Value(self.arena.alloc(Expression::Error(span)))
+                } else {
+                    // A case without fields or a name, as in `Status.Open`, is the value `Class.y` reads.
+                    Pattern::Value(self.parse_expression_with_precedence(Precedence::Comparison)?)
+                }
             }
             _ => Pattern::Type(TypePattern { hint: self.parse_type_hint()?, variable: self.parse_pattern_variable()? }),
         };
@@ -156,6 +161,15 @@ where
             }
             _ => Ok(None),
         }
+    }
+
+    /// Whether `Case.Name` is followed by its fields in parentheses or a name, as an enum with data writes it.
+    fn is_at_case_with_data(&mut self) -> Result<bool, ParseError> {
+        Ok(match self.stream.lookahead(3)? {
+            Some(token) if token.kind == T!["("] => true,
+            Some(token) => token.kind == T![Identifier] && token.value != b"when",
+            None => false,
+        })
     }
 
     /// Skips an enum case pattern, `Case.Name`, then its fields in parentheses or its name, and returns its span.

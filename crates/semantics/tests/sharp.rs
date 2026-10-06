@@ -1489,6 +1489,13 @@ fn a_match_without_a_default_arm_is_an_error() {
 }
 
 #[test]
+fn a_match_whose_arms_name_class_values_leaves_its_default_to_the_analyzer() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Status;\n\nclass Report\n{\n    public string label(Status? status)\n    {\n        match (status) {\n            Status.Open when status !== null => {},\n            Status.Closed or null => {},\n        }\n        return match (status) {\n            Status.Open => \"open\",\n            0 => \"zero\",\n        };\n    }\n}\n";
+
+    assert_eq!(issues(code), ["13:16 A `match` needs a `default` arm."]);
+}
+
+#[test]
 fn a_second_default_arm_or_a_block_arm_in_a_match_that_gives_a_value_is_an_error() {
     let code = leak(method(
         "        const a = match (extra) {\n            default => 1,\n            default => 2,\n        };\n        return match (extra) {\n            0 => { return 1; },\n            default => 2,\n        };\n",

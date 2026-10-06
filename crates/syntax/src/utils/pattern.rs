@@ -58,6 +58,7 @@ use crate::cst::MatchDefaultArm;
 use crate::cst::MatchExpressionArm;
 use crate::cst::MatchGuard;
 use crate::cst::Node;
+use crate::cst::Parenthesized;
 use crate::cst::Pattern;
 use crate::cst::PatternMatch;
 use crate::cst::PatternMatchArm;
@@ -169,7 +170,7 @@ where
         };
         let mut subject =
             if named { Subject { first: Some(is.value), variable: None } } else { self.subject(is.value) };
-        let test = self.test(is.pattern, &mut subject)?;
+        let test = self.test(is.pattern, is.is.span, &mut subject)?;
         self.tests.push((is.pattern.span(), test));
 
         Some(test)
@@ -206,13 +207,14 @@ where
         };
 
         let mut arms = Vec::new_in(self.arena);
-        for arm in pattern_match.arms.iter() {
+        for (index, arm) in pattern_match.arms.iter().enumerate() {
             arms.push(match arm {
                 PatternMatchArm::Pattern(arm) => {
                     let PatternMatchArmBody::Expression(expression) = arm.body else {
                         return None;
                     };
-                    let condition = self.arm_condition(arm.pattern, arm.guard.as_ref(), &mut subject)?;
+                    let follows = arm_follows(pattern_match, index);
+                    let condition = self.arm_condition(arm.pattern, follows, arm.guard.as_ref(), &mut subject)?;
 
                     MatchArm::Expression(MatchExpressionArm {
                         conditions: TokenSeparatedSequence::from_slices(self.arena.alloc_slice_copy(&[condition]), &[]),
@@ -274,9 +276,18 @@ where
 
         let mut subject = self.arm_subject(pattern_match.expression);
         let mut branches = std::vec::Vec::new();
-        for arm in pattern_match.arms.iter() {
+        for (index, arm) in pattern_match.arms.iter().enumerate() {
             if let PatternMatchArm::Pattern(arm) = arm {
-                let condition = self.arm_condition(arm.pattern, arm.guard.as_ref(), &mut subject)?;
+                let follows = arm_follows(pattern_match, index);
+                let condition = self.arm_condition(arm.pattern, follows, arm.guard.as_ref(), &mut subject)?;
+                // php-src gives the jump after a branch its condition's line, and the subject's read may be on the
+                // line before the pattern. The parentheses run from the pattern to the arrow, so the `if` is on the
+                // pattern's line and their span is no other node's.
+                let condition = self.alloc(Expression::Parenthesized(Parenthesized {
+                    left_parenthesis: start_of(arm.pattern.span()),
+                    expression: condition,
+                    right_parenthesis: arm.arrow,
+                }));
                 branches.push((arm.pattern.span(), condition, self.arm_statement(&arm.body)));
             }
         }
@@ -311,10 +322,11 @@ where
     fn arm_condition(
         &mut self,
         pattern: &'arena Pattern<'arena>,
+        follows: Span,
         guard: Option<&MatchGuard<'arena>>,
         subject: &mut Subject<'arena>,
     ) -> Option<&'arena Expression<'arena>> {
-        let test = self.test(pattern, subject)?;
+        let test = self.test(pattern, follows, subject)?;
         self.tests.push((pattern.span(), test));
 
         Some(match guard {
@@ -337,10 +349,13 @@ where
         }))
     }
 
-    /// The PHP that is `true` when the subject matches `pattern`, reading the subject in evaluation order.
+    /// The PHP that is `true` when the subject matches `pattern`, reading the subject in evaluation order. `follows`
+    /// is the token the pattern follows. A value's read sits at its start, so `read === value` spans more than the
+    /// value: the analyzer keeps one type per span, and the value keeps its own.
     fn test(
         &mut self,
         pattern: &'arena Pattern<'arena>,
+        follows: Span,
         subject: &mut Subject<'arena>,
     ) -> Option<&'arena Expression<'arena>> {
         Some(match pattern {
@@ -349,7 +364,7 @@ where
                 if (self.is_local)(local.span) =>
             {
                 let value = self.alloc(Expression::ConstantAccess(ConstantAccess { name: *name }));
-                let read = self.read(subject, pattern.span());
+                let read = self.read(subject, follows);
 
                 self.binary(read, BinaryOperator::Identical(start_of(local.span)), value)
             }
@@ -374,7 +389,7 @@ where
             // A list or enum case pattern, which the parser refuses as not supported yet.
             Pattern::Value(Expression::Error(_)) => return None,
             Pattern::Value(value) => {
-                let read = self.read(subject, pattern.span());
+                let read = self.read(subject, follows);
 
                 self.binary(read, BinaryOperator::Identical(start_of(value.span())), value)
             }
@@ -384,7 +399,7 @@ where
                 self.binary(read, comparison.operator, comparison.value)
             }
             Pattern::Not(not) => {
-                let operand = self.test(not.pattern, subject)?;
+                let operand = self.test(not.pattern, not.not.span, subject)?;
 
                 self.alloc(Expression::UnaryPrefix(UnaryPrefix {
                     operator: UnaryPrefixOperator::Not(not.not.span),
@@ -392,8 +407,8 @@ where
                 }))
             }
             Pattern::Binary(binary) => {
-                let left = self.test(binary.left, subject)?;
-                let right = self.test(binary.right, subject)?;
+                let left = self.test(binary.left, follows, subject)?;
+                let right = self.test(binary.right, binary.operator.span, subject)?;
                 let operator = if binary.is_and() {
                     BinaryOperator::And(binary.operator.span)
                 } else {
@@ -402,7 +417,9 @@ where
 
                 self.binary(left, operator, right)
             }
-            Pattern::Parenthesized(parenthesized) => self.test(parenthesized.pattern, subject)?,
+            Pattern::Parenthesized(parenthesized) => {
+                self.test(parenthesized.pattern, parenthesized.left_parenthesis, subject)?
+            }
             Pattern::Properties(properties) => {
                 let function = called_function(Node::PropertiesPattern(properties))?;
                 let read = self.read(subject, pattern.span());
@@ -420,7 +437,7 @@ where
                     } else {
                         self.subject(value)
                     };
-                    let property_test = self.test(property.pattern, &mut property_subject)?;
+                    let property_test = self.test(property.pattern, property.colon, &mut property_subject)?;
 
                     test = self.binary(test, BinaryOperator::And(at), property_test);
                 }
@@ -549,6 +566,14 @@ where
 /// variable.
 fn is_named(pattern: &Pattern<'_>) -> bool {
     matches!(pattern, Pattern::Type(TypePattern { variable: Some(_), .. }))
+}
+
+/// The token the pattern of the arm at `index` follows: `{` for the first arm, and the comma before it otherwise.
+fn arm_follows(pattern_match: &PatternMatch<'_>, index: usize) -> Span {
+    match index.checked_sub(1).and_then(|previous| pattern_match.arms.tokens.get(previous)) {
+        Some(comma) => comma.span_for(pattern_match.left_brace.file_id),
+        None => pattern_match.left_brace,
+    }
 }
 
 fn start_of(span: Span) -> Span {
