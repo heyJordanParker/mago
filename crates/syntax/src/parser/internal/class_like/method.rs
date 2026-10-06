@@ -30,6 +30,7 @@ where
             function: Some(self.expect_php_keyword(T!["function"])?),
             ampersand: if self.stream.is_at(T!["&"])? { Some(self.stream.eat_span(T!["&"])?) } else { None },
             name: self.parse_local_identifier()?,
+            type_parameters: None,
             parameter_list: self.parse_function_like_parameter_list()?,
             return_type_hint: self.parse_optional_function_like_return_type_hint()?,
             body: self.parse_method_body()?,
@@ -40,8 +41,8 @@ where
     /// and no `function` keyword, or a field, `int count = 0;`. A name followed by `(` with no type before it is the
     /// constructor, `public Report(int count) {}`, a method without a return type.
     ///
-    /// The type is parsed once, and the name after it decides: a name followed by `(` makes a method, anything else
-    /// a field. A type has no length limit, so no fixed lookahead can decide before it. A PHP property, which starts
+    /// The type is parsed once, and the name after it decides: a name followed by `(`, or by `<` and its type
+    /// parameters, makes a method, anything else a field. A type has no length limit, so no fixed lookahead can decide before it. A PHP property, which starts
     /// with `var` or a `$` variable, still parses so the rest of the class does, and its PHP syntax is an error. So do
     /// a named constructor and `required` on any member but the constructor, which are one "not supported yet" error
     /// each.
@@ -92,6 +93,7 @@ where
                 function: None,
                 ampersand: None,
                 name,
+                type_parameters: None,
                 parameter_list: self.parse_function_like_parameter_list()?,
                 return_type_hint: None,
                 body: self.parse_method_body()?,
@@ -109,7 +111,7 @@ where
 
             return Ok(ClassLikeMember::Property(self.parse_untyped_field(attributes, modifiers, name)?));
         }
-        if !matches!(self.stream.peek_kind(1)?, Some(T!["("])) {
+        if !matches!(self.stream.peek_kind(1)?, Some(T!["(" | "<"])) {
             return Ok(ClassLikeMember::Property(self.parse_property_with_hint(
                 attributes,
                 modifiers,
@@ -125,6 +127,7 @@ where
             return_type_hint: Some(FunctionLikeReturnTypeHint { colon: None, hint }),
             ampersand: None,
             name: self.parse_local_identifier()?,
+            type_parameters: self.parse_optional_type_parameter_list()?,
             parameter_list: self.parse_function_like_parameter_list()?,
             body: self.parse_method_body()?,
         }))

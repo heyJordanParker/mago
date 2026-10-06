@@ -2657,7 +2657,7 @@ generate_ast_walker! {
 
     'arena GenericHint as generic_hint => {
         walker.walk_local_identifier(&generic_hint.name, context);
-        for argument in &generic_hint.arguments {
+        for argument in &generic_hint.type_arguments.arguments {
             walker.walk_hint(argument, context);
         }
     }

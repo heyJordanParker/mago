@@ -13,6 +13,7 @@ use crate::cst::cst::identifier::LocalIdentifier;
 use crate::cst::cst::keyword::Keyword;
 use crate::cst::cst::modifier::Modifier;
 use crate::cst::cst::type_hint::Hint;
+use crate::cst::cst::type_hint::TypeParameterList;
 use crate::cst::sequence::Sequence;
 
 /// Represents a method statement in PHP.
@@ -40,6 +41,8 @@ pub struct Method<'arena> {
     pub function: Option<Keyword<'arena>>,
     pub ampersand: Option<Span>,
     pub name: LocalIdentifier<'arena>,
+    /// PHP#'s type parameters, as in `public T first<T>(List<T> items)`. Always `None` in PHP.
+    pub type_parameters: Option<TypeParameterList<'arena>>,
     pub parameter_list: FunctionLikeParameterList<'arena>,
     pub return_type_hint: Option<FunctionLikeReturnTypeHint<'arena>>,
     pub body: MethodBody<'arena>,

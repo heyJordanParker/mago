@@ -2644,7 +2644,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             },
             Node::GenericHint(node) => {
                 f(Node::LocalIdentifier(&node.name));
-                for argument in node.arguments.iter() {
+                for argument in node.type_arguments.arguments.iter() {
                     f(Node::Hint(argument));
                 }
             }

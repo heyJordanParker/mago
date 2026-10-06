@@ -196,8 +196,11 @@ fn union_from_hint(
         }
         Hint::Iterable(_) => get_mixed_iterable(),
         Hint::Generic(generic) => {
-            let mut arguments =
-                generic.arguments.iter().map(|argument| get_union_from_hint(argument, classname, resolved_names));
+            let mut arguments = generic
+                .type_arguments
+                .arguments
+                .iter()
+                .map(|argument| get_union_from_hint(argument, classname, resolved_names));
 
             match (generic.name.value, arguments.next(), arguments.next(), arguments.next()) {
                 (b"List", Some(element), None, None) => get_list(element),

@@ -11,6 +11,10 @@ use crate::cst::cst::Keyword;
 use crate::cst::cst::LocalIdentifier;
 use crate::cst::cst::NullableHint;
 use crate::cst::cst::ParenthesizedHint;
+use crate::cst::cst::TypeArgumentList;
+use crate::cst::cst::TypeParameter;
+use crate::cst::cst::TypeParameterBound;
+use crate::cst::cst::TypeParameterList;
 use crate::cst::cst::UnionHint;
 use crate::cst::sequence::TokenSeparatedSequence;
 use crate::error::ParseError;
@@ -167,7 +171,11 @@ where
 
     /// Parses a PHP# type with type arguments, as in `Map<string, List<Line>>`.
     fn parse_generic_hint(&mut self) -> Result<GenericHint<'arena>, ParseError> {
-        let name = self.parse_local_identifier()?;
+        Ok(GenericHint { name: self.parse_local_identifier()?, type_arguments: self.parse_type_argument_list()? })
+    }
+
+    /// Parses PHP# type arguments, as a type, a `new` and a call write them: `<string, List<Line>>`.
+    pub(crate) fn parse_type_argument_list(&mut self) -> Result<TypeArgumentList<'arena>, ParseError> {
         let less_than = self.stream.eat_span(T!["<"])?;
         let mut arguments = Vec::new_in(self.arena);
         let mut commas = Vec::new_in(self.arena);
@@ -180,11 +188,90 @@ where
             commas.push(self.stream.consume()?);
         }
 
-        Ok(GenericHint {
-            name,
+        Ok(TypeArgumentList {
             less_than,
             arguments: TokenSeparatedSequence::new(arguments, commas),
             greater_than: self.parse_closing_angle()?,
+        })
+    }
+
+    /// Parses the PHP# type arguments after the class of `new`, as in `new PaginatedList<Order>(rows)`.
+    pub(crate) fn parse_optional_type_argument_list(&mut self) -> Result<Option<TypeArgumentList<'arena>>, ParseError> {
+        if self.dialect.is_sharp() && self.stream.is_at(T!["<"])? {
+            Ok(Some(self.parse_type_argument_list()?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Parses the PHP# type arguments of a method call, as in `Json.decode<WebhookPayload>(body)`. As C# decides, a
+    /// `<` starts them only when every token up to the `>` that closes it can be part of a type and `(` follows that
+    /// `>`, so `this.count < limit` stays a comparison.
+    pub(crate) fn parse_optional_call_type_argument_list(
+        &mut self,
+    ) -> Result<Option<TypeArgumentList<'arena>>, ParseError> {
+        if self.dialect.is_sharp()
+            && self.stream.is_at(T!["<"])?
+            && self.stream.peek_kind_after_type_arguments()? == Some(T!["("])
+        {
+            Ok(Some(self.parse_type_argument_list()?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Parses the PHP# type parameters after the name of a class, an interface or a method, as in
+    /// `<out TItem : DatabaseEntity & Shareable, TKey>`.
+    pub(crate) fn parse_optional_type_parameter_list(
+        &mut self,
+    ) -> Result<Option<TypeParameterList<'arena>>, ParseError> {
+        if !self.dialect.is_sharp() || !self.stream.is_at(T!["<"])? {
+            return Ok(None);
+        }
+
+        let less_than = self.stream.eat_span(T!["<"])?;
+        let mut parameters = Vec::new_in(self.arena);
+        let mut commas = Vec::new_in(self.arena);
+        loop {
+            parameters.push(self.parse_type_parameter()?);
+            if self.state.closing_angle.is_some() || !self.stream.is_at(T![","])? {
+                break;
+            }
+
+            commas.push(self.stream.consume()?);
+        }
+
+        Ok(Some(TypeParameterList {
+            less_than,
+            parameters: TokenSeparatedSequence::new(parameters, commas),
+            greater_than: self.parse_closing_angle()?,
+        }))
+    }
+
+    /// Parses one PHP# type parameter. `in` and `out` are names the lexer reads as identifiers, so one is the variance
+    /// only when another name follows it, as `of` is read in a `for … of` loop.
+    fn parse_type_parameter(&mut self) -> Result<TypeParameter<'arena>, ParseError> {
+        let variance = match self.stream.lookahead(0)? {
+            Some(token)
+                if token.kind == T![Identifier]
+                    && matches!(token.value, b"in" | b"out")
+                    && self.stream.peek_kind(1)? == Some(T![Identifier]) =>
+            {
+                let token = self.stream.consume()?;
+
+                Some(Keyword { span: token.span_for(self.stream.file_id()), value: token.value })
+            }
+            _ => None,
+        };
+
+        Ok(TypeParameter {
+            variance,
+            name: self.parse_local_identifier()?,
+            bound: if self.stream.is_at(T![":"])? {
+                Some(TypeParameterBound { colon: self.stream.eat_span(T![":"])?, hint: self.parse_type_hint()? })
+            } else {
+                None
+            },
         })
     }
 

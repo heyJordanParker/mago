@@ -573,7 +573,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         }
         (Node::GenericHint(generic), FieldOrProperty | Method | Signature | Parameter | Body) => {
             // The analyzer refuses a named key type without an `int` or `string` backing value.
-            if let [key, _] = generic.arguments.as_slice()
+            if let [key, _] = generic.type_arguments.arguments.as_slice()
                 && !matches!(key, Hint::Integer(_) | Hint::String(_) | Hint::Identifier(_))
             {
                 context.report(
@@ -1790,10 +1790,11 @@ fn is_slice_type(hint: &Hint) -> bool {
         | Hint::Nullable(_) => true,
         Hint::Mixed(any) => any.value == ANY,
         Hint::Generic(generic) => {
-            let arguments = generic.arguments.len();
+            let arguments = &generic.type_arguments.arguments;
 
-            ((generic.name.value == b"List" && arguments == 1) || (generic.name.value == b"Map" && arguments == 2))
-                && !generic.arguments.iter().any(|argument| matches!(argument, Hint::Void(_)))
+            ((generic.name.value == b"List" && arguments.len() == 1)
+                || (generic.name.value == b"Map" && arguments.len() == 2))
+                && !arguments.iter().any(|argument| matches!(argument, Hint::Void(_)))
         }
         Hint::Function(function) => !function.parameters.iter().any(|parameter| matches!(parameter, Hint::Void(_))),
         _ => false,

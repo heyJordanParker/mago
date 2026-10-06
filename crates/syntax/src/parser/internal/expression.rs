@@ -545,8 +545,21 @@ where
             T!["->"] => {
                 let arrow = self.consume_operator_span()?;
                 let selector = self.parse_classlike_member_selector()?;
+                let type_arguments = if Precedence::CallDim > precedence {
+                    self.parse_optional_call_type_argument_list()?
+                } else {
+                    None
+                };
 
-                if Precedence::CallDim > precedence && matches!(self.stream.peek_kind(0)?, Some(T!["("])) {
+                if type_arguments.is_some() {
+                    Expression::Call(Call::Method(MethodCall {
+                        object: lhs,
+                        arrow,
+                        method: selector,
+                        type_arguments,
+                        argument_list: self.parse_argument_list()?,
+                    }))
+                } else if Precedence::CallDim > precedence && matches!(self.stream.peek_kind(0)?, Some(T!["("])) {
                     let partial_args = self.parse_partial_argument_list()?;
 
                     if partial_args.has_placeholders() {
@@ -561,6 +574,7 @@ where
                             object: lhs,
                             arrow,
                             method: selector,
+                            type_arguments: None,
                             argument_list: partial_args.into_argument_list(self.arena),
                         }))
                     }
@@ -571,12 +585,20 @@ where
             T!["?->"] => {
                 let question_mark_arrow = self.consume_operator_span()?;
                 let selector = self.parse_classlike_member_selector()?;
+                let type_arguments = if Precedence::CallDim > precedence {
+                    self.parse_optional_call_type_argument_list()?
+                } else {
+                    None
+                };
 
-                if Precedence::CallDim > precedence && matches!(self.stream.peek_kind(0)?, Some(T!["("])) {
+                if type_arguments.is_some()
+                    || (Precedence::CallDim > precedence && matches!(self.stream.peek_kind(0)?, Some(T!["("])))
+                {
                     Expression::Call(Call::NullSafeMethod(NullSafeMethodCall {
                         object: lhs,
                         question_mark_arrow,
                         method: selector,
+                        type_arguments,
                         argument_list: self.parse_argument_list()?,
                     }))
                 } else {

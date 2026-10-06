@@ -234,36 +234,61 @@ where
     ///
     /// Returns a [`ParseError`] if the lexer fails to produce a token.
     pub fn peek_kind_after_parentheses(&mut self) -> Result<Option<TokenKind>, ParseError> {
-        let mut lexer = self.lexer.clone();
-        let mut index = 0;
-        let mut next_kind = || -> Result<Option<TokenKind>, SyntaxError> {
-            if index < self.buffer.len() {
-                index += 1;
-
-                return Ok(self.buffer.get(index - 1).map(|token| token.kind));
-            }
-
-            while let Some(token) = lexer.advance() {
-                let token = token?;
-                if !token.kind.is_trivia() {
-                    return Ok(Some(token.kind));
-                }
-            }
-
-            Ok(None)
-        };
-
+        let mut kinds = self.kinds_ahead();
         let mut depth = 0usize;
-        while let Some(kind) = next_kind()? {
+        while let Some(kind) = kinds.next().transpose()? {
             match kind {
                 T!["("] => depth += 1,
-                T![")"] if depth == 1 => return Ok(next_kind()?),
+                T![")"] if depth == 1 => return Ok(kinds.next().transpose()?),
                 T![")"] => depth -= 1,
                 _ => {}
             }
         }
 
         Ok(None)
+    }
+
+    /// Peeks past the `<` at the head of the stream to the `>` that closes it, and returns the kind of the token after
+    /// that `>`. It returns `None` when a token that cannot be part of a PHP# type comes first, or the file ends. A
+    /// `>>` closes two lists. It reads ahead with a copy of the lexer, so it consumes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ParseError`] if the lexer fails to produce a token.
+    pub fn peek_kind_after_type_arguments(&mut self) -> Result<Option<TokenKind>, ParseError> {
+        let mut kinds = self.kinds_ahead();
+        let mut depth = 0usize;
+        while let Some(kind) = kinds.next().transpose()? {
+            depth = match kind {
+                T!["<"] => depth + 1,
+                T![">"] if depth >= 1 => depth - 1,
+                T![">>"] if depth >= 2 => depth - 2,
+                T![Identifier | "list" | "function" | "," | "?" | "|" | "&" | "(" | ")"] => depth,
+                kind if kind.is_cast() => depth,
+                _ => return Ok(None),
+            };
+            if depth == 0 {
+                return Ok(kinds.next().transpose()?);
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// The kinds of the tokens from the head of the stream on, without trivia: the buffered tokens, then the tokens a
+    /// copy of the lexer reads, so reading them consumes nothing.
+    fn kinds_ahead(&self) -> impl Iterator<Item = Result<TokenKind, SyntaxError>> + '_ {
+        let mut lexer = self.lexer.clone();
+        let buffered = (0..self.buffer.len()).filter_map(|index| self.buffer.get(index)).map(|token| Ok(token.kind));
+
+        buffered.chain(std::iter::from_fn(move || {
+            loop {
+                match lexer.advance()? {
+                    Ok(token) if token.kind.is_trivia() => {}
+                    token => return Some(token.map(|token| token.kind)),
+                }
+            }
+        }))
     }
 
     /// Creates a `ParseError` for an unexpected token or EOF, given one or more expected kinds.

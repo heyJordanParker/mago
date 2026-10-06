@@ -83,7 +83,7 @@ impl Fingerprintable for GenericHint<'_> {
     {
         "generic".hash(hasher);
         self.name.value.hash(hasher);
-        for argument in &self.arguments {
+        for argument in &self.type_arguments.arguments {
             argument.fingerprint_with_hasher(hasher, resolved_names, options);
         }
     }

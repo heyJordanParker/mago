@@ -42,9 +42,13 @@ fn sources() -> Vec<(String, Vec<u8>)> {
 
     let fixture = crates.join("semantics/tests/fixtures/slice.sharp");
     sources.push((fixture.display().to_string(), std::fs::read(&fixture).expect("the slice fixture")));
+    sources.push(("src/Generics.sharp".to_string(), GENERICS.as_bytes().to_vec()));
 
     sources
 }
+
+/// Every PHP# type parameter and type argument form, which no fixture holds yet.
+const GENERICS: &str = "public interface Validator<in TItem>\n{\n    bool validate(TItem item);\n}\n\npublic class PaginatedList<out TItem : DatabaseEntity & Shareable, TKey>\n{\n    public T first<T>(List<T> items) => items[0];\n\n    public void run()\n    {\n        new PaginatedList<Order>(rows);\n        Json.decode<WebhookPayload>(body);\n        this.repository?.find<Map<string, List<int>>>(id);\n    }\n}\n";
 
 /// The checks that run in one walk, such as PHP#'s slice check, see every node `Node::visit_children` reaches. Keywords
 /// are left out, because the walker skips some of them, such as a closure's `use`.
@@ -69,5 +73,5 @@ fn the_walker_enters_every_node_visit_children_reaches() {
         assert!(missed.is_empty(), "the walker misses these nodes of {name}: {missed:?}");
     }
 
-    assert_eq!(parsed, 468, "the number of sources without a parse error");
+    assert_eq!(parsed, 469, "the number of sources without a parse error");
 }
