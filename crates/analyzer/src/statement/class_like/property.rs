@@ -122,7 +122,8 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for PropertyConcreteItem<'arena> {
 }
 
 /// Analyzes a property's default value and reports it when its type is not assignable to the property's. A PHP#
-/// initial value that is not constant runs in the constructor, and the same check covers it.
+/// initial value that is not constant runs in the constructor, and the same check covers it. In PHP# a `null` or
+/// `false` that the type does not hold is an error too, as the engine refuses it.
 fn analyze_default_value<'ctx, 'arena, A>(
     variable_name: &[u8],
     value: &Expression<'arena>,
@@ -164,8 +165,8 @@ where
             context.codebase,
             value_type,
             &declared_type,
-            true,
-            true,
+            !context.dialect.is_sharp(),
+            !context.dialect.is_sharp(),
             false,
             &mut comparison_result,
         ) {

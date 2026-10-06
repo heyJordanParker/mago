@@ -6,20 +6,30 @@ use mago_allocator::LocalArena;
 use mago_database::file::File;
 use mago_names::resolver::NameResolver;
 use mago_php_version::PHPVersion;
+use mago_reporting::Issue;
 use mago_semantics::SemanticsChecker;
 use mago_syntax::parser::parse_file;
 
-/// Every semantic issue in the PHP# source, as `line:column message` at its primary span.
-fn issues(code: &'static str) -> Vec<String> {
+/// Every semantic issue in the source, in the dialect its path names.
+fn check(path: &'static str, code: &'static str) -> Vec<Issue> {
     let arena = LocalArena::new();
-    let file = File::ephemeral(Cow::Borrowed(b"src/Report.sharp"), Cow::Borrowed(code.as_bytes()));
+    let file = File::ephemeral(Cow::Borrowed(path.as_bytes()), Cow::Borrowed(code.as_bytes()));
     let program = parse_file(&arena, &file);
     assert!(program.errors.is_empty(), "test source did not parse: {:#?}", program.errors);
 
     let names = NameResolver::new(&arena).resolve(program);
-    let issues = SemanticsChecker::new(PHPVersion::new(8, 4, 0)).check(&file, program, &names);
 
-    issues
+    SemanticsChecker::new(PHPVersion::new(8, 4, 0)).check(&file, program, &names).into_iter().collect()
+}
+
+/// Every semantic issue in the PHP# source, as `line:column message` at its primary span.
+fn issues(code: &'static str) -> Vec<String> {
+    issues_in("src/Report.sharp", code)
+}
+
+/// Every semantic issue in the source, in the dialect its path names, as `line:column message` at its primary span.
+fn issues_in(path: &'static str, code: &'static str) -> Vec<String> {
+    check(path, code)
         .iter()
         .map(|issue| {
             let span = issue.primary_span().expect("a primary span");
@@ -65,15 +75,18 @@ fn every_construct_outside_the_slice_is_not_supported_yet() {
     );
 }
 
-/// The bridge writes every class type by its full name, so the engine never sees a `self` or `parent` type in a class
-/// whose parent its header names.
+/// The bridge writes every class type by its full name, so the engine never sees a `parent` type in a class whose
+/// parent its header names. PHP's `self` is not part of PHP#, spec section 25.
 #[test]
-fn self_and_parent_types_are_not_supported_yet() {
+fn a_parent_type_is_not_supported_yet_and_a_self_type_is_an_error() {
     let code = "namespace App.Tenant;\n\nimport Lib.Entity;\n\nclass Report : Entity\n{\n    public parent copy(self other)\n    {\n        return other;\n    }\n}\n";
 
     assert_eq!(
         issues(code),
-        ["7:12 This type is not supported yet in PHP#.", "7:24 This type is not supported yet in PHP#."]
+        [
+            "7:12 This type is not supported yet in PHP#.",
+            "7:24 PHP# has no `self`: write the class's own name, `Report`, for the declaring class.",
+        ]
     );
 }
 
@@ -527,6 +540,114 @@ fn super_calls_the_parent_method() {
     assert_eq!(issues(code), ["7:20 This expression is not supported yet in PHP#."]);
 }
 
+/// Spec section 25's example: `Self` is the class a static method is called on, and `new Self(…)` needs a `required`
+/// constructor. A subclass calls its parent's constructor with `super.__construct(…)`, because `: super(…)` does not
+/// parse yet.
+#[test]
+fn self_is_a_return_type_creates_with_a_required_constructor_and_calls_static_methods() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Row;\nimport Lib.Clock;\n\npublic abstract class DatabaseEntity\n{\n    public required DatabaseEntity(Row row)\n    {\n    }\n\n    public static Self fromSchema(Row row)\n    {\n        return new Self(row);\n    }\n\n    public static Self? find(Row row) => Self.fromSchema(row);\n\n    public static Self|int counted(Row row) => Self.fromSchema(row);\n\n    public static (Self|int)? either(Row row) => null;\n}\n\npublic class Order : DatabaseEntity\n{\n    public Order(Row row, Clock? clock = null)\n    {\n        super.__construct(row);\n    }\n}\n\npublic interface Copyable\n{\n    Self copy();\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn self_is_only_a_return_type() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private Self owner;\n    public Self? next { get; set; }\n    public const Self SAME = 1;\n\n    public required Report(Self other, int|Self either)\n    {\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:13 `Self` is only a return type in PHP#.",
+            "6:12 `Self` is only a return type in PHP#.",
+            "7:18 `Self` is only a return type in PHP#.",
+            "9:28 `Self` is only a return type in PHP#.",
+            "9:44 `Self` is only a return type in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn new_self_needs_a_required_constructor() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public Report(int count)\n    {\n    }\n\n    public static Self make() => new Self(1);\n}\n\nclass Total\n{\n    public static Self make() => new Self();\n}\n\nclass Entity\n{\n    public required Entity(int count)\n    {\n    }\n\n    public static Self make() => new Self;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "9:34 `new Self(…)` needs a `required` constructor: `Self` can be any subclass, so every subclass must keep a constructor that `new Self(…)` can call.",
+            "14:34 `new Self(…)` needs a `required` constructor: `Self` can be any subclass, so every subclass must keep a constructor that `new Self(…)` can call.",
+            "23:34 This `new` without arguments is not supported yet in PHP#.",
+        ]
+    );
+    let help: Vec<_> = check("src/Report.sharp", code).into_iter().filter_map(|issue| issue.help).collect();
+    assert_eq!(
+        help,
+        [
+            "Declare the constructor of `Report` `required`, as in `public required Report(…)`.",
+            "Declare the constructor of `Total` `required`, as in `public required Total(…)`.",
+        ]
+    );
+}
+
+/// `Self.y` is not ruled yet, as `super.y` is not.
+#[test]
+fn a_member_of_self_read_or_written_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private static int count = 0;\n\n    public static int run()\n    {\n        Self.count = 1;\n        return Self.count + Self;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "9:9 This expression is not supported yet in PHP#.",
+            "10:16 This expression is not supported yet in PHP#.",
+            "10:29 This expression is not supported yet in PHP#.",
+        ]
+    );
+}
+
+/// PHP's `self` is removed, spec section 25: a class writes its own name, or `Self` where `Self` goes.
+#[test]
+fn self_names_the_class_and_self_where_it_goes() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private static int count = 0;\n    private self other;\n\n    public required Report(self copy)\n    {\n    }\n\n    public static self make()\n    {\n        self.count = 1;\n        let made = self.make();\n        return new self(self.count);\n    }\n}\n\ninterface Copyable\n{\n    self copy();\n}\n";
+    let without_self = "PHP# has no `self`: write the class's own name, `Report`, for the declaring class.";
+    let with_self = "PHP# has no `self`: write the class's own name, `Report`, for the declaring class, or `Self` for the class a static method is called on.";
+
+    assert_eq!(
+        issues(code),
+        [
+            format!("6:13 {without_self}"),
+            format!("8:28 {without_self}"),
+            format!("12:19 {with_self}"),
+            format!("14:9 {without_self}"),
+            format!("15:20 {with_self}"),
+            format!("16:20 {with_self}"),
+            "22:5 PHP# has no `self`: write the class's own name, `Copyable`, for the declaring class, or `Self` for the class a static method is called on.".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn static_is_written_self() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private static int count = 0;\n\n    public required Report(int|static copy)\n    {\n    }\n\n    public static int|static make()\n    {\n        let count = static.count;\n        let made = static.make();\n        return new static(static.count);\n    }\n}\n";
+    let message = "PHP# writes `Self` for PHP's `static`.";
+
+    assert_eq!(
+        issues(code),
+        [
+            format!("7:32 {message}"),
+            format!("11:23 {message}"),
+            format!("13:21 {message}"),
+            format!("14:20 {message}"),
+            format!("15:20 {message}"),
+        ]
+    );
+}
+
+#[test]
+fn required_is_a_modifier_of_the_constructor_only() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public required const int MAX = 1;\n\n    public required Report(int count)\n    {\n    }\n}\n";
+
+    assert_eq!(issues(code), ["5:12 This modifier is not supported yet in PHP#."]);
+}
+
 #[test]
 fn an_optional_parameter_before_a_required_one_is_an_error() {
     let code = leak(method("        return extra;\n").replace("int extra", "int first = 1, int extra, int last = 2"));
@@ -537,6 +658,20 @@ fn an_optional_parameter_before_a_required_one_is_an_error() {
             "5:20 The optional parameter `first` comes before the required parameter `extra`: PHP would make it required."
         ]
     );
+}
+
+#[test]
+fn an_optional_parameter_before_a_variadic_one_is_in_the_slice_as_in_php() {
+    let code = leak(method("        return extra;\n").replace("int extra", "int extra = 1, int ...rest"));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn an_interface_method_takes_union_types_and_a_variadic_parameter() {
+    let code = "namespace App.Tenant;\n\ninterface Measured\n{\n    int|float total(int|float ...values);\n\n    (int|string)? key(string? name, int ...rest);\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
 }
 
 #[test]
@@ -1010,16 +1145,22 @@ fn a_field_ended_by_a_closing_tag_is_not_supported_yet() {
 
 #[test]
 fn fields_outside_the_slice_are_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private readonly int count = 0;\n    private int first, second;\n    private int? maybe;\n}\n";
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private readonly int count = 0;\n    private int first, second;\n}\n";
 
     assert_eq!(
         issues(code),
         [
             "5:13 This modifier is not supported yet in PHP#.",
             "6:5 A field declaring several names is not supported yet in PHP#.",
-            "7:13 This type is not supported yet in PHP#.",
         ]
     );
+}
+
+#[test]
+fn a_nullable_field_or_auto_property_is_in_the_slice_with_or_without_an_initial_value() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private int? total;\n    protected Calc? owner;\n    private (int|string)? key;\n    private int? start = 1;\n    public Calc? helper { get; set; }\n    public int? count { get; private set; }\n    public (int|string)? code { get; protected set; } = 2;\n    public int? limit { get; } = null;\n    public string? label { get; } = \"none\";\n\n    public Report(public int? id { get; }, private int? flag, public (int|string)? tag { get; })\n    {\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
 }
 
 #[test]
@@ -1027,6 +1168,40 @@ fn a_field_or_a_property_may_be_static_with_a_constant_initial_value() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    private static int count = 0;\n    protected static string label = \"none\";\n    public static int views { get; private set; } = 0;\n    public static string last { get; set; } = \"\";\n}\n";
 
     assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_nullable_field_of_a_type_outside_the_slice_is_not_supported_yet() {
+    let code =
+        "namespace App.Tenant;\n\nclass Report\n{\n    private iterable? items;\n    private (int|iterable)? key;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["5:13 This type is not supported yet in PHP#.", "6:18 This type is not supported yet in PHP#."]
+    );
+}
+
+#[test]
+fn a_void_field_reports_only_the_php_error() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private void? nothing;\n    private void plain;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["6:13 Property `Report::plain` cannot have type `void`.", "5:13 Type `void` cannot be nullable."]
+    );
+}
+
+#[test]
+fn a_get_only_nullable_property_without_an_initial_value_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int? total { get; }\n    private (int|string)? key { get; }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:17 A get-only nullable property without an initial value is not supported yet in PHP#.",
+            "6:27 A get-only nullable property without an initial value is not supported yet in PHP#.",
+        ]
+    );
 }
 
 #[test]
@@ -1040,6 +1215,22 @@ fn a_static_member_outside_the_slice_is_not_supported_yet() {
             "8:32 A static member's initial value that is not constant is not supported yet in PHP#.",
             "9:45 A static member's initial value that is not constant is not supported yet in PHP#.",
         ]
+    );
+}
+
+#[test]
+fn a_get_only_nullable_property_without_an_initial_value_names_the_initial_value_or_set_to_write() {
+    let notes: Vec<Vec<String>> =
+        check("src/Report.sharp", "namespace App.Tenant;\n\nclass Report\n{\n    public int? total { get; }\n}\n")
+            .into_iter()
+            .map(|issue| issue.notes)
+            .collect();
+
+    assert_eq!(
+        notes,
+        [[
+            "A get-only property runs as PHP's `readonly`, which takes no default, so it cannot start as null: give it an initial value, as in `public int? total { get; } = null;`, or a `set` accessor."
+        ]]
     );
 }
 
@@ -1076,6 +1267,28 @@ fn a_constant_or_static_member_named_without_its_class_is_an_error_that_names_th
             "10:9 Write `Report.count`: a static member is reached through its class name.",
             "10:17 Write `Report.MAX`: a static member is reached through its class name.",
             "11:16 Write `Report.count`: a static member is reached through its class name.",
+        ]
+    );
+}
+
+/// Spec section 24 writes a union anywhere a type goes, and PHP 8.3 types a class constant with one.
+#[test]
+fn a_class_constant_may_have_a_union_type_or_a_nullable_union_type() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public const int|string KEY = 1;\n    public const (int|string)? CODE = null;\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_union_typed_class_constant_follows_the_union_rules() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public const int|null NONE = null;\n    public const int|iterable ITEMS = 1;\n    public const int|string|int TWICE = 1;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:22 This union that holds null is not supported yet in PHP#.",
+            "6:22 This type is not supported yet in PHP#.",
+            "7:29 Duplicate type `int` is redundant.",
         ]
     );
 }
@@ -1169,6 +1382,16 @@ fn properties_outside_the_slice_are_not_supported_yet() {
 #[test]
 fn accessor_bodies_are_in_the_slice() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    public string name { get => field; set => field = trim(value); }\n    public int count { get; private set { if (value < 0) { throw new Negative(value); } field = value; } }\n    public int total { get { return this.count + 1; } }\n    public string label { get => this.name; set => this.rename(value); }\n    public List<string> tags { get => field; set { field = value; } } = [];\n    public Map<string, int> hits { get => field; set { field = value; field[\"all\"] = 1; field.set(\"one\", 1); } } = [:];\n    public int seen { get => field; set { field += value; field++; } } = 0;\n\n    public Report(public string title { get => field; set => field = value; })\n    {\n    }\n\n    public void rename(string text)\n    {\n        this.name = text;\n        this.tags.add(text);\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+/// Spec section 24 puts `?` on a property as on a parameter, so a property with accessor bodies takes a nullable type.
+/// A property without storage is computed by its accessors, so it starts as nothing and needs no initial value even
+/// when get-only, and one whose body uses `field` starts as null as an auto-property with `set` does.
+#[test]
+fn nullable_properties_with_accessor_bodies_are_in_the_slice() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Model;\n\nclass Order : Model\n{\n    public Address? shipping { get => this.getAttribute(\"shipping\"); set => this.setAttribute(\"shipping\", value); }\n    public string? note { get => field; set => field = value; }\n    public string? summary { get => this.note; }\n}\n\nclass Address\n{\n}\n";
 
     assert_eq!(issues(code), Vec::<String>::new());
 }
@@ -1276,10 +1499,147 @@ fn a_static_property_with_an_accessor_body_is_not_supported_yet() {
 }
 
 #[test]
-fn a_variadic_parameter_is_not_supported_yet() {
-    let code = leak(method("        return 1;\n").replace("int extra", "int ...extra"));
+fn a_variadic_parameter_is_in_the_slice_on_a_method_and_a_constructor() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public Report(string label, int ...values)\n    {\n    }\n\n    public static int sum(int|float ...values)\n    {\n        return 0;\n    }\n}\n";
 
-    assert_eq!(issues(code), ["5:24 This variadic parameter is not supported yet in PHP#."]);
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_variadic_parameter_that_is_not_last_or_has_a_default_is_an_error_as_in_php() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int run(int ...values, int extra)\n    {\n        return extra;\n    }\n\n    public int sum(int ...values = 1)\n    {\n        return 0;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:39 Invalid parameter order: parameter `extra` is defined after variadic parameter `values`.",
+            "10:34 Invalid parameter definition: variadic parameter `values` cannot have a default value.",
+        ]
+    );
+}
+
+#[test]
+fn a_void_variadic_parameter_reports_only_the_php_error() {
+    let code = leak(method("        return 1;\n").replace("int extra", "void ...extra"));
+
+    assert_eq!(issues(code), ["5:20 Invalid parameter type: bottom type `void` cannot be used as a parameter type."]);
+}
+
+#[test]
+fn a_variadic_constructor_parameter_that_declares_a_member_is_an_error_as_in_php() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public Report(private int ...values)\n    {\n    }\n}\n\nclass Total\n{\n    public Total(public int ...values { get; })\n    {\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:19 Cannot declare variadic promoted property `values`.",
+            "12:18 Cannot declare variadic promoted property `values`.",
+        ]
+    );
+}
+
+/// Upstream Mago checks neither the member nor the type of a variadic parameter, nor a type written twice, so a `.php`
+/// file keeps its results. The PHP# twins of these lines are errors.
+#[test]
+fn a_php_file_keeps_upstream_results_for_a_variadic_parameter_and_a_type_written_twice() {
+    let code = "<?php\n\nclass Report\n{\n    public function __construct(private int ...$values)\n    {\n    }\n}\n\nfunction f(void ...$x) {}\n\nfunction g(int|int $x) {}\n";
+
+    assert_eq!(issues_in("src/Report.php", code), Vec::<String>::new());
+}
+
+#[test]
+fn a_union_type_is_in_the_slice_wherever_a_type_is() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private int|string key = 1;\n    public int|float amount { get; set; } = 0;\n\n    public Report(private bool|Calc flag, int|string start)\n    {\n    }\n\n    public int|string run(int|float|Calc extra)\n    {\n        int|string local = 1;\n        for (int|bool step = 0; ; ) {\n        }\n        return local;\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_union_that_holds_null_is_not_supported_yet() {
+    let code = leak(
+        method("        return 1;\n").replace("int extra", "int?|string a, int|string? b, int|null c, null|Calc d"),
+    );
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:20 Type `int?` cannot be part of a union.",
+            "5:39 Type `string?` cannot be part of a union.",
+            "5:54 This union that holds null is not supported yet in PHP#.",
+            "5:62 This union that holds null is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn void_in_a_union_reports_only_the_php_error() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public void|int run(int|void extra)\n    {\n        return 1;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["5:12 Type `void` cannot be part of a union.", "5:29 Type `void` cannot be part of a union."]
+    );
+}
+
+#[test]
+fn a_type_written_twice_in_a_union_is_an_error_as_in_php() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public int|string|int run(Calc|string|calc extra)\n    {\n        return 1;\n    }\n}\n";
+
+    assert_eq!(issues(code), ["7:23 Duplicate type `int` is redundant.", "7:43 Duplicate type `calc` is redundant."]);
+}
+
+#[test]
+fn a_nullable_union_holds_null_where_a_nullable_type_does() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private (int|string)? key = null;\n    public (int|string)? amount { get; set; } = null;\n\n    public Report(private (bool|Calc)? flag, (int|string)? start)\n    {\n    }\n\n    public (int|string)? run((int|float|Calc)? extra)\n    {\n        (int|string)? local = null;\n        const (int|bool)? fixed = null;\n        for ((int|bool)? step = null; ; ) {\n        }\n        return local;\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_union_that_holds_null_names_the_nullable_union_to_write() {
+    let notes: Vec<Vec<String>> =
+        check("src/Report.sharp", leak(method("        return 1;\n").replace("int extra", "int|null a")))
+            .into_iter()
+            .map(|issue| issue.notes)
+            .collect();
+
+    assert_eq!(
+        notes,
+        [["PHP# writes a union that holds null in parentheses with `?` after it, as in `(int|string)?`."]]
+    );
+}
+
+#[test]
+fn a_nullable_union_is_checked_as_its_union_and_never_joins_another_union() {
+    let code = leak(method("        return 1;\n").replace(
+        "int extra",
+        "(int|string|int)? a, (int|null)? b, (int?|string)? c, (int|string)?|float d, (void|int)? e",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:32 Duplicate type `int` is redundant.",
+            "5:46 This union that holds null is not supported yet in PHP#.",
+            "5:57 Type `int?` cannot be part of a union.",
+            "5:74 Type `(int|string)?` cannot be part of a union.",
+            "5:98 Type `void` cannot be part of a union.",
+        ]
+    );
+}
+
+#[test]
+fn a_single_type_in_parentheses_with_a_question_mark_after_it_reports_only_the_php_errors() {
+    let code = leak(method("        return 1;\n").replace("int extra", "(Calc)? extra"));
+
+    assert_eq!(issues(code), ["5:20 Type `(Calc)` cannot be nullable.", "5:21 Type `Calc` cannot be parenthesized."]);
+}
+
+#[test]
+fn a_php_file_keeps_refusing_a_nullable_union_in_parentheses() {
+    let code = "<?php\n\nfunction f(?(int|string) $x) {}\n";
+
+    assert_eq!(issues_in("src/Report.php", code), ["3:13 Type `(int|string)` cannot be nullable."]);
 }
 
 #[test]
@@ -1325,18 +1685,19 @@ fn a_member_name_written_as_an_expression_is_not_supported_yet() {
 
 #[test]
 fn types_outside_the_slice_are_not_supported_yet() {
-    let code = "class Report\n{\n    public mixed run(iterable? a, int|string b, iterable c, callable d, (Lib&Other)|null e)\n    {\n        return 1;\n    }\n\n    public self make(Lib f, float g, bool h, string i)\n    {\n        return this;\n    }\n}\n";
+    let code = "class Report\n{\n    public mixed run(iterable? a, int|iterable b, iterable c, callable d, (Lib&Other)|null e)\n    {\n        return 1;\n    }\n\n    public self make(Lib f, float g, bool h, string i)\n    {\n        return this;\n    }\n}\n";
 
     assert_eq!(
         issues(code),
         [
             "3:12 This type is not supported yet in PHP#.",
             "3:22 This type is not supported yet in PHP#.",
-            "3:35 This type is not supported yet in PHP#.",
-            "3:49 This type is not supported yet in PHP#.",
-            "3:61 This type is not supported yet in PHP#.",
-            "3:73 This type is not supported yet in PHP#.",
-            "8:12 This type is not supported yet in PHP#.",
+            "3:39 This type is not supported yet in PHP#.",
+            "3:51 This type is not supported yet in PHP#.",
+            "3:63 This type is not supported yet in PHP#.",
+            "3:75 This type is not supported yet in PHP#.",
+            "3:87 This union that holds null is not supported yet in PHP#.",
+            "8:12 PHP# has no `self`: write the class's own name, `Report`, for the declaring class, or `Self` for the class a static method is called on.",
         ]
     );
 }
@@ -1530,17 +1891,12 @@ fn new_creates_a_class_written_by_its_short_name_with_its_arguments() {
 
 #[test]
 fn new_outside_the_slice_is_not_supported_yet() {
-    let code = leak(method(
-        "        const kind = new (Report);\n        const other = new class {};\n        const spread = new Report(...extra);\n        return 1;\n",
-    ));
+    let code =
+        leak(method("        const kind = new (Report);\n        const other = new class {};\n        return 1;\n"));
 
     assert_eq!(
         issues(code),
-        [
-            "7:22 This expression is not supported yet in PHP#.",
-            "8:23 This expression is not supported yet in PHP#.",
-            "9:35 This spread argument is not supported yet in PHP#.",
-        ]
+        ["7:22 This expression is not supported yet in PHP#.", "8:23 This expression is not supported yet in PHP#."]
     );
 }
 
@@ -1650,10 +2006,40 @@ fn a_cast_or_a_ternary_in_a_parameter_default_is_not_supported_yet() {
 }
 
 #[test]
-fn a_spread_argument_is_not_supported_yet() {
-    let code = leak(method("        const parts = this.parts();\n        return this.total(...parts);\n"));
+fn a_positional_argument_after_a_spread_or_a_spread_after_a_named_argument_is_an_error_as_in_php() {
+    let code = leak(method(
+        "        const parts = this.parts();\n        this.total(...parts, 1);\n        this.total(first: 1, ...parts);\n        return 1;\n",
+    ));
 
-    assert_eq!(issues(code), ["8:27 This spread argument is not supported yet in PHP#."]);
+    assert_eq!(
+        issues(code),
+        [
+            "8:30 Cannot use positional argument after argument unpacking.",
+            "9:30 Cannot use argument unpacking after a named argument.",
+        ]
+    );
+}
+
+#[test]
+fn an_assert_whose_only_argument_is_a_spread_is_an_error_as_in_php() {
+    let code = leak(method(
+        "        const parts = this.parts();\n        assert(...parts);\n        ASSERT(...parts);\n        assert(true, ...parts);\n        assert(...parts, ...parts);\n        assert(...parts, description: \"parts\");\n        return 1;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "8:16 Cannot use positional argument after argument unpacking.",
+            "9:16 Cannot use positional argument after argument unpacking.",
+        ]
+    );
+}
+
+#[test]
+fn a_spread_in_attribute_arguments_reports_only_the_php_error() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    [Field(...PARTS)]\n    public int run(int extra)\n    {\n        return extra;\n    }\n}\n";
+
+    assert_eq!(issues(code), ["5:12 Cannot use argument unpacking in attribute arguments."]);
 }
 
 #[test]
@@ -1849,14 +2235,64 @@ fn a_method_named_as_a_property_of_its_class_is_an_error() {
 #[test]
 fn a_lambda_parameter_outside_the_slice_is_not_supported_yet() {
     let code = leak(method(
-        "        const spread = (int ...values) => 1;\n        const marked = (readonly int value) => value;\n        return extra;\n",
+        "        const changed = (&value) => value;\n        const marked = (readonly int value) => value;\n        return extra;\n",
     ));
 
     assert_eq!(
         issues(code),
         [
-            "7:29 This variadic parameter is not supported yet in PHP#.",
+            "7:26 A by-reference parameter is not supported yet in PHP#.",
             "8:25 This modifier is not supported yet in PHP#.",
+        ]
+    );
+}
+
+/// A lambda's parameter is a method's, so it takes a union, a nullable union and a variadic last parameter, and a
+/// function type takes unions as its return and parameter types.
+#[test]
+fn a_lambda_and_a_function_type_take_unions_and_a_variadic_parameter() {
+    let code = leak(method(
+        "        const pick = (int|string key, (int|Calc)? fallback, int ...rest) => count(rest);\n        Function<(int|string)?(int|string, List<int>|Calc)> choose = (a, b) => a;\n        const sum = (int ...values) => array_sum(values);\n        return pick(1, null, ...[2, 3]) + sum(...[extra]);\n",
+    ));
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+/// `Self` is a method's return type only, so a function type, whose return is not a method's, refuses it anywhere,
+/// while a `List` a method returns may hold it.
+#[test]
+fn self_in_a_function_type_is_an_error_and_a_list_of_self_is_a_return_type() {
+    let code = "namespace App;\n\nclass Report\n{\n    private Function<Self()> make;\n\n    public static List<Self>|Self all(Function<int(Self)> pick) => [];\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["5:22 `Self` is only a return type in PHP#.", "7:52 `Self` is only a return type in PHP#.",]
+    );
+}
+
+/// An enum's method returns `Self`, which is the enum, and its constants take union types, as a class's do. An enum
+/// has no constructor, so `new Self(…)` in it is an error.
+#[test]
+fn an_enum_returns_self_holds_union_constants_and_refuses_new_self() {
+    let code = "namespace App;\n\npublic enum Status : string\n{\n    public const int|string Key = 1;\n    public const (int|string)? Code = null;\n\n    case Active = \"a\";\n\n    public static Self first() => Status.Active;\n\n    public static Self? find(string ...codes) => Status.tryFrom(codes[0] ?? \"\");\n\n    public static Self make() => new Self(\"a\");\n}\n";
+
+    assert_eq!(issues(code), ["14:34 An enum has no constructor: its cases are its only values."]);
+}
+
+/// `List` and `Map` both run as PHP's `array`, and every function type as `\Closure`, so a union of two of either is
+/// a type written twice, which the engine refuses.
+#[test]
+fn a_union_of_two_collections_or_two_function_types_is_a_type_written_twice() {
+    let code = leak(method("        return 1;\n").replace(
+        "int extra",
+        "List<int>|Map<string, int> items, Function<int()>|Function<string()> make, List<int>|string fine",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:30 Duplicate type `Map<string, int>` is redundant.",
+            "5:70 Duplicate type `Function<string()>` is redundant."
         ]
     );
 }
