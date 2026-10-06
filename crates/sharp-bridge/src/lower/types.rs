@@ -67,8 +67,9 @@ impl<'analysis> Types<'analysis> {
         Declaration { kind }
     }
 
-    /// The declaration `member` of the fully qualified class name `class` resolves to when code reads it: a constant
-    /// or enum case first, then a property, then a method, which the read takes as a first-class callable.
+    /// The declaration `member` of the fully qualified class name `class` resolves to when code reads it: an enum case,
+    /// a constant, a property, then a method, which the read takes as a first-class callable. Only when the class
+    /// declares none of them is it a property its `__get` serves.
     pub(crate) fn member_declaration(&self, class: &[u8], member: &[u8]) -> Declaration {
         let kind = if self.codebase.get_enum_case(class, member).is_some() {
             DeclarationKind::EnumCase
@@ -78,6 +79,8 @@ impl<'analysis> Types<'analysis> {
             kind
         } else if let Some(kind) = self.method_kind(class, member) {
             kind
+        } else if self.codebase.method_exists(class, b"__get") {
+            DeclarationKind::Property
         } else {
             unreachable!(
                 "the checker refuses `{}.{}`, which names no member",
@@ -90,7 +93,8 @@ impl<'analysis> Types<'analysis> {
     }
 
     /// The declaration the method call `call`, null-safe or not, runs: the receiver's method, or else its property
-    /// holding a function, as spec section 14 calls one. The receiver's type names one class.
+    /// holding a function, as spec section 14 calls one. Only when the class declares neither is it a method its
+    /// `__call` serves. The receiver's type names one class.
     pub(crate) fn call_target(&self, call: &Expression) -> Declaration {
         let (object, method) = match call {
             Expression::Call(Call::Method(call)) => (call.object, &call.method),
@@ -103,7 +107,10 @@ impl<'analysis> Types<'analysis> {
         let class = single_class(self.expression_type(object))
             .unwrap_or_else(|| unreachable!("the lowering asks only for a receiver whose type names one class"));
 
-        let kind = self.method_kind(class, method.value).or_else(|| self.property_kind(class, method.value));
+        let kind = self
+            .method_kind(class, method.value)
+            .or_else(|| self.property_kind(class, method.value))
+            .or_else(|| self.codebase.method_exists(class, b"__call").then_some(DeclarationKind::Method));
 
         Declaration {
             kind: kind.unwrap_or_else(|| {
@@ -116,22 +123,18 @@ impl<'analysis> Types<'analysis> {
         }
     }
 
-    /// A declared property, or else one a PHP class's `__get` serves, tagged with `@property` or not.
+    /// The kind of the property `class` declares by that name, if any.
     fn property_kind(&self, class: &[u8], property: &[u8]) -> Option<DeclarationKind> {
-        match self.codebase.get_declaring_property(class, &[b"$", property].concat()) {
-            Some(property) if property.flags.is_static() => Some(DeclarationKind::StaticProperty),
-            Some(_) => Some(DeclarationKind::Property),
-            None => self.codebase.method_exists(class, b"__get").then_some(DeclarationKind::Property),
-        }
+        let property = self.codebase.get_declaring_property(class, &[b"$", property].concat())?;
+
+        Some(if property.flags.is_static() { DeclarationKind::StaticProperty } else { DeclarationKind::Property })
     }
 
-    /// A declared method, or else one a PHP class's `__call` serves, tagged with `@method` or not.
+    /// The kind of the method `class` declares by that name, if any.
     fn method_kind(&self, class: &[u8], method: &[u8]) -> Option<DeclarationKind> {
-        match self.codebase.get_declaring_method(class, method).and_then(|method| method.method_metadata.as_ref()) {
-            Some(method) if method.is_static => Some(DeclarationKind::StaticMethod),
-            Some(_) => Some(DeclarationKind::Method),
-            None => self.codebase.method_exists(class, b"__call").then_some(DeclarationKind::Method),
-        }
+        let method = self.codebase.get_declaring_method(class, method)?.method_metadata.as_ref()?;
+
+        Some(if method.is_static { DeclarationKind::StaticMethod } else { DeclarationKind::Method })
     }
 }
 

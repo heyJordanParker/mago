@@ -3517,6 +3517,50 @@ fn int_division_assignment_to_a_property_runs_its_receiver_once() {
 }
 
 /// ```php
+/// $save = $order->save(...);
+/// return ($order->handler)($save());
+/// ```
+///
+/// A member the class declares wins over one its `__get` or `__call` would serve, so a declared method is a method
+/// value and a declared property holding a function is called as that function.
+#[test]
+fn a_declared_member_wins_over_a_magic_one() {
+    let lowered = Lowered::with(
+        "namespace App.Tenant;\n\nimport Lib.Order;\n\nclass Report\n{\n    public int run(Order order)\n    {\n        const Function<int()> save = order.save;\n        return order.handler(save());\n    }\n}\n",
+        &[(
+            "src/Lib/Order.php",
+            "<?php namespace Lib; final class Order { /** @var \\Closure(int): int */ public \\Closure $handler; public function __construct() { $this->handler = fn (int $n): int => $n; } public function save(): int { return 1; } public function __get(string $name): mixed { return null; } public function __call(string $name, array $arguments): mixed { return null; } }",
+        )],
+    );
+
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "save"
+                METHOD_CALL
+                  VAR
+                    ZVAL "order"
+                  ZVAL "save"
+                  CALLABLE_CONVERT
+              RETURN
+                CALL
+                  PROP
+                    VAR
+                      ZVAL "order"
+                    ZVAL "handler"
+                  ARG_LIST
+                    CALL
+                      VAR
+                        ZVAL "save"
+                      ARG_LIST
+        "#}
+    );
+}
+
+/// ```php
 /// return \App\Tenant\Report::make();
 /// ```
 #[test]
