@@ -70,6 +70,7 @@ use mago_syntax_core::utils::parse_literal_integer_as_float;
 
 use crate::Diagnostic;
 use crate::Unit;
+use crate::lower::checked::CheckError;
 use crate::lower::checked::CheckedProgram;
 use crate::lower::checked::check;
 use crate::sharp_kind;
@@ -198,19 +199,19 @@ pub(crate) fn lower(path: Vec<u8>, source: Vec<u8>) -> Box<Unit> {
     let lines = Lines::new(&file.contents);
     let arena = LocalArena::new();
     let program = parse_file_with_dialect(&arena, &file, Dialect::Sharp, ParserSettings::default());
-    if !program.errors.is_empty() {
-        return Unit::failed(
-            program
-                .errors
-                .iter()
-                .map(|error| lines.diagnostic(Some(error.span()), sharp_severity::SHARP_PARSE_ERROR, error.to_string()))
-                .collect(),
-        );
-    }
-
     let checked = match check(&arena, &file, program) {
         Ok(checked) => checked,
-        Err(errors) => {
+        Err(CheckError::Parse(errors)) => {
+            return Unit::failed(
+                errors
+                    .iter()
+                    .map(|error| {
+                        lines.diagnostic(Some(error.span()), sharp_severity::SHARP_PARSE_ERROR, error.to_string())
+                    })
+                    .collect(),
+            );
+        }
+        Err(CheckError::Compile(errors)) => {
             return Unit::failed(
                 errors
                     .into_iter()
