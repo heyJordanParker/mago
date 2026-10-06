@@ -1610,6 +1610,39 @@ fn a_lambda_takes_union_and_variadic_parameters_and_a_spread_call() {
 }
 
 /// ```php
+/// $all = [...$extra, 1, ...\Lib\Calc::make()];
+/// ```
+///
+/// A spread in a literal is an `UNPACK` of its value among the literal's elements, as php-src's grammar builds
+/// `[...$extra]`.
+#[test]
+fn a_spread_in_a_literal_is_an_unpack_among_its_elements() {
+    assert_eq!(
+        body("        const all = [...extra, 1, ...Calc.make()];\n        return 1;\n"),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "all"
+                ARRAY [3]
+                  UNPACK
+                    VAR
+                      ZVAL "extra"
+                  ARRAY_ELEM
+                    ZVAL 1
+                    null
+                  UNPACK
+                    STATIC_CALL
+                      ZVAL "Lib\\Calc"
+                      ZVAL "make"
+                      ARG_LIST
+              RETURN
+                ZVAL 1
+        "#}
+    );
+}
+
+/// ```php
 /// \Lib\Calc::sum(...$extra);
 /// $this->run(1, ...$extra);
 /// $made = new \Lib\Calc(...$extra);

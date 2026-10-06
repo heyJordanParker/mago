@@ -181,7 +181,7 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   class. A constant expression, which is a parameter default, an attribute argument, a constant's value, a
 ///   constant initial value or an enum case's value, reads only a constant or an enum case this way, as PHP does: a
 ///   static field or property there is an error when this file declares it, and the analyzer reports it otherwise.
-/// - In expressions: literals, list literals `[a, b]`, map literals `["key": value]` and `[:]`, index reads
+/// - In expressions: literals, list literals `[a, b]` and `[...a, b]`, map literals `["key": value]` and `[:]`, index reads
 ///   `value[key]`, templates, parentheses, bare names, assignment, the operators below, and method calls and property
 ///   reads written with `.` or `?.` and a member name, `new Class(...)` on a class written by its short name,
 ///   `new Self(...)` in a class whose constructor is `required`, calls of a function by its bare name,
@@ -750,9 +750,10 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         (
             Node::Expression(Expression::Array(_))
             | Node::Array(_)
-            | Node::ArrayElement(ArrayElement::Value(_) | ArrayElement::KeyValue(_))
+            | Node::ArrayElement(ArrayElement::Value(_) | ArrayElement::KeyValue(_) | ArrayElement::Variadic(_))
             | Node::ValueArrayElement(_)
-            | Node::KeyValueArrayElement(_),
+            | Node::KeyValueArrayElement(_)
+            | Node::VariadicArrayElement(_),
             Body | Constant,
         ) => Some(place),
         (Node::Expression(Expression::ArrayAccess(_)) | Node::ArrayAccess(_), Body) => Some(Body),

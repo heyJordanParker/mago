@@ -2238,3 +2238,59 @@ fn a_written_loop_variable_type_checks_as_a_typed_local_does() {
         ]
     );
 }
+
+/// A `List` spread appends, so a literal of values and `List` spreads is a `List`, a plain PHP `list<int>` included.
+#[test]
+fn a_list_spread_appends_into_a_list_literal() {
+    let sharp = "namespace Demo;\n\nimport Lib.Prices;\n\nclass Report\n{\n    public List<int> join(List<int> open, List<int> closed)\n    {\n        List<int> all = [...open, 0, ...closed, ...Prices.listed()];\n        List<string> names = [...open];\n        return all;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Prices.php", PRICES)]),
+        ["10:30 invalid-local-assignment-value"]
+    );
+}
+
+/// A `Map` spread copies the entries with their keys, which needs the literal's type when it runs, so it waits for
+/// typed compilation. A plain PHP `array<string, int>` is a `Map`.
+#[test]
+fn a_map_spread_is_not_supported_yet() {
+    let sharp = "namespace Demo;\n\nimport Lib.Prices;\n\nclass Report\n{\n    public void merge(Map<string, int> defaults, Map<string, int> overrides)\n    {\n        const merged = [...defaults, ...overrides];\n        const rooted = [...defaults, \"root\": 0];\n        const named = [...Prices.named()];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Prices.php", PRICES)]),
+        ["9:25 not-supported-yet", "10:25 not-supported-yet", "11:24 not-supported-yet"]
+    );
+}
+
+/// A literal is one collection, so a `List`'s values and a `Map`'s entries never share one.
+#[test]
+fn a_list_and_a_map_in_one_literal_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public void mix(List<int> open, Map<string, int> defaults)\n    {\n        const keyed = [...open, \"root\": 0];\n        const both = [...open, ...defaults];\n        const valued = [...defaults, 5];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[]),
+        ["7:33 invalid-array-element", "8:32 invalid-array-element", "9:38 invalid-array-element"]
+    );
+    assert_eq!(
+        messages(("src/Demo/Report.sharp", sharp), &[])[0],
+        "A literal cannot hold a `List`'s values and a `Map`'s entries together."
+    );
+
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    /**\n     * @param list<int> $open\n     * @param array<string, int> $defaults\n     */\n    public function mix(array $open, array $defaults): array\n    {\n        return [[...$open, 'root' => 0], [...$open, ...$defaults], [...$defaults, 5]];\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
+}
+
+/// Only a `List` or a `Map` spreads into a literal. A value that may not be iterable keeps PHP's own error alone.
+#[test]
+fn a_spread_of_a_value_that_is_neither_a_list_nor_a_map_is_an_error() {
+    let sharp = "namespace Demo;\n\nimport Lib.Prices;\n\nclass Report\n{\n    public void spread(int number)\n    {\n        const streamed = [...Prices.stream()];\n        const numbered = [...number];\n    }\n}\n";
+
+    assert_eq!(
+        messages(("src/Demo/Report.sharp", sharp), &[("src/Lib/Prices.php", PRICES)]),
+        [
+            "Cannot spread a value of type `iterable<int, int>`: PHP# spreads a `List` or a `Map`.",
+            "Cannot use spread operator on non-iterable type `int`.",
+        ]
+    );
+}

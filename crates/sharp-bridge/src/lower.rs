@@ -1206,19 +1206,20 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     /// A list or map literal is an `ARRAY` with `ZEND_ARRAY_SYNTAX_SHORT`, as php-src's grammar builds `[…]`. Each
-    /// element is an `ARRAY_ELEM` of its value and its key or null.
+    /// element is an `ARRAY_ELEM` of its value and its key or null, and a spread is an `UNPACK` of its value.
     fn array(&mut self, array: &Array) -> u32 {
         let mut elements = Vec::new();
         for element in &array.elements {
-            let value_and_key = match element {
-                ArrayElement::Value(element) => [self.expression(element.value), NULL],
-                ArrayElement::KeyValue(element) => [self.expression(element.value), self.expression(element.key)],
-                ArrayElement::Variadic(_) | ArrayElement::Missing(_) => {
-                    unreachable!("check_slice refuses a spread or missing literal element")
+            let (kind, value_and_key) = match element {
+                ArrayElement::Value(element) => (SHARP_AST_ARRAY_ELEM, vec![self.expression(element.value), NULL]),
+                ArrayElement::KeyValue(element) => {
+                    (SHARP_AST_ARRAY_ELEM, vec![self.expression(element.value), self.expression(element.key)])
                 }
+                ArrayElement::Variadic(element) => (SHARP_AST_UNPACK, vec![self.expression(element.value)]),
+                ArrayElement::Missing(_) => unreachable!("check_slice refuses a missing literal element"),
             };
 
-            elements.push(self.node(SHARP_AST_ARRAY_ELEM, 0, self.line(element), &value_and_key));
+            elements.push(self.node(kind, 0, self.line(element), &value_and_key));
         }
 
         self.node(SHARP_AST_ARRAY, ZEND_ARRAY_SYNTAX_SHORT, self.line(array), &elements)

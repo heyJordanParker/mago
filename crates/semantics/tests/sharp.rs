@@ -1748,18 +1748,25 @@ fn a_map_key_that_is_not_int_string_or_a_named_type_is_an_error() {
 #[test]
 fn a_literal_element_outside_the_slice_is_not_supported_yet() {
     let code = leak(method(
-        "        const spread = [...extra];\n        const reference = [&extra];\n        const missing = [, extra];\n        let list = [1];\n        list[] = 2;\n        return 1;\n",
+        "        const reference = [&extra];\n        const missing = [, extra];\n        let list = [1];\n        list[] = 2;\n        return 1;\n",
     ));
 
     assert_eq!(
         issues(code),
         [
-            "7:25 This construct is not supported yet in PHP#.",
-            "8:28 This operator is not supported yet in PHP#.",
-            "9:26 This construct is not supported yet in PHP#.",
-            "11:9 This write target is not supported yet in PHP#.",
+            "7:28 This operator is not supported yet in PHP#.",
+            "8:26 This construct is not supported yet in PHP#.",
+            "10:9 This write target is not supported yet in PHP#.",
         ]
     );
+}
+
+/// The analyzer decides whether a spread is a `List`'s or a `Map`'s, since the spread value's type does.
+#[test]
+fn a_spread_in_a_literal_is_in_the_slice() {
+    let code = "class Report\n{\n    private List<int> all = [...Defaults.SMALL, 3, ...Defaults.LARGE];\n\n    public List<int> run(List<int> extra)\n    {\n        const all = [...extra, 1, ...this.all];\n        return all;\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
 }
 
 #[test]
