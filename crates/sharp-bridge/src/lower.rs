@@ -1,8 +1,6 @@
-use std::borrow::Cow;
 use std::collections::HashSet;
 
 use mago_allocator::LocalArena;
-use mago_database::file::File;
 use mago_names::ResolvedNames;
 use mago_names::binding::Binding;
 use mago_names::binding::php_method_name;
@@ -79,19 +77,13 @@ use mago_syntax::cst::UnaryPostfixOperator;
 use mago_syntax::cst::UnaryPrefixOperator;
 use mago_syntax::cst::Variable;
 use mago_syntax::cst::WhileBody;
-use mago_syntax::dialect::Dialect;
-use mago_syntax::parser::parse_file_with_dialect;
-use mago_syntax::settings::ParserSettings;
 use mago_syntax::utils::pattern::PhpShape;
 use mago_syntax::utils::pattern::php_shape;
 use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_syntax_core::utils::parse_literal_integer_as_float;
 
-use crate::Diagnostic;
 use crate::Unit;
-use crate::lower::checked::CheckError;
 use crate::lower::checked::CheckedProgram;
-use crate::lower::checked::check;
 use crate::sharp_kind;
 use crate::sharp_kind::SHARP_AST_AND;
 use crate::sharp_kind::SHARP_AST_ARG_LIST;
@@ -177,12 +169,12 @@ use crate::sharp_kind::SHARP_AST_VAR;
 use crate::sharp_kind::SHARP_AST_WHILE;
 use crate::sharp_kind::SHARP_AST_ZVAL;
 use crate::sharp_node;
-use crate::sharp_severity;
 use crate::sharp_str;
 use crate::sharp_value;
 use crate::store_text;
 
-mod checked;
+pub(crate) mod checked;
+mod types;
 
 /// The values php-src gives the attrs the lowering emits, from `zend_compile.h` and `zend_vm_opcodes.h`.
 const ZEND_NAME_FQ: u32 = 0;
@@ -234,39 +226,12 @@ const ZEND_ACC_TYPE_FOLLOWS_PARENT: u32 = 1 << 13;
 /// A null child.
 const NULL: u32 = u32::MAX;
 
-/// Runs the PHP# file at `path` through the parser, the binder and the semantic checks, and lowers it into the tree
-/// php-src builds for the equivalent PHP. Any error returns diagnostics and no nodes. The file is PHP# whatever its
-/// name, because `ext/sharp` decided that before calling.
-pub(crate) fn lower(path: Vec<u8>, source: Vec<u8>) -> Box<Unit> {
-    let file = File::ephemeral(Cow::Owned(path), Cow::Owned(source));
-    let lines = Lines::new(&file.contents);
-    let arena = LocalArena::new();
-    let program = parse_file_with_dialect(&arena, &file, Dialect::Sharp, ParserSettings::default());
-    let checked = match check(&arena, &file, program) {
-        Ok(checked) => checked,
-        Err(CheckError::Parse(errors)) => {
-            return Unit::failed(
-                errors
-                    .iter()
-                    .map(|error| {
-                        lines.diagnostic(Some(error.span()), sharp_severity::SHARP_PARSE_ERROR, error.to_string())
-                    })
-                    .collect(),
-            );
-        }
-        Err(CheckError::Compile(errors)) => {
-            return Unit::failed(
-                errors
-                    .into_iter()
-                    .map(|issue| {
-                        lines.diagnostic(issue.primary_span(), sharp_severity::SHARP_COMPILE_ERROR, issue.message)
-                    })
-                    .collect(),
-            );
-        }
-    };
+/// Lowers a program the checker accepted into the tree php-src builds for the equivalent PHP.
+#[must_use]
+pub fn lower(checked: &CheckedProgram<'_>) -> Unit {
+    let lines = Lines::new(&checked.file().contents);
 
-    Lowering::new(&lines, checked.names()).program(&checked)
+    Lowering::new(&lines, checked.names()).program(checked)
 }
 
 /// The offset each line starts at, counted as the Zend scanner counts: `\n`, `\r\n` and a lone `\r` each end a line.
@@ -292,18 +257,6 @@ impl Lines {
     /// The file's last line, the one after its last line ending.
     fn last(&self) -> u32 {
         self.0.len() as u32
-    }
-
-    /// A diagnostic at the start of `span`, with a 1-based line and byte column. Without a span it is at line 0,
-    /// column 0, which the ABI defines as no position.
-    fn diagnostic(&self, span: Option<Span>, severity: sharp_severity, message: String) -> Diagnostic {
-        let (line, column) = span.map_or((0, 0), |span| {
-            let line = self.line(span.start.offset);
-
-            (line, span.start.offset - self.0[line as usize - 1] + 1)
-        });
-
-        Diagnostic { line, column, severity, message }
     }
 }
 
@@ -353,7 +306,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
     /// `declare(strict_types=1);` first, then the namespaces and classes. Imports are not lowered: every class name
     /// in the tree is fully qualified.
-    fn program(mut self, checked: &CheckedProgram) -> Box<Unit> {
+    fn program(mut self, checked: &CheckedProgram) -> Unit {
         for lambda in Node::Program(checked.program()).filter_map(|node| match node {
             Node::ArrowFunction(arrow_function) => Some(arrow_function.span()),
             Node::Closure(closure) => Some(closure.span()),
@@ -374,7 +327,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let root = self.node(SHARP_AST_STMT_LIST, 0, 1, &statements);
         self.nodes[root as usize].end_line = self.lines.last();
 
-        Unit::boxed(self.nodes, self.children, root, Vec::new(), self.texts)
+        Unit { nodes: self.nodes, children: self.children, root, texts: self.texts }
     }
 
     fn strict_types(&mut self) -> u32 {
@@ -1841,42 +1794,58 @@ fn assignment_kind(operator: &AssignmentOperator) -> (sharp_kind, u32) {
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
+    use mago_analyzer::artifacts::AnalysisArtifacts;
+    use mago_codex::metadata::CodebaseMetadata;
+    use mago_database::file::File;
     use mago_names::resolver::NameResolver;
+    use mago_syntax::dialect::Dialect;
+    use mago_syntax::parser::parse_file_with_dialect;
+    use mago_syntax::settings::ParserSettings;
 
     use super::*;
-    use crate::catch_panic;
 
-    /// Lowers a class holding `method`, skipping the semantic checks that would refuse it, and asserts the result is
-    /// one internal error and no nodes.
-    fn assert_internal_error(method: &str) {
+    /// Lowers a class holding `method`, skipping the checks that would refuse it. A construct the checks refuse that
+    /// reaches the lowering is a checker bug, so the lowering panics on it.
+    fn lower_method(method: &str) {
         let source = format!("class Report\n{{\n    {method}\n}}\n");
-
-        let unit = catch_panic(|| {
-            let file = File::ephemeral(Cow::Borrowed(b"src/Report.sharp"), Cow::Owned(source.into_bytes()));
-            let arena = LocalArena::new();
-            let program = parse_file_with_dialect(&arena, &file, Dialect::Sharp, ParserSettings::default());
-            let checked = CheckedProgram::unchecked(program, NameResolver::new(&arena).resolve(program));
-
-            Lowering::new(&Lines::new(&file.contents), checked.names()).program(&checked)
-        });
-
-        assert_eq!(unit.abi.node_count, 0, "{method}");
-        assert_eq!(unit.diagnostics.len(), 1, "{method}");
-        assert!(
-            unit.text(unit.diagnostics[0].message).starts_with(b"internal error in the PHP# front end: "),
-            "{method}"
+        let file = File::ephemeral(Cow::Borrowed(b"src/Report.sharp"), Cow::Owned(source.into_bytes()));
+        let arena = LocalArena::new();
+        let program = parse_file_with_dialect(&arena, &file, Dialect::Sharp, ParserSettings::default());
+        let (artifacts, codebase) = (AnalysisArtifacts::new(), CodebaseMetadata::new());
+        let checked = CheckedProgram::unchecked(
+            &file,
+            program,
+            NameResolver::new(&arena).resolve(program),
+            &artifacts,
+            &codebase,
         );
+
+        let _ = lower(&checked);
     }
 
     #[test]
-    fn a_write_to_anything_but_a_local_or_a_member_returns_an_internal_error_and_no_nodes() {
-        assert_internal_error("public void run() { PHP_INT_MAX = 1; }");
-        assert_internal_error("public void run() { PHP_INT_MAX += 1; }");
-        assert_internal_error("public void run() { PHP_INT_MAX++; }");
+    #[should_panic(expected = "check_slice refuses writing to `ConstantAccess`")]
+    fn an_assignment_to_a_constant_panics() {
+        lower_method("public void run() { PHP_INT_MAX = 1; }");
     }
 
     #[test]
-    fn a_parameter_without_a_type_returns_an_internal_error_and_no_nodes() {
-        assert_internal_error("public void run($extra) {}");
+    #[should_panic(expected = "check_slice refuses writing to `ConstantAccess`")]
+    fn a_compound_assignment_to_a_constant_panics() {
+        lower_method("public void run() { PHP_INT_MAX += 1; }");
+    }
+
+    #[test]
+    #[should_panic(expected = "check_slice refuses writing to `ConstantAccess`")]
+    fn an_increment_of_a_constant_panics() {
+        lower_method("public void run() { PHP_INT_MAX++; }");
+    }
+
+    #[test]
+    #[should_panic(expected = "semantics refuses a method parameter without a type")]
+    fn a_parameter_without_a_type_panics() {
+        lower_method("public void run($extra) {}");
     }
 }

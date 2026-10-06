@@ -37,7 +37,7 @@ fn main() {
         )),
         documentation_style: DocumentationStyle::C99,
         export: ExportConfig {
-            include: vec!["sharp_unit_header".to_owned(), "sharp_input".to_owned()],
+            include: vec!["sharp_unit_header".to_owned(), "sharp_input".to_owned(), "sharp_node".to_owned()],
             ..ExportConfig::default()
         },
         ..Config::default()

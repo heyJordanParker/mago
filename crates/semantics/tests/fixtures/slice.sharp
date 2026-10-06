@@ -116,7 +116,7 @@ public class Report
         Report.made += 2;
         Report.last ??= "touched";
         const limit = Report.MAX;
-        const rate = Calc.rate.cents;
+        const rate = Calc.standard.cents;
         const label = Status.Active.label();
         const active = Status.Default === Status.Active;
         return;
@@ -138,14 +138,14 @@ public class Report
         let second = id;
         second ??= first;
         id ??= 1;
-        fallback.rate ??= rate;
+        this.calc.rate ??= rate;
         Calc? kept = fallback;
         int count = 2;
         const float? share = rate;
         const Calc made = Calc.make();
         kept = null;
         const sum = fallback?.add(1, 2) ?? fallback?.rate;
-        const again = this?.find(id)?.rate.cents;
+        const again = this?.find(id)?.price.cents;
         return fallback ?? throw new Calc(0);
     }
 
@@ -241,7 +241,7 @@ public class Report
         (int|string)? found = null;
         const made = new Calc(first, ...values);
         made.add(...values);
-        return Report.part(...values) + max(1, ...values);
+        return Report.part(2, ...values) + max(1, ...values);
     }
 
     [Entity(["a", "b"], ["x": 1])]
@@ -255,7 +255,7 @@ public class Report
         this.sizes["b"] = array_sum(numbers);
         const nested = ["x": ["a": 1]];
         nested["x"]["a"] = items[0]?.rate ?? items[1].rate;
-        for (const [name, size] of sizes) {
+        for (const [string name, size] of sizes) {
             this.sizes[name] = size;
         }
         return ["all": numbers];
@@ -265,7 +265,7 @@ public class Report
     {
         let count = 0;
         Function<int(int)> twice = a => a * extra;
-        const half = b => b / 2;
+        const half = (int b) => b / 2;
         const add = (int step, int by = 1) => {
             count += step * by;
             const inner = () => count + extra;

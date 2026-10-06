@@ -6,77 +6,64 @@
 
 #![allow(clippy::panic, clippy::expect_used, clippy::use_debug)]
 
-use std::ffi::c_char;
+mod common;
+
 use std::fmt::Write;
-use std::slice;
+use std::thread;
 
 use indoc::indoc;
 
+use mago_sharp_bridge::Unit;
+use mago_sharp_bridge::lower;
 use mago_sharp_bridge::sharp_kind;
-use mago_sharp_bridge::sharp_lower;
 use mago_sharp_bridge::sharp_node;
-use mago_sharp_bridge::sharp_severity;
 use mago_sharp_bridge::sharp_str;
-use mago_sharp_bridge::sharp_unit;
-use mago_sharp_bridge::sharp_unit_free;
 use mago_sharp_bridge::sharp_value;
 
-/// A unit `sharp_lower` returned, freed on drop.
-struct Lowered(*mut sharp_unit);
+/// A file the checker accepted and its lowered unit, or the checker's refusal.
+struct Lowered(Result<Unit, Vec<String>>);
 
 impl Lowered {
     fn new(code: &str) -> Self {
-        Self::named("src/Report.sharp", code)
+        Self::with(code, &[])
     }
 
-    fn named(path: &str, code: &str) -> Self {
-        // SAFETY: both pointers point to as many bytes as their lengths say.
-        Self(unsafe {
-            sharp_lower(path.as_ptr().cast::<c_char>(), path.len(), code.as_ptr().cast::<c_char>(), code.len())
-        })
+    /// Lowers `code` beside the `library` files, each a path and its code, which declare what `code` uses.
+    fn with(code: &str, library: &[(&str, &str)]) -> Self {
+        Self(common::checked("src/Report.sharp", code, library, lower))
     }
 
-    fn unit(&self) -> &sharp_unit {
-        // SAFETY: `sharp_lower` returns a valid unit, freed only on drop.
-        unsafe { &*self.0 }
+    fn unit(&self) -> Option<&Unit> {
+        self.0.as_ref().ok()
     }
 
+    /// The unit's nodes, none when the checker refused the file.
     fn nodes(&self) -> &[sharp_node] {
-        // SAFETY: the unit owns `node_count` nodes.
-        unsafe { array(self.unit().nodes, self.unit().node_count) }
+        self.unit().map_or(&[], Unit::nodes)
     }
 
     fn children(&self) -> &[u32] {
-        // SAFETY: the unit owns `children_count` children.
-        unsafe { array(self.unit().children, self.unit().children_count) }
+        self.unit().map_or(&[], Unit::children)
     }
 
-    /// Every diagnostic, as `line:column severity message`.
+    fn root(&self) -> u32 {
+        self.0.as_ref().unwrap_or_else(|refusal| panic!("the source lowers: {refusal:#?}")).root()
+    }
+
+    /// Every refusal, as `line:column severity message`.
     fn diagnostics(&self) -> Vec<String> {
-        // SAFETY: the unit owns `diagnostic_count` diagnostics.
-        let diagnostics = unsafe { array(self.unit().diagnostics, self.unit().diagnostic_count) };
-
-        diagnostics
-            .iter()
-            .map(|diagnostic| {
-                let severity = match diagnostic.severity {
-                    sharp_severity::SHARP_PARSE_ERROR => "parse error",
-                    sharp_severity::SHARP_COMPILE_ERROR => "compile error",
-                };
-
-                format!("{}:{} {severity}: {}", diagnostic.line, diagnostic.column, self.text(diagnostic.message))
-            })
-            .collect()
+        self.0.as_ref().err().cloned().unwrap_or_default()
     }
 
     fn tree(&self) -> String {
         assert_eq!(self.diagnostics(), Vec::<String>::new(), "the source lowers");
 
-        self.render(self.unit().root)
+        self.render(self.root())
     }
 
     /// The statements of the method `run`.
     fn body(&self) -> String {
+        assert_eq!(self.diagnostics(), Vec::<String>::new(), "the source lowers");
         let method = self
             .nodes()
             .iter()
@@ -139,41 +126,43 @@ impl Lowered {
     }
 
     fn text(&self, text: sharp_str) -> String {
-        // SAFETY: the unit owns `texts_size` bytes at `texts`, and `text` lies inside them.
-        let texts = unsafe { array(self.unit().texts.cast::<u8>(), self.unit().texts_size) };
-
-        String::from_utf8_lossy(&texts[text.offset as usize..(text.offset + text.len) as usize]).into_owned()
+        String::from_utf8_lossy(self.unit().expect("the source lowers").text(text)).into_owned()
     }
 }
 
-impl Drop for Lowered {
-    fn drop(&mut self) {
-        // SAFETY: `sharp_lower` returned the unit, and only this drop frees it.
-        unsafe { sharp_unit_free(self.0) };
-    }
-}
-
-/// # Safety
-///
-/// When `len` is not 0, `pointer` points to `len` values.
-unsafe fn array<'unit, T>(pointer: *const T, len: usize) -> &'unit [T] {
-    if len == 0 {
-        return &[];
-    }
-
-    // SAFETY: the caller passes `len` values at `pointer`.
-    unsafe { slice::from_raw_parts(pointer, len) }
-}
+/// The signature `method` declares `run` with.
+const RUN: &str = "int run(int extra)";
 
 /// A file declaring the method `run` with `body`. Its body starts on line 9.
 fn method(body: &str) -> String {
+    method_with(RUN, body)
+}
+
+/// A file declaring a method with `signature` and `body` in the class `Report`. Its body starts on line 9.
+fn method_with(signature: &str, body: &str) -> String {
+    method_in("Report", signature, body)
+}
+
+/// A file declaring a method with `signature` and `body` in the class `header`. Its body starts on line 9.
+fn method_in(header: &str, signature: &str, body: &str) -> String {
     format!(
-        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{{\n    public int run(int extra)\n    {{\n{body}    }}\n}}\n"
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass {header}\n{{\n    public {signature}\n    {{\n{body}    }}\n}}\n"
     )
 }
 
 fn body(statements: &str) -> String {
-    Lowered::new(&method(statements)).body()
+    body_in(RUN, statements, &[])
+}
+
+/// The statements of `run`, declared with `signature` and holding `statements`, lowered beside the `library` files.
+fn body_in(signature: &str, statements: &str, library: &[(&str, &str)]) -> String {
+    Lowered::with(&method_with(signature, statements), library).body()
+}
+
+/// The statements of `run`, declared with `signature` and holding `statements`, in `Report : Base`, where `base`
+/// declares `App\Tenant\Base` in PHP.
+fn child_body(signature: &str, statements: &str, base: &str) -> String {
+    Lowered::with(&method_in("Report : Base", signature, statements), &[("src/App/Tenant/Base.php", base)]).body()
 }
 
 /// ```php
@@ -184,8 +173,8 @@ fn a_const_local_reassigned_returns_one_compile_error_and_no_nodes() {
     let lowered = Lowered::new(&method("        const base = 2;\n        base = 3;\n        return base;\n"));
 
     assert_eq!(lowered.diagnostics(), ["10:9 compile error: Cannot assign to `base`: it is declared with `const`."]);
-    assert_eq!(lowered.unit().node_count, 0);
-    assert_eq!(lowered.unit().children_count, 0);
+    assert_eq!(lowered.nodes().len(), 0);
+    assert_eq!(lowered.children().len(), 0);
 }
 
 #[test]
@@ -193,7 +182,7 @@ fn php_syntax_returns_a_parse_error_and_no_nodes() {
     let lowered = Lowered::new(&method("        return this->run(1);\n"));
 
     assert_eq!(lowered.diagnostics(), ["9:20 parse error: `->` is PHP syntax: PHP# writes member access with `.`"]);
-    assert_eq!(lowered.unit().node_count, 0);
+    assert_eq!(lowered.nodes().len(), 0);
 }
 
 #[test]
@@ -212,7 +201,7 @@ fn an_enum_the_slice_refuses_returns_its_error_and_no_nodes() {
         lowered.diagnostics(),
         ["5:12 compile error: An enum has no constructor: its cases are its only values."]
     );
-    assert_eq!(lowered.unit().node_count, 0);
+    assert_eq!(lowered.nodes().len(), 0);
 }
 
 #[test]
@@ -221,7 +210,10 @@ fn a_method_without_a_body_returns_the_checker_error() {
 
     assert_eq!(
         lowered.diagnostics(),
-        ["3:21 compile error: Non-Abstract method `Report::run` must have a concrete body."]
+        [
+            "3:21 compile error: Non-Abstract method `Report::run` must have a concrete body.",
+            "1:7 compile error: Class `Report` does not implement the abstract method `run`."
+        ]
     );
 }
 
@@ -246,7 +238,7 @@ fn a_file_nested_100_000_levels_deep_returns_the_depth_error_and_no_nodes() {
             lowered.diagnostics(),
             [format!("9:{column} parse error: PHP# nests statements, expressions and types at most 512 levels deep.")]
         );
-        assert_eq!(lowered.unit().node_count, 0);
+        assert_eq!(lowered.nodes().len(), 0);
     }
 }
 
@@ -264,49 +256,47 @@ fn a_union_of_100_000_types_returns_the_depth_error_and_no_nodes() {
         lowered.diagnostics(),
         [format!("5:{column} parse error: PHP# nests statements, expressions and types at most 512 levels deep.")]
     );
-    assert_eq!(lowered.unit().node_count, 0);
+    assert_eq!(lowered.nodes().len(), 0);
 }
 
 /// A 509-term sum or `??` chain in a method nests its innermost term 512 levels deep, the most the checker allows, and
-/// so do a null-safe call chain of 509 calls and a 510-term sum as a field's initial value. The bridge lowers each on a
-/// thread whose stack is far smaller than the recursion needs, as a PHP thread or fiber may be.
+/// so do a null-safe call chain of 509 calls and a 510-term sum as a field's initial value. Each is checked on a thread
+/// with the 8 MiB stack `mago` gives its smallest worker, then lowers from a stack far smaller than the recursion needs,
+/// which proves `ensure_sufficient_stack` guards every recursive path of `lower` whatever stack its caller starts on.
 #[test]
-fn the_deepest_file_the_checker_accepts_lowers_on_a_small_stack() {
+fn the_deepest_file_the_checker_accepts_lowers_from_a_small_stack() {
     let codes = [
         method(&format!("        return {};\n", vec!["extra"; 509].join(" + "))),
         method(&format!("        return {};\n", vec!["extra"; 509].join(" ?? "))),
-        method(&format!("        this{};\n        return extra;\n", "?.total(extra)".repeat(508))),
+        method_in(
+            "Report : Base",
+            RUN,
+            &format!("        this{};\n        return extra;\n", "?.total(extra)".repeat(508)),
+        ),
         format!(
             "namespace App.Tenant;\n\nclass Report\n{{\n    private int total = {};\n}}\n",
             vec!["1"; 510].join(" + ")
         ),
     ];
+    let base = (
+        "src/App/Tenant/Base.php",
+        "<?php namespace App\\Tenant; class Base { public function total(int $amount): ?static { return $this; } }",
+    );
 
     for code in codes {
-        let node_count = std::thread::Builder::new()
-            .stack_size(128 * 1024)
+        let node_count = thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
             .spawn(move || {
-                let lowered = Lowered::new(&code);
-                assert_eq!(lowered.diagnostics(), Vec::<String>::new());
-
-                lowered.unit().node_count
+                common::checked("src/Report.sharp", &code, &[base], |checked| {
+                    stacker::grow(128 * 1024, || lower(checked).nodes().len())
+                })
             })
             .expect("the thread starts")
             .join()
-            .expect("the lowering returns");
+            .expect("the check and the lowering finish");
 
-        assert!(node_count > 509 * 2, "{node_count} nodes");
+        assert!(node_count.as_ref().is_ok_and(|&count| count > 509 * 2), "{node_count:?} nodes");
     }
-}
-
-/// `ext/sharp` decides the dialect from the file name, so the bridge parses and checks PHP# whatever name it gets.
-#[test]
-fn a_file_of_any_name_is_parsed_and_checked_as_php_sharp() {
-    let lowered = Lowered::named("src/Upper.SHARP", "namespace App.Tenant;\n\nclass Report\n{\n}\n");
-    assert_eq!(lowered.diagnostics(), Vec::<String>::new());
-
-    let refused = Lowered::named("src/Upper.SHARP", &method("        echo extra;\n        return 1;\n"));
-    assert_eq!(refused.diagnostics(), ["9:9 compile error: This statement is not supported yet in PHP#."]);
 }
 
 /// The Zend scanner ends a line at `\n`, `\r\n` and a lone `\r`, and stops on the line after the last line ending.
@@ -324,7 +314,7 @@ fn the_root_end_line_is_the_last_line_the_zend_scanner_counts() {
         let lowered = Lowered::new(code);
         assert_eq!(lowered.diagnostics(), Vec::<String>::new());
 
-        lowered.nodes()[lowered.unit().root as usize].end_line
+        lowered.nodes()[lowered.root() as usize].end_line
     })
     .collect();
 
@@ -335,8 +325,8 @@ fn the_root_end_line_is_the_last_line_the_zend_scanner_counts() {
 #[test]
 fn every_line_is_the_line_the_zend_scanner_counts() {
     let class = Lowered::new("class Report\r\n{\r}\n\n");
-    let root = &class.nodes()[class.unit().root as usize];
-    let declaration = &class.nodes()[class.child(class.unit().root, 1) as usize];
+    let root = &class.nodes()[class.root() as usize];
+    let declaration = &class.nodes()[class.child(class.root(), 1) as usize];
     assert_eq!((declaration.line, declaration.end_line, root.end_line), (1, 3, 5));
 
     let method = Lowered::new("class Report\r{\r    public int run()\r    {\r        return 1;\r    }\r}\r");
@@ -432,7 +422,7 @@ fn a_file_without_a_namespace_declares_its_classes_globally() {
 #[test]
 fn a_method_is_a_public_function_with_its_return_type_after_its_parameters() {
     let lowered = Lowered::new(&method("        return extra;\n"));
-    let class = lowered.child(lowered.unit().root, 2);
+    let class = lowered.child(lowered.root(), 2);
 
     assert_eq!(
         lowered.render(class),
@@ -471,10 +461,11 @@ fn a_method_is_a_public_function_with_its_return_type_after_its_parameters() {
 /// `[4]` and `[2]` are `ZEND_ACC_PRIVATE` and `ZEND_ACC_PROTECTED`.
 #[test]
 fn a_field_is_a_property_group_of_one_property() {
-    let lowered = Lowered::new(
+    let lowered = Lowered::with(
         "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private int count = 0;\n    protected Calc calc;\n}\n",
+        &[("src/Lib/Calc.php", "<?php namespace Lib; final class Calc {}")],
     );
-    let class = lowered.child(lowered.unit().root, 2);
+    let class = lowered.child(lowered.root(), 2);
 
     assert_eq!(
         lowered.render(lowered.child(class, 2)),
@@ -590,8 +581,9 @@ fn the_constructor_is_a_public_function_named_construct() {
 /// An expression body returns its expression, and runs it as a statement in a `void` method and the constructor.
 #[test]
 fn an_expression_body_is_the_body_that_returns_its_expression() {
-    let lowered = Lowered::new(
-        "class Report\n{\n    private int count = 0;\n\n    public int total() => this.count + 1;\n\n    public void touch() => this.save();\n\n    public Report(int count) => this.count = count;\n}\n",
+    let lowered = Lowered::with(
+        "class Report : Base\n{\n    private int count = 0;\n\n    public int total() => this.count + 1;\n\n    public void touch() => this.save();\n\n    public Report(int count) => this.count = count;\n}\n",
+        &[("src/Base.php", "<?php class Base { public function save(): void {} }")],
     );
     let bodies: Vec<String> = lowered
         .nodes()
@@ -647,7 +639,7 @@ fn a_computed_property_is_a_property_with_a_short_get_hook() {
     let lowered = Lowered::new(
         "class Report\n{\n    private string name = \"\";\n\n    public string slug => strtolower(this.name);\n}\n",
     );
-    let class = lowered.child(lowered.unit().root, 1);
+    let class = lowered.child(lowered.root(), 1);
 
     assert_eq!(
         lowered.render(lowered.child(lowered.child(class, 2), 1)),
@@ -680,6 +672,8 @@ fn a_computed_property_is_a_property_with_a_short_get_hook() {
 
 /// The `PROP_GROUP` of each property a class declares, rendered.
 fn property_groups(lowered: &Lowered) -> Vec<String> {
+    assert_eq!(lowered.diagnostics(), Vec::<String>::new(), "the source lowers");
+
     lowered
         .nodes()
         .iter()
@@ -932,10 +926,11 @@ fn field_in_a_nested_block_keeps_a_property_backed_and_field_only_in_a_lambda_is
     assert_eq!(
         lambda.diagnostics(),
         [
-            "3:45 compile error: `field` cannot be used in a lambda: PHP would call the accessor again instead of reading the storage."
+            "3:45 compile error: `field` cannot be used in a lambda: PHP would call the accessor again instead of reading the storage.",
+            "3:59 compile error: Could not infer a precise return type for property hook `Report::$b::get`. Saw type `mixed`."
         ]
     );
-    assert_eq!(lambda.unit().node_count, 0);
+    assert_eq!(lambda.nodes().len(), 0);
 }
 
 /// ```php
@@ -1081,8 +1076,9 @@ fn a_promoted_property_with_accessor_bodies_is_a_promoted_parameter_with_hooks()
 /// is the backing store. Accessors over a plain PHP parent's methods never use `field`, so the property is virtual.
 #[test]
 fn a_validating_set_and_a_property_over_a_parents_methods_are_their_php_hooks() {
-    let lowered = Lowered::new(
+    let lowered = Lowered::with(
         "import Lib.Model;\nimport InvalidArgumentException;\n\nclass Order : Model\n{\n    public int price { get; set { if (value < 0) { throw new InvalidArgumentException(\"negative\"); } field = value; } } = 0;\n    public Address shipping { get => this.getAttribute(\"shipping\"); set => this.setAttribute(\"shipping\", value); }\n}\n\nclass Address\n{\n}\n",
+        &[common::MODEL],
     );
 
     assert_eq!(
@@ -1179,8 +1175,9 @@ fn a_validating_set_and_a_property_over_a_parents_methods_are_their_php_hooks() 
 /// on a class name, and `[257]` is `ZEND_NAME_NOT_FQ | ZEND_TYPE_NULLABLE`.
 #[test]
 fn nullable_properties_with_accessor_bodies_are_their_php_hooks() {
-    let lowered = Lowered::new(
+    let lowered = Lowered::with(
         "import Lib.Model;\n\nclass Order : Model\n{\n    public Address? shipping { get => this.getAttribute(\"shipping\"); set => this.setAttribute(\"shipping\", value); }\n    public string? note { get => field; set => field = value; }\n    public string? summary { get => this.note; }\n}\n\nclass Address\n{\n}\n",
+        &[common::MODEL],
     );
 
     assert_eq!(
@@ -1317,17 +1314,18 @@ fn a_constructor_parameter_with_an_access_modifier_is_a_promoted_parameter() {
 /// public function __construct(int $start)
 /// {
 ///     $this->calc = new \Lib\Calc(1);
-///     $this->count = $start;
+///     $this->total = $start;
 /// }
 /// ```
 ///
 /// A constant initial value is the property's default. Any other runs at the start of the constructor.
 #[test]
 fn a_non_constant_initial_value_runs_at_the_start_of_the_constructor() {
-    let lowered = Lowered::new(
-        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private Calc calc = new Calc(1);\n    public int total { get; set; } = 1 + 1;\n\n    public Report(int start)\n    {\n        this.count = start;\n    }\n}\n",
+    let lowered = Lowered::with(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private Calc calc = new Calc(1);\n    public int total { get; set; } = 1 + 1;\n\n    public Report(int start)\n    {\n        this.total = start;\n    }\n}\n",
+        &[("src/Lib/Calc.php", "<?php namespace Lib; final class Calc { public function __construct(int $start) {} }")],
     );
-    let class = lowered.child(lowered.unit().root, 2);
+    let class = lowered.child(lowered.root(), 2);
 
     assert_eq!(
         lowered.render(lowered.child(class, 2)),
@@ -1377,7 +1375,7 @@ fn a_non_constant_initial_value_runs_at_the_start_of_the_constructor() {
                     PROP
                       VAR
                         ZVAL "this"
-                      ZVAL "count"
+                      ZVAL "total"
                     VAR
                       ZVAL "start"
                 null
@@ -1397,10 +1395,11 @@ fn a_non_constant_initial_value_runs_at_the_start_of_the_constructor() {
 /// A class with a non-constant initial value and no constructor gets a public one, which spans the class.
 #[test]
 fn a_class_with_a_non_constant_initial_value_and_no_constructor_gets_one() {
-    let lowered = Lowered::new(
+    let lowered = Lowered::with(
         "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private Calc calc = new Calc(1);\n}\n",
+        &[("src/Lib/Calc.php", "<?php namespace Lib; final class Calc { public function __construct(int $start) {} }")],
     );
-    let class = lowered.child(lowered.unit().root, 2);
+    let class = lowered.child(lowered.root(), 2);
 
     assert_eq!(
         lowered.render(lowered.child(class, 2)),
@@ -1447,7 +1446,7 @@ fn a_class_with_a_non_constant_initial_value_and_no_constructor_gets_one() {
 #[test]
 fn a_get_only_property_gets_its_initial_value_in_the_constructor() {
     let lowered = Lowered::new("class Report\n{\n    public string code { get; } = \"none\";\n}\n");
-    let class = lowered.child(lowered.unit().root, 1);
+    let class = lowered.child(lowered.root(), 1);
 
     assert_eq!(
         lowered.render(lowered.child(class, 2)),
@@ -1497,10 +1496,11 @@ fn a_get_only_property_gets_its_initial_value_in_the_constructor() {
 /// `ZEND_TYPE_NULLABLE` on a class name.
 #[test]
 fn a_nullable_field_or_settable_auto_property_without_an_initial_value_defaults_to_null() {
-    let lowered = Lowered::new(
+    let lowered = Lowered::with(
         "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private int? total;\n    public Calc? owner { get; set; }\n    private (int|string)? key;\n    private int? start = 1;\n    public int? limit { get; } = null;\n}\n",
+        &[("src/Lib/Calc.php", "<?php namespace Lib; final class Calc {}")],
     );
-    let class = lowered.child(lowered.unit().root, 2);
+    let class = lowered.child(lowered.root(), 2);
 
     assert_eq!(
         lowered.render(lowered.child(class, 2)),
@@ -1599,14 +1599,15 @@ fn method_modifiers_become_the_method_flags() {
 }
 
 /// ```php
-/// public function make(\Lib\Calc $other, float $rate = 1.5, bool $loud = PHP_DEBUG): \Lib\Calc {}
+/// public function make(\Lib\Calc $other, float $rate = 1.5, int $loud = PHP_DEBUG): \Lib\Calc {}
 /// ```
 ///
 /// A class type is its full name with `ZEND_NAME_FQ`, which is 0.
 #[test]
 fn parameters_carry_their_type_name_and_default() {
-    let lowered = Lowered::new(
-        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public Calc make(Calc other, float rate = 1.5, bool loud = PHP_DEBUG) { return other; }\n}\n",
+    let lowered = Lowered::with(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public Calc make(Calc other, float rate = 1.5, int loud = PHP_DEBUG) { return other; }\n}\n",
+        &[("src/Lib/Calc.php", "<?php namespace Lib; final class Calc {}")],
     );
     let method = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a method");
 
@@ -1629,7 +1630,7 @@ fn parameters_carry_their_type_name_and_default() {
                 null
                 null
               PARAM
-                ZVAL [1] "bool"
+                ZVAL [1] "int"
                 ZVAL "loud"
                 CONST
                   ZVAL [1] "PHP_DEBUG"
@@ -1654,8 +1655,9 @@ fn parameters_carry_their_type_name_and_default() {
 /// `ZEND_NAME_NOT_FQ`.
 #[test]
 fn a_nullable_type_is_its_type_with_the_nullable_flag() {
-    let lowered = Lowered::new(
+    let lowered = Lowered::with(
         "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public Calc? find(int? id, Calc? other = null) { return null; }\n}\n",
+        &[("src/Lib/Calc.php", "<?php namespace Lib; final class Calc {}")],
     );
     let method = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a method");
 
@@ -1742,8 +1744,10 @@ fn a_list_or_map_type_is_the_array_type() {
 #[test]
 fn a_map_keyed_by_a_backed_enum_lowers_as_any_map() {
     assert_eq!(
-        body(
-            "        Map<Calc, int> counts = [Calc.Active: 1];\n        counts[Calc.Closed] = 2;\n        return counts[Calc.Active] ?? 0;\n"
+        body_in(
+            RUN,
+            "        Map<Calc, int> counts = [Calc.Active: 1];\n        counts[Calc.Closed] = 2;\n        return counts[Calc.Active] ?? 0;\n",
+            &[("src/Lib/Calc.php", "<?php namespace Lib; enum Calc: string { case Active = 'a'; case Closed = 'c'; }")]
         ),
         indoc! {r#"
             STMT_LIST
@@ -1785,7 +1789,7 @@ fn a_map_keyed_by_a_backed_enum_lowers_as_any_map() {
 #[test]
 fn a_function_type_is_the_closure_class() {
     let lowered = Lowered::new(
-        "namespace App.Tenant;\n\nclass Report\n{\n    public Function<bool(int)> apply(Function<int(string, int)> step, Function<void()>? other = null) { return step; }\n}\n",
+        "namespace App.Tenant;\n\nclass Report\n{\n    public Function<int(string, int)> apply(Function<int(string, int)> step, Function<void()>? other = null) { return step; }\n}\n",
     );
     let method = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a method");
 
@@ -1821,8 +1825,8 @@ fn a_function_type_is_the_closure_class() {
 /// $numbers = [1, $extra];
 /// $named = ['a' => 1, 2 => $numbers[0]];
 /// $empty = [];
-/// $numbers[0] = $named['a'];
-/// $this->sizes['a'] += 1;
+/// $named['b'] = $numbers[0];
+/// $this->sizes['a'] = ($this->sizes['a'] ?? 0) + 1;
 /// return $numbers[1];
 /// ```
 ///
@@ -1831,8 +1835,10 @@ fn a_function_type_is_the_closure_class() {
 #[test]
 fn literals_are_short_arrays_and_an_index_is_a_dim() {
     assert_eq!(
-        body(
-            "        List<int> numbers = [1, extra];\n        const named = [\"a\": 1, 2: numbers[0]];\n        const Map<string, int> empty = [:];\n        numbers[0] = named[\"a\"];\n        this.sizes[\"a\"] += 1;\n        return numbers[1];\n"
+        child_body(
+            RUN,
+            "        List<int> numbers = [1, extra];\n        const named = [\"a\": 1, 2: numbers[0]];\n        const Map<string, int> empty = [:];\n        named[\"b\"] = numbers[0];\n        this.sizes[\"a\"] = (this.sizes[\"a\"] ?? 0) + 1;\n        return numbers[1];\n",
+            "<?php namespace App\\Tenant; class Base { /** @var array<string, int> */ public array $sizes = ['a' => 0]; }"
         ),
         indoc! {r#"
             STMT_LIST
@@ -1867,20 +1873,29 @@ fn literals_are_short_arrays_and_an_index_is_a_dim() {
               ASSIGN
                 DIM
                   VAR
-                    ZVAL "numbers"
-                  ZVAL 0
+                    ZVAL "named"
+                  ZVAL "b"
                 DIM
                   VAR
-                    ZVAL "named"
-                  ZVAL "a"
-              ASSIGN_OP [1]
+                    ZVAL "numbers"
+                  ZVAL 0
+              ASSIGN
                 DIM
                   PROP
                     VAR
                       ZVAL "this"
                     ZVAL "sizes"
                   ZVAL "a"
-                ZVAL 1
+                BINARY_OP [1]
+                  COALESCE
+                    DIM
+                      PROP
+                        VAR
+                          ZVAL "this"
+                        ZVAL "sizes"
+                      ZVAL "a"
+                    ZVAL 0
+                  ZVAL 1
               RETURN
                 DIM
                   VAR
@@ -1982,7 +1997,11 @@ fn typed_locals_assign_their_variables_and_drop_the_type() {
 #[test]
 fn this_count_plus_equals_one_is_a_compound_assignment_to_a_property_of_this() {
     assert_eq!(
-        body("        this.count += 1;\n        return 1;\n"),
+        child_body(
+            RUN,
+            "        this.count += 1;\n        return 1;\n",
+            "<?php namespace App\\Tenant; class Base { public int $count = 0; }",
+        ),
         indoc! {r#"
             STMT_LIST
               ASSIGN_OP [1]
@@ -2004,8 +2023,10 @@ fn this_count_plus_equals_one_is_a_compound_assignment_to_a_property_of_this() {
 /// The class is its full name with `ZEND_NAME_FQ`, which is 0.
 #[test]
 fn calc_make_is_a_static_call_on_the_imported_class() {
+    let calc = "<?php namespace Lib; final class Calc { public static function make(int $n): int { return $n; } }";
+
     assert_eq!(
-        body("        return Calc.make(2);\n"),
+        body_in(RUN, "        return Calc.make(2);\n", &[("src/Lib/Calc.php", calc)]),
         indoc! {r#"
             STMT_LIST
               RETURN
@@ -2027,10 +2048,11 @@ fn calc_make_is_a_static_call_on_the_imported_class() {
 /// builds `int|float|\Lib\Calc`, on the line of its first type.
 #[test]
 fn a_union_type_is_one_type_union_list_of_its_types_in_written_order() {
-    let lowered = Lowered::new(
+    let lowered = Lowered::with(
         "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private int|string key = 1;\n\n    public Calc|string find(\n        int|float|Calc id,\n    ) { return \"none\"; }\n}\n",
+        &[("src/Lib/Calc.php", "<?php namespace Lib; final class Calc {}")],
     );
-    let members = lowered.child(lowered.child(lowered.unit().root, 2), 2);
+    let members = lowered.child(lowered.child(lowered.root(), 2), 2);
     let field = lowered.child(lowered.child(members, 0), 0);
     let method = lowered.child(members, 1);
     let parameter = lowered.child(lowered.child(lowered.child(method, 0), 0), 0);
@@ -2073,11 +2095,12 @@ fn a_union_type_is_one_type_union_list_of_its_types_in_written_order() {
 /// carries no `ZEND_TYPE_NULLABLE`, and `null` is on the line of the `?`.
 #[test]
 fn a_nullable_union_is_its_type_union_list_with_null_last() {
-    let lowered = Lowered::new(
+    let lowered = Lowered::with(
         "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public (Calc|string)? find(\n        (int|string)? id,\n    ) { return null; }\n}\n",
+        &[("src/Lib/Calc.php", "<?php namespace Lib; final class Calc {}")],
     );
     assert_eq!(lowered.diagnostics(), Vec::<String>::new());
-    let method = lowered.child(lowered.child(lowered.child(lowered.unit().root, 2), 2), 0);
+    let method = lowered.child(lowered.child(lowered.child(lowered.root(), 2), 2), 0);
     let parameters = lowered.child(method, 0);
     let return_type = lowered.child(method, 3);
 
@@ -2157,8 +2180,10 @@ fn a_variadic_parameter_carries_the_variadic_flag() {
 #[test]
 fn a_lambda_takes_union_and_variadic_parameters_and_a_spread_call() {
     assert_eq!(
-        body(
-            "        const pick = (int|string key, (int|Calc)? fallback, int ...rest) => count(rest);\n        return pick(1, null, ...extra);\n"
+        body_in(
+            "int run(List<int> extra)",
+            "        const pick = (int|string key, (int|Calc)? fallback, int ...rest) => count(rest);\n        return pick(1, null, ...extra);\n",
+            &[("src/Lib/Calc.php", "<?php namespace Lib; final class Calc {}")]
         ),
         indoc! {r#"
             STMT_LIST
@@ -2224,7 +2249,14 @@ fn a_lambda_takes_union_and_variadic_parameters_and_a_spread_call() {
 #[test]
 fn a_spread_in_a_literal_is_an_unpack_among_its_elements() {
     assert_eq!(
-        body("        const all = [...extra, 1, ...Calc.make()];\n        return 1;\n"),
+        body_in(
+            "int run(List<int> extra)",
+            "        const all = [...extra, 1, ...Calc.make()];\n        return 1;\n",
+            &[(
+                "src/Lib/Calc.php",
+                "<?php namespace Lib; final class Calc { /** @return list<int> */ public static function make(): array { return []; } }",
+            )]
+        ),
         indoc! {r#"
             STMT_LIST
               ASSIGN
@@ -2259,8 +2291,13 @@ fn a_spread_in_a_literal_is_an_unpack_among_its_elements() {
 #[test]
 fn a_spread_argument_is_an_unpack_of_its_value() {
     assert_eq!(
-        body(
-            "        Calc.sum(...extra);\n        this.run(1, ...extra);\n        const made = new Calc(...extra);\n        return max(...extra);\n"
+        body_in(
+            "int run(int first, int ...extra)",
+            "        Calc.sum(...extra);\n        this.run(1, ...extra);\n        const made = new Calc(...extra);\n        return max(first, ...extra);\n",
+            &[(
+                "src/Lib/Calc.php",
+                "<?php namespace Lib; final class Calc { public function __construct(int ...$n) {} public static function sum(int ...$n): int { return 0; } }",
+            )]
         ),
         indoc! {r#"
             STMT_LIST
@@ -2293,6 +2330,8 @@ fn a_spread_argument_is_an_unpack_of_its_value() {
                 CALL
                   ZVAL "max"
                   ARG_LIST
+                    VAR
+                      ZVAL "first"
                     UNPACK
                       VAR
                         ZVAL "extra"
@@ -2308,7 +2347,14 @@ fn a_spread_argument_is_an_unpack_of_its_value() {
 #[test]
 fn new_creates_the_imported_class_by_its_full_name() {
     assert_eq!(
-        body("        return new Calc(extra, rate: 2);\n"),
+        body_in(
+            "Calc run(int extra)",
+            "        return new Calc(extra, rate: 2);\n",
+            &[(
+                "src/Lib/Calc.php",
+                "<?php namespace Lib; final class Calc { public function __construct(int $start, int $rate) {} }",
+            )]
+        ),
         indoc! {r#"
             STMT_LIST
               RETURN
@@ -2423,8 +2469,9 @@ fn abstract_and_final_classes_and_interfaces_are_class_declarations_with_their_f
 /// interfaces, as PHP's `extends` list does.
 #[test]
 fn a_header_is_the_interface_name_list_and_marks_a_class_to_find_its_parent_there() {
-    let lowered = Lowered::new(
+    let lowered = Lowered::with(
         "namespace App.Tenant;\n\nimport Lib.Entity;\nimport Lib.Named;\n\ninterface Linkable : Named\n{\n}\n\nclass Page : Entity, Linkable\n{\n}\n",
+        &[("src/Lib/Entity.php", "<?php namespace Lib; interface Named {} class Entity {}")],
     );
 
     assert_eq!(
@@ -2469,8 +2516,9 @@ fn a_header_is_the_interface_name_list_and_marks_a_class_to_find_its_parent_ther
 /// so PHP checks at link time that a parent method exists. Its attribute group follows the method's own.
 #[test]
 fn virtual_lowers_to_nothing_and_override_to_the_override_attribute() {
-    let lowered = Lowered::new(
+    let lowered = Lowered::with(
         "class Thumbnail : Image\n{\n    public virtual int size()\n    {\n        return 1;\n    }\n\n    [Deprecated]\n    public override string name()\n    {\n        return \"thumbnail\";\n    }\n}\n",
+        &[("src/Image.php", "<?php class Image { public function name(): string { return 'image'; } }")],
     );
 
     assert_eq!(
@@ -2530,10 +2578,11 @@ fn virtual_lowers_to_nothing_and_override_to_the_override_attribute() {
 /// `ZEND_ACC_PROTECTED | ZEND_ACC_TYPE_FOLLOWS_PARENT`, and `[8193]` is `ZEND_ACC_PUBLIC | ZEND_ACC_TYPE_FOLLOWS_PARENT`.
 #[test]
 fn an_override_is_a_field_marked_to_follow_the_parent_type() {
-    let lowered = Lowered::new(
+    let lowered = Lowered::with(
         "class Order : Model\n{\n    protected override string table = \"orders\";\n    public override bool timestamps = false;\n}\n",
+        &[("src/Model.php", "<?php class Model { protected string $table = ''; public bool $timestamps = true; }")],
     );
-    let class = lowered.child(lowered.unit().root, 1);
+    let class = lowered.child(lowered.root(), 1);
 
     assert_eq!(
         lowered.render(lowered.child(class, 2)),
@@ -2585,8 +2634,12 @@ fn an_override_is_a_field_marked_to_follow_the_parent_type() {
 /// argument of the static call on `parent`.
 #[test]
 fn a_subclass_method_with_a_union_variadic_spreads_it_into_the_parent_method() {
-    let lowered = Lowered::new(
+    let lowered = Lowered::with(
         "namespace App.Tenant;\n\nimport Lib.Ledger;\n\nclass Account : Ledger\n{\n    public override int|float total(string label, int|float ...amounts)\n    {\n        return super.total(label, ...amounts);\n    }\n}\n",
+        &[(
+            "src/Lib/Ledger.php",
+            "<?php namespace Lib; class Ledger { public function total(string $label, int|float ...$amounts): int|float { return 0; } }",
+        )],
     );
 
     assert_eq!(
@@ -2661,7 +2714,11 @@ fn a_subclass_method_with_a_union_variadic_spreads_it_into_the_parent_method() {
 #[test]
 fn super_calls_are_static_calls_on_parent() {
     assert_eq!(
-        body("        return super.size(2);\n"),
+        child_body(
+            RUN,
+            "        return super.size(2);\n",
+            "<?php namespace App\\Tenant; class Base { public function size(int $n): int { return $n; } }",
+        ),
         indoc! {r#"
             STMT_LIST
               RETURN
@@ -2686,12 +2743,13 @@ fn super_calls_are_static_calls_on_parent() {
 /// php-src's grammar builds `new static` and `static::`. `required` adds no flag, as PHP has no `required`.
 #[test]
 fn self_is_static_and_required_adds_no_flag() {
-    let lowered = Lowered::new(
+    let lowered = Lowered::with(
         "namespace App.Tenant;\n\nimport Lib.Row;\n\npublic abstract class DatabaseEntity\n{\n    public required DatabaseEntity(Row row)\n    {\n    }\n\n    public static Self fromSchema(Row row)\n    {\n        return new Self(row);\n    }\n\n    public static Self? find(Row row) => Self.fromSchema(row);\n\n    public static Self|int counted(Row row) => Self.fromSchema(row);\n}\n",
+        &[("src/Lib/Row.php", "<?php namespace Lib; final class Row {}")],
     );
 
     assert_eq!(
-        lowered.render(lowered.child(lowered.child(lowered.unit().root, 2), 2)),
+        lowered.render(lowered.child(lowered.child(lowered.root(), 2), 2)),
         indoc! {r#"
             STMT_LIST
               METHOD [1] "__construct" @7-9
@@ -2778,7 +2836,11 @@ fn self_is_static_and_required_adds_no_flag() {
 #[test]
 fn self_calls_are_static_calls_on_static() {
     assert_eq!(
-        body("        return Self.make(2);\n"),
+        child_body(
+            RUN,
+            "        return Self.make(2);\n",
+            "<?php namespace App\\Tenant; class Base { public static function make(int $n): int { return $n; } }",
+        ),
         indoc! {r#"
             STMT_LIST
               RETURN
@@ -2799,7 +2861,11 @@ fn self_calls_are_static_calls_on_static() {
 #[test]
 fn typeof_is_the_class_name_of_the_imported_class() {
     assert_eq!(
-        body("        return typeof(Calc);\n"),
+        body_in(
+            "string run(int extra)",
+            "        return typeof(Calc);\n",
+            &[("src/Lib/Calc.php", "<?php namespace Lib; final class Calc {}")]
+        ),
         indoc! {r#"
             STMT_LIST
               RETURN
@@ -2817,12 +2883,19 @@ fn typeof_is_the_class_name_of_the_imported_class() {
 /// `typeof(X)` in an attribute argument is the class name, which PHP takes as a constant expression.
 #[test]
 fn typeof_in_an_attribute_argument_is_the_class_name() {
-    let lowered = Lowered::new(
+    let lowered = Lowered::with(
         "namespace App.Tenant;\n\nimport Lib.Access;\nimport Lib.Calc;\n\n[Access(typeof(Calc), role: typeof(Report))]\nclass Report\n{\n}\n",
+        &[
+            (
+                "src/Lib/Access.php",
+                "<?php namespace Lib; #[\\Attribute] final class Access { public function __construct(string $class, string $role) {} }",
+            ),
+            ("src/Lib/Calc.php", "<?php namespace Lib; final class Calc {}"),
+        ],
     );
 
     assert_eq!(
-        lowered.render(lowered.child(lowered.child(lowered.unit().root, 2), 3)),
+        lowered.render(lowered.child(lowered.child(lowered.root(), 2), 3)),
         indoc! {r#"
             ATTRIBUTE_LIST
               ATTRIBUTE_GROUP
@@ -2851,7 +2924,7 @@ fn a_class_constant_is_a_class_constant_group_of_one_constant() {
     let lowered = Lowered::new(
         "namespace App.Tenant;\n\nclass Report\n{\n    public const int MAX = 3;\n    protected const LIMIT = PHP_INT_MAX - 1;\n}\n",
     );
-    let class = lowered.child(lowered.unit().root, 2);
+    let class = lowered.child(lowered.root(), 2);
 
     assert_eq!(
         lowered.render(lowered.child(class, 2)),
@@ -2891,7 +2964,7 @@ fn a_union_typed_class_constant_has_its_type_union() {
     let lowered = Lowered::new(
         "namespace App.Tenant;\n\nclass Report\n{\n    public const int|string KEY = 1;\n    public const (int|string)? CODE = null;\n}\n",
     );
-    let class = lowered.child(lowered.unit().root, 2);
+    let class = lowered.child(lowered.root(), 2);
 
     assert_eq!(
         lowered.render(lowered.child(class, 2)),
@@ -2995,8 +3068,13 @@ fn a_static_member_written_through_its_class_is_a_static_property() {
 /// value, a constant initial value, a parameter default and an attribute argument is an unmarked class constant.
 #[test]
 fn a_class_member_read_in_a_constant_expression_is_an_unmarked_class_constant() {
-    let lowered = Lowered::new(
+    let lowered = Lowered::with(
         "namespace App.Tenant;\n\nimport Lib.Calc;\nimport Lib.Field;\nimport Lib.Mode;\n\nclass Report\n{\n    public const int MAX = Calc.MAX;\n    private Mode mode = Mode.Read;\n\n    [Field(Mode.Write)]\n    public int run(Mode extra = Mode.Read)\n    {\n        return 1;\n    }\n}\n",
+        &[
+            ("src/Lib/Calc.php", "<?php namespace Lib; final class Calc { public const int MAX = 3; }"),
+            ("src/Lib/Mode.php", "<?php namespace Lib; enum Mode { case Read; case Write; }"),
+            common::FIELD,
+        ],
     );
 
     let class_constants = lowered
@@ -3020,7 +3098,14 @@ fn a_class_member_read_in_a_constant_expression_is_an_unmarked_class_constant() 
 #[test]
 fn a_class_member_read_is_a_class_constant_marked_to_fall_back_to_the_static_property() {
     assert_eq!(
-        body("        return Calc.rate.cents;\n"),
+        body_in(
+            RUN,
+            "        return Calc.rate.cents;\n",
+            &[
+                ("src/Lib/Money.php", "<?php namespace Lib; final class Money { public int $cents = 0; }"),
+                ("src/Lib/Calc.php", "<?php namespace Lib; final class Calc { public static Money $rate; }"),
+            ]
+        ),
         indoc! {r#"
             STMT_LIST
               RETURN
@@ -3039,7 +3124,11 @@ fn a_class_member_read_is_a_class_constant_marked_to_fall_back_to_the_static_pro
 #[test]
 fn a_class_of_the_same_namespace_is_called_by_its_full_name() {
     assert_eq!(
-        body("        return Report.make();\n"),
+        child_body(
+            RUN,
+            "        return Report.make();\n",
+            "<?php namespace App\\Tenant; class Base { public static function make(): int { return 0; } }",
+        ),
         indoc! {r#"
             STMT_LIST
               RETURN
@@ -3057,7 +3146,7 @@ fn a_class_of_the_same_namespace_is_called_by_its_full_name() {
 #[test]
 fn int_and_float_are_the_classes_of_the_sharp_namespace() {
     assert_eq!(
-        body("        return Int.parse(extra) + Float.tryParse(extra);\n"),
+        body_in("float run(string extra)", "        return Int.parse(extra) + Float.tryParse(extra);\n", &[]),
         indoc! {r#"
             STMT_LIST
               RETURN
@@ -3084,7 +3173,11 @@ fn int_and_float_are_the_classes_of_the_sharp_namespace() {
 #[test]
 fn member_calls_and_reads_on_values_are_instance_access() {
     assert_eq!(
-        body("        return this.total(extra, rate: 2).value;\n"),
+        child_body(
+            RUN,
+            "        return this.total(extra, rate: 2).value;\n",
+            "<?php namespace App\\Tenant; final class Total { public int $value = 0; } class Base { public function total(int $a, int $rate): Total { return new Total(); } }",
+        ),
         indoc! {r#"
             STMT_LIST
               RETURN
@@ -3110,7 +3203,14 @@ fn member_calls_and_reads_on_values_are_instance_access() {
 #[test]
 fn a_call_on_a_static_call_result_is_an_instance_call() {
     assert_eq!(
-        body("        return Calc.make().add(extra);\n"),
+        body_in(
+            RUN,
+            "        return Calc.make().add(extra);\n",
+            &[(
+                "src/Lib/Calc.php",
+                "<?php namespace Lib; final class Calc { public static function make(): self { return new self(); } public function add(int $a): int { return $a; } }",
+            )]
+        ),
         indoc! {r#"
             STMT_LIST
               RETURN
@@ -3343,7 +3443,11 @@ fn exponentiation_is_a_right_grouped_pow_under_unary_minus() {
 #[test]
 fn null_coalescing_is_coalesce() {
     assert_eq!(
-        body("        return extra ?? this.total() ?? 0;\n"),
+        child_body(
+            RUN,
+            "        return extra ?? this.total() ?? 0;\n",
+            "<?php namespace App\\Tenant; class Base { public function total(): ?int { return null; } }",
+        ),
         indoc! {r#"
             STMT_LIST
               RETURN
@@ -3403,7 +3507,11 @@ fn the_ternary_is_a_conditional_marked_when_parenthesized() {
 #[test]
 fn casts_between_numbers_are_casts_to_their_types() {
     assert_eq!(
-        body("        const cents = (int)(extra * 1.5);\n        return (string)(float)cents;\n"),
+        body_in(
+            "string run(int extra)",
+            "        const cents = (int)(extra * 1.5);\n        return (string)(float)cents;\n",
+            &[]
+        ),
         indoc! {r#"
             STMT_LIST
               ASSIGN
@@ -3429,7 +3537,11 @@ fn casts_between_numbers_are_casts_to_their_types() {
 #[test]
 fn null_coalescing_assignment_is_assign_coalesce() {
     assert_eq!(
-        body("        extra ??= 1;\n        this.count ??= extra;\n        return extra;\n"),
+        child_body(
+            RUN,
+            "        extra ??= 1;\n        this.count ??= extra;\n        return extra;\n",
+            "<?php namespace App\\Tenant; class Base { public ?int $count = null; }",
+        ),
         indoc! {r#"
             STMT_LIST
               ASSIGN_COALESCE
@@ -3456,7 +3568,11 @@ fn null_coalescing_assignment_is_assign_coalesce() {
 #[test]
 fn null_safe_calls_and_reads_are_nullsafe_kinds() {
     assert_eq!(
-        body("        return this?.total(extra)?.value.cents;\n"),
+        child_body(
+            "int? run(int extra)",
+            "        return this?.total(extra)?.value.cents;\n",
+            "<?php namespace App\\Tenant; final class Money { public int $cents = 0; } final class Total { public Money $value; } class Base { public function total(int $a): ?Total { return null; } }",
+        ),
         indoc! {r#"
             STMT_LIST
               RETURN
@@ -3483,7 +3599,14 @@ fn null_safe_calls_and_reads_are_nullsafe_kinds() {
 #[test]
 fn null_safe_access_on_an_index_coalesces_a_missing_key_to_null() {
     assert_eq!(
-        body("        return extra[0]?.value ?? (extra[1])?.total();\n"),
+        body_in(
+            "int run(List<Calc> extra)",
+            "        return extra[0]?.value ?? (extra[1])?.total();\n",
+            &[(
+                "src/Lib/Calc.php",
+                "<?php namespace Lib; final class Calc { public int $value = 0; public function total(): int { return 0; } }",
+            )]
+        ),
         indoc! {r#"
             STMT_LIST
               RETURN
@@ -3772,8 +3895,13 @@ fn a_typed_for_counter_is_the_assignment_of_its_value() {
 #[test]
 fn for_of_loops_are_foreach_nodes_with_the_value_before_the_key() {
     assert_eq!(
-        body(
-            "        for (const value of Calc.make(2)) {\n            extra += value;\n        }\n        for (let [key, value] of Calc.make(3)) {\n        }\n        return extra;\n"
+        body_in(
+            RUN,
+            "        for (const value of Calc.make(2)) {\n            extra += value;\n        }\n        for (let [key, value] of Calc.make(3)) {\n        }\n        return extra;\n",
+            &[(
+                "src/Lib/Calc.php",
+                "<?php namespace Lib; final class Calc { /** @return array<int, int> */ public static function make(int $n): array { return [$n => $n]; } }",
+            )]
         ),
         indoc! {r#"
             STMT_LIST
@@ -3811,18 +3939,18 @@ fn for_of_loops_are_foreach_nodes_with_the_value_before_the_key() {
 }
 
 /// ```php
-/// foreach ($extra as $status => $n) {
+/// foreach ($statuses as $status => $n) {
 ///     $status = \Lib\Calc::from($status);
 ///     {
 ///         $extra += $n;
 ///     }
 /// }
-/// foreach ($extra as $sku => $n) {
+/// foreach ($skus as $sku => $n) {
 ///     $sku = (string) $sku;
 ///     {
 ///     }
 /// }
-/// foreach ($extra as $key => $n) {
+/// foreach ($keys as $key => $n) {
 /// }
 /// ```
 ///
@@ -3832,14 +3960,16 @@ fn for_of_loops_are_foreach_nodes_with_the_value_before_the_key() {
 #[test]
 fn a_loop_key_written_as_a_class_or_string_reads_back_through_from_or_a_cast() {
     assert_eq!(
-        body(
-            "        for (const [Calc status, int n] of extra) {\n            extra += n;\n        }\n        for (const [string sku, n] of extra) {\n        }\n        for (const [int key, n] of extra) {\n        }\n        return 1;\n"
+        body_in(
+            "int run(int extra, Map<Calc, int> statuses, Map<string, int> skus, Map<int, int> keys)",
+            "        for (const [Calc status, int n] of statuses) {\n            extra += n;\n        }\n        for (const [string sku, n] of skus) {\n        }\n        for (const [int key, n] of keys) {\n        }\n        return 1;\n",
+            &[("src/Lib/Calc.php", "<?php namespace Lib; enum Calc: string { case Active = 'a'; case Closed = 'c'; }")]
         ),
         indoc! {r#"
             STMT_LIST
               FOREACH
                 VAR
-                  ZVAL "extra"
+                  ZVAL "statuses"
                 VAR
                   ZVAL "n"
                 VAR
@@ -3862,7 +3992,7 @@ fn a_loop_key_written_as_a_class_or_string_reads_back_through_from_or_a_cast() {
                         ZVAL "n"
               FOREACH
                 VAR
-                  ZVAL "extra"
+                  ZVAL "skus"
                 VAR
                   ZVAL "n"
                 VAR
@@ -3877,7 +4007,7 @@ fn a_loop_key_written_as_a_class_or_string_reads_back_through_from_or_a_cast() {
                   STMT_LIST
               FOREACH
                 VAR
-                  ZVAL "extra"
+                  ZVAL "keys"
                 VAR
                   ZVAL "n"
                 VAR
@@ -3898,7 +4028,14 @@ fn a_loop_key_written_as_a_class_or_string_reads_back_through_from_or_a_cast() {
 #[test]
 fn throw_is_a_throw_expression() {
     assert_eq!(
-        body("        throw new Failure(extra);\n        return extra ?? throw new Failure(0);\n"),
+        body_in(
+            RUN,
+            "        throw new Failure(extra);\n        return extra ?? throw new Failure(0);\n",
+            &[(
+                "src/App/Tenant/Failure.php",
+                "<?php namespace App\\Tenant; final class Failure extends \\Exception { public function __construct(int $code) { parent::__construct('', $code); } }",
+            )]
+        ),
         indoc! {r#"
             STMT_LIST
               THROW
@@ -3936,8 +4073,10 @@ fn throw_is_a_throw_expression() {
 #[test]
 fn try_is_a_try_node_with_a_catch_list_and_a_finally_block() {
     assert_eq!(
-        body(
-            "        try {\n            extra += 1;\n        } catch (Calc | Missing failure) {\n            throw failure;\n        } catch (Broken) {\n        } finally {\n            extra -= 1;\n        }\n        return extra;\n"
+        body_in(
+            RUN,
+            "        try {\n            extra += 1;\n        } catch (Calc | Missing failure) {\n            throw failure;\n        } catch (Broken) {\n        } finally {\n            extra -= 1;\n        }\n        return extra;\n",
+            &[("src/Lib/Calc.php", "<?php namespace Lib; final class Calc extends \\Exception {}"), common::FAILURES]
         ),
         indoc! {r#"
             STMT_LIST
@@ -4005,7 +4144,7 @@ fn try_without_a_catch_has_an_empty_catch_list() {
 #[test]
 fn a_function_call_is_a_call_of_the_global_function() {
     assert_eq!(
-        body("        return strlen(sprintf(\"%d\", count(extra, mode: 0)));\n"),
+        body_in("int run(List<int> extra)", "        return strlen(sprintf(\"%d\", count(extra, mode: 0)));\n", &[]),
         indoc! {r#"
             STMT_LIST
               RETURN
@@ -4083,8 +4222,10 @@ fn a_template_is_an_encaps_list_of_its_text_and_interpolations() {
 #[test]
 fn a_lambda_that_writes_no_capture_is_an_arrow_function() {
     assert_eq!(
-        body(
-            "        const twice = (int a) => a * extra;\n        const half = b => b / 2;\n        return twice(half(4));\n"
+        body_in(
+            RUN,
+            "        const twice = (int a) => a * extra;\n        Function<int(int)> half = b => b / 2;\n        return twice(half(4));\n",
+            &[]
         ),
         indoc! {r#"
             STMT_LIST
@@ -4299,7 +4440,7 @@ fn a_let_declared_inside_a_lambda_in_a_loop_is_not_unset() {
 /// php-src takes a list's line from its first child, and each piece of text's from where it starts.
 #[test]
 fn a_template_over_several_lines_keeps_the_line_of_each_part() {
-    let lowered = Lowered::new(&method("        return `total:\n${extra} more`;\n"));
+    let lowered = Lowered::new(&method_with("string run(int extra)", "        return `total:\n${extra} more`;\n"));
     let list = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_ENCAPS_LIST).expect("a list");
     let lines: Vec<u32> =
         (0..3).map(|index| lowered.nodes()[lowered.child(list as u32, index) as usize].line).collect();
@@ -4331,12 +4472,13 @@ fn a_template_over_several_lines_keeps_the_line_of_each_part() {
 /// 4th of a parameter.
 #[test]
 fn attributes_are_attribute_lists_of_attribute_groups_on_their_declarations() {
-    let lowered = Lowered::new(
+    let lowered = Lowered::with(
         "namespace App.Tenant;\n\nimport Lib.Field;\nimport Lib.Entity;\n\n[Entity(label: \"Orders\", order: 2 * 3), Searchable]\n[Entity(null)]\nclass Report\n{\n    [Field] private int count = 0;\n\n    public Report([Field(-1.5)] public int total { get; })\n    {\n    }\n\n    [Entity(true, PHP_INT_MAX)]\n    public void run([Field] int extra)\n    {\n    }\n}\n",
+        &[common::FIELD, common::ENTITY, common::SEARCHABLE],
     );
 
     assert_eq!(
-        lowered.render(lowered.child(lowered.unit().root, 2)),
+        lowered.render(lowered.child(lowered.root(), 2)),
         indoc! {r#"
             CLASS "Report" @8-20
               null
@@ -4435,8 +4577,10 @@ fn attributes_are_attribute_lists_of_attribute_groups_on_their_declarations() {
 #[test]
 fn is_without_a_name_is_instanceof_or_a_type_check() {
     assert_eq!(
-        body(
-            "        const a = extra is Calc;\n        const b = extra is int;\n        const c = extra is string;\n        const d = this.total() is Calc;\n        return extra;\n"
+        child_body(
+            "Calc|int|string run(Calc|int|string extra)",
+            "        const a = extra is Calc;\n        const b = extra is int;\n        const c = extra is string;\n        const d = this.total() is Calc;\n        return extra;\n",
+            "<?php namespace App\\Tenant { class Base { public function total(): ?object { return null; } } } namespace Lib { final class Calc {} }",
         ),
         indoc! {r#"
             STMT_LIST
@@ -4494,8 +4638,10 @@ fn is_without_a_name_is_instanceof_or_a_type_check() {
 #[test]
 fn is_with_a_name_assigns_the_name_before_the_test() {
     assert_eq!(
-        body(
-            "        if (extra is Calc calc) {\n            return 1;\n        }\n        if (extra is not int count) {\n            return 0;\n        }\n        return count;\n"
+        body_in(
+            "int run(Calc|int extra)",
+            "        if (extra is Calc calc) {\n            return 1;\n        }\n        if (extra is not int count) {\n            return 0;\n        }\n        return count;\n",
+            &[("src/Lib/Calc.php", "<?php namespace Lib; final class Calc {}")]
         ),
         indoc! {r#"
             STMT_LIST
@@ -4542,7 +4688,14 @@ fn is_with_a_name_assigns_the_name_before_the_test() {
 #[test]
 fn as_is_a_conditional_that_gives_the_value_or_null() {
     assert_eq!(
-        body("        const calc = extra as Calc;\n        const made = Calc.make() as Calc;\n        return extra;\n"),
+        body_in(
+            "Calc|int run(Calc|int extra)",
+            "        const calc = extra as Calc;\n        const made = Calc.make() as Calc;\n        return extra;\n",
+            &[(
+                "src/Lib/Calc.php",
+                "<?php namespace Lib; final class Calc { public static function make(): object { return new self(); } }",
+            )]
+        ),
         indoc! {r#"
             STMT_LIST
               ASSIGN
@@ -4593,8 +4746,13 @@ fn as_is_a_conditional_that_gives_the_value_or_null() {
 #[test]
 fn values_comparisons_and_properties_are_the_php_comparisons_they_name() {
     assert_eq!(
-        body(
-            "        let limit = 10;\n        const a = extra is 200;\n        const b = extra is >= 1 and < limit or not -1;\n        const c = extra is limit;\n        const d = extra is { count: > 0, name: string label };\n        return extra;\n"
+        body_in(
+            "Calc|int run(Calc|int extra)",
+            "        let limit = 10;\n        const a = extra is 200;\n        const b = extra is >= 1 and < limit or not -1;\n        const c = extra is limit;\n        const d = extra is { count: > 0, name: string label };\n        return extra;\n",
+            &[(
+                "src/Lib/Calc.php",
+                "<?php namespace Lib; final class Calc { public int $count = 0; public ?string $name = null; }",
+            )]
         ),
         indoc! {r#"
             STMT_LIST
@@ -4686,8 +4844,10 @@ fn values_comparisons_and_properties_are_the_php_comparisons_they_name() {
 #[test]
 fn a_match_that_gives_a_value_is_a_match_of_true() {
     assert_eq!(
-        body(
-            "        return match (this.total()) {\n            0 => 1,\n            int n when n > 9 => n,\n            default => 2,\n        };\n"
+        child_body(
+            RUN,
+            "        return match (this.total()) {\n            0 => 1,\n            int n when n > 9 => n,\n            default => 2,\n        };\n",
+            "<?php namespace App\\Tenant; class Base { public function total(): int { return 0; } }",
         ),
         indoc! {r#"
             STMT_LIST
@@ -4839,8 +4999,12 @@ fn each_arm_of_a_match_that_starts_a_statement_is_on_its_pattern_line() {
 /// case is an `ENUM_CASE` of its name, its value, a null doc comment and its attributes, on the line of its name.
 #[test]
 fn a_backed_enum_is_a_final_enum_class_with_its_backing_type_cases_and_methods() {
-    let lowered = Lowered::new(
+    let lowered = Lowered::with(
         "namespace App.Tenant;\n\nimport Lib.Label;\n\n[Label(\"Order status\")]\nenum Status : string\n{\n    case Active = \"active\";\n    [Label(\"Gone\")]\n    case Archived = \"archived\";\n\n    public string title()\n    {\n        return this.value;\n    }\n\n    public static Status parse(string value)\n    {\n        const all = Status.cases();\n        return Status.tryFrom(value) ?? Status.from(\"active\");\n    }\n}\n",
+        &[(
+            "src/Lib/Label.php",
+            "<?php namespace Lib; #[\\Attribute(\\Attribute::TARGET_ALL)] final class Label { public function __construct(string $text) {} }",
+        )],
     );
     let case_lines: Vec<u32> = lowered
         .nodes()
@@ -5086,8 +5250,9 @@ fn an_int_backed_enum_is_a_final_enum_class_of_int_cases() {
 /// `ZEND_ACC_PARENT_IN_INTERFACES`: an enum has no parent, so every name there is an interface.
 #[test]
 fn an_enum_header_is_the_interface_name_list_without_a_parent_mark() {
-    let lowered = Lowered::new(
+    let lowered = Lowered::with(
         "namespace App.Tenant;\n\nimport Lib.HasLabel;\n\nenum Status : string, HasLabel, Sorted\n{\n    case Active = \"a\";\n}\n\nenum Suit : HasLabel\n{\n    case Hearts;\n}\n",
+        &[common::HAS_LABEL, ("src/App/Tenant/Sorted.php", "<?php namespace App\\Tenant; interface Sorted {}")],
     );
 
     assert_eq!(
@@ -5151,7 +5316,7 @@ fn an_enum_constant_is_a_class_constant_group_that_reads_a_case_unmarked() {
     let lowered = Lowered::new(
         "namespace App.Tenant;\n\nenum Status : string\n{\n    case Active = \"a\";\n\n    public const Status Default = Status.Active;\n}\n",
     );
-    let r#enum = lowered.child(lowered.unit().root, 2);
+    let r#enum = lowered.child(lowered.root(), 2);
 
     assert_eq!(
         lowered.render(lowered.child(r#enum, 2)),
@@ -5190,8 +5355,9 @@ fn an_enum_constant_is_a_class_constant_group_that_reads_a_case_unmarked() {
 /// in a method body. A method called on a case is an instance call on that fetch.
 #[test]
 fn a_case_read_is_a_class_constant_in_every_place() {
-    let lowered = Lowered::new(
+    let lowered = Lowered::with(
         "namespace App.Tenant;\n\nimport Lib.Registry;\n\npublic enum Status : string\n{\n    case Active = \"a\";\n    case Paused = Registry.PAUSED;\n\n    public const Status Default = Status.Active;\n\n    public bool active() => this === Status.Active;\n\n    public string label() => this.name;\n}\n\nclass Report\n{\n    public string run(Status status = Status.Active)\n    {\n        if (status === Status.Active) {\n            return Status.Active.label();\n        }\n        return Status.Default.label();\n    }\n}\n",
+        &[("src/Lib/Registry.php", "<?php namespace Lib; final class Registry { public const string PAUSED = 'p'; }")],
     );
     let reads: Vec<(u32, String)> = lowered
         .nodes()
@@ -5248,8 +5414,9 @@ fn a_case_read_is_a_class_constant_in_every_place() {
 /// read of the enum's own case in a method is marked to fall back to the static property, as in a class.
 #[test]
 fn a_class_member_read_in_an_enum_case_value_is_an_unmarked_class_constant() {
-    let lowered = Lowered::new(
+    let lowered = Lowered::with(
         "namespace App.Tenant;\n\nimport Lib.Calc;\n\nenum Rank : int\n{\n    case Top = Calc.MAX;\n\n    public static Rank first() => Rank.Top;\n}\n",
+        &[("src/Lib/Calc.php", "<?php namespace Lib; final class Calc { public const int MAX = 3; }")],
     );
     let class_constants = lowered
         .nodes()
@@ -5461,7 +5628,24 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
 /// has the child count of its kind.
 #[test]
 fn every_construct_of_the_slice_lowers_into_nodes_of_their_kinds_child_count() {
-    let lowered = Lowered::new(include_str!("../../semantics/tests/fixtures/slice.sharp"));
+    let lowered = Lowered::with(
+        include_str!("../../semantics/tests/fixtures/slice.sharp"),
+        &[
+            (
+                "src/Lib/Calc.php",
+                "<?php namespace Lib; final class Money { public int $cents = 0; } final class Calc extends \\Exception { public const int MAX = 3; public static Money $standard; public ?float $rate = null; public Money $price; public function __construct(int|float|Calc $start = 0, int $rate = 1, int ...$more) {} public static function make(): Calc { return new Calc(); } public function add(int ...$amounts): Calc { return $this; } /** @return array<int, int> */ public static function values(): array { return []; } }",
+            ),
+            (
+                "src/App/Tenant/Access.php",
+                "<?php namespace App\\Tenant; #[\\Attribute] final class Access { public function __construct(string $class) {} }",
+            ),
+            common::ENTITY,
+            common::FIELD,
+            common::SEARCHABLE,
+            common::HAS_LABEL,
+            common::FAILURES,
+        ],
+    );
     assert_eq!(lowered.diagnostics(), Vec::<String>::new());
 
     let wrong: Vec<String> = lowered

@@ -1890,17 +1890,23 @@ name = "mago-sharp-bridge"
 version = "1.53.0-patch.2"
 dependencies = [
  "cbindgen",
+ "foldhash",
  "indoc",
  "mago-allocator",
+ "mago-analyzer",
  "mago-build-id",
+ "mago-codex",
  "mago-database",
  "mago-names",
  "mago-php-version",
+ "mago-prelude",
  "mago-reporting",
  "mago-semantics",
  "mago-span",
  "mago-syntax",
  "mago-syntax-core",
+ "mago-word",
+ "stacker",
  "tempfile",
  "xxhash-rust",
 ]

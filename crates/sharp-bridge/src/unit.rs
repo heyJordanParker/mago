@@ -172,12 +172,9 @@ fn key_of(compiler: &[&[u8]], source_hash: [u8; 16], reads: &Reads) -> [u8; 16] 
 ///
 /// # Panics
 ///
-/// Panics when `unit` holds diagnostics, because a refused file gets no compiled file, and when a section holds more
-/// than a 32-bit size can say.
+/// Panics when a section holds more than a 32-bit size can say.
 #[must_use]
 pub fn encode(unit: &Unit, source: &[u8], key: [u8; 16], inputs: &[Input], facts: &[u8]) -> Vec<u8> {
-    assert!(unit.diagnostics.is_empty(), "a refused file gets no compiled file");
-
     let mut texts = unit.texts.clone();
     let inputs: Vec<sharp_input> = inputs
         .iter()
@@ -199,7 +196,7 @@ pub fn encode(unit: &Unit, source: &[u8], key: [u8; 16], inputs: &[Input], facts
         input_count: size("inputs", inputs.len()),
         node_count: size("nodes", unit.nodes.len()),
         children_count: size("children", unit.children.len()),
-        root: unit.abi.root,
+        root: unit.root,
         texts_size: size("texts", texts.len()),
         facts_size: size("facts", facts.len()),
     };

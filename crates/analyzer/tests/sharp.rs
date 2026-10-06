@@ -1305,6 +1305,28 @@ fn exponentiation_has_the_type_it_has_in_php() {
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
 }
 
+/// Spec section 24 truncates `/` on two integers toward zero, so in PHP# it gives an `int`, as `/=` does on an `int`
+/// field. PHP gives `float|int`, which an `int` hook or field refuses.
+#[test]
+fn division_of_two_ints_gives_an_int_in_php_sharp_and_float_or_int_in_php() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    private int total = 7;\n\n    public int half => this.total / 2;\n\n    public int shrink(int by)\n    {\n        this.total /= by;\n        return this.total;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    private int $total = 7;\n\n    public int $half { get => $this->total / 2; }\n\n    public function shrink(int $by): int\n    {\n        $this->total /= $by;\n        return $this->total;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
+    assert_eq!(
+        issues(("src/Demo/Report.php", php), &[]),
+        ["9:31 invalid-return-statement", "13:25 invalid-property-assignment-value"]
+    );
+}
+
+/// A `float` operand keeps `/` a float division in PHP#, as spec section 24 says.
+#[test]
+fn division_with_a_float_operand_gives_a_float_in_php_sharp() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public float share(int total, float parts) => total / parts;\n\n    public int whole(int total, float parts) => total / parts;\n}\n";
+
+    assert_eq!(codes(&issues(("src/Demo/Report.sharp", sharp), &[])), ["invalid-return-statement"]);
+}
+
 #[test]
 fn plus_on_a_string_and_a_value_that_may_not_be_one_is_an_invalid_operand() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    public static string total(int count, float rate, string name, string? maybe)\n    {\n        const a = name + count;\n        const b = rate + name;\n        const c = maybe + name;\n        const d = count + rate;\n        return name;\n    }\n}\n";
