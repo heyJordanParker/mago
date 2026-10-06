@@ -7,11 +7,16 @@ use mago_codex::ttype::expander;
 use mago_codex::ttype::expander::StaticClassType;
 use mago_codex::ttype::expander::TypeExpansionOptions;
 use mago_codex::ttype::get_mixed;
+use mago_names::ResolvedNames;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
+use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
+use mago_syntax::cst::LocalIdentifier;
+use mago_syntax::cst::PropertyAccess;
+use mago_syntax::cst::StaticPropertyAccess;
 use mago_syntax::cst::Variable;
 
 use crate::analyzable::Analyzable;
@@ -28,18 +33,82 @@ use crate::utils::expression::get_block_expression_id;
 use crate::utils::expression::get_variable_id;
 use crate::visibility::check_static_property_read_visibility;
 
-/// Resolves all possible static properties from a class expression and a member selector.
-pub fn resolve_static_properties<'ctx, 'ast, 'arena, A>(
+/// The parts of a static property access.
+///
+/// PHP writes it as a [`StaticPropertyAccess`] node, `Class::$name`. PHP# writes it as a [`PropertyAccess`] node,
+/// `Class.name`, whose object the binder bound to a class. Both are analyzed as these parts.
+#[derive(Debug, Clone, Copy)]
+pub struct StaticProperty<'ast, 'arena> {
+    pub class: &'ast Expression<'arena>,
+    pub name: StaticPropertyName<'ast, 'arena>,
+    pub span: Span,
+}
+
+/// The name of a static property: PHP's `$name`, `${expression}` or `$$name`, or PHP#'s `name`.
+#[derive(Debug, Clone, Copy)]
+pub enum StaticPropertyName<'ast, 'arena> {
+    Variable(&'ast Variable<'arena>),
+    Identifier(&'ast LocalIdentifier<'arena>),
+}
+
+impl<'ast, 'arena> StaticProperty<'ast, 'arena> {
+    #[must_use]
+    pub fn from_static_property_access(access: &'ast StaticPropertyAccess<'arena>) -> Self {
+        Self { class: access.class, name: StaticPropertyName::Variable(&access.property), span: access.span() }
+    }
+
+    /// Returns the static property a PHP# property access writes, `Class.name`, when
+    /// [`ResolvedNames::static_property_class`] finds its class, and `None` for an instance property.
+    #[must_use]
+    pub fn from_property_access(
+        access: &'ast PropertyAccess<'arena>,
+        resolved_names: &ResolvedNames<'_>,
+    ) -> Option<Self> {
+        let ClassLikeMemberSelector::Identifier(name) = &access.property else {
+            return None;
+        };
+
+        resolved_names.static_property_class(access).map(|_| Self {
+            class: access.object,
+            name: StaticPropertyName::Identifier(name),
+            span: access.span(),
+        })
+    }
+}
+
+impl StaticPropertyName<'_, '_> {
+    /// The property's name as the codebase stores it, with its `$`, when the source writes it directly.
+    #[must_use]
+    pub fn direct_name(&self) -> Option<Word> {
+        match self {
+            Self::Variable(Variable::Direct(variable)) => Some(word(variable.name)),
+            Self::Variable(_) => None,
+            Self::Identifier(name) => Some(concat_word!("$", name.value)),
+        }
+    }
+}
+
+impl HasSpan for StaticPropertyName<'_, '_> {
+    fn span(&self) -> Span {
+        match self {
+            Self::Variable(variable) => variable.span(),
+            Self::Identifier(name) => name.span,
+        }
+    }
+}
+
+/// Resolves all possible static properties of a static property access.
+pub fn resolve_static_properties<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
     block_context: &mut BlockContext<'ctx>,
     artifacts: &mut AnalysisArtifacts,
-    class_expression: &'ast Expression<'arena>,
-    property_variable: &'ast Variable<'arena>,
+    access: StaticProperty<'_, 'arena>,
 ) -> Result<PropertyResolutionResult, AnalysisError>
 where
     A: Arena,
 {
     let mut result = PropertyResolutionResult::default();
+    let class_expression = access.class;
 
     let classnames = resolve_classnames_from_expression(context, block_context, artifacts, class_expression, false)?;
     if let Some(class_type) = artifacts.get_expression_type(class_expression)
@@ -51,13 +120,13 @@ where
     let mut property_names = vec![];
 
     'resolve_names: {
-        let (variable_type, variable_id) = match property_variable {
-            Variable::Direct(direct_variable) => {
-                property_names.push(word(direct_variable.name));
+        let (variable_type, variable_id) = match access.name {
+            StaticPropertyName::Identifier(_) | StaticPropertyName::Variable(Variable::Direct(_)) => {
+                property_names.extend(access.name.direct_name());
 
                 break 'resolve_names;
             }
-            Variable::Indirect(indirect_variable) => {
+            StaticPropertyName::Variable(Variable::Indirect(indirect_variable)) => {
                 let was_inside_general_use = block_context.flags.inside_general_use();
                 block_context.flags.set_inside_general_use(true);
                 indirect_variable.expression.analyze(context, block_context, artifacts)?;
@@ -68,7 +137,7 @@ where
                     get_block_expression_id(indirect_variable.expression, context, block_context),
                 )
             }
-            Variable::Nested(nested_variable) => {
+            StaticPropertyName::Variable(Variable::Nested(nested_variable)) => {
                 let was_inside_general_use = block_context.flags.inside_general_use();
                 block_context.flags.set_inside_general_use(true);
                 nested_variable.variable.analyze(context, block_context, artifacts)?;
@@ -92,7 +161,7 @@ where
             context,
             block_context,
             artifacts,
-            property_variable.span(),
+            access.name.span(),
         )?;
 
         for variable_atomic_type in variable_type.types.as_ref() {
@@ -132,7 +201,7 @@ where
                 block_context,
                 fqcn,
                 *property_name,
-                property_variable,
+                access.name.span(),
                 class_expression,
                 &mut result,
             ) {
@@ -145,13 +214,13 @@ where
 }
 
 /// Finds a static property in a class, gets its type, and handles template localization.
-fn find_static_property_in_class<'ctx, 'ast, 'arena, A>(
+fn find_static_property_in_class<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
     block_context: &BlockContext<'ctx>,
     class_id: Word,
     property_name: Word,
-    variable: &'ast Variable<'arena>,
-    class_expr: &'ast Expression<'arena>,
+    name_span: Span,
+    class_expr: &Expression<'arena>,
     result: &mut PropertyResolutionResult,
 ) -> Option<ResolvedProperty>
 where
@@ -234,7 +303,7 @@ where
             context,
             declaring_class_metadata.original_name,
             property_name,
-            variable.span(),
+            name_span,
             class_expr.span(),
         );
 
@@ -247,7 +316,7 @@ where
         context.collector.report_with_code(
             IssueCode::InvalidStaticPropertyAccess,
             Issue::error(format!("Cannot access instance property `{classname}::{property_name}` statically."))
-                .with_annotation(Annotation::primary(variable.span()).with_message("This is an instance property"))
+                .with_annotation(Annotation::primary(name_span).with_message("This is an instance property"))
                 .with_note("Static properties are declared with the `static` keyword and accessed with `::` on a class name, not an instance.")
                 .with_help(format!("To access this property, you need an instance of the class (e.g., `$instance->{property_name}`), or declare the property as `static`.")),
         );
@@ -262,7 +331,7 @@ where
         declaring_class_id.as_bytes(),
         property_name.as_bytes(),
         class_expr.span(),
-        Some(variable.span()),
+        Some(name_span),
     ) {
         result.has_error_path = true;
         return None;

@@ -117,6 +117,10 @@ pub fn check_class<'ast, 'arena>(class: &'ast Class<'arena>, context: &mut Conte
                         .with_help("Remove the `static` modifier."),
                 );
             }
+            // Spec section 5 makes a PHP# class `public` or, by default, `internal`.
+            Modifier::Public(_) if context.program.dialect.is_sharp() => {}
+            // Only PHP# parses these, and `check_slice` decides them.
+            Modifier::Virtual(_) | Modifier::Override(_) => {}
             Modifier::Public(keyword)
             | Modifier::Protected(keyword)
             | Modifier::Private(keyword)
@@ -1045,6 +1049,8 @@ pub fn check_anonymous_class<'ast, 'arena>(
 
     for modifier in &anonymous_class.modifiers {
         match &modifier {
+            // Only PHP# parses these, and `check_slice` decides them.
+            Modifier::Virtual(_) | Modifier::Override(_) => {}
             Modifier::Static(_)
             | Modifier::Abstract(_)
             | Modifier::PrivateSet(_)

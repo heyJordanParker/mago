@@ -63,7 +63,8 @@ where
     }
 
     let is_sharp = context.program.dialect.is_sharp();
-    if parameter.modifiers.contains_readonly() || (is_sharp && parameter.hooks.as_ref().is_some_and(is_sharp_get_only))
+    if parameter.modifiers.contains_readonly()
+        || (is_sharp && parameter.hooks.as_ref().is_some_and(PropertyHookList::is_get_only))
     {
         flags |= MetadataFlags::READONLY;
     }
@@ -306,7 +307,7 @@ where
                     type_metadata
                 });
             }
-            if is_sharp && !has_default && !is_sharp_get_only(&hooked_property.hook_list) {
+            if is_sharp && !has_default && !hooked_property.hook_list.is_get_only() {
                 default_type = sharp_null_default(hooked_property.hint.as_ref(), name_span);
                 has_default = default_type.is_some();
             }
@@ -326,8 +327,12 @@ where
                 flags |= MetadataFlags::HAS_DEFAULT;
             }
 
-            if is_sharp && is_sharp_get_only(&hooked_property.hook_list) {
+            if is_sharp && hooked_property.hook_list.is_get_only() {
                 flags |= MetadataFlags::READONLY;
+            }
+
+            if hooked_property.modifiers.contains_static() {
+                flags |= MetadataFlags::STATIC;
             }
 
             if hooked_property.modifiers.contains_abstract() {
@@ -458,11 +463,6 @@ fn sharp_write_visibility(accessors: &PropertyHookList, read_visibility: Visibil
         None if read_visibility == Visibility::Public => Visibility::Protected,
         None => read_visibility,
     }
-}
-
-/// Whether a PHP# accessor list declares a get-only property, which runs as `readonly`.
-fn is_sharp_get_only(accessors: &PropertyHookList) -> bool {
-    !accessors.hooks.iter().any(|accessor| accessor.name.value == b"set")
 }
 
 /// The default of a PHP# field or auto-property with `set` of a nullable type written without an initial value: it

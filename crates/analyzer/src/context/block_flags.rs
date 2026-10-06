@@ -26,6 +26,9 @@ impl BlockContextFlags {
     /// its body.
     pub const INSIDE_CLASS_LIKE_ATTRIBUTE: u32 = 1 << 18;
     pub const INSIDE_REFERENCE: u32 = 1 << 19;
+    /// Set while analyzing a constant expression: a constant's value, a default or an attribute's arguments. PHP#
+    /// reads `Class.name` there as the class constant or enum case only, as PHP evaluates it.
+    pub const INSIDE_CONSTANT_EXPRESSION: u32 = 1 << 20;
 
     #[inline]
     pub const fn new() -> Self {
@@ -155,6 +158,11 @@ impl BlockContextFlags {
     }
 
     #[inline(always)]
+    pub const fn inside_constant_expression(&self) -> bool {
+        self.contains(Self::INSIDE_CONSTANT_EXPRESSION)
+    }
+
+    #[inline(always)]
     pub fn set_inside_conditional(&mut self, value: bool) {
         self.set(Self::INSIDE_CONDITIONAL, value);
     }
@@ -252,5 +260,10 @@ impl BlockContextFlags {
     #[inline(always)]
     pub fn set_inside_reference(&mut self, value: bool) {
         self.set(Self::INSIDE_REFERENCE, value);
+    }
+
+    #[inline(always)]
+    pub fn set_inside_constant_expression(&mut self, value: bool) {
+        self.set(Self::INSIDE_CONSTANT_EXPRESSION, value);
     }
 }
