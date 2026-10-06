@@ -57,7 +57,10 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ClassLikeConstantItem<'arena> {
     where
         A: Arena,
     {
-        self.value.analyze(context, block_context, artifacts)?;
+        block_context.in_constant_expression(|block_context| self.value.analyze(context, block_context, artifacts))?;
+
+        // A PHP# type holds null only when it is written with `?`, so its `Any` and its null values are checked too.
+        let is_sharp = context.dialect.is_sharp();
 
         if let Some(class_metadata) = block_context.scope.get_class_like()
             && let Some(constant_metadata) = class_metadata.constants.get(&word(self.name.value))
@@ -80,7 +83,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ClassLikeConstantItem<'arena> {
             } else if let Some(declared_type_metadata) = constant_metadata.type_metadata.as_ref()
                 && let Some(value_type) = artifacts.get_expression_type(&self.value)
                 && !value_type.is_never()
-                && !declared_type_metadata.type_union.is_mixed()
+                && (is_sharp || !declared_type_metadata.type_union.is_mixed())
                 && !declared_type_metadata.type_union.has_template_types()
                 && !declared_type_metadata.type_union.is_generic_parameter()
             {
@@ -95,12 +98,12 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ClassLikeConstantItem<'arena> {
                     },
                 );
 
-                let mut comparison_result = ComparisonResult::new();
+                let mut comparison_result = ComparisonResult::with_strict_nonnull(is_sharp);
                 if !union_comparator::is_contained_by(
                     context.codebase,
                     value_type,
                     &declared_type,
-                    true,
+                    !is_sharp,
                     true,
                     false,
                     &mut comparison_result,

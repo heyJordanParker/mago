@@ -33,6 +33,8 @@ where
                 cst::Modifier::ProtectedSet(_) => ModifierKind::ProtectedSet,
                 cst::Modifier::Private(_) => ModifierKind::Private,
                 cst::Modifier::PrivateSet(_) => ModifierKind::PrivateSet,
+                cst::Modifier::Virtual(_) => ModifierKind::Virtual,
+                cst::Modifier::Override(_) => ModifierKind::Override,
             },
         }
     }

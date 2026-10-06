@@ -13,7 +13,6 @@ use mago_codex::ttype::union::TUnion;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
-use mago_syntax::cst::StaticPropertyAccess;
 use mago_word::Word;
 
 use crate::artifacts::AnalysisArtifacts;
@@ -21,6 +20,7 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::resolver::static_property::StaticProperty;
 use crate::resolver::static_property::resolve_static_properties;
 use crate::utils::get_type_diff;
 
@@ -28,15 +28,14 @@ pub(crate) fn analyze<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
     block_context: &mut BlockContext<'ctx>,
     artifacts: &mut AnalysisArtifacts,
-    property_access: &StaticPropertyAccess<'arena>,
+    property_access: StaticProperty<'_, 'arena>,
     assigned_value_type: &TUnion,
     property_access_id: Option<Word>,
 ) -> Result<(), AnalysisError>
 where
     A: Arena,
 {
-    let property_resolution =
-        resolve_static_properties(context, block_context, artifacts, property_access.class, &property_access.property)?;
+    let property_resolution = resolve_static_properties(context, block_context, artifacts, property_access)?;
 
     let mut resolved_property_type = None;
     let mut matched_all_properties = true;
@@ -50,7 +49,7 @@ where
             );
         }
 
-        let mut union_comparison_result = ComparisonResult::new();
+        let mut union_comparison_result = ComparisonResult::with_strict_nonnull(context.dialect.is_sharp());
 
         let type_match_found = union_comparator::is_contained_by(
             context.codebase,
@@ -160,7 +159,7 @@ where
         block_context.locals.insert(property_access_id, Rc::clone(&resulting_type));
     }
 
-    artifacts.set_rc_expression_type(property_access, resulting_type);
+    artifacts.set_rc_expression_type(&property_access.span, resulting_type);
 
     Ok(())
 }

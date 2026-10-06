@@ -35,6 +35,7 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::context::scope::control_action::ControlAction;
 use crate::error::AnalysisError;
+use crate::expression::is_refused;
 use crate::utils::docblock::check_docblock_type_incompatibility;
 use crate::utils::docblock::get_type_from_var_docblock;
 use crate::utils::expression::get_direct_variable_id;
@@ -60,10 +61,10 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Return<'arena> {
 
             let inferred_return_type = artifacts.get_rc_expression_type(&return_value).cloned();
 
-            // A value that failed to parse is `never`, and its parse error already reports it.
+            // A refused value is `never`, and its error already reports it.
             if let Some(inferred_return_type) = &inferred_return_type
                 && inferred_return_type.is_never()
-                && !matches!(return_value, Expression::Error(_))
+                && !is_refused(return_value)
             {
                 context.collector.report_with_code(
                     IssueCode::NeverReturn,
@@ -311,11 +312,7 @@ pub fn handle_return_value<'ctx, A>(
     if let Some(return_value) = return_value {
         let mut union_comparison_result = ComparisonResult::with_strict_nonnull(context.dialect.is_sharp());
 
-        // In a `.sharp` file, `nonnull`, which PHP# writes `Any`, still refuses a value that may be null.
-        let strict_nonnull_refuses = union_comparison_result.strict_nonnull
-            && !expected_return_type.accepts_null()
-            && inferred_return_type.can_be_null();
-        if expected_return_type.is_mixed() && !strict_nonnull_refuses {
+        if takes_any_value(&expected_return_type, &inferred_return_type, union_comparison_result.strict_nonnull) {
             return;
         }
 
@@ -575,6 +572,13 @@ fn returns_declared_parameter_variable(
         .any(|atomic| matches!(atomic, TAtomic::Variable(expected) if *expected == variable_name))
 }
 
+/// Whether a declared `mixed` return type takes the inferred value unchecked. With `strict_nonnull`, set for a `.sharp`
+/// file, `nonnull`, which PHP# writes `Any`, still refuses a value that may be null.
+fn takes_any_value(expected_return_type: &TUnion, inferred_return_type: &TUnion, strict_nonnull: bool) -> bool {
+    expected_return_type.is_mixed()
+        && !(strict_nonnull && !expected_return_type.accepts_null() && inferred_return_type.can_be_null())
+}
+
 fn handle_property_hook_return<'ctx, A>(
     context: &mut Context<'ctx, '_, A>,
     block_context: &BlockContext<'ctx>,
@@ -605,7 +609,8 @@ fn handle_property_hook_return<'ctx, A>(
         inferred_return_type = Rc::new(inner);
     }
 
-    if expected_return_type.is_mixed() {
+    let strict_nonnull = context.dialect.is_sharp();
+    if takes_any_value(&expected_return_type, &inferred_return_type, strict_nonnull) {
         return;
     }
 
@@ -631,7 +636,7 @@ fn handle_property_hook_return<'ctx, A>(
         return;
     }
 
-    let mut comparison_result = ComparisonResult::new();
+    let mut comparison_result = ComparisonResult::with_strict_nonnull(strict_nonnull);
     if is_contained_by(
         context.codebase,
         &inferred_return_type,

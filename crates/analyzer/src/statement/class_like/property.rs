@@ -131,7 +131,11 @@ fn analyze_default_value<'ctx, 'arena, A>(
 where
     A: Arena,
 {
-    value.analyze(context, block_context, artifacts)?;
+    if value.is_constant(&context.settings.version, false) {
+        block_context.in_constant_expression(|block_context| value.analyze(context, block_context, artifacts))?;
+    } else {
+        value.analyze(context, block_context, artifacts)?;
+    }
 
     // A PHP# type holds null only when it is written with `?`, so its `Any` and its null defaults are checked too.
     let is_sharp = context.dialect.is_sharp();
