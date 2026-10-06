@@ -75,6 +75,90 @@ final class ListMethods
      * @mutation-free
      */
     public function entries(): array {}
+
+    /**
+     * @param \Closure(T): bool $predicate
+     *
+     * @return list<T> the elements `$predicate` keeps, in order.
+     *
+     * @mutation-free
+     */
+    public function filter(\Closure $predicate): array {}
+
+    /**
+     * @template R
+     *
+     * @param \Closure(T): R $transform
+     *
+     * @return list<R> what `$transform` gives for each element, in order.
+     *
+     * @mutation-free
+     */
+    public function map(\Closure $transform): array {}
+
+    /**
+     * @template R of int|float
+     *
+     * @param \Closure(T): R $selector
+     *
+     * @return R the sum of what `$selector` gives for each element, 0 for an empty list.
+     *
+     * @mutation-free
+     */
+    public function sumOf(\Closure $selector): int|float {}
+
+    /**
+     * @param \Closure(T): bool $predicate
+     *
+     * @return T the first element `$predicate` keeps.
+     *
+     * @throws \OutOfRangeException when `$predicate` keeps no element.
+     *
+     * @mutation-free
+     */
+    public function first(\Closure $predicate): mixed {}
+
+    /**
+     * @param \Closure(T): bool $predicate
+     *
+     * @return bool whether `$predicate` keeps any element.
+     *
+     * @mutation-free
+     */
+    public function any(\Closure $predicate): bool {}
+
+    /**
+     * @template G of array-key
+     *
+     * @param \Closure(T): G $key
+     *
+     * @return array<G, list<T>> the elements under the key `$key` gives each, in order.
+     *
+     * @mutation-free
+     */
+    public function groupBy(\Closure $key): array {}
+
+    /**
+     * @template G of array-key
+     *
+     * @param \Closure(T): G $key
+     *
+     * @return array<G, T> each element under the key `$key` gives it, the last one where two share a key.
+     *
+     * @mutation-free
+     */
+    public function associateBy(\Closure $key): array {}
+
+    /**
+     * @template R
+     *
+     * @param \Closure(T): R $selector
+     *
+     * @return list<T> the elements in ascending order of what `$selector` gives, equal ones in their order.
+     *
+     * @mutation-free
+     */
+    public function sortedBy(\Closure $selector): array {}
 }
 
 /**
@@ -101,4 +185,97 @@ final class MapMethods
      * @mutation-free
      */
     public function get(int|string $key): mixed {}
+
+    /**
+     * @param \Closure(V): bool $predicate
+     *
+     * @return list<V> the values `$predicate` keeps, in order, without their keys.
+     *
+     * @mutation-free
+     */
+    public function filter(\Closure $predicate): array {}
+
+    /**
+     * @param \Closure(V): bool $predicate
+     *
+     * @return array<K, V> the entries whose values `$predicate` keeps, with their keys.
+     *
+     * @mutation-free
+     */
+    public function filterValues(\Closure $predicate): array {}
+
+    /**
+     * @template R
+     *
+     * @param \Closure(V): R $transform
+     *
+     * @return list<R> what `$transform` gives for each value, in order.
+     *
+     * @mutation-free
+     */
+    public function map(\Closure $transform): array {}
+
+    /**
+     * @template R of int|float
+     *
+     * @param \Closure(V): R $selector
+     *
+     * @return R the sum of what `$selector` gives for each value, 0 for an empty map.
+     *
+     * @mutation-free
+     */
+    public function sumOf(\Closure $selector): int|float {}
+
+    /**
+     * @param \Closure(V): bool $predicate
+     *
+     * @return V the first value `$predicate` keeps.
+     *
+     * @throws \OutOfRangeException when `$predicate` keeps no value.
+     *
+     * @mutation-free
+     */
+    public function first(\Closure $predicate): mixed {}
+
+    /**
+     * @param \Closure(V): bool $predicate
+     *
+     * @return bool whether `$predicate` keeps any value.
+     *
+     * @mutation-free
+     */
+    public function any(\Closure $predicate): bool {}
+
+    /**
+     * @template G of array-key
+     *
+     * @param \Closure(V): G $key
+     *
+     * @return array<G, list<V>> the values under the key `$key` gives each, in order.
+     *
+     * @mutation-free
+     */
+    public function groupBy(\Closure $key): array {}
+
+    /**
+     * @template G of array-key
+     *
+     * @param \Closure(V): G $key
+     *
+     * @return array<G, V> each value under the key `$key` gives it, the last one where two share a key.
+     *
+     * @mutation-free
+     */
+    public function associateBy(\Closure $key): array {}
+
+    /**
+     * @template R
+     *
+     * @param \Closure(V): R $selector
+     *
+     * @return list<V> the values in ascending order of what `$selector` gives, equal ones in their order.
+     *
+     * @mutation-free
+     */
+    public function sortedBy(\Closure $selector): array {}
 }

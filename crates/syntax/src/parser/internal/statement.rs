@@ -49,7 +49,7 @@ where
             T![Identifier] if self.dialect.is_sharp() && token.value == b"import" => {
                 Statement::Use(self.parse_import()?)
             }
-            T!["const" | Identifier | "list"] if self.is_at_local_declaration()? => {
+            T!["const" | Identifier | "list" | "function" | "("] if self.is_at_local_declaration()? => {
                 Statement::LocalDeclaration(self.parse_local_declaration()?)
             }
             T!["return"] => Statement::Return(self.parse_return()?),

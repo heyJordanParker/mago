@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashSet;
 
 use mago_allocator::LocalArena;
 use mago_database::file::File;
@@ -14,6 +15,7 @@ use mago_syntax::cst::Argument;
 use mago_syntax::cst::ArgumentList;
 use mago_syntax::cst::Array;
 use mago_syntax::cst::ArrayElement;
+use mago_syntax::cst::ArrowFunction;
 use mago_syntax::cst::AssignmentOperator;
 use mago_syntax::cst::AttributeList;
 use mago_syntax::cst::BinaryOperator;
@@ -23,16 +25,21 @@ use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeConstant;
 use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::ClassLikeMemberSelector;
+use mago_syntax::cst::Closure;
 use mago_syntax::cst::CompositeString;
 use mago_syntax::cst::Conditional;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::DirectVariable;
+use mago_syntax::cst::Enum;
+use mago_syntax::cst::EnumCase;
+use mago_syntax::cst::EnumCaseItem;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::For;
 use mago_syntax::cst::ForBody;
 use mago_syntax::cst::ForOfTarget;
 use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::FunctionLikeParameter;
+use mago_syntax::cst::FunctionLikeParameterList;
 use mago_syntax::cst::Hint;
 use mago_syntax::cst::If;
 use mago_syntax::cst::IfBody;
@@ -50,6 +57,8 @@ use mago_syntax::cst::Modifier;
 use mago_syntax::cst::ModifierSequenceExt;
 use mago_syntax::cst::NamedArgument;
 use mago_syntax::cst::NamespaceBody;
+use mago_syntax::cst::Node;
+use mago_syntax::cst::NullableHint;
 use mago_syntax::cst::PartialArgument;
 use mago_syntax::cst::PartialArgumentList;
 use mago_syntax::cst::PositionalArgument;
@@ -72,6 +81,7 @@ use mago_syntax_core::utils::parse_literal_integer_as_float;
 
 use crate::Diagnostic;
 use crate::Unit;
+use crate::lower::checked::CheckError;
 use crate::lower::checked::CheckedProgram;
 use crate::lower::checked::check;
 use crate::sharp_kind;
@@ -79,6 +89,7 @@ use crate::sharp_kind::SHARP_AST_AND;
 use crate::sharp_kind::SHARP_AST_ARG_LIST;
 use crate::sharp_kind::SHARP_AST_ARRAY;
 use crate::sharp_kind::SHARP_AST_ARRAY_ELEM;
+use crate::sharp_kind::SHARP_AST_ARROW_FUNC;
 use crate::sharp_kind::SHARP_AST_ASSIGN;
 use crate::sharp_kind::SHARP_AST_ASSIGN_COALESCE;
 use crate::sharp_kind::SHARP_AST_ASSIGN_OP;
@@ -96,6 +107,8 @@ use crate::sharp_kind::SHARP_AST_CLASS_CONST;
 use crate::sharp_kind::SHARP_AST_CLASS_CONST_DECL;
 use crate::sharp_kind::SHARP_AST_CLASS_CONST_GROUP;
 use crate::sharp_kind::SHARP_AST_CLASS_NAME;
+use crate::sharp_kind::SHARP_AST_CLOSURE;
+use crate::sharp_kind::SHARP_AST_CLOSURE_USES;
 use crate::sharp_kind::SHARP_AST_COALESCE;
 use crate::sharp_kind::SHARP_AST_CONDITIONAL;
 use crate::sharp_kind::SHARP_AST_CONST;
@@ -106,6 +119,7 @@ use crate::sharp_kind::SHARP_AST_DECLARE;
 use crate::sharp_kind::SHARP_AST_DIM;
 use crate::sharp_kind::SHARP_AST_DO_WHILE;
 use crate::sharp_kind::SHARP_AST_ENCAPS_LIST;
+use crate::sharp_kind::SHARP_AST_ENUM_CASE;
 use crate::sharp_kind::SHARP_AST_EXPR_LIST;
 use crate::sharp_kind::SHARP_AST_FOR;
 use crate::sharp_kind::SHARP_AST_FOREACH;
@@ -141,9 +155,12 @@ use crate::sharp_kind::SHARP_AST_STMT_LIST;
 use crate::sharp_kind::SHARP_AST_THROW;
 use crate::sharp_kind::SHARP_AST_TRY;
 use crate::sharp_kind::SHARP_AST_TYPE;
+use crate::sharp_kind::SHARP_AST_TYPE_UNION;
 use crate::sharp_kind::SHARP_AST_UNARY_MINUS;
 use crate::sharp_kind::SHARP_AST_UNARY_OP;
 use crate::sharp_kind::SHARP_AST_UNARY_PLUS;
+use crate::sharp_kind::SHARP_AST_UNPACK;
+use crate::sharp_kind::SHARP_AST_UNSET;
 use crate::sharp_kind::SHARP_AST_VAR;
 use crate::sharp_kind::SHARP_AST_WHILE;
 use crate::sharp_kind::SHARP_AST_ZVAL;
@@ -169,8 +186,12 @@ const ZEND_ACC_INTERFACE: u32 = 1 << 0;
 const ZEND_ACC_READONLY: u32 = 1 << 7;
 const ZEND_ACC_PROTECTED_SET: u32 = 1 << 11;
 const ZEND_ACC_PRIVATE_SET: u32 = 1 << 12;
+const ZEND_ACC_ENUM: u32 = 1 << 28;
 const ZEND_TYPE_NULLABLE: u32 = 1 << 8;
+const IS_STATIC: u32 = 15;
+const ZEND_PARAM_VARIADIC: u32 = 1 << 4;
 const ZEND_PARENTHESIZED_CONDITIONAL: u32 = 1;
+const ZEND_BIND_REF: u32 = 1;
 const IS_LONG: u32 = 4;
 const IS_DOUBLE: u32 = 5;
 const IS_STRING: u32 = 6;
@@ -206,19 +227,19 @@ pub(crate) fn lower(path: Vec<u8>, source: Vec<u8>) -> Box<Unit> {
     let lines = Lines::new(&file.contents);
     let arena = LocalArena::new();
     let program = parse_file_with_dialect(&arena, &file, Dialect::Sharp, ParserSettings::default());
-    if !program.errors.is_empty() {
-        return Unit::failed(
-            program
-                .errors
-                .iter()
-                .map(|error| lines.diagnostic(Some(error.span()), sharp_severity::SHARP_PARSE_ERROR, error.to_string()))
-                .collect(),
-        );
-    }
-
     let checked = match check(&arena, &file, program) {
         Ok(checked) => checked,
-        Err(errors) => {
+        Err(CheckError::Parse(errors)) => {
+            return Unit::failed(
+                errors
+                    .iter()
+                    .map(|error| {
+                        lines.diagnostic(Some(error.span()), sharp_severity::SHARP_PARSE_ERROR, error.to_string())
+                    })
+                    .collect(),
+            );
+        }
+        Err(CheckError::Compile(errors)) => {
             return Unit::failed(
                 errors
                     .into_iter()
@@ -278,6 +299,10 @@ struct Lowering<'lowering, 'arena> {
     nodes: Vec<sharp_node>,
     children: Vec<u32>,
     texts: LocalArena,
+    /// The declaration offsets of the locals a lambda captures by reference: those code writes.
+    by_reference: HashSet<u32>,
+    /// How many loop bodies hold the statement being lowered, inside the innermost method or lambda.
+    loop_depth: u32,
     /// Whether the lowering is inside a constant expression, which PHP evaluates without opcodes.
     in_constant_expression: bool,
 }
@@ -290,6 +315,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             nodes: Vec::new(),
             children: Vec::new(),
             texts: LocalArena::new(),
+            by_reference: HashSet::default(),
+            loop_depth: 0,
             in_constant_expression: false,
         }
     }
@@ -306,6 +333,18 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// `declare(strict_types=1);` first, then the namespaces and classes. Imports are not lowered: every class name
     /// in the tree is fully qualified.
     fn program(mut self, checked: &CheckedProgram) -> Box<Unit> {
+        for lambda in Node::Program(checked.program()).filter_map(|node| match node {
+            Node::ArrowFunction(arrow_function) => Some(arrow_function.span()),
+            Node::Closure(closure) => Some(closure.span()),
+            _ => None,
+        }) {
+            for (_, local) in self.names.captures(&lambda) {
+                if self.names.is_written(local) {
+                    self.by_reference.insert(local.declaration.start.offset);
+                }
+            }
+        }
+
         let mut statements = vec![self.strict_types()];
         for statement in &checked.program().statements {
             self.file_statement(statement, &mut statements);
@@ -342,6 +381,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             Statement::Use(_) => {}
             Statement::Class(class) => statements.push(self.class(class)),
             Statement::Interface(interface) => statements.push(self.interface(interface)),
+            Statement::Enum(r#enum) => statements.push(self.r#enum(r#enum)),
             _ => unreachable!("check_slice refuses the file statement `{statement}`"),
         }
     }
@@ -444,6 +484,50 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         )
     }
 
+    /// An enum is a final class with the enum flag, its header as its interface list and its backing type as its last
+    /// child, as php-src's grammar builds `enum Status: string implements HasLabel`. An enum has no parent, so its
+    /// header needs no mark.
+    fn r#enum(&mut self, r#enum: &Enum) -> u32 {
+        let mut members = Vec::new();
+        for member in &r#enum.members {
+            members.push(match member {
+                ClassLikeMember::Method(method) => self.method(method, modifier_flags(&method.modifiers), &[]),
+                ClassLikeMember::EnumCase(case) => self.enum_case(case),
+                ClassLikeMember::Constant(constant) => self.constant(constant),
+                _ => unreachable!("check_slice refuses the enum member `{member}`"),
+            });
+        }
+
+        let members = self.node(SHARP_AST_STMT_LIST, 0, self.line(r#enum.left_brace), &members);
+        let attributes = self.attributes(&r#enum.attribute_lists, None);
+        let header = r#enum.inheritance.as_ref().map_or(NULL, |inheritance| self.name_list(inheritance));
+        let backing_type = r#enum.backing_type_hint.as_ref().map_or(NULL, |backing_type| self.hint(&backing_type.hint));
+
+        self.declaration(
+            SHARP_AST_CLASS,
+            ZEND_ACC_ENUM | ZEND_ACC_FINAL,
+            r#enum.r#enum.span,
+            r#enum.right_brace,
+            r#enum.name.value,
+            &[NULL, header, members, attributes, backing_type],
+        )
+    }
+
+    /// A case is its name, its value or null, a null doc comment and its attributes, on the line of its name, as
+    /// php-src's grammar builds `case Active = "active";`. A value is a constant expression.
+    fn enum_case(&mut self, case: &EnumCase) -> u32 {
+        let name = case.item.name();
+        let line = self.line(name.span);
+        let name = self.string(0, line, name.value);
+        let value = match &case.item {
+            EnumCaseItem::Unit(_) => NULL,
+            EnumCaseItem::Backed(item) => self.constant_expression(|lowering| lowering.expression(item.value)),
+        };
+        let attributes = self.attributes(&case.attribute_lists, None);
+
+        self.node(SHARP_AST_ENUM_CASE, 0, line, &[name, value, NULL, attributes])
+    }
+
     /// A method is a `function` with its return type after its parameters, and with `flags`. Its first line is where
     /// PHP writes `function`: the return type, or the name of the constructor, which runs as `__construct` and has
     /// no return type. The constructor's body starts with the class's initial values that are not constant, and an
@@ -498,11 +582,18 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         )
     }
 
+    /// A variadic parameter carries `ZEND_PARAM_VARIADIC`, as php-src's grammar builds `int ...$values`.
     fn parameter(&mut self, parameter: &FunctionLikeParameter) -> u32 {
         let Some(hint) = &parameter.hint else {
-            unreachable!("semantics refuses a parameter without a type");
+            unreachable!("semantics refuses a method parameter without a type");
         };
         let hint = self.hint(hint);
+
+        self.parameter_of_type(parameter, hint)
+    }
+
+    /// A parameter with its lowered type, or with a null type, as a lambda's parameter can be.
+    fn parameter_of_type(&mut self, parameter: &FunctionLikeParameter, hint: u32) -> u32 {
         let name = self.string(0, self.line(parameter.variable.span), parameter.variable.name);
         let default = parameter
             .default_value
@@ -510,7 +601,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             .map_or(NULL, |default| self.constant_expression(|lowering| lowering.expression(default.value)));
         let accessor_flags =
             parameter.hooks.as_ref().map_or(0, |accessors| accessor_flags(&parameter.modifiers, accessors));
-        let flags = modifier_flags(&parameter.modifiers) | accessor_flags;
+        let variadic_flag = if parameter.is_variadic() { ZEND_PARAM_VARIADIC } else { 0 };
+        let flags = modifier_flags(&parameter.modifiers) | accessor_flags | variadic_flag;
         let attributes = self.attributes(&parameter.attribute_lists, None);
 
         self.node(SHARP_AST_PARAM, flags, self.line(parameter), &[hint, name, default, attributes, NULL, NULL])
@@ -519,7 +611,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// A field, an auto-property or a computed property is a property group of one property, as php-src's grammar
     /// builds `private int $count = 0;`, `public private(set) int $views = 0;`, `public readonly int $id;` and
     /// `public string $slug { get => expr; }`. A constant initial value is its default, unless the property is
-    /// `readonly`.
+    /// `readonly`. A member that starts as null without an initial value takes the default `null` on the line of its
+    /// name, as php-src builds `private ?int $total = null;`.
     fn property(&mut self, property: &Property) -> u32 {
         let (accessor_flags, attribute_lists, hooks) = match property {
             Property::Plain(field) => (0, &field.attribute_lists, NULL),
@@ -541,6 +634,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             Some(value) if is_default(property, value) => {
                 self.constant_expression(|lowering| lowering.expression(value))
             }
+            None if is_null_by_default(property) => self.zval(line, sharp_value::SHARP_NULL, |_| {}),
             _ => NULL,
         };
         let element = self.node(SHARP_AST_PROP_ELEM, 0, line, &[name, default, NULL, hooks]);
@@ -636,8 +730,9 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_ASSIGN, 0, line, &[property, value])
     }
 
-    /// A built-in type is written unqualified, and a class by its full name. A `List` or `Map` is a PHP array, so its
-    /// type is `array`, as php-src's grammar builds it. A nullable type is its type with `ZEND_TYPE_NULLABLE`, as
+    /// A built-in type is written unqualified, and a class by its full name. `Self` is a `TYPE` node of `IS_STATIC`, as
+    /// php-src's grammar builds `static`. A `List` or `Map` is a PHP array, so its type is `array`, as php-src's grammar
+    /// builds it. A function type runs as PHP's `\Closure`. A nullable type is its type with `ZEND_TYPE_NULLABLE`, as
     /// php-src's grammar builds `?int`.
     fn hint(&mut self, hint: &Hint) -> u32 {
         match hint {
@@ -645,15 +740,37 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.string(ZEND_NAME_NOT_FQ, self.line(name.span), name.value)
             }
             Hint::Identifier(class) => self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class)),
+            Hint::Self_(keyword) => self.node(SHARP_AST_TYPE, IS_STATIC, self.line(keyword), &[]),
             Hint::Generic(generic) => self.node(SHARP_AST_TYPE, IS_ARRAY, self.line(generic), &[]),
+            Hint::Function(function) => self.string(ZEND_NAME_FQ, self.line(function), b"Closure"),
+            Hint::Nullable(NullableHint { question_mark, hint: Hint::Parenthesized(parenthesized) }) => {
+                self.union(parenthesized.hint, Some(*question_mark))
+            }
             Hint::Nullable(nullable) => {
                 let index = self.hint(nullable.hint);
                 self.nodes[index as usize].attr |= ZEND_TYPE_NULLABLE;
 
                 index
             }
+            Hint::Union(_) => self.union(hint, None),
             _ => unreachable!("check_slice refuses the type `{hint}`"),
         }
+    }
+
+    /// A union is one `TYPE_UNION` list of its types in the order they are written, on the line of its first type, as
+    /// php-src's `union_type` rule builds `int|string`. A union in parentheses with `?` after it, `(int|string)?`,
+    /// ends its list with the name `null` on the line of the `?`, as php-src builds `int|string|null`.
+    fn union(&mut self, union: &Hint, question_mark: Option<Span>) -> u32 {
+        let mut types = Vec::new();
+        for member in union_members(union) {
+            types.push(self.hint(member));
+        }
+        if let Some(question_mark) = question_mark {
+            types.push(self.string(ZEND_NAME_NOT_FQ, self.line(question_mark), b"null"));
+        }
+        let line = self.nodes[types[0] as usize].line;
+
+        self.node(SHARP_AST_TYPE_UNION, 0, line, &types)
     }
 
     fn block(&mut self, block: &Block) -> u32 {
@@ -685,7 +802,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                         (self.variable(pair.key.span, pair.key.value), self.variable(pair.value.span, pair.value.value))
                     }
                 };
-                let body = self.statement(for_of.body);
+                let body = self.loop_body(for_of.body);
 
                 self.node(SHARP_AST_FOREACH, 0, self.line(for_of), &[collection, value, key, body])
             }
@@ -694,12 +811,12 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                     unreachable!("check_slice refuses a colon-delimited `while`");
                 };
                 let condition = self.expression(r#while.condition);
-                let body = self.statement(body);
+                let body = self.loop_body(body);
 
                 self.node(SHARP_AST_WHILE, 0, self.line(r#while), &[condition, body])
             }
             Statement::DoWhile(do_while) => {
-                let body = self.statement(do_while.statement);
+                let body = self.loop_body(do_while.statement);
                 let condition = self.expression(do_while.condition);
 
                 self.node(SHARP_AST_DO_WHILE, 0, self.line(do_while), &[body, condition])
@@ -711,12 +828,31 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         })
     }
 
-    /// A `let` or `const` local is the assignment of its value to its variable.
+    fn loop_body(&mut self, body: &Statement) -> u32 {
+        self.loop_depth += 1;
+        let body = self.statement(body);
+        self.loop_depth -= 1;
+
+        body
+    }
+
+    /// A `let` or `const` local is the assignment of its value to its variable. Spec section 3 gives each loop pass
+    /// its own local, and PHP reuses one variable, so a local in a loop body that a lambda captures by reference is
+    /// `{ unset($local); $local = value; }`, and the lambda of each pass keeps its own.
     fn local(&mut self, local: &LocalDeclaration) -> u32 {
+        let line = self.line(local);
         let variable = self.variable(local.name.span, local.name.value);
         let value = self.expression(local.value);
+        let assignment = self.node(SHARP_AST_ASSIGN, 0, line, &[variable, value]);
+        if self.loop_depth == 0 || !self.by_reference.contains(&local.name.span.start.offset) {
+            return assignment;
+        }
 
-        self.node(SHARP_AST_ASSIGN, 0, self.line(local), &[variable, value])
+        let variable = self.variable(local.name.span, local.name.value);
+        let unset = self.node(SHARP_AST_UNSET, 0, line, &[variable]);
+        let unset = self.node(SHARP_AST_STMT_LIST, 0, line, &[unset]);
+
+        self.node(SHARP_AST_STMT_LIST, 0, line, &[unset, assignment])
     }
 
     /// Each part of the header is an `EXPR_LIST`, or null when it is empty. A `let` or `const` counter is the
@@ -739,7 +875,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let conditions = self.expression_list(&conditions);
         let increments: Vec<u32> = r#for.increments.iter().map(|increment| self.expression(increment)).collect();
         let increments = self.expression_list(&increments);
-        let body = self.statement(body);
+        let body = self.loop_body(body);
 
         self.node(SHARP_AST_FOR, 0, self.line(r#for), &[initializations, conditions, increments, body])
     }
@@ -789,9 +925,16 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_TRY, 0, line, &[block, catches, finally])
     }
 
+    /// The classes a catch clause names are each its full name, in the order they are written.
     fn catch(&mut self, clause: &TryCatchClause) -> u32 {
         let mut classes = Vec::new();
-        self.catch_classes(&clause.hint, &mut classes);
+        for class in union_members(&clause.hint) {
+            let Hint::Identifier(class) = class else {
+                unreachable!("semantics refuses the catch type `{class}`");
+            };
+
+            classes.push(self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class)));
+        }
         let line = self.nodes[classes[0] as usize].line;
         let classes = self.node(SHARP_AST_NAME_LIST, 0, line, &classes);
         let variable =
@@ -799,18 +942,6 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let block = self.block(&clause.block);
 
         self.node(SHARP_AST_CATCH, 0, line, &[classes, variable, block])
-    }
-
-    /// The classes a catch clause names, each by its full name, in the order they are written.
-    fn catch_classes(&mut self, hint: &Hint, classes: &mut Vec<u32>) {
-        match hint {
-            Hint::Identifier(class) => classes.push(self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class))),
-            Hint::Union(union) => {
-                self.catch_classes(union.left, classes);
-                self.catch_classes(union.right, classes);
-            }
-            _ => unreachable!("semantics refuses the catch type `{hint}`"),
-        }
     }
 
     fn expression(&mut self, expression: &Expression) -> u32 {
@@ -872,7 +1003,12 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 function: Expression::Identifier(function),
                 argument_list,
             })) => {
-                let function = self.string(ZEND_NAME_FQ, self.line(function), function.value());
+                // A local holds a function, so `f(x)` calls it as PHP's `$f($x)`, and any other name is the global
+                // function's.
+                let function = match self.names.binding(function) {
+                    Some(Binding::Local(_)) => self.variable(function.span(), function.value()),
+                    _ => self.string(ZEND_NAME_FQ, self.line(function), function.value()),
+                };
                 let arguments = self.arguments(argument_list);
 
                 self.node(SHARP_AST_CALL, 0, line, &[function, arguments])
@@ -883,6 +1019,17 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 ..
             }) => {
                 let class = self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class));
+                let arguments = self.arguments(arguments);
+
+                self.node(SHARP_AST_NEW, 0, line, &[class, arguments])
+            }
+            // `new Self(…)` is `new static(…)`, the name php-src's grammar writes with `ZEND_NAME_NOT_FQ`.
+            Expression::Instantiation(Instantiation {
+                class: Expression::Self_(keyword),
+                argument_list: Some(arguments),
+                ..
+            }) => {
+                let class = self.string(ZEND_NAME_NOT_FQ, self.line(keyword), b"static");
                 let arguments = self.arguments(arguments);
 
                 self.node(SHARP_AST_NEW, 0, line, &[class, arguments])
@@ -929,6 +1076,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.node(SHARP_AST_THROW, 0, line, &[exception])
             }
             Expression::CompositeString(CompositeString::Interpolated(template)) => self.template(template),
+            Expression::ArrowFunction(arrow_function) => self.arrow_function(arrow_function),
+            Expression::Closure(closure) => self.closure(closure),
             Expression::Array(array) => self.array(array),
             Expression::ArrayAccess(access) => {
                 let value = self.expression(access.array);
@@ -952,6 +1101,82 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let null = self.zval(line, sharp_value::SHARP_NULL, |_| {});
 
         self.node(SHARP_AST_COALESCE, 0, line, &[value, null])
+    }
+
+    /// Spec section 3: a lambda captures the variable itself. PHP's `fn` captures by value what its body reads, which
+    /// is the variable itself when nothing writes it, so a lambda with an expression body that captures no written
+    /// local is an `ARROW_FUNC`, as php-src's grammar builds `fn`, with its expression as its body. Any other is a
+    /// `CLOSURE` whose body returns the expression.
+    fn arrow_function(&mut self, arrow_function: &ArrowFunction) -> u32 {
+        let lambda = arrow_function.span();
+        if !self.names.captures(&lambda).iter().any(|(_, local)| self.names.is_written(local)) {
+            let parameters = self.lambda_parameters(&arrow_function.parameter_list);
+            let body = self.lambda_body(|lowering| lowering.expression(arrow_function.expression));
+
+            return self.declaration(
+                SHARP_AST_ARROW_FUNC,
+                0,
+                lambda,
+                arrow_function.expression,
+                b"",
+                &[parameters, NULL, body, NULL, NULL],
+            );
+        }
+
+        let parameters = self.lambda_parameters(&arrow_function.parameter_list);
+        let uses = self.closure_uses(lambda);
+        let body = self.lambda_body(|lowering| {
+            let line = lowering.line(arrow_function.expression);
+            let value = lowering.expression(arrow_function.expression);
+            let r#return = lowering.node(SHARP_AST_RETURN, 0, line, &[value]);
+
+            lowering.node(SHARP_AST_STMT_LIST, 0, line, &[r#return])
+        });
+
+        self.declaration(SHARP_AST_CLOSURE, 0, lambda, lambda, b"", &[parameters, uses, body, NULL, NULL])
+    }
+
+    /// A lambda with a block body is a `CLOSURE`, as php-src's grammar builds `function () use (…) { … }`.
+    fn closure(&mut self, closure: &Closure) -> u32 {
+        let lambda = closure.span();
+        let parameters = self.lambda_parameters(&closure.parameter_list);
+        let uses = self.closure_uses(lambda);
+        let body = self.lambda_body(|lowering| lowering.block(&closure.body));
+
+        self.declaration(SHARP_AST_CLOSURE, 0, lambda, lambda, b"", &[parameters, uses, body, NULL, NULL])
+    }
+
+    /// A lambda's parameters, each with its type or a null type, as PHP writes a parameter without one.
+    fn lambda_parameters(&mut self, list: &FunctionLikeParameterList) -> u32 {
+        let mut parameters = Vec::new();
+        for parameter in &list.parameters {
+            let hint = parameter.hint.as_ref().map_or(NULL, |hint| self.hint(hint));
+            parameters.push(self.parameter_of_type(parameter, hint));
+        }
+
+        self.node(SHARP_AST_PARAM_LIST, 0, self.line(list), &parameters)
+    }
+
+    /// The `use` list of a `CLOSURE`: each local the lambda captures, in first-use order, by reference with
+    /// `ZEND_BIND_REF` when code writes it and by value otherwise, or null when it captures none.
+    fn closure_uses(&mut self, lambda: Span) -> u32 {
+        let line = self.line(lambda);
+        let mut uses = Vec::new();
+        for &(name, local) in self.names.captures(&lambda) {
+            let attr = if self.names.is_written(&local) { ZEND_BIND_REF } else { 0 };
+            uses.push(self.string(attr, line, name));
+        }
+
+        if uses.is_empty() { NULL } else { self.node(SHARP_AST_CLOSURE_USES, 0, line, &uses) }
+    }
+
+    /// Lowers a lambda's body, which runs in a frame of its own, outside any loop of the method around it.
+    fn lambda_body(&mut self, lower: impl FnOnce(&mut Self) -> u32) -> u32 {
+        let loop_depth = std::mem::replace(&mut self.loop_depth, 0);
+        let body = lower(self);
+        self.loop_depth = loop_depth;
+
+        body
     }
 
     /// A list or map literal is an `ARRAY` with `ZEND_ARRAY_SYNTAX_SHORT`, as php-src's grammar builds `[…]`. Each
@@ -1058,8 +1283,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_VAR, 0, line, &[name])
     }
 
-    /// `Class.m()` is a static call on the class's full name, and `super.m()` one on `parent`. Any other `object.m()`
-    /// is an instance call.
+    /// `Class.m()` is a static call on the class's full name, `super.m()` one on `parent`, and `Self.m()` one on
+    /// `static`. Any other `object.m()` is an instance call.
     fn method_call(&mut self, call: &MethodCall) -> u32 {
         let line = self.line(call);
         let (kind, object) = match (self.names.static_call_class(call), call.object) {
@@ -1070,6 +1295,9 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             }
             (None, Expression::Parent(keyword)) => {
                 (SHARP_AST_STATIC_CALL, self.string(ZEND_NAME_NOT_FQ, self.line(keyword), b"parent"))
+            }
+            (None, Expression::Self_(keyword)) => {
+                (SHARP_AST_STATIC_CALL, self.string(ZEND_NAME_NOT_FQ, self.line(keyword), b"static"))
             }
             (None, object) => (SHARP_AST_METHOD_CALL, self.expression(object)),
         };
@@ -1113,12 +1341,14 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_ARG_LIST, 0, self.line(list), &arguments)
     }
 
+    /// A spread argument is an `UNPACK` of its value, as php-src's grammar builds `...$list`.
     fn positional_argument(&mut self, argument: &PositionalArgument) -> u32 {
-        if argument.ellipsis.is_some() {
-            unreachable!("check_slice refuses a spread argument");
+        let value = self.expression(argument.value);
+        if argument.ellipsis.is_none() {
+            return value;
         }
 
-        self.expression(argument.value)
+        self.node(SHARP_AST_UNPACK, 0, self.nodes[value as usize].line, &[value])
     }
 
     fn named_argument(&mut self, argument: &NamedArgument) -> u32 {
@@ -1225,6 +1455,20 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 }
 
+/// The types of a union in the order they are written, or the one type that is not a union. The parser nests a
+/// union to the right.
+fn union_members<'hint, 'arena>(hint: &'hint Hint<'arena>) -> Vec<&'hint Hint<'arena>> {
+    match hint {
+        Hint::Union(union) => {
+            let mut members = union_members(union.left);
+            members.extend(union_members(union.right));
+
+            members
+        }
+        _ => vec![hint],
+    }
+}
+
 /// The flags of a member's modifiers. Every modifier is named, so a new one does not compile until it is decided.
 fn modifier_flags(modifiers: &Sequence<Modifier>) -> u32 {
     let mut flags = 0;
@@ -1235,8 +1479,9 @@ fn modifier_flags(modifiers: &Sequence<Modifier>) -> u32 {
             Modifier::Private(_) => ZEND_ACC_PRIVATE,
             Modifier::Static(_) => ZEND_ACC_STATIC,
             Modifier::Abstract(_) => ZEND_ACC_ABSTRACT,
-            // PHP methods are open to overriding, and `method` lowers `override` to `#[\Override]`.
-            Modifier::Virtual(_) | Modifier::Override(_) => 0,
+            // PHP methods are open to overriding, and `method` lowers `override` to `#[\Override]`. PHP has no
+            // `required` constructor, and the checker proves every subclass keeps one `new Self(…)` can call.
+            Modifier::Virtual(_) | Modifier::Override(_) | Modifier::Required(_) => 0,
             Modifier::Final(_)
             | Modifier::Readonly(_)
             | Modifier::PublicSet(_)
@@ -1264,7 +1509,8 @@ fn class_flags(modifiers: &Sequence<Modifier>) -> u32 {
             | Modifier::ProtectedSet(_)
             | Modifier::PrivateSet(_)
             | Modifier::Virtual(_)
-            | Modifier::Override(_) => unreachable!("check_slice refuses the class modifier `{modifier}`"),
+            | Modifier::Override(_)
+            | Modifier::Required(_) => unreachable!("check_slice refuses the class modifier `{modifier}`"),
         };
     }
 
@@ -1276,6 +1522,18 @@ fn class_flags(modifiers: &Sequence<Modifier>) -> u32 {
 fn is_default(property: &Property, value: &Expression) -> bool {
     !matches!(property, Property::Hooked(auto_property) if auto_property.hook_list.is_get_only())
         && value.is_constant(&PHPVersion::PHP85, false)
+}
+
+/// Whether a member without an initial value starts as null, as in C# and Swift: a field or an auto-property with
+/// `set` of a nullable type. A get-only property is `readonly`, which takes no default, so the checker refuses one of a
+/// nullable type without an initial value.
+fn is_null_by_default(property: &Property) -> bool {
+    matches!(property.hint(), Some(Hint::Nullable(_)))
+        && match property {
+            Property::Plain(_) => true,
+            Property::Hooked(auto_property) => !auto_property.hook_list.is_get_only(),
+            Property::Computed(_) => false,
+        }
 }
 
 /// The flags an auto-property's accessors add: `readonly` for a get-only property, which spec section 6.1 sets in

@@ -34,6 +34,7 @@ where
                 match self.stream.lookahead(0)?.map(|token| token.value) {
                     Some(b"virtual") => Modifier::Virtual(self.expect_any_keyword()?),
                     Some(b"override") => Modifier::Override(self.expect_any_keyword()?),
+                    Some(b"required") => Modifier::Required(self.expect_any_keyword()?),
                     _ => return Ok(None),
                 }
             }
