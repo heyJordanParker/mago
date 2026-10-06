@@ -30,6 +30,9 @@ use mago_syntax::cst::CompositeString;
 use mago_syntax::cst::Conditional;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::DirectVariable;
+use mago_syntax::cst::Enum;
+use mago_syntax::cst::EnumCase;
+use mago_syntax::cst::EnumCaseItem;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::For;
 use mago_syntax::cst::ForBody;
@@ -114,6 +117,7 @@ use crate::sharp_kind::SHARP_AST_DECLARE;
 use crate::sharp_kind::SHARP_AST_DIM;
 use crate::sharp_kind::SHARP_AST_DO_WHILE;
 use crate::sharp_kind::SHARP_AST_ENCAPS_LIST;
+use crate::sharp_kind::SHARP_AST_ENUM_CASE;
 use crate::sharp_kind::SHARP_AST_EXPR_LIST;
 use crate::sharp_kind::SHARP_AST_FOR;
 use crate::sharp_kind::SHARP_AST_FOREACH;
@@ -178,6 +182,7 @@ const ZEND_ACC_INTERFACE: u32 = 1 << 0;
 const ZEND_ACC_READONLY: u32 = 1 << 7;
 const ZEND_ACC_PROTECTED_SET: u32 = 1 << 11;
 const ZEND_ACC_PRIVATE_SET: u32 = 1 << 12;
+const ZEND_ACC_ENUM: u32 = 1 << 28;
 const ZEND_TYPE_NULLABLE: u32 = 1 << 8;
 const ZEND_PARENTHESIZED_CONDITIONAL: u32 = 1;
 const ZEND_BIND_REF: u32 = 1;
@@ -370,6 +375,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             Statement::Use(_) => {}
             Statement::Class(class) => statements.push(self.class(class)),
             Statement::Interface(interface) => statements.push(self.interface(interface)),
+            Statement::Enum(r#enum) => statements.push(self.r#enum(r#enum)),
             _ => unreachable!("check_slice refuses the file statement `{statement}`"),
         }
     }
@@ -470,6 +476,50 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             interface.name.value,
             &[NULL, header, members, NULL, NULL],
         )
+    }
+
+    /// An enum is a final class with the enum flag, its header as its interface list and its backing type as its last
+    /// child, as php-src's grammar builds `enum Status: string implements HasLabel`. An enum has no parent, so its
+    /// header needs no mark.
+    fn r#enum(&mut self, r#enum: &Enum) -> u32 {
+        let mut members = Vec::new();
+        for member in &r#enum.members {
+            members.push(match member {
+                ClassLikeMember::Method(method) => self.method(method, modifier_flags(&method.modifiers), &[]),
+                ClassLikeMember::EnumCase(case) => self.enum_case(case),
+                ClassLikeMember::Constant(constant) => self.constant(constant),
+                _ => unreachable!("check_slice refuses the enum member `{member}`"),
+            });
+        }
+
+        let members = self.node(SHARP_AST_STMT_LIST, 0, self.line(r#enum.left_brace), &members);
+        let attributes = self.attributes(&r#enum.attribute_lists, None);
+        let header = r#enum.inheritance.as_ref().map_or(NULL, |inheritance| self.name_list(inheritance));
+        let backing_type = r#enum.backing_type_hint.as_ref().map_or(NULL, |backing_type| self.hint(&backing_type.hint));
+
+        self.declaration(
+            SHARP_AST_CLASS,
+            ZEND_ACC_ENUM | ZEND_ACC_FINAL,
+            r#enum.r#enum.span,
+            r#enum.right_brace,
+            r#enum.name.value,
+            &[NULL, header, members, attributes, backing_type],
+        )
+    }
+
+    /// A case is its name, its value or null, a null doc comment and its attributes, on the line of its name, as
+    /// php-src's grammar builds `case Active = "active";`. A value is a constant expression.
+    fn enum_case(&mut self, case: &EnumCase) -> u32 {
+        let name = case.item.name();
+        let line = self.line(name.span);
+        let name = self.string(0, line, name.value);
+        let value = match &case.item {
+            EnumCaseItem::Unit(_) => NULL,
+            EnumCaseItem::Backed(item) => self.constant_expression(|lowering| lowering.expression(item.value)),
+        };
+        let attributes = self.attributes(&case.attribute_lists, None);
+
+        self.node(SHARP_AST_ENUM_CASE, 0, line, &[name, value, NULL, attributes])
     }
 
     /// A method is a `function` with its return type after its parameters, and with `flags`. Its first line is where

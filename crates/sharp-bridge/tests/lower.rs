@@ -201,6 +201,18 @@ fn a_construct_outside_the_slice_returns_its_not_supported_error() {
     assert_eq!(lowered.diagnostics(), ["9:9 compile error: This statement is not supported yet in PHP#."]);
 }
 
+/// The lowering takes only a checked program, so an enum the slice refuses lowers no node of the enum.
+#[test]
+fn an_enum_the_slice_refuses_returns_its_error_and_no_nodes() {
+    let lowered = Lowered::new("enum Status\n{\n    case Active;\n\n    public status() {}\n}\n");
+
+    assert_eq!(
+        lowered.diagnostics(),
+        ["5:12 compile error: An enum has no constructor: its cases are its only values."]
+    );
+    assert_eq!(lowered.unit().node_count, 0);
+}
+
 #[test]
 fn a_method_without_a_body_returns_the_checker_error() {
     let lowered = Lowered::new("class Report\n{\n    public int run();\n}\n");
@@ -1285,6 +1297,15 @@ fn new_creates_the_imported_class_by_its_full_name() {
 fn a_public_class_is_a_class() {
     let public = Lowered::new("namespace App.Tenant;\n\npublic class Report\n{\n}\n");
     let internal = Lowered::new("namespace App.Tenant;\n\nclass Report\n{\n}\n");
+
+    assert_eq!(public.tree(), internal.tree());
+}
+
+/// PHP has no enum visibility, so a `public` enum is the same enum.
+#[test]
+fn a_public_enum_is_an_enum() {
+    let public = Lowered::new("namespace App.Tenant;\n\npublic enum Suit\n{\n    case Hearts;\n}\n");
+    let internal = Lowered::new("namespace App.Tenant;\n\nenum Suit\n{\n    case Hearts;\n}\n");
 
     assert_eq!(public.tree(), internal.tree());
 }
@@ -2996,6 +3017,567 @@ fn attributes_are_attribute_lists_of_attribute_groups_on_their_declarations() {
                     ARG_LIST
                       ZVAL null
               null
+        "#}
+    );
+}
+
+/// ```php
+/// <?php declare(strict_types=1); namespace App\Tenant;
+///
+///
+///
+/// #[\Lib\Label("Order status")]
+/// enum Status: string
+/// {
+///     case Active = "active";
+///     #[\Lib\Label("Gone")]
+///     case Archived = "archived";
+///
+///     public function title(): string
+///     {
+///         return $this->value;
+///     }
+///
+///     public static function parse(string $value): \App\Tenant\Status
+///     {
+///         $all = \App\Tenant\Status::cases();
+///         return \App\Tenant\Status::tryFrom($value) ?? \App\Tenant\Status::from("active");
+///     }
+/// }
+/// ```
+///
+/// An enum is a `CLASS` with `[268435488]`, `ZEND_ACC_ENUM | ZEND_ACC_FINAL`, and its backing type as its 5th child. A
+/// case is an `ENUM_CASE` of its name, its value, a null doc comment and its attributes, on the line of its name.
+#[test]
+fn a_backed_enum_is_a_final_enum_class_with_its_backing_type_cases_and_methods() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Label;\n\n[Label(\"Order status\")]\nenum Status : string\n{\n    case Active = \"active\";\n    [Label(\"Gone\")]\n    case Archived = \"archived\";\n\n    public string title()\n    {\n        return this.value;\n    }\n\n    public static Status parse(string value)\n    {\n        const all = Status.cases();\n        return Status.tryFrom(value) ?? Status.from(\"active\");\n    }\n}\n",
+    );
+    let case_lines: Vec<u32> = lowered
+        .nodes()
+        .iter()
+        .filter(|node| node.kind == sharp_kind::SHARP_AST_ENUM_CASE)
+        .map(|node| node.line)
+        .collect();
+
+    assert_eq!(case_lines, [8, 10]);
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              NAMESPACE
+                ZVAL "App\\Tenant"
+                null
+              CLASS [268435488] "Status" @6-22
+                null
+                null
+                STMT_LIST
+                  ENUM_CASE
+                    ZVAL "Active"
+                    ZVAL "active"
+                    null
+                    null
+                  ENUM_CASE
+                    ZVAL "Archived"
+                    ZVAL "archived"
+                    null
+                    ATTRIBUTE_LIST
+                      ATTRIBUTE_GROUP
+                        ATTRIBUTE
+                          ZVAL "Lib\\Label"
+                          ARG_LIST
+                            ZVAL "Gone"
+                  METHOD [1] "title" @12-15
+                    PARAM_LIST
+                    null
+                    STMT_LIST
+                      RETURN
+                        PROP
+                          VAR
+                            ZVAL "this"
+                          ZVAL "value"
+                    ZVAL [1] "string"
+                    null
+                  METHOD [17] "parse" @17-21
+                    PARAM_LIST
+                      PARAM
+                        ZVAL [1] "string"
+                        ZVAL "value"
+                        null
+                        null
+                        null
+                        null
+                    null
+                    STMT_LIST
+                      ASSIGN
+                        VAR
+                          ZVAL "all"
+                        STATIC_CALL
+                          ZVAL "App\\Tenant\\Status"
+                          ZVAL "cases"
+                          ARG_LIST
+                      RETURN
+                        COALESCE
+                          STATIC_CALL
+                            ZVAL "App\\Tenant\\Status"
+                            ZVAL "tryFrom"
+                            ARG_LIST
+                              VAR
+                                ZVAL "value"
+                          STATIC_CALL
+                            ZVAL "App\\Tenant\\Status"
+                            ZVAL "from"
+                            ARG_LIST
+                              ZVAL "active"
+                    ZVAL "App\\Tenant\\Status"
+                    null
+                ATTRIBUTE_LIST
+                  ATTRIBUTE_GROUP
+                    ATTRIBUTE
+                      ZVAL "Lib\\Label"
+                      ARG_LIST
+                        ZVAL "Order status"
+                ZVAL [1] "string"
+        "#}
+    );
+}
+
+/// ```php
+/// <?php declare(strict_types=1); enum Suit
+/// {
+///     case Hearts;
+///     case Spades;
+///
+///     public function label(): string { return $this->name; }
+///
+///     public static function size(): int { return \count(\Suit::cases()); }
+/// }
+/// ```
+///
+/// A pure enum has no backing type, and its cases have no value.
+#[test]
+fn a_pure_enum_is_a_final_enum_class_of_unit_cases_without_a_backing_type() {
+    let lowered = Lowered::new(
+        "enum Suit\n{\n    case Hearts;\n    case Spades;\n\n    public string label() => this.name;\n\n    public static int size() => count(Suit.cases());\n}\n",
+    );
+
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              CLASS [268435488] "Suit" @1-9
+                null
+                null
+                STMT_LIST
+                  ENUM_CASE
+                    ZVAL "Hearts"
+                    null
+                    null
+                    null
+                  ENUM_CASE
+                    ZVAL "Spades"
+                    null
+                    null
+                    null
+                  METHOD [1] "label" @6-6
+                    PARAM_LIST
+                    null
+                    STMT_LIST
+                      RETURN
+                        PROP
+                          VAR
+                            ZVAL "this"
+                          ZVAL "name"
+                    ZVAL [1] "string"
+                    null
+                  METHOD [17] "size" @8-8
+                    PARAM_LIST
+                    null
+                    STMT_LIST
+                      RETURN
+                        CALL
+                          ZVAL "count"
+                          ARG_LIST
+                            STATIC_CALL
+                              ZVAL "Suit"
+                              ZVAL "cases"
+                              ARG_LIST
+                    ZVAL [1] "int"
+                    null
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// <?php declare(strict_types=1); enum Rank: int
+/// {
+///     case Low = -1;
+///     case High = 2;
+/// }
+/// ```
+///
+/// An int-backed enum has `int` as its backing type, and a negative case value is the `UNARY_MINUS` of its literal, as
+/// php-src's grammar builds `-1`.
+#[test]
+fn an_int_backed_enum_is_a_final_enum_class_of_int_cases() {
+    let lowered = Lowered::new("enum Rank : int\n{\n    case Low = -1;\n    case High = 2;\n}\n");
+    let case_lines: Vec<u32> = lowered
+        .nodes()
+        .iter()
+        .filter(|node| node.kind == sharp_kind::SHARP_AST_ENUM_CASE)
+        .map(|node| node.line)
+        .collect();
+
+    assert_eq!(case_lines, [3, 4]);
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              CLASS [268435488] "Rank" @1-5
+                null
+                null
+                STMT_LIST
+                  ENUM_CASE
+                    ZVAL "Low"
+                    UNARY_MINUS
+                      ZVAL 1
+                    null
+                    null
+                  ENUM_CASE
+                    ZVAL "High"
+                    ZVAL 2
+                    null
+                    null
+                null
+                ZVAL [1] "int"
+        "#}
+    );
+}
+
+/// ```php
+/// <?php declare(strict_types=1); namespace App\Tenant;
+///
+///
+///
+/// enum Status: string implements \Lib\HasLabel, \App\Tenant\Sorted
+/// {
+///     case Active = "a";
+/// }
+///
+/// enum Suit implements \Lib\HasLabel
+/// {
+///     case Hearts;
+/// }
+/// ```
+///
+/// An enum's header is the interface name list, its 2nd child, with `ZEND_NAME_FQ`, which is 0. It carries no
+/// `ZEND_ACC_PARENT_IN_INTERFACES`: an enum has no parent, so every name there is an interface.
+#[test]
+fn an_enum_header_is_the_interface_name_list_without_a_parent_mark() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.HasLabel;\n\nenum Status : string, HasLabel, Sorted\n{\n    case Active = \"a\";\n}\n\nenum Suit : HasLabel\n{\n    case Hearts;\n}\n",
+    );
+
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              NAMESPACE
+                ZVAL "App\\Tenant"
+                null
+              CLASS [268435488] "Status" @5-8
+                null
+                NAME_LIST
+                  ZVAL "Lib\\HasLabel"
+                  ZVAL "App\\Tenant\\Sorted"
+                STMT_LIST
+                  ENUM_CASE
+                    ZVAL "Active"
+                    ZVAL "a"
+                    null
+                    null
+                null
+                ZVAL [1] "string"
+              CLASS [268435488] "Suit" @10-13
+                null
+                NAME_LIST
+                  ZVAL "Lib\\HasLabel"
+                STMT_LIST
+                  ENUM_CASE
+                    ZVAL "Hearts"
+                    null
+                    null
+                    null
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// <?php declare(strict_types=1); namespace App\Tenant;
+///
+/// enum Status: string
+/// {
+///     case Active = "a";
+///
+///     public const \App\Tenant\Status Default = \App\Tenant\Status::Active;
+/// }
+/// ```
+///
+/// An enum's constant is a class constant group of one constant, as a class's is. Its value is a constant expression,
+/// so its read of a case is an unmarked class constant.
+#[test]
+fn an_enum_constant_is_a_class_constant_group_that_reads_a_case_unmarked() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nenum Status : string\n{\n    case Active = \"a\";\n\n    public const Status Default = Status.Active;\n}\n",
+    );
+    let r#enum = lowered.child(lowered.unit().root, 2);
+
+    assert_eq!(
+        lowered.render(lowered.child(r#enum, 2)),
+        indoc! {r#"
+            STMT_LIST
+              ENUM_CASE
+                ZVAL "Active"
+                ZVAL "a"
+                null
+                null
+              CLASS_CONST_GROUP [1]
+                CLASS_CONST_DECL
+                  CONST_ELEM
+                    ZVAL "Default"
+                    CLASS_CONST
+                      ZVAL "App\\Tenant\\Status"
+                      ZVAL "Active"
+                    null
+                null
+                ZVAL "App\\Tenant\\Status"
+        "#}
+    );
+}
+
+/// ```php
+/// case Paused = \Lib\Registry::PAUSED;
+/// public const \App\Tenant\Status Default = \App\Tenant\Status::Active;
+/// return $this === \App\Tenant\Status::Active;
+/// public function run(\App\Tenant\Status $status = \App\Tenant\Status::Active): string
+/// if ($status === \App\Tenant\Status::Active) { return \App\Tenant\Status::Active->label(); }
+/// return \App\Tenant\Status::Default->label();
+/// ```
+///
+/// A case read is a class constant fetch in every place: unmarked in a case's value, a constant and a parameter
+/// default, which are constant expressions, and marked with `[32768]`, `1 << 15`, to fall back to the static property
+/// in a method body. A method called on a case is an instance call on that fetch.
+#[test]
+fn a_case_read_is_a_class_constant_in_every_place() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Registry;\n\npublic enum Status : string\n{\n    case Active = \"a\";\n    case Paused = Registry.PAUSED;\n\n    public const Status Default = Status.Active;\n\n    public bool active() => this === Status.Active;\n\n    public string label() => this.name;\n}\n\nclass Report\n{\n    public string run(Status status = Status.Active)\n    {\n        if (status === Status.Active) {\n            return Status.Active.label();\n        }\n        return Status.Default.label();\n    }\n}\n",
+    );
+    let reads: Vec<(u32, String)> = lowered
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.kind == sharp_kind::SHARP_AST_CLASS_CONST)
+        .map(|(index, node)| (node.attr, lowered.render(lowered.child(index as u32, 1)).trim_end().to_owned()))
+        .collect();
+
+    assert_eq!(
+        reads,
+        [
+            (0, "ZVAL \"PAUSED\"".to_owned()),
+            (0, "ZVAL \"Active\"".to_owned()),
+            (1 << 15, "ZVAL \"Active\"".to_owned()),
+            (0, "ZVAL \"Active\"".to_owned()),
+            (1 << 15, "ZVAL \"Active\"".to_owned()),
+            (1 << 15, "ZVAL \"Active\"".to_owned()),
+            (1 << 15, "ZVAL \"Default\"".to_owned()),
+        ]
+    );
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              IF
+                IF_ELEM
+                  BINARY_OP [16]
+                    VAR
+                      ZVAL "status"
+                    CLASS_CONST [32768]
+                      ZVAL "App\\Tenant\\Status"
+                      ZVAL "Active"
+                  STMT_LIST
+                    RETURN
+                      METHOD_CALL
+                        CLASS_CONST [32768]
+                          ZVAL "App\\Tenant\\Status"
+                          ZVAL "Active"
+                        ZVAL "label"
+                        ARG_LIST
+              RETURN
+                METHOD_CALL
+                  CLASS_CONST [32768]
+                    ZVAL "App\\Tenant\\Status"
+                    ZVAL "Default"
+                  ZVAL "label"
+                  ARG_LIST
+        "#}
+    );
+}
+
+/// An enum case's value is a constant expression, so a class member read there is an unmarked class constant, while a
+/// read of the enum's own case in a method is marked to fall back to the static property, as in a class.
+#[test]
+fn a_class_member_read_in_an_enum_case_value_is_an_unmarked_class_constant() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nenum Rank : int\n{\n    case Top = Calc.MAX;\n\n    public static Rank first() => Rank.Top;\n}\n",
+    );
+    let class_constants = lowered
+        .nodes()
+        .iter()
+        .filter(|node| node.kind == sharp_kind::SHARP_AST_CLASS_CONST)
+        .map(|node| node.attr)
+        .collect::<Vec<_>>();
+
+    assert_eq!(lowered.diagnostics(), Vec::<String>::new());
+    assert_eq!(class_constants, [0, 1 << 15]);
+}
+
+/// ```php
+/// <?php declare(strict_types=1); enum Suit
+/// {
+///     case Hearts;
+///     case Spades;
+///
+///     public static function all(): array { return [\Suit::Hearts, \Suit::Spades]; }
+///
+///     public function matches(): \Closure
+///     {
+///         $first = \Suit::Hearts;
+///         return fn ($other) => $other === $this || $other === $first;
+///     }
+/// }
+/// ```
+///
+/// An enum's method lowers a list literal, a function type and a lambda as a class's method does, so a case read in
+/// either is the marked class constant of any method body.
+#[test]
+fn an_enum_method_lowers_a_list_literal_a_function_type_and_a_lambda_as_a_class_method_does() {
+    let lowered = Lowered::new(
+        "enum Suit\n{\n    case Hearts;\n    case Spades;\n\n    public static List<Suit> all() => [Suit.Hearts, Suit.Spades];\n\n    public Function<bool(Suit)> matches()\n    {\n        const first = Suit.Hearts;\n        return other => other === this || other === first;\n    }\n}\n",
+    );
+
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              CLASS [268435488] "Suit" @1-13
+                null
+                null
+                STMT_LIST
+                  ENUM_CASE
+                    ZVAL "Hearts"
+                    null
+                    null
+                    null
+                  ENUM_CASE
+                    ZVAL "Spades"
+                    null
+                    null
+                    null
+                  METHOD [17] "all" @6-6
+                    PARAM_LIST
+                    null
+                    STMT_LIST
+                      RETURN
+                        ARRAY [3]
+                          ARRAY_ELEM
+                            CLASS_CONST [32768]
+                              ZVAL "Suit"
+                              ZVAL "Hearts"
+                            null
+                          ARRAY_ELEM
+                            CLASS_CONST [32768]
+                              ZVAL "Suit"
+                              ZVAL "Spades"
+                            null
+                    TYPE [7]
+                    null
+                  METHOD [1] "matches" @8-12
+                    PARAM_LIST
+                    null
+                    STMT_LIST
+                      ASSIGN
+                        VAR
+                          ZVAL "first"
+                        CLASS_CONST [32768]
+                          ZVAL "Suit"
+                          ZVAL "Hearts"
+                      RETURN
+                        ARROW_FUNC "" @11-11
+                          PARAM_LIST
+                            PARAM
+                              null
+                              ZVAL "other"
+                              null
+                              null
+                              null
+                              null
+                          null
+                          OR
+                            BINARY_OP [16]
+                              VAR
+                                ZVAL "other"
+                              VAR
+                                ZVAL "this"
+                            BINARY_OP [16]
+                              VAR
+                                ZVAL "other"
+                              VAR
+                                ZVAL "first"
+                          null
+                          null
+                    ZVAL "Closure"
+                    null
+                null
+                null
         "#}
     );
 }

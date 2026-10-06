@@ -3,6 +3,7 @@ namespace App.Tenant;
 import Lib.Calc;
 import Lib.Field;
 import Lib.Entity;
+import Lib.HasLabel;
 
 [Entity(label: "Reports", order: 2 * 3), Searchable]
 [Entity(null), Access(typeof(Report))]
@@ -109,6 +110,8 @@ public class Report
         Report.last ??= "touched";
         const limit = Report.MAX;
         const rate = Calc.rate.cents;
+        const label = Status.Active.label();
+        const active = Status.Default === Status.Active;
         return;
     }
 
@@ -264,6 +267,50 @@ public class Report
         count += twice(half(4)) + add(1, by: 2) + bump() + array_sum(array_map(x => x * 2, [1, 2]));
         return n => check("n", n) ? n + count : n;
     }
+}
+
+[Entity("status"), Searchable]
+public enum Status : string, HasLabel
+{
+    public const Status Default = Status.Active;
+
+    case Active = "active";
+    [Field("archived")]
+    case Archived = "archived";
+
+    public string title()
+    {
+        return this.value;
+    }
+
+    public string label()
+    {
+        return this === Status.Active ? "Active" : this.title();
+    }
+
+    public static Status parse(string value)
+    {
+        const all = Status.cases();
+        const fallback = Status.from("active");
+        return Status.tryFrom(value) ?? fallback;
+    }
+}
+
+enum Suit
+{
+    case Hearts;
+    case Spades;
+
+    public string label() => this.name;
+
+    public static int size() => count(Suit.cases());
+}
+
+enum Rank : int
+{
+    case Ace = 1;
+    case Two = 1 + 1;
+    case Top = PHP_INT_MAX;
 }
 
 abstract class Shape

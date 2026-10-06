@@ -48,7 +48,7 @@ fn the_slice_fixture_has_no_semantic_issues() {
 
 #[test]
 fn every_construct_outside_the_slice_is_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\nenum Suit\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        switch (extra) {\n            default: return 1;\n        }\n        echo extra;\n        const made = new Report;\n        const partial = this.run(...);\n        const text = <<<TEXT\ntotal\nTEXT;\n        return extra;\n    }\n}\n";
+    let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\ntrait Named\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        switch (extra) {\n            default: return 1;\n        }\n        echo extra;\n        const made = new Report;\n        const partial = this.run(...);\n        const text = <<<TEXT\ntotal\nTEXT;\n        return extra;\n    }\n}\n";
 
     assert_eq!(
         issues(code),
@@ -78,13 +78,13 @@ fn self_and_parent_types_are_not_supported_yet() {
 }
 
 #[test]
-fn a_public_enum_or_trait_is_not_supported_yet_where_it_starts() {
-    let code = "namespace App.Tenant;\n\npublic enum Suit\n{\n}\n\npublic trait Tagged\n{\n}\n\ntrait Bare\n{\n}\n";
+fn a_final_enum_or_a_public_trait_is_not_supported_yet_where_it_starts() {
+    let code = "namespace App.Tenant;\n\nfinal enum Suit\n{\n}\n\npublic trait Tagged\n{\n}\n\ntrait Bare\n{\n}\n";
 
     assert_eq!(
         issues(code),
         [
-            "3:1 This statement is not supported yet in PHP#.",
+            "3:1 This modifier is not supported yet in PHP#.",
             "7:1 This statement is not supported yet in PHP#.",
             "11:1 This statement is not supported yet in PHP#.",
         ]
@@ -483,19 +483,11 @@ fn a_dollar_variable_in_a_double_quoted_string_is_text() {
     assert_eq!(issues(code), Vec::<String>::new());
 }
 
+/// One file cannot tell `Status.Active`, a class and its case, from `App.Status`, a namespace and a class, so the
+/// analyzer, which knows the codebase, reports a full name. A class of the same namespace needs no import.
 #[test]
-fn a_full_name_inside_code_names_the_import_to_add() {
-    let code = leak(method("        return App.Shared.Money.of(extra);\n"));
-
-    assert_eq!(
-        issues(code),
-        ["7:16 Full names appear only in `import` lines: add `import App.Shared.Money;` and write `Money`."]
-    );
-}
-
-#[test]
-fn a_class_declared_in_the_file_is_never_the_root_of_a_full_name() {
-    let code = leak(method("        return Report.Totals.of(extra);\n"));
+fn a_chain_of_capitalized_names_on_a_class_of_another_file_is_a_member_read() {
+    let code = leak(method("        return Status.Active.label().length + App.Shared.Money.of(extra);\n"));
 
     assert_eq!(issues(code), Vec::<String>::new());
 }
@@ -801,6 +793,13 @@ fn typeof_is_an_attribute_argument() {
 #[test]
 fn a_class_may_be_public() {
     let code = "namespace App.Tenant;\n\npublic class Report\n{\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn an_enum_may_be_public() {
+    let code = "namespace App.Tenant;\n\npublic enum Status : string\n{\n    case Active = \"a\";\n}\n";
 
     assert_eq!(issues(code), Vec::<String>::new());
 }
@@ -1528,6 +1527,157 @@ fn a_spread_argument_is_not_supported_yet() {
     let code = leak(method("        const parts = this.parts();\n        return this.total(...parts);\n"));
 
     assert_eq!(issues(code), ["8:27 This spread argument is not supported yet in PHP#."]);
+}
+
+#[test]
+fn implements_or_a_member_modifier_in_an_enum_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Shape;\n\nenum Status : string implements Shape\n{\n    case Active = \"a\";\n\n    final public string label()\n    {\n        return this.name;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:22 This `implements` clause is not supported yet in PHP#.",
+            "9:5 This modifier is not supported yet in PHP#.",
+        ]
+    );
+}
+
+/// An enum's constant follows a class constant's rules: an access modifier, an optional type, one name and a constant
+/// value, which may read a case of the enum.
+#[test]
+fn an_enum_constant_follows_the_class_constant_rules() {
+    let code = "namespace App.Tenant;\n\nenum Status : string\n{\n    case Active = \"a\";\n\n    public const Status Default = Status.Active;\n    private const int LIMIT = 3;\n    const string BARE = \"b\";\n    public const int ONE = 1, TWO = 2;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "9:18 A constant without `public`, `protected` or `private` is not supported yet in PHP#.",
+            "10:5 A constant declaring several names is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn an_enum_names_its_backing_type_then_its_interfaces_after_a_colon() {
+    let code = "namespace App.Tenant;\n\nimport Lib.HasLabel;\n\nenum Status : string, HasLabel\n{\n    case Active = \"a\";\n}\n\nenum Suit : HasLabel\n{\n    case Hearts;\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+/// The engine refuses a declaration whose header names an interface twice. It adds `UnitEnum` to every enum, and
+/// `BackedEnum` to a backed one, so it refuses an enum header that names them as well.
+#[test]
+fn a_header_naming_an_interface_twice_or_an_enum_header_naming_unit_enum_is_an_error() {
+    let code = "namespace App.Tenant;\n\nimport Lib.HasLabel;\nimport UnitEnum;\nimport BackedEnum;\n\nclass Card : HasLabel, HasLabel\n{\n}\n\ninterface Shown : HasLabel, HasLabel\n{\n}\n\nenum Status : string, HasLabel, BackedEnum\n{\n    case Active = \"a\";\n}\n\nenum Suit : UnitEnum\n{\n    case Hearts;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:24 This header names `HasLabel` twice.",
+            "11:29 This header names `HasLabel` twice.",
+            "15:33 Every enum implements `UnitEnum`, and every backed enum `BackedEnum`, so an enum header never names them.",
+            "20:13 Every enum implements `UnitEnum`, and every backed enum `BackedEnum`, so an enum header never names them.",
+        ]
+    );
+}
+
+#[test]
+fn a_property_in_an_enum_reports_only_the_php_error() {
+    let code = "namespace App.Tenant;\n\nenum Status\n{\n    case Active;\n\n    private int count = 0;\n}\n";
+
+    assert_eq!(issues(code), ["7:5 Enum `Status` cannot have properties."]);
+}
+
+#[test]
+fn a_backing_type_other_than_int_or_string_reports_only_the_php_error() {
+    let code = "namespace App.Tenant;\n\nenum Status : float\n{\n    case Active = 1.5;\n}\n";
+
+    assert_eq!(issues(code), ["3:15 Enum `Status` backing type must be either `string` or `int`, but found `float`."]);
+}
+
+#[test]
+fn an_enum_method_without_a_return_type_is_an_error() {
+    let code = "namespace App.Tenant;\n\nenum Status\n{\n    case Active;\n\n    public status() {}\n    public label() {}\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:12 An enum has no constructor: its cases are its only values.",
+            "8:12 A PHP# method needs a return type: only the constructor, named after its class, has none.",
+        ]
+    );
+}
+
+#[test]
+fn an_enum_case_named_class_is_an_error_as_in_php() {
+    let code = "namespace App.Tenant;\n\nenum Status\n{\n    case class;\n}\n\nenum Mode : string\n{\n    case CLASS = \"c\";\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:10 An enum case cannot be named `class`: PHP reserves `class` for the class name.",
+            "10:10 An enum case cannot be named `class`: PHP reserves `class` for the class name.",
+        ]
+    );
+}
+
+#[test]
+fn a_bare_case_name_in_an_enum_method_is_an_error_that_names_the_enum() {
+    let code = "namespace App.Tenant;\n\nenum Status\n{\n    case Active;\n\n    public bool active()\n    {\n        return this === Active && label() != \"\";\n    }\n\n    public string label() => this.name;\n\n    public static Status first() => Active;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "9:25 Write `Status.Active`: an enum case is reached through its enum's name.",
+            "9:35 Write `this.label()`: members of the same object are always written with `this.`.",
+            "14:37 Write `Status.Active`: an enum case is reached through its enum's name.",
+        ]
+    );
+}
+
+#[test]
+fn an_enum_case_of_the_same_file_is_read_through_its_enum_name_in_a_class_and_in_the_enum() {
+    let code = "namespace App.Tenant;\n\nenum Status\n{\n    case Active;\n\n    public static Status first() => Status.Active;\n}\n\nclass Report\n{\n    public bool run(Status status = Status.Active)\n    {\n        return status === Status.Active;\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+/// A case is read as `Status.Active` in a class, in the enum's own method, in a parameter default, in a constant, and
+/// with a method called on it. A case's value reads another class's constant the same way.
+#[test]
+fn a_case_is_read_through_its_enum_name_in_every_place() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Registry;\n\npublic enum Status : string\n{\n    case Active = \"a\";\n    case Paused = Registry.PAUSED;\n\n    public const Status Default = Status.Active;\n\n    public bool active() => this === Status.Active;\n\n    public string label() => this.name;\n}\n\nclass Report\n{\n    public string run(Status status = Status.Active)\n    {\n        if (status === Status.Active) {\n            return Status.Active.label();\n        }\n        return Status.Default.label();\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_static_member_read_in_an_enum_case_value_is_an_error() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    private static int count = 0;\n}\n\nenum Tier : int\n{\n    case Low = Report.count;\n}\n";
+
+    assert_eq!(issues(code), ["10:16 `Report.count` is a static member, which a constant value cannot read."]);
+}
+
+#[test]
+fn an_enum_named_like_a_reserved_class_name_or_an_import_is_an_error_as_a_class_is() {
+    let code = "namespace App.Tenant;\n\nimport App.Shared.Status;\n\nenum Status\n{\n    case Active;\n}\n\nenum Mixed\n{\n    case One;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "3:8 Cannot import `App.Shared.Status` as `Status`: this file declares a class named `Status`.",
+            "10:6 Cannot use `Mixed` as a class name: it is reserved.",
+        ]
+    );
+}
+
+/// An enum's method follows a class's method rules, so it takes `List`, `Map` and function types and holds lambdas,
+/// and a lambda in it captures a loop variable that changes only as a class's does.
+#[test]
+fn an_enum_method_takes_collection_and_function_types_and_holds_lambdas_as_a_class_method_does() {
+    let code = "namespace App.Tenant;\n\nenum Status : string\n{\n    case Active = \"a\";\n\n    public static Map<string, Status> byValue(List<Status> all)\n    {\n        const Function<string(Status)> key = s => s.value;\n        return all.associateBy(key);\n    }\n\n    public List<Function<bool()>> checks(List<Status> all)\n    {\n        List<Function<bool()>> checks = [];\n        for (let other of all) {\n            other = Status.Active;\n            checks.add(() => other === this);\n        }\n        return checks;\n    }\n}\n";
+
+    assert_eq!(issues(code), ["18:30 This capture of a loop variable that changes is not supported yet in PHP#."]);
 }
 
 #[test]

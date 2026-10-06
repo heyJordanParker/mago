@@ -1562,6 +1562,9 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 for item in node.backing_type_hint.iter() {
                     f(Node::EnumBackingTypeHint(item));
                 }
+                for item in node.inheritance.iter() {
+                    f(Node::Inheritance(item));
+                }
                 for item in node.implements.iter() {
                     f(Node::Implements(item));
                 }

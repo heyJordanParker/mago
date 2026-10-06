@@ -92,7 +92,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for EnumCaseBackedItem<'arena> {
             return Ok(());
         };
 
-        self.value.analyze(context, block_context, artifacts)?;
+        block_context.in_constant_expression(|block_context| self.value.analyze(context, block_context, artifacts))?;
 
         let Some(value_type) = artifacts.get_rc_expression_type(&self.value).cloned() else {
             context.collector.report_with_code(

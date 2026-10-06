@@ -308,6 +308,45 @@ fn spec_syntax_outside_the_slice_is_one_not_supported_error_where_it_starts() {
     }
 }
 
+/// A case that carries data, spec section 20, is one error from its name to its closing parenthesis. The case stays
+/// in the enum, and the members after it still parse. PHP keeps its own parse error at the parenthesis.
+#[test]
+fn a_case_that_carries_data_is_one_not_supported_error_and_the_enum_parses_on() {
+    const CODE: &str = "enum PaymentResult\n{\n    case Open;\n    case Paid(string transactionId, int cents);\n\n    public int run() { return 1; }\n}\n";
+    let arena = LocalArena::new();
+
+    let php_code: &'static str = Box::leak(format!("<?php {CODE}").into_boxed_str());
+    let php = parse(&arena, "src/PaymentResult.php", php_code);
+    let Some(php_error) = php.errors.first() else {
+        panic!("expected a PHP error, got none");
+    };
+    assert_eq!(source(php_code, php_error), "(");
+    assert!(
+        !php.errors.iter().any(|error| matches!(error, ParseError::NotSupportedYetInSharp(..))),
+        "{:#?}",
+        php.errors
+    );
+
+    let program = parse(&arena, "src/PaymentResult.sharp", CODE);
+    let [error] = program.errors else {
+        panic!("expected one error, got {:#?}", program.errors);
+    };
+    assert_eq!(error.to_string(), "A case that carries data is not supported yet in PHP#.");
+    assert_eq!(source(CODE, error), "Paid(string transactionId, int cents)");
+    let Some(Statement::Enum(payment_result)) = program.statements.first() else {
+        panic!("expected an enum, got {:#?}", program.statements);
+    };
+    let [ClassLikeMember::EnumCase(open), ClassLikeMember::EnumCase(paid), ClassLikeMember::Method(run)] =
+        payment_result.members.as_slice()
+    else {
+        panic!("expected the cases `Open` and `Paid` and the method `run`, got {:#?}", payment_result.members);
+    };
+    assert_eq!(open.item.name().value, b"Open");
+    assert!(matches!(paid.item, EnumCaseItem::Unit(_)), "{:#?}", paid.item);
+    assert_eq!(paid.item.name().value, b"Paid");
+    assert_eq!(run.name.value, b"run");
+}
+
 /// A PHP#-only parse error is its own message, so `mago analyze` shows the rule as the issue's title.
 #[test]
 fn a_sharp_parse_error_shows_its_message_as_the_issue_title() {
@@ -1614,7 +1653,59 @@ fn a_class_or_an_interface_names_its_base_class_and_interfaces_after_a_colon() {
     assert_eq!(source(CODE, class), "public class Page : Entity, Linkable\n{\n}");
 }
 
-/// An enum or a trait takes `public` as a class does, so the checker refuses the whole declaration where it starts.
+/// An enum's header holds a backing type, `int` or `string`, first, and then its interfaces. After a backing type, the
+/// `,` opens the interfaces as the `:` does without one, so each token belongs to one node.
+#[test]
+fn an_enum_names_its_backing_type_then_its_interfaces_after_a_colon() {
+    const CODE: &str = "public enum Status : string, HasLabel, Sorted\n{\n}\n\nenum Suit : HasLabel\n{\n}\n\nenum Retry : string\n{\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Status.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let headers: Vec<_> = program
+        .statements
+        .iter()
+        .map(|statement| {
+            let Statement::Enum(r#enum) = statement else {
+                panic!("expected an enum, got {statement:#?}");
+            };
+
+            (
+                r#enum.backing_type_hint.as_ref().map(|backing_type| source(CODE, backing_type)),
+                r#enum.inheritance.as_ref().map(|inheritance| source(CODE, inheritance)),
+                r#enum
+                    .inheritance
+                    .iter()
+                    .flat_map(|inheritance| inheritance.types.iter().map(Identifier::value))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        headers,
+        [
+            (Some(": string"), Some(", HasLabel, Sorted"), vec![&b"HasLabel"[..], b"Sorted"]),
+            (None, Some(": HasLabel"), vec![&b"HasLabel"[..]]),
+            (Some(": string"), None, vec![]),
+        ]
+    );
+}
+
+#[test]
+fn a_php_enum_keeps_its_implements_clause_and_has_no_header() {
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Status.php", "<?php enum Status: string implements HasLabel {}");
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::OpeningTag(_), Statement::Enum(r#enum)] = program.statements.as_slice() else {
+        panic!("expected an enum, got {:#?}", program.statements);
+    };
+    assert!(r#enum.backing_type_hint.is_some());
+    assert!(r#enum.implements.is_some());
+    assert!(r#enum.inheritance.is_none());
+}
+
+/// An enum or a trait takes `public` as a class does, so the checker refuses a trait where it starts.
 #[test]
 fn an_enum_or_a_trait_starts_with_its_modifiers() {
     const CODE: &str = "public enum Suit\n{\n}\n\npublic trait Tagged\n{\n}\n";

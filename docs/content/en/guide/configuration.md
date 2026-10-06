@@ -199,7 +199,7 @@ paths     = ["src", "tests"]
 patches   = ["patches"]
 includes  = ["vendor"]
 excludes  = ["cache/**", "build/**", "var/**"]
-extensions = ["php"]
+extensions = ["php", "sharp"]
 ```
 
 Glob patterns work in all four lists:
@@ -224,7 +224,9 @@ excludes = [
 | `includes` | string list | `[]` | Directories or globs for third-party code Mago should parse but not modify. |
 | `patches` | string list | `[]` | Directories or globs for type patches. Their PHPDoc and type declarations override those from `includes` and built-ins. Not analysed, linted, or formatted. |
 | `excludes` | string list | `[]` | Globs or paths excluded from every tool. |
-| `extensions` | string list | `["php"]` | File extensions treated as PHP. |
+| `extensions` | string list | `["php", "sharp"]` | File extensions of the PHP and PHP# files Mago reads. |
+
+`mago lint`, `mago fmt` and `mago guard` do not read PHP# files yet: they skip every `.sharp` file they find and refuse one named on the command line.
 
 ### Patching vendor types
 
