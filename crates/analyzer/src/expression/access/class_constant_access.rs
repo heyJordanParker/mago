@@ -5,7 +5,11 @@ use mago_codex::ttype::expander::TypeExpansionOptions;
 use mago_codex::ttype::expander::expand_union;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_never;
+use mago_span::HasSpan;
+use mago_span::Span;
 use mago_syntax::cst::ClassConstantAccess;
+use mago_syntax::cst::ClassLikeConstantSelector;
+use mago_syntax::cst::Expression;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
@@ -24,37 +28,53 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ClassConstantAccess<'arena> {
     where
         A: Arena,
     {
-        let resolution = resolve_class_constants(context, block_context, artifacts, self.class, &self.constant, false)?;
-
-        let mut resulting_type = if resolution.has_ambiguous_path { Some(get_mixed()) } else { None };
-        for resolved_constant in resolution.constants {
-            resulting_type =
-                Some(add_optional_union_type(resolved_constant.const_type, resulting_type.as_ref(), context.codebase));
-        }
-
-        if let Some(resulting_type) = &mut resulting_type {
-            expand_union(
-                context.codebase,
-                resulting_type,
-                &TypeExpansionOptions {
-                    self_class: block_context.scope.get_class_like_name(),
-                    static_class_type: if let Some(calling_class) = block_context.scope.get_class_like_name() {
-                        StaticClassType::Name(calling_class)
-                    } else {
-                        StaticClassType::None
-                    },
-                    ..Default::default()
-                },
-            );
-        }
-
-        artifacts.set_expression_type(
-            self,
-            if resolution.has_invalid_path { get_never() } else { resulting_type.unwrap_or_else(get_mixed) },
-        );
-
-        Ok(())
+        analyze_class_constant_access(context, block_context, artifacts, self.class, &self.constant, self.span())
     }
+}
+
+/// Analyzes the class constant or enum case `class::constant`, which spans `span`: PHP's `Class::NAME`, or PHP#'s
+/// `Class.name` when the class has a constant or enum case by that name.
+pub(crate) fn analyze_class_constant_access<'ctx, 'arena, A>(
+    context: &mut Context<'ctx, 'arena, A>,
+    block_context: &mut BlockContext<'ctx>,
+    artifacts: &mut AnalysisArtifacts,
+    class: &Expression<'arena>,
+    constant: &ClassLikeConstantSelector<'arena>,
+    span: Span,
+) -> Result<(), AnalysisError>
+where
+    A: Arena,
+{
+    let resolution = resolve_class_constants(context, block_context, artifacts, class, constant, false)?;
+
+    let mut resulting_type = if resolution.has_ambiguous_path { Some(get_mixed()) } else { None };
+    for resolved_constant in resolution.constants {
+        resulting_type =
+            Some(add_optional_union_type(resolved_constant.const_type, resulting_type.as_ref(), context.codebase));
+    }
+
+    if let Some(resulting_type) = &mut resulting_type {
+        expand_union(
+            context.codebase,
+            resulting_type,
+            &TypeExpansionOptions {
+                self_class: block_context.scope.get_class_like_name(),
+                static_class_type: if let Some(calling_class) = block_context.scope.get_class_like_name() {
+                    StaticClassType::Name(calling_class)
+                } else {
+                    StaticClassType::None
+                },
+                ..Default::default()
+            },
+        );
+    }
+
+    artifacts.set_expression_type(
+        &span,
+        if resolution.has_invalid_path { get_never() } else { resulting_type.unwrap_or_else(get_mixed) },
+    );
+
+    Ok(())
 }
 
 #[cfg(test)]
