@@ -48,6 +48,7 @@ use mago_syntax::cst::Modifier;
 use mago_syntax::cst::ModifierSequenceExt;
 use mago_syntax::cst::NamedArgument;
 use mago_syntax::cst::NamespaceBody;
+use mago_syntax::cst::NullableHint;
 use mago_syntax::cst::PartialArgument;
 use mago_syntax::cst::PartialArgumentList;
 use mago_syntax::cst::PositionalArgument;
@@ -130,9 +131,11 @@ use crate::sharp_kind::SHARP_AST_STATIC_CALL;
 use crate::sharp_kind::SHARP_AST_STMT_LIST;
 use crate::sharp_kind::SHARP_AST_THROW;
 use crate::sharp_kind::SHARP_AST_TRY;
+use crate::sharp_kind::SHARP_AST_TYPE_UNION;
 use crate::sharp_kind::SHARP_AST_UNARY_MINUS;
 use crate::sharp_kind::SHARP_AST_UNARY_OP;
 use crate::sharp_kind::SHARP_AST_UNARY_PLUS;
+use crate::sharp_kind::SHARP_AST_UNPACK;
 use crate::sharp_kind::SHARP_AST_VAR;
 use crate::sharp_kind::SHARP_AST_WHILE;
 use crate::sharp_kind::SHARP_AST_ZVAL;
@@ -153,6 +156,7 @@ const ZEND_ACC_READONLY: u32 = 1 << 7;
 const ZEND_ACC_PROTECTED_SET: u32 = 1 << 11;
 const ZEND_ACC_PRIVATE_SET: u32 = 1 << 12;
 const ZEND_TYPE_NULLABLE: u32 = 1 << 8;
+const ZEND_PARAM_VARIADIC: u32 = 1 << 4;
 const ZEND_PARENTHESIZED_CONDITIONAL: u32 = 1;
 const IS_LONG: u32 = 4;
 const IS_DOUBLE: u32 = 5;
@@ -410,6 +414,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         )
     }
 
+    /// A variadic parameter carries `ZEND_PARAM_VARIADIC`, as php-src's grammar builds `int ...$values`.
     fn parameter(&mut self, parameter: &FunctionLikeParameter) -> u32 {
         let Some(hint) = &parameter.hint else {
             unreachable!("semantics refuses a parameter without a type");
@@ -419,7 +424,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let default = parameter.default_value.as_ref().map_or(NULL, |default| self.expression(default.value));
         let accessor_flags =
             parameter.hooks.as_ref().map_or(0, |accessors| accessor_flags(&parameter.modifiers, accessors));
-        let flags = modifier_flags(&parameter.modifiers) | accessor_flags;
+        let variadic_flag = if parameter.is_variadic() { ZEND_PARAM_VARIADIC } else { 0 };
+        let flags = modifier_flags(&parameter.modifiers) | accessor_flags | variadic_flag;
         let attributes = self.attributes(&parameter.attribute_lists);
 
         self.node(SHARP_AST_PARAM, flags, self.line(parameter), &[hint, name, default, attributes, NULL, NULL])
@@ -519,14 +525,34 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.string(ZEND_NAME_NOT_FQ, self.line(name.span), name.value)
             }
             Hint::Identifier(class) => self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class)),
+            Hint::Nullable(NullableHint { question_mark, hint: Hint::Parenthesized(parenthesized) }) => {
+                self.union(parenthesized.hint, Some(*question_mark))
+            }
             Hint::Nullable(nullable) => {
                 let index = self.hint(nullable.hint);
                 self.nodes[index as usize].attr |= ZEND_TYPE_NULLABLE;
 
                 index
             }
+            Hint::Union(_) => self.union(hint, None),
             _ => unreachable!("check_slice refuses the type `{hint}`"),
         }
+    }
+
+    /// A union is one `TYPE_UNION` list of its types in the order they are written, on the line of its first type, as
+    /// php-src's `union_type` rule builds `int|string`. A union in parentheses with `?` after it, `(int|string)?`,
+    /// ends its list with the name `null` on the line of the `?`, as php-src builds `int|string|null`.
+    fn union(&mut self, union: &Hint, question_mark: Option<Span>) -> u32 {
+        let mut types = Vec::new();
+        for member in union_members(union) {
+            types.push(self.hint(member));
+        }
+        if let Some(question_mark) = question_mark {
+            types.push(self.string(ZEND_NAME_NOT_FQ, self.line(question_mark), b"null"));
+        }
+        let line = self.nodes[types[0] as usize].line;
+
+        self.node(SHARP_AST_TYPE_UNION, 0, line, &types)
     }
 
     fn block(&mut self, block: &Block) -> u32 {
@@ -662,9 +688,16 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_TRY, 0, line, &[block, catches, finally])
     }
 
+    /// The classes a catch clause names are each its full name, in the order they are written.
     fn catch(&mut self, clause: &TryCatchClause) -> u32 {
         let mut classes = Vec::new();
-        self.catch_classes(&clause.hint, &mut classes);
+        for class in union_members(&clause.hint) {
+            let Hint::Identifier(class) = class else {
+                unreachable!("semantics refuses the catch type `{class}`");
+            };
+
+            classes.push(self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class)));
+        }
         let line = self.nodes[classes[0] as usize].line;
         let classes = self.node(SHARP_AST_NAME_LIST, 0, line, &classes);
         let variable =
@@ -672,18 +705,6 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let block = self.block(&clause.block);
 
         self.node(SHARP_AST_CATCH, 0, line, &[classes, variable, block])
-    }
-
-    /// The classes a catch clause names, each by its full name, in the order they are written.
-    fn catch_classes(&mut self, hint: &Hint, classes: &mut Vec<u32>) {
-        match hint {
-            Hint::Identifier(class) => classes.push(self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class))),
-            Hint::Union(union) => {
-                self.catch_classes(union.left, classes);
-                self.catch_classes(union.right, classes);
-            }
-            _ => unreachable!("semantics refuses the catch type `{hint}`"),
-        }
     }
 
     fn expression(&mut self, expression: &Expression) -> u32 {
@@ -909,12 +930,14 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_ARG_LIST, 0, self.line(list), &arguments)
     }
 
+    /// A spread argument is an `UNPACK` of its value, as php-src's grammar builds `...$list`.
     fn positional_argument(&mut self, argument: &PositionalArgument) -> u32 {
-        if argument.ellipsis.is_some() {
-            unreachable!("check_slice refuses a spread argument");
+        let value = self.expression(argument.value);
+        if argument.ellipsis.is_none() {
+            return value;
         }
 
-        self.expression(argument.value)
+        self.node(SHARP_AST_UNPACK, 0, self.nodes[value as usize].line, &[value])
     }
 
     fn named_argument(&mut self, argument: &NamedArgument) -> u32 {
@@ -1018,6 +1041,20 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
     fn line(&self, node: impl HasSpan) -> u32 {
         self.lines.line(node.span().start.offset)
+    }
+}
+
+/// The types of a union in the order they are written, or the one type that is not a union. The parser nests a
+/// union to the right.
+fn union_members<'hint, 'arena>(hint: &'hint Hint<'arena>) -> Vec<&'hint Hint<'arena>> {
+    match hint {
+        Hint::Union(union) => {
+            let mut members = union_members(union.left);
+            members.extend(union_members(union.right));
+
+            members
+        }
+        _ => vec![hint],
     }
 }
 

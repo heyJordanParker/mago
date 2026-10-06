@@ -157,7 +157,23 @@ pub fn check_parameter_list(
             }
 
             last_variadic = Some((name_bytes, parameter.span()));
-            continue;
+
+            // Upstream Mago checks neither the member nor the type of a variadic parameter, so a `.php` file keeps its
+            // results. PHP# reports both, as the engine refuses them.
+            if !context.program.dialect.is_sharp() {
+                continue;
+            }
+
+            if parameter.is_promoted_property() {
+                context.report(
+                    Issue::error(format!("Cannot declare variadic promoted property `{name}`."))
+                        .with_annotation(
+                            Annotation::primary(parameter.span())
+                                .with_message(format!("Parameter `{name}` is variadic and promoted here.")),
+                        )
+                        .with_help("Remove the `...`, or declare the property in the class body."),
+                );
+            }
         }
 
         if let Some(hint) = &parameter.hint {

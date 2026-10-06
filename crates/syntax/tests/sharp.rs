@@ -547,6 +547,112 @@ fn a_local_can_be_declared_with_its_type_written() {
 }
 
 #[test]
+fn a_local_can_be_declared_with_a_union_type_written() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        int|string key = 1;\n        const Calc|int?|float found = null;\n        for (int|bool step = 0; ; ) {\n        }\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let types: Vec<&str> = method_body(program)
+        .iter()
+        .map(|statement| {
+            let local = match statement {
+                Statement::LocalDeclaration(local) => local,
+                Statement::For(r#for) => r#for.declaration.as_ref().expect("a declaration"),
+                _ => panic!("expected a local declaration, got {statement:#?}"),
+            };
+
+            source(CODE, local.hint.as_ref().expect("a type"))
+        })
+        .collect();
+
+    assert_eq!(types, ["int|string", "Calc|int?|float", "int|bool"]);
+}
+
+#[test]
+fn a_union_in_parentheses_with_a_question_mark_after_it_is_nullable_wherever_a_type_goes() {
+    const CODE: &str = "class Report\n{\n    private (int|string)? key = null;\n    public (int|Calc)? id { get; }\n\n    public Report(private (bool|float)? flag)\n    {\n    }\n\n    public (Calc|string)? find((int|float)? extra)\n    {\n        (int|string)? found = null;\n        const (int|bool)? fixed = null;\n        for ((int|float)? step = null; ; ) {\n        }\n        return found;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [
+        ClassLikeMember::Property(Property::Plain(field)),
+        ClassLikeMember::Property(Property::Hooked(property)),
+        ClassLikeMember::Method(constructor),
+        ClassLikeMember::Method(find),
+    ] = class_members(program).as_slice()
+    else {
+        panic!("expected a field, a property and two methods, got {:#?}", class_members(program));
+    };
+    let MethodBody::Concrete(body) = &find.body else {
+        panic!("expected a method body, got {:#?}", find.body);
+    };
+    let locals = body.statements.iter().filter_map(|statement| match statement {
+        Statement::LocalDeclaration(local) => local.hint,
+        Statement::For(r#for) => r#for.declaration.as_ref().and_then(|local| local.hint),
+        _ => None,
+    });
+    let hints = [field.hint.as_ref(), property.hint.as_ref()]
+        .into_iter()
+        .flatten()
+        .chain(constructor.parameter_list.parameters.iter().filter_map(|parameter| parameter.hint.as_ref()))
+        .chain(find.return_type_hint.iter().map(|return_type| &return_type.hint))
+        .chain(find.parameter_list.parameters.iter().filter_map(|parameter| parameter.hint.as_ref()))
+        .chain(locals);
+    let unions: Vec<&str> = hints
+        .map(|hint| {
+            let Hint::Nullable(NullableHint { hint: Hint::Parenthesized(parenthesized), .. }) = hint else {
+                panic!("expected a nullable type in parentheses, got {hint:#?}");
+            };
+            assert!(matches!(parenthesized.hint, Hint::Union(_)), "{hint:#?}");
+
+            source(CODE, hint)
+        })
+        .collect();
+
+    assert_eq!(
+        unions,
+        [
+            "(int|string)?",
+            "(int|Calc)?",
+            "(bool|float)?",
+            "(Calc|string)?",
+            "(int|float)?",
+            "(int|string)?",
+            "(int|bool)?",
+            "(int|float)?",
+        ]
+    );
+}
+
+/// The lexer reads `(int)` as a cast, as PHP does, so PHP# writes `int?`.
+#[test]
+fn a_built_in_type_in_parentheses_is_a_parse_error() {
+    const CODE: &str = "class Report\n{\n    public int run((int)? extra) { return 1; }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    let spans: Vec<&str> = program.errors.iter().map(|error| source(CODE, error)).collect();
+    assert_eq!(spans.first(), Some(&"(int)"), "{:#?}", program.errors);
+}
+
+#[test]
+fn a_statement_starting_with_parentheses_without_a_union_is_an_expression() {
+    const CODE: &str =
+        "class Report\n{\n    void run()\n    {\n        (found).run();\n        (found || other);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [call, logical] = method_body(program) else {
+        panic!("expected two statements, got {:#?}", method_body(program));
+    };
+    assert!(matches!(expression(call), Expression::Call(Call::Method(_))), "{call:#?}");
+    assert!(matches!(expression(logical), Expression::Parenthesized(_)), "{logical:#?}");
+}
+
+#[test]
 fn a_spaced_question_mark_after_a_name_is_not_a_typed_local() {
     const CODE: &str = "class Report\n{\n    void run()\n    {\n        found ? total = 1 : 2;\n    }\n}\n";
     let arena = LocalArena::new();

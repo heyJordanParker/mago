@@ -6,20 +6,30 @@ use mago_allocator::LocalArena;
 use mago_database::file::File;
 use mago_names::resolver::NameResolver;
 use mago_php_version::PHPVersion;
+use mago_reporting::Issue;
 use mago_semantics::SemanticsChecker;
 use mago_syntax::parser::parse_file;
 
-/// Every semantic issue in the PHP# source, as `line:column message` at its primary span.
-fn issues(code: &'static str) -> Vec<String> {
+/// Every semantic issue in the source, in the dialect its path names.
+fn check(path: &'static str, code: &'static str) -> Vec<Issue> {
     let arena = LocalArena::new();
-    let file = File::ephemeral(Cow::Borrowed(b"src/Report.sharp"), Cow::Borrowed(code.as_bytes()));
+    let file = File::ephemeral(Cow::Borrowed(path.as_bytes()), Cow::Borrowed(code.as_bytes()));
     let program = parse_file(&arena, &file);
     assert!(program.errors.is_empty(), "test source did not parse: {:#?}", program.errors);
 
     let names = NameResolver::new(&arena).resolve(program);
-    let issues = SemanticsChecker::new(PHPVersion::new(8, 4, 0)).check(&file, program, &names);
 
-    issues
+    SemanticsChecker::new(PHPVersion::new(8, 4, 0)).check(&file, program, &names).into_iter().collect()
+}
+
+/// Every semantic issue in the PHP# source, as `line:column message` at its primary span.
+fn issues(code: &'static str) -> Vec<String> {
+    issues_in("src/Report.sharp", code)
+}
+
+/// Every semantic issue in the source, in the dialect its path names, as `line:column message` at its primary span.
+fn issues_in(path: &'static str, code: &'static str) -> Vec<String> {
+    check(path, code)
         .iter()
         .map(|issue| {
             let span = issue.primary_span().expect("a primary span");
@@ -957,10 +967,150 @@ fn properties_outside_the_slice_are_not_supported_yet() {
 }
 
 #[test]
-fn a_variadic_parameter_is_not_supported_yet() {
-    let code = leak(method("        return 1;\n").replace("int extra", "int ...extra"));
+fn a_variadic_parameter_is_in_the_slice_on_a_method_and_a_constructor() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public Report(string label, int ...values)\n    {\n    }\n\n    public static int sum(int|float ...values)\n    {\n        return 0;\n    }\n}\n";
 
-    assert_eq!(issues(code), ["5:24 This variadic parameter is not supported yet in PHP#."]);
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_variadic_parameter_that_is_not_last_or_has_a_default_is_an_error_as_in_php() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int run(int ...values, int extra)\n    {\n        return extra;\n    }\n\n    public int sum(int ...values = 1)\n    {\n        return 0;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:39 Invalid parameter order: parameter `extra` is defined after variadic parameter `values`.",
+            "10:34 Invalid parameter definition: variadic parameter `values` cannot have a default value.",
+        ]
+    );
+}
+
+#[test]
+fn a_void_variadic_parameter_reports_only_the_php_error() {
+    let code = leak(method("        return 1;\n").replace("int extra", "void ...extra"));
+
+    assert_eq!(issues(code), ["5:20 Invalid parameter type: bottom type `void` cannot be used as a parameter type."]);
+}
+
+#[test]
+fn a_variadic_constructor_parameter_that_declares_a_member_is_an_error_as_in_php() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public Report(private int ...values)\n    {\n    }\n}\n\nclass Total\n{\n    public Total(public int ...values { get; })\n    {\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:19 Cannot declare variadic promoted property `values`.",
+            "12:18 Cannot declare variadic promoted property `values`.",
+        ]
+    );
+}
+
+/// Upstream Mago checks neither the member nor the type of a variadic parameter, nor a type written twice, so a `.php`
+/// file keeps its results. The PHP# twins of these lines are errors.
+#[test]
+fn a_php_file_keeps_upstream_results_for_a_variadic_parameter_and_a_type_written_twice() {
+    let code = "<?php\n\nclass Report\n{\n    public function __construct(private int ...$values)\n    {\n    }\n}\n\nfunction f(void ...$x) {}\n\nfunction g(int|int $x) {}\n";
+
+    assert_eq!(issues_in("src/Report.php", code), Vec::<String>::new());
+}
+
+#[test]
+fn a_union_type_is_in_the_slice_wherever_a_type_is() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private int|string key = 1;\n    public int|float amount { get; set; } = 0;\n\n    public Report(private bool|Calc flag, int|string start)\n    {\n    }\n\n    public int|string run(int|float|Calc extra)\n    {\n        int|string local = 1;\n        for (int|bool step = 0; ; ) {\n        }\n        return local;\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_union_that_holds_null_is_not_supported_yet() {
+    let code = leak(
+        method("        return 1;\n").replace("int extra", "int?|string a, int|string? b, int|null c, null|Calc d"),
+    );
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:20 Type `int?` cannot be part of a union.",
+            "5:39 Type `string?` cannot be part of a union.",
+            "5:54 This union that holds null is not supported yet in PHP#.",
+            "5:62 This union that holds null is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
+fn void_in_a_union_reports_only_the_php_error() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public void|int run(int|void extra)\n    {\n        return 1;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["5:12 Type `void` cannot be part of a union.", "5:29 Type `void` cannot be part of a union."]
+    );
+}
+
+#[test]
+fn a_type_written_twice_in_a_union_is_an_error_as_in_php() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public int|string|int run(Calc|string|calc extra)\n    {\n        return 1;\n    }\n}\n";
+
+    assert_eq!(issues(code), ["7:23 Duplicate type `int` is redundant.", "7:43 Duplicate type `calc` is redundant."]);
+}
+
+#[test]
+fn a_nullable_union_holds_null_where_a_nullable_type_does() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private (int|string)? key = null;\n    public (int|string)? amount { get; set; } = null;\n\n    public Report(private (bool|Calc)? flag, (int|string)? start)\n    {\n    }\n\n    public (int|string)? run((int|float|Calc)? extra)\n    {\n        (int|string)? local = null;\n        const (int|bool)? fixed = null;\n        for ((int|bool)? step = null; ; ) {\n        }\n        return local;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["7:13 This type is not supported yet in PHP#.", "8:12 This type is not supported yet in PHP#."]
+    );
+}
+
+#[test]
+fn a_union_that_holds_null_names_the_nullable_union_to_write() {
+    let notes: Vec<Vec<String>> =
+        check("src/Report.sharp", leak(method("        return 1;\n").replace("int extra", "int|null a")))
+            .into_iter()
+            .map(|issue| issue.notes)
+            .collect();
+
+    assert_eq!(
+        notes,
+        [["PHP# writes a union that holds null in parentheses with `?` after it, as in `(int|string)?`."]]
+    );
+}
+
+#[test]
+fn a_nullable_union_is_checked_as_its_union_and_never_joins_another_union() {
+    let code = leak(method("        return 1;\n").replace(
+        "int extra",
+        "(int|string|int)? a, (int|null)? b, (int?|string)? c, (int|string)?|float d, (void|int)? e",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:32 Duplicate type `int` is redundant.",
+            "5:46 This union that holds null is not supported yet in PHP#.",
+            "5:57 Type `int?` cannot be part of a union.",
+            "5:74 Type `(int|string)?` cannot be part of a union.",
+            "5:98 Type `void` cannot be part of a union.",
+        ]
+    );
+}
+
+#[test]
+fn a_single_type_in_parentheses_with_a_question_mark_after_it_reports_only_the_php_errors() {
+    let code = leak(method("        return 1;\n").replace("int extra", "(Calc)? extra"));
+
+    assert_eq!(issues(code), ["5:20 Type `(Calc)` cannot be nullable.", "5:21 Type `Calc` cannot be parenthesized."]);
+}
+
+#[test]
+fn a_php_file_keeps_refusing_a_nullable_union_in_parentheses() {
+    let code = "<?php\n\nfunction f(?(int|string) $x) {}\n";
+
+    assert_eq!(issues_in("src/Report.php", code), ["3:13 Type `(int|string)` cannot be nullable."]);
 }
 
 #[test]
@@ -1006,17 +1156,18 @@ fn a_member_name_written_as_an_expression_is_not_supported_yet() {
 
 #[test]
 fn types_outside_the_slice_are_not_supported_yet() {
-    let code = "class Report\n{\n    public mixed run(iterable? a, int|string b, iterable c, callable d, (Lib&Other)|null e)\n    {\n        return 1;\n    }\n\n    public self make(Lib f, float g, bool h, string i)\n    {\n        return this;\n    }\n}\n";
+    let code = "class Report\n{\n    public mixed run(iterable? a, int|iterable b, iterable c, callable d, (Lib&Other)|null e)\n    {\n        return 1;\n    }\n\n    public self make(Lib f, float g, bool h, string i)\n    {\n        return this;\n    }\n}\n";
 
     assert_eq!(
         issues(code),
         [
             "3:12 This type is not supported yet in PHP#.",
             "3:22 This type is not supported yet in PHP#.",
-            "3:35 This type is not supported yet in PHP#.",
-            "3:49 This type is not supported yet in PHP#.",
-            "3:61 This type is not supported yet in PHP#.",
-            "3:73 This type is not supported yet in PHP#.",
+            "3:39 This type is not supported yet in PHP#.",
+            "3:51 This type is not supported yet in PHP#.",
+            "3:63 This type is not supported yet in PHP#.",
+            "3:75 This type is not supported yet in PHP#.",
+            "3:87 This union that holds null is not supported yet in PHP#.",
             "8:12 This type is not supported yet in PHP#.",
         ]
     );
@@ -1149,17 +1300,12 @@ fn new_creates_a_class_written_by_its_short_name_with_its_arguments() {
 
 #[test]
 fn new_outside_the_slice_is_not_supported_yet() {
-    let code = leak(method(
-        "        const kind = new (Report);\n        const other = new class {};\n        const spread = new Report(...extra);\n        return 1;\n",
-    ));
+    let code =
+        leak(method("        const kind = new (Report);\n        const other = new class {};\n        return 1;\n"));
 
     assert_eq!(
         issues(code),
-        [
-            "7:22 This expression is not supported yet in PHP#.",
-            "8:23 This expression is not supported yet in PHP#.",
-            "9:35 This spread argument is not supported yet in PHP#.",
-        ]
+        ["7:22 This expression is not supported yet in PHP#.", "8:23 This expression is not supported yet in PHP#."]
     );
 }
 
@@ -1247,8 +1393,38 @@ fn a_cast_or_a_ternary_in_a_parameter_default_is_not_supported_yet() {
 }
 
 #[test]
-fn a_spread_argument_is_not_supported_yet() {
-    let code = leak(method("        const parts = this.parts();\n        return this.total(...parts);\n"));
+fn a_positional_argument_after_a_spread_or_a_spread_after_a_named_argument_is_an_error_as_in_php() {
+    let code = leak(method(
+        "        const parts = this.parts();\n        this.total(...parts, 1);\n        this.total(first: 1, ...parts);\n        return 1;\n",
+    ));
 
-    assert_eq!(issues(code), ["8:27 This spread argument is not supported yet in PHP#."]);
+    assert_eq!(
+        issues(code),
+        [
+            "8:30 Cannot use positional argument after argument unpacking.",
+            "9:30 Cannot use argument unpacking after a named argument.",
+        ]
+    );
+}
+
+#[test]
+fn an_assert_whose_only_argument_is_a_spread_is_an_error_as_in_php() {
+    let code = leak(method(
+        "        const parts = this.parts();\n        assert(...parts);\n        ASSERT(...parts);\n        assert(true, ...parts);\n        assert(...parts, ...parts);\n        assert(...parts, description: \"parts\");\n        return 1;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "8:16 Cannot use positional argument after argument unpacking.",
+            "9:16 Cannot use positional argument after argument unpacking.",
+        ]
+    );
+}
+
+#[test]
+fn a_spread_in_attribute_arguments_reports_only_the_php_error() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    [Field(...PARTS)]\n    public int run(int extra)\n    {\n        return extra;\n    }\n}\n";
+
+    assert_eq!(issues(code), ["5:12 Cannot use argument unpacking in attribute arguments."]);
 }

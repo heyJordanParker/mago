@@ -1096,6 +1096,187 @@ fn calc_make_is_a_static_call_on_the_imported_class() {
 }
 
 /// ```php
+/// private int|string $key = 1;
+/// public function find(int|float|\Lib\Calc $id): \Lib\Calc|string { return "none"; }
+/// ```
+///
+/// A union is one `TYPE_UNION` list of its types in the order they are written, as php-src's `union_type` rule
+/// builds `int|float|\Lib\Calc`, on the line of its first type.
+#[test]
+fn a_union_type_is_one_type_union_list_of_its_types_in_written_order() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private int|string key = 1;\n\n    public Calc|string find(\n        int|float|Calc id,\n    ) { return \"none\"; }\n}\n",
+    );
+    let members = lowered.child(lowered.child(lowered.unit().root, 2), 2);
+    let field = lowered.child(lowered.child(members, 0), 0);
+    let method = lowered.child(members, 1);
+    let parameter = lowered.child(lowered.child(lowered.child(method, 0), 0), 0);
+    let return_type = lowered.child(method, 3);
+
+    assert_eq!(
+        lowered.render(field),
+        indoc! {r#"
+            TYPE_UNION
+              ZVAL [1] "int"
+              ZVAL [1] "string"
+        "#}
+    );
+    assert_eq!(
+        lowered.render(parameter),
+        indoc! {r#"
+            TYPE_UNION
+              ZVAL [1] "int"
+              ZVAL [1] "float"
+              ZVAL "Lib\\Calc"
+        "#}
+    );
+    assert_eq!(
+        lowered.render(return_type),
+        indoc! {r#"
+            TYPE_UNION
+              ZVAL "Lib\\Calc"
+              ZVAL [1] "string"
+        "#}
+    );
+    assert_eq!([field, parameter, return_type].map(|union| lowered.nodes()[union as usize].line), [7, 10, 9]);
+}
+
+/// ```php
+/// public function find(int|string|null $id): \Lib\Calc|string|null { return null; }
+/// ```
+///
+/// A union in parentheses with `?` after it is the `TYPE_UNION` list of its types in the order they are written,
+/// then the name `null` with `ZEND_NAME_NOT_FQ`, as php-src's `union_type` rule builds `int|string|null`. The list
+/// carries no `ZEND_TYPE_NULLABLE`, and `null` is on the line of the `?`.
+#[test]
+fn a_nullable_union_is_its_type_union_list_with_null_last() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public (Calc|string)? find(\n        (int|string)? id,\n    ) { return null; }\n}\n",
+    );
+    assert_eq!(lowered.diagnostics(), Vec::<String>::new());
+    let method = lowered.child(lowered.child(lowered.child(lowered.unit().root, 2), 2), 0);
+    let parameters = lowered.child(method, 0);
+    let return_type = lowered.child(method, 3);
+
+    assert_eq!(
+        lowered.render(parameters),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                TYPE_UNION
+                  ZVAL [1] "int"
+                  ZVAL [1] "string"
+                  ZVAL [1] "null"
+                ZVAL "id"
+                null
+                null
+                null
+                null
+        "#}
+    );
+    assert_eq!(
+        lowered.render(return_type),
+        indoc! {r#"
+            TYPE_UNION
+              ZVAL "Lib\\Calc"
+              ZVAL [1] "string"
+              ZVAL [1] "null"
+        "#}
+    );
+    let parameter = lowered.child(lowered.child(parameters, 0), 0);
+    let null_lines = [parameter, return_type].map(|union| lowered.nodes()[lowered.child(union, 2) as usize].line);
+    assert_eq!(null_lines, [8, 7]);
+}
+
+/// ```php
+/// public static function sum(string $label, int|float ...$values): int { return 0; }
+/// ```
+///
+/// `[16]` is `ZEND_PARAM_VARIADIC`, which php-src's grammar adds to the parameter's attr.
+#[test]
+fn a_variadic_parameter_carries_the_variadic_flag() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public static int sum(string label, int|float ...values) { return 0; }\n}\n",
+    );
+    let method = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a method");
+
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 0)),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                ZVAL [1] "string"
+                ZVAL "label"
+                null
+                null
+                null
+                null
+              PARAM [16]
+                TYPE_UNION
+                  ZVAL [1] "int"
+                  ZVAL [1] "float"
+                ZVAL "values"
+                null
+                null
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// \Lib\Calc::sum(...$extra);
+/// $this->run(1, ...$extra);
+/// $made = new \Lib\Calc(...$extra);
+/// return max(...$extra);
+/// ```
+///
+/// A spread argument is an `UNPACK` of its value, as php-src's grammar builds `...$extra`.
+#[test]
+fn a_spread_argument_is_an_unpack_of_its_value() {
+    assert_eq!(
+        body(
+            "        Calc.sum(...extra);\n        this.run(1, ...extra);\n        const made = new Calc(...extra);\n        return max(...extra);\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              STATIC_CALL
+                ZVAL "Lib\\Calc"
+                ZVAL "sum"
+                ARG_LIST
+                  UNPACK
+                    VAR
+                      ZVAL "extra"
+              METHOD_CALL
+                VAR
+                  ZVAL "this"
+                ZVAL "run"
+                ARG_LIST
+                  ZVAL 1
+                  UNPACK
+                    VAR
+                      ZVAL "extra"
+              ASSIGN
+                VAR
+                  ZVAL "made"
+                NEW
+                  ZVAL "Lib\\Calc"
+                  ARG_LIST
+                    UNPACK
+                      VAR
+                        ZVAL "extra"
+              RETURN
+                CALL
+                  ZVAL "max"
+                  ARG_LIST
+                    UNPACK
+                      VAR
+                        ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
 /// return new \Lib\Calc($extra, rate: 2);
 /// ```
 ///

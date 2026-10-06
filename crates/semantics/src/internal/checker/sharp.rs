@@ -9,6 +9,7 @@ use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::Access;
+use mago_syntax::cst::Argument;
 use mago_syntax::cst::Assignment;
 use mago_syntax::cst::AssignmentOperator;
 use mago_syntax::cst::BinaryOperator;
@@ -41,6 +42,7 @@ use mago_syntax::cst::ModifierSequenceExt;
 use mago_syntax::cst::Namespace;
 use mago_syntax::cst::NamespaceBody;
 use mago_syntax::cst::Node;
+use mago_syntax::cst::NullableHint;
 use mago_syntax::cst::PartialArgument;
 use mago_syntax::cst::Program;
 use mago_syntax::cst::Property;
@@ -56,6 +58,7 @@ use mago_syntax::cst::UnaryPostfix;
 use mago_syntax::cst::UnaryPostfixOperator;
 use mago_syntax::cst::UnaryPrefix;
 use mago_syntax::cst::UnaryPrefixOperator;
+use mago_syntax::cst::UnionHint;
 use mago_syntax::cst::Use;
 use mago_syntax::cst::UseItem;
 use mago_syntax::cst::UseItems;
@@ -81,8 +84,8 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// - A class: attributes, a name, fields and methods, with no modifiers, `extends` or `implements`.
 /// - Attributes: on a class, a method, a field, a property and a parameter, written `[Name]` or `[Name(arguments)]`,
 ///   several in one list, as in `[Field("Name"), Searchable]`, or in several lists. An argument is positional or
-///   named, and is a constant expression as a parameter default is. An attribute target, as in `[return: NotNull]`,
-///   is a parse error.
+///   named, and is a constant expression as a parameter default is. PHP's own check reports a spread argument. An
+///   attribute target, as in `[return: NotNull]`, is a parse error.
 /// - A field: `private` or `protected`, a type, one name and an optional initial value. A `public` field is an error,
 ///   because spec section 6 has no public fields.
 /// - An initial value: any expression a method body has, without `this`, which is an error. A constant initial value,
@@ -102,33 +105,47 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   without a return type named otherwise is an error. A constructor parameter with an access modifier declares a
 ///   member: a field when `private` or `protected` without accessors, and a property with accessors, which follow the
 ///   auto-property rules. A `public` parameter without accessors is an error, as spec section 9 says.
-/// - A parameter: always a type, a name and an optional default, and neither variadic nor by reference. A default is
-///   a constant expression: a literal, a constant, or the operators below on them, without `++` and `--`.
+/// - A parameter: always a type, a name and an optional default, and never by reference. A default is a constant
+///   expression: a literal, a constant, or the operators below on them, without `++` and `--`. A parameter written
+///   `int ...values` is variadic, as spec section 7 writes it, and PHP's own checks report a variadic parameter that
+///   is not the last or has a default. `check_parameter_list` reports a variadic parameter that declares a member or
+///   has a `void` type in a `.sharp` file only, as upstream Mago reports neither.
 /// - Types: `int`, `float`, `bool`, `string` and a class written by its short name, and `void` as a return type.
 ///   PHP's own check reports a `void` parameter. Each of them is nullable when written with `?` after it, as in
-///   `int?`, and PHP's own check reports `void?`.
+///   `int?`, and PHP's own check reports `void?`. A union of them but `void`, written inline as spec section 24 writes
+///   it, as in `int|string`, goes wherever a type goes. PHP's own check reports `void` and a nullable type, as in
+///   `int?|string`, in a union, and `check_union` reports a type written twice, which the engine refuses. A union
+///   holds null only when written in parentheses with `?` after it, as in `(int|string)?`, which the engine compiles
+///   as `int|string|null`. `check_union` reports `null` written in a union, as in `int|null`, as not supported yet.
+///   PHP's own check reports a nullable union inside another union, and a single type in parentheses, as in `(Calc)?`,
+///   which PHP# writes `Calc?`. `(int)?` is a parse error, as PHP lexes `(int)` as a cast. A nullable type and a
+///   nullable union on a field or an auto-property, as in `private int? total;`, are not supported yet.
 /// - A method body: a block, or an expression body, `=> expr;`, which returns the expression, or runs it as a
 ///   statement in a `void` method and the constructor, as in C#.
 /// - In a method body: blocks, expression statements, `return`, `let` and `const` declarations, `if` with `else if`
 ///   and `else`, `while`, `do … while`, `for` with a `let` or `const` counter or with expressions, `for … of` over a
 ///   value or a key and value, `break` and `continue` without a level, and `try` with `catch` clauses and `finally`.
 ///   The body of `if`, `else` and each loop is a block in braces. A catch clause names one or more classes separated
-///   by `|`, and an optional variable written without `$`, which lives until the clause's block ends. A local statement can have its type written, as in `Money? total = null;` or
-///   `const int base = 2;`, from the types above but `void`.
+///   by `|`, and an optional variable written without `$`, which lives until the clause's block ends. A local
+///   statement can have its type written, as in `Money? total = null;` or `const int base = 2;`, from the types
+///   above but `void`.
 /// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter or a member written
 ///   `object.name`.
 /// - In expressions: literals, templates, parentheses, bare names, assignment, the operators below, and method calls
 ///   and property reads written with `.` or `?.` and a member name, `new Class(...)` on a class written by its short
-///   name, calls of a function by its bare name, each with positional and named arguments, and `throw`, which is an
-///   expression as in PHP. `?.` never follows a class. A function is the global function of that name, PHP's own
-///   or one a library or the app declares, as spec sections 8 and 29 keep them, and the engine calls the global
-///   one. A string literal's `\u{...}` escapes are valid codepoints, as PHP requires. A `"…"` string never
-///   interpolates, and a template, `` `Order ${number}` ``, interpolates any expression of this list in each `${…}`
-///   and takes JavaScript's escapes, as spec section 18 writes them.
+///   name, calls of a function by its bare name, each with positional, named and spread arguments, as in
+///   `Money.sum(...prices)` and `max(...prices)`, and `throw`, which is an expression as in PHP. PHP's own check
+///   reports a positional argument after a spread and a spread after a named argument, and `check_function_call`
+///   reports `assert` with a spread as its only argument, after which PHP adds a positional description. `?.` never
+///   follows a class. A function is the global function of that name, PHP's own or one a library or the app declares,
+///   as spec sections 8 and 29 keep them, and the engine calls the global one. A string literal's `\u{...}` escapes are
+///   valid codepoints, as PHP requires. A `"…"` string never interpolates, and a template, `` `Order ${number}` ``,
+///   interpolates any expression of this list in each `${…}` and takes JavaScript's escapes, as spec section 18 writes
+///   them.
 /// - Operators: `+ - * / % **`, `== != === !== < > <= >=`, `&& || !`, `??`, unary `-` and `+`, `++` and `--`, and
 ///   `= += -= *= /= **= ??=`.
-/// - The ternary `c ? a : b` in a method body, as spec section 21 writes it. PHP's `a ?: b` is an error, and a ternary as the condition
-///   of another needs parentheses, as in PHP 8.
+/// - The ternary `c ? a : b` in a method body, as spec section 21 writes it. PHP's `a ?: b` is an error, and a
+///   ternary as the condition of another needs parentheses, as in PHP 8.
 /// - Casts: `(int)`, `(float)` and `(string)` in a method body, as spec section 24 writes them. PHP's other casts and
 ///   its cast aliases, such as `(bool)` and `(integer)`, are errors.
 /// - A bare `Int` or `Float` before `.` is the class `Sharp\Int` or `Sharp\Float` of the engine's standard library,
@@ -140,7 +157,7 @@ const SUPERGLOBALS: [&[u8]; 9] =
 /// run on a file with a parse error, which is the one error to fix first. The constructs PHP# never has, such as `$`
 /// variables, `global` and top-level functions, keep their own errors.
 ///
-/// Five more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
+/// Eight more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
 /// - `+` that may join a string with any other value, which spec section 18 makes an error, in
 ///   `analyze_arithmetic_operation`. `+` on two strings joins them.
 /// - a condition of `if`, `while`, `do … while`, `for` or `? :`, or an operand of `&&`, `||` or `!`, that is not
@@ -149,6 +166,12 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   `analyze`.
 /// - an instance method used as a value, such as `order.total` without a call, in `report_non_existent_property`.
 /// - a call that resolves to a namespaced function, in `report_namespaced_function_call`.
+/// - a spread of a value that is not a list, which spec section 7 spreads, in `report_non_list_spread`.
+/// - a named argument that names a variadic parameter or no parameter, on a method or a plain PHP function that
+///   takes any number of arguments too, which spec section 16 makes an error, in `analyze_invocation`.
+/// - a default or an initial value that does not fit its declared type, such as `null` for an `int` or `false` for
+///   an `int|string`, which the engine refuses, in `check_parameter_default_value` and the property's
+///   `analyze_default_value`. A nullable type, as in `int? total = null`, holds `null`.
 #[inline]
 pub fn check_slice(node: Node<'_, '_>, context: &mut Context<'_, '_, '_>) {
     let place = match context.slice_places.last() {
@@ -265,7 +288,8 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             | Node::PartialArgument(PartialArgument::Positional(_) | PartialArgument::Named(_)),
             Attribute,
         ) => Some(Attribute),
-        (Node::PositionalArgument(argument), Attribute) if argument.ellipsis.is_none() => Some(Constant),
+        // PHP refuses a spread in attribute arguments, and `check_attribute_list` reports it.
+        (Node::PositionalArgument(argument), Attribute) => argument.ellipsis.is_none().then_some(Constant),
         (Node::NamedArgument(_), Attribute) => Some(Constant),
 
         (Node::ClassLikeMember(ClassLikeMember::Method(_)), Class) => Some(Class),
@@ -339,26 +363,24 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
             None
         }
-        (Node::FunctionLikeParameter(parameter), Method) => match is_slice_parameter(parameter) {
-            Ok(()) => {
-                if let Some(accessors) = &parameter.hooks
-                    && parameter.modifiers.contains_visibility()
-                {
-                    check_accessors(&parameter.modifiers, accessors, parameter.variable.span, context);
-                }
+        (Node::FunctionLikeParameter(parameter), Method) if let Some(ampersand) = parameter.ampersand => {
+            context.report(
+                Issue::error("A by-reference parameter is not supported yet in PHP#.")
+                    .with_annotation(Annotation::primary(ampersand).with_message("Not supported yet."))
+                    .with_note("The engine passes every PHP# argument by value."),
+            );
 
-                Some(Parameter)
+            None
+        }
+        (Node::FunctionLikeParameter(parameter), Method) => {
+            if let Some(accessors) = &parameter.hooks
+                && parameter.modifiers.contains_visibility()
+            {
+                check_accessors(&parameter.modifiers, accessors, parameter.variable.span, context);
             }
-            Err((span, message, help)) => {
-                context.report(
-                    Issue::error(message)
-                        .with_annotation(Annotation::primary(span).with_message("Not supported yet."))
-                        .with_note(help),
-                );
 
-                None
-            }
-        },
+            Some(Parameter)
+        }
         (Node::Hint(Hint::Void(_)), Body) => {
             context.report(
                 Issue::error("A local cannot be `void`: `void` is only a return type.")
@@ -367,7 +389,23 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
             None
         }
+        // `check_hint` reports a type in parentheses that is not a union.
+        (
+            Node::Hint(Hint::Nullable(NullableHint { hint: Hint::Parenthesized(parenthesized), .. })),
+            Method | Parameter | Body,
+        ) => {
+            if let Hint::Union(union) = parenthesized.hint {
+                check_union(union, place, context);
+            }
+
+            None
+        }
         (Node::Hint(hint), Method | Parameter | Body) if is_slice_type(hint) => Some(place),
+        (Node::Hint(Hint::Union(union)), Method | Parameter | Body | FieldOrProperty) => {
+            check_union(union, place, context);
+
+            None
+        }
         (Node::NullableHint(_), Method | Parameter | Body) => Some(place),
         (Node::DirectVariable(_), Parameter) => Some(Parameter),
         // An access modifier declares a member, and `check_accessors` checked its accessors. PHP reports `static`,
@@ -532,7 +570,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         }
         (Node::ArgumentList(_), Instantiation) => Some(Body),
         (Node::AssignmentOperator(operator), Body) if is_slice_assignment_operator(operator) => Some(Body),
-        (Node::PositionalArgument(argument), Body) if argument.ellipsis.is_none() => Some(Body),
+        (Node::PositionalArgument(_), Body) => Some(Body),
         (Node::MethodCall(call), Body) => {
             check_member_access(call.object, &call.method, MemberUse::Call, context);
 
@@ -624,21 +662,6 @@ fn is_slice_method(method: &Method, program: &Program) -> Result<(), (&'static s
     };
 
     Err(refusal)
-}
-
-/// Whether the slice has a parameter, with the refusal's span, message and note when it does not.
-fn is_slice_parameter(parameter: &FunctionLikeParameter) -> Result<(), (Span, &'static str, &'static str)> {
-    if let Some(ellipsis) = parameter.ellipsis {
-        Err((ellipsis, "This variadic parameter is not supported yet in PHP#.", supported(Place::Parameter)))
-    } else if let Some(ampersand) = parameter.ampersand {
-        Err((
-            ampersand,
-            "A by-reference parameter is not supported yet in PHP#.",
-            "The engine passes every PHP# argument by value.",
-        ))
-    } else {
-        Ok(())
-    }
 }
 
 /// Whether the slice has a field or a property, with the refusal when it does not. Spec section 6 makes a field
@@ -896,6 +919,58 @@ fn is_slice_type(hint: &Hint) -> bool {
     )
 }
 
+/// Checks a union type. A type written twice is compared as the engine compares it: a class by its full name,
+/// ignoring case.
+fn check_union(union: &UnionHint, place: Place, context: &mut Context<'_, '_, '_>) {
+    let mut members = Vec::new();
+    union_members(union, &mut members);
+
+    for (index, member) in members.iter().enumerate() {
+        match member {
+            Hint::Null(_) => report_not_supported(
+                member.span(),
+                "union that holds null",
+                "PHP# writes a union that holds null in parentheses with `?` after it, as in `(int|string)?`.",
+                context,
+            ),
+            Hint::Void(_) | Hint::Nullable(_) => {}
+            _ if !is_slice_type(member) => report_not_supported(member.span(), "type", supported(place), context),
+            _ => {
+                let Some(first) = members[..index].iter().find(|earlier| is_same_type(earlier, member, context)) else {
+                    continue;
+                };
+                let written = BytesDisplay(context.get_code_snippet(*member));
+
+                context.report(
+                    Issue::error(format!("Duplicate type `{written}` is redundant."))
+                        .with_annotation(Annotation::primary(member.span()).with_message("Written again here."))
+                        .with_annotation(Annotation::secondary(first.span()).with_message("First written here."))
+                        .with_help("Remove the second one, as PHP refuses a union that names a type twice."),
+                );
+            }
+        }
+    }
+}
+
+/// The members of a union, in the order they are written. The parser nests a union to the right.
+fn union_members<'ast, 'arena>(union: &'ast UnionHint<'arena>, members: &mut Vec<&'ast Hint<'arena>>) {
+    for side in [union.left, union.right] {
+        match side {
+            Hint::Union(inner) => union_members(inner, members),
+            member => members.push(member),
+        }
+    }
+}
+
+fn is_same_type(first: &Hint, second: &Hint, context: &Context<'_, '_, '_>) -> bool {
+    match (first, second) {
+        (Hint::Identifier(first), Hint::Identifier(second)) => {
+            context.names.get(first).eq_ignore_ascii_case(context.names.get(second))
+        }
+        _ => std::mem::discriminant(first) == std::mem::discriminant(second),
+    }
+}
+
 /// Whether the slice has a binary operator. Every operator is named, so a new one does not compile until it is
 /// decided.
 const fn is_slice_binary_operator(operator: &BinaryOperator) -> bool {
@@ -1040,7 +1115,6 @@ fn report_unsupported(node: Node<'_, '_>, place: Place, context: &mut Context<'_
         Node::Implements(_) => "`implements` clause",
         Node::ClassLikeMember(_) => "class member",
         Node::ClassLikeMemberSelector(_) => "member name",
-        Node::PositionalArgument(_) => "spread argument",
         _ => "construct",
     };
 
@@ -1055,16 +1129,16 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# class has attributes, a name, fields and methods, with no modifiers, `extends` or `implements`."
         }
         Place::FieldOrProperty => {
-            "A PHP# field is `private` or `protected`, and a property has the accessors `get;` and an optional `set;`. Both have a type of `int`, `float`, `bool`, `string` or a class, a name, and an optional initial value."
+            "A PHP# field is `private` or `protected`, and a property has the accessors `get;` and an optional `set;`. Both have a type of `int`, `float`, `bool`, `string` or a class, or a union of them as in `int|string`, a name, and an optional initial value."
         }
         Place::Method => {
-            "A PHP# method takes `public`, `protected`, `private` and `static`, parameters, and a return type of `int`, `float`, `bool`, `string`, `void` or a class, each but `void` nullable as in `int?`."
+            "A PHP# method takes `public`, `protected`, `private` and `static`, parameters, and a return type of `int`, `float`, `bool`, `string`, `void` or a class, each but `void` nullable as in `int?`, or a union of them but `void`, as in `int|string`."
         }
         Place::Parameter => {
-            "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, a name, and an optional default."
+            "A PHP# parameter has a type of `int`, `float`, `bool`, `string` or a class, nullable as in `int?` or not, or a union of them as in `int|string`, a name, and an optional default. The last parameter can be variadic, as in `int ...values`."
         }
         Place::Body | Place::Instantiation | Place::FunctionCall | Place::TryCatchClause => {
-            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, `break` and `continue` without a level, and `try` with `catch` and `finally`, with literals, templates, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, the ternary `c ? a : b`, `(int)`, `(float)` and `(string)`, `++` and `--`, method calls and property reads written with `.` or `?.`, `new Class(...)`, calls of global functions and `throw`."
+            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, `break` and `continue` without a level, and `try` with `catch` and `finally`, with literals, templates, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, the ternary `c ? a : b`, `(int)`, `(float)` and `(string)`, `++` and `--`, method calls and property reads written with `.` or `?.`, `new Class(...)`, calls of global functions, each with positional, named and spread arguments as in `max(...prices)`, and `throw`."
         }
         Place::Attribute => {
             "A PHP# attribute is a class name with optional positional and named arguments, as in `[Field(\"Name\", searchable: true)]`."
@@ -1298,10 +1372,22 @@ pub fn check_function_call(function_call: &FunctionCall, context: &mut Context<'
                 .with_annotation(Annotation::primary(function_call.span()).with_message("Called here."))
                 .with_help("PHP# variables are never created or read by name at runtime."),
         );
+    } else if function.eq_ignore_ascii_case(b"assert")
+        && let [Argument::Positional(argument)] = function_call.argument_list.arguments.as_slice()
+        && argument.ellipsis.is_some()
+    {
+        context.report(
+            Issue::error("Cannot use positional argument after argument unpacking.")
+                .with_annotation(
+                    Annotation::primary(argument.span()).with_message("The only argument of `assert` is a spread."),
+                )
+                .with_note("PHP compiles `assert` with one argument by adding its text as a positional description.")
+                .with_help("Pass the condition without `...`, or pass the description by name after the spread."),
+        );
     }
 }
 
-/// Returns true when `check_function_call` reports the call: a bare member, `compact()` or `extract()`.
+/// Returns true when `check_function_call` reports the whole call: a bare member, `compact()` or `extract()`.
 fn is_checked_function_call(function_call: &FunctionCall, context: &Context<'_, '_, '_>) -> bool {
     let Expression::Identifier(identifier) = function_call.function else {
         return false;

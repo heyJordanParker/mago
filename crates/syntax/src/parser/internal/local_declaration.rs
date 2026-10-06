@@ -9,8 +9,8 @@ impl<'arena, A> Parser<'_, 'arena, A>
 where
     A: Arena,
 {
-    /// Whether a PHP# local declaration starts here: `const`, `let` followed by a name, or a type followed by a name
-    /// and `=`.
+    /// Whether a PHP# local declaration starts here: `const`, `let` followed by a name, or a type, as
+    /// `is_at_typed_local` reads it.
     pub(crate) fn is_at_local_declaration(&mut self) -> Result<bool, ParseError> {
         if !self.dialect.is_sharp() {
             return Ok(false);
@@ -50,12 +50,18 @@ where
         })
     }
 
-    /// Returns `true` when the next tokens read as a type, a name and `=`: a name, an optional `?` written
-    /// right after it, another name and `=`. A spaced `?` is the conditional operator.
+    /// Returns `true` when the next tokens read as a type: a name and an optional `?` written right after it, then
+    /// another name and `=`, or `|`, which starts a union type as in `int|string key = 1;`, or `(`, a name and `|`,
+    /// which start a nullable union as in `(int|string)? key = null;`. A spaced `?` is the conditional operator. The
+    /// token buffer cannot look past a union, so a statement of the bitwise `|`, such as `flags | 1;` or
+    /// `(flags | 1);`, is a parse error while the slice refuses bitwise `|`.
     fn is_at_typed_local(&mut self) -> Result<bool, ParseError> {
         let Some(hint) = self.stream.lookahead(0)? else {
             return Ok(false);
         };
+        if hint.kind == T!["("] {
+            return Ok(self.stream.peek_kind(1)? == Some(T![Identifier]) && self.stream.peek_kind(2)? == Some(T!["|"]));
+        }
         if hint.kind != T![Identifier] {
             return Ok(false);
         }
@@ -70,7 +76,12 @@ where
             _ => 1,
         };
 
-        Ok(self.stream.peek_kind(name)?.is_some_and(|kind| kind.is_identifier_maybe_reserved())
-            && matches!(self.stream.peek_kind(name + 1)?, Some(T!["="])))
+        match self.stream.peek_kind(name)? {
+            Some(T!["|"]) => Ok(true),
+            Some(kind) if kind.is_identifier_maybe_reserved() => {
+                Ok(matches!(self.stream.peek_kind(name + 1)?, Some(T!["="])))
+            }
+            _ => Ok(false),
+        }
     }
 }
