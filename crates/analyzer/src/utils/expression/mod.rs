@@ -42,6 +42,7 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::resolver::static_property::StaticProperty;
+use crate::statement::function_like::unused_parameter::utils::is_super_global_variable;
 use crate::utils::misc::unwrap_expression;
 
 pub mod array;
@@ -229,6 +230,13 @@ pub fn get_bare_name_variable_id(name: &Identifier<'_>, resolved_names: &Resolve
         Binding::Local(_) | Binding::This => Some(php_variable_name(name.value())),
         _ => None,
     }
+}
+
+/// Returns whether a bare PHP# name is a PHP form PHP# removes, which the semantic checks refuse: a superglobal such
+/// as `_SERVER`, or a `__Something__` name.
+pub(crate) fn is_removed_php_name(name: &[u8]) -> bool {
+    is_super_global_variable(php_variable_name(name).as_bytes())
+        || (name.len() > 4 && name.starts_with(b"__") && name.ends_with(b"__"))
 }
 
 /// Returns the name of the variable an expression is: a PHP variable such as `$total`, or a bare PHP# name bound

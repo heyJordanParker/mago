@@ -10,6 +10,7 @@ use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_syntax::cst::ArrayAccess;
 use mago_syntax::cst::Expression;
+use mago_syntax::cst::Variable;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
@@ -17,6 +18,7 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::statement::function_like::unused_parameter::utils::is_super_global_variable;
 use crate::utils::expression::array::get_array_target_type_given_index;
 use crate::utils::expression::expression_is_nullsafe;
 use crate::utils::expression::get_array_access_id;
@@ -139,10 +141,11 @@ pub(crate) fn check_sharp_map_read<A>(
 ) where
     A: Arena,
 {
+    let is_superglobal = matches!(access.array, Expression::Variable(Variable::Direct(variable)) if is_super_global_variable(variable.name));
     let is_map = artifacts.get_expression_type(access.array).is_some_and(|container| {
         container.types.iter().any(|atomic| matches!(atomic, TAtomic::Array(TArray::Keyed(_))))
     });
-    if !is_map {
+    if is_superglobal || !is_map {
         return;
     }
 

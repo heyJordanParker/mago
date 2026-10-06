@@ -46,6 +46,11 @@ fn method(body: &str) -> String {
     format!("namespace App.Tenant;\n\nclass Report\n{{\n    public int run(int extra)\n    {{\n{body}    }}\n}}\n")
 }
 
+/// The plain PHP twin of `method`, whose body reads the parameter as `$extra`.
+fn php_method(body: &str) -> String {
+    format!("<?php\n\nclass Report\n{{\n    public function run(int $extra): int\n    {{\n{body}    }}\n}}\n")
+}
+
 fn leak(code: String) -> &'static str {
     Box::leak(code.into_boxed_str())
 }
@@ -58,7 +63,7 @@ fn the_slice_fixture_has_no_semantic_issues() {
 
 #[test]
 fn every_construct_outside_the_slice_is_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\ntrait Named\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        switch (extra) {\n            default: return 1;\n        }\n        echo extra;\n        const made = new Report;\n        const partial = this.run(...);\n        const text = <<<TEXT\ntotal\nTEXT;\n        return extra;\n    }\n}\n";
+    let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\ntrait Named\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        switch (extra) {\n            default: return 1;\n        }\n        const made = new Report;\n        const partial = this.run(...);\n        const text = <<<TEXT\ntotal\nTEXT;\n        return extra;\n    }\n}\n";
 
     assert_eq!(
         issues(code),
@@ -67,10 +72,9 @@ fn every_construct_outside_the_slice_is_not_supported_yet() {
             "4:1 This statement is not supported yet in PHP#.",
             "10:1 This statement is not supported yet in PHP#.",
             "18:9 This statement is not supported yet in PHP#.",
-            "21:9 This statement is not supported yet in PHP#.",
-            "22:22 This `new` without arguments is not supported yet in PHP#.",
-            "23:25 This expression is not supported yet in PHP#.",
-            "24:22 This expression is not supported yet in PHP#.",
+            "21:22 This `new` without arguments is not supported yet in PHP#.",
+            "22:25 This expression is not supported yet in PHP#.",
+            "23:22 This expression is not supported yet in PHP#.",
         ]
     );
 }
@@ -489,6 +493,89 @@ fn compact_extract_and_global_are_errors() {
     );
 }
 
+/// Spec section 8 removes `echo` and `print`: output goes through `printf` or `fwrite`.
+#[test]
+fn echo_is_an_error_that_names_printf_and_fwrite() {
+    let code = leak(method("        echo \"total\", extra;\n        return extra;\n"));
+    let php = leak(php_method("        echo 'total', $extra;\n        return $extra;\n"));
+
+    assert_eq!(issues(code), ["7:9 PHP# has no `echo`: write `printf` or `fwrite`."]);
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
+}
+
+#[test]
+fn print_is_an_error_that_names_printf_and_fwrite() {
+    let code = leak(method("        const shown = print \"total\";\n        return extra;\n"));
+    let php = leak(php_method("        $shown = print 'total';\n        return $extra;\n"));
+
+    assert_eq!(issues(code), ["7:23 PHP# has no `print`: write `printf` or `fwrite`."]);
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
+}
+
+/// `die("…")` prints its message and exits with status 0, which reports success, so spec section 8 removes `die`.
+#[test]
+fn die_in_every_form_is_an_error_that_names_stderr_and_exit() {
+    let code = leak(method(
+        "        die;\n        die();\n        die(\"failed\");\n        die(1);\n        return extra;\n",
+    ));
+    let php = leak(php_method(
+        "        die;\n        die();\n        die('failed');\n        die(1);\n        return $extra;\n",
+    ));
+    let message = "PHP# has no `die`: write the message to STDERR, then `exit(1)`.";
+
+    assert_eq!(
+        issues(code),
+        [format!("7:9 {message}"), format!("8:9 {message}"), format!("9:9 {message}"), format!("10:9 {message}")]
+    );
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
+}
+
+/// `exit("…")` prints its message and exits with status 0, as `die("…")` does. The engine runs a `.sharp` file
+/// without the analyzer, which refuses an argument that is not an `int`, so `check_slice` refuses a string literal or
+/// a template, in parentheses or not.
+#[test]
+fn exit_with_a_string_literal_is_an_error_as_die_is() {
+    let code = leak(method(
+        "        exit(\"failed\");\n        exit(status: \"failed\");\n        exit(`failed`);\n        exit((\"failed\"));\n        exit(((\"failed\")));\n        return extra;\n",
+    ));
+    let php = leak(php_method(
+        "        exit('failed');\n        exit(status: 'failed');\n        exit(\"failed $extra\");\n        exit(('failed'));\n        exit((('failed')));\n        return $extra;\n",
+    ));
+    let message = "PHP# has no `die`: write the message to STDERR, then `exit(1)`.";
+
+    assert_eq!(
+        issues(code),
+        [
+            format!("7:9 {message}"),
+            format!("8:9 {message}"),
+            format!("9:9 {message}"),
+            format!("10:9 {message}"),
+            format!("11:9 {message}"),
+        ]
+    );
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
+}
+
+#[test]
+fn exit_without_parentheses_is_an_error_that_names_the_call() {
+    let code = leak(method("        exit;\n        return extra;\n"));
+    let php = leak(php_method("        exit;\n        return $extra;\n"));
+
+    assert_eq!(issues(code), ["7:9 PHP# calls `exit` as a function: write `exit(0)`."]);
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
+}
+
+/// Spec section 8 keeps `exit(code)` as PHP 8.4's built-in function.
+#[test]
+fn exit_with_a_code_or_without_arguments_is_in_the_slice() {
+    let code = leak(
+        method("        exit(1);\n        exit(code);\n        exit(status: code);\n        exit();\n        return code;\n")
+            .replace("int extra", "int code"),
+    );
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
 #[test]
 fn a_dollar_variable_in_a_double_quoted_string_is_text() {
     let code = leak(method("        return \"{$extra} $extra ${extra}\";\n"));
@@ -845,6 +932,216 @@ fn a_local_or_parameter_named_after_a_superglobal_is_an_error() {
             "5:24 `GLOBALS` is the name of a PHP superglobal: rename this parameter.",
             "7:13 `_GET` is the name of a PHP superglobal: rename this local.",
         ]
+    );
+}
+
+/// Spec section 29 removes every superglobal, written with `$` or bare as in `_SERVER["HTTP_HOST"]`.
+#[test]
+fn a_superglobal_with_or_without_dollar_is_an_error_that_names_a_request() {
+    let code = leak(method(
+        "        Store.keep(GLOBALS[\"a\"], $GLOBALS);\n        Store.keep(_SERVER[\"a\"], $_SERVER);\n        Store.keep(_GET[\"a\"], $_GET);\n        Store.keep(_POST[\"a\"], $_POST);\n        Store.keep(_FILES[\"a\"], $_FILES);\n        Store.keep(_COOKIE[\"a\"], $_COOKIE);\n        Store.keep(_SESSION[\"a\"], $_SESSION);\n        Store.keep(_REQUEST[\"a\"], $_REQUEST);\n        Store.keep(_ENV[\"a\"], $_ENV);\n        return extra;\n",
+    ));
+    let php = leak(php_method(
+        "        Store::keep(GLOBALS['a'], $GLOBALS);\n        Store::keep(_SERVER['a'], $_SERVER);\n        Store::keep(_GET['a'], $_GET);\n        Store::keep(_POST['a'], $_POST);\n        Store::keep(_FILES['a'], $_FILES);\n        Store::keep(_COOKIE['a'], $_COOKIE);\n        Store::keep(_SESSION['a'], $_SESSION);\n        Store::keep(_REQUEST['a'], $_REQUEST);\n        Store::keep(_ENV['a'], $_ENV);\n        return $extra;\n",
+    ));
+    let message = "PHP# has no superglobals; take a Request";
+
+    assert_eq!(
+        issues(code),
+        [
+            format!("7:20 {message}"),
+            format!("7:34 {message}"),
+            format!("8:20 {message}"),
+            format!("8:34 {message}"),
+            format!("9:20 {message}"),
+            format!("9:31 {message}"),
+            format!("10:20 {message}"),
+            format!("10:32 {message}"),
+            format!("11:20 {message}"),
+            format!("11:33 {message}"),
+            format!("12:20 {message}"),
+            format!("12:34 {message}"),
+            format!("13:20 {message}"),
+            format!("13:35 {message}"),
+            format!("14:20 {message}"),
+            format!("14:35 {message}"),
+            format!("15:20 {message}"),
+            format!("15:31 {message}"),
+        ]
+    );
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
+}
+
+/// A write to a superglobal's element names the request as a read does, not the write target.
+#[test]
+fn a_write_to_a_superglobal_is_an_error_that_names_a_request() {
+    let code = leak(method(
+        "        _SESSION[\"user\"] = extra;\n        $_SESSION[\"user\"] = extra;\n        _GET[\"n\"]++;\n        return extra;\n",
+    ));
+    let php = leak(php_method(
+        "        _SESSION['user'] = $extra;\n        $_SESSION['user'] = $extra;\n        _GET['n']++;\n        return $extra;\n",
+    ));
+    let message = "PHP# has no superglobals; take a Request";
+
+    assert_eq!(issues(code), [format!("7:9 {message}"), format!("8:9 {message}"), format!("9:9 {message}")]);
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
+}
+
+/// A constant expression that reads a superglobal, or a member of one or of a `__Something__` name, names the
+/// replacement, as a method body does: a parameter default, an attribute argument and a constant's value.
+#[test]
+fn a_superglobal_in_a_constant_expression_is_an_error_that_names_a_request() {
+    let code = leak(
+        method("        return 1;\n")
+            .replace("{\n    public int run", "{\n    public const int A = __Foo__.bar;\n    [Field(_SERVER.x)]\n    public int run")
+            .replace(
+                "int extra",
+                "string host = _SERVER[\"HTTP_HOST\"], string other = $_SERVER[\"HTTP_HOST\"], string server = _SERVER.HTTP_HOST, int line = __Foo__.bar",
+            ),
+    );
+    let php = leak(
+        php_method("        return 1;\n")
+            .replace(
+                "{\n    public function run",
+                "{\n    public const int A = __Foo__::bar;\n    #[Field(_SERVER::X)]\n    public function run",
+            )
+            .replace(
+                "int $extra",
+                "string $host = _SERVER['HTTP_HOST'], string $other = $_SERVER['HTTP_HOST'], string $server = _SERVER::HTTP_HOST, int $line = __Foo__::bar",
+            ),
+    );
+    let message = "PHP# has no superglobals; take a Request";
+    let magic = "PHP# has no `__Foo__`: `Position.current()` gives the file, directory, line, column and function.";
+
+    assert_eq!(
+        issues(code),
+        [
+            format!("5:26 {magic}"),
+            format!("6:12 {message}"),
+            format!("7:34 {message}"),
+            format!("7:71 {message}"),
+            format!("7:110 {message}"),
+            format!("7:140 {magic}"),
+        ]
+    );
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
+}
+
+/// A superglobal or a `__Something__` name before `.` or `?.` binds as a class, and is refused as its bare form is. A
+/// class whose name only starts with `_` is read as a class.
+#[test]
+fn a_superglobal_or_a_double_underscore_name_before_a_member_is_an_error() {
+    let code = leak(method(
+        "        Store.keep(_SERVER.x);\n        Store.keep(GLOBALS.x);\n        _SERVER.read();\n        _SERVER.x = 1;\n        Store.keep(__Foo__.bar);\n        __Foo__.bar();\n        Store.keep(_SERVER?.x);\n        Store.keep(_Helper.x);\n        return extra;\n",
+    ));
+    let php = leak(php_method(
+        "        Store::keep(_SERVER::$x);\n        Store::keep(GLOBALS::$x);\n        _SERVER::read();\n        _SERVER::$x = 1;\n        Store::keep(__Foo__::$bar);\n        __Foo__::bar();\n        Store::keep(_SERVER?->x);\n        Store::keep(_Helper::$x);\n        return $extra;\n",
+    ));
+    let superglobal = "PHP# has no superglobals; take a Request";
+    let magic = "PHP# has no `__Foo__`: `Position.current()` gives the file, directory, line, column and function.";
+
+    assert_eq!(
+        issues(code),
+        [
+            format!("7:20 {superglobal}"),
+            format!("8:20 {superglobal}"),
+            format!("9:9 {superglobal}"),
+            format!("10:9 {superglobal}"),
+            format!("11:20 {magic}"),
+            format!("12:9 {magic}"),
+            format!("13:20 {superglobal}"),
+        ]
+    );
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
+}
+
+/// Spec section 27 removes PHP's magic constants and every other `__Something__` name, in a body and in a constant
+/// expression, and `Position` says where code sits. Each error names the magic constant as written.
+#[test]
+fn a_magic_constant_or_another_double_underscore_name_is_an_error_that_names_position() {
+    let code = leak(
+        method(
+            "        Store.keep(__DIR__);\n        Store.keep(__FILE__);\n        Store.keep(__LINE__);\n        Store.keep(__FUNCTION__);\n        Store.keep(__METHOD__);\n        Store.keep(__CLASS__);\n        Store.keep(__NAMESPACE__);\n        Store.keep(__TRAIT__);\n        Store.keep(__PROPERTY__);\n        Store.keep(__COMPILER_HALT_OFFSET__);\n        Store.keep(__dir__);\n        Store.keep(____, __Version);\n        return extra;\n",
+        )
+        .replace("int extra", "int extra = __LINE__"),
+    );
+    let php = leak(
+        php_method(
+            "        Store::keep(__DIR__);\n        Store::keep(__FILE__);\n        Store::keep(__LINE__);\n        Store::keep(__FUNCTION__);\n        Store::keep(__METHOD__);\n        Store::keep(__CLASS__);\n        Store::keep(__NAMESPACE__);\n        Store::keep(__TRAIT__);\n        Store::keep(__PROPERTY__);\n        Store::keep(__COMPILER_HALT_OFFSET__);\n        Store::keep(__dir__);\n        Store::keep(____, __Version);\n        return $extra;\n",
+        )
+        .replace("int $extra", "int $extra = __LINE__"),
+    );
+    let position = "`Position.current()` gives the file, directory, line, column and function.";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:32 PHP# has no `__LINE__`: write `Position.current().line`.".to_owned(),
+            "7:20 PHP# has no `__DIR__`: write `Position.current().directory`.".to_owned(),
+            "8:20 PHP# has no `__FILE__`: write `Position.current().file`.".to_owned(),
+            "9:20 PHP# has no `__LINE__`: write `Position.current().line`.".to_owned(),
+            "10:20 PHP# has no `__FUNCTION__`: write `Position.current().function`.".to_owned(),
+            "11:20 PHP# has no `__METHOD__`: write `Position.current().function`.".to_owned(),
+            "12:20 PHP# has no `__CLASS__`: write `typeof(Class)` with the class's name.".to_owned(),
+            "13:20 PHP# has no `__NAMESPACE__`: write `Position.current().function`, which starts with the namespace."
+                .to_owned(),
+            format!("14:20 PHP# has no `__TRAIT__`: {position}"),
+            format!("15:20 PHP# has no `__PROPERTY__`: {position}"),
+            format!("16:20 PHP# has no `__COMPILER_HALT_OFFSET__`: {position}"),
+            "17:20 PHP# has no `__dir__`: write `Position.current().directory`.".to_owned(),
+        ]
+    );
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
+}
+
+/// A declared `__Something__` name is refused as a read of one is, in every kind of declaration. A method named as
+/// PHP's magic methods are, starting but not ending with `__`, keeps its own error.
+#[test]
+fn a_declared_double_underscore_name_is_an_error_that_names_position() {
+    let code = "namespace App.Tenant;\n\nclass __Shape__\n{\n}\n\ninterface __Named__\n{\n    int __area__(int __side__);\n}\n\nenum __Suit__\n{\n    case __Hearts__;\n}\n\nclass Report\n{\n    private int __count__ = 0;\n    public int __views__ { get; set; }\n    public string __slug__ => \"a\";\n    public const int __MAX__ = 1;\n\n    public Report(private int __kept__)\n    {\n    }\n\n    public int __run__(int __extra__)\n    {\n        let __a__ = 1;\n        const __b__ = 2;\n        int __c__ = 3;\n        for (let __i__ = 0; __i__ < 1; __i__++) {\n        }\n        for (const __v__ of Store.values()) {\n        }\n        try {\n        } catch (Missing __e__) {\n        }\n        const f = (int __x__) => __x__;\n        return 1;\n    }\n\n    public int __get(string name) => 1;\n}\n";
+    let php = "<?php\n\nclass __Shape__\n{\n}\n\ninterface __Named__\n{\n    public function __area__(int $__side__): int;\n}\n\nenum __Suit__\n{\n    case __Hearts__;\n}\n\nclass Report\n{\n    private int $__count__ = 0;\n    public int $__views__ = 0;\n    public string $__slug__ { get => \"a\"; }\n    public const int __MAX__ = 1;\n\n    public function __construct(private int $__kept__)\n    {\n    }\n\n    public function __run__(int $__extra__): int\n    {\n        $__a__ = 1;\n        for ($__i__ = 0; $__i__ < 1; $__i__++) {\n        }\n        foreach ([] as $__v__) {\n        }\n        try {\n        } catch (Missing $__e__) {\n        }\n        $f = fn (int $__x__) => $__x__;\n        return 1;\n    }\n}\n";
+    let position = "`Position.current()` gives the file, directory, line, column and function.";
+
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
+    assert_eq!(
+        issues(code),
+        [
+            format!("3:7 PHP# has no `__Shape__`: {position}"),
+            format!("7:11 PHP# has no `__Named__`: {position}"),
+            format!("9:9 PHP# has no `__area__`: {position}"),
+            format!("9:22 PHP# has no `__side__`: {position}"),
+            format!("12:6 PHP# has no `__Suit__`: {position}"),
+            format!("14:10 PHP# has no `__Hearts__`: {position}"),
+            format!("19:17 PHP# has no `__count__`: {position}"),
+            format!("20:16 PHP# has no `__views__`: {position}"),
+            format!("21:19 PHP# has no `__slug__`: {position}"),
+            format!("22:22 PHP# has no `__MAX__`: {position}"),
+            format!("24:31 PHP# has no `__kept__`: {position}"),
+            format!("28:16 PHP# has no `__run__`: {position}"),
+            format!("28:28 PHP# has no `__extra__`: {position}"),
+            format!("30:13 PHP# has no `__a__`: {position}"),
+            format!("31:15 PHP# has no `__b__`: {position}"),
+            format!("32:13 PHP# has no `__c__`: {position}"),
+            format!("33:18 PHP# has no `__i__`: {position}"),
+            format!("35:20 PHP# has no `__v__`: {position}"),
+            format!("38:26 PHP# has no `__e__`: {position}"),
+            format!("40:24 PHP# has no `__x__`: {position}"),
+            "44:16 This method name is not supported yet in PHP#.".to_owned(),
+        ]
+    );
+}
+
+/// A constructor carries its class's name, so a `__Something__` class reports its name once, at the class.
+#[test]
+fn a_double_underscore_class_with_a_constructor_reports_its_name_once() {
+    let code = "namespace App.Tenant;\n\nclass __Shape__\n{\n    public __Shape__()\n    {\n    }\n}\n";
+    let php = "<?php\n\nclass __Shape__\n{\n    public function __construct()\n    {\n    }\n}\n";
+
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
+    assert_eq!(
+        issues(code),
+        ["3:7 PHP# has no `__Shape__`: `Position.current()` gives the file, directory, line, column and function."
+            .to_owned()]
     );
 }
 
@@ -1935,10 +2232,47 @@ fn bool_array_and_object_casts_do_not_exist_in_php_sharp() {
         issues(code),
         [
             "7:19 PHP# has no `(bool)`: compare the value instead, as in `count > 0` or `flag == \"1\"`.",
-            "8:19 PHP# has no `(array)`: `(int)`, `(float)` and `(string)` convert between numbers only.",
-            "9:19 PHP# has no `(object)`: `(int)`, `(float)` and `(string)` convert between numbers only.",
+            "8:19 PHP# has no `(array)`: write a struct's `parse(extra)` for an object, or `List.wrap(extra)` for a value.",
+            "9:19 PHP# has no `(object)`: write a `Map` literal, or a struct.",
         ]
     );
+}
+
+/// Spec section 24 replaces `(array)` with a struct's `parse` for an object and `List.wrap` for a value, and names a
+/// bare operand, as its `(array)row` does.
+#[test]
+fn an_array_cast_is_an_error_that_names_parse_and_list_wrap() {
+    let code = leak(
+        method(
+            "        const data = (array)row;\n        const items = (array)this.list();\n        const server = (array)_SERVER;\n        const version = (array)__VERSION__;\n        return 1;\n",
+        )
+        .replace("int extra", "int row"),
+    );
+    let php = leak(php_method(
+        "        $data = (array)$extra;\n        $items = (array)$this->list();\n        $server = (array)$_SERVER;\n        $version = (array)__VERSION__;\n        return 1;\n",
+    ));
+    let value = "write a struct's `parse(value)` for an object, or `List.wrap(value)` for a value.";
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:22 PHP# has no `(array)`: write a struct's `parse(row)` for an object, or `List.wrap(row)` for a value."
+                .to_owned(),
+            format!("8:23 PHP# has no `(array)`: {value}"),
+            format!("9:24 PHP# has no `(array)`: {value}"),
+            format!("10:25 PHP# has no `(array)`: {value}"),
+        ]
+    );
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
+}
+
+#[test]
+fn an_object_cast_is_an_error_that_names_a_map_literal_and_a_struct() {
+    let code = leak(method("        const row = (object)extra;\n        return 1;\n"));
+    let php = leak(php_method("        $row = (object)$extra;\n        return 1;\n"));
+
+    assert_eq!(issues(code), ["7:21 PHP# has no `(object)`: write a `Map` literal, or a struct."]);
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
 }
 
 #[test]

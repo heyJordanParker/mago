@@ -1236,6 +1236,154 @@ fn a_cast_of_a_value_that_is_not_a_number_is_an_invalid_operand() {
     );
 }
 
+/// In a `.sharp` file, an `exit` argument that can hold a string gets the `die` message, because `exit("…")` prints the
+/// message and exits with status 0, which reports success. A `.php` file still takes it.
+#[test]
+fn exit_with_a_value_that_is_not_an_int_names_the_message_to_write_and_exit_1() {
+    let any = "<?php\n\nnamespace Lib;\n\nfinal class Any\n{\n    public static function value(): mixed\n    {\n        return 1;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Any;\n\nclass Shutdown\n{\n    public void reason(string reason)\n    {\n        exit(reason);\n    }\n\n    public void either(int|string status)\n    {\n        exit(status);\n    }\n\n    public void any()\n    {\n        exit(Any.value());\n    }\n\n    public void named(string reason)\n    {\n        exit(status: reason);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Shutdown\n{\n    public function reason(string $reason): void\n    {\n        exit($reason);\n    }\n\n    public function either(int|string $status): void\n    {\n        exit($status);\n    }\n}\n";
+    let others = [("src/Lib/Any.php", any)];
+
+    assert_eq!(
+        issues(("src/Demo/Shutdown.sharp", sharp), &others),
+        ["9:9 invalid-argument", "14:9 invalid-argument", "19:9 invalid-argument", "24:9 invalid-argument"]
+    );
+    let refusals = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Shutdown.sharp", sharp), &others);
+    for refusal in &refusals {
+        assert_eq!(refusal.message, "PHP# has no `die`: write the message to STDERR, then `exit(1)`.");
+        assert_eq!(
+            refusal.notes,
+            ["`die(\"…\")` and `exit(\"…\")` print the message and exit with status 0, which reports success."]
+        );
+    }
+    let annotations: Vec<String> =
+        refusals.iter().filter_map(|issue| issue.primary_annotation()?.message.clone()).collect();
+    assert_eq!(
+        annotations,
+        [
+            "This is `string`, not an `int`.",
+            "This is `int|string`, not an `int`.",
+            "This is `mixed`, not an `int`.",
+            "This is `string`, not an `int`.",
+        ]
+    );
+    assert_eq!(issues(("src/Demo/Shutdown.php", php), &[]), Vec::<String>::new());
+}
+
+/// An `exit` argument that cannot hold a string is no message, so it names the `int` status `exit` takes.
+#[test]
+fn exit_with_a_value_that_cannot_be_a_message_names_the_int_status() {
+    let sharp = "namespace Demo;\n\nclass Shutdown\n{\n    public void maybe(int? code)\n    {\n        exit(code);\n    }\n\n    public void fraction(float code)\n    {\n        exit(code);\n    }\n\n    public void flag(bool done)\n    {\n        exit(done);\n    }\n\n    public void listed(List<int> codes)\n    {\n        exit(codes);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Shutdown.sharp", sharp), &[]),
+        ["7:9 invalid-argument", "12:9 invalid-argument", "17:9 invalid-argument", "22:9 invalid-argument"]
+    );
+    let refusals = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Shutdown.sharp", sharp), &[]);
+    let messages: Vec<&str> = refusals.iter().map(|issue| issue.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [
+            "`exit` takes an `int` status: this is `int|null`.",
+            "`exit` takes an `int` status: this is `float`.",
+            "`exit` takes an `int` status: this is `bool`.",
+            "`exit` takes an `int` status: this is `list<int>`.",
+        ]
+    );
+    for refusal in &refusals {
+        assert_eq!(
+            refusal.primary_annotation().and_then(|annotation| annotation.message.as_deref()),
+            Some("This status is not an `int`.")
+        );
+        assert!(refusal.notes.is_empty(), "{:?}", refusal.notes);
+    }
+}
+
+#[test]
+fn exit_with_an_int_or_no_value_adds_no_issue() {
+    let sharp = "namespace Demo;\n\nclass Shutdown\n{\n    public void code(int code)\n    {\n        exit(code);\n    }\n\n    public void failed()\n    {\n        exit(1);\n    }\n\n    public void done()\n    {\n        exit();\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Shutdown.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// The engine runs a `.sharp` file through the semantic checks but never the analyzer, so the semantic checks refuse
+/// `exit` with a string literal or a template, parenthesized or not, and the analyzer adds no second issue.
+#[test]
+fn exit_with_a_string_literal_is_left_to_the_semantic_checks() {
+    let sharp = "namespace Demo;\n\nclass Shutdown\n{\n    public void stop()\n    {\n        exit(\"m\");\n    }\n\n    public void template()\n    {\n        exit(`m`);\n    }\n\n    public void parenthesized()\n    {\n        exit((\"m\"));\n    }\n\n    public void nested()\n    {\n        exit(((\"m\")));\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Shutdown.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// The semantic checks refuse a superglobal and a `__Something__` name in a `.sharp` file, so the analyzer adds no
+/// follow-on issue that would steer a moved file toward keeping them. A `.php` file keeps its issues.
+#[test]
+fn a_superglobal_or_magic_name_is_left_to_the_semantic_checks() {
+    let sharp = "namespace App;\n\nclass Request\n{\n    public void read()\n    {\n        const host = _SERVER[\"HTTP_HOST\"];\n        const all = GLOBALS;\n        const env = _ENV;\n        const magic = __Something__;\n        const dollar = $_SERVER[\"HTTP_HOST\"];\n    }\n}\n";
+    let php = "<?php\n\nnamespace App;\n\nclass Request\n{\n    public function read(): void\n    {\n        $host = _SERVER[\"HTTP_HOST\"];\n        $all = GLOBALS;\n        $env = _ENV;\n        $magic = __Something__;\n        $dollar = $_SERVER[\"HTTP_HOST\"];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/App/Request.php", php), &[]),
+        [
+            "9:17 non-existent-constant",
+            "9:9 mixed-assignment",
+            "10:16 non-existent-constant",
+            "10:9 mixed-assignment",
+            "11:16 non-existent-constant",
+            "11:9 mixed-assignment",
+            "12:18 non-existent-constant",
+            "12:9 mixed-assignment",
+        ]
+    );
+    assert_eq!(
+        issues(("src/App/Request.sharp", sharp), &[]),
+        ["7:15 mixed-assignment", "8:15 mixed-assignment", "9:15 mixed-assignment", "10:15 mixed-assignment"]
+    );
+}
+
+/// The semantic checks refuse a superglobal or a `__Something__` name written before `.`, so the analyzer resolves no
+/// class for it and adds no follow-on issue. A `.php` file keeps its issues.
+#[test]
+fn a_member_of_a_superglobal_or_magic_name_is_left_to_the_semantic_checks() {
+    let sharp = "namespace App;\n\nclass Request\n{\n    public const int LIMIT = __Foo__.y;\n\n    public void read()\n    {\n        const a = _SERVER.x;\n        _SERVER.read();\n        __Foo__.bar();\n    }\n}\n";
+    let php = "<?php\n\nnamespace App;\n\nclass Request\n{\n    public const int LIMIT = __Foo__::y;\n\n    public function read(): void\n    {\n        $a = _SERVER::x;\n        _SERVER::read();\n        __Foo__::bar();\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/App/Request.php", php), &[]),
+        [
+            "7:30 non-existent-class-like",
+            "11:14 non-existent-class-like",
+            "11:9 impossible-assignment",
+            "12:18 non-existent-method",
+            "13:18 non-existent-method",
+        ]
+    );
+    assert_eq!(issues(("src/App/Request.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn exit_checks_only_its_first_argument() {
+    let sharp =
+        "namespace Demo;\n\nclass Shutdown\n{\n    public void stop()\n    {\n        exit(1, 2.5);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Shutdown.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn exit_with_a_never_value_has_the_issues_of_its_php_twin() {
+    let halt = "<?php\n\nnamespace Lib;\n\nfinal class Halt\n{\n    public static function now(): never\n    {\n        exit(1);\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Halt;\n\nclass Shutdown\n{\n    public void stop()\n    {\n        exit(Halt.now());\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Halt;\n\nclass Shutdown\n{\n    public function stop(): void\n    {\n        exit(Halt::now());\n    }\n}\n";
+    let others = [("src/Lib/Halt.php", halt)];
+
+    let sharp_issues = issues(("src/Demo/Shutdown.sharp", sharp), &others);
+    let php_issues = issues(("src/Demo/Shutdown.php", php), &others);
+
+    assert_eq!(sharp_issues, ["9:14 no-value"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
 #[test]
 fn int_and_float_parse_have_the_types_of_the_sharp_library_classes() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int count(string text, int? fallback)\n    {\n        const price = Float.parse(text) + (Float.tryParse(fallback) ?? 0.0);\n        const count = Int.parse(text) + (Int.tryParse(null) ?? 0);\n        return price > 1.0 ? count : Int.tryParse(text);\n    }\n}\n";

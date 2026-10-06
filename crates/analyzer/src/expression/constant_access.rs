@@ -19,6 +19,7 @@ use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::expression::variable::read_variable;
 use crate::utils::expression::get_bare_name_variable_id;
+use crate::utils::expression::is_removed_php_name;
 use mago_bytes::BytesDisplay;
 
 impl<'arena> Analyzable<'_, 'arena> for ConstantAccess<'arena> {
@@ -38,16 +39,24 @@ impl<'arena> Analyzable<'_, 'arena> for ConstantAccess<'arena> {
             return Ok(());
         }
 
+        let binding = context.resolved_names.binding(&self.name);
+
         // The semantic checks report a bare member, and a class is only ever the object of a member access.
-        if let Some(Binding::Class | Binding::Member) = context.resolved_names.binding(&self.name) {
+        if let Some(Binding::Class | Binding::Member) = binding {
             artifacts.set_expression_type(self, get_mixed());
 
             return Ok(());
         }
 
+        // The semantic checks report a superglobal and a `__Something__` name in PHP#. The refused value has no type,
+        // as an undefined constant has none, so reading it adds no second issue.
+        let unqualified_name = self.name.value();
+        if context.dialect.is_sharp() && binding == Some(Binding::Constant) && is_removed_php_name(unqualified_name) {
+            return Ok(());
+        }
+
         let name_bytes = context.resolved_names.get(self);
         let name = BytesDisplay(name_bytes);
-        let unqualified_name = self.name.value();
 
         let constant_metadata =
             context.codebase.get_constant(name_bytes).or_else(|| context.codebase.get_constant(unqualified_name));

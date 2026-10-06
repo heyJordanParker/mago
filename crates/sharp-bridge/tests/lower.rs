@@ -196,7 +196,9 @@ fn php_syntax_returns_a_parse_error_and_no_nodes() {
 
 #[test]
 fn a_construct_outside_the_slice_returns_its_not_supported_error() {
-    let lowered = Lowered::new(&method("        echo extra;\n        return 1;\n"));
+    let lowered = Lowered::new(&method(
+        "        switch (extra) {\n            default: return 1;\n        }\n        return 1;\n",
+    ));
 
     assert_eq!(lowered.diagnostics(), ["9:9 compile error: This statement is not supported yet in PHP#."]);
 }
@@ -304,7 +306,7 @@ fn a_file_of_any_name_is_parsed_and_checked_as_php_sharp() {
     assert_eq!(lowered.diagnostics(), Vec::<String>::new());
 
     let refused = Lowered::named("src/Upper.SHARP", &method("        echo extra;\n        return 1;\n"));
-    assert_eq!(refused.diagnostics(), ["9:9 compile error: This statement is not supported yet in PHP#."]);
+    assert_eq!(refused.diagnostics(), ["9:9 compile error: PHP# has no `echo`: write `printf` or `fwrite`."]);
 }
 
 /// The Zend scanner ends a line at `\n`, `\r\n` and a lone `\r`, and stops on the line after the last line ending.
@@ -347,7 +349,7 @@ fn every_line_is_the_line_the_zend_scanner_counts() {
     assert_eq!(lines, [("SHARP_AST_RETURN".to_owned(), 5, 0), ("SHARP_AST_METHOD".to_owned(), 3, 6)]);
 
     let refused = Lowered::new("class Report\r{\r    public void run() { echo 1; }\r}\r");
-    assert_eq!(refused.diagnostics(), ["3:25 compile error: This statement is not supported yet in PHP#."]);
+    assert_eq!(refused.diagnostics(), ["3:25 compile error: PHP# has no `echo`: write `printf` or `fwrite`."]);
 }
 
 /// ```php
@@ -3418,6 +3420,36 @@ fn a_function_call_is_a_call_of_the_global_function() {
                             NAMED_ARG
                               ZVAL "mode"
                               ZVAL 0
+        "#}
+    );
+}
+
+/// ```php
+/// exit(1);
+/// exit($extra);
+/// exit();
+/// ```
+///
+/// PHP 8.4 makes `exit` a function, so php-src's grammar builds `exit(…)` as a call of the global function `exit`,
+/// named with `ZEND_NAME_FQ`, which is 0.
+#[test]
+fn exit_is_a_call_of_the_global_function_exit() {
+    assert_eq!(
+        body("        exit(1);\n        exit(extra);\n        exit();\n"),
+        indoc! {r#"
+            STMT_LIST
+              CALL
+                ZVAL "exit"
+                ARG_LIST
+                  ZVAL 1
+              CALL
+                ZVAL "exit"
+                ARG_LIST
+                  VAR
+                    ZVAL "extra"
+              CALL
+                ZVAL "exit"
+                ARG_LIST
         "#}
     );
 }

@@ -29,10 +29,12 @@ use mago_syntax::cst::Closure;
 use mago_syntax::cst::CompositeString;
 use mago_syntax::cst::Conditional;
 use mago_syntax::cst::ConstantAccess;
+use mago_syntax::cst::Construct;
 use mago_syntax::cst::DirectVariable;
 use mago_syntax::cst::Enum;
 use mago_syntax::cst::EnumCase;
 use mago_syntax::cst::EnumCaseItem;
+use mago_syntax::cst::ExitConstruct;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::For;
 use mago_syntax::cst::ForBody;
@@ -1043,6 +1045,12 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                     _ => self.string(ZEND_NAME_FQ, self.line(function), function.value()),
                 };
                 let arguments = self.arguments(argument_list);
+
+                self.node(SHARP_AST_CALL, 0, line, &[function, arguments])
+            }
+            Expression::Construct(Construct::Exit(ExitConstruct { arguments: Some(arguments), .. })) => {
+                let function = self.string(ZEND_NAME_FQ, line, b"exit");
+                let arguments = self.arguments(arguments);
 
                 self.node(SHARP_AST_CALL, 0, line, &[function, arguments])
             }

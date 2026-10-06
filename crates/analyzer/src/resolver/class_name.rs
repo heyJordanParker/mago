@@ -30,6 +30,7 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::utils::expression::expression_is_nullsafe;
+use crate::utils::expression::is_removed_php_name;
 use crate::utils::names::display_class_like_name;
 
 /// Describes the origin and nature of a class name resolution.
@@ -256,7 +257,12 @@ where
         Expression::ConstantAccess(constant_access)
             if context.resolved_names.binding(&constant_access.name) == Some(Binding::Class) =>
         {
-            possible_types.push(resolve_named_class(context, block_context, &constant_access.name));
+            // The semantic checks refuse a superglobal or a `__Something__` name in PHP#, so it names no class.
+            if context.dialect.is_sharp() && is_removed_php_name(constant_access.name.value()) {
+                possible_types.push(ResolvedClassname::invalid());
+            } else {
+                possible_types.push(resolve_named_class(context, block_context, &constant_access.name));
+            }
         }
         Expression::Self_(self_keyword) if !context.dialect.is_sharp() => {
             if let Some(self_class) = block_context.scope.get_class_like() {
