@@ -64,7 +64,7 @@ impl Lowered {
                     sharp_severity::SHARP_COMPILE_ERROR => "compile error",
                 };
 
-                format!("{}:{} {severity}: {}", diagnostic.line, diagnostic.column, text(diagnostic.message))
+                format!("{}:{} {severity}: {}", diagnostic.line, diagnostic.column, self.text(diagnostic.message))
             })
             .collect()
     }
@@ -81,7 +81,7 @@ impl Lowered {
         let method = self
             .nodes()
             .iter()
-            .position(|node| node.kind == sharp_kind::SHARP_AST_METHOD && text(node.text) == "run")
+            .position(|node| node.kind == sharp_kind::SHARP_AST_METHOD && self.text(node.text) == "run")
             .expect("the source declares `run`");
 
         self.render(self.child(method as u32, 2))
@@ -120,7 +120,7 @@ impl Lowered {
                     sharp_value::SHARP_TRUE => write!(tree, " true"),
                     sharp_value::SHARP_LONG => write!(tree, " {}", node.long_value),
                     sharp_value::SHARP_DOUBLE => write!(tree, " {:?}", node.double_value),
-                    sharp_value::SHARP_STRING => write!(tree, " {:?}", text(node.text)),
+                    sharp_value::SHARP_STRING => write!(tree, " {:?}", self.text(node.text)),
                 };
             }
             sharp_kind::SHARP_AST_CLASS
@@ -128,7 +128,7 @@ impl Lowered {
             | sharp_kind::SHARP_AST_PROPERTY_HOOK
             | sharp_kind::SHARP_AST_CLOSURE
             | sharp_kind::SHARP_AST_ARROW_FUNC => {
-                let _ = write!(tree, " {:?} @{}-{}", text(node.text), node.line, node.end_line);
+                let _ = write!(tree, " {:?} @{}-{}", self.text(node.text), node.line, node.end_line);
             }
             _ => {}
         }
@@ -137,6 +137,13 @@ impl Lowered {
         for child in 0..node.child_count {
             self.render_into(self.child(index, child), depth + 1, tree);
         }
+    }
+
+    fn text(&self, text: sharp_str) -> String {
+        // SAFETY: the unit owns `texts_size` bytes at `texts`, and `text` lies inside them.
+        let texts = unsafe { array(self.unit().texts.cast::<u8>(), self.unit().texts_size) };
+
+        String::from_utf8_lossy(&texts[text.offset as usize..(text.offset + text.len) as usize]).into_owned()
     }
 }
 
@@ -157,11 +164,6 @@ unsafe fn array<'unit, T>(pointer: *const T, len: usize) -> &'unit [T] {
 
     // SAFETY: the caller passes `len` values at `pointer`.
     unsafe { slice::from_raw_parts(pointer, len) }
-}
-
-fn text(text: sharp_str) -> String {
-    // SAFETY: the unit owns `len` bytes at `ptr`.
-    String::from_utf8_lossy(unsafe { array(text.ptr.cast::<u8>(), text.len) }).into_owned()
 }
 
 /// A file declaring the method `run` with `body`. Its body starts on line 9.
@@ -1302,7 +1304,7 @@ fn a_constructor_parameter_with_an_access_modifier_is_a_promoted_parameter() {
         .map(|(index, node)| {
             assert_eq!(lowered.child(index as u32, 5), u32::MAX, "a promoted parameter has no hooks");
 
-            (text(lowered.nodes()[lowered.child(index as u32, 1) as usize].text), node.attr)
+            (lowered.text(lowered.nodes()[lowered.child(index as u32, 1) as usize].text), node.attr)
         })
         .collect();
 
@@ -1593,7 +1595,7 @@ fn method_modifiers_become_the_method_flags() {
         .nodes()
         .iter()
         .filter(|node| node.kind == sharp_kind::SHARP_AST_METHOD)
-        .map(|node| (text(node.text), node.attr))
+        .map(|node| (lowered.text(node.text), node.attr))
         .collect();
 
     assert_eq!(methods, [("make".to_owned(), 17), ("hide".to_owned(), 4), ("share".to_owned(), 2)]);
@@ -3377,7 +3379,7 @@ fn positions(lowered: &Lowered) -> Vec<String> {
             let arguments = lowered.child(index as u32, 1);
             let argument = |index| &lowered.nodes()[lowered.child(arguments, index) as usize];
 
-            format!("{}:{} {}", node.line, argument(2).long_value, text(argument(3).text))
+            format!("{}:{} {}", node.line, argument(2).long_value, lowered.text(argument(3).text))
         })
         .collect()
 }
@@ -5972,7 +5974,7 @@ fn each_node_carries_the_line_of_its_first_token() {
         .nodes()
         .iter()
         .filter(|node| node.kind == sharp_kind::SHARP_AST_ZVAL && node.value == sharp_value::SHARP_STRING)
-        .map(|node| (text(node.text), node.line))
+        .map(|node| (lowered.text(node.text), node.line))
         .filter(|(name, _)| name == "total" || name == "extra")
         .collect();
 
