@@ -1,6 +1,8 @@
 //! The single-workspace [`Server`]: the transport-agnostic core that owns one
 //! workspace's file database and analysis service, and answers queries against them.
 
+use std::path::Path;
+
 use foldhash::HashSet;
 
 use mago_analyzer::analysis_result::AnalysisResult;
@@ -163,11 +165,18 @@ impl Server {
             .map_err(ServerError::from)
     }
 
-    /// The workspace files whose path `scope` contains.
+    /// The workspace files whose path `scope` contains. Database paths are canonical, so a file
+    /// outside every root of `scope` is skipped before [`WorkspaceMatcher::contains`] resolves it.
     fn files_in(&self, scope: &WorkspaceMatcher) -> HashSet<FileId> {
+        let roots: Vec<&Path> = scope.roots().collect();
+
         self.database
             .files()
-            .filter(|file| file.path.as_deref().is_some_and(|path| scope.contains(path)))
+            .filter(|file| {
+                file.path
+                    .as_deref()
+                    .is_some_and(|path| roots.iter().any(|root| path.starts_with(root)) && scope.contains(path))
+            })
             .map(|file| file.id)
             .collect()
     }

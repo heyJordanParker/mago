@@ -1088,6 +1088,7 @@ impl IncrementalAnalysisService {
             self.distribute_codebase_issues(new_codebase_issues);
 
             for file_id in re_analyzed_unchanged {
+                let node_analysis = self.runs_node_analysis(file_id);
                 if let Some(issues) = per_file_issues.remove(&file_id)
                     && let Some(state) = self.file_states.get_mut(&file_id)
                 {
@@ -1095,8 +1096,7 @@ impl IncrementalAnalysisService {
                     state.analysis_issues = issues;
                     state.deferred_pragmas = per_file_pragmas.get(&file_id).cloned();
                     state.late_symbol_references = late_symbol_references_by_file.remove(&file_id).unwrap_or_default();
-                    state.node_analysis =
-                        self.node_analysis_files.as_ref().is_none_or(|files| files.contains(&file_id));
+                    state.node_analysis = node_analysis;
                 }
             }
 
@@ -1120,7 +1120,7 @@ impl IncrementalAnalysisService {
                         codebase_issues,
                         deferred_pragmas,
                         late_symbol_references,
-                        node_analysis: self.node_analysis_files.as_ref().is_none_or(|files| files.contains(&file_id)),
+                        node_analysis: self.runs_node_analysis(file_id),
                     },
                 );
             }
@@ -1353,6 +1353,7 @@ impl IncrementalAnalysisService {
         self.distribute_codebase_issues(new_codebase_issues);
 
         for file_id in re_analyzed_unchanged {
+            let node_analysis = self.runs_node_analysis(file_id);
             if let Some(issues) = per_file_issues.remove(&file_id)
                 && let Some(state) = self.file_states.get_mut(&file_id)
             {
@@ -1360,7 +1361,7 @@ impl IncrementalAnalysisService {
                 state.analysis_issues = issues;
                 state.deferred_pragmas = per_file_pragmas.get(&file_id).cloned();
                 state.late_symbol_references = late_symbol_references_by_file.remove(&file_id).unwrap_or_default();
-                state.node_analysis = self.node_analysis_files.as_ref().is_none_or(|files| files.contains(&file_id));
+                state.node_analysis = node_analysis;
             }
         }
 
@@ -1383,7 +1384,7 @@ impl IncrementalAnalysisService {
                     codebase_issues,
                     deferred_pragmas,
                     late_symbol_references,
-                    node_analysis: self.node_analysis_files.as_ref().is_none_or(|files| files.contains(&file_id)),
+                    node_analysis: self.runs_node_analysis(file_id),
                 },
             );
         }
