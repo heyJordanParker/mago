@@ -1,10 +1,16 @@
 use mago_analyzer::artifacts::AnalysisArtifacts;
 use mago_codex::metadata::CodebaseMetadata;
+use mago_codex::ttype::atomic::TAtomic;
+use mago_codex::ttype::atomic::object::TObject;
+use mago_codex::ttype::union::TUnion;
+use mago_span::HasSpan;
+use mago_syntax::cst::Call;
+use mago_syntax::cst::ClassLikeMemberSelector;
+use mago_syntax::cst::Expression;
 
 /// The checker's types for one file. The lowering reads a type only through these queries, so `--assert-types` can
 /// turn each answer it used into a runtime guard.
 pub struct Types<'analysis> {
-    #[expect(dead_code, reason = "the first expression type query in piece 3 reads it")]
     artifacts: &'analysis AnalysisArtifacts,
     codebase: &'analysis CodebaseMetadata,
 }
@@ -24,12 +30,24 @@ pub(crate) enum DeclarationKind {
     Constant,
     EnumCase,
     StaticProperty,
+    Property,
     StaticMethod,
+    Method,
 }
 
 impl<'analysis> Types<'analysis> {
     pub(crate) fn new(artifacts: &'analysis AnalysisArtifacts, codebase: &'analysis CodebaseMetadata) -> Self {
         Self { artifacts, codebase }
+    }
+
+    /// The type the analysis gave `expression`.
+    pub(crate) fn expression_type(&self, expression: &Expression) -> &'analysis TUnion {
+        self.artifacts.get_expression_type(expression).unwrap_or_else(|| {
+            unreachable!(
+                "the analysis types every expression of a file the checker accepted, not {:?}",
+                expression.span()
+            )
+        })
     }
 
     /// The declaration the fully qualified class name `class` resolves to.
@@ -49,29 +67,20 @@ impl<'analysis> Types<'analysis> {
         Declaration { kind }
     }
 
-    /// The declaration `member` of the fully qualified class name `class` resolves to, found as the engine finds
-    /// `Class::member`: a constant or enum case first, then a static property, then a static method.
+    /// The declaration `member` of the fully qualified class name `class` resolves to when code reads it: a constant
+    /// or enum case first, then a property, then a method, which the read takes as a first-class callable.
     pub(crate) fn member_declaration(&self, class: &[u8], member: &[u8]) -> Declaration {
         let kind = if self.codebase.get_enum_case(class, member).is_some() {
             DeclarationKind::EnumCase
         } else if self.codebase.class_constant_exists(class, member) {
             DeclarationKind::Constant
-        } else if self
-            .codebase
-            .get_declaring_property(class, &[b"$", member].concat())
-            .is_some_and(|property| property.flags.is_static())
-        {
-            DeclarationKind::StaticProperty
-        } else if self
-            .codebase
-            .get_declaring_method(class, member)
-            .and_then(|method| method.method_metadata.as_ref())
-            .is_some_and(|method| method.is_static)
-        {
-            DeclarationKind::StaticMethod
+        } else if let Some(kind) = self.property_kind(class, member) {
+            kind
+        } else if let Some(kind) = self.method_kind(class, member) {
+            kind
         } else {
             unreachable!(
-                "the checker refuses `{}.{}`, which names no constant, case, static property or static method",
+                "the checker refuses `{}.{}`, which names no member",
                 String::from_utf8_lossy(class),
                 String::from_utf8_lossy(member)
             )
@@ -79,4 +88,60 @@ impl<'analysis> Types<'analysis> {
 
         Declaration { kind }
     }
+
+    /// The declaration the method call `call` runs: the receiver's method, or else its property holding a function,
+    /// as spec section 14 calls one. The receiver's type names one class.
+    pub(crate) fn call_target(&self, call: &Expression) -> Declaration {
+        let Expression::Call(Call::Method(call)) = call else {
+            unreachable!("only a method call has a typed call target yet");
+        };
+        let ClassLikeMemberSelector::Identifier(method) = &call.method else {
+            unreachable!("check_slice refuses the method name `{}`", call.method);
+        };
+        let class = single_class(self.expression_type(call.object))
+            .unwrap_or_else(|| unreachable!("the lowering asks only for a receiver whose type names one class"));
+
+        let kind = self.method_kind(class, method.value).or_else(|| self.property_kind(class, method.value));
+
+        Declaration {
+            kind: kind.unwrap_or_else(|| {
+                unreachable!(
+                    "the checker refuses `{}.{}()`, which names no method or property",
+                    String::from_utf8_lossy(class),
+                    String::from_utf8_lossy(method.value)
+                )
+            }),
+        }
+    }
+
+    /// A declared property, or else one a PHP class's `__get` serves, tagged with `@property` or not.
+    fn property_kind(&self, class: &[u8], property: &[u8]) -> Option<DeclarationKind> {
+        match self.codebase.get_declaring_property(class, &[b"$", property].concat()) {
+            Some(property) if property.flags.is_static() => Some(DeclarationKind::StaticProperty),
+            Some(_) => Some(DeclarationKind::Property),
+            None => self.codebase.method_exists(class, b"__get").then_some(DeclarationKind::Property),
+        }
+    }
+
+    /// A declared method, or else one a PHP class's `__call` serves, tagged with `@method` or not.
+    fn method_kind(&self, class: &[u8], method: &[u8]) -> Option<DeclarationKind> {
+        match self.codebase.get_declaring_method(class, method).and_then(|method| method.method_metadata.as_ref()) {
+            Some(method) if method.is_static => Some(DeclarationKind::StaticMethod),
+            Some(_) => Some(DeclarationKind::Method),
+            None => self.codebase.method_exists(class, b"__call").then_some(DeclarationKind::Method),
+        }
+    }
+}
+
+/// The fully qualified name of the one class `r#type` names, leaving out `null`, or none when it names no class or
+/// several.
+pub(crate) fn single_class(r#type: &TUnion) -> Option<&[u8]> {
+    let mut classes = r#type.types.iter().filter(|atomic| !atomic.is_null()).map(|atomic| match atomic {
+        TAtomic::Object(TObject::Named(object)) => Some(object.name.as_bytes()),
+        TAtomic::Object(TObject::Enum(object)) => Some(object.name.as_bytes()),
+        _ => None,
+    });
+    let class = classes.next()??;
+
+    classes.all(|other| other == Some(class)).then_some(class)
 }

@@ -179,6 +179,7 @@ mod types;
 
 use types::DeclarationKind;
 use types::Types;
+use types::single_class;
 
 /// The values php-src gives the attrs the lowering emits, from `zend_compile.h` and `zend_vm_opcodes.h`.
 const ZEND_NAME_FQ: u32 = 0;
@@ -1113,7 +1114,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 self.node(kind, attr, line, &[lhs, rhs])
             }
-            Expression::Call(Call::Method(call)) => self.method_call(call),
+            Expression::Call(Call::Method(call)) => self.method_call(expression, call),
             Expression::Call(Call::Function(FunctionCall {
                 function: Expression::Identifier(function),
                 argument_list,
@@ -1173,11 +1174,25 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                         kind => unreachable!("`Class.y` names a member, not a {kind:?}"),
                     }
                 }
+                // `object.name` is the method `name` as a first-class callable when the checker found a method.
                 None => {
+                    let is_method = match (single_class(self.types.expression_type(access.object)), &access.property) {
+                        (Some(class), ClassLikeMemberSelector::Identifier(name)) => matches!(
+                            self.types.member_declaration(class, name.value).kind,
+                            DeclarationKind::Method | DeclarationKind::StaticMethod
+                        ),
+                        _ => false,
+                    };
                     let object = self.expression(access.object);
-                    let property = self.member(&access.property);
+                    let member = self.member(&access.property);
 
-                    self.node(SHARP_AST_PROP, 0, line, &[object, property])
+                    if is_method {
+                        let callable = self.node(SHARP_AST_CALLABLE_CONVERT, 0, line, &[]);
+
+                        self.node(SHARP_AST_METHOD_CALL, 0, line, &[object, member, callable])
+                    } else {
+                        self.node(SHARP_AST_PROP, 0, line, &[object, member])
+                    }
                 }
             },
             Expression::Call(Call::NullSafeMethod(call)) => {
@@ -1440,8 +1455,9 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     /// `Class.m()` is a static call on the class's full name, `super.m()` one on `parent`, and `Self.m()` one on
-    /// `static`. Any other `object.m()` is an instance call.
-    fn method_call(&mut self, call: &MethodCall) -> u32 {
+    /// `static`. Any other `object.m()` is an instance call, or a call of the function in the property `m` when the
+    /// checker found that property, as spec section 14 calls one.
+    fn method_call(&mut self, expression: &Expression, call: &MethodCall) -> u32 {
         let line = self.line(call);
         let (kind, object) = match (self.names.static_call_class(call), call.object) {
             (Some(class), _) => {
@@ -1459,6 +1475,15 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         };
         let method = self.member(&call.method);
         let arguments = self.arguments(&call.argument_list);
+
+        if kind == SHARP_AST_METHOD_CALL
+            && single_class(self.types.expression_type(call.object)).is_some()
+            && self.types.call_target(expression).kind == DeclarationKind::Property
+        {
+            let property = self.node(SHARP_AST_PROP, 0, line, &[object, method]);
+
+            return self.node(SHARP_AST_CALL, 0, line, &[property, arguments]);
+        }
 
         self.node(kind, 0, line, &[object, method, arguments])
     }

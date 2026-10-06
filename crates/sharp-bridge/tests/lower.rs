@@ -3147,6 +3147,140 @@ fn a_class_member_read_is_the_fetch_of_the_member_kind_the_checker_found() {
 }
 
 /// ```php
+/// $add = $calc->add(...);
+/// $again = $this->count(...);
+/// return ($this->scale)($extra) + $add(1, 2) + $again() + $calc->add(1, 2) + $calc->base;
+/// ```
+///
+/// A member named without a call is the property the checker found, or else the method as a first-class callable. A
+/// call is the method the checker found, or else a call of the function its property holds.
+#[test]
+fn a_member_is_the_property_or_method_the_checker_found_on_the_receiver() {
+    let lowered = Lowered::with(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    private Function<int(int)> scale;\n\n    public Report(int factor)\n    {\n        this.scale = n => n * factor;\n    }\n\n    public int run(Calc calc, int extra)\n    {\n        const Function<int(int, int)> add = calc.add;\n        const Function<int()> again = this.count;\n        return this.scale(extra) + add(1, 2) + again() + calc.add(1, 2) + calc.base;\n    }\n\n    private int count() => 1;\n}\n",
+        &[(
+            "src/Lib/Calc.php",
+            "<?php namespace Lib; final class Calc { public int $base = 0; public function add(int $a, int $b): int { return $a + $b; } }",
+        )],
+    );
+
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "add"
+                METHOD_CALL
+                  VAR
+                    ZVAL "calc"
+                  ZVAL "add"
+                  CALLABLE_CONVERT
+              ASSIGN
+                VAR
+                  ZVAL "again"
+                METHOD_CALL
+                  VAR
+                    ZVAL "this"
+                  ZVAL "count"
+                  CALLABLE_CONVERT
+              RETURN
+                BINARY_OP [1]
+                  BINARY_OP [1]
+                    BINARY_OP [1]
+                      BINARY_OP [1]
+                        CALL
+                          PROP
+                            VAR
+                              ZVAL "this"
+                            ZVAL "scale"
+                          ARG_LIST
+                            VAR
+                              ZVAL "extra"
+                        CALL
+                          VAR
+                            ZVAL "add"
+                          ARG_LIST
+                            ZVAL 1
+                            ZVAL 2
+                      CALL
+                        VAR
+                          ZVAL "again"
+                        ARG_LIST
+                    METHOD_CALL
+                      VAR
+                        ZVAL "calc"
+                      ZVAL "add"
+                      ARG_LIST
+                        ZVAL 1
+                        ZVAL 2
+                  PROP
+                    VAR
+                      ZVAL "calc"
+                    ZVAL "base"
+        "#}
+    );
+}
+
+/// ```php
+/// return $bag->size + $bag->count() + \strlen(\gettype($bag->other)) + \strlen(\gettype($bag->untagged()));
+/// ```
+///
+/// A member a PHP class's `__get` serves is a property, and one its `__call` serves is a method, whether a
+/// `@property` or `@method` tag names it or not.
+#[test]
+fn a_magic_property_and_a_magic_method_of_a_php_class_are_a_property_and_a_method() {
+    let lowered = Lowered::with(
+        "namespace App.Tenant;\n\nimport Lib.Bag;\n\nclass Report\n{\n    public int run(Bag bag)\n    {\n        return bag.size + bag.count() + strlen(gettype(bag.other)) + strlen(gettype(bag.untagged()));\n    }\n}\n",
+        &[(
+            "src/Lib/Bag.php",
+            "<?php namespace Lib; /** @property int $size\n * @method int count() */ final class Bag { public function __get(string $name): mixed { return 1; } public function __call(string $name, array $arguments): mixed { return 1; } }",
+        )],
+    );
+
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                BINARY_OP [1]
+                  BINARY_OP [1]
+                    BINARY_OP [1]
+                      PROP
+                        VAR
+                          ZVAL "bag"
+                        ZVAL "size"
+                      METHOD_CALL
+                        VAR
+                          ZVAL "bag"
+                        ZVAL "count"
+                        ARG_LIST
+                    CALL
+                      ZVAL "strlen"
+                      ARG_LIST
+                        CALL
+                          ZVAL "gettype"
+                          ARG_LIST
+                            PROP
+                              VAR
+                                ZVAL "bag"
+                              ZVAL "other"
+                  CALL
+                    ZVAL "strlen"
+                    ARG_LIST
+                      CALL
+                        ZVAL "gettype"
+                        ARG_LIST
+                          METHOD_CALL
+                            VAR
+                              ZVAL "bag"
+                            ZVAL "untagged"
+                            ARG_LIST
+        "#}
+    );
+}
+
+/// ```php
 /// return \App\Tenant\Report::make();
 /// ```
 #[test]
