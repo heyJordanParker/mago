@@ -1129,6 +1129,57 @@ fn a_public_field_is_an_error() {
     assert_eq!(issues(code), ["5:5 A PHP# field cannot be `public`: a field is `private` or `protected`."]);
 }
 
+/// A field written `override` replaces a plain PHP parent's property, spec section 6.1, with the parent's access
+/// level, `public` included. The analyzer checks it against the parent.
+#[test]
+fn a_field_may_override_a_parent_property_with_its_access_level_and_a_constant_value() {
+    let code = "namespace App.Store;\n\nimport Lib.Model;\n\npublic class Order : Model\n{\n    protected override List<string> fillable = [\"number\", \"total\"];\n    public override bool timestamps = false;\n    protected override string table = \"orders\";\n    protected static override int count = 1 + 2;\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+/// An override replaces the default of the parent's property, so it writes one: without it, the engine would give the
+/// property PHP's default for an untyped one, `null`, which its written type may not hold.
+#[test]
+fn an_override_without_an_initial_value_is_an_error() {
+    let code = "namespace App.Store;\n\nimport Lib.Model;\n\npublic class Order : Model\n{\n    protected override List<string> hidden;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["7:37 An override needs an initial value: it replaces the default of the parent's property."]
+    );
+}
+
+/// The parent's constructor may read an overridden property before this class's code runs, so an override's initial
+/// value is constant, which PHP stores as the default.
+#[test]
+fn an_override_whose_initial_value_is_not_constant_is_an_error() {
+    let code = "namespace App.Store;\n\nimport Lib.Calc;\nimport Lib.Model;\n\npublic class Order : Model\n{\n    protected override List<string> fillable = this.columns();\n    protected override int perPage = Calc.make();\n\n    public List<string> columns() => [\"number\"];\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "8:48 The initial value of an override must be constant: the parent's constructor may read it before this class's code runs.",
+            "9:38 The initial value of an override must be constant: the parent's constructor may read it before this class's code runs.",
+        ]
+    );
+}
+
+/// `override` takes a field, the one member that replaces a plain PHP parent's property. A PHP# parent's property is
+/// overridden as a property, spec section 6.1, which is not supported yet.
+#[test]
+fn an_overriding_property_is_not_supported_yet() {
+    let code = "namespace App.Store;\n\nimport Lib.Model;\n\npublic class Order : Model\n{\n    public override int views { get; set; } = 0;\n    public override string slug => \"order\";\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:25 Overriding a property is not supported yet in PHP#.",
+            "8:28 Overriding a property is not supported yet in PHP#.",
+        ]
+    );
+}
+
 #[test]
 fn a_field_without_an_access_modifier_is_not_supported_yet() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    int count = 0;\n}\n";
@@ -1368,7 +1419,7 @@ fn properties_outside_the_slice_are_not_supported_yet() {
             "6:23 A get-only static property is not supported yet in PHP#.",
             "7:20 This accessor is not supported yet in PHP#.",
             "8:12 This modifier is not supported yet in PHP#.",
-            "9:12 This modifier is not supported yet in PHP#.",
+            "9:25 Overriding a property is not supported yet in PHP#.",
             "10:25 This accessor is not supported yet in PHP#.",
             "11:16 An initial value before the accessors is not supported yet in PHP#.",
             "12:25 This accessor is not supported yet in PHP#.",
@@ -1459,7 +1510,7 @@ fn field_in_a_nested_block_gives_storage_and_field_only_in_a_lambda_does_not() {
 fn a_property_with_accessor_bodies_that_overrides_a_parent_property_is_not_supported_yet() {
     let code = "namespace App.Store;\n\nimport Lib.Model;\n\nclass Order : Model\n{\n    public override string status { get => field; set => field = value; }\n}\n";
 
-    assert_eq!(issues(code), ["7:12 This modifier is not supported yet in PHP#."]);
+    assert_eq!(issues(code), ["7:28 Overriding a property is not supported yet in PHP#."]);
 }
 
 /// A property whose accessors all have bodies and never use `field` has no storage, as PHP's virtual property, so
@@ -1807,6 +1858,30 @@ fn an_interface_method_takes_and_returns_list_and_map_types() {
     let code = "interface Grouped\n{\n    List<int> sizes(Map<string, List<int>> groups);\n\n    Map<float, int> rounded();\n}\n";
 
     assert_eq!(issues(code), ["5:9 A `Map`'s keys are `int` or `string`, as a PHP array's keys are."]);
+}
+
+#[test]
+fn an_empty_literal_needs_a_type() {
+    let code = leak(method(
+        "        let names = [];\n        const sizes = [:];\n        List<string> kept = [];\n        const Map<string, int> counts = [:];\n        let filled = [1];\n        names = [];\n        return 1;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:21 An empty literal needs a type: write `List<T> names = []`.",
+            "8:23 An empty literal needs a type: write `const Map<TKey, TValue> sizes = [:]`.",
+        ]
+    );
+}
+
+#[test]
+fn a_null_start_needs_a_type() {
+    let code = leak(method(
+        "        let value = null;\n        const other = null;\n        string? kept = null;\n        let either = extra > 1 ? null : 1;\n        return 1;\n",
+    ));
+
+    assert_eq!(issues(code), ["7:21 A null start needs a type: write `T? value = null`."]);
 }
 
 #[test]

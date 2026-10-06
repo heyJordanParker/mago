@@ -44,6 +44,7 @@ use mago_syntax::cst::IfBody;
 use mago_syntax::cst::Inheritance;
 use mago_syntax::cst::Instantiation;
 use mago_syntax::cst::Keyword;
+use mago_syntax::cst::Literal;
 use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::LocalIdentifier;
 use mago_syntax::cst::Method;
@@ -116,6 +117,8 @@ const SUPERGLOBALS: [&[u8]; 9] =
 ///   value as a parameter default is.
 /// - A field: `private` or `protected`, an optional `static`, a type, one name and an optional initial value. A
 ///   `public` field is an error, because spec section 6 has no public fields.
+/// - An override: a field written `override`, which replaces a plain PHP parent's property, spec section 6.1. It may
+///   be `public`, as the parent's property is, and has a constant initial value. The analyzer checks the parent.
 /// - A static field or property: an initial value that is constant, which PHP stores as its default, and a `set`
 ///   accessor, because PHP has no `readonly` static property.
 /// - An initial value: any expression a method body has, without `this`, which is an error. A constant initial value,
@@ -527,8 +530,13 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             | Node::PropertyAbstractItem(_)
             | Node::PropertyConcreteItem(_)
             | Node::DirectVariable(_)
+            // `is_slice_property` refuses `override` on a member that is not a field.
             | Node::Modifier(
-                Modifier::Public(_) | Modifier::Protected(_) | Modifier::Private(_) | Modifier::Static(_),
+                Modifier::Public(_)
+                | Modifier::Protected(_)
+                | Modifier::Private(_)
+                | Modifier::Static(_)
+                | Modifier::Override(_),
             ),
             FieldOrProperty,
         ) => Some(FieldOrProperty),
@@ -1067,6 +1075,10 @@ fn report_optional_before_required(parameters: &FunctionLikeParameterList, conte
 ///
 /// A static member takes only a constant initial value, which PHP stores as its default, because any other runs in
 /// the constructor. A static property has `set`, because PHP has no `readonly` static property.
+///
+/// A field written `override` replaces a plain PHP parent's property, spec section 6.1. It takes the parent's access
+/// level, which may be `public` and which the analyzer checks, and a constant initial value, its new default, because
+/// the parent's constructor may read the property before this class's constructor sets any other.
 fn is_slice_property(property: &Property, version: &PHPVersion, names: &ResolvedNames) -> Result<(), Box<Issue>> {
     let not_supported = |span: Span, message: &str, note: &str| {
         Issue::error(message)
@@ -1107,15 +1119,48 @@ fn is_slice_property(property: &Property, version: &PHPVersion, names: &Resolved
         }
     }
 
+    let is_override = property.modifiers().iter().any(|modifier| matches!(modifier, Modifier::Override(_)));
+    if is_override && !matches!(property, Property::Plain(_)) {
+        return Err(Box::new(not_supported(
+            property.first_variable().span,
+            "Overriding a property is not supported yet in PHP#.",
+            "`override` takes a field that replaces a plain PHP parent's property, as in `protected override string table = \"orders\";`.",
+        )));
+    }
+
     match property {
         Property::Plain(field) => {
-            if let Some(public) = field.modifiers.get_public() {
+            if let Some(public) = field.modifiers.get_public()
+                && !is_override
+            {
                 Err(Box::new(
                     Issue::error("A PHP# field cannot be `public`: a field is `private` or `protected`.")
                         .with_annotation(Annotation::primary(public.span()).with_message("Declared `public` here."))
                         .with_help("Declare a property, as in `public int views { get; set; }`, to make it public."),
                 ))
-            } else if !field.modifiers.contains_protected() && !field.modifiers.contains_private() {
+            } else if is_override && property.initial_value().is_none() {
+                Err(Box::new(
+                    Issue::error(
+                        "An override needs an initial value: it replaces the default of the parent's property.",
+                    )
+                    .with_annotation(
+                        Annotation::primary(property.first_variable().span)
+                            .with_message("Declared without a value here."),
+                    )
+                    .with_help("Write the new default, as in `protected override string table = \"orders\";`."),
+                ))
+            } else if is_override
+                && let Some(value) = property.initial_value()
+                && !value.is_constant(version, false)
+            {
+                Err(Box::new(
+                    Issue::error(
+                        "The initial value of an override must be constant: the parent's constructor may read it before this class's code runs.",
+                    )
+                    .with_annotation(Annotation::primary(value.span()).with_message("Not constant."))
+                    .with_help("Write a constant value, such as a literal or a list of literals."),
+                ))
+            } else if !field.modifiers.contains_visibility() {
                 Err(Box::new(not_supported(
                     property.first_variable().span,
                     "A field without `private` or `protected` is not supported yet in PHP#.",
@@ -1987,9 +2032,35 @@ fn check_const_write(target: &Expression, write: &str, context: &mut Context<'_,
     }
 }
 
+/// Checks a local's name, and reports an empty literal, or a `let` that starts as `null`, declared without a type,
+/// which has no type to give the local. Swift refuses an empty collection literal or `nil` without a type for the same
+/// reason.
 #[inline]
 pub fn check_local_declaration(local_declaration: &LocalDeclaration, context: &mut Context<'_, '_, '_>) {
     check_local_name(local_declaration.name.value, local_declaration.name.span, "local", context);
+
+    if local_declaration.hint.is_some() {
+        return;
+    }
+
+    let (start, hint, value) = match local_declaration.value {
+        Expression::Array(literal) if literal.elements.is_empty() && literal.colon.is_some() => {
+            ("An empty literal", "Map<TKey, TValue>", "[:]")
+        }
+        Expression::Array(literal) if literal.elements.is_empty() => ("An empty literal", "List<T>", "[]"),
+        // A `const` never takes another value, so `null` is all of its type.
+        Expression::Literal(Literal::Null(_)) if !local_declaration.is_const() => ("A null start", "T?", "null"),
+        _ => return,
+    };
+
+    let keyword = if local_declaration.is_const() { "const " } else { "" };
+    let name = BytesDisplay(local_declaration.name.value);
+
+    context.report(
+        Issue::error(format!("{start} needs a type: write `{keyword}{hint} {name} = {value}`.")).with_annotation(
+            Annotation::primary(local_declaration.value.span()).with_message("Declared without a type."),
+        ),
+    );
 }
 
 #[inline]

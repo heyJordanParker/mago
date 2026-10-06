@@ -1784,7 +1784,7 @@ fn a_function_type_is_the_closure_class() {
 fn literals_are_short_arrays_and_an_index_is_a_dim() {
     assert_eq!(
         body(
-            "        List<int> numbers = [1, extra];\n        const named = [\"a\": 1, 2: numbers[0]];\n        const empty = [:];\n        numbers[0] = named[\"a\"];\n        this.sizes[\"a\"] += 1;\n        return numbers[1];\n"
+            "        List<int> numbers = [1, extra];\n        const named = [\"a\": 1, 2: numbers[0]];\n        const Map<string, int> empty = [:];\n        numbers[0] = named[\"a\"];\n        this.sizes[\"a\"] += 1;\n        return numbers[1];\n"
         ),
         indoc! {r#"
             STMT_LIST
@@ -2439,6 +2439,56 @@ fn virtual_lowers_to_nothing_and_override_to_the_override_attribute() {
 }
 
 /// ```php
+/// #[\Override] protected string $table = 'orders';   // runs as `protected $table` when Model's $table has no type
+/// #[\Override] public bool $timestamps = false;
+/// ```
+///
+/// An override is a field with `#[\Override]`, so PHP checks at link time that the parent has the property, and with
+/// php-sharp's `ZEND_ACC_TYPE_FOLLOWS_PARENT`, `1 << 13`. One file cannot tell whether the parent's property has a
+/// type, so the engine drops the written type when the class links if it has none. `[8194]` is
+/// `ZEND_ACC_PROTECTED | ZEND_ACC_TYPE_FOLLOWS_PARENT`, and `[8193]` is `ZEND_ACC_PUBLIC | ZEND_ACC_TYPE_FOLLOWS_PARENT`.
+#[test]
+fn an_override_is_a_field_marked_to_follow_the_parent_type() {
+    let lowered = Lowered::new(
+        "class Order : Model\n{\n    protected override string table = \"orders\";\n    public override bool timestamps = false;\n}\n",
+    );
+    let class = lowered.child(lowered.unit().root, 1);
+
+    assert_eq!(
+        lowered.render(lowered.child(class, 2)),
+        indoc! {r#"
+            STMT_LIST
+              PROP_GROUP [8194]
+                ZVAL [1] "string"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "table"
+                    ZVAL "orders"
+                    null
+                    null
+                ATTRIBUTE_LIST
+                  ATTRIBUTE_GROUP
+                    ATTRIBUTE
+                      ZVAL "Override"
+                      null
+              PROP_GROUP [8193]
+                ZVAL [1] "bool"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "timestamps"
+                    ZVAL false
+                    null
+                    null
+                ATTRIBUTE_LIST
+                  ATTRIBUTE_GROUP
+                    ATTRIBUTE
+                      ZVAL "Override"
+                      null
+        "#}
+    );
+}
+
+/// ```php
 /// class Account extends \Lib\Ledger
 /// {
 ///     #[\Override]
@@ -3005,7 +3055,7 @@ fn a_call_on_a_static_call_result_is_an_instance_call() {
 fn literals_are_zvals_of_their_php_value() {
     assert_eq!(
         body(
-            "        let a = \"line\\n\";\n        let b = 'raw\\n';\n        let c = 1.5;\n        let d = 0x10;\n        let e = 9223372036854775808;\n        let f = true;\n        let g = false;\n        let h = null;\n        return 1;\n"
+            "        let a = \"line\\n\";\n        let b = 'raw\\n';\n        let c = 1.5;\n        let d = 0x10;\n        let e = 9223372036854775808;\n        let f = true;\n        let g = false;\n        string? h = null;\n        return 1;\n"
         ),
         indoc! {r#"
             STMT_LIST
