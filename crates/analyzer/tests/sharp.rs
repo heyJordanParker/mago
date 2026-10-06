@@ -853,7 +853,7 @@ const MODEL: &str = "<?php\n\nnamespace Lib;\n\ntrait HasTimestamps\n{\n    /** 
 /// declares the untyped properties without a type.
 #[test]
 fn a_field_overrides_a_plain_php_property_with_a_type_that_fits_the_parent() {
-    let sharp = "namespace Demo;\n\nimport Lib.Model;\n\npublic class Order : Model\n{\n    protected override string table = \"orders\";\n    protected override List<string> fillable = [\"number\", \"total\"];\n    protected override List<string> with = [\"customer\"];\n    public override bool timestamps = false;\n    protected override int perPage = 20;\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Model;\n\npublic class Order : Model\n{\n    protected override string? table = \"orders\";\n    protected override List<string> fillable = [\"number\", \"total\"];\n    protected override List<string> with = [\"customer\"];\n    public override bool timestamps = false;\n    protected override int perPage = 20;\n}\n";
     let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Model;\n\nclass Order extends Model\n{\n    #[\\Override]\n    protected $table = 'orders';\n    #[\\Override]\n    protected $fillable = ['number', 'total'];\n    #[\\Override]\n    protected $with = ['customer'];\n    #[\\Override]\n    public $timestamps = false;\n    #[\\Override]\n    protected int $perPage = 20;\n}\n";
     let others = [("src/Lib/Model.php", MODEL)];
 
@@ -865,7 +865,7 @@ fn a_field_overrides_a_plain_php_property_with_a_type_that_fits_the_parent() {
 /// that replaces a parent's property without `override`, is an error, spec section 6.1.
 #[test]
 fn an_override_that_does_not_match_the_plain_php_property_is_an_error() {
-    let sharp = "namespace Demo;\n\nimport Lib.Model;\n\npublic class Order : Model\n{\n    public override List<string> fillable = [\"number\"];\n    protected override string table = 5;\n    public override int timestamps = 0;\n    protected override List<string> appends = [];\n    protected string with = \"customer\";\n    protected override string missing = \"none\";\n    protected override string secret = \"order\";\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Model;\n\npublic class Order : Model\n{\n    public override List<string> fillable = [\"number\"];\n    protected override string? table = 5;\n    public override int timestamps = 0;\n    protected override List<string> appends = [];\n    protected string with = \"customer\";\n    protected override string missing = \"none\";\n    protected override string secret = \"order\";\n}\n";
 
     let issues =
         analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Order.sharp", sharp), &[("src/Lib/Model.php", MODEL)]);
