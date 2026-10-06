@@ -8,6 +8,7 @@ use mago_span::Position;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::MethodCall;
+use mago_syntax::cst::PropertyAccess;
 
 use crate::binding::Binding;
 use crate::binding::BindingError;
@@ -149,7 +150,20 @@ impl<'arena> ResolvedNames<'arena> {
     /// The checker and the engine both read this, so they never disagree on a static call.
     #[must_use]
     pub fn static_call_class<'ast>(&self, call: &MethodCall<'ast>) -> Option<&'ast ConstantAccess<'ast>> {
-        match call.object {
+        self.class_object(call.object)
+    }
+
+    /// Returns the class of a PHP# static property access, `Class.name`: the object of `access` when the binder bound
+    /// it to a class. Returns `None` for an instance property and for every access in a PHP file.
+    ///
+    /// The checker, the analyzer and the engine all read this, so they never disagree on a static property.
+    #[must_use]
+    pub fn static_property_class<'ast>(&self, access: &PropertyAccess<'ast>) -> Option<&'ast ConstantAccess<'ast>> {
+        self.class_object(access.object)
+    }
+
+    fn class_object<'ast>(&self, object: &'ast Expression<'ast>) -> Option<&'ast ConstantAccess<'ast>> {
+        match object {
             Expression::ConstantAccess(access) if self.binding(&access.name) == Some(Binding::Class) => Some(access),
             _ => None,
         }

@@ -570,7 +570,9 @@ where
         )?;
 
         if let Some(default_value) = parameter_node.default_value.as_ref() {
-            default_value.value.analyze(context, block_context, artifacts)?;
+            block_context.in_constant_expression(|block_context| {
+                default_value.value.analyze(context, block_context, artifacts)
+            })?;
 
             if !parameter_metadata.flags.is_variadic()
                 && let Some(parameter_type_metadata) = parameter_metadata.get_type_metadata()
