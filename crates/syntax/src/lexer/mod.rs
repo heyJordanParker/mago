@@ -448,7 +448,8 @@ impl<'input> Lexer<'input> {
                     [b'&', b'=', ..] => (TokenKind::AmpersandEqual, 2),
                     [b'.', b'=', ..] => (TokenKind::DotEqual, 2),
                     [b'?', b'?', ..] => (TokenKind::QuestionQuestion, 2),
-                    [b'?', b'>', ..] => (TokenKind::CloseTag, 2),
+                    // A `.sharp` file has no PHP tags, so `?>` there is the end of a nullable type argument.
+                    [b'?', b'>', ..] if !self.sharp => (TokenKind::CloseTag, 2),
                     [b'=', b'>', ..] => (TokenKind::EqualGreaterThan, 2),
                     [b'=', b'=', ..] => (TokenKind::EqualEqual, 2),
                     [b'+', b'+', ..] => (TokenKind::PlusPlus, 2),
@@ -473,7 +474,7 @@ impl<'input> Lexer<'input> {
                     [b'|', b'>', ..] => (TokenKind::PipeGreaterThan, 2),
                     [b'/', b'/', ..] => {
                         let remaining = self.input.peek(2, self.input.len() - self.input.current_offset());
-                        let comment_len = scan_single_line_comment(remaining);
+                        let comment_len = scan_single_line_comment(remaining, !self.sharp);
                         (TokenKind::SingleLineComment, 2 + comment_len)
                     }
                     [b'/', b'*', asterisk] => {
@@ -597,7 +598,7 @@ impl<'input> Lexer<'input> {
                     }
                     [b'#', ..] => {
                         let remaining = self.input.peek(1, self.input.len() - self.input.current_offset());
-                        let comment_len = scan_single_line_comment(remaining);
+                        let comment_len = scan_single_line_comment(remaining, !self.sharp);
                         (TokenKind::HashComment, 1 + comment_len)
                     }
                     [b'\\', ..] => (TokenKind::NamespaceSeparator, 1),
@@ -1951,9 +1952,9 @@ fn scan_multi_line_comment(bytes: &[u8]) -> Option<usize> {
 
 /// Scan a single-line comment using SIMD-accelerated search.
 /// Returns the length of the comment body (not including the //).
-/// Stops at newline or ?>.
+/// Stops at newline, or at ?> when `ends_at_close_tag` is set, as in PHP. A `.sharp` file has no close tag.
 #[inline]
-fn scan_single_line_comment(bytes: &[u8]) -> usize {
+fn scan_single_line_comment(bytes: &[u8], ends_at_close_tag: bool) -> usize {
     let mut pos = 0;
     while pos < bytes.len() {
         match memchr::memchr3(b'\n', b'\r', b'?', &bytes[pos..]) {
@@ -1963,7 +1964,7 @@ fn scan_single_line_comment(bytes: &[u8]) -> usize {
                     b'\n' | b'\r' => return found_pos,
                     b'?' => {
                         // Check if it's ?>
-                        if found_pos + 1 < bytes.len() && bytes[found_pos + 1] == b'>' {
+                        if ends_at_close_tag && found_pos + 1 < bytes.len() && bytes[found_pos + 1] == b'>' {
                             // Also check for whitespace before ?>
                             if found_pos > 0 && bytes[found_pos - 1].is_ascii_whitespace() {
                                 return found_pos - 1;

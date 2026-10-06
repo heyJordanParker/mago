@@ -5,16 +5,15 @@ use mago_database::file::File;
 use mago_names::ResolvedNames;
 use mago_names::binding::Binding;
 use mago_names::binding::php_method_name;
-use mago_names::resolver::NameResolver;
 use mago_names::scope::php_name;
 use mago_php_version::PHPVersion;
-use mago_reporting::Level;
-use mago_semantics::SemanticsChecker;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::Access;
 use mago_syntax::cst::Argument;
 use mago_syntax::cst::ArgumentList;
+use mago_syntax::cst::Array;
+use mago_syntax::cst::ArrayElement;
 use mago_syntax::cst::AssignmentOperator;
 use mago_syntax::cst::AttributeList;
 use mago_syntax::cst::BinaryOperator;
@@ -55,7 +54,6 @@ use mago_syntax::cst::NullableHint;
 use mago_syntax::cst::PartialArgument;
 use mago_syntax::cst::PartialArgumentList;
 use mago_syntax::cst::PositionalArgument;
-use mago_syntax::cst::Program;
 use mago_syntax::cst::Property;
 use mago_syntax::cst::PropertyHookConcreteExpressionBody;
 use mago_syntax::cst::PropertyHookList;
@@ -75,9 +73,13 @@ use mago_syntax_core::utils::parse_literal_integer_as_float;
 
 use crate::Diagnostic;
 use crate::Unit;
+use crate::lower::checked::CheckedProgram;
+use crate::lower::checked::check;
 use crate::sharp_kind;
 use crate::sharp_kind::SHARP_AST_AND;
 use crate::sharp_kind::SHARP_AST_ARG_LIST;
+use crate::sharp_kind::SHARP_AST_ARRAY;
+use crate::sharp_kind::SHARP_AST_ARRAY_ELEM;
 use crate::sharp_kind::SHARP_AST_ASSIGN;
 use crate::sharp_kind::SHARP_AST_ASSIGN_COALESCE;
 use crate::sharp_kind::SHARP_AST_ASSIGN_OP;
@@ -102,6 +104,7 @@ use crate::sharp_kind::SHARP_AST_CONST_DECL;
 use crate::sharp_kind::SHARP_AST_CONST_ELEM;
 use crate::sharp_kind::SHARP_AST_CONTINUE;
 use crate::sharp_kind::SHARP_AST_DECLARE;
+use crate::sharp_kind::SHARP_AST_DIM;
 use crate::sharp_kind::SHARP_AST_DO_WHILE;
 use crate::sharp_kind::SHARP_AST_ENCAPS_LIST;
 use crate::sharp_kind::SHARP_AST_EXPR_LIST;
@@ -138,6 +141,7 @@ use crate::sharp_kind::SHARP_AST_STATIC_PROP;
 use crate::sharp_kind::SHARP_AST_STMT_LIST;
 use crate::sharp_kind::SHARP_AST_THROW;
 use crate::sharp_kind::SHARP_AST_TRY;
+use crate::sharp_kind::SHARP_AST_TYPE;
 use crate::sharp_kind::SHARP_AST_UNARY_MINUS;
 use crate::sharp_kind::SHARP_AST_UNARY_OP;
 use crate::sharp_kind::SHARP_AST_UNARY_PLUS;
@@ -149,6 +153,8 @@ use crate::sharp_severity;
 use crate::sharp_str;
 use crate::sharp_value;
 use crate::store_text;
+
+mod checked;
 
 /// The values php-src gives the attrs the lowering emits, from `zend_compile.h` and `zend_vm_opcodes.h`.
 const ZEND_NAME_FQ: u32 = 0;
@@ -169,6 +175,8 @@ const ZEND_PARENTHESIZED_CONDITIONAL: u32 = 1;
 const IS_LONG: u32 = 4;
 const IS_DOUBLE: u32 = 5;
 const IS_STRING: u32 = 6;
+const IS_ARRAY: u32 = 7;
+const ZEND_ARRAY_SYNTAX_SHORT: u32 = 3;
 const ZEND_ADD: u32 = 1;
 const ZEND_SUB: u32 = 2;
 const ZEND_MUL: u32 = 3;
@@ -209,18 +217,21 @@ pub(crate) fn lower(path: Vec<u8>, source: Vec<u8>) -> Box<Unit> {
         );
     }
 
-    let names = NameResolver::new(&arena).resolve(program);
-    let errors: Vec<Diagnostic> = SemanticsChecker::new(PHPVersion::PHP85)
-        .check(&file, program, &names)
-        .iter()
-        .filter(|issue| issue.level == Level::Error)
-        .map(|issue| lines.diagnostic(issue.primary_span(), sharp_severity::SHARP_COMPILE_ERROR, issue.message.clone()))
-        .collect();
-    if !errors.is_empty() {
-        return Unit::failed(errors);
-    }
+    let checked = match check(&arena, &file, program) {
+        Ok(checked) => checked,
+        Err(errors) => {
+            return Unit::failed(
+                errors
+                    .into_iter()
+                    .map(|issue| {
+                        lines.diagnostic(issue.primary_span(), sharp_severity::SHARP_COMPILE_ERROR, issue.message)
+                    })
+                    .collect(),
+            );
+        }
+    };
 
-    Lowering::new(&lines, &names).program(program)
+    Lowering::new(&lines, checked.names()).program(&checked)
 }
 
 /// The offset each line starts at, counted as the Zend scanner counts: `\n`, `\r\n` and a lone `\r` each end a line.
@@ -295,9 +306,9 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
     /// `declare(strict_types=1);` first, then the namespaces and classes. Imports are not lowered: every class name
     /// in the tree is fully qualified.
-    fn program(mut self, program: &Program) -> Box<Unit> {
+    fn program(mut self, checked: &CheckedProgram) -> Box<Unit> {
         let mut statements = vec![self.strict_types()];
-        for statement in &program.statements {
+        for statement in &checked.program().statements {
             self.file_statement(statement, &mut statements);
         }
 
@@ -626,9 +637,9 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_ASSIGN, 0, line, &[property, value])
     }
 
-    /// A built-in type is written unqualified, and a class by its full name. `Any` and `Any?` are PHP's `mixed`, which
-    /// already holds null. Any other nullable type is its type with `ZEND_TYPE_NULLABLE`, as php-src's grammar builds
-    /// `?int`.
+    /// A built-in type is written unqualified, and a class by its full name. A `List` or `Map` is a PHP array, so its
+    /// type is `array`, as php-src's grammar builds it. `Any` and `Any?` are PHP's `mixed`, which already holds null.
+    /// Any other nullable type is its type with `ZEND_TYPE_NULLABLE`, as php-src's grammar builds `?int`.
     fn hint(&mut self, hint: &Hint) -> u32 {
         match hint {
             Hint::Integer(name) | Hint::Float(name) | Hint::Bool(name) | Hint::String(name) | Hint::Void(name) => {
@@ -636,6 +647,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             }
             Hint::Mixed(any) => self.string(ZEND_NAME_NOT_FQ, self.line(any.span), b"mixed"),
             Hint::Identifier(class) => self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class)),
+            Hint::Generic(generic) => self.node(SHARP_AST_TYPE, IS_ARRAY, self.line(generic), &[]),
             Hint::Nullable(NullableHint { hint: any @ Hint::Mixed(_), .. }) => self.hint(any),
             Hint::Nullable(nullable) => {
                 let index = self.hint(nullable.hint);
@@ -897,14 +909,14 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 }
             },
             Expression::Call(Call::NullSafeMethod(call)) => {
-                let object = self.expression(call.object);
+                let object = self.null_safe_object(call.object);
                 let method = self.member(&call.method);
                 let arguments = self.arguments(&call.argument_list);
 
                 self.node(SHARP_AST_NULLSAFE_METHOD_CALL, 0, line, &[object, method, arguments])
             }
             Expression::Access(Access::NullSafeProperty(access)) => {
-                let object = self.expression(access.object);
+                let object = self.null_safe_object(access.object);
                 let property = self.member(&access.property);
 
                 self.node(SHARP_AST_NULLSAFE_PROP, 0, line, &[object, property])
@@ -920,8 +932,48 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.node(SHARP_AST_THROW, 0, line, &[exception])
             }
             Expression::CompositeString(CompositeString::Interpolated(template)) => self.template(template),
+            Expression::Array(array) => self.array(array),
+            Expression::ArrayAccess(access) => {
+                let value = self.expression(access.array);
+                let key = self.expression(access.index);
+
+                self.node(SHARP_AST_DIM, 0, line, &[value, key])
+            }
             _ => unreachable!("check_slice refuses the expression `{expression}`"),
         })
+    }
+
+    /// The object of `?.`. An index there reads a missing key as null, as `??` does, so `x[k]?.name` is
+    /// `($x[$k] ?? null)?->name`, where a bare `x[k]` throws on a missing key (spec section 12).
+    fn null_safe_object(&mut self, object: &Expression) -> u32 {
+        let value = self.expression(object);
+        if !matches!(object.unparenthesized(), Expression::ArrayAccess(_)) {
+            return value;
+        }
+
+        let line = self.line(object);
+        let null = self.zval(line, sharp_value::SHARP_NULL, |_| {});
+
+        self.node(SHARP_AST_COALESCE, 0, line, &[value, null])
+    }
+
+    /// A list or map literal is an `ARRAY` with `ZEND_ARRAY_SYNTAX_SHORT`, as php-src's grammar builds `[…]`. Each
+    /// element is an `ARRAY_ELEM` of its value and its key or null.
+    fn array(&mut self, array: &Array) -> u32 {
+        let mut elements = Vec::new();
+        for element in &array.elements {
+            let value_and_key = match element {
+                ArrayElement::Value(element) => [self.expression(element.value), NULL],
+                ArrayElement::KeyValue(element) => [self.expression(element.value), self.expression(element.key)],
+                ArrayElement::Variadic(_) | ArrayElement::Missing(_) => {
+                    unreachable!("check_slice refuses a spread or missing literal element")
+                }
+            };
+
+            elements.push(self.node(SHARP_AST_ARRAY_ELEM, 0, self.line(element), &value_and_key));
+        }
+
+        self.node(SHARP_AST_ARRAY, ZEND_ARRAY_SYNTAX_SHORT, self.line(array), &elements)
     }
 
     /// A template without `${…}` is its text, as php-src's grammar builds a string without interpolation. Any other
@@ -958,8 +1010,9 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.string(0, self.line(text), value)
     }
 
-    /// What an assignment, a compound assignment, `++` or `--` writes: a local or parameter, `object.name`, or
-    /// `Class.name`, which php-src's grammar builds as the static property `Class::$name`.
+    /// What an assignment, a compound assignment, `++` or `--` writes: a local or parameter, `object.name`,
+    /// `Class.name`, which php-src's grammar builds as the static property `Class::$name`, or an index of one of them,
+    /// as php-src's `variable` rule takes them.
     fn target(&mut self, target: &Expression) -> u32 {
         match target {
             Expression::ConstantAccess(name) if matches!(self.names.binding(&name.name), Some(Binding::Local(_))) => {
@@ -975,6 +1028,12 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 }
                 None => self.expression(target),
             },
+            Expression::ArrayAccess(access) => {
+                let value = self.target(access.array);
+                let key = self.expression(access.index);
+
+                self.node(SHARP_AST_DIM, 0, self.line(target), &[value, key])
+            }
             _ => unreachable!("check_slice refuses writing to `{target}`"),
         }
     }
@@ -1328,6 +1387,8 @@ fn assignment_kind(operator: &AssignmentOperator) -> (sharp_kind, u32) {
 
 #[cfg(test)]
 mod tests {
+    use mago_names::resolver::NameResolver;
+
     use super::*;
     use crate::catch_panic;
 
@@ -1340,9 +1401,9 @@ mod tests {
             let file = File::ephemeral(Cow::Borrowed(b"src/Report.sharp"), Cow::Owned(source.into_bytes()));
             let arena = LocalArena::new();
             let program = parse_file_with_dialect(&arena, &file, Dialect::Sharp, ParserSettings::default());
-            let names = NameResolver::new(&arena).resolve(program);
+            let checked = CheckedProgram::unchecked(program, NameResolver::new(&arena).resolve(program));
 
-            Lowering::new(&Lines::new(&file.contents), &names).program(program)
+            Lowering::new(&Lines::new(&file.contents), checked.names()).program(&checked)
         });
 
         assert_eq!(unit.abi.node_count, 0, "{method}");
