@@ -895,6 +895,27 @@ fn an_override_that_does_not_match_the_plain_php_property_is_an_error() {
     assert_eq!(reported.len(), 7, "{reported:#?}");
 }
 
+/// An override keeps its written type instead of inheriting the parent's `@var` type, so a type that does not fit is
+/// one issue, not a second one for its initial value against the inherited type.
+#[test]
+fn an_override_whose_type_does_not_fit_the_parent_is_reported_once() {
+    let sharp = "namespace Demo;\n\nimport Lib.Model;\n\npublic class Order : Model\n{\n    protected override int table = 5;\n}\n";
+
+    let issues =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Order.sharp", sharp), &[("src/Lib/Model.php", MODEL)]);
+
+    assert_eq!(
+        issues
+            .iter()
+            .map(|issue| (issue.code.as_deref().unwrap_or("none"), issue.message.as_str()))
+            .collect::<Vec<_>>(),
+        [(
+            "incompatible-property-type",
+            "The override `Demo\\Order::$table` has type `int`, which does not fit `null|string`, the type of `Lib\\Model::$table`.",
+        )]
+    );
+}
+
 /// A PHP# parent's property is overridden as a property, spec section 6.1, which is not supported yet. A field that
 /// replaces one without `override` keeps PHP's own checks.
 #[test]
