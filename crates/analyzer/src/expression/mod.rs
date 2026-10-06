@@ -12,6 +12,8 @@ use mago_reporting::Issue;
 use mago_reporting::Level;
 use mago_span::HasPosition;
 use mago_span::HasSpan;
+use mago_syntax::cst::Access;
+use mago_syntax::cst::Call;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::Parenthesized;
@@ -59,6 +61,7 @@ pub mod magic_constant;
 pub mod r#match;
 pub mod partial_application;
 pub mod throw;
+pub mod type_of;
 pub mod unary;
 pub mod variable;
 pub mod r#yield;
@@ -150,17 +153,16 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
                         anonymous_class.span(),
                         anonymous_class.extends.as_ref(),
                         anonymous_class.implements.as_ref(),
+                        None,
                         class_like_metadata,
                         anonymous_class.members.as_slice(),
                     )?;
 
-                    if context.settings.check_missing_override {
-                        override_attribute::check_override_attribute(
-                            class_like_metadata,
-                            anonymous_class.members.as_slice(),
-                            context,
-                        );
-                    }
+                    override_attribute::check_override_attribute(
+                        class_like_metadata,
+                        anonymous_class.members.as_slice(),
+                        context,
+                    );
 
                     artifacts.set_expression_type(&self, get_named_object(class_like_metadata.name, None));
 
@@ -175,6 +177,11 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
                 Expression::Construct(expr) => expr.analyze(context, block_context, artifacts),
                 Expression::Throw(expr) => expr.analyze(context, block_context, artifacts),
                 Expression::Clone(expr) => expr.analyze(context, block_context, artifacts),
+                Expression::Error(_) | Expression::Access(_) | Expression::Call(_) if is_refused(self) => {
+                    artifacts.set_expression_type(&self, get_never());
+
+                    Ok(())
+                }
                 Expression::Call(expr) => expr.analyze(context, block_context, artifacts),
                 Expression::Access(expr) => expr.analyze(context, block_context, artifacts),
                 Expression::PartialApplication(expr) => expr.analyze(context, block_context, artifacts),
@@ -184,6 +191,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
                 Expression::Is(_) | Expression::As(_) | Expression::PatternMatch(_) => {
                     analyze_php_shape(Node::Expression(self), context, block_context, artifacts)
                 }
+                Expression::TypeOf(expr) => expr.analyze(context, block_context, artifacts),
                 Expression::List(list_expr) => {
                     context.collector.report_with_code(
                     IssueCode::ListUsedInReadContext,
@@ -237,11 +245,6 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
                     }
 
                     artifacts.set_expression_type(&self, get_literal_string(word(identifier.value())));
-
-                    Ok(())
-                }
-                Expression::Error(_) => {
-                    artifacts.set_expression_type(&self, get_never());
 
                     Ok(())
                 }
@@ -387,6 +390,23 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Parenthesized<'arena> {
 
         Ok(())
     }
+}
+
+/// Whether an error already refuses `expression`: it failed to parse, or it reads or calls a member of `typeof(X)`
+/// through any chain of property reads, which `check_slice` refuses. Its type is `never`, and it adds no issue.
+pub(crate) fn is_refused(expression: &Expression<'_>) -> bool {
+    let mut object = match expression {
+        Expression::Error(_) => return true,
+        Expression::Access(Access::Property(access)) => access.object,
+        Expression::Call(Call::Method(call)) => call.object,
+        _ => return false,
+    };
+
+    while let Expression::Access(Access::Property(access)) = object {
+        object = access.object;
+    }
+
+    matches!(object, Expression::TypeOf(_))
 }
 
 pub fn find_expression_logic_issues<'ctx, 'arena, A>(

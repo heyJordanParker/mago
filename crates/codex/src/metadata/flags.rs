@@ -52,6 +52,8 @@ impl MetadataFlags {
     pub const POLYFILL: MetadataFlags = MetadataFlags(1 << 41);
     pub const PATCH: MetadataFlags = MetadataFlags(1 << 42);
     pub const EXTERNAL: MetadataFlags = MetadataFlags(1 << 43);
+    /// Declared in a PHP# file.
+    pub const SHARP: MetadataFlags = MetadataFlags(1 << 44);
 }
 
 impl MetadataFlags {
@@ -110,6 +112,12 @@ impl MetadataFlags {
     #[must_use]
     pub const fn is_final(self) -> bool {
         self.contains(Self::FINAL)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn is_sharp(self) -> bool {
+        self.contains(Self::SHARP)
     }
 
     #[inline]

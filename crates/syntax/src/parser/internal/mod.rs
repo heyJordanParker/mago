@@ -40,6 +40,7 @@ pub(crate) mod terminator;
 pub(crate) mod throw;
 pub(crate) mod r#try;
 pub(crate) mod type_hint;
+pub(crate) mod type_of;
 pub(crate) mod unset;
 pub(crate) mod r#use;
 pub(crate) mod variable;
