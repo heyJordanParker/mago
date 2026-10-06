@@ -91,7 +91,7 @@ where
             );
         }
 
-        let mut union_comparison_result = ComparisonResult::new();
+        let mut union_comparison_result = ComparisonResult::with_strict_nonnull(context.dialect.is_sharp());
 
         let type_match_found = union_comparator::is_contained_by(
             context.codebase,

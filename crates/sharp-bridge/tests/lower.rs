@@ -1890,6 +1890,61 @@ fn literals_are_short_arrays_and_an_index_is_a_dim() {
 }
 
 /// ```php
+/// public function run(mixed $value, mixed $maybe): mixed { $held = $maybe; return $value; }
+/// ```
+///
+/// `Any` and `Any?` are both PHP's `mixed`, which already holds null and refuses `?`, so neither carries
+/// `ZEND_TYPE_NULLABLE`. `[1]` is `ZEND_NAME_NOT_FQ`.
+#[test]
+fn any_and_nullable_any_are_mixed() {
+    let lowered = Lowered::new(
+        "class Report\n{\n    public Any run(Any value, Any? maybe)\n    {\n        Any? held = maybe;\n        return value;\n    }\n}\n",
+    );
+    let method = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a method");
+
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 0)),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                ZVAL [1] "mixed"
+                ZVAL "value"
+                null
+                null
+                null
+                null
+              PARAM
+                ZVAL [1] "mixed"
+                ZVAL "maybe"
+                null
+                null
+                null
+                null
+        "#}
+    );
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 3)),
+        indoc! {r#"
+            ZVAL [1] "mixed"
+        "#}
+    );
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "held"
+                VAR
+                  ZVAL "maybe"
+              RETURN
+                VAR
+                  ZVAL "value"
+        "#}
+    );
+}
+
+/// ```php
 /// public function run(): void
 /// {
 ///     return;

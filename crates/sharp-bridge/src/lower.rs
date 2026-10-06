@@ -820,17 +820,20 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
     /// A built-in type is written unqualified, and a class by its full name. `Self` is a `TYPE` node of `IS_STATIC`, as
     /// php-src's grammar builds `static`. A `List` or `Map` is a PHP array, so its type is `array`, as php-src's grammar
-    /// builds it. A function type runs as PHP's `\Closure`. A nullable type is its type with `ZEND_TYPE_NULLABLE`, as
+    /// builds it. A function type runs as PHP's `\Closure`. `Any` and `Any?` are PHP's `mixed`, which already holds
+    /// null. Any other nullable type is its type with `ZEND_TYPE_NULLABLE`, as
     /// php-src's grammar builds `?int`.
     fn hint(&mut self, hint: &Hint) -> u32 {
         match hint {
             Hint::Integer(name) | Hint::Float(name) | Hint::Bool(name) | Hint::String(name) | Hint::Void(name) => {
                 self.string(ZEND_NAME_NOT_FQ, self.line(name.span), name.value)
             }
+            Hint::Mixed(any) => self.string(ZEND_NAME_NOT_FQ, self.line(any.span), b"mixed"),
             Hint::Identifier(class) => self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class)),
             Hint::Self_(keyword) => self.node(SHARP_AST_TYPE, IS_STATIC, self.line(keyword), &[]),
             Hint::Generic(generic) => self.node(SHARP_AST_TYPE, IS_ARRAY, self.line(generic), &[]),
             Hint::Function(function) => self.string(ZEND_NAME_FQ, self.line(function), b"Closure"),
+            Hint::Nullable(NullableHint { hint: any @ Hint::Mixed(_), .. }) => self.hint(any),
             Hint::Nullable(NullableHint { question_mark, hint: Hint::Parenthesized(parenthesized) }) => {
                 self.union(parenthesized.hint, Some(*question_mark))
             }

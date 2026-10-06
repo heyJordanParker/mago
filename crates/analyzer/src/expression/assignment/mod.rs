@@ -645,7 +645,7 @@ pub fn analyze_assignment_to_variable<'ctx, 'arena, A>(
             false,
             false,
             false,
-            &mut ComparisonResult::default(),
+            &mut ComparisonResult::with_strict_nonnull(context.dialect.is_sharp()),
         )
     {
         let variable_name = variable_id.to_string();
@@ -745,7 +745,14 @@ pub fn analyze_assignment_to_variable<'ctx, 'arena, A>(
         from_docblock = true;
     }
 
-    if !is_hidden && !from_docblock && assigned_type.is_mixed() && !variable_id.as_bytes().starts_with(b"$_") {
+    // A PHP# local holds a value of unknown type as `Any?`, and spec section 24 refuses each use of it until it is
+    // checked, so storing it is not reported.
+    if !is_hidden
+        && !from_docblock
+        && assigned_type.is_mixed()
+        && !variable_id.as_bytes().starts_with(b"$_")
+        && !context.dialect.is_sharp()
+    {
         let assigned_type_str = assigned_type.get_id();
 
         let mut issue = Issue::warning(format!(

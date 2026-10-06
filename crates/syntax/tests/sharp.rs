@@ -580,6 +580,53 @@ fn a_function_type_with_one_built_in_parameter_type_reads_the_cast_as_its_parent
     assert_eq!(types, [("int", vec!["int"], "(", ")"), ("bool", vec!["string"], "(", ")")]);
 }
 
+/// A `.sharp` file has no `<?php` or `?>`, so a nullable last type argument ends the type, as in `Map<string, Any?>`.
+#[test]
+fn a_nullable_type_argument_ends_a_collection_type() {
+    const CODE: &str = "class Report\n{\n    public Map<string, Any?> group(List<int?> sizes, Map<int, List<string?>> names) { return [:]; }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(ClassLikeMember::Method(method)) = class_members(program).first() else {
+        panic!("expected a method, got {:#?}", class_members(program));
+    };
+    let return_type = &method.return_type_hint.as_ref().expect("a return type").hint;
+    assert_eq!(generic_type(CODE, return_type), ("Map", vec!["string", "Any?"]));
+
+    let [sizes, names] = method.parameter_list.parameters.as_slice() else {
+        panic!("expected two parameters, got {:#?}", method.parameter_list.parameters);
+    };
+    assert_eq!(generic_type(CODE, sizes.hint.as_ref().expect("a type")), ("List", vec!["int?"]));
+    assert_eq!(generic_type(CODE, names.hint.as_ref().expect("a type")), ("Map", vec!["int", "List<string?>"]));
+}
+
+/// A `.sharp` file has no `?>`, so a field written `= 0 ?><?php` is a parse error and never reaches the checker or
+/// the lowering.
+#[test]
+fn a_closing_tag_does_not_end_a_field() {
+    const CODE: &str = "namespace App.Tenant;\n\nclass Report\n{\n    private int count = 0 ?><?php\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(!program.errors.is_empty(), "expected a parse error, got {:#?}", program.statements);
+}
+
+/// A `.sharp` file has no `?>`, so a line comment that writes one runs to the end of its line.
+#[test]
+fn a_line_comment_runs_past_a_question_mark_and_greater_than() {
+    const CODE: &str =
+        "class Report\n{\n    // keeps a Map<string, Any?> of settings\n    public int run() { return 1; }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(ClassLikeMember::Method(method)) = class_members(program).first() else {
+        panic!("expected a method, got {:#?}", class_members(program));
+    };
+    assert_eq!(source(CODE, &method.name), "run");
+}
+
 #[test]
 fn a_local_and_a_field_can_have_a_collection_type_written() {
     const CODE: &str = "class Report\n{\n    private Map<string, int> counts = [:];\n    public void run()\n    {\n        List<Line> lines = [];\n        Map<string, List<int>>? groups = null;\n    }\n}\n";
@@ -662,6 +709,51 @@ fn a_php_double_arrow_in_a_literal_is_a_php_syntax_error() {
         panic!("expected a PHP-syntax error, got {:#?}", program.errors);
     };
     assert_eq!(source(CODE, span), "=>");
+}
+
+#[test]
+fn any_is_the_type_php_writes_mixed_and_any_question_mark_is_it_nullable() {
+    const CODE: &str = "class Report\n{\n    public Any find(Any? value) { return value; }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(ClassLikeMember::Method(method)) = class_members(program).first() else {
+        panic!("expected a method, got {:#?}", class_members(program));
+    };
+    let Hint::Mixed(any) = &method.return_type_hint.as_ref().expect("a return type").hint else {
+        panic!("expected `Any`, got {:#?}", method.return_type_hint);
+    };
+    let Some(Hint::Nullable(NullableHint { hint: Hint::Mixed(nullable), .. })) =
+        method.parameter_list.parameters.first().and_then(|parameter| parameter.hint.as_ref())
+    else {
+        panic!("expected `Any?`, got {:#?}", method.parameter_list.parameters);
+    };
+
+    assert_eq!((source(CODE, any), source(CODE, nullable)), ("Any", "Any"));
+}
+
+#[test]
+fn any_in_a_php_file_is_a_class_name() {
+    const CODE: &str = "<?php class Report { public function find(Any $value): Any { return $value; } }\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.php", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(Statement::Class(class)) =
+        program.statements.iter().find(|statement| matches!(statement, Statement::Class(_)))
+    else {
+        panic!("expected a class, got {:#?}", program.statements);
+    };
+    let Some(ClassLikeMember::Method(method)) = class.members.first() else {
+        panic!("expected a method, got {:#?}", class.members);
+    };
+
+    assert!(
+        matches!(method.return_type_hint.as_ref().map(|hint| &hint.hint), Some(Hint::Identifier(_))),
+        "{:#?}",
+        method.return_type_hint
+    );
 }
 
 #[test]
