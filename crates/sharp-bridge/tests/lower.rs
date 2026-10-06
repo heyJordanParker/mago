@@ -3560,6 +3560,56 @@ fn a_declared_member_wins_over_a_magic_one() {
     );
 }
 
+/// ```php
+/// $total = $doc->total(...);
+/// return $total() + $doc->count();
+/// ```
+///
+/// A receiver that can be one of several classes reads the member each of them declares, when it is the same kind of
+/// member on every one.
+#[test]
+fn a_member_of_a_union_receiver_is_the_kind_every_class_declares() {
+    let lowered = Lowered::with(
+        "namespace App.Tenant;\n\nimport Lib.Invoice;\nimport Lib.Order;\n\nclass Report\n{\n    public int run(Order|Invoice doc)\n    {\n        const Function<int()> total = doc.total;\n        return total() + doc.count();\n    }\n}\n",
+        &[
+            (
+                "src/Lib/Order.php",
+                "<?php namespace Lib; final class Order { public function total(): int { return 1; } public function count(): int { return 1; } }",
+            ),
+            (
+                "src/Lib/Invoice.php",
+                "<?php namespace Lib; final class Invoice { public function total(): int { return 2; } public function count(): int { return 2; } }",
+            ),
+        ],
+    );
+
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "total"
+                METHOD_CALL
+                  VAR
+                    ZVAL "doc"
+                  ZVAL "total"
+                  CALLABLE_CONVERT
+              RETURN
+                BINARY_OP [1]
+                  CALL
+                    VAR
+                      ZVAL "total"
+                    ARG_LIST
+                  METHOD_CALL
+                    VAR
+                      ZVAL "doc"
+                    ZVAL "count"
+                    ARG_LIST
+        "#}
+    );
+}
+
 /// A PHP class whose `__get` and `__callStatic` serve undeclared members, with a static property and a static method.
 const MAGIC_ORDER: (&str, &str) = (
     "src/Lib/Order.php",

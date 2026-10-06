@@ -2806,6 +2806,23 @@ fn the_receiver_of_a_property_read_the_analysis_already_knows_is_typed() {
     assert_eq!(receiver(other, "other"), Some("Demo\\Report".to_owned()));
 }
 
+/// The lowering reads or calls a member by its kind, so a receiver that can be several classes needs the member to be
+/// one kind on all of them: a method on each, or a property on each. Each kind names its classes once.
+#[test]
+fn a_member_whose_kind_differs_across_the_receivers_classes_is_an_error() {
+    let sharp = "namespace Demo;\n\nimport Lib.Invoice;\nimport Lib.Order;\nimport Lib.Quote;\n\nclass Report\n{\n    public int run(Order|Invoice doc, Order|Quote|Invoice three)\n    {\n        const Function<int()> total = doc.total;\n        const Function<int()> again = three.total;\n        return doc.total();\n    }\n}\n";
+    let library = "<?php\n\nnamespace Lib;\n\nfinal class Order\n{\n    public function total(): int\n    {\n        return 1;\n    }\n}\n\nfinal class Quote\n{\n    public function total(): int\n    {\n        return 2;\n    }\n}\n\nfinal class Invoice\n{\n    /** @var \\Closure(): int */\n    public \\Closure $total;\n\n    public function __construct()\n    {\n        $this->total = fn (): int => 3;\n    }\n}\n";
+
+    assert_eq!(
+        messages(("src/Demo/Report.sharp", sharp), &[("src/Lib/Order.php", library)]),
+        [
+            "`doc.total` is a method on `Lib\\Order` but a property on `Lib\\Invoice`, so PHP# cannot tell how to read it.",
+            "`three.total` is a method on `Lib\\Order` and `Lib\\Quote` but a property on `Lib\\Invoice`, so PHP# cannot tell how to read it.",
+            "`doc.total()` calls a method on `Lib\\Order` but a function in a property on `Lib\\Invoice`, so PHP# cannot tell how to call it.",
+        ]
+    );
+}
+
 /// The type arguments of the call in the analyzed file, with `library` beside it.
 fn recorded_type_arguments(analyzed: (&'static str, &'static str), library: &'static str, call: &str) -> Vec<String> {
     let start = analyzed.1.find(call).unwrap() as u32;

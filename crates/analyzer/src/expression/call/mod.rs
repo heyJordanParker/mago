@@ -31,6 +31,7 @@ use crate::context::block::BlockContext;
 use crate::context::scope::control_action::ControlAction;
 use crate::error::AnalysisError;
 use crate::expression::access::report_full_name;
+use crate::expression::access::report_member_of_mixed_kinds;
 use crate::invocation::Invocation;
 use crate::invocation::InvocationArgumentsSource;
 use crate::invocation::InvocationTarget;
@@ -124,8 +125,18 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Call<'arena> {
             {
                 static_method_call::analyze_static_method_call(context, block_context, artifacts, static_call)
             }
-            Call::Method(call) => call.analyze(context, block_context, artifacts),
-            Call::NullSafeMethod(call) => call.analyze(context, block_context, artifacts),
+            Call::Method(call) => {
+                call.analyze(context, block_context, artifacts)?;
+                report_member_of_mixed_kinds(context, artifacts, call.object, &call.method, true);
+
+                Ok(())
+            }
+            Call::NullSafeMethod(call) => {
+                call.analyze(context, block_context, artifacts)?;
+                report_member_of_mixed_kinds(context, artifacts, call.object, &call.method, true);
+
+                Ok(())
+            }
             Call::StaticMethod(call) => call.analyze(context, block_context, artifacts),
         }
     }

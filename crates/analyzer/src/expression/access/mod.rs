@@ -11,6 +11,7 @@ use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::LocalIdentifier;
 use mago_syntax::cst::PropertyAccess;
+use mago_word::Word;
 use mago_word::concat_word;
 use mago_word::word;
 
@@ -85,9 +86,19 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Access<'arena> {
                     artifacts,
                     static_property,
                 ),
-                None => access.analyze(context, block_context, artifacts),
+                None => {
+                    access.analyze(context, block_context, artifacts)?;
+                    report_member_of_mixed_kinds(context, artifacts, access.object, &access.property, false);
+
+                    Ok(())
+                }
             },
-            Access::NullSafeProperty(access) => access.analyze(context, block_context, artifacts),
+            Access::NullSafeProperty(access) => {
+                access.analyze(context, block_context, artifacts)?;
+                report_member_of_mixed_kinds(context, artifacts, access.object, &access.property, false);
+
+                Ok(())
+            }
             Access::StaticProperty(access) => access.analyze(context, block_context, artifacts),
             Access::ClassConstant(access) => access.analyze(context, block_context, artifacts),
         }
@@ -159,6 +170,97 @@ where
     }
 
     false
+}
+
+/// Reports a PHP# member read or call whose member is a method on some classes the receiver can be and a property on
+/// others. The lowering reads a method as its closure and calls a property's function, so it needs one kind of member
+/// on every class. `is_call` says whether `object.member(…)` calls it.
+pub(crate) fn report_member_of_mixed_kinds<A>(
+    context: &mut Context<'_, '_, A>,
+    artifacts: &AnalysisArtifacts,
+    object: &Expression<'_>,
+    member: &ClassLikeMemberSelector<'_>,
+    is_call: bool,
+) where
+    A: Arena,
+{
+    let ClassLikeMemberSelector::Identifier(name) = member else {
+        return;
+    };
+    if !context.dialect.is_sharp() {
+        return;
+    }
+    let Some(receiver) = artifacts.get_expression_type(object) else {
+        return;
+    };
+
+    // The lowering's order: a read takes a declared property before a method, and a call a declared method before a
+    // property, with `__call` last.
+    let codebase = context.codebase;
+    let property = concat_word!("$", name.value);
+    let (mut methods, mut properties) = (Vec::new(), Vec::new());
+    for atomic in receiver.types.iter().filter(|atomic| !atomic.is_null()) {
+        let Some(class) = atomic.get_object_or_enum_name() else {
+            return;
+        };
+        let declares_property = codebase.get_declaring_property(class.as_bytes(), property.as_bytes()).is_some();
+        let declares_method = codebase.get_declaring_method(class.as_bytes(), name.value).is_some();
+        let is_method = if is_call {
+            declares_method || (!declares_property && codebase.method_exists(class.as_bytes(), b"__call"))
+        } else {
+            declares_method && !declares_property
+        };
+        let classes = if is_method { &mut methods } else { &mut properties };
+        classes.push(class);
+    }
+    // A union keeps no written order, so the message names the classes in alphabetical order.
+    for classes in [&mut methods, &mut properties] {
+        classes.sort_unstable_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+        classes.dedup();
+    }
+    let (Some(first_method), false) = (methods.first(), properties.is_empty()) else {
+        return;
+    };
+
+    let receiver = BytesDisplay(&context.source_file.contents[object.span().to_range_usize()]);
+    let member = BytesDisplay(name.value);
+    let (methods, properties) = (and_list(&methods), and_list(&properties));
+    let (code, message) = if is_call {
+        (
+            IssueCode::AmbiguousObjectMethodAccess,
+            format!(
+                "`{receiver}.{member}()` calls a method on {methods} but a function in a property on {properties}, so PHP# cannot tell how to call it."
+            ),
+        )
+    } else {
+        (
+            IssueCode::AmbiguousObjectPropertyAccess,
+            format!(
+                "`{receiver}.{member}` is a method on {methods} but a property on {properties}, so PHP# cannot tell how to read it."
+            ),
+        )
+    };
+    let class =
+        String::from_utf8_lossy(first_method.as_bytes().rsplit(|byte| *byte == b'\\').next().unwrap_or_default());
+    let local = class.to_lowercase();
+
+    context.collector.report_with_code(
+        code,
+        Issue::error(message)
+            .with_annotation(Annotation::primary(name.span).with_message("Not the same kind of member on every class"))
+            .with_help(format!("Narrow `{receiver}` to one class first, as in `if ({receiver} is {class} {local})`.")),
+    );
+}
+
+/// The class names `classes` as an English list, each in backticks: "`A`", "`A` and `B`", "`A`, `B` and `C`".
+fn and_list(classes: &[Word]) -> String {
+    let names: Vec<String> = classes.iter().map(|class| format!("`{}`", BytesDisplay(class.as_bytes()))).collect();
+
+    match names.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => String::new(),
+    }
 }
 
 /// Whether PHP# `Class.name` reads the static method `name`: the class has no static property of that name, which the

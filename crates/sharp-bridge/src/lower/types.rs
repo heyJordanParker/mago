@@ -104,23 +104,25 @@ impl<'analysis> Types<'analysis> {
         let ClassLikeMemberSelector::Identifier(method) = method else {
             unreachable!("check_slice refuses the method name `{method}`");
         };
-        let class = single_class(self.expression_type(object))
-            .unwrap_or_else(|| unreachable!("the lowering asks only for a receiver whose type names one class"));
+        let classes = receiver_classes(self.expression_type(object))
+            .unwrap_or_else(|| unreachable!("the lowering asks only for a receiver whose type names classes"));
 
-        let kind = self
-            .method_kind(class, method.value)
-            .or_else(|| self.property_kind(class, method.value))
-            .or_else(|| self.codebase.method_exists(class, b"__call").then_some(DeclarationKind::Method));
+        Declaration { kind: agreed_kind(classes.into_iter().map(|class| self.call_kind(class, method.value))) }
+    }
 
-        Declaration {
-            kind: kind.unwrap_or_else(|| {
+    /// The kind of what `class`'s call of `method` runs: its method, its property holding a function, or else a method
+    /// its `__call` serves.
+    fn call_kind(&self, class: &[u8], method: &[u8]) -> DeclarationKind {
+        self.method_kind(class, method)
+            .or_else(|| self.property_kind(class, method))
+            .or_else(|| self.codebase.method_exists(class, b"__call").then_some(DeclarationKind::Method))
+            .unwrap_or_else(|| {
                 unreachable!(
                     "the checker refuses `{}.{}()`, which names no method or property",
                     String::from_utf8_lossy(class),
-                    String::from_utf8_lossy(method.value)
+                    String::from_utf8_lossy(method)
                 )
-            }),
-        }
+            })
     }
 
     /// The kind of the property `class` declares by that name, if any.
@@ -138,15 +140,29 @@ impl<'analysis> Types<'analysis> {
     }
 }
 
-/// The fully qualified name of the one class `r#type` names, leaving out `null`, or none when it names no class or
-/// several.
-pub(crate) fn single_class(r#type: &TUnion) -> Option<&[u8]> {
-    let mut classes = r#type.types.iter().filter(|atomic| !atomic.is_null()).map(|atomic| match atomic {
-        TAtomic::Object(TObject::Named(object)) => Some(object.name.as_bytes()),
-        TAtomic::Object(TObject::Enum(object)) => Some(object.name.as_bytes()),
-        _ => None,
-    });
-    let class = classes.next()??;
+/// The fully qualified names of the classes a value of `r#type` can be, leaving out `null`, or none when part of the
+/// type is no class, such as a collection.
+pub(crate) fn receiver_classes(r#type: &TUnion) -> Option<Vec<&[u8]>> {
+    let classes: Vec<&[u8]> = r#type
+        .types
+        .iter()
+        .filter(|atomic| !atomic.is_null())
+        .map(|atomic| match atomic {
+            TAtomic::Object(TObject::Named(object)) => Some(object.name.as_bytes()),
+            TAtomic::Object(TObject::Enum(object)) => Some(object.name.as_bytes()),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
 
-    classes.all(|other| other == Some(class)).then_some(class)
+    (!classes.is_empty()).then_some(classes)
+}
+
+/// The kind of member every class a receiver can be declares, which the checker requires to be one kind.
+pub(crate) fn agreed_kind(mut kinds: impl Iterator<Item = DeclarationKind>) -> DeclarationKind {
+    let kind = kinds.next().unwrap_or_else(|| unreachable!("a receiver's type names at least one class"));
+    if kinds.any(|other| other != kind) {
+        unreachable!("the checker refuses a member whose kind differs across the receiver's classes");
+    }
+
+    kind
 }

@@ -180,7 +180,8 @@ mod types;
 
 use types::DeclarationKind;
 use types::Types;
-use types::single_class;
+use types::agreed_kind;
+use types::receiver_classes;
 
 /// The values php-src gives the attrs the lowering emits, from `zend_compile.h` and `zend_vm_opcodes.h`.
 const ZEND_NAME_FQ: u32 = 0;
@@ -1286,20 +1287,22 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         })
     }
 
-    /// Whether `object.member` reads a method, which the read takes as a first-class callable.
+    /// Whether `object.member` reads a method, which the read takes as a first-class callable. The member is the same
+    /// kind on every class the receiver can be.
     fn is_method_value(&self, object: &Expression, member: &ClassLikeMemberSelector) -> bool {
-        match (single_class(self.types.expression_type(object)), member) {
-            (Some(class), ClassLikeMemberSelector::Identifier(name)) => matches!(
-                self.types.member_declaration(class, name.value).kind,
-                DeclarationKind::Method | DeclarationKind::StaticMethod
-            ),
-            _ => false,
-        }
+        let (Some(classes), ClassLikeMemberSelector::Identifier(name)) =
+            (receiver_classes(self.types.expression_type(object)), member)
+        else {
+            return false;
+        };
+        let kind = agreed_kind(classes.into_iter().map(|class| self.types.member_declaration(class, name.value).kind));
+
+        matches!(kind, DeclarationKind::Method | DeclarationKind::StaticMethod)
     }
 
     /// Whether the method call `call` on `object` runs the function the property of that name holds.
     fn is_property_call(&self, call: &Expression, object: &Expression) -> bool {
-        single_class(self.types.expression_type(object)).is_some()
+        receiver_classes(self.types.expression_type(object)).is_some()
             && self.types.call_target(call).kind == DeclarationKind::Property
     }
 
