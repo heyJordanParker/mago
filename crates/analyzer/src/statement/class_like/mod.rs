@@ -35,6 +35,7 @@ use mago_codex::ttype::template::definition_type_replacer::DefinitionReplacement
 use mago_codex::ttype::template::inferred_type_replacer;
 use mago_codex::ttype::union::TUnion;
 use mago_codex::visibility::Visibility;
+use mago_names::binding::php_variable_name;
 use mago_names::kind::NameKind;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -1117,10 +1118,13 @@ where
                 let prop_meta = first_property_name.and_then(|name| class_like_metadata.properties.get(&name));
                 missing_type_hints::check_imprecise_property_type_hint(context, property, prop_meta);
 
+                // A PHP# field's name has no `$`, and the codebase keys every property by its PHP name.
                 let property_names: Vec<Word> = match property {
-                    Property::Plain(plain) => plain.items.iter().map(|item| word(item.variable().name)).collect(),
+                    Property::Plain(plain) => {
+                        plain.items.iter().map(|item| php_variable_name(item.variable().name)).collect()
+                    }
                     Property::Hooked(_) | Property::Computed(_) => {
-                        vec![word(property.first_variable().name)]
+                        vec![php_variable_name(property.first_variable().name)]
                     }
                 };
 

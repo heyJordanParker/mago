@@ -1012,6 +1012,52 @@ fn a_list_or_map_type_is_the_array_type() {
 }
 
 /// ```php
+/// $counts = [\Lib\Calc::Active => 1];
+/// $counts[\Lib\Calc::Closed] = 2;
+/// return $counts[\Lib\Calc::Active] ?? 0;
+/// ```
+///
+/// A `Map` keyed by a backed enum lowers as any `Map` does. The engine stores each case as its backing value, because
+/// `ext/sharp` marks every PHP# index and literal.
+#[test]
+fn a_map_keyed_by_a_backed_enum_lowers_as_any_map() {
+    assert_eq!(
+        body(
+            "        Map<Calc, int> counts = [Calc.Active: 1];\n        counts[Calc.Closed] = 2;\n        return counts[Calc.Active] ?? 0;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "counts"
+                ARRAY [3]
+                  ARRAY_ELEM
+                    ZVAL 1
+                    CLASS_CONST [32768]
+                      ZVAL "Lib\\Calc"
+                      ZVAL "Active"
+              ASSIGN
+                DIM
+                  VAR
+                    ZVAL "counts"
+                  CLASS_CONST [32768]
+                    ZVAL "Lib\\Calc"
+                    ZVAL "Closed"
+                ZVAL 2
+              RETURN
+                COALESCE
+                  DIM
+                    VAR
+                      ZVAL "counts"
+                    CLASS_CONST [32768]
+                      ZVAL "Lib\\Calc"
+                      ZVAL "Active"
+                  ZVAL 0
+        "#}
+    );
+}
+
+/// ```php
 /// $numbers = [1, $extra];
 /// $named = ['a' => 1, 2 => $numbers[0]];
 /// $empty = [];
@@ -2417,6 +2463,85 @@ fn for_of_loops_are_foreach_nodes_with_the_value_before_the_key() {
               RETURN
                 VAR
                   ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
+/// foreach ($extra as $status => $n) {
+///     $status = \Lib\Calc::from($status);
+///     {
+///         $extra += $n;
+///     }
+/// }
+/// foreach ($extra as $sku => $n) {
+///     $sku = (string) $sku;
+///     {
+///     }
+/// }
+/// foreach ($extra as $key => $n) {
+/// }
+/// ```
+///
+/// A `Map` keyed by a backed enum holds each key as its backing value, so a loop whose key names a class reads the key
+/// back as that class's case, through `from` on the class as it runs. PHP stores an all-digit `string` key as an
+/// `int`, so a key written `string` reads back through `(string)`. An `int` key type changes nothing.
+#[test]
+fn a_loop_key_written_as_a_class_or_string_reads_back_through_from_or_a_cast() {
+    assert_eq!(
+        body(
+            "        for (const [Calc status, int n] of extra) {\n            extra += n;\n        }\n        for (const [string sku, n] of extra) {\n        }\n        for (const [int key, n] of extra) {\n        }\n        return 1;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              FOREACH
+                VAR
+                  ZVAL "extra"
+                VAR
+                  ZVAL "n"
+                VAR
+                  ZVAL "status"
+                STMT_LIST
+                  ASSIGN
+                    VAR
+                      ZVAL "status"
+                    STATIC_CALL
+                      ZVAL "Lib\\Calc"
+                      ZVAL "from"
+                      ARG_LIST
+                        VAR
+                          ZVAL "status"
+                  STMT_LIST
+                    ASSIGN_OP [1]
+                      VAR
+                        ZVAL "extra"
+                      VAR
+                        ZVAL "n"
+              FOREACH
+                VAR
+                  ZVAL "extra"
+                VAR
+                  ZVAL "n"
+                VAR
+                  ZVAL "sku"
+                STMT_LIST
+                  ASSIGN
+                    VAR
+                      ZVAL "sku"
+                    CAST [6]
+                      VAR
+                        ZVAL "sku"
+                  STMT_LIST
+              FOREACH
+                VAR
+                  ZVAL "extra"
+                VAR
+                  ZVAL "n"
+                VAR
+                  ZVAL "key"
+                STMT_LIST
+              RETURN
+                ZVAL 1
         "#}
     );
 }

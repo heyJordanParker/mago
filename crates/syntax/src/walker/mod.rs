@@ -73,6 +73,7 @@ use crate::cst::cst::ForColonDelimitedBody;
 use crate::cst::cst::ForOf;
 use crate::cst::cst::ForOfKeyValueTarget;
 use crate::cst::cst::ForOfTarget;
+use crate::cst::cst::ForOfVariable;
 use crate::cst::cst::Foreach;
 use crate::cst::cst::ForeachBody;
 use crate::cst::cst::ForeachColonDelimitedBody;
@@ -1426,14 +1427,22 @@ generate_ast_walker! {
 
     'arena ForOfTarget as for_of_target => {
         match for_of_target {
-            ForOfTarget::Value(value) => walker.walk_local_identifier(value, context),
+            ForOfTarget::Value(value) => walker.walk_for_of_variable(value, context),
             ForOfTarget::KeyValue(key_value) => walker.walk_for_of_key_value_target(key_value, context),
         }
     }
 
     'arena ForOfKeyValueTarget as for_of_key_value_target => {
-        walker.walk_local_identifier(&for_of_key_value_target.key, context);
-        walker.walk_local_identifier(&for_of_key_value_target.value, context);
+        walker.walk_for_of_variable(&for_of_key_value_target.key, context);
+        walker.walk_for_of_variable(&for_of_key_value_target.value, context);
+    }
+
+    'arena ForOfVariable as for_of_variable => {
+        if let Some(hint) = for_of_variable.hint {
+            walker.walk_hint(hint, context);
+        }
+
+        walker.walk_local_identifier(&for_of_variable.name, context);
     }
 
     'arena While as r#while => {

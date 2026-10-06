@@ -1252,6 +1252,21 @@ fn a_typed_for_counter_takes_the_types_of_the_slice_but_not_void() {
 }
 
 #[test]
+fn a_typed_loop_variable_takes_the_types_of_the_slice_but_not_void() {
+    let code = leak(method(
+        "        for (const [Status status, int n] of Store.counts()) {\n        }\n        for (const Map<string, List<int>> group of Store.groups()) {\n        }\n        for (const void step of Store.values()) {\n        }\n        for (const iterable items of Store.values()) {\n        }\n        return 1;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "11:20 A local cannot be `void`: `void` is only a return type.",
+            "13:20 This type is not supported yet in PHP#.",
+        ]
+    );
+}
+
+#[test]
 fn a_nullable_void_reports_only_the_php_error() {
     let code = "class Report\n{\n    public void? run()\n    {\n    }\n}\n";
 
@@ -1321,7 +1336,10 @@ fn list_and_map_types_literals_and_indexes_are_in_the_slice() {
 fn an_interface_method_takes_and_returns_list_and_map_types() {
     let code = "interface Grouped\n{\n    List<int> sizes(Map<string, List<int>> groups);\n\n    Map<float, int> rounded();\n}\n";
 
-    assert_eq!(issues(code), ["5:9 A `Map`'s keys are `int` or `string`, as a PHP array's keys are."]);
+    assert_eq!(
+        issues(code),
+        ["5:9 A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value."]
+    );
 }
 
 #[test]
@@ -1364,17 +1382,17 @@ fn a_type_with_type_arguments_other_than_list_or_map_is_not_supported_yet() {
     );
 }
 
+/// A named key type may have a backing value, which only the analyzer knows, so it passes here.
 #[test]
-fn a_map_key_that_is_not_int_or_string_is_an_error() {
+fn a_map_key_that_is_not_int_string_or_a_named_type_is_an_error() {
     let code = "class Report\n{\n    public Map<float, int> run(Map<Line, int> a, Map<int?, int> b, Map<string, Map<bool, int>> c)\n    {\n        return [:];\n    }\n}\n";
 
     assert_eq!(
         issues(code),
         [
-            "3:16 A `Map`'s keys are `int` or `string`, as a PHP array's keys are.",
-            "3:36 A `Map`'s keys are `int` or `string`, as a PHP array's keys are.",
-            "3:54 A `Map`'s keys are `int` or `string`, as a PHP array's keys are.",
-            "3:84 A `Map`'s keys are `int` or `string`, as a PHP array's keys are.",
+            "3:16 A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value.",
+            "3:54 A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value.",
+            "3:84 A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value.",
         ]
     );
 }

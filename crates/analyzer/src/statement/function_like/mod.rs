@@ -18,6 +18,7 @@ use mago_codex::ttype::TType;
 use mago_codex::ttype::TypeRef;
 use mago_codex::ttype::add_optional_union_type;
 use mago_codex::ttype::atomic::TAtomic;
+use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::callable::TCallable;
 use mago_codex::ttype::atomic::generic::TGenericParameter;
 use mago_codex::ttype::atomic::object::TObject;
@@ -34,6 +35,7 @@ use mago_codex::ttype::expander::StaticClassType;
 use mago_codex::ttype::expander::TypeExpansionOptions;
 use mago_codex::ttype::expander::get_signature_of_function_like_metadata;
 use mago_codex::ttype::get_arraykey;
+use mago_codex::ttype::get_backing_key_type;
 use mago_codex::ttype::get_keyed_array;
 use mago_codex::ttype::get_list;
 use mago_codex::ttype::get_mixed;
@@ -1549,6 +1551,8 @@ where
         return;
     }
 
+    report_map_keys_without_backing_value(context, &type_metadata.type_union, type_metadata.span);
+
     let codebase = context.codebase;
     for type_ref in type_metadata.type_union.get_all_child_nodes() {
         let TypeRef::Atomic(TAtomic::Object(TObject::Named(named))) = type_ref else {
@@ -1638,5 +1642,39 @@ where
                 .with_help(format!("Supply a type contained by `{constraint_id}`.")),
             );
         }
+    }
+}
+
+/// Reports each PHP# `Map` written in `type_union` whose key type is a class or an enum without a backing value.
+/// Spec section 12 keys a `Map` by an `int`, a `string` or a type with an `int` or `string` backing value, which
+/// runs as its backing value.
+pub fn report_map_keys_without_backing_value<A>(context: &mut Context<'_, '_, A>, type_union: &TUnion, span: Span)
+where
+    A: Arena,
+{
+    if !context.dialect.is_sharp() {
+        return;
+    }
+
+    for type_ref in type_union.get_all_child_nodes() {
+        let TypeRef::Atomic(TAtomic::Array(TArray::Keyed(keyed_array))) = type_ref else {
+            continue;
+        };
+        let Some((key_type, _)) = keyed_array.get_generic_parameters() else {
+            continue;
+        };
+        if get_backing_key_type(key_type, context.codebase).is_always_array_key(true) {
+            continue;
+        }
+
+        let key_id = key_type.get_id();
+        context.collector.report_with_code(
+            IssueCode::TemplateConstraintViolation,
+            Issue::error(format!(
+                "A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value, and `{key_id}` has none."
+            ))
+            .with_annotation(Annotation::primary(span).with_message(format!("`{key_id}` keys this `Map`.")))
+            .with_help("Key the `Map` by an `int`, a `string` or a backed enum, such as `enum Status: string`."),
+        );
     }
 }

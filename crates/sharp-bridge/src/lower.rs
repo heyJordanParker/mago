@@ -680,12 +680,38 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             Statement::ForOf(for_of) => {
                 let collection = self.expression(for_of.expression);
                 let (key, value) = match &for_of.target {
-                    ForOfTarget::Value(value) => (NULL, self.variable(value.span, value.value)),
-                    ForOfTarget::KeyValue(pair) => {
-                        (self.variable(pair.key.span, pair.key.value), self.variable(pair.value.span, pair.value.value))
-                    }
+                    ForOfTarget::Value(value) => (NULL, self.variable(value.name.span, value.name.value)),
+                    ForOfTarget::KeyValue(pair) => (
+                        self.variable(pair.key.name.span, pair.key.name.value),
+                        self.variable(pair.value.name.span, pair.value.name.value),
+                    ),
                 };
-                let body = self.statement(for_of.body);
+                let mut body = self.statement(for_of.body);
+
+                // A `Map` keyed by a backed enum holds each key as its backing value, and the analyzer requires a loop
+                // over one to name the enum as its key's type, so a key that names a class reads back as its case.
+                // PHP stores an all-digit `string` key as an `int`, so a key written `string` reads back through
+                // `(string)`, as spec section 12 reads a `Map<string, V>` key.
+                if let ForOfTarget::KeyValue(pair) = &for_of.target
+                    && let Some(hint @ (Hint::Identifier(_) | Hint::String(_))) = pair.key.hint
+                {
+                    let line = self.line(&pair.key);
+                    let stored_key = self.variable(pair.key.name.span, pair.key.name.value);
+                    let read_back = match hint {
+                        Hint::Identifier(class) => {
+                            let class = self.string(ZEND_NAME_FQ, line, self.names.get(class));
+                            let from = self.string(0, line, b"from");
+                            let arguments = self.node(SHARP_AST_ARG_LIST, 0, line, &[stored_key]);
+
+                            self.node(SHARP_AST_STATIC_CALL, 0, line, &[class, from, arguments])
+                        }
+                        _ => self.node(SHARP_AST_CAST, IS_STRING, line, &[stored_key]),
+                    };
+                    let key = self.variable(pair.key.name.span, pair.key.name.value);
+                    let assignment = self.node(SHARP_AST_ASSIGN, 0, line, &[key, read_back]);
+
+                    body = self.node(SHARP_AST_STMT_LIST, 0, line, &[assignment, body]);
+                }
 
                 self.node(SHARP_AST_FOREACH, 0, self.line(for_of), &[collection, value, key, body])
             }

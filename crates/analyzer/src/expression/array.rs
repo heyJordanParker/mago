@@ -22,6 +22,7 @@ use mago_codex::ttype::comparator::ComparisonResult;
 use mago_codex::ttype::comparator::union_comparator;
 use mago_codex::ttype::comparator::union_comparator::is_contained_by;
 use mago_codex::ttype::get_arraykey;
+use mago_codex::ttype::get_backing_key_type;
 use mago_codex::ttype::get_empty_keyed_array;
 use mago_codex::ttype::get_int;
 use mago_codex::ttype::get_iterable_parameters;
@@ -181,6 +182,11 @@ where
                             get_literal_int(f.trunc() as i64)
                         } else if item_key_type.is_float() {
                             get_int()
+                        } else if context.dialect.is_sharp()
+                            && get_backing_key_type(item_key_type, context.codebase).is_always_array_key(true)
+                        {
+                            // A PHP# literal keys a `Map` by a backed enum, which runs as its backing value.
+                            item_key_type.clone()
                         } else if !item_key_type.is_always_array_key(true) {
                             let item_key_type_id = item_key_type.get_id();
 

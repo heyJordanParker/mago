@@ -407,11 +407,14 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         ) => Some(FieldOrProperty),
         (Node::Hint(hint), FieldOrProperty) if is_slice_type(hint) && !matches!(hint, Hint::Void(_)) => Some(FieldOrProperty),
         (Node::GenericHint(generic), FieldOrProperty | Method | Signature | Parameter | Body) => {
+            // The analyzer refuses a named key type without an `int` or `string` backing value.
             if let [key, _] = generic.arguments.as_slice()
-                && !matches!(key, Hint::Integer(_) | Hint::String(_))
+                && !matches!(key, Hint::Integer(_) | Hint::String(_) | Hint::Identifier(_))
             {
                 context.report(
-                    Issue::error("A `Map`'s keys are `int` or `string`, as a PHP array's keys are.")
+                    Issue::error(
+                        "A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value.",
+                    )
                         .with_annotation(Annotation::primary(key.span()).with_message("Key type written here.")),
                 );
 
@@ -559,7 +562,8 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             | Node::ForBody(ForBody::Statement(_))
             | Node::ForOf(_)
             | Node::ForOfTarget(_)
-            | Node::ForOfKeyValueTarget(_),
+            | Node::ForOfKeyValueTarget(_)
+            | Node::ForOfVariable(_),
             Body,
         ) => Some(Body),
 

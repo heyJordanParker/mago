@@ -91,7 +91,7 @@ final class MapMethods
      *
      * @param K $key
      */
-    public function delete(int|string $key): void {}
+    public function delete(int|string|\BackedEnum $key): void {}
 
     /**
      * @param K $key
@@ -100,5 +100,5 @@ final class MapMethods
      *
      * @mutation-free
      */
-    public function get(int|string $key): mixed {}
+    public function get(int|string|\BackedEnum $key): mixed {}
 }
