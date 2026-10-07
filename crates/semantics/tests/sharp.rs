@@ -1910,18 +1910,18 @@ fn a_null_start_needs_a_type() {
     assert_eq!(issues(code), ["7:21 A null start needs a type: write `T? value = null`."]);
 }
 
+/// `List` takes one type argument and `Map` two, and none is `void`. A class takes any number, which the analyzer
+/// checks, so `Set<string>` and `Paged<Line>` are generic class types.
 #[test]
-fn a_type_with_type_arguments_other_than_list_or_map_is_not_supported_yet() {
+fn a_list_or_map_with_the_wrong_type_arguments_is_not_supported_yet() {
     let code = "class Report\n{\n    public List<void> run(Set<string> a, List<int, int> b, Map<string> c, Paged<Line> d)\n    {\n        return [];\n    }\n}\n";
 
     assert_eq!(
         issues(code),
         [
             "3:12 This type is not supported yet in PHP#.",
-            "3:27 This type is not supported yet in PHP#.",
             "3:42 This type is not supported yet in PHP#.",
             "3:60 This type is not supported yet in PHP#.",
-            "3:75 This type is not supported yet in PHP#.",
         ]
     );
 }
@@ -2238,13 +2238,153 @@ fn a_header_naming_an_interface_twice_or_an_enum_header_naming_unit_enum_is_an_e
     );
 }
 
-/// A header parses any type, as C#'s base list does. Type arguments in a header wait until the binder reads them, and
-/// a header names no other type, so each is not supported yet where it is written.
+/// A header parses any type, as C#'s base list does. It names a class or an interface, or a generic class type whose
+/// type arguments are checked as a parameter's types, and any other type is not supported yet where it is written.
 #[test]
-fn a_header_type_with_type_arguments_or_that_is_not_a_name_is_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nimport Lib.PaginatedList;\n\npublic class OrderPage : PaginatedList<Order> { }\n\nclass Card : int { }\n";
+fn a_header_names_a_class_or_a_generic_class_type_and_any_other_type_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nimport Lib.PaginatedList;\n\npublic class OrderPage : PaginatedList<Order>, Comparable<OrderPage> { }\n\nclass Card : int { }\n\npublic class Bad : PaginatedList<void> { }\n\npublic class Worse<TItem, TOther> : TItem, Lines<Self>, List<int>, TOther<Order> { }\n";
 
-    assert_eq!(issues(code), ["5:26 This type is not supported yet in PHP#.", "7:14 This type is not supported yet in PHP#."]);
+    assert_eq!(
+        issues(code),
+        [
+            "7:14 This type is not supported yet in PHP#.",
+            "9:20 This type is not supported yet in PHP#.",
+            "11:37 This type is not supported yet in PHP#.",
+            "11:50 `Self` is only a return type in PHP#.",
+            "11:57 This type is not supported yet in PHP#.",
+            "11:68 A type parameter takes no type arguments: write `TOther`.",
+        ]
+    );
+}
+
+/// Every example of spec sections 11 and 25 is in the slice: type parameters on a class, an interface and a method,
+/// bounds, variance, generic types, `Class<T>`, and type arguments on `new` and on a call. Section 11's `value is
+/// TItem` needs `TItem`'s type argument while the code runs, which G1 erases.
+#[test]
+fn the_generics_examples_of_the_spec_are_in_the_slice_but_a_test_of_a_type_parameter() {
+    let code = "namespace App.Tenant;\n\nimport Illuminate.Database.Eloquent.Model;\n\npublic class PaginatedList<TItem : DatabaseEntity>\n{\n    public TItem first(List<TItem> items) => items[0];\n}\n\npublic class Repository\n{\n    private Map<string, Class<Element>> elements = [:];\n\n    public PaginatedList<TItem> list<TItem : DatabaseEntity>(Query<TItem> query) => new PaginatedList<TItem>(query.rows());\n\n    public void share<TItem : DatabaseEntity & Shareable>(TItem item, Any body)\n    {\n        const page = new PaginatedList<Order>(this.rows());\n        const payload = Json.decode<WebhookPayload>(body);\n        const found = this?.find<Order>(1);\n    }\n\n    public Model? load(Class<Model> type, int id) => type.find(id);\n}\n\npublic interface Validator<in TItem>\n{\n    bool check(TItem item);\n}\n\npublic interface Source<out TItem>\n{\n    TItem next();\n}\n\npublic class OrderPage : PaginatedList<Order>\n{\n}\n\npublic class Inbox\n{\n    public bool holds<TItem>(List<TItem> items, Any value) => value is TItem;\n}\n";
+
+    assert_eq!(issues(code), ["42:72 This type is not supported yet in PHP#."]);
+}
+
+/// A type parameter's name is `T`, or `T` and an uppercase letter, as C# names them, spec section 11.
+#[test]
+fn a_type_parameter_whose_name_does_not_start_with_t_and_an_uppercase_letter_is_an_error() {
+    let code = "namespace App.Tenant;\n\npublic class Box<Item, T, TKey, Tkey, T1, TK>\n{\n    public void run<Value>() { }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "3:18 A type parameter's name starts with `T`, as in `TItem`.",
+            "3:33 A type parameter's name starts with `T`, as in `TItem`.",
+            "3:39 A type parameter's name starts with `T`, as in `TItem`.",
+            "5:21 A type parameter's name starts with `T`, as in `TItem`.",
+        ]
+    );
+}
+
+#[test]
+fn a_type_parameter_list_that_declares_a_name_twice_is_an_error() {
+    let code = "namespace App.Tenant;\n\npublic class Pair<TKey, TValue, TKey>\n{\n    public void run<T, T>() { }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "3:33 This type parameter list declares `TKey` twice.",
+            "5:24 This type parameter list declares `T` twice.",
+        ]
+    );
+}
+
+/// Only a class or an interface declares variance, spec section 11.1, so `in` or `out` on a method's type parameter
+/// is an error.
+#[test]
+fn in_or_out_on_a_method_type_parameter_is_an_error() {
+    let code = "namespace App.Tenant;\n\npublic class Box<out TItem, in TOther>\n{\n    public void run<out T, in TKey, TValue>() { }\n}\n\npublic interface Source<out TItem>\n{\n    TItem next<in T>();\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:21 A method's type parameter takes no `out`: only a class or an interface declares variance, so remove it.",
+            "5:28 A method's type parameter takes no `in`: only a class or an interface declares variance, so remove it.",
+            "10:16 A method's type parameter takes no `in`: only a class or an interface declares variance, so remove it.",
+        ]
+    );
+}
+
+/// A bound is a class or an interface, a generic class type, or several of them joined with `&`, spec section 11.
+#[test]
+fn a_bound_that_is_not_a_class_an_interface_or_a_generic_class_type_is_an_error() {
+    let code = "namespace App.Tenant;\n\npublic class Box<TA : DatabaseEntity, TB : Comparable<TB>, TC : DatabaseEntity & Shareable>\n{\n    public void a<TD : int>() { }\n    public void b<TE : Any>() { }\n    public void c<TF : Order?>() { }\n    public void d<TG : Order|Line>() { }\n    public void e<TH : List<int>>() { }\n    public void f<TI : Map<string, int>>() { }\n    public void g<TJ : Class<Order>>() { }\n    public void h<TK : TA>() { }\n    public void i<TL : Order & TA>() { }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        (5..=13)
+            .map(|line| format!("{line}:24 A bound is a class or an interface, as in `<TItem : DatabaseEntity>`."))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// A generic type goes wherever a type goes. `Map`'s key rule applies to `Map` alone, `Class<T>` takes a class, an
+/// interface or a type parameter, a type argument is never `void`, and a type parameter takes no type arguments. The
+/// analyzer checks a generic class's arity and bounds.
+#[test]
+fn a_generic_type_goes_wherever_a_type_goes_with_the_type_arguments_its_name_takes() {
+    let code = "namespace App.Tenant;\n\npublic class Store\n{\n    private PaginatedList<Order?, Line> pages;\n    private Map<Order?, int> sizes = [:];\n    private Class<int> kind;\n    private Map<string, Class<List<int>>> kinds = [:];\n    private PaginatedList<void> nothing;\n\n    public PaginatedList<Order> run<TItem>(Class<Order> type, Class<TItem> mine, PaginatedList<Map<string, Order>> pages)\n    {\n        PaginatedList<Line>? kept = null;\n        return new PaginatedList<Order>(type);\n    }\n\n    public void take<TItem>(TItem<Order> value) { }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "6:17 A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value.",
+            "7:19 `Class`'s type argument is a class, an interface or a type parameter, as in `Class<Order>`.",
+            "8:31 `Class`'s type argument is a class, an interface or a type parameter, as in `Class<Order>`.",
+            "9:13 This type is not supported yet in PHP#.",
+            "17:29 A type parameter takes no type arguments: write `TItem`.",
+        ]
+    );
+}
+
+/// The type arguments of `new` and of a method call, `super.` and `Self.` calls included, are a method body's types,
+/// so `void` and `mixed` among them are errors.
+#[test]
+fn the_type_arguments_of_new_and_of_a_method_call_are_checked_as_types() {
+    let code = "namespace App.Tenant;\n\nclass Report : Base\n{\n    public int run(int extra)\n    {\n        const page = new PaginatedList<Order>(extra);\n        const payload = Json.decode<WebhookPayload>(extra);\n        const found = this?.find<Order, List<int>>(extra);\n        const none = new PaginatedList<void>(extra);\n        const any = Json.decode<mixed>(extra);\n        const raw = this?.find<void>(extra);\n        return super.run<Order>(extra);\n    }\n\n    public static int make(int extra) => Self.make<Order>(extra);\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "10:40 A type argument cannot be `void`: `void` is only a return type.",
+            "11:33 PHP# has no `mixed`: write `Any?`, or `Any` for a value that is never null.",
+            "12:32 A type argument cannot be `void`: `void` is only a return type.",
+        ]
+    );
+}
+
+/// G1 erases type arguments, so whatever needs one while the code runs is not supported yet: a type parameter in a
+/// pattern, `as` or a catch clause, `typeof` of one, `new` of one, a generic class type or `Class<T>` in a pattern or
+/// `as`, and a `List` or `Map` pattern or `as` whose type arguments hold a type parameter.
+#[test]
+fn what_needs_a_type_argument_while_the_code_runs_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public bool run<TItem>(Any value, List<TItem> items)\n    {\n        const a = value is TItem;\n        const b = value is TItem item;\n        const c = value as TItem;\n        const d = value is PaginatedList<Order>;\n        const e = value as PaginatedList<Order>;\n        const f = value as List<TItem>;\n        const g = value as Map<string, List<TItem>>;\n        const h = value is List<TItem>;\n        const i = match (value) { TItem => 1, default => 0 };\n        const j = typeof(TItem);\n        const k = new TItem(value);\n        try {\n        } catch (TItem failure) {\n        }\n        const l = value as List<Order>;\n        const m = value is Class<Order>;\n        return a;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:28 This type is not supported yet in PHP#.",
+            "8:28 This type is not supported yet in PHP#.",
+            "9:28 This type is not supported yet in PHP#.",
+            "10:28 This type is not supported yet in PHP#.",
+            "11:28 This type is not supported yet in PHP#.",
+            "12:33 This type is not supported yet in PHP#.",
+            "13:45 This type is not supported yet in PHP#.",
+            "14:33 This type is not supported yet in PHP#.",
+            "15:35 This type is not supported yet in PHP#.",
+            "16:19 This `typeof` of a type parameter is not supported yet in PHP#.",
+            "17:19 This `new` of a type parameter is not supported yet in PHP#.",
+            "19:18 This type is not supported yet in PHP#.",
+            "22:28 This type is not supported yet in PHP#.",
+        ]
+    );
 }
 
 #[test]

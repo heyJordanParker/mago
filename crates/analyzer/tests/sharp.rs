@@ -1003,6 +1003,15 @@ fn a_generic_type_in_a_header_links_its_class_by_its_name() {
     );
 }
 
+/// `List`, `Map` and `Class` are never classes, so the binder resolves no name for them, and a header that names one,
+/// which `check_slice` refuses, links no parent.
+#[test]
+fn a_header_naming_a_built_in_generic_type_links_no_parent() {
+    let sharp = "namespace Demo;\n\npublic class Lines : List<int>, Map<string, int>, Class<Lines>\n{\n}\n";
+
+    assert_eq!(issues(("src/Demo/Lines.sharp", sharp), &[]), Vec::<String>::new());
+}
+
 /// A method is closed unless it is `virtual`, and `override` is required to replace one, spec section 22. So PHP#
 /// reports what PHP reports for a `final` method and a missing or stray `#[\Override]`, without the
 /// `check-missing-override` setting. Implementing an interface method takes no `override`.

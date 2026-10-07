@@ -409,7 +409,7 @@ where
     // A PHP# header, `: Base, IFace`, lists a class's base among its interfaces. PHP links the one class there as
     // the parent, and so does the populator. An enum has no parent, so every name in its header is an interface. A
     // generic type in the header, as in `: PaginatedList<Order>`, names its class before its type arguments, and the
-    // checker refuses any other type there.
+    // checker refuses any other type there. `List`, `Map` and `Class` have no resolved name, because no class is one.
     if let Some(inheritance) = inheritance {
         for type_name in &inheritance.types {
             let name = match type_name {
@@ -417,8 +417,11 @@ where
                 Hint::Generic(generic) => Identifier::Local(generic.name),
                 _ => continue,
             };
+            let Some(name) = context.resolved_names.resolve(&name) else {
+                continue;
+            };
 
-            class_like_metadata.add_direct_parent_interface(ascii_lowercase_word(context.resolved_names.get(&name)));
+            class_like_metadata.add_direct_parent_interface(ascii_lowercase_word(name));
         }
     }
 

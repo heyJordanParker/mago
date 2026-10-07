@@ -410,3 +410,25 @@ abstract class Record
 
     public static (Self|int)? either(int id) => Self.find(id);
 }
+
+public class Page<out TItem : Record & Sized, TKey : Comparable<TKey>> : Listing<TItem>, Sized
+{
+    private Map<string, Class<TItem>> kinds = [:];
+    public List<TItem> items { get; private set; } = [];
+
+    public TItem? first(TKey key, PaginatedList<Order>? fallback = null)
+    {
+        const page = new Page<Calc, int>(1);
+        const found = this.convert<Calc>(this.items[0]);
+        const again = this?.convert<List<Calc>>(found);
+        Class<TItem>? kind = null;
+        return null;
+    }
+
+    public TResult convert<TResult : Record>(TItem item) => this.convert<TResult>(item);
+}
+
+public interface Listing<in TItem> : Sized
+{
+    bool accepts(TItem item);
+}

@@ -35,7 +35,6 @@ use mago_syntax::cst::Identifier;
 use mago_syntax::cst::If;
 use mago_syntax::cst::IfBody;
 use mago_syntax::cst::Implements;
-use mago_syntax::cst::Inheritance;
 use mago_syntax::cst::Instantiation;
 use mago_syntax::cst::Interface;
 use mago_syntax::cst::Is;
@@ -63,6 +62,7 @@ use mago_syntax::cst::Trait;
 use mago_syntax::cst::TraitUse;
 use mago_syntax::cst::TryCatchClause;
 use mago_syntax::cst::TypeOf;
+use mago_syntax::cst::TypeParameterList;
 use mago_syntax::cst::TypePattern;
 use mago_syntax::cst::UnaryPostfix;
 use mago_syntax::cst::UnaryPrefix;
@@ -96,7 +96,8 @@ use crate::scope::trim_start_byte;
 /// PHP's scoping and aliasing rules.
 ///
 /// In a PHP# file it is also the binder: it classifies every bare name as a local, `this`,
-/// a class or a constant, from the scopes of the file alone.
+/// a class or a constant, and every type name that names a type parameter as that type parameter, from the scopes of
+/// the file alone.
 #[derive(Debug, Default)]
 pub struct NameWalker<'arena> {
     /// Accumulates the resolved names found during the CST walk.
@@ -114,6 +115,9 @@ pub struct NameWalker<'arena> {
     lambdas: std::vec::Vec<u32>,
     /// The accessor list being walked in PHP#, which declares `field`, its property's storage.
     accessors: Option<Span>,
+    /// The name and declaration of each type parameter of each class, interface and method being walked in PHP#, one
+    /// list each, innermost last.
+    type_parameters: std::vec::Vec<std::vec::Vec<(&'arena [u8], Span)>>,
 }
 
 /// The member names of one class, compared as PHP compares them: method names ignoring case, and property and
@@ -225,6 +229,39 @@ impl<'arena> NameWalker<'arena> {
         {
             self.member_objects.insert(object.name.span().start.offset);
         }
+    }
+
+    /// Brings the type parameters of a class, an interface or a method into scope until `exit_type_parameters`.
+    fn enter_type_parameters(&mut self, list: Option<&TypeParameterList<'arena>>) {
+        if self.sharp {
+            self.type_parameters.push(list.map_or_else(std::vec::Vec::new, |list| {
+                list.parameters.iter().map(|parameter| (parameter.name.value, parameter.name.span)).collect()
+            }));
+        }
+    }
+
+    fn exit_type_parameters(&mut self) {
+        if self.sharp {
+            self.type_parameters.pop();
+        }
+    }
+
+    /// Binds a type name that names a type parameter in scope, the innermost list's first, and resolves it to the name
+    /// as written. Returns whether it named one.
+    fn bind_type_parameter(&mut self, name: &'arena [u8], span: Span) -> bool {
+        let Some(declaration) = self
+            .type_parameters
+            .iter()
+            .rev()
+            .find_map(|list| list.iter().find(|(parameter, _)| *parameter == name).map(|(_, declaration)| *declaration))
+        else {
+            return false;
+        };
+
+        self.resolved_names.insert_at(span, name, false);
+        self.resolved_names.bind(span, Binding::TypeParameter { declaration });
+
+        true
     }
 
     fn is_member(&self, name: &[u8]) -> bool {
@@ -473,24 +510,28 @@ where
         if self.sharp {
             self.class_members.push(class_member_names(&class.members));
         }
+        self.enter_type_parameters(class.type_parameters.as_ref());
     }
 
     fn walk_out_class(&mut self, _class: &'ast Class<'arena>, _context: &mut NameResolutionContext<'arena, A>) {
         if self.sharp {
             self.class_members.pop();
         }
+        self.exit_type_parameters();
     }
 
-    fn walk_in_method(&mut self, _method: &'ast Method<'arena>, _context: &mut NameResolutionContext<'arena, A>) {
+    fn walk_in_method(&mut self, method: &'ast Method<'arena>, _context: &mut NameResolutionContext<'arena, A>) {
         if self.sharp {
             self.locals.enter_method();
         }
+        self.enter_type_parameters(method.type_parameters.as_ref());
     }
 
     fn walk_out_method(&mut self, _method: &'ast Method<'arena>, _context: &mut NameResolutionContext<'arena, A>) {
         if self.sharp {
             self.locals.exit_method();
         }
+        self.exit_type_parameters();
     }
 
     fn walk_out_function(
@@ -890,6 +931,15 @@ where
         let classlike = context.qualify_name(interface.name.value);
 
         self.resolved_names.insert_at(interface.name.span, classlike, false);
+        self.enter_type_parameters(interface.type_parameters.as_ref());
+    }
+
+    fn walk_out_interface(
+        &mut self,
+        _interface: &'ast Interface<'arena>,
+        _context: &mut NameResolutionContext<'arena, A>,
+    ) {
+        self.exit_type_parameters();
     }
 
     fn walk_in_trait(&mut self, r#trait: &'ast Trait<'arena>, context: &mut NameResolutionContext<'arena, A>) {
@@ -942,28 +992,23 @@ where
         }
     }
 
-    /// A header's generic type, as in `: PaginatedList<Order>`, names its class before its type arguments.
-    /// `walk_in_hint` resolves the header's plain names, as it resolves every name a type is written with.
-    fn walk_in_inheritance(
-        &mut self,
-        inheritance: &'ast Inheritance<'arena>,
-        context: &mut NameResolutionContext<'arena, A>,
-    ) {
-        for parent in &inheritance.types {
-            if let Hint::Generic(generic) = parent {
-                let (parent_classlike, imported) = context.resolve(NameKind::Default, generic.name.value);
-
-                self.resolved_names.insert_at(generic.name.span, parent_classlike, imported);
-            }
-        }
-    }
-
+    /// Resolves the name every type is written with, a header's included. A name that names a type parameter in scope
+    /// is that type parameter. A generic type, as in `PaginatedList<Order>`, names its class before its type arguments,
+    /// and `List`, `Map` and `Class` name no class.
     fn walk_in_hint(&mut self, hint: &'ast Hint<'arena>, context: &mut NameResolutionContext<'arena, A>) {
-        if let Hint::Identifier(identifier) = hint {
-            let (name, imported) = context.resolve(NameKind::Default, identifier.value());
-
-            self.resolved_names.insert_at(identifier.span(), name, imported);
+        let (name, span) = match hint {
+            Hint::Identifier(identifier) => (identifier.value(), identifier.span()),
+            Hint::Generic(generic) if !matches!(generic.name.value, b"List" | b"Map" | b"Class") => {
+                (generic.name.value, generic.name.span)
+            }
+            _ => return,
+        };
+        if self.bind_type_parameter(name, span) {
+            return;
         }
+
+        let (name, imported) = context.resolve(NameKind::Default, name);
+        self.resolved_names.insert_at(span, name, imported);
     }
 
     fn walk_in_attribute(
@@ -1015,7 +1060,9 @@ where
         instantiation: &'ast Instantiation<'arena>,
         context: &mut NameResolutionContext<'arena, A>,
     ) {
-        if let Expression::Identifier(identifier) = instantiation.class {
+        if let Expression::Identifier(identifier) = instantiation.class
+            && !self.bind_type_parameter(identifier.value(), identifier.span())
+        {
             let (name, imported) = context.resolve(NameKind::Default, identifier.value());
 
             self.resolved_names.insert_at(identifier.span(), name, imported);
@@ -1023,6 +1070,10 @@ where
     }
 
     fn walk_in_type_of(&mut self, type_of: &'ast TypeOf<'arena>, context: &mut NameResolutionContext<'arena, A>) {
+        if self.bind_type_parameter(type_of.class.value(), type_of.class.span()) {
+            return;
+        }
+
         let (name, imported) = context.resolve(NameKind::Default, type_of.class.value());
 
         self.resolved_names.insert_at(type_of.class.span(), name, imported);

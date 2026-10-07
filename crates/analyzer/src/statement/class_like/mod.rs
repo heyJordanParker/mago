@@ -865,17 +865,19 @@ where
 
     // A PHP# header, `: Base, IFace`, names an interface's parents, or a class's parent among its interfaces: the
     // one class the populator linked as the parent. A generic type there, as in `: PaginatedList<Order>`, names its
-    // class before its type arguments, and the checker refuses any other type there.
+    // class before its type arguments, and the checker refuses any other type there. `List`, `Map` and `Class` have no
+    // resolved name, because no class is one.
     for type_hint in inheritance_ast.iter().flat_map(|inheritance| inheritance.types.iter()) {
         let type_name = match type_hint {
             Hint::Identifier(identifier) => *identifier,
             Hint::Generic(generic) => Identifier::Local(generic.name),
             _ => continue,
         };
+        let Some(resolved) = context.resolved_names.resolve(&type_name) else {
+            continue;
+        };
         let is_parent = class_like_metadata.kind.is_interface()
-            || class_like_metadata
-                .direct_parent_class
-                .is_some_and(|parent| parent.as_bytes().eq_ignore_ascii_case(context.resolved_names.get(&type_name)));
+            || class_like_metadata.direct_parent_class.is_some_and(|parent| parent.as_bytes().eq_ignore_ascii_case(resolved));
 
         if is_parent { extended_types.push(type_name) } else { implemented_types.push(type_name) }
     }

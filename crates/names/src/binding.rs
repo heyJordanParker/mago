@@ -21,7 +21,7 @@ pub fn php_method_name<'arena>(method: &Method<'arena>) -> &'arena [u8] {
     if method.function.is_none() && method.return_type_hint.is_none() { b"__construct" } else { method.name.value }
 }
 
-/// What a bare PHP# name refers to.
+/// What a bare PHP# name, or a type name that names a type parameter, refers to.
 ///
 /// The parser reads `x`, `x.y` and `x.y()` the same way whatever `x` is. The binder then decides,
 /// from the scopes of the file alone, what each bare name means.
@@ -41,6 +41,12 @@ pub enum Binding {
     Member,
     /// `field` in an accessor body: the storage of the property the accessor belongs to.
     Field,
+    /// A type parameter of the enclosing method, class or interface, written as a type. Its resolved name is the name
+    /// as written, as in `TItem`.
+    TypeParameter {
+        /// The name in the type parameter's declaration, as `TItem` in `<TItem : DatabaseEntity>`.
+        declaration: Span,
+    },
 }
 
 /// A PHP# scope rule a bare name breaks. The name still has its [`Binding`].

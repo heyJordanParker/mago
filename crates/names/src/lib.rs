@@ -50,7 +50,8 @@ pub struct ResolvedNames<'arena> {
     /// for backward compatibility.
     names: HashMap<u32, (u32, (&'arena [u8], bool))>,
 
-    /// Start offset of every bare PHP# name -> what it refers to. Empty for PHP.
+    /// Start offset of every bare PHP# name, and of every PHP# type name that names a type parameter -> what it refers
+    /// to. Empty for PHP.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "HashMap::is_empty"))]
     bindings: HashMap<u32, Binding>,
 
@@ -156,7 +157,8 @@ impl<'arena> ResolvedNames<'arena> {
             .collect()
     }
 
-    /// Returns what the bare PHP# name starting at the given position refers to.
+    /// Returns what the bare PHP# name starting at the given position refers to, or the type parameter a PHP# type name
+    /// there names.
     ///
     /// Returns `None` for every name in a PHP file.
     pub fn binding<T>(&self, position: &T) -> Option<Binding>

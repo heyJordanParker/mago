@@ -78,6 +78,64 @@ fn a_generic_type_in_a_header_resolves_by_its_name() {
     assert_eq!(resolved(&names, CODE, "Shareable", 0), b"App\\Tenant\\Store\\Shareable");
 }
 
+/// Every type name that names a type parameter binds as that type parameter and resolves to the name as written, never
+/// namespace-qualified. A generic class type resolves its name as a class name, and `List`, `Map` and `Class` are never
+/// classes.
+#[test]
+fn a_type_parameter_written_as_a_type_binds_as_its_type_parameter_and_resolves_to_its_name() {
+    const CODE: &str = "namespace App;\n\npublic class PaginatedList<TItem : DatabaseEntity>\n{\n    private Map<string, Class<TItem>> types = [:];\n\n    public TItem first()\n    {\n        return this.first();\n    }\n\n    public List<T> keep<T>(List<T> items, PaginatedList<Order> page)\n    {\n        TItem x = this.first();\n        const pick = (T item) => item;\n        const kept = this.keep<TItem>([], page);\n        const kind = typeof(TItem);\n        const made = new TItem(x);\n        const same = x is TItem;\n        const cast = x as TItem;\n        try {\n        } catch (TItem failure) {\n        }\n        return items;\n    }\n\n    public void sort<TKey, TValue : Comparable<TKey>>()\n    {\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    let item = Some(Binding::TypeParameter { declaration: span(CODE, "TItem", 0) });
+    for nth in 1..=9 {
+        assert_eq!(binding(&names, CODE, "TItem", nth), item, "`TItem` #{nth}");
+        assert_eq!(resolved(&names, CODE, "TItem", nth), b"TItem", "`TItem` #{nth}");
+    }
+
+    let t = Some(Binding::TypeParameter { declaration: name_at(CODE, "T>(List", "T") });
+    for at in ["T> keep", "T> items", "T item)"] {
+        assert_eq!(bound_at(&names, CODE, at, "T"), t, "`T` at `{at}`");
+        assert_eq!(names.get(&name_at(CODE, at, "T").start), b"T", "`T` at `{at}`");
+    }
+
+    assert_eq!(
+        bound_at(&names, CODE, "TKey>>", "TKey"),
+        Some(Binding::TypeParameter { declaration: name_at(CODE, "TKey, TValue", "TKey") })
+    );
+    assert_eq!(resolved(&names, CODE, "TKey>>", 0), b"TKey");
+
+    assert_eq!(resolved(&names, CODE, "DatabaseEntity", 0), b"App\\DatabaseEntity");
+    assert_eq!(resolved(&names, CODE, "Comparable", 0), b"App\\Comparable");
+    assert_eq!(resolved(&names, CODE, "PaginatedList<Order>", 0), b"App\\PaginatedList");
+    assert_eq!(binding(&names, CODE, "PaginatedList<Order>", 0), None);
+    assert_eq!(resolved(&names, CODE, "Order", 0), b"App\\Order");
+    for needle in ["List<T> keep", "List<T> items", "Map<string", "Class<TItem>"] {
+        assert!(!names.contains(&Position::new(offset(CODE, needle, 0))), "`{needle}` has a resolved name");
+    }
+}
+
+/// A class's or an interface's type parameters are in scope in its whole declaration, its header included, and a
+/// method's in its signature and body, where they win over the class's of the same name. Past the declaration, the
+/// name is a class name again.
+#[test]
+fn a_type_parameter_is_in_scope_in_its_declaration_and_a_method_type_parameter_shadows_the_class_type_parameter() {
+    const CODE: &str = "namespace App;\n\npublic interface Validator<in TItem>\n{\n    bool check(TItem item);\n}\n\npublic class Box<TItem> : PaginatedList<TItem>, Validator<TItem>\n{\n    public TItem convert<TItem>(TItem value)\n    {\n        return value;\n    }\n\n    public bool check(TItem item)\n    {\n        return true;\n    }\n}\n\nclass Other\n{\n    public TItem get(TItem item)\n    {\n        return item;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    let of = |nth: usize| Some(Binding::TypeParameter { declaration: span(CODE, "TItem", nth) });
+    assert_eq!(binding(&names, CODE, "TItem", 1), of(0));
+    for (nth, declaration) in [(3, 2), (4, 2), (5, 6), (7, 6), (8, 2)] {
+        assert_eq!(binding(&names, CODE, "TItem", nth), of(declaration), "`TItem` #{nth}");
+        assert_eq!(resolved(&names, CODE, "TItem", nth), b"TItem", "`TItem` #{nth}");
+    }
+    for nth in [9, 10] {
+        assert_eq!(binding(&names, CODE, "TItem", nth), None, "`TItem` #{nth}");
+        assert_eq!(resolved(&names, CODE, "TItem", nth), b"App\\TItem", "`TItem` #{nth}");
+    }
+}
+
 #[test]
 fn the_interfaces_in_an_enum_header_resolve_as_class_names() {
     const CODE: &str = "namespace App.Tenant.Store;\n\nimport App.Shared.HasLabel;\n\nenum Status : string, HasLabel, Sorted\n{\n}\n\nenum Suit : HasLabel\n{\n}\n";
