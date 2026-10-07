@@ -343,7 +343,9 @@ where
                     .with_note(format!(
                         "`{form}` requires an `iterable` (e.g., `array` or an object implementing `Traversable`).",
                     ))
-                    .with_help(format!("Ensure the expression used with `{form}` always evaluates to an iterable type.")),
+                    .with_help(format!(
+                        "Ensure the expression used with `{form}` always evaluates to an iterable type."
+                    )),
             );
 
             continue;

@@ -2758,6 +2758,42 @@ fn an_override_is_a_field_marked_to_follow_the_parent_type() {
     );
 }
 
+/// An override of a PHP# parent's override is marked the same way. One file cannot tell whether `Order::$table` runs
+/// untyped, and the engine links `Order` first, so `RushOrder::$table` follows the type `Order::$table` runs with.
+#[test]
+fn an_override_of_an_override_is_marked_to_follow_the_parent_type() {
+    let lowered = Lowered::new(
+        "class Order : Model\n{\n    protected override string? table = \"orders\";\n}\n\nclass RushOrder : Order\n{\n    protected override string? table = \"rush_orders\";\n}\n",
+    );
+
+    for (class, value) in [(1, "orders"), (2, "rush_orders")] {
+        let class = lowered.child(lowered.unit().root, class);
+
+        assert_eq!(
+            lowered.render(lowered.child(class, 2)),
+            format!(
+                indoc! {r#"
+                    STMT_LIST
+                      PROP_GROUP [8194]
+                        ZVAL [257] "string"
+                        PROP_DECL
+                          PROP_ELEM
+                            ZVAL "table"
+                            ZVAL "{}"
+                            null
+                            null
+                        ATTRIBUTE_LIST
+                          ATTRIBUTE_GROUP
+                            ATTRIBUTE
+                              ZVAL "Override"
+                              null
+                "#},
+                value
+            )
+        );
+    }
+}
+
 /// ```php
 /// class Account extends \Lib\Ledger
 /// {
