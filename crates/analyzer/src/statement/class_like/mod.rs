@@ -3276,6 +3276,14 @@ fn check_class_like_properties<'ctx, A>(
                 );
         }
 
+        // PHP links a class against the nearest declaration of the property, so PHP# measures an override against it
+        // alone. The declarations up to the root decide whether the property runs untyped.
+        let overridden: Vec<_> = if context.dialect.is_sharp() {
+            override_attribute::overridden_properties(class_like_metadata, *property_name, context.codebase).collect()
+        } else {
+            Vec::new()
+        };
+
         // Check each parent class for this property
         for parent_fqcn in &class_like_metadata.all_parent_classes {
             let parent_fqcn_str = parent_fqcn.as_ref();
@@ -3291,12 +3299,19 @@ fn check_class_like_properties<'ctx, A>(
                 continue;
             }
 
+            if overridden.first().is_some_and(|(nearest, _)| nearest.name != parent_metadata.name) {
+                continue;
+            }
+
             let property_span = property_metadata.name_span.unwrap_or(class_like_metadata.span);
             let parent_property_span = parent_property.name_span.unwrap_or(parent_metadata.span);
             let declaring_class_name = class_like_metadata.original_name;
             let parent_class_name = parent_metadata.original_name;
 
-            if parent_property.flags.is_final() {
+            // PHP makes a property whose `set` is private final, so the engine refuses a PHP# override of one.
+            if parent_property.flags.is_final()
+                || (context.dialect.is_sharp() && parent_property.write_visibility.is_private())
+            {
                 context.collector.report_with_code(
                     IssueCode::OverrideFinalProperty,
                     Issue::error(format!(
@@ -3489,6 +3504,31 @@ fn check_class_like_properties<'ctx, A>(
             let parent_only_get = parent_is_virtual && parent_has_get_hook && !parent_has_set_hook;
             let parent_only_set = parent_is_virtual && parent_has_set_hook && !parent_has_get_hook;
 
+            // A property keeps its written type, which PHP refuses over a property that runs untyped, so it cannot replace
+            // a property that a declaration up to the root leaves untyped yet.
+            if let Some(declaring_type) = property_metadata.type_declaration_metadata.as_ref()
+                && let Some((untyped_parent, _)) =
+                    overridden.iter().find(|(_, overridden)| overridden.type_declaration_metadata.is_none())
+                && has_accessors(members, property_metadata.name.0)
+            {
+                let property_name = property_metadata.name.0;
+                let untyped_parent_name = untyped_parent.original_name;
+
+                context.collector.report_with_code(
+                    IssueCode::NotSupportedYet,
+                    Issue::error(format!(
+                        "A property that replaces the untyped PHP property `{untyped_parent_name}::{property_name}` is not supported yet."
+                    ))
+                    .with_annotation(
+                        Annotation::primary(declaring_type.span)
+                            .with_message("PHP refuses a type the parent property does not have."),
+                    )
+                    .with_help("Rename the property, or give the PHP property a type."),
+                );
+
+                continue;
+            }
+
             let mut has_type_incompatibility = false;
             match (
                 property_metadata.type_declaration_metadata.as_ref(),
@@ -3534,24 +3574,9 @@ fn check_class_like_properties<'ctx, A>(
                     let class_name = class_like_metadata.original_name;
 
                     // A PHP# field over an untyped PHP property writes a type the engine drops when the class links, so
-                    // it fits the parent's `@var` type, or any type without one, spec section 6.1. A property keeps its
-                    // written type, which PHP refuses there, so it cannot replace an untyped PHP property yet.
+                    // it fits the parent's `@var` type, or any type without one, spec section 6.1.
                     if context.dialect.is_sharp() {
-                        if has_accessors(members, property_name) {
-                            context.collector.report_with_code(
-                                IssueCode::NotSupportedYet,
-                                Issue::error(format!(
-                                    "A property that replaces the untyped PHP property `{parent_class_name}::{property_name}` is not supported yet."
-                                ))
-                                .with_annotation(
-                                    Annotation::primary(declaring_type.span)
-                                        .with_message("PHP refuses a type the parent property does not have."),
-                                )
-                                .with_help("Rename the property, or give the PHP property a type."),
-                            );
-                        } else if let Some(parent_type) =
-                            parent_property.type_metadata.as_ref().filter(|t| t.from_docblock)
-                        {
+                        if let Some(parent_type) = parent_property.type_metadata.as_ref().filter(|t| t.from_docblock) {
                             let parent_type_union = localize_parent_type(
                                 context.codebase,
                                 class_like_metadata,
