@@ -79,6 +79,9 @@ const _: () = {
 };
 
 /// An input before the encoder stores its path in the texts.
+///
+/// An input no file was at when it was stamped is absent: its size, modification time and hash are all zero. A file
+/// that exists never has that stamp, because the hash of an empty file is not zero.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Input {
     /// Workspace-relative, with `/` separators.
