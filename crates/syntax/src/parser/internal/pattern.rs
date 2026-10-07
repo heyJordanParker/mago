@@ -50,7 +50,7 @@ where
         let keyword = self.expect_any_keyword()?;
 
         Ok(self.arena.alloc(if keyword.value == b"as" {
-            Expression::As(As { value, r#as: keyword, hint: self.arena.alloc(self.parse_type_hint()?) })
+            Expression::As(As { value, r#as: keyword, hint: self.arena.alloc(self.parse_type_hint_in_expression()?) })
         } else {
             Expression::Is(Is { value, is: keyword, pattern: self.parse_pattern()? })
         }))
@@ -149,7 +149,10 @@ where
                     Pattern::Value(self.parse_expression_with_precedence(Precedence::Comparison)?)
                 }
             }
-            _ => Pattern::Type(TypePattern { hint: self.parse_type_hint()?, variable: self.parse_pattern_variable()? }),
+            _ => Pattern::Type(TypePattern {
+                hint: self.parse_type_hint_in_expression()?,
+                variable: self.parse_pattern_variable()?,
+            }),
         };
 
         Ok(self.arena.alloc(pattern))

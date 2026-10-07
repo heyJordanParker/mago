@@ -211,9 +211,14 @@ impl std::fmt::Display for ParseError {
                 kind => format!("`{kind}` is PHP syntax that PHP# does not have"),
             },
             ParseError::QualifiedNameInSharp(name, _) => {
-                let short_name = name.rsplit('.').next().unwrap_or(name);
+                match ["null", "true", "false"].into_iter().find(|keyword| name.eq_ignore_ascii_case(keyword)) {
+                    Some(keyword) => format!("A `\\` name is PHP syntax: write `{keyword}`"),
+                    None => {
+                        let short_name = name.rsplit('.').next().unwrap_or(name);
 
-                format!("A `\\` name is PHP syntax: add `import {name};` and write `{short_name}`")
+                        format!("A `\\` name is PHP syntax: add `import {name};` and write `{short_name}`")
+                    }
+                }
             }
             ParseError::UntypedParameterInSharp(_) => "A PHP# parameter needs a type, as in `int extra`.".to_string(),
             ParseError::UntypedFieldInSharp(_) => {

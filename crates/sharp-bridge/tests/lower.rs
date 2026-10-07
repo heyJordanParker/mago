@@ -6151,6 +6151,33 @@ fn is_with_a_name_assigns_the_name_before_the_test() {
 }
 
 /// ```php
+/// return \is_string($extra) ? 1 : 0;
+/// ```
+///
+/// A `?` after the type that `is` tests starts a `? :`, as in C#, so it lowers as the same test in parentheses does.
+#[test]
+fn is_before_a_question_mark_is_the_condition_of_a_conditional() {
+    let tree = body_in("int run(int|string extra)", "        return extra is string ? 1 : 0;\n", &[]);
+
+    assert_eq!(tree, body_in("int run(int|string extra)", "        return (extra is string) ? 1 : 0;\n", &[]));
+    assert_eq!(
+        tree,
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CONDITIONAL
+                  CALL
+                    ZVAL "is_string"
+                    ARG_LIST
+                      VAR
+                        ZVAL "extra"
+                  ZVAL 1
+                  ZVAL 0
+        "#}
+    );
+}
+
+/// ```php
 /// $calc = $extra instanceof \Lib\Calc ? $extra : null;
 /// $made = (${'as#1'} = \Lib\Calc::make()) instanceof \Lib\Calc ? ${'as#1'} : null;
 /// ```
