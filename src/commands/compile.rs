@@ -137,7 +137,6 @@ impl CompileCommand {
         }
 
         for folder in package_compiled_folders(&root, database) {
-            let folder = folder.strip_prefix(&root).unwrap_or(&folder).display().to_string();
             tracing::error!(
                 "{folder} is a compiled folder inside a package, and the engine would read it instead of the project's .sharp folder. Delete {folder}."
             );
@@ -210,9 +209,14 @@ fn write_by_rename(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::create_dir_all(folder)?;
     let mut file = tempfile::NamedTempFile::new_in(folder)?;
     file.write_all(bytes)?;
-    file.persist(path).map_err(|error| error.error)?;
+    let (file, written) = file.keep().map_err(|error| error.error)?;
+    drop(file);
 
-    Ok(())
+    // `NamedTempFile::persist` renames with `MoveFileExW` alone, which fails on Windows while a reader holds the old
+    // file open. `std::fs::rename` then falls back to a POSIX rename, which replaces it and leaves the reader the old file.
+    std::fs::rename(&written, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&written);
+    })
 }
 
 /// Deletes every file under `folder` that is not in `kept`, then every folder left empty, `folder` included.
@@ -244,16 +248,19 @@ fn package_of(name: &[u8]) -> Option<String> {
     Some(format!("{}/{}", String::from_utf8_lossy(vendor), String::from_utf8_lossy(package)))
 }
 
-/// Each `.sharp` folder in a folder that holds a loaded PHP# file of `vendor/`, below the workspace root.
-fn package_compiled_folders(root: &Path, database: &impl DatabaseReader) -> BTreeSet<PathBuf> {
+/// The workspace-relative name of each `.sharp` folder in a folder that holds a loaded PHP# file of `vendor/`, with `/`
+/// between its parts as in every file name the database holds.
+fn package_compiled_folders(root: &Path, database: &impl DatabaseReader) -> BTreeSet<String> {
     let mut folders = BTreeSet::new();
     for file in database.files().filter(|file| file.name.starts_with(VENDOR) && Dialect::of(file).is_sharp()) {
-        let source = root.join(String::from_utf8_lossy(&file.name).as_ref());
-        for folder in source.ancestors().skip(1).take_while(|folder| *folder != root) {
-            let compiled = folder.join(COMPILED_FOLDER);
-            if compiled.is_dir() {
+        let name = String::from_utf8_lossy(&file.name);
+        let mut folder = name.as_ref();
+        while let Some((parent, _)) = folder.rsplit_once('/') {
+            let compiled = format!("{parent}/{COMPILED_FOLDER}");
+            if root.join(&compiled).is_dir() {
                 folders.insert(compiled);
             }
+            folder = parent;
         }
     }
 
