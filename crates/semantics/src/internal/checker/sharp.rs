@@ -1044,11 +1044,11 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
             None
         }
-        // PHP# never has top-level functions, `global`, `compact()`, `extract()` or a member called without `this.`:
-        // `check_function`, `check_global` and `check_function_call` report them.
+        // PHP# never has top-level functions, `global`, `compact()` or `extract()`: `check_function`, `check_global` and
+        // `check_function_call` report them.
         (Node::Statement(Statement::Function(_)), File) | (Node::Statement(Statement::Global(_)), Body) => None,
         (Node::Expression(Expression::Call(Call::Function(function_call))), Body)
-            if is_checked_function_call(function_call, context) =>
+            if is_checked_function_call(function_call) =>
         {
             None
         }
@@ -2527,12 +2527,6 @@ pub fn check_function_call(function_call: &FunctionCall, context: &mut Context<'
         return;
     };
 
-    if context.names.binding(identifier) == Some(Binding::Member) {
-        report_bare_member(identifier.span(), identifier.value(), context);
-
-        return;
-    }
-
     let function = identifier.last_segment();
     if is_compact_or_extract(function) {
         let function = BytesDisplay(function);
@@ -2557,13 +2551,13 @@ pub fn check_function_call(function_call: &FunctionCall, context: &mut Context<'
     }
 }
 
-/// Returns true when `check_function_call` reports the whole call: a bare member, `compact()` or `extract()`.
-fn is_checked_function_call(function_call: &FunctionCall, context: &Context<'_, '_, '_>) -> bool {
+/// Returns true when `check_function_call` reports the whole call: `compact()` or `extract()`.
+fn is_checked_function_call(function_call: &FunctionCall) -> bool {
     let Expression::Identifier(identifier) = function_call.function else {
         return false;
     };
 
-    context.names.binding(identifier) == Some(Binding::Member) || is_compact_or_extract(identifier.last_segment())
+    is_compact_or_extract(identifier.last_segment())
 }
 
 fn is_compact_or_extract(function: &[u8]) -> bool {

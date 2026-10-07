@@ -357,32 +357,44 @@ fn a_parameter_default_does_not_see_the_parameter_it_belongs_to() {
 
 #[test]
 fn a_member_of_the_enclosing_class_without_this_is_recorded() {
-    const CODE: &str = "class Report\n{\n    private int count()\n    {\n        return 1;\n    }\n\n    public int total()\n    {\n        return count() + total();\n    }\n}\n";
+    const CODE: &str = "class Report\n{\n    private int count()\n    {\n        return 1;\n    }\n\n    public int total()\n    {\n        return count + total;\n    }\n}\n";
     let arena = LocalArena::new();
     let names = bind(&arena, CODE);
 
-    assert_eq!(binding(&names, CODE, "count()", 1), Some(Binding::Member));
-    assert_eq!(binding(&names, CODE, "total()", 1), Some(Binding::Member));
+    assert_eq!(binding(&names, CODE, "count", 1), Some(Binding::Member));
+    assert_eq!(binding(&names, CODE, "total;", 0), Some(Binding::Member));
+}
+
+/// Spec section 4 writes every member as `this.m()` or `Class.m()`, so a bare call is the global function's, even
+/// when the class declares a method of the same name.
+#[test]
+fn a_bare_call_is_never_a_member() {
+    const CODE: &str = "public static class Math\n{\n    public static float ceil(float x) => ceil(x);\n\n    public static int total() => total();\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "ceil(x)", 0), None);
+    assert_eq!(binding(&names, CODE, "total();", 0), None);
 }
 
 #[test]
 fn a_case_or_method_of_the_enclosing_enum_without_this_is_recorded() {
-    const CODE: &str = "enum Status : string\n{\n    case Active = \"a\";\n\n    public string label()\n    {\n        return Active + label() + this.value;\n    }\n}\n";
+    const CODE: &str = "enum Status : string\n{\n    case Active = \"a\";\n\n    public string label()\n    {\n        return Active + label + this.value;\n    }\n}\n";
     let arena = LocalArena::new();
     let names = bind(&arena, CODE);
 
     assert_eq!(binding(&names, CODE, "Active", 1), Some(Binding::Member));
-    assert_eq!(binding(&names, CODE, "label()", 1), Some(Binding::Member));
+    assert_eq!(binding(&names, CODE, "label", 1), Some(Binding::Member));
     assert_eq!(binding(&names, CODE, "this", 0), Some(Binding::This));
 }
 
 #[test]
 fn a_member_name_matches_as_php_matches_it() {
-    const CODE: &str = "class Report\n{\n    const int RATE = 2;\n\n    public int total()\n    {\n        return Total() + Rate;\n    }\n}\n";
+    const CODE: &str = "class Report\n{\n    const int RATE = 2;\n\n    public int total()\n    {\n        return Total + Rate;\n    }\n}\n";
     let arena = LocalArena::new();
     let names = bind(&arena, CODE);
 
-    assert_eq!(binding(&names, CODE, "Total()", 0), Some(Binding::Member));
+    assert_eq!(binding(&names, CODE, "Total", 0), Some(Binding::Member));
     assert_eq!(binding(&names, CODE, "Rate", 0), Some(Binding::Constant));
 }
 

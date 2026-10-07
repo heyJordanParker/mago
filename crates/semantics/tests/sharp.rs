@@ -872,6 +872,8 @@ fn a_local_or_parameter_named_after_a_superglobal_is_an_error() {
     );
 }
 
+/// A bare call is the global function's, so only the analyzer, which knows the functions, reports one that names a
+/// method instead.
 #[test]
 fn a_bare_member_name_is_an_error_that_names_this() {
     let code =
@@ -879,16 +881,13 @@ fn a_bare_member_name_is_an_error_that_names_this() {
 
     assert_eq!(
         issues(code),
-        [
-            "5:31 Write `this.count()`: members of the same object are always written with `this.`.",
-            "5:39 Write `this.run()`: members of the same object are always written with `this.`.",
-        ]
+        ["5:31 Write `this.count()`: members of the same object are always written with `this.`."]
     );
 }
 
 #[test]
 fn a_bare_method_name_matches_ignoring_case_as_in_php() {
-    let code = "class Report\n{\n    public int total() { return 0; }\n\n    public int run() { return Total(); }\n}\n";
+    let code = "class Report\n{\n    public int total() { return 0; }\n\n    public int run() { return Total; }\n}\n";
 
     assert_eq!(
         issues(code),
@@ -898,12 +897,20 @@ fn a_bare_method_name_matches_ignoring_case_as_in_php() {
 
 #[test]
 fn a_bare_member_in_a_static_method_names_the_class() {
-    let code = "class Report\n{\n    public static int helper() { return 0; }\n\n    public static int run() { return helper(); }\n}\n";
+    let code = "class Report\n{\n    public static int helper() { return 0; }\n\n    public static int run() { return helper; }\n}\n";
 
     assert_eq!(
         issues(code),
         ["5:38 Write `Report.helper()`: a static method reaches the members of its class through the class name."]
     );
+}
+
+#[test]
+fn a_bare_call_named_like_a_method_of_its_class_compiles_as_the_global_function() {
+    let code =
+        "namespace Sharp.Math;\n\npublic static class Math\n{\n    public static float ceil(float x) => ceil(x);\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
 }
 
 #[test]
@@ -2377,7 +2384,7 @@ fn an_enum_case_named_class_is_an_error_as_in_php() {
 
 #[test]
 fn a_bare_case_name_in_an_enum_method_is_an_error_that_names_the_enum() {
-    let code = "namespace App.Tenant;\n\nenum Status\n{\n    case Active;\n\n    public bool active()\n    {\n        return this === Active && label() != \"\";\n    }\n\n    public string label() => this.name;\n\n    public static Status first() => Active;\n}\n";
+    let code = "namespace App.Tenant;\n\nenum Status\n{\n    case Active;\n\n    public bool active()\n    {\n        return this === Active && label != \"\";\n    }\n\n    public string label() => this.name;\n\n    public static Status first() => Active;\n}\n";
 
     assert_eq!(
         issues(code),

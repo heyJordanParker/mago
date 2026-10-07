@@ -122,9 +122,31 @@ where
 
         let lowercased_name = ascii_lowercase_word(name.as_bytes());
         let skip_error = block_context.known_functions.contains(&lowercased_name);
+        let member = if context.dialect.is_sharp() {
+            bare_member_call(context, block_context, function_name.value())
+        } else {
+            None
+        };
 
-        let target =
-            get_function_like_target_with_skip(context, identifier, alternative, expression.span(), None, skip_error);
+        let target = get_function_like_target_with_skip(
+            context,
+            identifier,
+            alternative,
+            expression.span(),
+            None,
+            skip_error || member.is_some(),
+        );
+
+        if target.is_none()
+            && !skip_error
+            && let Some(member) = member
+        {
+            context.collector.report_with_code(
+                IssueCode::NonExistentFunction,
+                Issue::error(member)
+                    .with_annotation(Annotation::primary(function_name.span()).with_message("Used here.")),
+            );
+        }
 
         if let Some(t) = target.as_ref()
             && let Some(metadata) = t.get_function_like_metadata()
@@ -264,6 +286,29 @@ where
             .with_annotation(Annotation::primary(span).with_message("Resolves to a function inside a namespace."))
             .with_note("PHP# calls global functions, such as `count` and Laravel's `now`, by their bare names."),
     );
+}
+
+/// Spec section 4 writes every member as `this.m()` or `Class.m()`, so a bare call is the global function's. When the
+/// enclosing class declares a method of that name, returns the message that names the member call to write, for the
+/// call that finds no function.
+fn bare_member_call<A>(context: &Context<'_, '_, A>, block_context: &BlockContext<'_>, name: &[u8]) -> Option<String>
+where
+    A: Arena,
+{
+    let class = block_context.scope.get_class_like()?;
+    let method = context.codebase.get_method(class.name.as_bytes(), name)?;
+
+    Some(if block_context.scope.is_static() {
+        let class_name = class.original_name.as_bytes().rsplit(|byte| *byte == b'\\').next().unwrap_or_default();
+
+        format!(
+            "Write `{}.{}()`: a static method reaches the members of its class through the class name.",
+            String::from_utf8_lossy(class_name),
+            method.original_name
+        )
+    } else {
+        format!("Write `this.{}()`: members of the same object are always written with `this.`.", method.original_name)
+    })
 }
 
 #[cfg(test)]

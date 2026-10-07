@@ -4234,6 +4234,28 @@ fn a_function_call_is_a_call_of_the_global_function() {
 }
 
 /// ```php
+/// return \run($extra);
+/// ```
+///
+/// Spec section 4 writes every member as `this.m()` or `Class.m()`, so a bare call inside `run` calls the global
+/// function `run`, not the method.
+#[test]
+fn a_bare_call_named_like_a_method_of_its_class_is_a_call_of_the_global_function() {
+    assert_eq!(
+        body("        return run(extra);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CALL
+                  ZVAL "run"
+                  ARG_LIST
+                    VAR
+                      ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
 /// $label = "Order {$extra}: " . \strlen("x") . "!"; $alone = "{$extra}"; $plain = "plain A"; return $extra;
 /// ```
 ///

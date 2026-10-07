@@ -1282,6 +1282,40 @@ fn calling_a_namespaced_function_is_not_supported_yet() {
     assert_eq!(issues(("src/Demo/Report.php", php), &[("src/Demo/helpers.php", helpers)]), Vec::<String>::new());
 }
 
+/// Spec section 4 writes every member as `this.m()` or `Class.m()`, so a bare call is the global function's, even
+/// when the class declares a method of the same name.
+#[test]
+fn a_bare_call_named_like_a_method_of_its_class_calls_the_php_function() {
+    let sharp = "namespace Sharp.Math;\n\npublic static class Math\n{\n    public static float ceil(float x) => ceil(x);\n\n    public static int count(List<int> values) => count(values);\n}\n";
+
+    assert_eq!(issues(("src/Sharp/Math/Math.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn a_bare_call_of_a_method_that_no_function_shares_names_the_member_to_write() {
+    let sharp = "namespace Demo;\n\nclass Calc\n{\n    public static int total() => 1;\n\n    public static int run() => total();\n\n    public int size() => 1;\n\n    public int measure() => Size();\n}\n";
+    let analyzed = ("src/Demo/Calc.sharp", sharp);
+
+    assert_eq!(
+        messages(analyzed, &[]),
+        [
+            "Write `Calc.total()`: a static method reaches the members of its class through the class name.",
+            "Could not infer a precise return type for function `Demo\\Calc::run`. Saw type `mixed`.",
+            "Write `this.size()`: members of the same object are always written with `this.`.",
+            "Could not infer a precise return type for function `Demo\\Calc::measure`. Saw type `mixed`.",
+        ]
+    );
+    assert_eq!(
+        issues(analyzed, &[]),
+        [
+            "7:32 non-existent-function",
+            "7:32 mixed-return-statement",
+            "11:29 non-existent-function",
+            "11:29 mixed-return-statement",
+        ]
+    );
+}
+
 #[test]
 fn plus_joins_two_strings_into_the_string_dot_gives_in_php() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(string name)\n    {\n        const label = \"Order \" + name + `!`;\n        let line = label;\n        line += \"\\n\";\n        return line;\n    }\n}\n";

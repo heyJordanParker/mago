@@ -988,8 +988,6 @@ where
 
             if let Some(local) = self.locals.lookup(identifier.value()) {
                 self.bind_local(identifier.value(), identifier.span(), local);
-            } else if self.is_member(identifier.value()) {
-                self.resolved_names.bind(identifier.span(), Binding::Member);
             }
         }
     }
