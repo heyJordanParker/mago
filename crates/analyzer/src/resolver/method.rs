@@ -12,6 +12,7 @@ use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::generic::TGenericParameter;
+use mago_codex::ttype::atomic::iterable::TIterable;
 use mago_codex::ttype::atomic::mixed::TMixed;
 use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::atomic::object::named::TNamedObject;
@@ -222,6 +223,24 @@ where
         }
     }
 
+    let declared = if context.dialect.is_sharp() {
+        get_declared_collection(context, block_context, artifacts, object)
+    } else {
+        None
+    };
+
+    // A PHP# receiver whose place is declared `Iterable<T>` is read as one, spec section 12, whatever the analysis saw
+    // assigned to the place last. Its type records that, so the lowering finds the same methods.
+    if let Some(iterable @ TAtomic::Iterable(_)) = &declared
+        && let Some(object_type) = artifacts.get_expression_type(object)
+    {
+        let mut read_as = TUnion::from_atomic(iterable.clone());
+        if object_type.has_null() {
+            read_as = read_as.as_nullable();
+        }
+        artifacts.set_expression_type(object, read_as);
+    }
+
     if let Some(object_type) = artifacts.get_expression_type(object) {
         let mut object_atomics = object_type.types.iter().collect::<Vec<_>>();
 
@@ -266,16 +285,19 @@ where
                     &closure_object
                 }
                 TAtomic::Array(array) if context.dialect.is_sharp() => {
-                    let declared = get_declared_collection(context, block_context, artifacts, object);
                     let collection = match &declared {
-                        Some(declared) => declared,
+                        Some(TAtomic::Array(declared)) => declared,
                         // An empty literal with no declared type is neither a List nor a Map, and the semantic checks
                         // refuse its declaration.
-                        None if array.is_empty() => continue,
-                        None => array,
+                        _ if array.is_empty() => continue,
+                        _ => array,
                     };
 
                     collection_methods = get_collection_methods(collection, context.codebase);
+                    &collection_methods
+                }
+                TAtomic::Iterable(iterable) if context.dialect.is_sharp() => {
+                    collection_methods = get_iterable_methods(iterable);
                     &collection_methods
                 }
                 _ => {
@@ -367,7 +389,10 @@ where
                                         selector.span(),
                                         classname,
                                         &collection,
-                                        method_name,
+                                        match selector {
+                                            ClassLikeMemberSelector::Identifier(written) => word(written.value),
+                                            _ => method_name,
+                                        },
                                     );
 
                                     result.has_invalid_target = true;
@@ -1142,16 +1167,16 @@ where
     true
 }
 
-/// The collection type the place a PHP# collection method is called on is declared with: a typed local, a parameter,
-/// a property, or `field`, the storage of the property whose accessor is running. The method takes values of that
-/// type, as `$list[] = $x` is checked against the declared property, so a value the analyzer saw assigned last, such
-/// as `[]` or a list of one implementation, narrows nothing.
+/// The `List`, `Map` or `Iterable` type the place a PHP# collection method is called on is declared with: a typed
+/// local, a parameter, a property, or `field`, the storage of the property whose accessor is running. The method takes
+/// values of that type, as `$list[] = $x` is checked against the declared property, so a value the analyzer saw
+/// assigned last, such as `[]`, a list of one implementation or a `List` held as an `Iterable`, narrows nothing.
 fn get_declared_collection<'arena, A>(
     context: &Context<'_, 'arena, A>,
     block_context: &BlockContext<'_>,
     artifacts: &AnalysisArtifacts,
     object: &Expression<'arena>,
-) -> Option<TArray>
+) -> Option<TAtomic>
 where
     A: Arena,
 {
@@ -1200,10 +1225,7 @@ where
         _ => return None,
     };
 
-    declared.types.iter().find_map(|atomic| match atomic {
-        TAtomic::Array(array) => Some(array.clone()),
-        _ => None,
-    })
+    declared.types.iter().find(|atomic| matches!(atomic, TAtomic::Array(_) | TAtomic::Iterable(_))).cloned()
 }
 
 /// The class whose methods a PHP# collection has, as spec section 12 writes them: a `List<T>` is called as
@@ -1218,6 +1240,15 @@ fn get_collection_methods(array: &TArray, codebase: &CodebaseMetadata) -> TObjec
         TArray::List(_) => TNamedObject::new_with_type_parameters(word("Sharp\\ListMethods"), Some(vec![value])),
         TArray::Keyed(_) => TNamedObject::new_with_type_parameters(word("Sharp\\MapMethods"), Some(vec![key, value])),
     })
+}
+
+/// The class whose lazy operations a PHP# `Iterable<T>` has, spec section 12: it is called as
+/// `Sharp\IterableMethods<T>`, typed by its elements as a `List<T>` is.
+fn get_iterable_methods(iterable: &TIterable) -> TObject {
+    let mut value = iterable.get_value_type().clone();
+    value.widen_scalars();
+
+    TObject::Named(TNamedObject::new_with_type_parameters(word("Sharp\\IterableMethods"), Some(vec![value])))
 }
 
 fn report_call_on_non_object<A>(
@@ -1281,8 +1312,8 @@ pub(crate) fn report_non_existent_method<A>(
     );
 }
 
-/// Reports a method a PHP# `List` or `Map` does not have, naming the collection type the code wrote and the methods
-/// `classname`, its `Sharp\ListMethods` or `Sharp\MapMethods`, gives it.
+/// Reports a method a PHP# `List`, `Map` or `Iterable` does not have, naming the collection type the code wrote and
+/// the methods `classname`, its `Sharp\ListMethods`, `Sharp\MapMethods` or `Sharp\IterableMethods`, gives it.
 fn report_non_existent_collection_method<A>(
     context: &mut Context<'_, '_, A>,
     obj_span: Span,
@@ -1296,9 +1327,11 @@ fn report_non_existent_collection_method<A>(
     let mut methods = context
         .codebase
         .get_class_like(classname.as_bytes())
-        .map(|metadata| metadata.methods.iter().map(|method| format!("`{method}`")).collect::<Vec<_>>())
+        .map(|metadata| metadata.methods.iter().copied().collect::<Vec<_>>())
         .unwrap_or_default();
-    methods.sort();
+    methods.sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+    let methods: Vec<String> =
+        methods.into_iter().map(|method| format!("`{}`", display_method_name(context, classname, method))).collect();
 
     context.collector.report_with_code(
         IssueCode::NonExistentMethod,

@@ -302,10 +302,10 @@ public class Report
         return (a, b) => total > 0 ? a : null;
     }
 
-    public Object? keep(Object source, Object? fallback, List<Object> all)
+    public Object keep(Object source, Object? fallback, List<Object> all)
     {
         const Object kept = source;
-        return fallback == null ? null : kept;
+        return fallback ?? kept;
     }
 
     public Iterable<Calc> stream(Iterable<int>? numbers, List<Calc> items)

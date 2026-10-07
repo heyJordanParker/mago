@@ -1349,8 +1349,8 @@ fn super_in_a_class_without_a_base_class_is_an_error_as_in_php() {
     assert_eq!(invalid.message, "Cannot use `super` as the current type (`Demo\\Tag`) does not have a parent class.");
 }
 
-/// The checker refuses a member of `typeof(X)` once, so the analyzer adds no issue on the refused read, its chain, or
-/// the value it gives.
+/// A member read or call through a class value is checked as PHP checks the static member it reaches, with the same
+/// issues as the PHP twin and the type of the constant, static property or static method's return.
 #[test]
 fn a_member_read_through_a_class_value_is_checked_as_the_static_member_in_php() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    public const int MAX = 3;\n    private static int count = 0;\n\n    public static string tag() => \"div\";\n\n    public int total()\n    {\n        const type = typeof(Report);\n        const max = type.MAX;\n        const seen = type.count;\n        return typeof(Report).MAX + max + seen;\n    }\n\n    public string label()\n    {\n        const type = typeof(Report);\n        return type.tag();\n    }\n\n    public int missing()\n    {\n        const type = typeof(Report);\n        return type.absent;\n    }\n\n    public void named()\n    {\n        const type = typeof(Report);\n        type.attributes();\n    }\n}\n";
@@ -3395,6 +3395,92 @@ fn an_index_read_on_an_iterable_is_an_error() {
     assert_eq!(sharp_issues, ["7:16 invalid-array-access", "7:26 mixed-method-access", "7:16 mixed-return-statement"]);
     assert_eq!(codes(&sharp_issues), codes(&issues(("src/Demo/Report.php", php), &[])));
     assert_eq!(messages(("src/Demo/Report.sharp", sharp), &[]), messages(("src/Demo/Report.php", php), &[]));
+}
+
+/// An `Iterable<T>` has the lazy operations of spec section 12, checked against `Sharp\IterableMethods<T>`: `filter`
+/// and `take` keep the element type, `map` takes the lambda's return type, and `toList` reads them into a `List<T>`.
+#[test]
+fn lazy_operations_on_an_iterable_type_their_results_by_the_elements() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public int run(Iterable<Order> orders, Iterable<Order>? maybe)\n    {\n        Iterable<Order> paid = orders.filter(o => o.paid);\n        Iterable<string> numbers = paid.map(o => o.number);\n        Iterable<string> first = numbers.take(100);\n        List<string> list = first.toList();\n        Iterable<int> wrongMap = paid.map(o => o.number);\n        List<int> wrongList = first.toList();\n        Iterable<Order>? kept = maybe?.filter(o => o.paid);\n        List<string> chain = orders.filter(o => o.paid).map(o => o.number).take(100).toList();\n        return count(list) + count(wrongList) + count(chain) + (kept == null ? 0 : 1) + Report.size(wrongMap);\n    }\n\n    private static int size(Iterable<int> values) => 0;\n}\n\nclass Order\n{\n    public Order(public bool paid { get; }, public string number { get; })\n    {\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[]),
+        ["11:34 invalid-local-assignment-value", "12:31 invalid-local-assignment-value"]
+    );
+}
+
+/// A method an `Iterable<T>` does not have is the error a `List` or `Map` gives, naming the type the code wrote and
+/// never the class the analyzer checks it against.
+#[test]
+fn a_method_an_iterable_does_not_have_is_an_error_naming_the_iterable() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public bool run(Iterable<Order> orders)\n    {\n        orders.toArray();\n        orders.first();\n        return true;\n    }\n}\n\nclass Order\n{\n    public Order(public bool paid { get; })\n    {\n    }\n}\n";
+    let issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[]);
+
+    assert_eq!(
+        issues.iter().map(|issue| issue.message.as_str()).collect::<Vec<_>>(),
+        [
+            "Method `toArray` does not exist on `Iterable<Order>`.",
+            "Method `first` does not exist on `Iterable<Order>`."
+        ]
+    );
+    assert_eq!(
+        issues[0].help.as_deref(),
+        Some("A `Iterable<Order>` has the methods `filter`, `map`, `take`, `toList`.")
+    );
+    for issue in &issues {
+        let text = format!("{issue:?}");
+        assert!(!text.contains("IterableMethods"), "{text}");
+    }
+}
+
+/// A `List` held as a `List` keeps its own eager methods, so its `filter` gives a `List` and it has no `take`. Held as
+/// an `Iterable<T>`, the same value has the lazy operations, whatever the analyzer saw assigned to the place last.
+#[test]
+fn a_list_keeps_its_methods_until_it_is_held_as_an_iterable() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public int run(List<Order> items, List<Order> others)\n    {\n        List<Order> kept = items.filter(o => o.paid);\n        Iterable<Order> held = items;\n        Iterable<Order> lazy = held.filter(o => o.paid);\n        List<Order> wrong = held.filter(o => o.paid);\n        held = others;\n        List<Order> firstTwo = held.take(2).toList();\n        items.take(1);\n        return count(kept) + count(wrong) + count(firstTwo) + Report.size(lazy);\n    }\n\n    private static int size(Iterable<Order> values) => 0;\n}\n\nclass Order\n{\n    public Order(public bool paid { get; })\n    {\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[]),
+        ["10:29 invalid-local-assignment-value", "13:15 non-existent-method"]
+    );
+    assert_eq!(messages(("src/Demo/Report.sharp", sharp), &[])[1], "Method `take` does not exist on `List<Order>`.");
+}
+
+/// A lambda passed to a lazy operation is checked against the element type, as any argument is.
+#[test]
+fn a_lazy_operation_refuses_a_lambda_of_another_element_type() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public int run(Iterable<Order> orders)\n    {\n        Iterable<Order> kept = orders.filter((string s) => s == \"\");\n        Iterable<int> sizes = orders.map((int n) => n);\n        return Report.size(kept) + Report.size(sizes);\n    }\n\n    private static int size(Iterable<Any> values) => 0;\n}\n\nclass Order\n{\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), ["7:46 invalid-argument", "8:42 invalid-argument"]);
+    let messages = messages(("src/Demo/Report.sharp", sharp), &[]);
+    assert!(
+        messages[0].starts_with("Invalid argument type for argument #1 of `Iterable<Order>.filter`"),
+        "{messages:?}"
+    );
+    assert!(messages[1].starts_with("Invalid argument type for argument #1 of `Iterable<Order>.map`"), "{messages:?}");
+}
+
+/// A value typed as a plain PHP class keeps that class's own methods, spec section 12, until it is held as an
+/// `Iterable<T>`. Held as one, it has only the lazy operations.
+#[test]
+fn a_plain_php_iterable_class_keeps_its_methods_until_it_is_held_as_an_iterable() {
+    let cursor = "<?php\n\nnamespace Lib;\n\nuse Demo\\Order;\n\n/** @implements \\IteratorAggregate<int, Order> */\nfinal class Cursor implements \\IteratorAggregate\n{\n    public static function open(): self\n    {\n        return new self();\n    }\n\n    /** @param \\Closure(Order): bool $keep */\n    public function filter(\\Closure $keep): self\n    {\n        return $this;\n    }\n\n    public function only(): self\n    {\n        return $this;\n    }\n\n    /** @return \\Generator<int, Order, mixed, void> */\n    public function getIterator(): \\Generator\n    {\n        yield new Order(true, '1');\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Cursor;\n\nclass Report\n{\n    public int run()\n    {\n        Cursor cursor = Cursor.open().filter(o => o.paid).only();\n        Iterable<Order> rows = Cursor.open();\n        List<Order> some = rows.filter(o => o.paid).take(2).toList();\n        rows.only();\n        return count(some) + Report.size(cursor);\n    }\n\n    private static int size(Cursor values) => 0;\n}\n\nclass Order\n{\n    public Order(public bool paid { get; })\n    {\n    }\n}\n";
+    let others = [("src/Lib/Cursor.php", cursor)];
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &others), ["12:14 non-existent-method"]);
+    assert_eq!(
+        messages(("src/Demo/Report.sharp", sharp), &others),
+        ["Method `only` does not exist on `Iterable<Order>`."]
+    );
+}
+
+/// A plain PHP `iterable` has no methods, so a `.php` file's method call on one stays PHP's error.
+#[test]
+fn a_method_call_on_a_php_iterable_stays_an_error_in_php() {
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    /** @param iterable<Order> $orders */\n    public function run(iterable $orders): void\n    {\n        $orders->filter(fn (Order $o): bool => true);\n    }\n}\n\nclass Order\n{\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[]), ["10:18 invalid-method-access"]);
 }
 
 /// `Object` holds any object and nothing else, spec section 24, so `5` passed to an `Object` is reported as PHP reports

@@ -337,3 +337,49 @@ final class MapMethods
      */
     public function sortedBy(\Closure $selector): array {}
 }
+
+/**
+ * The lazy operations of a PHP# `Iterable<T>`, as spec section 12 writes them. The analyzer checks a call on an
+ * iterable against them, and the engine runs them on `Sharp\Sequence`. `filter`, `map` and `take` read nothing until
+ * `toList()` or a loop reads the result.
+ *
+ * @template T
+ */
+final class IterableMethods
+{
+    /**
+     * @param \Closure(T): bool $predicate
+     *
+     * @return iterable<T> the elements `$predicate` keeps, in order.
+     *
+     * @mutation-free
+     */
+    public function filter(\Closure $predicate): iterable {}
+
+    /**
+     * @template R
+     *
+     * @param \Closure(T): R $transform
+     *
+     * @return iterable<R> what `$transform` gives for each element, in order.
+     *
+     * @mutation-free
+     */
+    public function map(\Closure $transform): iterable {}
+
+    /**
+     * A negative `$count` throws `ValueError`.
+     *
+     * @return iterable<T> the first `$count` elements, reading no element after them.
+     *
+     * @mutation-free
+     */
+    public function take(int $count): iterable {}
+
+    /**
+     * @return list<T> every element, read now and numbered from 0.
+     *
+     * @mutation-free
+     */
+    public function toList(): array {}
+}

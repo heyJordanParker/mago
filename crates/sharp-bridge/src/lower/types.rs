@@ -135,7 +135,8 @@ impl<'analysis> Types<'analysis> {
     }
 
     /// The declaration the method call `call`, null-safe or not, runs, as PHP finds it. `Class.m()` and a class value's
-    /// `type.m()` run the class's method, or else a static method its `__callStatic` serves. `object.m()` runs the
+    /// `type.m()` run the class's method, or else a static method its `__callStatic` serves. `object.m()` on an
+    /// `Iterable<T>` runs the lazy operation `Sharp\IterableMethods` declares. Any other `object.m()` runs the
     /// receiver's method, or else its property holding a function, as spec section 14 calls one, or else a method its
     /// `__call` serves. Every class the receiver can be has the same kind of member, and `class` is the first's.
     /// `Self.m()` and `super.m()` lower to `static::` and `parent::`, and no caller asks their target.
@@ -158,6 +159,14 @@ impl<'analysis> Types<'analysis> {
         }
 
         let r#type = self.expression_type(object);
+        if is_iterable(r#type) {
+            return self.method_declaration(ITERABLE_METHODS, method.value).unwrap_or_else(|| {
+                unreachable!(
+                    "the checker refuses `{}` on an `Iterable`, which has no such operation",
+                    String::from_utf8_lossy(method.value)
+                )
+            });
+        }
         let declarations: Vec<Declaration> = if let Some(classes) = class_value_classes(r#type) {
             classes.iter().map(|class| self.static_call_declaration(class, method.value)).collect()
         } else {
@@ -304,6 +313,17 @@ impl<'analysis> Types<'analysis> {
             public: metadata.visibility.is_public(),
         })
     }
+}
+
+/// The prelude class that declares the lazy operations of a PHP# `Iterable<T>`, spec section 12.
+pub(crate) const ITERABLE_METHODS: &[u8] = b"Sharp\\IterableMethods";
+
+/// Whether a value of `r#type`, leaving out `null`, is held as an `Iterable<T>`, whose methods are the lazy operations
+/// of [`ITERABLE_METHODS`].
+pub(crate) fn is_iterable(r#type: &TUnion) -> bool {
+    let mut held = r#type.types.iter().filter(|atomic| !atomic.is_null()).peekable();
+
+    held.peek().is_some() && held.all(|atomic| matches!(atomic, TAtomic::Iterable(_)))
 }
 
 /// The fully qualified names of the classes a value of `r#type` can be, leaving out `null`, or none when part of the

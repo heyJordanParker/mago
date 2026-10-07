@@ -191,9 +191,11 @@ pub(crate) mod inline;
 mod types;
 
 use types::DeclarationKind;
+use types::ITERABLE_METHODS;
 use types::Types;
 use types::agreed_kind;
 use types::class_value_classes;
+use types::is_iterable;
 use types::receiver_classes;
 
 /// The values php-src gives the attrs the lowering emits, from `zend_compile.h` and `zend_vm_opcodes.h`.
@@ -1304,6 +1306,9 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                     return self.node(SHARP_AST_STATIC_CALL, 0, line, &[class, method, arguments]);
                 }
+                if tested && self.is_lazy_operation(expression, call.object) {
+                    return self.lazy_operation(line, call.object, &call.method, &call.argument_list);
+                }
 
                 let object = if tested { self.expression(call.object) } else { self.null_safe_object(call.object) };
                 let method = self.member(&call.method);
@@ -1440,6 +1445,51 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             && matches!(self.types.call_target(call).kind, DeclarationKind::Property { .. })
     }
 
+    /// Whether the method call `call` on `object` runs a lazy operation of `Iterable<T>`, spec section 12, which
+    /// `Sharp\IterableMethods` declares.
+    fn is_lazy_operation(&self, call: &Expression, object: &Expression) -> bool {
+        is_iterable(self.types.expression_type(object))
+            && self.types.call_target(call).class.as_bytes().eq_ignore_ascii_case(ITERABLE_METHODS)
+    }
+
+    /// Whether `expression` is an instance call, null-safe or not, of a lazy operation, whose value is a `Sequence`.
+    fn is_lazy_call(&self, expression: &Expression) -> bool {
+        match expression.unparenthesized() {
+            Expression::Call(Call::Method(call)) => {
+                self.names.static_call_class(call).is_none()
+                    && !matches!(call.object, Expression::Self_(_) | Expression::Parent(_))
+                    && self.is_lazy_operation(expression.unparenthesized(), call.object)
+            }
+            Expression::Call(Call::NullSafeMethod(call)) => {
+                self.is_lazy_operation(expression.unparenthesized(), call.object)
+            }
+            _ => false,
+        }
+    }
+
+    /// A lazy operation of an `Iterable<T>` on the engine's `Sharp\Sequence`, as
+    /// `\Sharp\Sequence::from($object)->method(arguments)`. An `object` that is itself a lazy operation is already a
+    /// `Sequence`, so a chain reads its first receiver through one `from`.
+    fn lazy_operation(
+        &mut self,
+        line: u32,
+        object: &Expression,
+        method: &ClassLikeMemberSelector,
+        arguments: &ArgumentList,
+    ) -> u32 {
+        let mut sequence = self.expression(object);
+        if !self.is_lazy_call(object) {
+            let class = self.string(ZEND_NAME_FQ, line, b"Sharp\\Sequence");
+            let from = self.string(0, line, b"from");
+            let source = self.node(SHARP_AST_ARG_LIST, 0, line, &[sequence]);
+            sequence = self.node(SHARP_AST_STATIC_CALL, 0, line, &[class, from, source]);
+        }
+        let method = self.member(method);
+        let arguments = self.arguments(arguments);
+
+        self.node(SHARP_AST_METHOD_CALL, 0, line, &[sequence, method, arguments])
+    }
+
     /// Whether both operands of an operator are strings or both ints, the two cases where spec section 24's operators
     /// differ from PHP's.
     fn operand_types(&self, lhs: &Expression, rhs: &Expression) -> Operands {
@@ -1553,7 +1603,9 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 }
                 Expression::Call(Call::NullSafeMethod(call)) => {
                     if !self.tested_links.contains(&link.span())
-                        && (self.is_class_value(call.object) || self.is_property_call(link, call.object))
+                        && (self.is_class_value(call.object)
+                            || self.is_property_call(link, call.object)
+                            || self.is_lazy_operation(link, call.object))
                     {
                         return Some((link, call.object));
                     }
@@ -1907,9 +1959,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     /// `Class.m()` is a static call on the class's full name, `super.m()` one on `parent`, and `Self.m()` one on
-    /// `static`, except the standard library's `Position.current()`, which is the position it is written at. Any other
-    /// `object.m()` is an instance call, or a call of the function in the property `m` when the checker found that
-    /// property, as spec section 14 calls one. A call of a standard library method with an inline form runs that form.
+    /// `static`, except the standard library's `Position.current()`, which is the position it is written at. A lazy
+    /// operation of an `Iterable<T>` runs on a `Sharp\Sequence`. Any other `object.m()` is an instance call, or a call
+    /// of the function in the property `m` when the checker found that property, as spec section 14 calls one. A call
+    /// of a standard library method with an inline form runs that form.
     fn method_call(&mut self, expression: &Expression, call: &MethodCall) -> u32 {
         if let Some(class) = self.names.static_call_class(call)
             && is_current_position(self.names.get(&class.name), call)
@@ -1935,6 +1988,9 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             }
             (None, object) => match self.class_value(object) {
                 Some((class, _)) => (SHARP_AST_STATIC_CALL, class),
+                None if self.is_lazy_operation(expression, object) => {
+                    return self.lazy_operation(line, object, &call.method, &call.argument_list);
+                }
                 None => (SHARP_AST_METHOD_CALL, self.expression(object)),
             },
         };

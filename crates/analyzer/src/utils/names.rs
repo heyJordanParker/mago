@@ -43,9 +43,9 @@ where
     context.codebase.get_function(name.as_bytes()).map_or(name, |m| m.original_name)
 }
 
-/// Returns the PHP# collection type, as in `Map<string, int>`, that `object` stands for when it is `Sharp\ListMethods`
-/// or `Sharp\MapMethods`. The analyzer checks a method call on a `List` or `Map` against those classes, and a message
-/// names the type the code wrote instead.
+/// Returns the PHP# collection type, as in `Map<string, int>`, that `object` stands for when it is `Sharp\ListMethods`,
+/// `Sharp\MapMethods` or `Sharp\IterableMethods`. The analyzer checks a method call on a `List`, `Map` or `Iterable`
+/// against those classes, and a message names the type the code wrote instead.
 #[must_use]
 pub(crate) fn display_sharp_collection(object: &TObject, codebase: &CodebaseMetadata) -> Option<String> {
     let collection = sharp_collection_name(object)?;
@@ -55,8 +55,8 @@ pub(crate) fn display_sharp_collection(object: &TObject, codebase: &CodebaseMeta
     Some(format!("{collection}<{}>", parameters.join(", ")))
 }
 
-/// Returns `union` as PHP# writes the type: `List<int>`, `Map<string, int>`, `int?`, `(int|string)?`, `Any?`, and a
-/// class by its short name.
+/// Returns `union` as PHP# writes the type: `List<int>`, `Map<string, int>`, `Iterable<int>`, `int?`, `(int|string)?`,
+/// `Any?`, and a class by its short name.
 #[must_use]
 pub(crate) fn display_sharp_type(union: &TUnion, codebase: &CodebaseMetadata) -> String {
     if let Some(TAtomic::Mixed(mixed)) = union.types.iter().find(|atomic| atomic.is_mixed()) {
@@ -89,6 +89,7 @@ fn display_sharp_atomic(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String
                 }
             }
         }
+        TAtomic::Iterable(iterable) => format!("Iterable<{}>", display_sharp_type(iterable.get_value_type(), codebase)),
         TAtomic::Object(object) => {
             let Some(name) = object.get_name() else {
                 return atomic.get_id().to_string();
@@ -108,7 +109,8 @@ fn display_sharp_atomic(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String
     }
 }
 
-/// Returns `List` or `Map` when `object` is `Sharp\ListMethods` or `Sharp\MapMethods`.
+/// Returns `List`, `Map` or `Iterable` when `object` is `Sharp\ListMethods`, `Sharp\MapMethods` or
+/// `Sharp\IterableMethods`.
 #[must_use]
 pub(crate) fn sharp_collection_name(object: &TObject) -> Option<&'static str> {
     let name = object.get_name()?;
@@ -117,6 +119,8 @@ pub(crate) fn sharp_collection_name(object: &TObject) -> Option<&'static str> {
         Some("List")
     } else if name.as_bytes().eq_ignore_ascii_case(b"Sharp\\MapMethods") {
         Some("Map")
+    } else if name.as_bytes().eq_ignore_ascii_case(b"Sharp\\IterableMethods") {
+        Some("Iterable")
     } else {
         None
     }
