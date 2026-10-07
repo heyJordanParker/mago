@@ -4750,15 +4750,16 @@ fn for_of_loops_are_foreach_nodes_with_the_value_before_the_key() {
 /// }
 /// ```
 ///
-/// A `Map` keyed by a backed enum holds each key as its backing value, so a loop whose key names a class reads the key
-/// back as that class's case, through `from` on the class as it runs. PHP stores an all-digit `string` key as an
-/// `int`, so a key written `string` reads back through `(string)`. An `int` key type changes nothing.
+/// A `Map` keyed by a backed enum holds each key as its backing value, so a loop reads each key back as its case,
+/// through `from` on the enum. PHP stores an all-digit `string` key as an `int`, so a loop over a `Map<string, V>`
+/// reads each key back through `(string)`. Both follow the `Map`'s key type, written on the key or not. An `int` key
+/// type changes nothing.
 #[test]
-fn a_loop_key_written_as_a_class_or_string_reads_back_through_from_or_a_cast() {
+fn a_loop_key_reads_back_through_from_or_a_cast_by_the_map_key_type() {
     assert_eq!(
         body_in(
             "int run(int extra, Map<Calc, int> statuses, Map<string, int> skus, Map<int, int> keys)",
-            "        for (const [Calc status, int n] of statuses) {\n            extra += n;\n        }\n        for (const [string sku, n] of skus) {\n        }\n        for (const [int key, n] of keys) {\n        }\n        return 1;\n",
+            "        for (const [status, int n] of statuses) {\n            extra += n;\n        }\n        for (const [string sku, n] of skus) {\n        }\n        for (const [key, n] of keys) {\n        }\n        return 1;\n",
             &[("src/Lib/Calc.php", "<?php namespace Lib; enum Calc: string { case Active = 'a'; case Closed = 'c'; }")]
         ),
         indoc! {r#"

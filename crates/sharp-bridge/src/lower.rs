@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use mago_allocator::LocalArena;
+use mago_codex::ttype::union::TUnion;
 use mago_names::ResolvedNames;
 use mago_names::binding::Binding;
 use mago_names::binding::php_method_name;
@@ -37,6 +38,7 @@ use mago_syntax::cst::Expression;
 use mago_syntax::cst::For;
 use mago_syntax::cst::ForBody;
 use mago_syntax::cst::ForOfTarget;
+use mago_syntax::cst::ForOfVariable;
 use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::FunctionLikeParameterList;
@@ -874,25 +876,14 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 };
                 let mut body = self.loop_body(for_of.body);
 
-                // A `Map` keyed by a backed enum holds each key as its backing value, and the analyzer requires a loop
-                // over one to name the enum as its key's type, so a key that names a class reads back as its case.
-                // PHP stores an all-digit `string` key as an `int`, so a key written `string` reads back through
-                // `(string)`, as spec section 12 reads a `Map<string, V>` key.
+                // A `Map` keyed by a backed enum holds each key as its backing value, so the key reads back as its
+                // case. PHP stores an all-digit `string` key as an `int`, so a `Map<string, V>` key reads back through
+                // `(string)`, as spec section 12 reads it. Both follow the `Map`'s key type, written on the key or not.
                 if let ForOfTarget::KeyValue(pair) = &for_of.target
-                    && let Some(hint @ (Hint::Identifier(_) | Hint::String(_))) = pair.key.hint
+                    && let Some(key_type) = self.types.map_key_type(self.types.expression_type(for_of.expression))
+                    && let Some(read_back) = self.key_read_back(&pair.key, &key_type)
                 {
                     let line = self.line(&pair.key);
-                    let stored_key = self.variable(pair.key.name.span, pair.key.name.value);
-                    let read_back = match hint {
-                        Hint::Identifier(class) => {
-                            let class = self.string(ZEND_NAME_FQ, line, self.names.get(class));
-                            let from = self.string(0, line, b"from");
-                            let arguments = self.node(SHARP_AST_ARG_LIST, 0, line, &[stored_key]);
-
-                            self.node(SHARP_AST_STATIC_CALL, 0, line, &[class, from, arguments])
-                        }
-                        _ => self.node(SHARP_AST_CAST, IS_STRING, line, &[stored_key]),
-                    };
                     let key = self.variable(pair.key.name.span, pair.key.name.value);
                     let assignment = self.node(SHARP_AST_ASSIGN, 0, line, &[key, read_back]);
 
@@ -1629,7 +1620,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// backing value, so a case goes in as its `->value`.
     fn key(&mut self, key: &Expression) -> u32 {
         let lowered = self.expression(key);
-        if !self.types.is_backed_enum(self.types.expression_type(key)) {
+        if self.backed_enum(self.types.expression_type(key)).is_none() {
             return lowered;
         }
 
@@ -1637,6 +1628,37 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let value = self.string(0, line, b"value");
 
         self.node(SHARP_AST_PROP, 0, line, &[lowered, value])
+    }
+
+    /// The loop key `key` of a `Map` keyed by `key_type`, read back as the value the `Map` was given: the case of a
+    /// backed enum through its `from`, or a `string` through `(string)`. None when the stored key is that value.
+    fn key_read_back(&mut self, key: &ForOfVariable, key_type: &TUnion) -> Option<u32> {
+        let line = self.line(key);
+        if let Some(class) = self.backed_enum(key_type) {
+            let stored_key = self.variable(key.name.span, key.name.value);
+            let class = self.string(ZEND_NAME_FQ, line, class);
+            let from = self.string(0, line, b"from");
+            let arguments = self.node(SHARP_AST_ARG_LIST, 0, line, &[stored_key]);
+
+            return Some(self.node(SHARP_AST_STATIC_CALL, 0, line, &[class, from, arguments]));
+        }
+        if !key_type.is_string() {
+            return None;
+        }
+
+        let stored_key = self.variable(key.name.span, key.name.value);
+
+        Some(self.node(SHARP_AST_CAST, IS_STRING, line, &[stored_key]))
+    }
+
+    /// The backed enum every value of `r#type` is a case of, if there is one.
+    fn backed_enum<'r#type>(&self, r#type: &'r#type TUnion) -> Option<&'r#type [u8]> {
+        let classes = receiver_classes(r#type)?;
+        let class = classes[0];
+
+        (classes.iter().all(|other| other.eq_ignore_ascii_case(class))
+            && self.types.class_declaration(class).kind == DeclarationKind::Enum { backed: true })
+        .then_some(class)
     }
 
     /// Whether `element` spreads a `Map`, which keeps its keys where PHP's `...` renumbers int keys.

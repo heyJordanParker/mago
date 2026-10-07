@@ -2506,16 +2506,13 @@ fn an_index_write_to_a_list_is_an_error() {
 }
 
 /// `for (const [k, v] of x)` reads the keys of a `Map`. A `List`'s indexes come from `entries()`, as spec section 12
-/// writes. PHP stores an all-digit string key as an `int`, so the key of a `Map<string, V>` reads back as
-/// `int|string`.
+/// writes. The key of a `Map<string, V>` reads back as a `string`, because the lowering casts a key PHP stored as an
+/// `int`.
 #[test]
-fn a_key_and_value_loop_reads_a_map_and_its_keys_as_php_stores_them() {
+fn a_key_and_value_loop_reads_a_map_and_its_keys_as_the_map_types_them() {
     let sharp = "namespace Demo;\n\nclass Loops\n{\n    public int run(List<int> sizes, Map<string, int> counts)\n    {\n        let total = 0;\n        for (const [index, size] of sizes) {\n            total += index + size;\n        }\n        for (const [name, count] of counts) {\n            total += strlen(name) + count;\n        }\n        return total;\n    }\n}\n";
 
-    assert_eq!(
-        issues(("src/Demo/Loops.sharp", sharp), &[]),
-        ["8:37 invalid-iterator", "12:29 possibly-invalid-argument"]
-    );
+    assert_eq!(issues(("src/Demo/Loops.sharp", sharp), &[]), ["8:37 invalid-iterator"]);
 }
 
 /// A `List` has `add`, `set`, `get` and `entries()`, and a `Map` has `delete` and `get`, each typed by the elements of
@@ -2742,50 +2739,48 @@ fn a_loop_over_a_map_keyed_by_a_backed_enum_reads_the_key_as_the_case_it_writes(
     assert_eq!(issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]), Vec::<String>::new());
 }
 
-/// The engine holds a backed enum key as its backing value, and the loop reads it back as the case only through a
-/// written key type that names the enum. A written type that cannot hold the case is refused once, as a typed local's.
+/// The engine holds a backed enum key as its backing value, and the lowering reads it back as the case from the
+/// `Map`'s key type, so a loop reads each key as its case with its type written or not. A written type that cannot
+/// hold the case is refused once, as a typed local's.
 #[test]
-fn a_loop_over_a_map_keyed_by_a_backed_enum_needs_the_key_type_written() {
-    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Tally\n{\n    public void read(Map<Status, int> counts)\n    {\n        for (const [status, n] of counts) {\n        }\n        for (const [Status? status, int n] of counts) {\n        }\n        for (const [string status, int n] of counts) {\n        }\n        for (const [Status status, string n] of counts) {\n        }\n    }\n}\n";
+fn a_loop_over_a_map_keyed_by_a_backed_enum_reads_each_key_as_its_case() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Tally\n{\n    public void read(Map<Status, int> counts)\n    {\n        for (const [status, n] of counts) {\n            this.weigh(status);\n        }\n        for (const [Status? status, int n] of counts) {\n        }\n        for (const [string status, int n] of counts) {\n        }\n        for (const [Status status, string n] of counts) {\n        }\n    }\n\n    private void weigh(Status status)\n    {\n    }\n}\n";
 
     assert_eq!(
         issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
-        [
-            "9:21 invalid-foreach-key",
-            "11:21 invalid-foreach-key",
-            "13:28 invalid-local-assignment-value",
-            "15:43 invalid-local-assignment-value",
-        ]
+        ["14:28 invalid-local-assignment-value", "16:43 invalid-local-assignment-value"]
     );
 }
 
-/// The message writes the loop over again with the enum's name, the value's type and the collection.
+/// A loop reads a backed enum key back through one enum's `from`, so a key type that mixes a backed enum with other
+/// types cannot be read back, written on the key or not.
 #[test]
-fn a_backed_key_without_its_type_names_the_loop_that_compiles() {
-    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Tally\n{\n    public void read(Map<Status, int> counts)\n    {\n        for (const [status, n] of counts) {\n        }\n    }\n}\n";
+fn a_loop_over_a_map_whose_keys_mix_a_backed_enum_with_other_types_is_an_error() {
+    let sharp = "namespace Demo;\n\nimport Lib.Size;\nimport Lib.Status;\n\nclass Tally\n{\n    public void read(Map<Status|Size, int> counts, Map<int|Status, int> totals, Map<Status, int> statuses)\n    {\n        for (const [key, n] of counts) {\n        }\n        for (const [key, n] of totals) {\n        }\n        for (const [key, n] of statuses) {\n        }\n    }\n}\n";
 
-    let issue =
-        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)])
-            .remove(0);
-
-    assert_eq!(issue.message, "A `Status` key needs its type written: `for (const [Status status, int n] of counts)`.");
+    assert_eq!(
+        messages(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
+        [
+            "The keys of `counts` mix a backed enum with other types, so the loop cannot read them back.",
+            "The keys of `totals` mix a backed enum with other types, so the loop cannot read them back.",
+        ]
+    );
+    assert_eq!(
+        issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
+        ["10:21 invalid-foreach-key", "12:21 invalid-foreach-key"]
+    );
 }
 
 /// A written key or value type checks as a typed local's does. Spec section 12 reads a `Map<string, V>` key back as a
-/// `string`, even the key `"5"` PHP stores as an int, so a key written `string` reads back through `(string)`. An
-/// unwritten key stays `int|string` until typed compilation casts it, and so does a key written `string?`, which
-/// nothing casts.
+/// `string`, even the key `"5"` PHP stores as an int, because the lowering casts every key of a `Map<string, V>` loop
+/// back to `string`, written or not.
 #[test]
 fn a_written_loop_variable_type_checks_as_a_typed_local_does() {
     let sharp = "namespace Demo;\n\nimport Lib.Line;\n\nclass Tally\n{\n    public void read(Map<string, int> stock, List<Line> lines)\n    {\n        for (const [int|string sku, int n] of stock) {\n        }\n        for (const [string sku, int n] of stock) {\n            this.reserve(sku);\n        }\n        for (const [sku, n] of stock) {\n            this.reserve(sku);\n        }\n        for (const [string? sku, int n] of stock) {\n        }\n        for (const Line line of lines) {\n        }\n        for (const int line of lines) {\n        }\n    }\n\n    private void reserve(string sku)\n    {\n    }\n}\n";
 
     assert_eq!(
         issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
-        [
-            "15:26 possibly-invalid-argument",
-            "17:29 invalid-local-assignment-value",
-            "21:24 invalid-local-assignment-value",
-        ]
+        ["21:24 invalid-local-assignment-value"]
     );
 }
 

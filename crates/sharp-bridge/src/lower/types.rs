@@ -1,9 +1,11 @@
 use mago_analyzer::artifacts::AnalysisArtifacts;
 use mago_codex::metadata::CodebaseMetadata;
+use mago_codex::ttype::add_optional_union_type;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::atomic::scalar::class_like_string::TClassLikeString;
+use mago_codex::ttype::get_array_parameters;
 use mago_codex::ttype::union::TUnion;
 use mago_span::HasSpan;
 use mago_syntax::cst::Call;
@@ -28,7 +30,10 @@ pub(crate) struct Declaration {
 pub(crate) enum DeclarationKind {
     Class,
     Interface,
-    Enum,
+    /// `backed` is whether each case has a backing value, which a `Map` keyed by the enum holds for the case.
+    Enum {
+        backed: bool,
+    },
     Constant,
     EnumCase,
     StaticProperty,
@@ -61,7 +66,7 @@ impl<'analysis> Types<'analysis> {
         let kind = if metadata.kind.is_interface() {
             DeclarationKind::Interface
         } else if metadata.kind.is_enum() {
-            DeclarationKind::Enum
+            DeclarationKind::Enum { backed: metadata.enum_type.is_some() }
         } else {
             DeclarationKind::Class
         };
@@ -127,16 +132,18 @@ impl<'analysis> Types<'analysis> {
             })
     }
 
-    /// Whether every value of `r#type` is a case of a backed enum, which a `Map` holds as a key by its backing value.
-    pub(crate) fn is_backed_enum(&self, r#type: &TUnion) -> bool {
-        !r#type.types.is_empty()
-            && r#type.types.iter().all(|atomic| match atomic {
-                TAtomic::Object(TObject::Enum(r#enum)) => self
-                    .codebase
-                    .get_class_like(r#enum.name.as_bytes())
-                    .is_some_and(|metadata| metadata.enum_type.is_some()),
-                _ => false,
-            })
+    /// The type of the keys a value of `r#type` holds, or none when part of it is no `Map` or `List`.
+    pub(crate) fn map_key_type(&self, r#type: &TUnion) -> Option<TUnion> {
+        let mut key_type = None;
+        for atomic in r#type.types.iter() {
+            let TAtomic::Array(array) = atomic else {
+                return None;
+            };
+            let (key, _) = get_array_parameters(array, self.codebase);
+            key_type = Some(add_optional_union_type(key, key_type.as_ref(), self.codebase));
+        }
+
+        key_type
     }
 
     /// The kind of the property `class` declares by that name, if any.
