@@ -7107,7 +7107,7 @@ fn a_form_that_reads_its_slots_in_order_first_inlines_with_any_arguments() {
 /// `Sharp\Padding` at the standard library's path, with a method whose body reads the global constant `STR_PAD_LEFT`.
 const PADDING: (&str, &str) = (
     "vendor/heyjordanparker/php-sharp-composer/library/Sharp/Padding.sharp",
-    "namespace Sharp;\n\npublic class Padding\n{\n    public static string left(string text, int width) => str_pad(text, width, \" \", STR_PAD_LEFT);\n}\n",
+    "namespace Sharp;\n\npublic class Padding\n{\n    public static string left(string text, int width) => str_pad(text, width, \" \", STR_PAD_LEFT);\n\n    public static string after(string text, int start) => substr(text, start, null);\n}\n",
 );
 
 /// The statements of `run`, declared with `signature` and holding `statements` in a class of `namespace` that imports
@@ -7142,6 +7142,29 @@ fn a_form_that_reads_a_global_constant_names_it_by_its_full_name() {
                     ZVAL " "
                     CONST
                       ZVAL "STR_PAD_LEFT"
+        "#}
+    );
+}
+
+/// ```php
+/// return \substr($name, 2, null);
+/// ```
+///
+/// `null`, `true` and `false` are literals, never constant reads, so a form that passes one inlines it as its value.
+#[test]
+fn a_form_that_passes_null_inlines_it_as_a_literal() {
+    assert_eq!(
+        padded_body("App.Tenant", "string run(string name)", "        return Padding.after(name, 2);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CALL
+                  ZVAL "substr"
+                  ARG_LIST
+                    VAR
+                      ZVAL "name"
+                    ZVAL 2
+                    ZVAL null
         "#}
     );
 }
