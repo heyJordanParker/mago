@@ -1041,8 +1041,12 @@ mod tests {
         fixtures.push(("the shop with an inherited member read".to_string(), shop_project(&read)));
         fixtures.push(("the library".to_string(), project(&[(TEXT_PATH, TEXT), ("app/Title.sharp", TITLE)])));
         fixtures.push((
-            "a chain through the signatures of members".to_string(),
+            "a PHP# file at the head of a chain through types named only in the signatures of members".to_string(),
             project(&[
+                (
+                    "app/Hint.sharp",
+                    "namespace App;\n\nimport Lib.A;\n\npublic class Hint\n{\n    public int take(A a)\n    {\n        return 1;\n    }\n}\n",
+                ),
                 (
                     "lib/A.php",
                     "<?php\n\nnamespace Lib;\n\nclass A\n{\n    public function f(?B $b = null): void {}\n}\n",
