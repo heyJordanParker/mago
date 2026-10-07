@@ -50,6 +50,7 @@ use mago_syntax::cst::NullSafeMethodCall;
 use mago_syntax::cst::NullSafePropertyAccess;
 use mago_syntax::cst::Pattern;
 use mago_syntax::cst::PatternMatchPatternArm;
+use mago_syntax::cst::Program;
 use mago_syntax::cst::PropertiesPattern;
 use mago_syntax::cst::PropertyAccess;
 use mago_syntax::cst::PropertyHook;
@@ -114,6 +115,8 @@ pub struct NameWalker<'arena> {
     lambdas: std::vec::Vec<u32>,
     /// The accessor list being walked in PHP#, which declares `field`, its property's storage.
     accessors: Option<Span>,
+    /// The names of the class-likes the file declares, compared as PHP compares class names.
+    declared_classes: foldhash::HashSet<IgnoringCase<'arena>>,
 }
 
 /// The member names of one class, compared as PHP compares them: method names ignoring case, and property and
@@ -148,8 +151,11 @@ impl Hash for IgnoringCase<'_> {
 }
 
 impl<'arena> NameWalker<'arena> {
-    pub fn new(sharp: bool) -> Self {
-        Self { sharp, ..Self::default() }
+    pub fn new(program: &Program<'arena>) -> Self {
+        let sharp = program.dialect.is_sharp();
+        let declared_classes = if sharp { declared_class_names(program) } else { foldhash::HashSet::default() };
+
+        Self { sharp, declared_classes, ..Self::default() }
     }
 
     fn declare(&mut self, name: &'arena [u8], declaration: Span, kind: LocalKind) {
@@ -266,6 +272,29 @@ impl<'arena> NameWalker<'arena> {
         walk(self, context);
         self.locals.exit_block();
     }
+
+    /// Resolves a name written where a class goes. In a PHP# file a bare name of the standard library is the class in
+    /// the `Sharp` namespace, unless the file imports or declares a class-like of that name, spec section 23.
+    fn resolve_class<A>(&self, context: &NameResolutionContext<'arena, A>, name: &[u8]) -> (&'arena [u8], bool)
+    where
+        A: Arena,
+    {
+        let (fqn, imported) = context.resolve(NameKind::Default, name);
+        if !self.sharp || imported || self.declared_classes.contains(&IgnoringCase(name)) {
+            return (fqn, imported);
+        }
+
+        let class: &'static [u8] = match name {
+            b"Int" => b"Sharp\\Int",
+            b"Float" => b"Sharp\\Float",
+            b"Position" => b"Sharp\\Position",
+            b"Environment" => b"Sharp\\Environment",
+            b"List" => b"Sharp\\List",
+            _ => return (fqn, imported),
+        };
+
+        (class, false)
+    }
 }
 
 /// The variables a pattern declares.
@@ -353,15 +382,6 @@ where
     }
 }
 
-/// The class of PHP#'s engine-level standard library that a bare `name` before `.` binds to unless the file imports it.
-fn sharp_library_class(name: &[u8]) -> Option<&'static [u8]> {
-    match name {
-        b"Int" => Some(b"Sharp\\Int"),
-        b"Float" => Some(b"Sharp\\Float"),
-        _ => None,
-    }
-}
-
 fn class_member_names<'arena>(members: &Sequence<'arena, ClassLikeMember<'arena>>) -> ClassMembers<'arena> {
     let mut names = ClassMembers::default();
     for member in members {
@@ -391,6 +411,31 @@ fn class_member_names<'arena>(members: &Sequence<'arena, ClassLikeMember<'arena>
     }
 
     names
+}
+
+/// The names of the class-likes declared at the top of the program and in its namespaces, where PHP# declares them.
+fn declared_class_names<'arena>(program: &Program<'arena>) -> foldhash::HashSet<IgnoringCase<'arena>> {
+    let namespaced = program
+        .statements
+        .iter()
+        .filter_map(|statement| match statement {
+            Statement::Namespace(namespace) => Some(namespace.statements().iter()),
+            _ => None,
+        })
+        .flatten();
+
+    program
+        .statements
+        .iter()
+        .chain(namespaced)
+        .filter_map(|statement| match statement {
+            Statement::Class(class) => Some(IgnoringCase(class.name.value)),
+            Statement::Interface(interface) => Some(IgnoringCase(interface.name.value)),
+            Statement::Trait(r#trait) => Some(IgnoringCase(r#trait.name.value)),
+            Statement::Enum(r#enum) => Some(IgnoringCase(r#enum.name.value)),
+            _ => None,
+        })
+        .collect()
 }
 
 impl<'ast, 'arena, A> MutWalker<'ast, 'arena, NameResolutionContext<'arena, A>> for NameWalker<'arena>
@@ -916,7 +961,7 @@ where
 
     fn walk_in_trait_use(&mut self, trait_use: &'ast TraitUse<'arena>, context: &mut NameResolutionContext<'arena, A>) {
         for trait_name in &trait_use.trait_names {
-            let (trait_classlike, imported) = context.resolve(NameKind::Default, trait_name.value());
+            let (trait_classlike, imported) = self.resolve_class(context, trait_name.value());
 
             self.resolved_names.insert_at(trait_name.span(), trait_classlike, imported);
         }
@@ -924,7 +969,7 @@ where
 
     fn walk_in_extends(&mut self, extends: &'ast Extends<'arena>, context: &mut NameResolutionContext<'arena, A>) {
         for parent in &extends.types {
-            let (parent_classlike, imported) = context.resolve(NameKind::Default, parent.value());
+            let (parent_classlike, imported) = self.resolve_class(context, parent.value());
 
             self.resolved_names.insert_at(parent.span(), parent_classlike, imported);
         }
@@ -936,7 +981,7 @@ where
         context: &mut NameResolutionContext<'arena, A>,
     ) {
         for parent in &implements.types {
-            let (parent_classlike, imported) = context.resolve(NameKind::Default, parent.value());
+            let (parent_classlike, imported) = self.resolve_class(context, parent.value());
 
             self.resolved_names.insert_at(parent.span(), parent_classlike, imported);
         }
@@ -948,7 +993,7 @@ where
         context: &mut NameResolutionContext<'arena, A>,
     ) {
         for parent in &inheritance.types {
-            let (parent_classlike, imported) = context.resolve(NameKind::Default, parent.value());
+            let (parent_classlike, imported) = self.resolve_class(context, parent.value());
 
             self.resolved_names.insert_at(parent.span(), parent_classlike, imported);
         }
@@ -956,7 +1001,7 @@ where
 
     fn walk_in_hint(&mut self, hint: &'ast Hint<'arena>, context: &mut NameResolutionContext<'arena, A>) {
         if let Hint::Identifier(identifier) = hint {
-            let (name, imported) = context.resolve(NameKind::Default, identifier.value());
+            let (name, imported) = self.resolve_class(context, identifier.value());
 
             self.resolved_names.insert_at(identifier.span(), name, imported);
         }
@@ -967,7 +1012,7 @@ where
         attribute: &'ast Attribute<'arena>,
         context: &mut NameResolutionContext<'arena, A>,
     ) {
-        let (name, imported) = context.resolve(NameKind::Default, attribute.name.value());
+        let (name, imported) = self.resolve_class(context, attribute.name.value());
 
         self.resolved_names.insert_at(attribute.name.span(), name, imported);
     }
@@ -1012,14 +1057,14 @@ where
         context: &mut NameResolutionContext<'arena, A>,
     ) {
         if let Expression::Identifier(identifier) = instantiation.class {
-            let (name, imported) = context.resolve(NameKind::Default, identifier.value());
+            let (name, imported) = self.resolve_class(context, identifier.value());
 
             self.resolved_names.insert_at(identifier.span(), name, imported);
         }
     }
 
     fn walk_in_type_of(&mut self, type_of: &'ast TypeOf<'arena>, context: &mut NameResolutionContext<'arena, A>) {
-        let (name, imported) = context.resolve(NameKind::Default, type_of.class.value());
+        let (name, imported) = self.resolve_class(context, type_of.class.value());
 
         self.resolved_names.insert_at(type_of.class.span(), name, imported);
     }
@@ -1030,7 +1075,7 @@ where
         context: &mut NameResolutionContext<'arena, A>,
     ) {
         if let Expression::Identifier(identifier) = static_method_call.class {
-            let (name, imported) = context.resolve(NameKind::Default, identifier.value());
+            let (name, imported) = self.resolve_class(context, identifier.value());
 
             self.resolved_names.insert_at(identifier.span(), name, imported);
         }
@@ -1042,7 +1087,7 @@ where
         context: &mut NameResolutionContext<'arena, A>,
     ) {
         if let Expression::Identifier(identifier) = static_method_partial_application.class {
-            let (name, imported) = context.resolve(NameKind::Default, identifier.value());
+            let (name, imported) = self.resolve_class(context, identifier.value());
 
             self.resolved_names.insert_at(identifier.span(), name, imported);
         }
@@ -1054,7 +1099,7 @@ where
         context: &mut NameResolutionContext<'arena, A>,
     ) {
         if let Expression::Identifier(identifier) = static_property_access.class {
-            let (name, imported) = context.resolve(NameKind::Default, identifier.value());
+            let (name, imported) = self.resolve_class(context, identifier.value());
 
             self.resolved_names.insert_at(identifier.span(), name, imported);
         }
@@ -1066,7 +1111,7 @@ where
         context: &mut NameResolutionContext<'arena, A>,
     ) {
         if let Expression::Identifier(identifier) = class_constant_access.class {
-            let (name, imported) = context.resolve(NameKind::Default, identifier.value());
+            let (name, imported) = self.resolve_class(context, identifier.value());
 
             self.resolved_names.insert_at(identifier.span(), name, imported);
         }
@@ -1074,7 +1119,7 @@ where
 
     fn walk_in_binary(&mut self, binary: &'ast Binary<'arena>, context: &mut NameResolutionContext<'arena, A>) {
         if let (BinaryOperator::Instanceof(_), Expression::Identifier(identifier)) = (binary.operator, binary.rhs) {
-            let (name, imported) = context.resolve(NameKind::Default, identifier.value());
+            let (name, imported) = self.resolve_class(context, identifier.value());
 
             self.resolved_names.insert_at(identifier.span(), name, imported);
         }
@@ -1110,21 +1155,14 @@ where
             }
 
             let is_member_object = self.member_objects.contains(&span.start.offset);
-            let (binding, kind) = if is_member_object {
-                (Binding::Class, NameKind::Default)
+            let (binding, (fqn, imported)) = if is_member_object {
+                (Binding::Class, self.resolve_class(context, name))
             } else if self.is_member(name) {
-                (Binding::Member, NameKind::Constant)
+                (Binding::Member, context.resolve(NameKind::Constant, name))
             } else {
-                (Binding::Constant, NameKind::Constant)
+                (Binding::Constant, context.resolve(NameKind::Constant, name))
             };
 
-            let (mut fqn, imported) = context.resolve(kind, name);
-            if is_member_object
-                && !imported
-                && let Some(class) = sharp_library_class(name)
-            {
-                fqn = class;
-            }
             self.resolved_names.insert_at(span, fqn, imported);
             self.resolved_names.bind(span, binding);
 
