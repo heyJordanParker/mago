@@ -1183,6 +1183,28 @@ fn an_override_that_does_not_match_the_sharp_field_is_an_error() {
     );
 }
 
+/// PHP makes a property whose `set` is private final, so a field cannot override one, whether a PHP# parent writes it
+/// `{ get; private set; }` or a plain PHP parent writes `private(set)`, as the engine refuses the class when it links.
+#[test]
+fn a_field_cannot_override_a_property_whose_set_is_private() {
+    let php = "<?php\n\nnamespace Lib;\n\nclass Tally\n{\n    public private(set) int $views = 0;\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Tally;\n\npublic class Counter\n{\n    public int views { get; private set; } = 0;\n    public int likes { get; set; } = 0;\n}\n\npublic class PageCounter : Counter\n{\n    public override int views = 1;\n    public override int likes = 1;\n}\n\npublic class PageTally : Tally\n{\n    public override int views = 1;\n}\n";
+
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counter.sharp", sharp), &[("src/Lib/Tally.php", php)])
+            .into_iter()
+            .map(|issue| (issue.code.unwrap_or_default(), issue.message))
+            .collect::<Vec<_>>(),
+        [
+            (
+                "override-final-property".to_owned(),
+                "Cannot override final property `Demo\\Counter::$views`.".to_owned()
+            ),
+            ("override-final-property".to_owned(), "Cannot override final property `Lib\\Tally::$views`.".to_owned()),
+        ]
+    );
+}
+
 /// A field cannot override a PHP# parent's property with accessor bodies yet: spec section 6.1 overrides it as a
 /// property, and PHP would keep the parent's accessors on the field.
 #[test]

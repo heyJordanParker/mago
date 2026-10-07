@@ -3308,7 +3308,10 @@ fn check_class_like_properties<'ctx, A>(
             let declaring_class_name = class_like_metadata.original_name;
             let parent_class_name = parent_metadata.original_name;
 
-            if parent_property.flags.is_final() {
+            // PHP makes a property whose `set` is private final, so the engine refuses a PHP# override of one.
+            if parent_property.flags.is_final()
+                || (context.dialect.is_sharp() && parent_property.write_visibility.is_private())
+            {
                 context.collector.report_with_code(
                     IssueCode::OverrideFinalProperty,
                     Issue::error(format!(
