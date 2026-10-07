@@ -39,6 +39,64 @@ final class Float
 }
 
 /**
+ * Where code sits in its source, as spec section 27 writes it. `$function` is the fully qualified dotted name.
+ */
+final class Position
+{
+    public readonly string $file;
+    public readonly string $directory;
+    public readonly int $line;
+    public readonly int $column;
+    public readonly string $function;
+
+    public function __construct(string $file, int $line, int $column, string $function) {}
+
+    /**
+     * The position where it is written, or the caller's position as a parameter's default. The engine declares no
+     * `current()`: the bridge lowers each call to a `new Position(…)`.
+     */
+    public static function current(): Position {}
+}
+
+/**
+ * The process environment, as spec section 29 writes it.
+ */
+final class Environment
+{
+    /**
+     * @var list<string> the command-line arguments, starting with the script's name.
+     */
+    public readonly array $arguments;
+
+    /**
+     * @var string the directory the process runs in.
+     */
+    public readonly string $currentDirectory;
+
+    public function __construct() {}
+
+    /**
+     * @return string|null the environment variable `$name`, or null when it is not set.
+     */
+    public function variable(string $name): ?string {}
+}
+
+final class List
+{
+    /**
+     * The list itself, or a list holding the one value, as spec section 24 writes it. The analyzer refuses a `.sharp`
+     * call when `T` could itself be a list, because a `List` and a `Map` both run as PHP arrays.
+     *
+     * @template T
+     *
+     * @param T|list<T> $value
+     *
+     * @return list<T>
+     */
+    public static function wrap(mixed $value): array {}
+}
+
+/**
  * The methods of a PHP# `List<T>`, as spec section 12 writes them. The analyzer checks a call on a list against
  * them, and the engine runs them on `Sharp\Collection`. A method without `@mutation-free` changes the list.
  *
