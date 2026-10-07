@@ -42,7 +42,7 @@ where
     #[must_use]
     pub fn resolve<'ast>(&self, program: &'ast Program<'arena>) -> ResolvedNames<'arena> {
         let mut context = NameResolutionContext::new(self.arena);
-        let mut walker = NameWalker::new(program.dialect.is_sharp());
+        let mut walker = NameWalker::new(program);
 
         walker.walk_program(program, &mut context);
 
