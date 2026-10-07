@@ -18,8 +18,10 @@ use mago_extension::WorkerCommand;
 use mago_extension::WorkerPool;
 use mago_extension::WorkerPoolOptions;
 use mago_orchestrator::service::incremental_analysis::IncrementalAnalysisService;
+use mago_orchestrator::service::incremental_analysis::compile::Compilation;
 use mago_php_version::PHPVersion;
 use mago_reporting::IssueCollection;
+use mago_sharp_bridge::unit::header;
 use mago_syntax::settings::ParserSettings;
 
 mod common;
@@ -259,4 +261,55 @@ fn a_return_taken_from_the_body_reaches_callers_and_follows_body_edits() {
         "the edited body no longer applies the narrower class: {fresh:#?}"
     );
     assert_eq!(edited, fresh, "incremental analysis after a body edit matches a fresh analysis");
+}
+
+const SHARP_CONSUMER: &str = r"namespace Proof;
+
+public class SharpConsumer
+{
+    public Box unwrap(Factory factory)
+    {
+        return factory.make();
+    }
+}
+";
+
+/// The key and input paths of `src/SharpConsumer.sharp` compiled beside a factory whose `make` returns `$this->{returned}`.
+fn compiled_consumer(repository: &Path, returned: &str) -> ([u8; 16], Vec<Vec<u8>>) {
+    let (mut database, _) = factory_database(returned);
+    database.add(File::new(
+        Cow::Borrowed(b"src/SharpConsumer.sharp"),
+        FileType::Host,
+        None,
+        Cow::Borrowed(SHARP_CONSUMER.as_bytes()),
+    ));
+    let mut incremental = service(&database, registry(repository));
+    incremental.analyze().expect("body return analysis should succeed");
+
+    let mut inputs = Vec::new();
+    let compiled = incremental
+        .compile(|path| {
+            inputs.push(path.to_vec());
+            Ok(None)
+        })
+        .expect("the compile runs");
+    let [(_, Compilation::Accepted(bytes))] = compiled.as_slice() else {
+        panic!("src/SharpConsumer.sharp is not accepted: {compiled:?}");
+    };
+
+    (header(bytes).expect("the header is valid").key, inputs)
+}
+
+#[test]
+fn a_sharp_caller_of_a_return_taken_from_the_body_names_its_file_and_changes_key_with_the_return() {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !common::php_sdk_is_available(repository, "the body return compile test") {
+        return;
+    }
+
+    let (special, inputs) = compiled_consumer(repository, "special");
+    let (plain, _) = compiled_consumer(repository, "plain");
+
+    assert!(inputs.contains(&b"src/Factory.php".to_vec()), "{inputs:?}");
+    assert_ne!(special, plain, "the body edit changed the return the caller read");
 }
