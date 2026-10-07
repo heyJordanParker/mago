@@ -16,6 +16,7 @@ workspace = true
 
 [dependencies]
 mago-allocator = { workspace = true }
+mago-build-id = { workspace = true }
 mago-database = { workspace = true }
 mago-names = { workspace = true }
 mago-php-version = { workspace = true }
@@ -24,9 +25,11 @@ mago-semantics = { workspace = true }
 mago-span = { workspace = true }
 mago-syntax = { workspace = true }
 mago-syntax-core = { workspace = true }
+xxhash-rust = { workspace = true }
 
 [dev-dependencies]
 indoc = { workspace = true }
+tempfile = { workspace = true }
 
 [build-dependencies]
 cbindgen = { workspace = true }

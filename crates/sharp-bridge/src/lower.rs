@@ -324,7 +324,7 @@ struct Lowering<'lowering, 'arena> {
     function: Vec<u8>,
     nodes: Vec<sharp_node>,
     children: Vec<u32>,
-    texts: LocalArena,
+    texts: Vec<u8>,
     /// How many hidden variables the pattern forms being lowered hold.
     temporaries: u32,
     /// The declaration offsets of the locals a lambda captures by reference: those code writes.
@@ -347,7 +347,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             function: Vec::new(),
             nodes: Vec::new(),
             children: Vec::new(),
-            texts: LocalArena::new(),
+            texts: Vec::new(),
             temporaries: 0,
             by_reference: HashSet::default(),
             loop_depth: 0,
@@ -780,7 +780,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     fn storage(&mut self, line: u32) -> u32 {
         let this = self.string(0, line, b"this");
         let this = self.node(SHARP_AST_VAR, 0, line, &[this]);
-        let name = store_text(&self.texts, &self.property);
+        let name = store_text(&mut self.texts, &self.property);
         let name = self.zval(line, sharp_value::SHARP_STRING, |node| node.text = name);
 
         self.node(SHARP_AST_PROP, 0, line, &[this, name])
@@ -1657,7 +1657,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     ) -> u32 {
         let index = self.node(kind, flags, self.line(start), children);
         let end_line = self.lines.line(end.span().end.offset);
-        let name = store_text(&self.texts, name);
+        let name = store_text(&mut self.texts, name);
 
         let node = &mut self.nodes[index as usize];
         node.end_line = end_line;
@@ -1667,7 +1667,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     fn string(&mut self, attr: u32, line: u32, text: &[u8]) -> u32 {
-        let text = store_text(&self.texts, text);
+        let text = store_text(&mut self.texts, text);
 
         self.zval(line, sharp_value::SHARP_STRING, |node| {
             node.attr = attr;
@@ -1945,7 +1945,10 @@ mod tests {
 
         assert_eq!(unit.abi.node_count, 0, "{method}");
         assert_eq!(unit.diagnostics.len(), 1, "{method}");
-        assert!(unit.diagnostics[0].message.bytes().starts_with(b"internal error in the PHP# front end: "), "{method}");
+        assert!(
+            unit.text(unit.diagnostics[0].message).starts_with(b"internal error in the PHP# front end: "),
+            "{method}"
+        );
     }
 
     #[test]

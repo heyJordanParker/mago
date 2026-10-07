@@ -3,30 +3,28 @@
 //! `sharp_lower` runs one `.sharp` file through the parser, the binder and the semantic checks, and lowers it into
 //! the tree php-src's own parser builds for the equivalent PHP. The tree is a flat node array behind a C ABI, which
 //! `ext/sharp` turns into `zend_ast` the way HHVM's `hackc-translator.cpp` turns hackc's unit into runtime structures.
-//! cbindgen writes this file's ABI to `sharp_bridge.h` in `OUT_DIR`.
+//! cbindgen writes this file's ABI and the compiled file's layout in `unit.rs` to `sharp_unit.h` in `OUT_DIR`.
 
 #![allow(non_camel_case_types)]
 
 use std::ffi::c_char;
 use std::panic;
 use std::panic::AssertUnwindSafe;
-use std::ptr;
 use std::slice;
-
-use mago_allocator::Arena;
-use mago_allocator::LocalArena;
 
 mod kind;
 mod lower;
+pub mod unit;
 
+pub use kind::SHARP_UNIT_ABI;
 pub use kind::sharp_kind;
 
-/// UTF-8, not NUL-terminated.
+/// `len` bytes of UTF-8 at `offset` in the unit's texts, not NUL-terminated.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct sharp_str {
-    pub ptr: *const c_char,
-    pub len: usize,
+    pub offset: u32,
+    pub len: u32,
 }
 
 #[repr(u8)]
@@ -88,6 +86,9 @@ pub struct sharp_unit {
     pub children_count: usize,
     /// A `SHARP_AST_STMT_LIST`.
     pub root: u32,
+    /// The bytes every `sharp_str` of the unit points into.
+    pub texts: *const c_char,
+    pub texts_size: usize,
     /// Non-empty: nodes are empty.
     pub diagnostics: *const sharp_diagnostic,
     pub diagnostic_count: usize,
@@ -130,22 +131,14 @@ pub unsafe extern "C" fn sharp_unit_free(unit: *mut sharp_unit) {
     }
 }
 
-/// For `php --ri sharp`.
-#[unsafe(no_mangle)]
-pub extern "C" fn sharp_mago_commit() -> sharp_str {
-    const COMMIT: &str = env!("SHARP_MAGO_COMMIT");
-
-    sharp_str { ptr: COMMIT.as_ptr().cast::<c_char>(), len: COMMIT.len() }
-}
-
 /// A lowered file and every byte its `sharp_unit` points to, which the bridge owns until `sharp_unit_free`.
 #[repr(C)]
-struct Unit {
+pub struct Unit {
     abi: sharp_unit,
     nodes: Vec<sharp_node>,
     children: Vec<u32>,
     diagnostics: Vec<sharp_diagnostic>,
-    texts: LocalArena,
+    texts: Vec<u8>,
 }
 
 /// A diagnostic before the bridge stores its message.
@@ -158,14 +151,14 @@ struct Diagnostic {
 
 impl Unit {
     fn failed(diagnostics: Vec<Diagnostic>) -> Box<Self> {
-        let texts = LocalArena::new();
+        let mut texts = Vec::new();
         let diagnostics = diagnostics
             .into_iter()
             .map(|diagnostic| sharp_diagnostic {
                 line: diagnostic.line,
                 column: diagnostic.column,
                 severity: diagnostic.severity,
-                message: store_text(&texts, diagnostic.message.as_bytes()),
+                message: store_text(&mut texts, diagnostic.message.as_bytes()),
             })
             .collect();
 
@@ -177,7 +170,7 @@ impl Unit {
         children: Vec<u32>,
         root: u32,
         diagnostics: Vec<sharp_diagnostic>,
-        texts: LocalArena,
+        texts: Vec<u8>,
     ) -> Box<Self> {
         let abi = sharp_unit {
             nodes: nodes.as_ptr(),
@@ -185,19 +178,34 @@ impl Unit {
             children: children.as_ptr(),
             children_count: children.len(),
             root,
+            texts: texts.as_ptr().cast::<c_char>(),
+            texts_size: texts.len(),
             diagnostics: diagnostics.as_ptr(),
             diagnostic_count: diagnostics.len(),
         };
 
         Box::new(Self { abi, nodes, children, diagnostics, texts })
     }
+
+    /// The bytes `text` points to.
+    #[cfg(test)]
+    fn text(&self, text: sharp_str) -> &[u8] {
+        &self.texts[text.offset as usize..(text.offset + text.len) as usize]
+    }
 }
 
-/// Copies `bytes` into `texts`, where they never move, and returns the string that points to them.
-fn store_text(texts: &LocalArena, bytes: &[u8]) -> sharp_str {
-    let text = texts.alloc_slice_copy(bytes);
+/// Appends `bytes` to `texts`, and returns the string that points to them. A `sharp_str` offset is 32 bits, so a
+/// unit's texts hold at most 4 GiB.
+fn store_text(texts: &mut Vec<u8>, bytes: &[u8]) -> sharp_str {
+    let offset = u32::try_from(texts.len()).unwrap_or_else(|_| panic!("a unit's texts exceed 4 GiB"));
+    let len = u32::try_from(bytes.len()).unwrap_or_else(|_| panic!("one text exceeds 4 GiB"));
+    if offset.checked_add(len).is_none() {
+        panic!("a unit's texts exceed 4 GiB");
+    }
 
-    sharp_str { ptr: text.as_ptr().cast::<c_char>(), len: text.len() }
+    texts.extend_from_slice(bytes);
+
+    sharp_str { offset, len }
 }
 
 /// Runs the lowering, and returns a panic inside it as one compile error, so the engine never unwinds.
@@ -233,14 +241,7 @@ unsafe fn bytes(pointer: *const c_char, len: usize) -> Vec<u8> {
 }
 
 impl sharp_str {
-    const EMPTY: Self = Self { ptr: ptr::null(), len: 0 };
-
-    /// The bytes of a stored text, which live as long as the unit that stores them.
-    #[cfg(test)]
-    fn bytes(&self) -> &[u8] {
-        // SAFETY: `store_text` returned this string, so it points to `len` bytes its unit owns.
-        unsafe { slice::from_raw_parts(self.ptr.cast::<u8>(), self.len) }
-    }
+    const EMPTY: Self = Self { offset: 0, len: 0 };
 }
 
 #[cfg(test)]
@@ -256,6 +257,6 @@ mod tests {
         assert_eq!(unit.abi.node_count, 0);
         assert_eq!(unit.diagnostics.len(), 1);
         assert_eq!(unit.diagnostics[0].severity, sharp_severity::SHARP_COMPILE_ERROR);
-        assert_eq!(unit.diagnostics[0].message.bytes(), b"internal error in the PHP# front end: forced");
+        assert_eq!(unit.text(unit.diagnostics[0].message), b"internal error in the PHP# front end: forced");
     }
 }

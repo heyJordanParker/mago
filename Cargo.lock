@@ -1892,6 +1892,7 @@ dependencies = [
  "cbindgen",
  "indoc",
  "mago-allocator",
+ "mago-build-id",
  "mago-database",
  "mago-names",
  "mago-php-version",
@@ -1900,6 +1901,8 @@ dependencies = [
  "mago-span",
  "mago-syntax",
  "mago-syntax-core",
+ "tempfile",
+ "xxhash-rust",
 ]
 
 [[package]]
