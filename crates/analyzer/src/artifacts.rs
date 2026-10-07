@@ -146,10 +146,7 @@ impl AnalysisArtifacts {
         }
     }
 
-    pub(crate) fn with_variable_definedness_targets(
-        mut self,
-        targets: Option<Arc<[bool; NodeKind::COUNT]>>,
-    ) -> Self {
+    pub(crate) fn with_variable_definedness_targets(mut self, targets: Option<Arc<[bool; NodeKind::COUNT]>>) -> Self {
         self.variable_definedness_targets = targets;
         self
     }
@@ -273,11 +270,7 @@ impl AnalysisArtifacts {
     }
 }
 
-fn node_or_same_span_descendant_is_targeted(
-    node: Node<'_, '_>,
-    span: Span,
-    targets: &[bool; NodeKind::COUNT],
-) -> bool {
+fn node_or_same_span_descendant_is_targeted(node: Node<'_, '_>, span: Span, targets: &[bool; NodeKind::COUNT]) -> bool {
     if targets[node.kind() as usize] {
         return true;
     }
