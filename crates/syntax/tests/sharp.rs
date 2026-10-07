@@ -1611,6 +1611,22 @@ fn a_qualified_name_is_a_parse_error_that_names_the_import() {
 }
 
 #[test]
+fn a_qualified_null_true_or_false_is_a_parse_error_that_names_the_keyword() {
+    for (code, keyword) in [
+        ("class Report\n{\n    Any? run()\n    {\n        return \\null;\n    }\n}\n", "null"),
+        ("class Report\n{\n    bool run()\n    {\n        return \\true;\n    }\n}\n", "true"),
+        ("class Report\n{\n    bool run()\n    {\n        return \\false;\n    }\n}\n", "false"),
+        ("class Report\n{\n    bool run()\n    {\n        return \\FALSE;\n    }\n}\n", "false"),
+    ] {
+        let arena = LocalArena::new();
+        let program = parse(&arena, "src/Report.sharp", code);
+
+        let messages: Vec<String> = program.errors.iter().map(ToString::to_string).collect();
+        assert_eq!(messages, [format!("A `\\` name is PHP syntax: write `{keyword}`")], "{code}");
+    }
+}
+
+#[test]
 fn a_method_written_with_function_is_a_parse_error() {
     let arena = LocalArena::new();
     let program =
@@ -2272,6 +2288,137 @@ fn is_tests_a_value_against_a_pattern_as_tightly_as_a_comparison() {
         panic!("expected `as` before `??`, got {coalesce:#?}");
     };
     assert_eq!(source(CODE, r#as), "result as Paid");
+}
+
+/// The condition, the value when it holds and the value when it fails of the `? :` that `run` returns, after checking
+/// that the file parses whole and that the condition is an `is` whose type pattern declares no name.
+fn conditional_after_is(code: &'static str) -> [&'static str; 3] {
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", code);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Expression::Conditional(conditional) = expression(&method_body(program)[0]) else {
+        panic!("expected `? :`, got {:#?}", method_body(program)[0]);
+    };
+    let Expression::Is(Is { pattern: Pattern::Type(TypePattern { variable: None, .. }), .. }) = conditional.condition
+    else {
+        panic!("expected `is` and a type as the condition, got {conditional:#?}");
+    };
+    let then = conditional.then.expect("a value when the condition holds");
+
+    [source(code, conditional.condition), source(code, then), source(code, conditional.r#else)]
+}
+
+#[test]
+fn a_question_mark_after_the_type_that_is_tests_starts_a_conditional_as_in_csharp() {
+    assert_eq!(
+        conditional_after_is(
+            "class Report\n{\n    string run()\n    {\n        return value is string ? value : \"\";\n    }\n}\n"
+        ),
+        ["value is string", "value", "\"\""]
+    );
+}
+
+#[test]
+fn a_question_mark_after_a_class_that_is_tests_starts_a_conditional() {
+    assert_eq!(
+        conditional_after_is(
+            "class Report\n{\n    string run()\n    {\n        return entity is Address ? entity.city : \"\";\n    }\n}\n"
+        ),
+        ["entity is Address", "entity.city", "\"\""]
+    );
+}
+
+#[test]
+fn a_conditional_after_is_takes_a_nested_conditional_in_parentheses() {
+    assert_eq!(
+        conditional_after_is(
+            "class Report\n{\n    string run()\n    {\n        return value is string ? (strict ? value : fallback) : \"\";\n    }\n}\n"
+        ),
+        ["value is string", "(strict ? value : fallback)", "\"\""]
+    );
+}
+
+#[test]
+fn a_question_mark_after_the_type_that_as_converts_to_starts_a_conditional() {
+    const CODE: &str = "class Report\n{\n    int run()\n    {\n        return value as bool ? 1 : 0;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Expression::Conditional(conditional) = expression(&method_body(program)[0]) else {
+        panic!("expected `? :`, got {:#?}", method_body(program)[0]);
+    };
+    assert!(matches!(conditional.condition, Expression::As(_)), "{conditional:#?}");
+    assert_eq!(source(CODE, conditional.condition), "value as bool");
+}
+
+#[test]
+fn a_question_mark_before_the_name_an_is_pattern_declares_makes_the_type_nullable() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        if (value is string? text) {\n        }\n        value is string? text;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::If(r#if), statement] = method_body(program) else {
+        panic!("expected an if and an expression, got {:#?}", method_body(program));
+    };
+    for is in [r#if.condition, expression(statement)] {
+        let Expression::Is(Is {
+            pattern: Pattern::Type(TypePattern { hint: hint @ Hint::Nullable(_), variable }), ..
+        }) = is
+        else {
+            panic!("expected `is` and a nullable type, got {is:#?}");
+        };
+        assert_eq!(source(CODE, hint), "string?");
+        assert_eq!(variable.map(|variable| variable.value), Some(&b"text"[..]));
+    }
+}
+
+#[test]
+fn a_question_mark_that_ends_an_is_pattern_makes_the_type_nullable() {
+    const CODE: &str = "class Report\n{\n    bool run()\n    {\n        if (value is string?) {\n        }\n        return value is string?;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::If(r#if), returned] = method_body(program) else {
+        panic!("expected an if and a return, got {:#?}", method_body(program));
+    };
+    for is in [r#if.condition, expression(returned)] {
+        let Expression::Is(Is {
+            pattern: Pattern::Type(TypePattern { hint: Hint::Nullable(_), variable: None }), ..
+        }) = is
+        else {
+            panic!("expected `is` and a nullable type, got {is:#?}");
+        };
+        assert_eq!(source(CODE, is), "value is string?");
+    }
+}
+
+#[test]
+fn a_question_mark_before_the_end_of_a_pattern_makes_the_type_nullable() {
+    const CODE: &str = "class Report\n{\n    int run()\n    {\n        return match (value) {\n            int? n => 1,\n            string? when strict => 2,\n            float? f when f > 0.0 => 3,\n            { name: string? n, age: int? } => 4,\n            bool? b or null => 5,\n            default => 0,\n        };\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Expression::PatternMatch(r#match) = expression(&method_body(program)[0]) else {
+        panic!("expected a match, got {:#?}", method_body(program)[0]);
+    };
+    let patterns: Vec<&str> = r#match
+        .arms
+        .iter()
+        .filter_map(|arm| match arm {
+            PatternMatchArm::Pattern(arm) => Some(source(CODE, arm.pattern)),
+            PatternMatchArm::Default(_) => None,
+        })
+        .collect();
+    assert_eq!(patterns, ["int? n", "string?", "float? f", "{ name: string? n, age: int? }", "bool? b or null"]);
+    let Some(PatternMatchArm::Pattern(first)) = r#match.arms.first() else {
+        panic!("expected a pattern arm, got {:#?}", r#match.arms);
+    };
+    assert!(matches!(first.pattern, Pattern::Type(TypePattern { hint: Hint::Nullable(_), .. })), "{first:#?}");
 }
 
 #[test]
