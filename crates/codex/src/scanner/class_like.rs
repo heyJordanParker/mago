@@ -18,7 +18,6 @@ use mago_syntax::cst::Enum;
 use mago_syntax::cst::EnumBackingTypeHint;
 use mago_syntax::cst::Extends;
 use mago_syntax::cst::Hint;
-use mago_syntax::cst::Identifier;
 use mago_syntax::cst::Implements;
 use mago_syntax::cst::Inheritance;
 use mago_syntax::cst::Interface;
@@ -419,19 +418,12 @@ where
     // the parent, and so does the populator. An enum has no parent, so every name in its header is an interface. A
     // generic type in the header, as in `: PaginatedList<Order>`, names its class before its type arguments, and the
     // checker refuses any other type there. `List`, `Map` and `Class` have no resolved name, because no class is one.
-    if let Some(inheritance) = inheritance {
-        for type_name in &inheritance.types {
-            let name = match type_name {
-                Hint::Identifier(identifier) => *identifier,
-                Hint::Generic(generic) => Identifier::Local(generic.name),
-                _ => continue,
-            };
-            let Some(name) = context.resolved_names.resolve(&name) else {
-                continue;
-            };
+    for name in inheritance.iter().flat_map(|inheritance| inheritance.names()) {
+        let Some(name) = context.resolved_names.resolve(&name) else {
+            continue;
+        };
 
-            class_like_metadata.add_direct_parent_interface(ascii_lowercase_word(name));
-        }
+        class_like_metadata.add_direct_parent_interface(ascii_lowercase_word(name));
     }
 
     let mut type_context = TypeResolutionContext::new();
@@ -1189,13 +1181,7 @@ where
         for ((template_name, definition), parameter) in templates.into_iter().zip(&type_parameters.parameters) {
             class_like_metadata.add_template_type(template_name, definition);
 
-            let variance = if parameter.is_covariant() {
-                Variance::Covariant
-            } else if parameter.is_contravariant() {
-                Variance::Contravariant
-            } else {
-                Variance::Invariant
-            };
+            let variance = Variance::from(parameter);
             if variance.is_readonly() {
                 class_like_metadata.template_readonly.insert(template_name);
             }

@@ -662,9 +662,9 @@ fn a_class_and_an_interface_declare_type_parameters_with_variance_and_bounds() {
         .into_iter()
         .flat_map(|list| list.as_ref().expect("a type parameter list").parameters.iter())
         .collect();
-    let variances: Vec<(bool, bool)> =
-        parameters.iter().map(|parameter| (parameter.is_covariant(), parameter.is_contravariant())).collect();
-    assert_eq!(variances, [(false, true), (true, false), (false, false)]);
+    let variances: Vec<Option<&[u8]>> =
+        parameters.iter().map(|parameter| parameter.variance.map(|variance| variance.value)).collect();
+    assert_eq!(variances, [Some(&b"in"[..]), Some(b"out"), None]);
     let bound = parameters[1].bound.as_ref().expect("a bound");
     assert!(matches!(bound.hint, Hint::Intersection(_)), "{:#?}", bound.hint);
     assert_eq!(source(CODE, bound), ": DatabaseEntity & Shareable");
@@ -2308,16 +2308,9 @@ fn typeof_names_a_class_by_its_short_name() {
     assert_eq!(source(CODE, type_of), "typeof(Order)");
 }
 
-/// The names of a header whose every type is a plain name, as it was before a header took type arguments.
+/// The names a header's entries are written with.
 fn header_names<'arena>(inheritance: &Inheritance<'arena>) -> Vec<&'arena [u8]> {
-    inheritance
-        .types
-        .iter()
-        .map(|hint| match hint {
-            Hint::Identifier(identifier) => identifier.value(),
-            _ => panic!("expected a name, got {hint:#?}"),
-        })
-        .collect()
+    inheritance.names().map(|name| name.value()).collect()
 }
 
 #[test]
@@ -2362,7 +2355,22 @@ fn a_header_names_a_generic_type_with_its_type_arguments() {
         panic!("expected a name, got {shareable:#?}");
     };
     assert_eq!(shareable.value(), b"Shareable");
+    assert_eq!(header_names(inheritance), [&b"PaginatedList"[..], b"Shareable"]);
     assert_eq!(source(CODE, inheritance), ": PaginatedList<Order>, Shareable");
+}
+
+/// A header entry that is neither a name nor a generic type, which the checker refuses, names nothing.
+#[test]
+fn a_header_entry_that_is_not_a_class_type_names_nothing() {
+    const CODE: &str = "public class Page : Entity, int, Map<string, int> { }\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Page.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::Class(class)] = program.statements.as_slice() else {
+        panic!("expected a class, got {:#?}", program.statements);
+    };
+    assert_eq!(header_names(class.inheritance.as_ref().expect("a header")), [&b"Entity"[..], b"Map"]);
 }
 
 /// An enum's header holds a backing type, `int` or `string`, first, and then its interfaces. After a backing type, the

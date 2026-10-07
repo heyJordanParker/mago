@@ -62,6 +62,18 @@ pub struct Inheritance<'arena> {
     pub types: TokenSeparatedSequence<'arena, Hint<'arena>>,
 }
 
+impl<'arena> Inheritance<'arena> {
+    /// The name each entry is written with, in written order: a name as written, and a generic type by its name before
+    /// its type arguments. Any other type, which the checker refuses in a header, names nothing.
+    pub fn names(&self) -> impl Iterator<Item = Identifier<'arena>> {
+        self.types.iter().filter_map(|hint| match hint {
+            Hint::Identifier(identifier) => Some(*identifier),
+            Hint::Generic(generic) => Some(Identifier::Local(generic.name)),
+            _ => None,
+        })
+    }
+}
+
 impl HasSpan for Inheritance<'_> {
     fn span(&self) -> Span {
         Span::between(self.colon, self.types.span(self.colon.file_id, self.colon.end))

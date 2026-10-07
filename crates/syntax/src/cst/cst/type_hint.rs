@@ -348,22 +348,6 @@ impl Hint<'_> {
     }
 }
 
-impl TypeParameter<'_> {
-    /// Returns `true` if the type parameter is marked `out`: its type only hands it out.
-    #[inline]
-    #[must_use]
-    pub fn is_covariant(&self) -> bool {
-        self.variance.is_some_and(|variance| variance.value == b"out")
-    }
-
-    /// Returns `true` if the type parameter is marked `in`: its type only takes it in.
-    #[inline]
-    #[must_use]
-    pub fn is_contravariant(&self) -> bool {
-        self.variance.is_some_and(|variance| variance.value == b"in")
-    }
-}
-
 impl HasSpan for Hint<'_> {
     fn span(&self) -> Span {
         match &self {

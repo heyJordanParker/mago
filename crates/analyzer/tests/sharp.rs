@@ -3751,6 +3751,15 @@ fn a_pattern_or_as_of_a_type_parameter_adds_no_issue() {
     assert_eq!(issues(("src/Demo/Builder.sharp", sharp), &[]), Vec::<String>::new());
 }
 
+/// `value is PaginatedList<Order>` and `value as PaginatedList<Order>`, which `check_slice` refuses because a generic
+/// class type needs its type argument while the code runs, add no analyzer issue on the refused line.
+#[test]
+fn a_pattern_or_as_of_a_generic_class_type_adds_no_issue() {
+    let sharp = "namespace Demo;\n\npublic class Report\n{\n    public static bool holds(Any? value) => value is PaginatedList<Order>;\n\n    public static Any? kept(Any? value) => value as PaginatedList<Order>;\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]), Vec::<String>::new());
+}
+
 /// Generics are erased when PHP# compiles, so `Validator<in TItem>` takes `mixed`, and PHP refuses a parameter
 /// narrower than the one it overrides when it links the class. The parameter is refused where it is written, with the
 /// type it must take and the bound that lets it keep its type.
@@ -3923,6 +3932,18 @@ fn new_of_a_generic_class_without_type_arguments_names_them() {
             "13:39 missing-template-parameter `new Pair` names its type arguments: write `new Pair<…>(…)` with a type for `TKey` and `TValue`.",
         ]
     );
+}
+
+/// `new Self(…)` in a generic class names no type arguments: `Self` is the class with its own type parameters, so its
+/// value passes where `Repo<TItem>` is expected inside the class, as a return value and as an argument, and not where
+/// `Box<int>` is.
+#[test]
+fn new_self_carries_the_type_parameters_of_its_class() {
+    let repo = "namespace Demo;\n\npublic class Repo<TItem>\n{\n    public required Repo()\n    {\n    }\n\n    public Self copy() => new Self();\n\n    public Repo<TItem> same() => new Self();\n\n    public Repo<TItem> kept(Repo<TItem> repo) => repo;\n\n    public Repo<TItem> passed() => this.kept(new Self());\n}\n";
+    let boxes = "namespace Demo;\n\npublic class Box<TItem>\n{\n    public required Box(TItem item)\n    {\n    }\n\n    public Box<TItem> wrapped(TItem item) => new Self(item);\n\n    public Box<int> counted() => new Self(1);\n}\n";
+
+    assert_eq!(explained(("src/Demo/Repo.sharp", repo), &[]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Box.sharp", boxes), &[]), ["11:34 less-specific-nested-return-statement"]);
 }
 
 /// A class, a static method and a method of `Store` with type parameters of their own.

@@ -875,19 +875,10 @@ where
     // one class the populator linked as the parent. A generic type there, as in `: PaginatedList<Order>`, names its
     // class before its type arguments, and the checker refuses any other type there. `List`, `Map` and `Class` have no
     // resolved name, because no class is one.
-    let mut header_spans = WordMap::default();
-    for type_hint in inheritance_ast.iter().flat_map(|inheritance| inheritance.types.iter()) {
-        let type_name = match type_hint {
-            Hint::Identifier(identifier) => *identifier,
-            Hint::Generic(generic) => Identifier::Local(generic.name),
-            _ => continue,
-        };
+    for type_name in inheritance_ast.iter().flat_map(|inheritance| inheritance.names()) {
         let Some(resolved) = context.resolved_names.resolve(&type_name) else {
             continue;
         };
-        if let Hint::Generic(generic) = type_hint {
-            header_spans.insert(ascii_lowercase_word(resolved), generic.span());
-        }
         let is_parent = class_like_metadata.kind.is_interface()
             || class_like_metadata
                 .direct_parent_class
@@ -1058,7 +1049,7 @@ where
     check_trait_property_conflicts(context, class_like_metadata, members);
     check_readonly_class_trait_properties(context, class_like_metadata, members);
     if class_like_metadata.flags.is_sharp() {
-        check_sharp_template_variance(context, class_like_metadata, &header_spans);
+        check_sharp_template_variance(context, class_like_metadata, inheritance_ast);
     } else {
         check_template_variance_positions(context, class_like_metadata);
     }
@@ -2084,13 +2075,12 @@ fn check_template_variance_positions<'ctx, A>(
     }
 }
 
-/// Checks spec section 11.1 on every member of a PHP# class or interface another class reaches, and on its header,
-/// whose entries stand at `header_spans`: an `out` type parameter is only handed out, and an `in` type parameter is
-/// only taken in.
+/// Checks spec section 11.1 on every member of a PHP# class or interface another class reaches, and on the generic
+/// types of its header: an `out` type parameter is only handed out, and an `in` type parameter is only taken in.
 fn check_sharp_template_variance<A>(
     context: &mut Context<'_, '_, A>,
     class_like_metadata: &ClassLikeMetadata,
-    header_spans: &WordMap<Span>,
+    inheritance: Option<&Inheritance<'_>>,
 ) where
     A: Arena,
 {
@@ -2098,7 +2088,17 @@ fn check_sharp_template_variance<A>(
         return;
     }
 
-    for template_use in find_template_uses(context.codebase, class_like_metadata, header_spans) {
+    let header_spans: WordMap<Span> = inheritance
+        .iter()
+        .flat_map(|inheritance| inheritance.types.iter())
+        .filter_map(|hint| match hint {
+            Hint::Generic(generic) => {
+                Some((ascii_lowercase_word(context.resolved_names.resolve(&generic.name)?), generic.span()))
+            }
+            _ => None,
+        })
+        .collect();
+    for template_use in find_template_uses(context.codebase, class_like_metadata, &header_spans) {
         let Some(index) = class_like_metadata.template_types.get_index_of(&template_use.template) else {
             continue;
         };

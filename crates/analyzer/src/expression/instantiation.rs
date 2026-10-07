@@ -49,6 +49,7 @@ use crate::invocation::template_result::seed_type_arguments;
 use crate::resolver::class_name::ResolutionOrigin;
 use crate::resolver::class_name::ResolvedClassname;
 use crate::resolver::class_name::resolve_classnames_from_expression;
+use crate::statement::function_like::get_this_type;
 use crate::utils::names::and_list;
 use crate::utils::names::short_name;
 use crate::utils::template::get_generic_parameter_for_offset;
@@ -322,6 +323,22 @@ where
             &metadata.template_types,
             &mut template_result,
         ),
+        // PHP#'s `new Self(…)` names no type arguments, spec section 11: `Self` is the class with its own type
+        // parameters, as in a return type, so they stand for written ones.
+        None if context.dialect.is_sharp() && classname.is_static() => {
+            let own_type_parameters = match get_this_type(context, metadata, None) {
+                TObject::Named(this) => this.type_parameters,
+                // An enum, which `new` refuses above.
+                _ => None,
+            };
+            for (own_type_parameter, (template_name, template)) in
+                own_type_parameters.iter().flatten().zip(&metadata.template_types)
+            {
+                template_result.add_lower_bound(*template_name, template.defining_entity, own_type_parameter.clone());
+            }
+
+            own_type_parameters
+        }
         None => {
             if context.dialect.is_sharp() && metadata.flags.is_sharp() && !metadata.template_types.is_empty() {
                 report_missing_type_arguments(context, metadata, class_expression_span);

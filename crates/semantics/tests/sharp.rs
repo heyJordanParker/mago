@@ -653,6 +653,15 @@ fn self_is_only_a_return_type() {
     );
 }
 
+/// `Self` is the class with its own type parameters, so `new Self(…)` in a generic class names no type arguments, and
+/// `new Self<…>(…)` is refused.
+#[test]
+fn new_self_names_no_type_arguments() {
+    let code = "namespace App.Tenant;\n\npublic class Repo<TItem>\n{\n    public required Repo()\n    {\n    }\n\n    public Self copy() => new Self();\n\n    public Self typed() => new Self<TItem>();\n}\n";
+
+    assert_eq!(issues(code), ["11:36 `Self` already carries its class's type parameters."]);
+}
+
 #[test]
 fn new_self_needs_a_required_constructor() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    public Report(int count)\n    {\n    }\n\n    public static Self make() => new Self(1);\n}\n\nclass Total\n{\n    public static Self make() => new Self();\n}\n\nclass Entity\n{\n    public required Entity(int count)\n    {\n    }\n\n    public static Self make() => new Self;\n}\n";

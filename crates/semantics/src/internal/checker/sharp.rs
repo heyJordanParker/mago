@@ -884,7 +884,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         (Node::Block(_), Method | Body) => Some(Body),
         (Node::MethodExpressionBody(_), Method) => Some(Body),
         (Node::TryCatchClause(_), Body) => Some(TryCatchClause),
-        (Node::Hint(hint), TryCatchClause) if let Some(erased) = erased_type(hint, context) => {
+        (Node::Hint(hint), TryCatchClause) if let Some(erased) = context.names.erased_type(hint) => {
             report_not_supported(erased, "type", ERASED_TYPE_ARGUMENTS, context);
 
             None
@@ -1019,7 +1019,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
                 None
             }
-            hint => match erased_type(hint, context) {
+            hint => match context.names.erased_type(hint) {
                 Some(erased) => {
                     report_not_supported(erased, "type", ERASED_TYPE_ARGUMENTS, context);
 
@@ -1047,7 +1047,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
             None
         }
-        (Node::Hint(hint), Place::Pattern) if let Some(erased) = erased_type(hint, context) => {
+        (Node::Hint(hint), Place::Pattern) if let Some(erased) = context.names.erased_type(hint) => {
             report_not_supported(erased, "type", ERASED_TYPE_ARGUMENTS, context);
 
             None
@@ -1388,12 +1388,7 @@ fn is_slice_signature(method: &Method) -> Result<(), (&'static str, &'static str
 /// is not a class or a generic class type, `List`, `Map` and `Class` included, which have no resolved name.
 fn check_header(inheritance: &Inheritance, place: Place, context: &mut Context<'_, '_, '_>) {
     let mut named: Vec<&[u8]> = Vec::new();
-    for hint in &inheritance.types {
-        let name = match hint {
-            Hint::Identifier(identifier) => *identifier,
-            Hint::Generic(generic) => Identifier::Local(generic.name),
-            _ => continue,
-        };
+    for name in inheritance.names() {
         let Some(resolved) = context.names.resolve(&name) else {
             continue;
         };
@@ -2199,39 +2194,6 @@ fn check_generic(generic: &GenericHint, place: Place, context: &mut Context<'_, 
     }
 }
 
-/// The part of a type in a pattern, `as` or a catch clause that needs a type argument while the code runs, which G1
-/// erases: a type parameter, a generic class type or `Class<T>`, or a type parameter in a `List`'s or a `Map`'s type
-/// arguments.
-fn erased_type(hint: &Hint, context: &Context<'_, '_, '_>) -> Option<Span> {
-    match hint {
-        Hint::Identifier(name) if is_type_parameter(name, context) => Some(name.span()),
-        Hint::Generic(generic) if matches!(generic.name.value, b"List" | b"Map") => {
-            generic.type_arguments.arguments.iter().find_map(|argument| type_parameter_in(argument, context))
-        }
-        Hint::Generic(generic) => Some(generic.span()),
-        Hint::Nullable(nullable) => erased_type(nullable.hint, context),
-        Hint::Parenthesized(parenthesized) => erased_type(parenthesized.hint, context),
-        Hint::Union(union) => erased_type(union.left, context).or_else(|| erased_type(union.right, context)),
-        _ => None,
-    }
-}
-
-/// The first type parameter a type holds, as in `Map<string, List<TItem>>`.
-fn type_parameter_in(hint: &Hint, context: &Context<'_, '_, '_>) -> Option<Span> {
-    match hint {
-        Hint::Identifier(name) if is_type_parameter(name, context) => Some(name.span()),
-        Hint::Generic(generic) => {
-            generic.type_arguments.arguments.iter().find_map(|argument| type_parameter_in(argument, context))
-        }
-        Hint::Nullable(nullable) => type_parameter_in(nullable.hint, context),
-        Hint::Parenthesized(parenthesized) => type_parameter_in(parenthesized.hint, context),
-        Hint::Union(union) => {
-            type_parameter_in(union.left, context).or_else(|| type_parameter_in(union.right, context))
-        }
-        _ => None,
-    }
-}
-
 /// Checks a union type. Each member in the slice is decided with the parts inside it as it is outside a union, so a
 /// generic member takes the type arguments it takes alone. A type written twice is compared as the engine compares it:
 /// a class by its full name, ignoring case.
@@ -2338,7 +2300,8 @@ fn report_php_static(keyword: &Keyword, context: &mut Context<'_, '_, '_>) {
 }
 
 /// Decides `new` on a class written by its short name, on `Self`, or on PHP's `self` or `static`. `new Self(…)` needs
-/// the class's constructor marked `required`, spec section 25, because `Self` can be any subclass. PHP's `self` and
+/// the class's constructor marked `required`, spec section 25, because `Self` can be any subclass, and names no type
+/// arguments, spec section 11, because `Self` is the class with its own type parameters. PHP's `self` and
 /// `static` are reported at the keyword, so the arguments are still checked. `new` of a type parameter needs its type
 /// argument while the code runs, which G1 erases.
 fn check_instantiation(instantiation: &Instantiation, context: &mut Context<'_, '_, '_>) -> Option<Place> {
@@ -2357,6 +2320,13 @@ fn check_instantiation(instantiation: &Instantiation, context: &mut Context<'_, 
             report_not_supported(instantiation.span(), "`new` of a type parameter", ERASED_TYPE_ARGUMENTS, context);
 
             return None;
+        }
+        Expression::Self_(_) if let Some(type_arguments) = &instantiation.type_arguments => {
+            context.report(
+                Issue::error("`Self` already carries its class's type parameters.")
+                    .with_annotation(Annotation::primary(type_arguments.span()).with_message("Written here."))
+                    .with_help("Write `new Self(…)`."),
+            );
         }
         _ => {}
     }

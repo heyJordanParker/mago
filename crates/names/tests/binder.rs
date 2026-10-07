@@ -723,6 +723,41 @@ fn php_variable_name_adds_a_dollar_only_to_a_bare_name() {
     assert_eq!(php_variable_name(b"$total").as_bytes(), b"$total");
 }
 
+/// The erased part of a type is what needs a type argument while the code runs: a type parameter, alone or inside a
+/// nullable type or a union, a generic class type, `Class<…>`, and a type parameter in a `List`'s or a `Map`'s type
+/// arguments, however deep. A class, and a `List` or a `Map` of types without a type parameter, have none.
+#[test]
+fn the_erased_part_of_a_type_is_what_needs_a_type_argument_while_the_code_runs() {
+    const CODE: &str = "class Store<TItem>\n{\n    public void run(Any? value)\n    {\n        value as TItem;\n        value as TItem?;\n        value as (Order|TItem)?;\n        value as PaginatedList<Order>;\n        value as Class<Order>;\n        value as List<TItem>;\n        value as Map<string, List<TItem>>;\n        value as Order;\n        value as List<Order>;\n        value as List<PaginatedList<Order>>;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let file = File::ephemeral(Cow::Borrowed(FILE_NAME), Cow::Borrowed(CODE.as_bytes()));
+    let program = parse_file(&arena, &file);
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let names = NameResolver::new(&arena).resolve(program);
+    let erased = Node::Program(program).filter_map(|node| match node {
+        Node::As(r#as) => Some(
+            names.erased_type(r#as.hint).map(|span| &CODE[span.start.offset as usize..span.end.offset as usize]),
+        ),
+        _ => None,
+    });
+
+    assert_eq!(
+        erased,
+        [
+            Some("TItem"),
+            Some("TItem"),
+            Some("TItem"),
+            Some("PaginatedList<Order>"),
+            Some("Class<Order>"),
+            Some("TItem"),
+            Some("TItem"),
+            None,
+            None,
+            None,
+        ]
+    );
+}
+
 #[test]
 fn php_names_are_not_bound() {
     let arena = LocalArena::new();
