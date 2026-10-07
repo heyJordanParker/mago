@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 
 use strum::Display;
+use strum::EnumCount;
 use strum::EnumIter;
 use strum::EnumString;
 
@@ -260,10 +261,10 @@ use crate::cst::cst::YieldFrom;
 use crate::cst::cst::YieldPair;
 use crate::cst::cst::YieldValue;
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord, Display, EnumIter, EnumString)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord, Display, EnumCount, EnumIter, EnumString)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type", content = "value"))]
-#[repr(u8)]
+#[repr(u16)]
 #[non_exhaustive]
 pub enum NodeKind {
     Program,
@@ -523,10 +524,14 @@ pub enum NodeKind {
     ClassLikeConstantMissingSelector,
 }
 
+impl NodeKind {
+    pub const COUNT: usize = <Self as EnumCount>::COUNT;
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord, Display)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type", content = "value"))]
-#[repr(u8)]
+#[repr(u16)]
 #[non_exhaustive]
 pub enum Node<'ast, 'arena> {
     Program(&'ast Program<'arena>),
