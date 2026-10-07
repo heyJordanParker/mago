@@ -5945,21 +5945,158 @@ fn a_loop_key_reads_back_through_from_or_a_cast_by_the_map_key_type() {
 /// foreach ($others as $other => $value) { $total += $value; }
 /// ```
 ///
-/// A loop key written as a type parameter reads back as its bound does, and one without a bound is `mixed`, which
-/// reads back as stored, as a key written `int` does.
+/// A loop key written as a type parameter reads back as its bound does: a backed enum bound through its `from`, as a
+/// key written as the enum does, beside a key written `int`, which reads back as stored.
 #[test]
 fn a_loop_key_written_as_a_type_parameter_reads_back_as_its_bound() {
-    let source = |class: &str, key: &str, other: &str| {
+    let source = |class: &str, key: &str| {
         format!(
-            "namespace App.Tenant;\n\nimport Lib.Status;\n\nclass {class}\n{{\n    public int count(Map<{key}, int> counts, Map<{other}, int> others)\n    {{\n        let total = 0;\n        for (const [{key} key, int value] of counts) {{\n            total += value;\n        }}\n        for (const [{other} other, int value] of others) {{\n            total += value;\n        }}\n\n        return total;\n    }}\n}}\n"
+            "namespace App.Tenant;\n\nimport Lib.Status;\n\nclass {class}\n{{\n    public int count(Map<{key}, int> counts, Map<int, int> others)\n    {{\n        let total = 0;\n        for (const [{key} key, int value] of counts) {{\n            total += value;\n        }}\n        for (const [int other, int value] of others) {{\n            total += value;\n        }}\n\n        return total;\n    }}\n}}\n"
         )
     };
     let library = [("src/Lib/Status.php", "<?php namespace Lib; enum Status: string { case Active = 'active'; }")];
-    let generic = Lowered::with(&source("Report<TKey : Status, TOther>", "TKey", "TOther"), &library);
-    let erased = Lowered::with(&source("Report", "Status", "int"), &library);
+    let generic = Lowered::with(&source("Report<TKey : Status>", "TKey"), &library);
+    let erased = Lowered::with(&source("Report", "Status"), &library);
 
     assert_eq!(generic.tree(), erased.tree());
     assert!(generic.tree().contains(r#"ZVAL "Lib\\Status""#), "{}", generic.tree());
+}
+
+/// `Lib\Status`, a backed enum that implements `Lib\HasLabel`, beside the interface `Lib\Other`.
+const LABELS: (&str, &str) = (
+    "src/Lib/Labels.php",
+    "<?php namespace Lib; interface HasLabel {} interface Other {} enum Status: string implements HasLabel { case Active = 'active'; }",
+);
+
+/// A class whose `count` loops over a `Map` keyed by the type parameter `TKey` bounded by `bound`.
+fn keyed_by(bound: &str) -> String {
+    format!(
+        "namespace App.Tenant;\n\nimport Lib.HasLabel;\nimport Lib.Other;\nimport Lib.Status;\n\nclass Report<TKey : {bound}>\n{{\n    public int count(Map<TKey, int> counts)\n    {{\n        let total = 0;\n        for (const [key, int value] of counts) {{\n            total += value;\n        }}\n\n        return total;\n    }}\n}}\n"
+    )
+}
+
+/// ```php
+/// foreach ($counts as $key => $value) { $key = \Lib\Status::from($key); $total += $value; }
+/// ```
+///
+/// A type parameter bounded by a backed enum and an interface reads its loop key back through the enum's `from`,
+/// whichever member the bound writes first, so both orders lower to the one tree the bound `Status` lowers to.
+#[test]
+fn a_loop_key_bounded_by_a_backed_enum_and_an_interface_reads_back_through_the_enum() {
+    let status = |bound: &str| {
+        let lowered = Lowered::with(&keyed_by(bound), &[LABELS]);
+        let class = lowered.child(lowered.root(), 2);
+
+        lowered.render(lowered.child(lowered.child(lowered.child(class, 2), 0), 2))
+    };
+    let first = status("Status & HasLabel");
+
+    assert_eq!(first, status("HasLabel & Status"));
+    assert_eq!(first, status("Status"));
+    assert_eq!(
+        first,
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "total"
+                ZVAL 0
+              FOREACH
+                VAR
+                  ZVAL "counts"
+                VAR
+                  ZVAL "value"
+                VAR
+                  ZVAL "key"
+                STMT_LIST
+                  ASSIGN
+                    VAR
+                      ZVAL "key"
+                    STATIC_CALL
+                      ZVAL "Lib\\Status"
+                      ZVAL "from"
+                      ARG_LIST
+                        VAR
+                          ZVAL "key"
+                  STMT_LIST
+                    ASSIGN_OP [1]
+                      VAR
+                        ZVAL "total"
+                      VAR
+                        ZVAL "value"
+              RETURN
+                VAR
+                  ZVAL "total"
+        "#}
+    );
+}
+
+/// A type parameter bounded by interfaces alone holds objects, which a PHP array cannot take as keys, so the checker
+/// refuses a `Map` keyed by it, and nothing lowers.
+#[test]
+fn a_map_keyed_by_a_type_parameter_bounded_by_interfaces_alone_is_refused() {
+    assert_eq!(
+        Lowered::with(&keyed_by("HasLabel & Other"), &[LABELS]).diagnostics(),
+        [
+            "9:22 compile error: A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value, and `('TKey.app\\tenant\\report extends Lib\\HasLabel&Lib\\Other)` has none."
+        ]
+    );
+}
+
+/// ```php
+/// interface Validator { public function validate(\App\Tenant\DatabaseEntity $item): bool; }
+/// class OrderValidator implements Validator { public function validate(\App\Tenant\DatabaseEntity $item): bool { … } }
+/// interface Feed { public function next(): mixed; }
+/// class OrderFeed implements Feed { public function next(): \App\Tenant\Order { … } }
+/// ```
+///
+/// The checker refuses a member whose erased signature PHP would refuse when it links the class, and lowers the
+/// declarations whose erased signatures link: a bound makes both sides of `validate` erase to the bound, and `Order`
+/// is narrower than the erased `mixed` of `next`.
+#[test]
+fn a_member_lowers_only_when_its_erased_signature_links_against_its_parent() {
+    let declarations = "namespace App.Tenant;\n\npublic abstract class DatabaseEntity\n{\n}\n\npublic class Order : DatabaseEntity\n{\n}\n\npublic interface Validator<in TItem : DatabaseEntity>\n{\n    bool validate(TItem item);\n}\n\npublic interface Feed<out TItem>\n{\n    TItem next();\n}\n\npublic interface Check<in TItem>\n{\n    bool check(TItem item);\n}\n";
+    let sound = format!(
+        "{declarations}\npublic class OrderValidator : Validator<Order>\n{{\n    public bool validate(DatabaseEntity item) => true;\n}}\n\npublic class OrderFeed : Feed<Order>\n{{\n    public Order next() => new Order();\n}}\n"
+    );
+    let narrowed = format!(
+        "{declarations}\npublic class OrderCheck : Check<Order>\n{{\n    public bool check(Order item) => true;\n}}\n"
+    );
+    let lowered = Lowered::with(&sound, &[]);
+    let signature = |class: u32| {
+        let method = lowered.child(lowered.child(lowered.child(lowered.root(), class), 2), 0);
+
+        format!("{}{}", lowered.render(lowered.child(method, 0)), lowered.render(lowered.child(method, 3)))
+    };
+
+    assert_eq!(
+        signature(4),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                ZVAL "App\\Tenant\\DatabaseEntity"
+                ZVAL "item"
+                null
+                null
+                null
+                null
+            ZVAL [1] "bool"
+        "#}
+    );
+    assert_eq!(signature(7), signature(4));
+    assert_eq!(
+        signature(8),
+        indoc! {r#"
+            PARAM_LIST
+            ZVAL "App\\Tenant\\Order"
+        "#}
+    );
+    assert_eq!(
+        Lowered::with(&narrowed, &[]).diagnostics(),
+        [
+            "28:29 compile error: Parameter `item` of `App\\Tenant\\OrderCheck::check()` must take at least `mixed`, the type `App\\Tenant\\Check::check()` erases it to."
+        ]
+    );
 }
 
 /// ```php

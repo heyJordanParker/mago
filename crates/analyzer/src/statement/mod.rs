@@ -7,6 +7,7 @@ use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::ttype::TypeMetadata;
 use mago_codex::scanner::get_union_from_hint;
+use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::array::keyed::TKeyedArray;
@@ -60,6 +61,7 @@ use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::expression::analyze_php_shape;
 use crate::expression::assignment::analyze_assignment;
+use crate::expression::is_refused_match;
 use crate::plugin::HookAction;
 use crate::plugin::context::HookContext;
 use crate::statement::function_like::report_invalid_template_arguments;
@@ -229,6 +231,9 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Statement<'arena> {
                 Statement::Foreach(foreach) => foreach.analyze(context, block_context, artifacts),
                 Statement::For(r#for) => r#for.analyze(context, block_context, artifacts),
                 Statement::ForOf(for_of) => analyze_for_of(for_of, context, block_context, artifacts),
+                Statement::PatternMatch(pattern_match) if is_refused_match(pattern_match, context.resolved_names) => {
+                    Ok(())
+                }
                 Statement::PatternMatch(_) => {
                     analyze_php_shape(Node::Statement(self), context, block_context, artifacts)
                 }
@@ -437,7 +442,8 @@ where
 }
 
 /// Reports a loop over a `Map` whose key type mixes a backed enum with other types. The engine holds each key as its
-/// backing value, and the lowering reads it back as a case only through one enum's `from`.
+/// backing value, and the lowering reads it back as a case only through one enum's `from`. A type parameter key is
+/// its bound, and a bound that joins classes with `&` reads back through its enum member.
 fn report_key_mixing_a_backed_enum<A>(
     context: &mut Context<'_, '_, A>,
     artifacts: &AnalysisArtifacts,
@@ -449,12 +455,28 @@ fn report_key_mixing_a_backed_enum<A>(
     let Some(collection_type) = artifacts.get_expression_type(for_of.expression) else {
         return;
     };
-    let is_one_enum = |key_type: &TUnion| match key_type.types.first() {
-        Some(TAtomic::Object(TObject::Enum(first))) => key_type
+    let enum_of = |atomic: &TAtomic| {
+        let bound = match atomic {
+            TAtomic::GenericParameter(parameter) => match parameter.constraint.types.as_ref() {
+                [bound] => bound,
+                _ => return None,
+            },
+            _ => atomic,
+        };
+
+        std::iter::once(bound).chain(bound.get_intersection_types().unwrap_or_default()).find_map(|member| match member
+        {
+            TAtomic::Object(TObject::Enum(enum_object)) => Some(enum_object.name),
+            _ => None,
+        })
+    };
+    let is_one_enum = |key_type: &TUnion| {
+        key_type
             .types
             .iter()
-            .all(|atomic| matches!(atomic, TAtomic::Object(TObject::Enum(other)) if other.name == first.name)),
-        _ => false,
+            .map(enum_of)
+            .collect::<Option<Vec<_>>>()
+            .is_some_and(|enums| enums.first().is_some_and(|first| enums.iter().all(|other| other == first)))
     };
     let mixes_a_backed_enum = collection_type.types.iter().any(|atomic| match atomic {
         TAtomic::Array(TArray::Keyed(keyed_array)) => {

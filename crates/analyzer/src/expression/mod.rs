@@ -24,9 +24,11 @@ use mago_span::Span;
 use mago_syntax::cst::Access;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::Expression;
+use mago_syntax::cst::Hint;
 use mago_syntax::cst::Identifier;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::Parenthesized;
+use mago_syntax::cst::Pattern;
 use mago_syntax::cst::PatternMatch;
 use mago_syntax::cst::PatternMatchArm;
 use mago_syntax::cst::PropertiesPattern;
@@ -201,6 +203,9 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
                 | Expression::Call(_)
                 | Expression::TypeOf(_)
                 | Expression::Instantiation(_)
+                | Expression::Is(_)
+                | Expression::As(_)
+                | Expression::PatternMatch(_)
                     if is_refused(self, context.resolved_names) =>
                 {
                     artifacts.set_expression_type(&self, get_never());
@@ -604,8 +609,9 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Parenthesized<'arena> {
 }
 
 /// Whether an error already refuses `expression`, which `check_slice` refuses: it failed to parse, it is `typeof` or
-/// `new` of a type parameter, or it reads or calls a member of a type parameter or of `typeof` of one through any chain
-/// of property reads. Its type is `never`, and it adds no issue.
+/// `new` of a type parameter, it tests or converts a value to a type that names a type parameter in `is`, `as` or a
+/// `match` arm, or it reads or calls a member of a type parameter or of `typeof` of one through any chain of property
+/// reads. Its type is `never`, and it adds no issue.
 pub(crate) fn is_refused(expression: &Expression<'_>, resolved_names: &ResolvedNames<'_>) -> bool {
     let is_type_parameter =
         |name: &Identifier<'_>| matches!(resolved_names.binding(name), Some(Binding::TypeParameter { .. }));
@@ -616,6 +622,9 @@ pub(crate) fn is_refused(expression: &Expression<'_>, resolved_names: &ResolvedN
         Expression::Instantiation(instantiation) => {
             return matches!(instantiation.class, Expression::Identifier(class) if is_type_parameter(class));
         }
+        Expression::Is(is) => return tests_type_parameter(is.pattern, resolved_names),
+        Expression::As(r#as) => return names_type_parameter(r#as.hint, resolved_names),
+        Expression::PatternMatch(pattern_match) => return is_refused_match(pattern_match, resolved_names),
         Expression::Access(Access::Property(access)) => access.object,
         Expression::Call(Call::Method(call)) => call.object,
         _ => return false,
@@ -628,6 +637,47 @@ pub(crate) fn is_refused(expression: &Expression<'_>, resolved_names: &ResolvedN
     match object {
         Expression::TypeOf(type_of) => is_type_parameter(&type_of.class),
         Expression::ConstantAccess(access) => is_type_parameter(&access.name),
+        _ => false,
+    }
+}
+
+/// Whether an arm of `pattern_match`, an expression or a statement, tests its value against a type that names a type
+/// parameter, which `check_slice` refuses.
+pub(crate) fn is_refused_match(pattern_match: &PatternMatch<'_>, resolved_names: &ResolvedNames<'_>) -> bool {
+    pattern_match.arms.iter().any(|arm| match arm {
+        PatternMatchArm::Pattern(arm) => tests_type_parameter(arm.pattern, resolved_names),
+        PatternMatchArm::Default(_) => false,
+    })
+}
+
+/// Whether `pattern` or a pattern inside it tests a value against a type that names a type parameter.
+fn tests_type_parameter(pattern: &Pattern<'_>, resolved_names: &ResolvedNames<'_>) -> bool {
+    match pattern {
+        Pattern::Type(type_pattern) => names_type_parameter(&type_pattern.hint, resolved_names),
+        Pattern::Not(not) => tests_type_parameter(not.pattern, resolved_names),
+        Pattern::Binary(binary) => {
+            tests_type_parameter(binary.left, resolved_names) || tests_type_parameter(binary.right, resolved_names)
+        }
+        Pattern::Parenthesized(parenthesized) => tests_type_parameter(parenthesized.pattern, resolved_names),
+        Pattern::Properties(properties) => {
+            properties.properties.iter().any(|property| tests_type_parameter(property.pattern, resolved_names))
+        }
+        Pattern::Value(_) | Pattern::Comparison(_) => false,
+    }
+}
+
+/// Whether `hint` names a type parameter, alone or inside a nullable type, a union or a type argument.
+fn names_type_parameter(hint: &Hint<'_>, resolved_names: &ResolvedNames<'_>) -> bool {
+    match hint {
+        Hint::Identifier(name) => matches!(resolved_names.binding(name), Some(Binding::TypeParameter { .. })),
+        Hint::Nullable(nullable) => names_type_parameter(nullable.hint, resolved_names),
+        Hint::Parenthesized(parenthesized) => names_type_parameter(parenthesized.hint, resolved_names),
+        Hint::Union(union) => {
+            names_type_parameter(union.left, resolved_names) || names_type_parameter(union.right, resolved_names)
+        }
+        Hint::Generic(generic) => {
+            generic.type_arguments.arguments.iter().any(|argument| names_type_parameter(argument, resolved_names))
+        }
         _ => false,
     }
 }

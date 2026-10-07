@@ -436,7 +436,7 @@ public class Page<TItem : Record & Sized, TKey : Comparable<Version>> : Listing<
     public TItem next() => this.items[0];
 }
 
-public interface Listing<in TItem> : Sized
+public interface Listing<in TItem : Record & Sized> : Sized
 {
     bool accepts(TItem item);
 }
@@ -457,5 +457,5 @@ final class Entry : Record, Sized
 
 final class Version : Comparable<Version>
 {
-    public int compareTo(Version other) => 0;
+    public int compareTo(Any? other) => 0;
 }

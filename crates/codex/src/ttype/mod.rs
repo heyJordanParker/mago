@@ -1399,14 +1399,26 @@ pub fn get_iterable_parameters(atomic: &TAtomic, codebase: &CodebaseMetadata) ->
 /// Returns the key type plain PHP sees for `key_type`.
 ///
 /// A PHP# `Map` keyed by a backed enum holds each case's backing value at runtime, as spec section 12 writes it, so
-/// plain PHP sees an enum key as the enum's backing type.
+/// plain PHP sees an enum key as the enum's backing type. A type parameter key is its bound, and a bound that joins
+/// classes with `&` is keyed by the backed enum among them, whichever member is written first.
 #[must_use]
 pub fn get_backing_key_type<'key>(key_type: &'key TUnion, codebase: &CodebaseMetadata) -> Cow<'key, TUnion> {
-    let backing_type = |atomic: &TAtomic| match atomic {
-        TAtomic::Object(TObject::Enum(enum_object)) => {
-            codebase.get_class_like(enum_object.name.as_bytes())?.enum_type.clone()
-        }
-        _ => None,
+    let backing_type = |atomic: &TAtomic| {
+        let bound = match atomic {
+            TAtomic::GenericParameter(parameter) => match parameter.constraint.types.as_ref() {
+                [bound] => bound,
+                _ => return None,
+            },
+            _ => atomic,
+        };
+
+        std::iter::once(bound).chain(bound.get_intersection_types().unwrap_or_default()).find_map(|member| match member
+        {
+            TAtomic::Object(TObject::Enum(enum_object)) => {
+                codebase.get_class_like(enum_object.name.as_bytes())?.enum_type.clone()
+            }
+            _ => None,
+        })
     };
 
     if !key_type.types.iter().any(|atomic| backing_type(atomic).is_some()) {

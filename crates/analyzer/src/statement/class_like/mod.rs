@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use foldhash::HashMap;
 use foldhash::HashSet;
 use foldhash::fast::RandomState;
@@ -2262,13 +2264,21 @@ fn check_abstract_method_signatures<'ctx, A>(
             let substituted_appearing_method =
                 get_substituted_method(appearing_method, class_like_metadata, method_fqcn, context.codebase);
 
-            let issues = method_signature::validate_method_signature_compatibility(
+            let mut issues = method_signature::validate_method_signature_compatibility(
                 context.codebase,
                 class_like_metadata.name,
                 &substituted_appearing_method,
                 &substituted_overridden_method,
                 context.dialect,
             );
+            if issues.is_empty() && context.dialect.is_sharp() {
+                issues.extend(method_signature::validate_erased_signature_compatibility(
+                    context.codebase,
+                    class_like_metadata.name,
+                    appearing_method,
+                    overridden_method,
+                ));
+            }
 
             if issues.is_empty() {
                 continue;
@@ -2856,13 +2866,21 @@ fn check_interface_method_signatures<'ctx, A>(
             context.codebase,
         );
 
-        let issues = method_signature::validate_method_signature_compatibility(
+        let mut issues = method_signature::validate_method_signature_compatibility(
             context.codebase,
             class_like_metadata.name,
             &substituted_class_method,
             &substituted_interface_method,
             context.dialect,
         );
+        if issues.is_empty() && context.dialect.is_sharp() {
+            issues.extend(method_signature::validate_erased_signature_compatibility(
+                context.codebase,
+                class_like_metadata.name,
+                class_method,
+                interface_method,
+            ));
+        }
 
         for incompatibility in issues {
             // Use the method span as primary location (where the issue actually is)
@@ -3033,6 +3051,34 @@ fn report_signature_compatibility_issue<'ctx, A>(
                 )
                 .with_note("Parameter types must be contravariant: child must accept equal or wider types than parent.")
                 .with_help("Change the parameter type to be compatible with the parent method."),
+            );
+        }
+        SignatureCompatibilityIssue::ErasedParameterNarrowed { parameter_index, child_type, parent_type, bound } => {
+            let parameter = parent_method.parameters.get(parameter_index);
+            let param_name = parameter
+                .map_or_else(|| word("unknown"), |p| word(mago_bytes::trim_start_byte(p.name.0.as_bytes(), b'$')));
+            let span = parameter
+                .map(|p| p.name_span)
+                .filter(|span| span.file_id == primary_span.file_id)
+                .unwrap_or(primary_span);
+            let help = match bound {
+                Some(bound) => format!(
+                    "Write `{param_name}` with a type that erases to `{parent_type}`, or bound the type parameter, as in `{bound}`, so both sides erase to the bound."
+                ),
+                None => format!("Write `{param_name}` with a type that erases to `{parent_type}`."),
+            };
+
+            context.collector.report_with_code(
+                IssueCode::IncompatibleParameterType,
+                Issue::error(format!(
+                    "Parameter `{param_name}` of `{child_name}::{method_name}()` must take at least `{parent_type}`, the type `{parent_name}::{method_name}()` erases it to."
+                ))
+                .with_annotation(Annotation::primary(span).with_message(format!("Erases to `{child_type}`.")))
+                .with_annotation(Annotation::secondary(parent_class_span).with_message(format!(
+                    "`{parent_name}::{method_name}()` takes `{parent_type}` once its type parameters are erased."
+                )))
+                .with_note("PHP# erases type parameters when it compiles, and PHP refuses a parameter narrower than the one it overrides when it links the class.")
+                .with_help(help),
             );
         }
         SignatureCompatibilityIssue::IncompatibleReturnType { child_type, parent_type } => {
@@ -3590,17 +3636,28 @@ fn check_class_like_properties<'ctx, A>(
                 parent_property.type_declaration_metadata.as_ref(),
             ) {
                 (Some(declaring_type), Some(parent_type)) => {
+                    let parent_type_union = if context.dialect.is_sharp() {
+                        Cow::Owned(localize_parent_type(
+                            context.codebase,
+                            class_like_metadata,
+                            parent_metadata.name,
+                            &parent_type.type_union,
+                        ))
+                    } else {
+                        Cow::Borrowed(&parent_type.type_union)
+                    };
+
                     if is_property_type_variance_invalid(
                         context.codebase,
                         &declaring_type.type_union,
-                        &parent_type.type_union,
+                        &parent_type_union,
                         parent_only_get,
                         parent_only_set,
                     ) {
                         has_type_incompatibility = true;
 
                         let declaring_type_id = declaring_type.type_union.get_id();
-                        let parent_type_id = parent_type.type_union.get_id();
+                        let parent_type_id = parent_type_union.get_id();
                         let property_name = property_metadata.name.0;
                         let class_name = class_like_metadata.original_name;
 
@@ -3620,6 +3677,53 @@ fn check_class_like_properties<'ctx, A>(
                                 .with_note("PHP requires property types to be invariant, meaning the type declaration in a child class must be exactly the same as in the parent class.")
                                 .with_help(format!("Change the type of `{property_name}` to `{parent_type_id}` to match the parent property."))
                             );
+                    } else if context.dialect.is_sharp() {
+                        let erased_type = method_signature::erase(&declaring_type.type_union, context.codebase);
+                        let erased_parent_type = method_signature::erase(&parent_type.type_union, context.codebase);
+
+                        if is_property_type_variance_invalid(
+                            context.codebase,
+                            &erased_type,
+                            &erased_parent_type,
+                            parent_only_get,
+                            parent_only_set,
+                        ) {
+                            has_type_incompatibility = true;
+
+                            let erased_type_id = erased_type.get_id();
+                            let erased_parent_type_id = erased_parent_type.get_id();
+                            let property_name = mago_bytes::trim_start_byte(property_metadata.name.0.as_bytes(), b'$');
+                            let property_name = String::from_utf8_lossy(property_name);
+                            let class_name = class_like_metadata.original_name;
+                            let help = match method_signature::bound_example(
+                                context.codebase,
+                                Some(parent_type),
+                                &erased_type,
+                            ) {
+                                Some(bound) => format!(
+                                    "Write `{property_name}` with a type that erases to `{erased_parent_type_id}`, or bound the type parameter, as in `{bound}`, so both sides erase to the bound."
+                                ),
+                                None => format!(
+                                    "Write `{property_name}` with a type that erases to `{erased_parent_type_id}`."
+                                ),
+                            };
+
+                            context.collector.report_with_code(
+                                IssueCode::IncompatiblePropertyType,
+                                Issue::error(format!(
+                                    "Property `{class_name}::${property_name}` must have the type `{erased_parent_type_id}`, the type `{parent_class_name}::${property_name}` erases to."
+                                ))
+                                .with_annotation(
+                                    Annotation::primary(declaring_type.span)
+                                        .with_message(format!("Erases to `{erased_type_id}`.")),
+                                )
+                                .with_annotation(Annotation::secondary(parent_type.span).with_message(format!(
+                                    "Erases to `{erased_parent_type_id}`."
+                                )))
+                                .with_note("PHP# erases type parameters when it compiles, and PHP requires a property to keep the type of the property it overrides.")
+                                .with_help(help),
+                            );
+                        }
                     }
                 }
                 (Some(declaring_type), None) => {

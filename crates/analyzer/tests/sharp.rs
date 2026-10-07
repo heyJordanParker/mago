@@ -3450,6 +3450,37 @@ fn a_loop_over_a_map_whose_keys_mix_a_backed_enum_with_other_types_is_an_error()
     );
 }
 
+/// `Lib\Status`, a backed enum that implements `Lib\HasLabel`, beside the interface `Lib\Other`.
+const LABELS: &str = "<?php\n\nnamespace Lib;\n\ninterface HasLabel\n{\n}\n\ninterface Other\n{\n}\n\nenum Status: string implements HasLabel\n{\n    case Active = 'active';\n}\n";
+
+/// A `Map` keyed by a type parameter is keyed by its bound, so a bound that is a backed enum, alone or as either
+/// member of an intersection, keys the `Map` by the enum's backing values, and a loop reads each key back as its case.
+#[test]
+fn a_map_keyed_by_a_type_parameter_is_keyed_by_the_backed_enum_in_its_bound() {
+    for sharp in [
+        "namespace Demo;\n\nimport Lib.Status;\n\npublic class Tally<TKey : Status>\n{\n    public int count(Map<TKey, int> counts)\n    {\n        let total = 0;\n        for (const [TKey key, int n] of counts) {\n            total = total + n + this.weight(key);\n        }\n\n        return total;\n    }\n\n    private int weight(Status status) => 1;\n}\n",
+        "namespace Demo;\n\nimport Lib.HasLabel;\nimport Lib.Status;\n\npublic class Tally<TKey : Status & HasLabel>\n{\n    public int count(Map<TKey, int> counts)\n    {\n        let total = 0;\n        for (const [TKey key, int n] of counts) {\n            total = total + n + this.weight(key);\n        }\n\n        return total;\n    }\n\n    private int weight(Status status) => 1;\n}\n",
+        "namespace Demo;\n\nimport Lib.HasLabel;\nimport Lib.Status;\n\npublic class Tally<TKey : HasLabel & Status>\n{\n    public int count(Map<TKey, int> counts)\n    {\n        let total = 0;\n        for (const [TKey key, int n] of counts) {\n            total = total + n + this.weight(key);\n        }\n\n        return total;\n    }\n\n    private int weight(Status status) => 1;\n}\n",
+    ] {
+        assert_eq!(issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Labels.php", LABELS)]), Vec::<String>::new());
+    }
+}
+
+/// A type parameter without a bound, or bounded by interfaces alone, holds objects, which a PHP array cannot take as
+/// keys, so a `Map` keyed by it is refused, as a `Map` keyed by those interfaces is.
+#[test]
+fn a_map_keyed_by_a_type_parameter_without_a_backed_enum_in_its_bound_is_an_error() {
+    let unbounded =
+        "namespace Demo;\n\npublic class Tally<TKey>\n{\n    public int count(Map<TKey, int> counts) => 0;\n}\n";
+    let interfaces = "namespace Demo;\n\nimport Lib.HasLabel;\nimport Lib.Other;\n\npublic class Tally<TKey : HasLabel & Other>\n{\n    public int count(Map<TKey, int> counts) => 0;\n}\n";
+    let written = "namespace Demo;\n\nimport Lib.HasLabel;\nimport Lib.Other;\n\npublic class Tally\n{\n    public int count(Map<HasLabel & Other, int> counts) => 0;\n}\n";
+    let others = [("src/Lib/Labels.php", LABELS)];
+
+    assert_eq!(issues(("src/Demo/Tally.sharp", unbounded), &others), ["5:22 template-constraint-violation"]);
+    assert_eq!(issues(("src/Demo/Tally.sharp", interfaces), &others), ["8:22 template-constraint-violation"]);
+    assert_eq!(issues(("src/Demo/Tally.sharp", written), &others), ["8:22 template-constraint-violation"]);
+}
+
 /// A written key or value type checks as a typed local's does. Spec section 12 reads a `Map<string, V>` key back as a
 /// `string`, even the key `"5"` PHP stores as an int, because the lowering casts every key of a `Map<string, V>` loop
 /// back to `string`, written or not.
@@ -3537,7 +3568,7 @@ fn a_spread_of_a_value_that_is_neither_a_list_nor_a_map_is_an_error() {
 
 /// The generic declarations of spec section 11: classes and interfaces with type parameters, their bounds and
 /// variance, a generic method, and headers that pass type arguments to a generic base.
-const PAGING: &str = "namespace Demo;\n\npublic abstract class DatabaseEntity\n{\n}\n\npublic interface Shareable\n{\n}\n\npublic class Order : DatabaseEntity\n{\n}\n\npublic class SharedOrder : DatabaseEntity, Shareable\n{\n}\n\npublic class Line\n{\n}\n\npublic interface Query<TItem>\n{\n    List<TItem> rows();\n}\n\npublic class PaginatedList<TItem : DatabaseEntity>\n{\n    private List<TItem> rows;\n\n    public PaginatedList(List<TItem> rows)\n    {\n        this.rows = rows;\n    }\n\n    public TItem first() => this.rows[0];\n\n    public TItem head()\n    {\n        TItem item = this.first();\n        return item;\n    }\n}\n\npublic interface Shelf<TItem : DatabaseEntity & Shareable>\n{\n    TItem top();\n}\n\npublic interface Feed<out TItem>\n{\n    TItem next();\n}\n\npublic interface Validator<in TItem>\n{\n    bool validate(TItem item);\n}\n\npublic interface Repository\n{\n    PaginatedList<TItem> list<TItem : DatabaseEntity>(Query<TItem> query);\n}\n\npublic class Lists\n{\n    public static T first<T>(List<T> items) => items[0];\n}\n\npublic class OrderPage : PaginatedList<Order>\n{\n}\n\npublic class OrderList<TItem : DatabaseEntity> : PaginatedList<TItem>\n{\n}\n\npublic class OrderValidator : Validator<Order>\n{\n    public bool validate(Order item) => true;\n}\n";
+const PAGING: &str = "namespace Demo;\n\npublic abstract class DatabaseEntity\n{\n}\n\npublic interface Shareable\n{\n}\n\npublic class Order : DatabaseEntity\n{\n}\n\npublic class SharedOrder : DatabaseEntity, Shareable\n{\n}\n\npublic class Line\n{\n}\n\npublic interface Query<TItem>\n{\n    List<TItem> rows();\n}\n\npublic class PaginatedList<TItem : DatabaseEntity>\n{\n    private List<TItem> rows;\n\n    public PaginatedList(List<TItem> rows)\n    {\n        this.rows = rows;\n    }\n\n    public TItem first() => this.rows[0];\n\n    public TItem head()\n    {\n        TItem item = this.first();\n        return item;\n    }\n}\n\npublic interface Shelf<TItem : DatabaseEntity & Shareable>\n{\n    TItem top();\n}\n\npublic interface Feed<out TItem>\n{\n    TItem next();\n}\n\npublic interface Validator<in TItem>\n{\n    bool validate(TItem item);\n}\n\npublic interface Repository\n{\n    PaginatedList<TItem> list<TItem : DatabaseEntity>(Query<TItem> query);\n}\n\npublic class Lists\n{\n    public static T first<T>(List<T> items) => items[0];\n}\n\npublic class OrderPage : PaginatedList<Order>\n{\n}\n\npublic class OrderList<TItem : DatabaseEntity> : PaginatedList<TItem>\n{\n}\n\npublic class OrderValidator : Validator<Order>\n{\n    public bool validate(Any? item) => true;\n}\n";
 
 /// The generic declarations read as Mago's templates, so a type parameter, a type argument, a bound and a typed local
 /// inside a generic class add no issue.
@@ -3667,6 +3698,74 @@ fn typeof_and_new_of_a_type_parameter_add_no_issue() {
     let sharp = "namespace Demo;\n\npublic abstract class Maker\n{\n}\n\npublic abstract class Builder<TItem : Maker>\n{\n    public string name() => typeof(TItem);\n\n    public Any create() => new TItem();\n\n    public abstract TItem made();\n}\n";
 
     assert_eq!(issues(("src/Demo/Builder.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// `value is TItem`, `value as TItem` and a `match` arm of the type `TItem`, which `check_slice` refuses, add no
+/// analyzer issue on the refused line, in an expression or in a statement.
+#[test]
+fn a_pattern_or_as_of_a_type_parameter_adds_no_issue() {
+    let sharp = "namespace Demo;\n\npublic abstract class Maker\n{\n}\n\npublic abstract class Builder<TItem : Maker>\n{\n    public bool holds(Any? value) => value is TItem;\n\n    public bool lacks(Any? value) => value is not TItem;\n\n    public Any? kept(Any? value) => value as TItem;\n\n    public int ranked(Any? value) => match (value) { TItem item => 1, default => 0 };\n\n    public void sort(Any? value)\n    {\n        match (value) {\n            TItem item => this.made(),\n            default => this.made(),\n        }\n    }\n\n    public abstract TItem made();\n}\n";
+
+    assert_eq!(issues(("src/Demo/Builder.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// Generics are erased when PHP# compiles, so `Validator<in TItem>` takes `mixed`, and PHP refuses a parameter
+/// narrower than the one it overrides when it links the class. The parameter is refused where it is written, with the
+/// type it must take and the bound that lets it keep its type.
+#[test]
+fn a_parameter_narrower_than_the_erased_parent_parameter_is_an_error() {
+    let sharp = "namespace Demo;\n\npublic class StrictValidator : Validator<Order>\n{\n    public bool validate(Order item) => true;\n}\n";
+
+    assert_eq!(
+        explained(("src/Demo/StrictValidator.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]),
+        [
+            "5:32 incompatible-parameter-type Parameter `item` of `Demo\\StrictValidator::validate()` must take at least `mixed`, the type `Demo\\Validator::validate()` erases it to. Write `item` with a type that erases to `mixed`, or bound the type parameter, as in `Validator<in TItem : Order>`, so both sides erase to the bound."
+        ]
+    );
+}
+
+/// PHP refuses a return type wider than the one it overrides, and a return type that would erase wider than the
+/// parent's erased return type is already an error before generics are erased: `pick<T>()` returns a `T` wider than
+/// `pick<T : DatabaseEntity>()`'s, and `Wrapper<TItem> : Feed<TItem>` passes a type argument outside `Feed`'s bound.
+#[test]
+fn a_return_type_that_would_erase_wider_than_the_parent_return_type_is_an_error() {
+    let picker = "namespace Demo;\n\npublic abstract class DatabaseEntity\n{\n}\n\npublic interface Picker\n{\n    T pick<T : DatabaseEntity>(T item);\n}\n\npublic class AnyPicker : Picker\n{\n    public T pick<T>(T item) => item;\n}\n";
+    let feed = "namespace Demo;\n\npublic abstract class DatabaseEntity\n{\n}\n\npublic interface Feed<out TItem : DatabaseEntity>\n{\n    TItem next();\n}\n\npublic abstract class Wrapper<TItem> : Feed<TItem>\n{\n    public abstract TItem next();\n}\n";
+    let errors = |analyzed: (&'static str, &'static str)| {
+        analyze(&PLUGIN_REGISTRY, settings(), analyzed, &[])
+            .iter()
+            .map(|issue| format!("{} {:?}", located(analyzed.1, issue), issue.level))
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(errors(("src/Demo/Picker.sharp", picker)), ["14:14 incompatible-return-type Error"]);
+    assert_eq!(errors(("src/Demo/Feed.sharp", feed)), ["12:23 invalid-template-parameter Error"]);
+}
+
+/// PHP requires an overriding property to keep the type of the property it overrides, so a field that erases to
+/// another type than the field it overrides is refused, and one whose parent's bound erases to the same type is not.
+#[test]
+fn a_field_whose_type_erases_to_another_type_than_the_parent_field_is_an_error() {
+    let unbound = "namespace Demo;\n\npublic class Order\n{\n}\n\npublic class Slot<TItem>\n{\n    public TItem? item = null;\n}\n\npublic class OrderSlot : Slot<Order>\n{\n    public override Order? item = null;\n}\n";
+    let bound = "namespace Demo;\n\npublic class Order\n{\n}\n\npublic class Slot<TItem : Order>\n{\n    public TItem? item = null;\n}\n\npublic class OrderSlot : Slot<Order>\n{\n    public override Order? item = null;\n}\n";
+
+    assert_eq!(
+        explained(("src/Demo/Slot.sharp", unbound), &[]),
+        [
+            "14:21 incompatible-property-type Property `Demo\\OrderSlot::$item` must have the type `mixed`, the type `Demo\\Slot::$item` erases to. Write `item` with a type that erases to `mixed`, or bound the type parameter, as in `Slot<TItem : Order>`, so both sides erase to the bound."
+        ]
+    );
+    assert_eq!(issues(("src/Demo/Slot.sharp", bound), &[]), Vec::<String>::new());
+}
+
+/// A signature that stays sound once generics are erased has no issue: a bound makes the parent's parameter erase to
+/// the bound the implementation takes, a covariant return narrower than the erased `mixed` links, and PHP does not
+/// link a constructor against a parent's constructor that is not abstract, `required` or not.
+#[test]
+fn a_signature_that_links_once_erased_has_no_issue() {
+    let sharp = "namespace Demo;\n\npublic abstract class DatabaseEntity\n{\n}\n\npublic class Order : DatabaseEntity\n{\n}\n\npublic interface Validator<in TItem : DatabaseEntity>\n{\n    bool validate(TItem item);\n}\n\npublic class OrderValidator : Validator<Order>\n{\n    public bool validate(DatabaseEntity item) => true;\n}\n\npublic interface Feed<out TItem>\n{\n    TItem next();\n}\n\npublic class OrderFeed : Feed<Order>\n{\n    public Order next() => new Order();\n}\n\npublic class Box<TItem>\n{\n    public required Box(TItem item)\n    {\n    }\n}\n\npublic class OrderBox : Box<Order>\n{\n    public required OrderBox(Order item)\n    {\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Entities.sharp", sharp), &[]), Vec::<String>::new());
 }
 
 /// The generic declarations written as PHP with `@template`, `@extends`, `@implements` and docblock type arguments
