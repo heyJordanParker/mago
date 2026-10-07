@@ -163,6 +163,7 @@ use crate::sharp_kind::SHARP_AST_PROP_GROUP;
 use crate::sharp_kind::SHARP_AST_PROPERTY_HOOK;
 use crate::sharp_kind::SHARP_AST_PROPERTY_HOOK_SHORT_BODY;
 use crate::sharp_kind::SHARP_AST_RETURN;
+use crate::sharp_kind::SHARP_AST_SILENCE;
 use crate::sharp_kind::SHARP_AST_STATIC_CALL;
 use crate::sharp_kind::SHARP_AST_STATIC_PROP;
 use crate::sharp_kind::SHARP_AST_STMT_LIST;
@@ -1945,8 +1946,8 @@ fn prefix_kind(operator: &UnaryPrefixOperator) -> (sharp_kind, u32) {
         UnaryPrefixOperator::IntCast(..) => (SHARP_AST_CAST, IS_LONG),
         UnaryPrefixOperator::FloatCast(..) => (SHARP_AST_CAST, IS_DOUBLE),
         UnaryPrefixOperator::StringCast(..) => (SHARP_AST_CAST, IS_STRING),
-        UnaryPrefixOperator::ErrorControl(_)
-        | UnaryPrefixOperator::Reference(_)
+        UnaryPrefixOperator::ErrorControl(_) => (SHARP_AST_SILENCE, 0),
+        UnaryPrefixOperator::Reference(_)
         | UnaryPrefixOperator::ArrayCast(..)
         | UnaryPrefixOperator::BoolCast(..)
         | UnaryPrefixOperator::BooleanCast(..)

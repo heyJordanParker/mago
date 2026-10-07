@@ -20,13 +20,14 @@ walkdir = { workspace = true, optional = true }
 foldhash = { workspace = true }
 globset = { workspace = true }
 serde = { workspace = true, features = ["rc"], optional = true }
+serde_json = { workspace = true, optional = true }
 rayon = { workspace = true }
 notify = { workspace = true, optional = true }
 
 [features]
 default = ["loader", "watcher"]
 serde = ["dep:serde"]
-loader = ["dep:glob", "dep:walkdir"]
+loader = ["dep:glob", "dep:walkdir", "dep:serde_json"]
 watcher = ["loader", "dep:notify"]
 
 [dev-dependencies]

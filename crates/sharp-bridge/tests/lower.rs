@@ -4016,6 +4016,32 @@ fn the_ternary_is_a_conditional_marked_when_parenthesized() {
 }
 
 /// ```php
+/// return @\f($x);
+/// ```
+///
+/// php-src's grammar builds `@expr` as a `SILENCE` of one child, the expression.
+#[test]
+fn error_control_is_a_silence_of_its_expression() {
+    let lowered = Lowered::new(
+        "namespace Sharp.Text;\n\npublic static class Text\n{\n    public static string run(string x)\n    {\n        return @f(x);\n    }\n}\n",
+    );
+
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                SILENCE
+                  CALL
+                    ZVAL "f"
+                    ARG_LIST
+                      VAR
+                        ZVAL "x"
+        "#}
+    );
+}
+
+/// ```php
 /// $cents = (int)($extra * 1.5); return (string)(float)$cents;
 /// ```
 ///

@@ -293,23 +293,32 @@ fn analyze_fix_refuses_a_fix_that_would_edit_a_sharp_file() {
     assert_eq!(report(directory.path()), source);
 }
 
-/// The standard library's `Text`, with a native body, spec section 29.
-const TEXT: &str =
-    "namespace Sharp.Text;\n\npublic static class Text\n{\n    public static extern string slug(string title);\n}\n";
+/// The standard library's `Text`, with a native body, spec section 29, and the `@` the library writes before it throws
+/// its own exception.
+const TEXT: &str = "namespace Sharp.Text;\n\npublic static class Text\n{\n    public static extern string slug(string title);\n\n    public static string quiet(string title) => @trim(title);\n}\n";
 
-/// A project whose `library/` folder holds the standard library's `Text`, vendored as `vendor/` is, beside the
-/// project's `src/App/Page.sharp`.
+/// The `composer.json` of the standard library's package.
+const LIBRARY_PACKAGE: &str = "{\n    \"name\": \"heyjordanparker/php-sharp-composer\"\n}\n";
+
+fn write(root: &Path, name: &str, contents: &str) {
+    let path = root.join(name);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, contents).unwrap();
+}
+
+/// A project whose `vendor/` holds the standard library's package with its `Text`, beside the project's
+/// `src/App/Page.sharp`.
 fn library_workspace(page: &str) -> tempfile::TempDir {
     let directory = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(directory.path().join("library/Sharp/Text")).unwrap();
-    std::fs::create_dir_all(directory.path().join("src/App")).unwrap();
-    std::fs::write(
-        directory.path().join("mago.toml"),
-        "php-version = \"8.4\"\n\n[source]\npaths = [\"src\"]\nincludes = [\"library\"]\n",
-    )
-    .unwrap();
-    std::fs::write(directory.path().join("library/Sharp/Text/Text.sharp"), TEXT).unwrap();
-    std::fs::write(directory.path().join("src/App/Page.sharp"), page).unwrap();
+    write(
+        directory.path(),
+        "mago.toml",
+        "php-version = \"8.4\"\n\n[source]\npaths = [\"src\"]\nincludes = [\"vendor\"]\n",
+    );
+    write(directory.path(), "composer.json", "{\n    \"name\": \"acme/app\"\n}\n");
+    write(directory.path(), "vendor/heyjordanparker/php-sharp-composer/composer.json", LIBRARY_PACKAGE);
+    write(directory.path(), "vendor/heyjordanparker/php-sharp-composer/library/Sharp/Text/Text.sharp", TEXT);
+    write(directory.path(), "src/App/Page.sharp", page);
     directory
 }
 
@@ -376,6 +385,60 @@ fn analyze_reports_an_extern_method_in_a_project_file() {
             "{namespace}"
         );
     }
+}
+
+/// A project file under `Sharp` passes the semantic checks, which know only the namespace, and the analyzer refuses
+/// both forms only the standard library may write.
+#[test]
+fn analyze_reports_extern_and_silence_in_a_project_file_under_sharp() {
+    assert_eq!(
+        page_errors(
+            "namespace Sharp.Mine;\n\npublic static class Page\n{\n    public static extern string slug(string title);\n\n    public static string quiet(string title) => @trim(title);\n}\n"
+        ),
+        [
+            "src/App/Page.sharp:5:33:error - native-body-outside-library: Only the standard library declares native bodies: give `slug` a body.",
+            "src/App/Page.sharp:7:49:error - silence-outside-library: `@` hides PHP's warnings, and only the standard library uses it: handle the failure where it happens.",
+        ]
+    );
+}
+
+/// The standard library's own repository analyzes its sources as project code, and its root `composer.json` names
+/// the package, so its `extern` methods and `@` are the library's.
+#[test]
+fn analyze_finds_no_issues_in_the_standard_librarys_own_repository() {
+    let directory = tempfile::tempdir().unwrap();
+    write(directory.path(), "mago.toml", "php-version = \"8.4\"\n\n[source]\npaths = [\"library\"]\n");
+    write(directory.path(), "composer.json", LIBRARY_PACKAGE);
+    write(directory.path(), "library/Sharp/Text/Text.sharp", TEXT);
+
+    let output = run(directory.path(), "analyze", &["--reporting-format", "emacs"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "{stdout}{stderr}");
+    assert!(stderr.contains("No issues found."), "{stdout}{stderr}");
+}
+
+/// `mago analyze` reports nothing in vendored files, so another package's `extern` method under `Sharp` gets no
+/// report. The engine registers no native function for it, so a call of it fails when it runs.
+#[test]
+fn analyze_trusts_a_vendored_file_of_another_package_under_sharp() {
+    let directory = library_workspace(
+        "namespace App;\n\nimport Sharp.Tools.Tools;\n\npublic class Page\n{\n    public string slug() => Tools.slug(\"Hello\");\n}\n",
+    );
+    write(directory.path(), "vendor/acme/tools/composer.json", "{\n    \"name\": \"acme/tools\"\n}\n");
+    write(
+        directory.path(),
+        "vendor/acme/tools/src/Sharp/Tools/Tools.sharp",
+        "namespace Sharp.Tools;\n\npublic static class Tools\n{\n    public static extern string slug(string title);\n}\n",
+    );
+
+    let output = run(directory.path(), "analyze", &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "{stdout}{stderr}");
+    assert!(stderr.contains("No issues found."), "{stdout}{stderr}");
 }
 
 #[test]

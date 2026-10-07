@@ -86,11 +86,10 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
             return Ok(());
         }
 
-        // Spec section 29 keeps native bodies to the standard library. The engine compiles the library from `vendor/` as
-        // any other code, so only the analyzer knows a project file, and it refuses a PHP# `extern` method there in any
-        // namespace.
-        if context.source_file.file_type.is_host()
-            && self.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Extern(_)))
+        // Spec section 29 keeps native bodies to the standard library's classes under `Sharp\`. The engine compiles the
+        // library from `vendor/` as any other code, so only the analyzer knows the file's package.
+        if self.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Extern(_)))
+            && !(context.source_file.is_standard_library && class_like_metadata.name.as_bytes().starts_with(b"sharp\\"))
         {
             context.collector.report_with_code(
                 IssueCode::NativeBodyOutsideLibrary,

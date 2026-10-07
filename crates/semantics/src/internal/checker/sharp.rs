@@ -165,7 +165,7 @@ const ANY: &[u8] = b"Any";
 ///   class.
 /// - An `extern` method, `public static extern string slug(string title);`, whose body is native, compiled into the
 ///   engine, as spec section 29 writes it: a `public static` method of a static class, with no body. Only the
-///   standard library declares one, and the analyzer refuses one in a project file.
+///   standard library declares one, and the analyzer refuses one anywhere else.
 /// - The constructor: a method named exactly after its class, without a return type and not `static`. A method
 ///   without a return type named otherwise is an error. A constructor parameter with an access modifier declares a
 ///   member: a field when `private` or `protected` without accessors, and a property with accessors, which follow the
@@ -244,6 +244,9 @@ const ANY: &[u8] = b"Any";
 ///   calls the lambda the local holds, with positional, named and spread arguments.
 /// - Operators: `+ - * / % **`, `== != === !== < > <= >=`, `&& || !`, `??`, unary `-` and `+`, `++` and `--`, and
 ///   `= += -= *= /= **= ??=`.
+/// - `@`, which hides PHP's warnings, in a method body of a file whose namespace is `Sharp` or below it, where the
+///   standard library writes it before a method throws its own exception. Anywhere else it is an error, and the
+///   analyzer refuses it in any file that is not the standard library's.
 /// - The ternary `c ? a : b` in a method body, as spec section 21 writes it. PHP's `a ?: b` is an error, and a
 ///   ternary as the condition of another needs parentheses, as in PHP 8.
 /// - Pattern matching in a method body, as spec section 21 writes it: `x is pattern`, `x as T` to a type that is not
@@ -275,11 +278,12 @@ const ANY: &[u8] = b"Any";
 /// constant, parameter or local. A method name that starts but does not end with `__`, as PHP's magic methods do,
 /// stays not supported yet.
 ///
-/// Fifteen more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
+/// Sixteen more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
 /// - `new` on a static class, in `analyze_class_instantiation`, and a class that extends one, in
 ///   `check_class_like_extends`, because the static class may be another file's.
-/// - an `extern` method in a project file, in any namespace, in `Method`'s `analyze`, because only the analyzer knows
-///   the file is the project's and not the standard library's.
+/// - an `extern` method anywhere but a standard library file whose class is under `Sharp`, in `Method`'s `analyze`,
+///   and `@` in any file that is not the standard library's, in `UnaryPrefix`'s `analyze`, because only the analyzer
+///   knows the file's package. The nearest `composer.json` above a file names it.
 /// - a bare call that finds no function while the enclosing class declares a method of that name, in
 ///   `bare_member_call`, because only the codebase knows which functions exist. A bare call is the global function's.
 /// - `+` that may join a string with any other value, which spec section 18 makes an error, in
@@ -1117,6 +1121,18 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         (Node::BinaryOperator(operator), Body | Constant) if is_slice_binary_operator(operator) => Some(place),
         // `check_cast` decided the cast at its `UnaryPrefix`.
         (Node::UnaryPrefixOperator(operator), Body | Constant) if operator.is_cast() => Some(place),
+        (Node::UnaryPrefixOperator(operator @ UnaryPrefixOperator::ErrorControl(_)), Body | Constant)
+            if !is_standard_library_namespace(context.program) =>
+        {
+            context.report(
+                Issue::error(
+                    "`@` hides PHP's warnings, and only the standard library uses it: handle the failure where it happens.",
+                )
+                .with_annotation(Annotation::primary(operator.span()).with_message("Written here.")),
+            );
+
+            None
+        }
         (Node::UnaryPrefixOperator(operator), Body | Constant) if is_slice_prefix_operator(operator, place) => {
             Some(place)
         }
@@ -1364,7 +1380,7 @@ fn is_extern(method: &Method) -> bool {
 /// The place of a method's parts, refusing an `extern` method that is not `public static`, in a static class, with no
 /// body. The refusal is at its name, so its other parts, a body written by mistake among them, stay checked. Only the
 /// standard library declares native bodies, but the engine compiles the library's files from `vendor/` as any other,
-/// so the analyzer, which knows a project file, refuses one there.
+/// so the analyzer, which knows a file's package, refuses one anywhere else.
 fn check_extern(method: &Method, context: &mut Context<'_, '_, '_>) -> Option<Place> {
     if !is_extern(method)
         || (enclosing_class(context.program, method.span()).is_some_and(|class| class.is_static)
@@ -1864,6 +1880,16 @@ fn first_namespace<'ast, 'arena>(program: &'ast Program<'arena>) -> Option<&'ast
     })
 }
 
+/// Whether a PHP# file's namespace is `Sharp` or below it, compared ignoring case as PHP compares namespaces. The
+/// engine compiles the standard library from `vendor/` knowing only the file, so its namespace is all the slice knows
+/// of the library.
+fn is_standard_library_namespace(program: &Program) -> bool {
+    first_namespace(program).and_then(|namespace| namespace.name.as_ref()).map(php_name).is_some_and(|name| {
+        name.get(..5).is_some_and(|root| root.eq_ignore_ascii_case(b"Sharp"))
+            && matches!(name.get(5), None | Some(b'\\'))
+    })
+}
+
 /// The statements at file level of a PHP# file, and those of each of its namespaces, the ones the slice refuses too.
 fn file_statements<'ast, 'arena>(program: &'ast Program<'arena>) -> impl Iterator<Item = &'ast Statement<'arena>> {
     program.statements.iter().flat_map(|statement| match statement {
@@ -2298,14 +2324,16 @@ const fn is_slice_binary_operator(operator: &BinaryOperator) -> bool {
     }
 }
 
-/// Whether the slice has a prefix operator at a place. A parameter default has no `++` or `--`. Every operator is
-/// named, so a new one does not compile until it is decided.
+/// Whether the slice has a prefix operator at a place. A parameter default has no `++`, `--` or `@`, and `enter`
+/// refuses `@` outside the namespace `Sharp` before it calls this. Every operator is named, so a new one does not
+/// compile until it is decided.
 fn is_slice_prefix_operator(operator: &UnaryPrefixOperator, place: Place) -> bool {
     match operator {
         UnaryPrefixOperator::Negation(_) | UnaryPrefixOperator::Plus(_) | UnaryPrefixOperator::Not(_) => true,
-        UnaryPrefixOperator::PreIncrement(_) | UnaryPrefixOperator::PreDecrement(_) => place == Place::Body,
-        UnaryPrefixOperator::ErrorControl(_)
-        | UnaryPrefixOperator::Reference(_)
+        UnaryPrefixOperator::PreIncrement(_)
+        | UnaryPrefixOperator::PreDecrement(_)
+        | UnaryPrefixOperator::ErrorControl(_) => place == Place::Body,
+        UnaryPrefixOperator::Reference(_)
         | UnaryPrefixOperator::ArrayCast(..)
         | UnaryPrefixOperator::BoolCast(..)
         | UnaryPrefixOperator::BooleanCast(..)

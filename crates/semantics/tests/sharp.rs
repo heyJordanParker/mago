@@ -1694,6 +1694,34 @@ fn extern_on_a_field_is_not_supported_yet() {
 }
 
 #[test]
+fn the_error_control_operator_is_in_the_slice_under_the_sharp_namespace() {
+    for namespace in ["Sharp", "Sharp.Text", "sharp.text"] {
+        let code = leak(format!(
+            "namespace {namespace};\n\npublic static class Text\n{{\n    public static string quiet(string title) => @trim(title);\n}}\n"
+        ));
+
+        assert_eq!(issues(code), Vec::<String>::new(), "{namespace}");
+    }
+}
+
+#[test]
+fn the_error_control_operator_outside_the_sharp_namespace_is_an_error() {
+    for namespace in ["App", "Sharpen.Text", "App.Sharp"] {
+        let code = leak(format!(
+            "namespace {namespace};\n\npublic static class Text\n{{\n    public static string quiet(string title) => @trim(title);\n}}\n"
+        ));
+
+        assert_eq!(
+            issues(code),
+            [
+                "5:49 `@` hides PHP's warnings, and only the standard library uses it: handle the failure where it happens."
+            ],
+            "{namespace}"
+        );
+    }
+}
+
+#[test]
 fn a_field_is_private_or_protected_with_a_type_and_an_optional_constant_initial_value() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    private int count = 0;\n    protected float rate = 1.5 * -PHP_INT_MAX;\n    private string label;\n}\n";
 
@@ -2290,7 +2318,7 @@ fn operators_outside_the_slice_are_not_supported_yet() {
     assert_eq!(
         issues(code),
         [
-            "8:13 This operator is not supported yet in PHP#.",
+            "8:13 `@` hides PHP's warnings, and only the standard library uses it: handle the failure where it happens.",
             "9:19 This operator is not supported yet in PHP#.",
             "10:19 This operator is not supported yet in PHP#.",
             "11:19 This operator is not supported yet in PHP#.",

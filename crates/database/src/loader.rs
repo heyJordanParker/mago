@@ -239,9 +239,12 @@ impl<'config> DatabaseLoader<'config> {
 
         db.reserve(tier_specs.len() + self.memory_sources.len());
 
+        let mut standard_library_directories = HashMap::default();
         for (file_id, (host_spec, vendored_spec, patch_spec)) in tier_specs {
             if let Some(mut file) = all_files.remove(&file_id) {
                 file.file_type = resolve_file_type(host_spec, vendored_spec, patch_spec);
+                file.is_standard_library =
+                    is_standard_library(&file, &self.configuration.workspace, &mut standard_library_directories);
                 db.add(file);
             }
         }
@@ -524,6 +527,62 @@ fn warn_walk_error(error: &walkdir::Error, fallback: &Path) {
 
 fn bump_spec(slot: &mut Option<usize>, s: usize) {
     *slot = Some(slot.map_or(s, |e| e.max(s)));
+}
+
+/// The package name in the standard library's `composer.json`.
+const STANDARD_LIBRARY_PACKAGE: &str = "heyjordanparker/php-sharp-composer";
+
+/// Whether a file is a PHP# source of the standard library: a `.sharp` file whose nearest `composer.json` names the
+/// standard library's package, vendored or in the package's own repository. `directories` holds the answer of every
+/// directory already looked up, so each directory's `composer.json` is read once.
+pub(crate) fn is_standard_library(file: &File, workspace: &Path, directories: &mut HashMap<PathBuf, bool>) -> bool {
+    if !file.name.ends_with(b".sharp") {
+        return false;
+    }
+
+    let joined;
+    let path = match &file.path {
+        Some(path) => path.as_path(),
+        None => {
+            joined = workspace.join(bytes_to_path(&file.name));
+            joined.as_path()
+        }
+    };
+
+    path.parent().is_some_and(|directory| is_standard_library_directory(directory, directories))
+}
+
+fn is_standard_library_directory(directory: &Path, directories: &mut HashMap<PathBuf, bool>) -> bool {
+    if let Some(&is_library) = directories.get(directory) {
+        return is_library;
+    }
+
+    let manifest = directory.join("composer.json");
+    let is_library = match std::fs::read(&manifest) {
+        Ok(contents) => match serde_json::from_slice::<serde_json::Value>(&contents) {
+            Ok(package) => package.get("name").and_then(serde_json::Value::as_str) == Some(STANDARD_LIBRARY_PACKAGE),
+            Err(error) => {
+                tracing::warn!(
+                    "Failed to parse `{}`: {error}. Its files are not the standard library.",
+                    manifest.display()
+                );
+
+                false
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            directory.parent().is_some_and(|parent| is_standard_library_directory(parent, directories))
+        }
+        Err(error) => {
+            tracing::warn!("Failed to read `{}`: {error}. Its files are not the standard library.", manifest.display());
+
+            false
+        }
+    };
+
+    directories.insert(directory.to_path_buf(), is_library);
+
+    is_library
 }
 
 /// Picks the final [`FileType`] for a file that matched configured base paths in one or
@@ -1080,5 +1139,41 @@ mod tests {
 
         let bar = db.files().find(|f| String::from_utf8_lossy(&f.name).contains("Bar.php")).unwrap();
         assert_eq!(bar.file_type, FileType::Host, "file not covered by patch should remain Host");
+    }
+
+    #[test]
+    fn a_sharp_file_is_the_standard_librarys_when_its_nearest_composer_json_names_the_package() {
+        let temp_dir = TempDir::new().unwrap();
+        let library = "vendor/heyjordanparker/php-sharp-composer";
+        create_test_file(&temp_dir, "composer.json", r#"{"name": "acme/app"}"#);
+        create_test_file(&temp_dir, "src/App/Page.sharp", "");
+        create_test_file(
+            &temp_dir,
+            &format!("{library}/composer.json"),
+            r#"{"name": "heyjordanparker/php-sharp-composer"}"#,
+        );
+        create_test_file(&temp_dir, &format!("{library}/autoload.php"), "<?php");
+        create_test_file(&temp_dir, &format!("{library}/library/Sharp/Text/Text.sharp"), "");
+        create_test_file(&temp_dir, &format!("{library}/library/Sharp/Text/Slug.sharp"), "");
+        create_test_file(&temp_dir, &format!("{library}/library/Sharp/Text.sharp"), "");
+        create_test_file(&temp_dir, &format!("{library}/vendor/acme/tools/composer.json"), r#"{"name": "acme/tools"}"#);
+        create_test_file(&temp_dir, &format!("{library}/vendor/acme/tools/Sharp/Tools.sharp"), "");
+
+        let mut config = create_test_config(&temp_dir, vec!["src"], vec!["vendor"]);
+        config.extensions = vec![Cow::Borrowed(b"php"), Cow::Borrowed(b"sharp")];
+        let db = DatabaseLoader::new(config).load().unwrap();
+
+        let mut in_library: Vec<String> =
+            db.files().filter(|file| file.is_standard_library).map(|file| name_str(&file.name).into_owned()).collect();
+        in_library.sort();
+
+        assert_eq!(
+            in_library,
+            [
+                format!("{library}/library/Sharp/Text.sharp"),
+                format!("{library}/library/Sharp/Text/Slug.sharp"),
+                format!("{library}/library/Sharp/Text/Text.sharp"),
+            ]
+        );
     }
 }
