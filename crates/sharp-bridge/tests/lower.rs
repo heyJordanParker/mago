@@ -2751,7 +2751,7 @@ fn an_extern_void_method_calls_without_return_and_forwards_a_variadic_parameter_
 /// The checker refuses an `extern` method in a project file, so `check` refuses the file and nothing lowers it. `Text\Text`
 /// would otherwise reach `Sharp\Text\Text`'s native body.
 #[test]
-fn an_extern_method_outside_sharp_is_a_lowering_error() {
+fn an_extern_method_outside_the_library_is_refused_before_lowering() {
     for namespace in ["App", "Text"] {
         let lowered = Lowered::named(
             "src/Text.sharp",
@@ -7702,6 +7702,68 @@ fn a_call_the_inlining_rule_does_not_take_keeps_its_call() {
             "{call}"
         );
     }
+}
+
+/// `Sharp\Slug` at the standard library's path, with two native bodies: one with plain parameters and one variadic.
+const SLUG: (&str, &str) = (
+    "vendor/heyjordanparker/php-sharp-composer/library/Sharp/Slug.sharp",
+    "namespace Sharp;\n\npublic static class Slug\n{\n    public static extern string title(string text);\n\n    public static extern string join(string text, string ...words);\n}\n",
+);
+
+/// The statements of `run`, which takes a `string name` and holds `statements` in a class that imports `Sharp.Slug`,
+/// lowered with the inline forms of `SLUG`.
+fn native_body(statements: &str) -> String {
+    let code = format!(
+        "namespace App.Tenant;\n\nimport Sharp.Slug;\n\nclass Report\n{{\n    public string run(string name)\n    {{\n{statements}    }}\n}}\n"
+    );
+
+    Lowered::inlining(&code, &[], &[SLUG]).body()
+}
+
+/// ```php
+/// return \Sharp\Internal\Slug\title($name);
+/// ```
+///
+/// An `extern` method's body is the call of its native function, so a call of it inlines as that call, as any one-call
+/// library method does, and the caller calls the native function directly.
+#[test]
+fn a_call_of_a_native_body_inlines_as_the_call_of_its_native_function() {
+    assert_eq!(
+        native_body("        return Slug.title(name);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CALL
+                  ZVAL "Sharp\\Internal\\Slug\\title"
+                  ARG_LIST
+                    VAR
+                      ZVAL "name"
+        "#}
+    );
+}
+
+/// ```php
+/// return \Sharp\Slug::join($name, $name);
+/// ```
+///
+/// A variadic parameter gives no form, for a native body as for any other, so the call keeps its static call.
+#[test]
+fn a_call_of_a_variadic_native_body_keeps_its_static_call() {
+    assert_eq!(
+        native_body("        return Slug.join(name, name);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                STATIC_CALL
+                  ZVAL "Sharp\\Slug"
+                  ZVAL "join"
+                  ARG_LIST
+                    VAR
+                      ZVAL "name"
+                    VAR
+                      ZVAL "name"
+        "#}
+    );
 }
 
 /// The unit names each form it inlines once, with the form's fingerprint, which `Reads::inlined` takes.

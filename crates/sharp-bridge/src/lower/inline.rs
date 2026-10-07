@@ -1,5 +1,6 @@
 //! Inline forms: a standard library method whose body is one expression runs at its call as that expression, with
-//! the call's receiver and arguments in the expression's slots, the way a compiler inlines a one-line method.
+//! the call's receiver and arguments in the expression's slots, the way a compiler inlines a one-line method. An
+//! `extern` method's body is the call of its native function, so its call runs as that call.
 //!
 //! The orchestrator takes forms only from the standard library's files, those `File::is_standard_library` marks, and
 //! lowers each of them with an empty [`InlineForms`], so in v1 one library form never inlines another.
@@ -16,6 +17,7 @@ use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::MethodBody;
 use mago_syntax::cst::MethodCall;
+use mago_syntax::cst::Modifier;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::Return;
 use mago_syntax::cst::Statement;
@@ -82,8 +84,10 @@ pub(crate) fn key(class: &[u8], method: &[u8]) -> Vec<u8> {
     [class.to_ascii_lowercase().as_slice(), b"::", method.to_ascii_lowercase().as_slice()].concat()
 }
 
-/// The inline form of each method of `checked` whose body is one expression built only from calls, literals and
-/// reads of its receiver and parameters, each read exactly once, with its name.
+/// The inline form of each method of `checked` the inlining rule takes, with its name.
+///
+/// A method's body is one expression built only from calls, literals and reads of its receiver and parameters, each
+/// read exactly once, or it is its native function's call.
 #[must_use]
 pub fn inline_forms(checked: &CheckedProgram<'_>) -> Vec<(Vec<u8>, InlineForm)> {
     let lines = Lines::new(&checked.file().contents);
@@ -116,17 +120,25 @@ enum Step {
 }
 
 impl Lowering<'_, '_> {
-    /// The form of `class`'s method `method`, lowered into this empty lowering, when its body is one expression whose
-    /// steps the inlining rule takes.
+    /// The form of `class`'s method `method`, lowered into this empty lowering, when the inlining rule takes it.
+    ///
+    /// The body is one expression whose steps the rule takes, or, for an `extern` method, the call of its native
+    /// function. `None` for an expression means the native call.
     fn form(mut self, class: &[u8], method: &Method) -> Option<InlineForm> {
         let expression = match &method.body {
-            MethodBody::Expression(body) if method.returns_value() => body.expression,
+            MethodBody::Expression(body) if method.returns_value() => Some(body.expression),
             MethodBody::Concrete(block) => {
                 let mut statements = block.statements.iter();
                 match (statements.next(), statements.next()) {
-                    (Some(Statement::Return(Return { value: Some(value), .. })), None) => value,
+                    (Some(Statement::Return(Return { value: Some(value), .. })), None) => Some(*value),
                     _ => return None,
                 }
+            }
+            MethodBody::Abstract(_)
+                if method.returns_value()
+                    && method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Extern(_))) =>
+            {
+                None
             }
             _ => return None,
         };
@@ -150,26 +162,33 @@ impl Lowering<'_, '_> {
             .into_iter()
             .chain(parameters.iter().map(|parameter| parameter.variable.name))
             .collect();
-        let mut steps = Vec::new();
-        if !self.steps(expression, &names, &mut steps) {
-            return None;
-        }
+        let (root, in_order) = match expression {
+            Some(expression) => {
+                let mut steps = Vec::new();
+                if !self.steps(expression, &names, &mut steps) {
+                    return None;
+                }
 
-        let reads: Vec<usize> = steps
-            .iter()
-            .filter_map(|step| match step {
-                Step::Read(slot) => Some(*slot),
-                Step::Call => None,
-            })
-            .collect();
-        let mut each_once = reads.clone();
-        each_once.sort_unstable();
-        if each_once != (0..names.len()).collect::<Vec<_>>() {
-            return None;
-        }
+                let reads: Vec<usize> = steps
+                    .iter()
+                    .filter_map(|step| match step {
+                        Step::Read(slot) => Some(*slot),
+                        Step::Call => None,
+                    })
+                    .collect();
+                let mut each_once = reads.clone();
+                each_once.sort_unstable();
+                if each_once != (0..names.len()).collect::<Vec<_>>() {
+                    return None;
+                }
 
-        let in_order = reads == each_once && steps[..reads.len()].iter().all(|step| matches!(step, Step::Read(_)));
-        let root = self.expression(expression);
+                let in_order =
+                    reads == each_once && steps[..reads.len()].iter().all(|step| matches!(step, Step::Read(_)));
+                (self.expression(expression), in_order)
+            }
+            // The native call reads each parameter once, in order, and then calls.
+            None => (self.native_call(method, class), true),
+        };
         let mut slots = vec![NULL; names.len()];
         for (index, node) in self.nodes.iter().enumerate() {
             if node.kind == SHARP_AST_VAR {

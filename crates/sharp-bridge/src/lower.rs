@@ -431,8 +431,13 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                     if method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Extern(_))) =>
                 {
                     let call = self.native_call(method, self.names.get(&class.name));
+                    let body = if method.returns_value() {
+                        self.node(SHARP_AST_RETURN, 0, self.line(method.name.span), &[call])
+                    } else {
+                        call
+                    };
 
-                    self.method(method, modifier_flags(&method.modifiers), &[call])
+                    self.method(method, modifier_flags(&method.modifiers), &[body])
                 }
                 ClassLikeMember::Method(method) => self.method(method, modifier_flags(&method.modifiers), &[]),
                 ClassLikeMember::Property(property) => self.property(property, parent_name),
@@ -634,10 +639,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         )
     }
 
-    /// The statement an `extern` method's body runs, as php-src's grammar builds
-    /// `return \Sharp\Internal\Text\Text\slug($title);`: a call of the native function the engine registers under
-    /// `Sharp\Internal`, then the class's full name after `Sharp\`, then the method's name. It passes each parameter on,
-    /// a variadic one as a spread, and returns the result unless the method is `void`.
+    /// The call an `extern` method's body runs, as php-src's grammar builds `\Sharp\Internal\Text\Text\slug($title)`:
+    /// a call of the native function the engine registers under `Sharp\Internal`, then the class's full name after
+    /// `Sharp\`, then the method's name. It passes each parameter on, a variadic one as a spread. The method returns it
+    /// unless it is `void`, and a caller inlines it as the method's form.
     fn native_call(&mut self, method: &Method, class: &[u8]) -> u32 {
         let Some(class_in_library) = class
             .split_at_checked(b"Sharp\\".len())
@@ -660,9 +665,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         }
 
         let arguments = self.node(SHARP_AST_ARG_LIST, 0, line, &arguments);
-        let call = self.node(SHARP_AST_CALL, 0, line, &[function, arguments]);
 
-        if method.returns_value() { self.node(SHARP_AST_RETURN, 0, line, &[call]) } else { call }
+        self.node(SHARP_AST_CALL, 0, line, &[function, arguments])
     }
 
     /// A variadic parameter carries `ZEND_PARAM_VARIADIC`, as php-src's grammar builds `int ...$values`.
