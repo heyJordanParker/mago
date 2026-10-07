@@ -2604,19 +2604,18 @@ fn virtual_lowers_to_nothing_and_override_to_the_override_attribute() {
 }
 
 /// ```php
-/// #[\Override] protected string $table = 'orders';   // runs as `protected $table` when Model's $table has no type
+/// #[\Override] protected $table = 'orders';
 /// #[\Override] public bool $timestamps = false;
 /// ```
 ///
-/// An override is a field with `#[\Override]`, so PHP checks at link time that the parent has the property, and with
-/// php-sharp's `ZEND_ACC_TYPE_FOLLOWS_PARENT`, `1 << 13`. One file cannot tell whether the parent's property has a
-/// type, so the engine drops the written type when the class links if it has none. `[8194]` is
-/// `ZEND_ACC_PROTECTED | ZEND_ACC_TYPE_FOLLOWS_PARENT`, and `[8193]` is `ZEND_ACC_PUBLIC | ZEND_ACC_TYPE_FOLLOWS_PARENT`.
+/// An override is a field with `#[\Override]`, so PHP checks at link time that the parent has the property. PHP
+/// refuses a type on a property whose parent's has none, so an override of a property with no type has none either,
+/// as decision 028 writes. An override of a typed property keeps its written type.
 #[test]
-fn an_override_is_a_field_marked_to_follow_the_parent_type() {
+fn an_override_of_a_property_with_no_type_has_no_type() {
     let lowered = Lowered::with(
         "class Order : Model\n{\n    protected override string table = \"orders\";\n    public override bool timestamps = false;\n}\n",
-        &[("src/Model.php", "<?php class Model { protected string $table = ''; public bool $timestamps = true; }")],
+        &[("src/Model.php", "<?php class Model { protected $table = ''; public bool $timestamps = true; }")],
     );
     let class = lowered.child(lowered.root(), 1);
 
@@ -2624,8 +2623,8 @@ fn an_override_is_a_field_marked_to_follow_the_parent_type() {
         lowered.render(lowered.child(class, 2)),
         indoc! {r#"
             STMT_LIST
-              PROP_GROUP [8194]
-                ZVAL [1] "string"
+              PROP_GROUP [2]
+                null
                 PROP_DECL
                   PROP_ELEM
                     ZVAL "table"
@@ -2637,7 +2636,7 @@ fn an_override_is_a_field_marked_to_follow_the_parent_type() {
                     ATTRIBUTE
                       ZVAL "Override"
                       null
-              PROP_GROUP [8193]
+              PROP_GROUP [1]
                 ZVAL [1] "bool"
                 PROP_DECL
                   PROP_ELEM

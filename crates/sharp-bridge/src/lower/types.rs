@@ -37,7 +37,10 @@ pub(crate) enum DeclarationKind {
     Constant,
     EnumCase,
     StaticProperty,
-    Property,
+    /// `typed` is whether the property is declared with a type, which PHP requires of a property that overrides it.
+    Property {
+        typed: bool,
+    },
     StaticMethod,
     Method,
 }
@@ -87,7 +90,7 @@ impl<'analysis> Types<'analysis> {
         } else if let Some(kind) = self.method_kind(class, member) {
             kind
         } else if self.codebase.method_exists(class, b"__get") {
-            DeclarationKind::Property
+            DeclarationKind::Property { typed: false }
         } else {
             unreachable!(
                 "the checker refuses `{}.{}`, which names no member",
@@ -150,7 +153,11 @@ impl<'analysis> Types<'analysis> {
     fn property_kind(&self, class: &[u8], property: &[u8]) -> Option<DeclarationKind> {
         let property = self.codebase.get_declaring_property(class, &[b"$", property].concat())?;
 
-        Some(if property.flags.is_static() { DeclarationKind::StaticProperty } else { DeclarationKind::Property })
+        Some(if property.flags.is_static() {
+            DeclarationKind::StaticProperty
+        } else {
+            DeclarationKind::Property { typed: property.type_declaration_metadata.is_some() }
+        })
     }
 
     /// The kind of the method `class` declares by that name, if any.
@@ -201,10 +208,11 @@ pub(crate) fn class_value_classes(r#type: &TUnion) -> Option<Vec<&[u8]>> {
     (!classes.is_empty()).then_some(classes)
 }
 
-/// The kind of member every class a receiver can be declares, which the checker requires to be one kind.
+/// The kind of member every class a receiver can be declares, which the checker requires to be one kind. Its details,
+/// such as whether a property is typed, may differ between the classes.
 pub(crate) fn agreed_kind(mut kinds: impl Iterator<Item = DeclarationKind>) -> DeclarationKind {
     let kind = kinds.next().unwrap_or_else(|| unreachable!("a receiver's type names at least one class"));
-    if kinds.any(|other| other != kind) {
+    if kinds.any(|other| std::mem::discriminant(&other) != std::mem::discriminant(&kind)) {
         unreachable!("the checker refuses a member whose kind differs across the receiver's classes");
     }
 

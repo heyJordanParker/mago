@@ -225,9 +225,6 @@ const ZEND_IS_EQUAL: u32 = 18;
 const ZEND_IS_NOT_EQUAL: u32 = 19;
 const ZEND_IS_SMALLER: u32 = 20;
 const ZEND_IS_SMALLER_OR_EQUAL: u32 = 21;
-/// php-sharp's own property flag from `zend_compile.h`: the property loses its type when the class links if the
-/// property it overrides has none.
-const ZEND_ACC_TYPE_FOLLOWS_PARENT: u32 = 1 << 13;
 
 /// A null child.
 const NULL: u32 = u32::MAX;
@@ -388,6 +385,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             }
         }
 
+        let (parent, interfaces, parent_name) = match &class.inheritance {
+            Some(inheritance) => self.class_header(inheritance),
+            None => (NULL, NULL, None),
+        };
         let mut members = Vec::new();
         let mut has_constructor = false;
         for member in &class.members {
@@ -398,7 +399,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                     self.method(method, modifier_flags(&method.modifiers), &initial_values)
                 }
                 ClassLikeMember::Method(method) => self.method(method, modifier_flags(&method.modifiers), &[]),
-                ClassLikeMember::Property(property) => self.property(property),
+                ClassLikeMember::Property(property) => self.property(property, parent_name),
                 ClassLikeMember::Constant(constant) => self.constant(constant),
                 _ => unreachable!("check_slice refuses the class member `{member}`"),
             });
@@ -421,10 +422,6 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
         let members = self.node(SHARP_AST_STMT_LIST, 0, self.line(class.left_brace), &members);
         let attributes = self.attributes(&class.attribute_lists, None);
-        let (parent, interfaces) = match &class.inheritance {
-            Some(inheritance) => self.class_header(inheritance),
-            None => (NULL, NULL),
-        };
 
         self.declaration(
             SHARP_AST_CLASS,
@@ -436,16 +433,18 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         )
     }
 
-    /// A class header's names as PHP's `extends` name and `implements` name list: the name the checker found to be a
-    /// class is the parent, and the rest are interfaces. Either is null when the header names none.
-    fn class_header(&mut self, inheritance: &Inheritance) -> (u32, u32) {
+    /// A class header's names as PHP's `extends` name and `implements` name list, with the parent's full name: the name
+    /// the checker found to be a class is the parent, and the rest are interfaces. Either is null when the header names
+    /// none.
+    fn class_header(&mut self, inheritance: &Inheritance) -> (u32, u32, Option<&'lowering [u8]>) {
         let mut parent = NULL;
+        let mut parent_name = None;
         let mut interfaces = Vec::new();
         for name in &inheritance.types {
             let full_name = self.names.get(name);
             let index = self.string(ZEND_NAME_FQ, self.line(name), full_name);
             match self.types.class_declaration(full_name).kind {
-                DeclarationKind::Class => parent = index,
+                DeclarationKind::Class => (parent, parent_name) = (index, Some(full_name)),
                 DeclarationKind::Interface => interfaces.push(index),
                 kind => unreachable!("the checker refuses a {kind:?} in a class header"),
             }
@@ -457,7 +456,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             self.node(SHARP_AST_NAME_LIST, 0, self.line(inheritance), &interfaces)
         };
 
-        (parent, interfaces)
+        (parent, interfaces, parent_name)
     }
 
     /// A header's names, which PHP compiles as the interface list.
@@ -627,9 +626,9 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// `public string $name { get => $this->name; }` and `public string $slug { get => expr; }`. A constant initial
     /// value is its default, unless the property is `readonly`. A member that starts as null without an initial value
     /// takes the default `null` on the line of its name, as php-src builds `private ?int $total = null;`. An override is
-    /// a field with `#[\Override]` whose type follows the parent's property: PHP refuses a type on a property whose
-    /// parent has none, and only the engine knows the parent when the class links.
-    fn property(&mut self, property: &Property) -> u32 {
+    /// a field with `#[\Override]`. PHP refuses a type on a property whose parent's property has none, so an override of
+    /// a property of `parent` with no type has none either (decision 028).
+    fn property(&mut self, property: &Property, parent: Option<&[u8]>) -> u32 {
         let (accessor_flags, attribute_lists, hooks) = match property {
             Property::Plain(field) => (0, &field.attribute_lists, NULL),
             Property::Hooked(hooked) => (
@@ -651,8 +650,17 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let Some(hint) = property.hint() else {
             unreachable!("the PHP# parser gives every field and property its type");
         };
-        let hint = self.hint(hint);
         let variable = property.first_variable();
+        let r#override = property.modifiers().iter().find(|modifier| matches!(modifier, Modifier::Override(_)));
+        let hint = match (r#override, parent) {
+            (Some(_), Some(parent))
+                if self.types.member_declaration(parent, variable.name).kind
+                    == (DeclarationKind::Property { typed: false }) =>
+            {
+                NULL
+            }
+            _ => self.hint(hint),
+        };
         let line = self.line(variable);
         let name = self.string(0, line, variable.name);
         let default = match property.initial_value() {
@@ -662,9 +670,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         };
         let element = self.node(SHARP_AST_PROP_ELEM, 0, line, &[name, default, NULL, hooks]);
         let declaration = self.node(SHARP_AST_PROP_DECL, 0, line, &[element]);
-        let r#override = property.modifiers().iter().find(|modifier| matches!(modifier, Modifier::Override(_)));
-        let follows_parent = if r#override.is_some() { ZEND_ACC_TYPE_FOLLOWS_PARENT } else { 0 };
-        let flags = modifier_flags(property.modifiers()) | accessor_flags | follows_parent;
+        let flags = modifier_flags(property.modifiers()) | accessor_flags;
         let attributes = self.attributes(attribute_lists, r#override);
 
         self.node(SHARP_AST_PROP_GROUP, flags, self.line(property), &[hint, declaration, attributes])
@@ -1339,7 +1345,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// Whether the method call `call` on `object` runs the function the property of that name holds.
     fn is_property_call(&self, call: &Expression, object: &Expression) -> bool {
         receiver_classes(self.types.expression_type(object)).is_some()
-            && self.types.call_target(call).kind == DeclarationKind::Property
+            && matches!(self.types.call_target(call).kind, DeclarationKind::Property { .. })
     }
 
     /// Whether both operands of an operator are strings or both ints, the two cases where spec section 24's operators
