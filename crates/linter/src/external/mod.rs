@@ -108,13 +108,13 @@ struct Backend<T> {
 #[derive(Debug)]
 struct ActiveRulePlan {
     indices: Box<[u16]>,
-    targets: [bool; u8::MAX as usize + 1],
+    targets: [bool; NodeKind::COUNT],
 }
 
 impl ActiveRulePlan {
     fn build(rules: &[ExternalRule], enabled: impl Fn(&ExternalRule) -> bool) -> Result<Self, ExternalLintError> {
         let mut indices = Vec::new();
-        let mut targets = [false; u8::MAX as usize + 1];
+        let mut targets = [false; NodeKind::COUNT];
         for (index, rule) in rules.iter().enumerate().filter(|(_, rule)| enabled(rule)) {
             let index = u16::try_from(index).map_err(|_| {
                 ExternalLintError::Protocol("worker registered more than 65,536 linter rules".to_string())
@@ -619,6 +619,49 @@ mod tests {
         assert_eq!(request.targets.len(), 2);
         assert_eq!(request.nodes.iter().filter(|node| node.kind == "FunctionCall").count(), 2);
         assert_ne!(request.targets[0], request.targets[1]);
+    }
+
+    #[test]
+    fn a_lint_request_sends_each_node_kind_in_two_bytes() {
+        let source = b"<?php\nrun(1);\n";
+        let arena = LocalArena::new();
+        let file = File::ephemeral(Cow::Borrowed(b"src/test.php"), Cow::Borrowed(source));
+        let program = parse_file(&arena, &file);
+        let resolved_names = NameResolver::new(&arena).resolve(program);
+        let transport = Arc::new(MockTransport {
+            registration: testing::describe_response(
+                "acme/tools",
+                "Acme Tools",
+                "1.0.0",
+                &[("acme/no-call", "No calls", "Disallows calls.", Level::Warning, true, &[NodeKind::FunctionCall])],
+            ),
+            response: testing::lint_response(&[]),
+            request: Mutex::new(None),
+            workers: 1,
+        });
+        let external = ExternalLinter::initialize_transports([Arc::clone(&transport)], PHPVersion::PHP85)
+            .expect("registration should succeed");
+
+        external.lint(&file, program, &resolved_names, None).expect("external lint should succeed");
+
+        let request = transport.request.lock().unwrap();
+        let request = request.as_ref().expect("one request should be captured");
+        let kinds = request.nodes.iter().map(|node| node.kind.as_str()).collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            [
+                "FunctionCall",
+                "Expression",
+                "Identifier",
+                "LocalIdentifier",
+                "ArgumentList",
+                "Argument",
+                "PositionalArgument",
+                "Expression",
+                "Literal",
+                "LiteralInteger",
+            ]
+        );
     }
 
     #[test]

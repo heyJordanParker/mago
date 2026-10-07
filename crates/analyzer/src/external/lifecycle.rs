@@ -159,7 +159,7 @@ struct ReferenceSummary {
 /// Number of completed files sent through one external after-file request.
 pub const AFTER_FILE_ANALYSIS_BATCH_SIZE: usize = 32;
 
-type NodeTargetKey = (u8, u32, u32);
+type NodeTargetKey = (NodeKind, u32, u32);
 
 struct NodeAnalysisTarget<'ast, 'arena> {
     node: Node<'ast, 'arena>,
@@ -177,7 +177,7 @@ impl<'ast, 'arena> NodeAnalysisPlan<'ast, 'arena> {
     fn configuration(&self, node: Node<'ast, 'arena>) -> Option<bool> {
         let span = node.span();
         self.by_node
-            .get(&(node.kind() as u8, span.start.offset, span.end.offset))
+            .get(&(node.kind(), span.start.offset, span.end.offset))
             .map(|index| self.targets[*index].requirements & super::NODE_REQUIREMENT_TARGET_SUBTREE != 0)
     }
 }
@@ -246,7 +246,7 @@ fn build_node_analysis_plan<'ast, 'arena>(
             || !targeted_hook_routes.is_empty()
         {
             let index = targets.len();
-            by_node.insert((kind as u8, span.start.offset, span.end.offset), index);
+            by_node.insert((kind, span.start.offset, span.end.offset), index);
             targets.push(NodeAnalysisTarget {
                 node,
                 requirements: requested,
@@ -616,7 +616,7 @@ pub(super) enum AnalysisStore<'analysis> {
         program: &'analysis Program<'analysis>,
         resolved_names: &'analysis ResolvedNames<'analysis>,
         artifacts: &'analysis AnalysisArtifacts,
-        node_analysis_targets: Option<&'analysis [bool; u8::MAX as usize + 1]>,
+        node_analysis_targets: Option<&'analysis [bool; NodeKind::COUNT]>,
     },
     Project(&'analysis [Arc<FileAnalysisSnapshot>]),
 }
@@ -643,7 +643,7 @@ enum FileView<'analysis> {
         &'analysis Program<'analysis>,
         &'analysis ResolvedNames<'analysis>,
         &'analysis AnalysisArtifacts,
-        Option<&'analysis [bool; u8::MAX as usize + 1]>,
+        Option<&'analysis [bool; NodeKind::COUNT]>,
     ),
     Snapshot(&'analysis FileAnalysisSnapshot),
 }

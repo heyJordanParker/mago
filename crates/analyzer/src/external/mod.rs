@@ -389,8 +389,8 @@ impl Registration {
     }
 
     pub(crate) fn node_analysis_requirements(&self) -> Option<NodeAnalysisRequirements> {
-        let mut targets = [false; u8::MAX as usize + 1];
-        let mut requirements = [0; u8::MAX as usize + 1];
+        let mut targets = [false; NodeKind::COUNT];
+        let mut requirements = [0; NodeKind::COUNT];
         let mut any = false;
         for hook in &self.node_analysis_hooks {
             for target in &hook.targets {
@@ -538,17 +538,17 @@ pub(super) const NODE_REQUIREMENTS_ALL: u8 = NODE_REQUIREMENT_EXPRESSION_TYPES
 /// Syntax targets and embedded data requested by external node-analysis hooks.
 #[derive(Debug, Clone)]
 pub struct NodeAnalysisRequirements {
-    targets: [bool; u8::MAX as usize + 1],
-    requirements: [u8; u8::MAX as usize + 1],
+    targets: [bool; NodeKind::COUNT],
+    requirements: [u8; NodeKind::COUNT],
     method_call_hooks: Arc<[MethodCallAnalysisHookRegistration]>,
     class_like_hooks: Arc<[ClassLikeAnalysisHookRegistration]>,
-    variable_definedness_targets: Option<Arc<[bool; u8::MAX as usize + 1]>>,
+    variable_definedness_targets: Option<Arc<[bool; NodeKind::COUNT]>>,
 }
 
 impl NodeAnalysisRequirements {
     fn new(
-        targets: [bool; u8::MAX as usize + 1],
-        requirements: [u8; u8::MAX as usize + 1],
+        targets: [bool; NodeKind::COUNT],
+        requirements: [u8; NodeKind::COUNT],
         method_call_hooks: Arc<[MethodCallAnalysisHookRegistration]>,
         class_like_hooks: Arc<[ClassLikeAnalysisHookRegistration]>,
     ) -> Self {
@@ -560,7 +560,7 @@ impl NodeAnalysisRequirements {
 
     #[inline]
     #[must_use]
-    pub(crate) const fn targets(&self) -> &[bool; u8::MAX as usize + 1] {
+    pub(crate) const fn targets(&self) -> &[bool; NodeKind::COUNT] {
         &self.targets
     }
 
@@ -578,16 +578,16 @@ impl NodeAnalysisRequirements {
             || self.class_like_hooks.iter().any(|hook| hook.requirements & NODE_REQUIREMENT_SOURCE_TEXT != 0)
     }
 
-    pub(crate) fn variable_definedness_targets(&self) -> Option<Arc<[bool; u8::MAX as usize + 1]>> {
+    pub(crate) fn variable_definedness_targets(&self) -> Option<Arc<[bool; NodeKind::COUNT]>> {
         self.variable_definedness_targets.clone()
     }
 
     fn create_variable_definedness_targets(
-        requirements: &[u8; u8::MAX as usize + 1],
+        requirements: &[u8; NodeKind::COUNT],
         method_call_hooks: &[MethodCallAnalysisHookRegistration],
         class_like_hooks: &[ClassLikeAnalysisHookRegistration],
-    ) -> Option<Arc<[bool; u8::MAX as usize + 1]>> {
-        let mut targets = [false; u8::MAX as usize + 1];
+    ) -> Option<Arc<[bool; NodeKind::COUNT]>> {
+        let mut targets = [false; NodeKind::COUNT];
         let mut any = false;
         for (target, requirements) in targets.iter_mut().zip(requirements) {
             if requirements & NODE_REQUIREMENT_VARIABLE_DEFINEDNESS != 0 {
@@ -1654,8 +1654,8 @@ impl<T> ExternalAnalyzer<T> {
     }
 
     pub(crate) fn node_analysis_requirements(&self) -> Option<NodeAnalysisRequirements> {
-        let mut targets = [false; u8::MAX as usize + 1];
-        let mut requirements = [0; u8::MAX as usize + 1];
+        let mut targets = [false; NodeKind::COUNT];
+        let mut requirements = [0; NodeKind::COUNT];
         let mut any = false;
         for backend in &self.backends {
             for hook in &backend.registration.node_analysis_hooks {
