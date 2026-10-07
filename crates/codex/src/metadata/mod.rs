@@ -1055,7 +1055,7 @@ impl CodebaseMetadata {
     /// Returns the logical names of files whose top-level code references an invalidated
     /// symbol. Returns `None` if the cascade was too large to compute.
     pub fn mark_safe_symbols(&mut self, diff: &CodebaseDiff, references: &SymbolReferences) -> Option<WordSet> {
-        let (invalid_symbols, partially_invalid, invalid_files) = references.get_invalid_symbols(diff)?;
+        let (invalid_symbols, partially_invalid, invalid_files) = references.get_invalid_symbols(self, diff)?;
 
         // Mark all symbols in 'keep' set as safe (unless invalidated by cascade)
         for keep_symbol in diff.get_keep() {

@@ -284,6 +284,7 @@ pub fn run(main_start: Instant) -> Result<ExitCode, Error> {
         MagoCommand::Fix(cmd) => cmd.execute(configuration, arguments.colors),
         MagoCommand::Cst(cmd) => cmd.execute(configuration, arguments.colors),
         MagoCommand::Analyze(cmd) => cmd.execute(configuration, arguments.colors).map(|outcome| outcome.exit_code),
+        MagoCommand::Compile(cmd) => cmd.execute(configuration, arguments.colors).map(|outcome| outcome.exit_code),
         MagoCommand::Guard(cmd) => cmd.execute(configuration, arguments.colors).map(|outcome| outcome.exit_code),
         MagoCommand::InspectBaseline(cmd) => cmd.execute(configuration, arguments.colors),
         MagoCommand::GenerateCompletions(cmd) => cmd.execute(),

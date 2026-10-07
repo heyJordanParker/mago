@@ -20,6 +20,7 @@ use mago_analyzer::artifacts::AnalysisArtifacts;
 use mago_analyzer::external::AFTER_FILE_ANALYSIS_BATCH_SIZE;
 use mago_analyzer::external::CodebaseScanFile;
 use mago_analyzer::external::CodebaseScanPlan;
+use mago_analyzer::external::ExternalAnalysisSession;
 use mago_analyzer::external::FileAnalysisSnapshot;
 use mago_analyzer::external::apply_refinements;
 use mago_analyzer::plugin::PluginRegistry;
@@ -37,8 +38,10 @@ use mago_codex::signature_builder;
 use mago_collector::DeferredPragmas;
 use mago_database::DatabaseReader;
 use mago_database::ReadDatabase;
+use mago_database::file::File;
 use mago_database::file::FileId;
 use mago_database::file::FileType;
+use mago_names::ResolvedNames;
 use mago_names::resolver::NameResolver;
 use mago_reporting::Issue;
 use mago_reporting::IssueCollection;
@@ -59,6 +62,8 @@ use crate::service::issue_reconciliation::drop_follow_on_issues;
 use crate::service::telemetry::HangWatcher;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::service::telemetry::SlowestFiles;
+
+pub mod compile;
 
 /// Per-file cached state for incremental analysis.
 #[derive(Debug, Clone)]
@@ -119,8 +124,12 @@ pub struct IncrementalAnalysisService {
     use_progress_bars: bool,
     scan_only: bool,
     node_analysis_files: Option<HashSet<FileId>>,
+    /// The files the last analysis analyzed, which the fanout tests compare with the inputs.
+    #[cfg(test)]
+    analyzed_files: HashSet<FileId>,
 }
 
+#[cfg_attr(test, allow(clippy::missing_fields_in_debug))]
 impl std::fmt::Debug for IncrementalAnalysisService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IncrementalAnalysisService")
@@ -191,6 +200,8 @@ impl IncrementalAnalysisService {
             use_progress_bars: false,
             scan_only: false,
             node_analysis_files: None,
+            #[cfg(test)]
+            analyzed_files: HashSet::default(),
         }
     }
 
@@ -520,6 +531,10 @@ impl IncrementalAnalysisService {
             codebase_issues: all_codebase_issues,
         } =
             self.run_analyzer_selective(&mut merged_codebase, symbol_references, &self.settings, &HashSet::default())?;
+        #[cfg(test)]
+        {
+            self.analyzed_files = per_file_issues.keys().copied().collect();
+        }
         self.external_symbol_references = external_symbol_references;
         self.late_symbol_references = late_symbol_references;
         self.native_symbol_references = native_symbol_references;
@@ -923,6 +938,10 @@ impl IncrementalAnalysisService {
                 snapshots,
                 codebase_issues: new_codebase_issues,
             } = self.run_analyzer_selective(&mut merged_codebase, symbol_references, &self.settings, &files_to_skip)?;
+            #[cfg(test)]
+            {
+                self.analyzed_files = per_file_issues.keys().copied().collect();
+            }
             self.external_symbol_references = external_symbol_references;
             self.late_symbol_references = late_symbol_references;
             self.native_symbol_references = native_symbol_references;
@@ -1037,37 +1056,6 @@ impl IncrementalAnalysisService {
             return self.analyze();
         };
 
-        // Ensure classes that depend on changed class_likes are not marked safe.
-        // This handles cases where reference graph edges were lost (e.g., a parent
-        // class was deleted and later re-added — the child→parent reference edge
-        // was removed when the parent was deleted, so the cascade can't reach the child).
-        {
-            let changed_class_like_names: WordSet = diff
-                .get_changed()
-                .iter()
-                .filter(|key| key.1.is_empty() && merged_codebase.class_likes.contains_key(&key.0))
-                .map(|key| key.0)
-                .collect();
-
-            if !changed_class_like_names.is_empty() {
-                let to_unsafify: Vec<mago_word::Word> = merged_codebase
-                    .class_likes
-                    .iter()
-                    .filter(|(name, _)| merged_codebase.safe_symbols.contains(name))
-                    .filter(|(_, metadata)| {
-                        metadata.direct_parent_class.is_some_and(|p| changed_class_like_names.contains(&p))
-                            || metadata.direct_parent_interfaces.iter().any(|i| changed_class_like_names.contains(i))
-                            || metadata.used_traits.iter().any(|t| changed_class_like_names.contains(t))
-                    })
-                    .map(|(name, _)| *name)
-                    .collect();
-
-                for name in to_unsafify {
-                    merged_codebase.safe_symbols.remove(&name);
-                }
-            }
-        }
-
         let safe_symbols = std::mem::take(&mut merged_codebase.safe_symbols);
         let safe_symbol_members = std::mem::take(&mut merged_codebase.safe_symbol_members);
 
@@ -1097,33 +1085,7 @@ impl IncrementalAnalysisService {
             safe_symbol_members,
             dirty_symbols,
         );
-        let mut files_to_skip: HashSet<FileId> = HashSet::default();
-        for &file_id in &unchanged_file_ids {
-            let file_invalid = self
-                .database
-                .get(&file_id)
-                .is_ok_and(|file| invalid_files.contains(&mago_word::word(file.name.as_ref())));
-            if let Some(sig) = merged_codebase.get_file_signature(&file_id) {
-                let all_safe = if file_invalid {
-                    false
-                } else if sig.ast_nodes.is_empty() {
-                    true
-                } else {
-                    sig.ast_nodes.iter().all(|node| {
-                        let symbol_safe = node.name.is_empty() || merged_codebase.safe_symbols.contains(&node.name);
-                        let children_safe = node.children.iter().all(|child| {
-                            child.name.is_empty()
-                                || merged_codebase.safe_symbol_members.contains(&(node.name, child.name))
-                        });
-                        symbol_safe && children_safe
-                    })
-                };
-
-                if all_safe {
-                    files_to_skip.insert(file_id);
-                }
-            }
-        }
+        let files_to_skip = self.files_to_skip(&merged_codebase, &unchanged_file_ids, &invalid_files);
 
         let reanalyzed_file_names: WordSet = new_file_scans
             .iter()
@@ -1195,6 +1157,10 @@ impl IncrementalAnalysisService {
             snapshots,
             codebase_issues: new_codebase_issues,
         } = self.run_analyzer_selective(&mut merged_codebase, symbol_references, &self.settings, &files_to_skip)?;
+        #[cfg(test)]
+        {
+            self.analyzed_files = per_file_issues.keys().copied().collect();
+        }
         self.external_symbol_references = external_symbol_references;
         self.late_symbol_references = late_symbol_references;
         self.native_symbol_references = native_symbol_references;
@@ -1295,14 +1261,7 @@ impl IncrementalAnalysisService {
         issues.extend(semantic_issues.iter().cloned());
 
         let mut analysis_result = AnalysisResult::new(SymbolReferences::new());
-        let mut analyzer =
-            Analyzer::new(&arena, &file, &resolved_names, &self.codebase, &self.plugin_registry, self.settings.clone());
-        if let Some(session) = external_session.as_ref() {
-            analyzer = analyzer.with_external_analysis_session(session);
-        }
-        if !self.external_symbol_references.is_empty() {
-            analyzer = analyzer.with_additional_symbol_references(&self.external_symbol_references);
-        }
+        let analyzer = self.file_analyzer(&arena, &file, &resolved_names, external_session.as_ref());
 
         let artifacts = match analyzer.analyze_with_artifacts(program, &mut analysis_result) {
             Ok(artifacts) => artifacts,
@@ -1351,14 +1310,7 @@ impl IncrementalAnalysisService {
         issues.extend(semantic_issues.iter().cloned());
 
         let mut analysis_result = AnalysisResult::new(SymbolReferences::new());
-        let mut analyzer =
-            Analyzer::new(&arena, &file, &resolved_names, &self.codebase, &self.plugin_registry, self.settings.clone());
-        if let Some(session) = external_session.as_ref() {
-            analyzer = analyzer.with_external_analysis_session(session);
-        }
-        if !self.external_symbol_references.is_empty() {
-            analyzer = analyzer.with_additional_symbol_references(&self.external_symbol_references);
-        }
+        let analyzer = self.file_analyzer(&arena, &file, &resolved_names, external_session.as_ref());
 
         if let Err(err) = analyzer.analyze(program, &mut analysis_result) {
             issues.push(Issue::error(format!("Analysis error: {err}")));
@@ -1374,6 +1326,60 @@ impl IncrementalAnalysisService {
             );
         }
         issues
+    }
+
+    /// The analyzer of one file against the current codebase, with the references the before-analysis hooks
+    /// contributed, outside the full analysis's passes.
+    fn file_analyzer<'ctx, 'ast, 'arena>(
+        &'ctx self,
+        arena: &'arena LocalArena,
+        file: &'ctx File,
+        resolved_names: &'ast ResolvedNames<'arena>,
+        session: Option<&'ctx ExternalAnalysisSession>,
+    ) -> Analyzer<'ctx, 'ast, 'arena, LocalArena> {
+        let mut analyzer =
+            Analyzer::new(arena, file, resolved_names, &self.codebase, &self.plugin_registry, self.settings.clone());
+        if let Some(session) = session {
+            analyzer = analyzer.with_external_analysis_session(session);
+        }
+        if !self.external_symbol_references.is_empty() {
+            analyzer = analyzer.with_additional_symbol_references(&self.external_symbol_references);
+        }
+
+        analyzer
+    }
+
+    /// The `unchanged` files that need no new analysis once [`CodebaseMetadata::mark_safe_symbols`] marked `codebase`'s
+    /// safe symbols: each one's
+    /// top-level code is not in `invalid_files`, and every symbol and member it declares stayed safe.
+    fn files_to_skip(
+        &self,
+        codebase: &CodebaseMetadata,
+        unchanged: &[FileId],
+        invalid_files: &WordSet,
+    ) -> HashSet<FileId> {
+        unchanged
+            .iter()
+            .copied()
+            .filter(|file_id| {
+                let file_invalid = self
+                    .database
+                    .get(file_id)
+                    .is_ok_and(|file| invalid_files.contains(&mago_word::word(file.name.as_ref())));
+                let Some(sig) = codebase.get_file_signature(file_id) else {
+                    return false;
+                };
+
+                !file_invalid
+                    && sig.ast_nodes.iter().all(|node| {
+                        let symbol_safe = node.name.is_empty() || codebase.safe_symbols.contains(&node.name);
+                        let children_safe = node.children.iter().all(|child| {
+                            child.name.is_empty() || codebase.safe_symbol_members.contains(&(node.name, child.name))
+                        });
+                        symbol_safe && children_safe
+                    })
+            })
+            .collect()
     }
 
     /// Runs the analyzer on host files.

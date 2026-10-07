@@ -401,3 +401,102 @@ fn lint_format_and_guard_refuse_a_sharp_file_named_on_the_command_line() {
         assert_eq!(report(directory.path()), REPORT, "{command} {arguments:?} changed the file");
     }
 }
+
+/// A PHP# class whose method returns a string where it declares `int`, with `pragma` on the line before.
+fn broken_sharp(pragma: &str) -> String {
+    format!(
+        "namespace Demo;\n\npublic class Broken\n{{\n    public int total()\n    {{\n        {pragma}\n        return \"one\";\n    }}\n}}\n"
+    )
+}
+
+/// The PHP twin of [`broken_sharp`].
+fn broken_php(pragma: &str) -> String {
+    format!(
+        "<?php\n\nnamespace Demo;\n\nfinal class Broken\n{{\n    public function total(): int\n    {{\n        {pragma}\n        return 'one';\n    }}\n}}\n"
+    )
+}
+
+const EXPECT_PRAGMA: &str = "// @mago-expect analysis:invalid-return-statement";
+
+/// A workspace with `src/Demo/{name}`, and with an analyzer `ignore` entry for `invalid-return-statement` when
+/// `ignored`.
+fn suppressed_workspace(name: &str, contents: &str, ignored: bool) -> tempfile::TempDir {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(directory.path().join("src/Demo")).unwrap();
+    let ignore = if ignored { "\n[analyzer]\nignore = [\"invalid-return-statement\"]\n" } else { "" };
+    std::fs::write(
+        directory.path().join("mago.toml"),
+        format!("php-version = \"8.4\"\n\n[source]\npaths = [\"src\"]\n{ignore}"),
+    )
+    .unwrap();
+    std::fs::write(directory.path().join("src/Demo").join(name), contents).unwrap();
+    directory
+}
+
+#[test]
+fn analyze_reports_a_sharp_error_an_expect_pragma_targets_and_points_at_the_pragma() {
+    let directory = suppressed_workspace("Broken.sharp", &broken_sharp(EXPECT_PRAGMA), false);
+
+    let output = run(directory.path(), "analyze", &["--reporting-format", "emacs"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(!output.status.success(), "{stdout}");
+    assert!(stdout.contains("src/Demo/Broken.sharp:8:16:error - invalid-return-statement:"), "{stdout}");
+    assert!(
+        stdout.contains(
+            "src/Demo/Broken.sharp:7:12:warning - unsuppressible-error: An error can't be suppressed in PHP#."
+        ),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("unfulfilled-expect"), "{stdout}");
+}
+
+#[test]
+fn a_pragma_still_hides_a_php_error() {
+    let directory = suppressed_workspace("Broken.php", &broken_php(EXPECT_PRAGMA), false);
+
+    let output = run(directory.path(), "analyze", &["--reporting-format", "emacs"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success(), "{stdout}");
+    assert!(!stdout.contains("invalid-return-statement"), "{stdout}");
+    assert!(!stdout.contains("unsuppressible-error"), "{stdout}");
+}
+
+#[test]
+fn a_pragma_still_hides_a_sharp_warning() {
+    let source = "namespace Demo;\n\npublic class Sure\n{\n    public int one()\n    {\n        // @mago-expect analysis:redundant-condition\n        if (true) {\n            return 1;\n        }\n        return 2;\n    }\n}\n";
+    let directory = suppressed_workspace("Sure.sharp", source, false);
+
+    let output = run(directory.path(), "analyze", &["--reporting-format", "emacs"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success(), "{stdout}");
+    assert!(!stdout.contains("redundant-condition"), "{stdout}");
+    assert!(!stdout.contains("unsuppressible-error"), "{stdout}");
+}
+
+#[test]
+fn compile_refuses_a_sharp_file_whose_error_a_pragma_an_ignore_entry_or_a_baseline_entry_targets() {
+    let pragma = suppressed_workspace("Broken.sharp", &broken_sharp(EXPECT_PRAGMA), false);
+    let ignored = suppressed_workspace("Broken.sharp", &broken_sharp(""), true);
+    let baselined = suppressed_workspace("Broken.sharp", &broken_sharp(""), false);
+    std::fs::write(
+        baselined.path().join("mago.toml"),
+        "php-version = \"8.4\"\n\n[source]\npaths = [\"src\"]\n\n[analyzer]\nbaseline = \"baseline.toml\"\n",
+    )
+    .unwrap();
+    let generated = run(baselined.path(), "analyze", &["--generate-baseline"]);
+    assert!(baselined.path().join("baseline.toml").is_file(), "{}", String::from_utf8_lossy(&generated.stderr));
+
+    for (suppression, directory) in
+        [("a pragma", &pragma), ("an ignore entry", &ignored), ("a baseline entry", &baselined)]
+    {
+        let output = run(directory.path(), "compile", &[]);
+        let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+
+        assert_eq!(output.status.code(), Some(1), "{suppression}: {printed}");
+        assert!(printed.contains("invalid-return-statement"), "{suppression}: {printed}");
+        assert!(!directory.path().join(".sharp/src/Demo/Broken.sharpc").exists(), "{suppression}");
+    }
+}

@@ -1437,6 +1437,7 @@ dependencies = [
  "mago-prelude",
  "mago-reporting",
  "mago-server",
+ "mago-sharp-bridge",
  "mago-syntax",
  "mago-syntax-core",
  "mago-text-edit",
@@ -1788,8 +1789,10 @@ dependencies = [
  "mago-linter",
  "mago-names",
  "mago-php-version",
+ "mago-prelude",
  "mago-reporting",
  "mago-semantics",
+ "mago-sharp-bridge",
  "mago-syntax",
  "mago-word",
  "rayon",
@@ -1883,6 +1886,7 @@ dependencies = [
  "mago-database",
  "mago-orchestrator",
  "mago-reporting",
+ "mago-sharp-bridge",
  "mago-syntax",
 ]
 
