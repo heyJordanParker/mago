@@ -268,6 +268,8 @@ fn analyze_yield_from<'ctx, 'arena, A>(
 where
     A: Arena,
 {
+    let form = if context.dialect.is_sharp() { "yield ..." } else { "yield from" };
+
     let was_inside_call = block_context.flags.inside_call();
     block_context.flags.set_inside_call(true);
     iterator.analyze(context, block_context, artifacts)?;
@@ -280,14 +282,14 @@ where
     let Some(iterator_type) = artifacts.get_rc_expression_type(iterator).cloned() else {
         context.collector.report_with_code(
                 IssueCode::UnknownYieldFromIteratorType,
-                Issue::error("Cannot determine the type of the expression in `yield from`.")
+                Issue::error(format!("Cannot determine the type of the expression in `{form}`."))
                     .with_annotation(
                         Annotation::primary(iterator.span())
                             .with_message("The type of this iterator is unknown"),
                     )
-                    .with_note(
-                        "`yield from` requires an iterable (array or `Traversable`). Its key, value, send, and return types must be compatible with the current generator."
-                    )
+                    .with_note(format!(
+                        "`{form}` requires an iterable (array or `Traversable`). Its key, value, send, and return types must be compatible with the current generator."
+                    ))
                     .with_help(
                         "Ensure the expression has a known iterable type. Check for undefined variables or unresolvable function calls.",
                     ),
@@ -314,7 +316,7 @@ where
                 context.collector.report_with_code(
                         IssueCode::YieldFromInvalidSendType,
                         Issue::error(format!(
-                            "Incompatible `send` type for `yield from`: current generator expects to be sent `{}`, but yielded generator expects `{}`.",
+                            "Incompatible `send` type for `{form}`: current generator expects to be sent `{}`, but yielded generator expects `{}`.",
                             s.get_id(),
                             generator.2.get_id()
                         ))
@@ -322,7 +324,7 @@ where
                             Annotation::primary(iterator.span())
                                 .with_message(format!("This generator expects to be sent `{}`", generator.2.get_id())),
                         )
-                        .with_note("When using `yield from` with another Generator, the `send` type of the inner generator (Ts') must be a supertype of (or equal to) the `send` type of the outer generator (Ts). This means `Ts <: Ts'`.")
+                        .with_note(format!("When using `{form}` with another Generator, the `send` type of the inner generator (Ts') must be a supertype of (or equal to) the `send` type of the outer generator (Ts). This means `Ts <: Ts'`."))
                         .with_help("Ensure the send types are compatible, or adjust the Generator type hints."),
                     );
             }
@@ -333,15 +335,15 @@ where
         } else {
             context.collector.report_with_code(
                 IssueCode::YieldFromNonIterable,
-                Issue::error(format!("Cannot `yield from` non-iterable type `{}`.", atomic.get_id()))
+                Issue::error(format!("Cannot `{form}` non-iterable type `{}`.", atomic.get_id()))
                     .with_annotation(Annotation::primary(iterator.span()).with_message(format!(
                         "Expression cannot be yielded from; it is of type `{}`",
                         atomic.get_id()
                     )))
-                    .with_note(
-                        "`yield from` requires an `iterable` (e.g., `array` or an object implementing `Traversable`).",
-                    )
-                    .with_help("Ensure the expression used with `yield from` always evaluates to an iterable type."),
+                    .with_note(format!(
+                        "`{form}` requires an `iterable` (e.g., `array` or an object implementing `Traversable`).",
+                    ))
+                    .with_help(format!("Ensure the expression used with `{form}` always evaluates to an iterable type.")),
             );
 
             continue;
@@ -357,7 +359,7 @@ where
             &mut ComparisonResult::new(),
         ) {
             let mut issue = Issue::error(format!(
-                    "Invalid value type from `yield from`: current generator expects to yield `{}`, but the inner iterable yields `{}`.",
+                    "Invalid value type from `{form}`: current generator expects to yield `{}`, but the inner iterable yields `{}`.",
                     v.get_id(),
                     value.get_id()
                 ))
@@ -385,7 +387,7 @@ where
             &mut ComparisonResult::new(),
         ) {
             let mut issue = Issue::error(format!(
-                    "Invalid key type from `yield from`: current generator expects to yield keys of type `{}`, but the inner iterable yields keys of type `{}`.",
+                    "Invalid key type from `{form}`: current generator expects to yield keys of type `{}`, but the inner iterable yields keys of type `{}`.",
                     k.get_id(),
                     key.get_id()
                 ))

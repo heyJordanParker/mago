@@ -3099,7 +3099,49 @@ fn a_yielded_spread_of_another_element_type_is_reported_as_php_reports_yield_fro
 
     assert_eq!(sharp_issues, ["10:18 yield-from-invalid-value-type"]);
     assert_eq!(codes(&sharp_issues), codes(&issues(("src/Demo/OrderImport.php", php), &[])));
-    assert_eq!(messages(("src/Demo/OrderImport.sharp", sharp), &[]), messages(("src/Demo/OrderImport.php", php), &[]));
+}
+
+/// An error about `yield ...other;` names `yield ...`, the form the `.sharp` file writes, where PHP's error about the
+/// same check names `yield from`, a form PHP# refuses.
+#[test]
+fn a_yielded_spread_error_writes_the_spread_as_the_file_does() {
+    let feed = "<?php\n\nnamespace Lib;\n\nfinal class Feed\n{\n    /** @return \\Generator<int, \\Demo\\Order, string, void> */\n    public static function orders(): \\Generator\n    {\n        yield new \\Demo\\Order();\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Feed;\n\nclass OrderImport\n{\n    public Iterable<Order> all(List<int> numbers, int count)\n    {\n        yield ...numbers;\n        yield ...count;\n        yield ...Feed.orders();\n    }\n}\n\nclass Order\n{\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Feed;\n\nclass OrderImport\n{\n    /**\n     * @param list<int> $numbers\n     *\n     * @return iterable<Order>\n     */\n    public function all(array $numbers, int $count): iterable\n    {\n        yield from $numbers;\n        yield from $count;\n        yield from Feed::orders();\n    }\n}\n\nclass Order\n{\n}\n";
+    let others = [("src/Lib/Feed.php", feed)];
+    let texts = |issues: &[Issue]| -> Vec<String> {
+        issues
+            .iter()
+            .flat_map(|issue| {
+                std::iter::once(issue.message.clone())
+                    .chain(issue.annotations.iter().filter_map(|annotation| annotation.message.clone()))
+                    .chain(issue.notes.iter().cloned())
+                    .chain(issue.help.clone())
+            })
+            .collect()
+    };
+
+    let sharp_issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/OrderImport.sharp", sharp), &others);
+    let php_issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/OrderImport.php", php), &others);
+
+    assert_eq!(
+        issues(("src/Demo/OrderImport.sharp", sharp), &others),
+        ["9:18 yield-from-invalid-value-type", "10:18 yield-from-non-iterable", "11:18 yield-from-invalid-send-type"]
+    );
+    assert_eq!(
+        sharp_issues[0].message,
+        "Invalid value type from `yield ...`: current generator expects to yield `Demo\\Order`, but the inner iterable yields `int`."
+    );
+    assert_eq!(
+        php_issues[0].message,
+        "Invalid value type from `yield from`: current generator expects to yield `Demo\\Order`, but the inner iterable yields `int`."
+    );
+    assert!(texts(&sharp_issues).iter().all(|text| !text.contains("yield from")), "{:#?}", texts(&sharp_issues));
+    assert!(texts(&php_issues).iter().all(|text| !text.contains("yield ...")), "{:#?}", texts(&php_issues));
+    assert_eq!(
+        texts(&sharp_issues),
+        texts(&php_issues).iter().map(|text| text.replace("yield from", "yield ...")).collect::<Vec<_>>()
+    );
 }
 
 /// An `Iterable` has no index, spec section 12, so `orders[0]` is the error PHP reports for an index read on an
