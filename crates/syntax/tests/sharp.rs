@@ -845,6 +845,49 @@ fn php_has_no_type_parameters_or_type_arguments() {
     assert!(interface.type_parameters.is_none());
 }
 
+/// `Class<T>` is the type of a class value, as spec section 25 writes it. The lexer reads `Class` as PHP's `class`
+/// keyword, so it starts a type only before `<`, as `Function` does.
+#[test]
+fn class_of_a_type_is_a_generic_type_wherever_a_type_goes() {
+    const CODE: &str = "public class FormBuilder\n{\n    Map<string, Class<Element>> elements = [:];\n\n    public Model? load(Class<Model> type, int id) => type.find(id);\n\n    public string run(Class<Element> type)\n    {\n        Class<Element> local = type;\n        return \"\";\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/FormBuilder.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [ClassLikeMember::Property(Property::Plain(elements)), ClassLikeMember::Method(load), ClassLikeMember::Method(run)] =
+        class_members(program).as_slice()
+    else {
+        panic!("expected a field and two methods, got {:#?}", class_members(program));
+    };
+    let Some(Hint::Generic(map)) = &elements.hint else {
+        panic!("expected a generic type, got {:#?}", elements.hint);
+    };
+    assert_eq!(source(CODE, &map.name), "Map");
+    let MethodBody::Concrete(body) = &run.body else {
+        panic!("expected a method body, got {:#?}", run.body);
+    };
+    let Some(Statement::LocalDeclaration(local)) = body.statements.first() else {
+        panic!("expected a local, got {:#?}", body.statements);
+    };
+    fn parameter_type<'ast, 'arena>(method: &'ast Method<'arena>) -> Option<&'ast Hint<'arena>> {
+        method.parameter_list.parameters.first().and_then(|first| first.hint.as_ref())
+    }
+    let class_types: Vec<(&str, Vec<&str>)> = [
+        map.type_arguments.arguments.get(1),
+        parameter_type(load),
+        parameter_type(run),
+        local.hint,
+    ]
+    .into_iter()
+    .map(|hint| generic_type(CODE, hint.expect("a type")))
+    .collect();
+    assert_eq!(
+        class_types,
+        [("Class", vec!["Element"]), ("Class", vec!["Model"]), ("Class", vec!["Element"]), ("Class", vec!["Element"])]
+    );
+    assert_eq!(source(CODE, &load.return_type_hint.as_ref().expect("a return type").hint), "Model?");
+}
+
 /// A `.sharp` file has no `?>`, so a field written `= 0 ?><?php` is a parse error and never reaches the checker or
 /// the lowering.
 #[test]
@@ -2182,6 +2225,18 @@ fn typeof_names_a_class_by_its_short_name() {
     assert_eq!(source(CODE, type_of), "typeof(Order)");
 }
 
+/// The names of a header whose every type is a plain name, as it was before a header took type arguments.
+fn header_names<'arena>(inheritance: &Inheritance<'arena>) -> Vec<&'arena [u8]> {
+    inheritance
+        .types
+        .iter()
+        .map(|hint| match hint {
+            Hint::Identifier(identifier) => identifier.value(),
+            _ => panic!("expected a name, got {hint:#?}"),
+        })
+        .collect()
+}
+
 #[test]
 fn a_class_or_an_interface_names_its_base_class_and_interfaces_after_a_colon() {
     const CODE: &str = "public class Page : Entity, Linkable\n{\n}\n\npublic interface Linkable : Named\n{\n}\n";
@@ -2196,11 +2251,35 @@ fn a_class_or_an_interface_names_its_base_class_and_interfaces_after_a_colon() {
         .into_iter()
         .map(|inheritance| {
             let inheritance = inheritance.as_ref().expect("a header");
-            (source(CODE, inheritance), inheritance.types.iter().map(Identifier::value).collect())
+            (source(CODE, inheritance), header_names(inheritance))
         })
         .collect();
     assert_eq!(headers, [(": Entity, Linkable", vec![&b"Entity"[..], b"Linkable"]), (": Named", vec![&b"Named"[..]])]);
     assert_eq!(source(CODE, class), "public class Page : Entity, Linkable\n{\n}");
+}
+
+/// A header lists types, as C#'s base list does, so it names a generic base class or interface with its type
+/// arguments.
+#[test]
+fn a_header_names_a_generic_type_with_its_type_arguments() {
+    const CODE: &str = "public class OrderPage : PaginatedList<Order>, Shareable { }\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/OrderPage.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::Class(class)] = program.statements.as_slice() else {
+        panic!("expected a class, got {:#?}", program.statements);
+    };
+    let inheritance = class.inheritance.as_ref().expect("a header");
+    let [paginated_list, shareable] = inheritance.types.as_slice() else {
+        panic!("expected two header types, got {:#?}", inheritance.types);
+    };
+    assert_eq!(generic_type(CODE, paginated_list), ("PaginatedList", vec!["Order"]));
+    let Hint::Identifier(shareable) = shareable else {
+        panic!("expected a name, got {shareable:#?}");
+    };
+    assert_eq!(shareable.value(), b"Shareable");
+    assert_eq!(source(CODE, inheritance), ": PaginatedList<Order>, Shareable");
 }
 
 /// An enum's header holds a backing type, `int` or `string`, first, and then its interfaces. After a backing type, the
@@ -2223,11 +2302,7 @@ fn an_enum_names_its_backing_type_then_its_interfaces_after_a_colon() {
             (
                 r#enum.backing_type_hint.as_ref().map(|backing_type| source(CODE, backing_type)),
                 r#enum.inheritance.as_ref().map(|inheritance| source(CODE, inheritance)),
-                r#enum
-                    .inheritance
-                    .iter()
-                    .flat_map(|inheritance| inheritance.types.iter().map(Identifier::value))
-                    .collect::<Vec<_>>(),
+                r#enum.inheritance.as_ref().map(header_names).unwrap_or_default(),
             )
         })
         .collect();
@@ -2253,6 +2328,28 @@ fn a_php_enum_keeps_its_implements_clause_and_has_no_header() {
     assert!(r#enum.backing_type_hint.is_some());
     assert!(r#enum.implements.is_some());
     assert!(r#enum.inheritance.is_none());
+}
+
+/// PHP keeps `class` a keyword everywhere, so `Class<…>` and the PHP# header never reach a PHP file.
+#[test]
+fn a_php_class_keeps_extends_and_implements_and_class_stays_a_keyword() {
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/A.php", "<?php class A extends B implements C {} $x = new class {};");
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::OpeningTag(_), Statement::Class(class), Statement::Expression(anonymous)] =
+        program.statements.as_slice()
+    else {
+        panic!("expected a class and an expression, got {:#?}", program.statements);
+    };
+    assert!(class.extends.is_some());
+    assert!(class.implements.is_some());
+    assert!(class.inheritance.is_none());
+    assert!(
+        matches!(anonymous.expression, Expression::Assignment(Assignment { rhs: Expression::AnonymousClass(_), .. })),
+        "{:#?}",
+        anonymous.expression
+    );
 }
 
 /// An enum or a trait takes `public` as a class does, so the checker refuses a trait where it starts.

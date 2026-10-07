@@ -89,6 +89,7 @@ where
                     (matches!(first.kind, T![Identifier | "list"])
                         && first.value.first().is_some_and(u8::is_ascii_uppercase))
                         || (first.kind == T!["function"] && first.value == b"Function")
+                        || (first.kind == T!["class"] && first.value == b"Class")
                 }
                 _ => false,
             });

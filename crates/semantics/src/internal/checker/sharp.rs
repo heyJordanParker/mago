@@ -116,7 +116,9 @@ const ANY: &[u8] = b"Any";
 ///   method rules, but an enum has no constructor, so a method without a return type is an error. PHP's `check_enum`
 ///   reports a property and any other backing type, and the analyzer a class name in the header.
 /// - A header of a class, an interface or an enum that names one type twice is an error, and so is an enum header that
-///   names `UnitEnum` or `BackedEnum`, because the engine refuses both when it declares the class.
+///   names `UnitEnum` or `BackedEnum`, because the engine refuses both when it declares the class. A header names each
+///   type by its short name: a generic type with type arguments, as in `: PaginatedList<Order>`, is not supported yet,
+///   and neither is any other type.
 /// - Attributes: on a class, an enum, an enum case, a method, a field, a property and a parameter, written `[Name]` or
 ///   `[Name(arguments)]`, several in one list, as in `[Field("Name"), Searchable]`, or in several lists. An argument
 ///   is positional or named, and is a constant expression as a parameter default is, list and map literals included.
@@ -296,6 +298,8 @@ pub enum Place {
     Signature,
     /// An enum and its members.
     Enum,
+    /// The types of a class, interface or enum header, written after `:`.
+    Header,
     /// A field or a property, both of which the CST calls a property: its modifiers, type and name.
     FieldOrProperty,
     /// A class constant: its modifiers, type and name.
@@ -339,6 +343,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
     use Place::FieldOrProperty;
     use Place::File;
     use Place::FunctionCall;
+    use Place::Header;
     use Place::Instantiation;
     use Place::Interface;
     use Place::Lambda;
@@ -431,8 +436,10 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         (Node::Inheritance(inheritance), Class | Interface | Enum) => {
             check_header(inheritance, place, context);
 
-            Some(place)
+            Some(Header)
         }
+        // A header names each type by its short name. Type arguments in a header wait until the binder reads them.
+        (Node::Hint(Hint::Identifier(_)), Header) => Some(Header),
         (Node::Modifier(Modifier::Public(_)), Interface | Enum) => Some(place),
         (Node::ClassLikeMember(ClassLikeMember::Method(_)), Interface) => Some(Interface),
         (Node::Modifier(modifier), Signature) => {
@@ -1122,10 +1129,16 @@ fn is_slice_signature(method: &Method) -> Result<(), (&'static str, &'static str
 
 /// Reports what the engine refuses in a header when it declares the class: a name the header already holds, and in an
 /// enum, `UnitEnum` or `BackedEnum`, which the engine adds to every enum or every backed one. Names compare as PHP's
-/// do, resolved and ignoring case.
+/// do, resolved and ignoring case. A generic type counts by its name, and `enter` refuses any type in a header that
+/// is not a name.
 fn check_header(inheritance: &Inheritance, place: Place, context: &mut Context<'_, '_, '_>) {
     let mut named: Vec<&[u8]> = Vec::new();
-    for name in &inheritance.types {
+    for hint in &inheritance.types {
+        let name = match hint {
+            Hint::Identifier(identifier) => *identifier,
+            Hint::Generic(generic) => Identifier::Local(generic.name),
+            _ => continue,
+        };
         let resolved = context.get_name(name.span().start);
         let issue = if place == Place::Enum
             && (resolved.eq_ignore_ascii_case(b"UnitEnum") || resolved.eq_ignore_ascii_case(b"BackedEnum"))
@@ -2148,6 +2161,9 @@ const fn supported(place: Place) -> &'static str {
         }
         Place::Enum => {
             "A PHP# enum has attributes, an optional `public`, a name, an optional `: string, Interface` header whose `int` or `string` comes first, constants, cases and methods, with no other modifiers or `implements`."
+        }
+        Place::Header => {
+            "A PHP# header names each base class and interface by its short name, as in `: DatabaseEntity, Linkable`, without type arguments."
         }
         Place::FieldOrProperty => {
             "A PHP# field is `private` or `protected`, and a property has the accessors `get` and an optional `set`, each `;`, `=> expr;` or a block. Both may be `static`, and have a type of `int`, `float`, `bool`, `string`, `Any`, a class, `List<T>`, `Map<TKey, TValue>` or `Function<R(P)>`, nullable as in `int?` or not, or a union of them as in `int|string`, a name, and an optional initial value."

@@ -308,8 +308,8 @@ where
     }
 
     /// The backing type after `:`, as PHP writes `: string`, and in PHP# the interfaces, as in `: string, HasLabel` or
-    /// `: HasLabel`. A leading class name opens the interfaces, and any other type is the backing type, which
-    /// `check_enum` holds to `int` or `string`.
+    /// `: HasLabel`. A leading class name, with or without type arguments, opens the interfaces, and any other type is
+    /// the backing type, which `check_enum` holds to `int` or `string`.
     fn parse_enum_header(
         &mut self,
     ) -> Result<(Option<EnumBackingTypeHint<'arena>>, Option<Inheritance<'arena>>), ParseError> {
@@ -323,8 +323,8 @@ where
             return Ok((Some(EnumBackingTypeHint { colon, hint }), None));
         }
 
-        if let Hint::Identifier(first) = hint {
-            return Ok((None, Some(self.parse_inheritance_from(colon, first)?)));
+        if matches!(hint, Hint::Identifier(_) | Hint::Generic(_)) {
+            return Ok((None, Some(self.parse_inheritance_from(colon, hint)?)));
         }
 
         let backing_type_hint = Some(EnumBackingTypeHint { colon, hint });
@@ -333,7 +333,7 @@ where
         }
 
         let comma = self.stream.consume_span()?;
-        let first = self.parse_identifier()?;
+        let first = self.parse_type_hint()?;
 
         Ok((backing_type_hint, Some(self.parse_inheritance_from(comma, first)?)))
     }

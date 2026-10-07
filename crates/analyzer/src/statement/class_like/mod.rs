@@ -48,6 +48,7 @@ use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::Enum;
 use mago_syntax::cst::EnumCaseItem;
 use mago_syntax::cst::Extends;
+use mago_syntax::cst::Hint;
 use mago_syntax::cst::Identifier;
 use mago_syntax::cst::Implements;
 use mago_syntax::cst::Inheritance;
@@ -858,16 +859,23 @@ where
 
     let mut checked_signatures: HashSet<(Word, Word)> = HashSet::default();
 
-    let mut extended_types: Vec<&Identifier<'arena>> = extends_ast.iter().flat_map(|e| e.types.iter()).collect();
-    let mut implemented_types: Vec<&Identifier<'arena>> = implements_ast.iter().flat_map(|i| i.types.iter()).collect();
+    let mut extended_types: Vec<Identifier<'arena>> = extends_ast.iter().flat_map(|e| e.types.iter()).copied().collect();
+    let mut implemented_types: Vec<Identifier<'arena>> =
+        implements_ast.iter().flat_map(|i| i.types.iter()).copied().collect();
 
     // A PHP# header, `: Base, IFace`, names an interface's parents, or a class's parent among its interfaces: the
-    // one class the populator linked as the parent.
-    for type_name in inheritance_ast.iter().flat_map(|inheritance| inheritance.types.iter()) {
+    // one class the populator linked as the parent. A generic type there, as in `: PaginatedList<Order>`, names its
+    // class before its type arguments, and the checker refuses any other type there.
+    for type_hint in inheritance_ast.iter().flat_map(|inheritance| inheritance.types.iter()) {
+        let type_name = match type_hint {
+            Hint::Identifier(identifier) => *identifier,
+            Hint::Generic(generic) => Identifier::Local(generic.name),
+            _ => continue,
+        };
         let is_parent = class_like_metadata.kind.is_interface()
             || class_like_metadata
                 .direct_parent_class
-                .is_some_and(|parent| parent.as_bytes().eq_ignore_ascii_case(context.resolved_names.get(type_name)));
+                .is_some_and(|parent| parent.as_bytes().eq_ignore_ascii_case(context.resolved_names.get(&type_name)));
 
         if is_parent { extended_types.push(type_name) } else { implemented_types.push(type_name) }
     }
@@ -1185,7 +1193,7 @@ where
 fn check_class_like_extends<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
     class_like_metadata: &'ctx ClassLikeMetadata,
-    extended_types: &[&Identifier<'arena>],
+    extended_types: &[Identifier<'arena>],
 ) where
     A: Arena,
 {
@@ -1375,7 +1383,7 @@ fn check_class_like_extends<'ctx, 'arena, A>(
 fn check_class_like_implements<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
     class_like_metadata: &'ctx ClassLikeMetadata,
-    implemented_types: &[&Identifier<'arena>],
+    implemented_types: &[Identifier<'arena>],
     checked_signatures: &mut HashSet<(Word, Word)>,
 ) where
     A: Arena,

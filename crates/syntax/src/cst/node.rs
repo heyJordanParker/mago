@@ -1370,7 +1370,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             }
             Node::Inheritance(node) => {
                 for item in node.types.iter() {
-                    f(Node::Identifier(item));
+                    f(Node::Hint(item));
                 }
             }
             Node::ClassLikeConstantSelector(node) => match node {

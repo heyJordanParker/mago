@@ -942,15 +942,19 @@ where
         }
     }
 
+    /// A header's generic type, as in `: PaginatedList<Order>`, names its class before its type arguments.
+    /// `walk_in_hint` resolves the header's plain names, as it resolves every name a type is written with.
     fn walk_in_inheritance(
         &mut self,
         inheritance: &'ast Inheritance<'arena>,
         context: &mut NameResolutionContext<'arena, A>,
     ) {
         for parent in &inheritance.types {
-            let (parent_classlike, imported) = context.resolve(NameKind::Default, parent.value());
+            if let Hint::Generic(generic) = parent {
+                let (parent_classlike, imported) = context.resolve(NameKind::Default, generic.name.value);
 
-            self.resolved_names.insert_at(parent.span(), parent_classlike, imported);
+                self.resolved_names.insert_at(generic.name.span, parent_classlike, imported);
+            }
         }
     }
 

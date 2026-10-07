@@ -990,6 +990,19 @@ fn a_header_reports_what_extends_and_implements_report_in_php() {
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
 }
 
+/// A generic type in a header links its class by the name before its type arguments, so the class calls the base's
+/// methods, and a missing generic base is reported where it is named.
+#[test]
+fn a_generic_type_in_a_header_links_its_class_by_its_name() {
+    let library = "<?php\n\nnamespace Lib;\n\nabstract class Listing\n{\n    public function count(): int\n    {\n        return 0;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Listing;\n\npublic class OrderPage : Listing<Order>\n{\n    public int size()\n    {\n        return this.count();\n    }\n}\n\npublic class Lost : Missing<Order>\n{\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/OrderPage.sharp", sharp), &[("src/Lib/Listing.php", library)]),
+        ["13:21 non-existent-class-like"]
+    );
+}
+
 /// A method is closed unless it is `virtual`, and `override` is required to replace one, spec section 22. So PHP#
 /// reports what PHP reports for a `final` method and a missing or stray `#[\Override]`, without the
 /// `check-missing-override` setting. Implementing an interface method takes no `override`.

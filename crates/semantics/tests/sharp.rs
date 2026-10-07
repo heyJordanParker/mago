@@ -2238,6 +2238,15 @@ fn a_header_naming_an_interface_twice_or_an_enum_header_naming_unit_enum_is_an_e
     );
 }
 
+/// A header parses any type, as C#'s base list does. Type arguments in a header wait until the binder reads them, and
+/// a header names no other type, so each is not supported yet where it is written.
+#[test]
+fn a_header_type_with_type_arguments_or_that_is_not_a_name_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nimport Lib.PaginatedList;\n\npublic class OrderPage : PaginatedList<Order> { }\n\nclass Card : int { }\n";
+
+    assert_eq!(issues(code), ["5:26 This type is not supported yet in PHP#.", "7:14 This type is not supported yet in PHP#."]);
+}
+
 #[test]
 fn a_property_in_an_enum_reports_only_the_php_error() {
     let code = "namespace App.Tenant;\n\nenum Status\n{\n    case Active;\n\n    private int count = 0;\n}\n";

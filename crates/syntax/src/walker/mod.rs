@@ -721,7 +721,7 @@ generate_ast_walker! {
 
     'arena Inheritance as inheritance => {
         for ty in &inheritance.types {
-            walker.walk_identifier(ty, context);
+            walker.walk_hint(ty, context);
         }
     }
 

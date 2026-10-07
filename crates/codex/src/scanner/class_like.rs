@@ -18,6 +18,7 @@ use mago_syntax::cst::Enum;
 use mago_syntax::cst::EnumBackingTypeHint;
 use mago_syntax::cst::Extends;
 use mago_syntax::cst::Hint;
+use mago_syntax::cst::Identifier;
 use mago_syntax::cst::Implements;
 use mago_syntax::cst::Inheritance;
 use mago_syntax::cst::Interface;
@@ -406,11 +407,18 @@ where
     }
 
     // A PHP# header, `: Base, IFace`, lists a class's base among its interfaces. PHP links the one class there as
-    // the parent, and so does the populator. An enum has no parent, so every name in its header is an interface.
+    // the parent, and so does the populator. An enum has no parent, so every name in its header is an interface. A
+    // generic type in the header, as in `: PaginatedList<Order>`, names its class before its type arguments, and the
+    // checker refuses any other type there.
     if let Some(inheritance) = inheritance {
         for type_name in &inheritance.types {
-            class_like_metadata
-                .add_direct_parent_interface(ascii_lowercase_word(context.resolved_names.get(type_name)));
+            let name = match type_name {
+                Hint::Identifier(identifier) => *identifier,
+                Hint::Generic(generic) => Identifier::Local(generic.name),
+                _ => continue,
+            };
+
+            class_like_metadata.add_direct_parent_interface(ascii_lowercase_word(context.resolved_names.get(&name)));
         }
     }
 

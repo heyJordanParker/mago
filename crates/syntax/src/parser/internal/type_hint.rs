@@ -81,7 +81,7 @@ where
             T!["static"] => Hint::Static(self.expect_any_keyword()?),
             T!["self"] => Hint::Self_(self.expect_any_keyword()?),
             T!["parent"] => Hint::Parent(self.expect_any_keyword()?),
-            T![Identifier | "list"] if self.is_at_generic_hint()? => Hint::Generic(self.parse_generic_hint()?),
+            T![Identifier | "list" | "class"] if self.is_at_generic_hint()? => Hint::Generic(self.parse_generic_hint()?),
             T!["function"] if self.is_at_function_hint()? => Hint::Function(self.parse_function_hint()?),
             T!["enum" | "from" | QualifiedIdentifier | FullyQualifiedIdentifier] => {
                 Hint::Identifier(self.parse_identifier()?)
@@ -162,10 +162,13 @@ where
         })
     }
 
-    /// Whether a PHP# type with type arguments starts here: a name, which may be `List`, followed by `<`.
+    /// Whether a PHP# type with type arguments starts here: a name, which may be `List`, followed by `<`. The lexer
+    /// reads `Class` as PHP's `class` keyword, which starts a type only here, as in `Class<Order>` of spec section 25.
     pub(crate) fn is_at_generic_hint(&mut self) -> Result<bool, ParseError> {
         Ok(self.dialect.is_sharp()
-            && matches!(self.stream.peek_kind(0)?, Some(T![Identifier | "list"]))
+            && self.stream.lookahead(0)?.is_some_and(|token| {
+                matches!(token.kind, T![Identifier | "list"]) || (token.kind == T!["class"] && token.value == b"Class")
+            })
             && self.stream.peek_kind(1)? == Some(T!["<"]))
     }
 

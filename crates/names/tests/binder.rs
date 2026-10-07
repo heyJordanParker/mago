@@ -68,6 +68,17 @@ fn the_names_in_a_class_or_interface_header_resolve_as_class_names() {
 }
 
 #[test]
+fn a_generic_type_in_a_header_resolves_by_its_name() {
+    const CODE: &str =
+        "namespace App.Tenant.Store;\n\nimport App.Shared.PaginatedList;\n\nclass OrderPage : PaginatedList<Order>, Shareable\n{\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(resolved(&names, CODE, "PaginatedList<", 0), b"App\\Shared\\PaginatedList");
+    assert_eq!(resolved(&names, CODE, "Shareable", 0), b"App\\Tenant\\Store\\Shareable");
+}
+
+#[test]
 fn the_interfaces_in_an_enum_header_resolve_as_class_names() {
     const CODE: &str = "namespace App.Tenant.Store;\n\nimport App.Shared.HasLabel;\n\nenum Status : string, HasLabel, Sorted\n{\n}\n\nenum Suit : HasLabel\n{\n}\n";
     let arena = LocalArena::new();

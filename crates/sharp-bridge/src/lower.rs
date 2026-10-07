@@ -42,6 +42,7 @@ use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::FunctionLikeParameterList;
 use mago_syntax::cst::Hint;
+use mago_syntax::cst::Identifier;
 use mago_syntax::cst::If;
 use mago_syntax::cst::IfBody;
 use mago_syntax::cst::Inheritance;
@@ -469,12 +470,21 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         )
     }
 
-    /// A header's names, which PHP compiles as the interface list.
+    /// A header's names, which PHP compiles as the interface list. A generic type names its class before its type
+    /// arguments.
     fn name_list(&mut self, inheritance: &Inheritance) -> u32 {
         let names: Vec<u32> = inheritance
             .types
             .iter()
-            .map(|name| self.string(ZEND_NAME_FQ, self.line(name), self.names.get(name)))
+            .map(|hint| {
+                let name = match hint {
+                    Hint::Identifier(identifier) => *identifier,
+                    Hint::Generic(generic) => Identifier::Local(generic.name),
+                    _ => unreachable!("check_slice refuses the header type `{hint}`"),
+                };
+
+                self.string(ZEND_NAME_FQ, self.line(name), self.names.get(&name))
+            })
             .collect();
 
         self.node(SHARP_AST_NAME_LIST, 0, self.line(inheritance), &names)

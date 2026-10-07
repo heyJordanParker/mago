@@ -3,6 +3,7 @@ use mago_span::Span;
 
 use crate::cst::cst::identifier::Identifier;
 use crate::cst::cst::keyword::Keyword;
+use crate::cst::cst::type_hint::Hint;
 use crate::cst::sequence::TokenSeparatedSequence;
 use crate::cst::sequence::TokenSeparatedSequenceExt;
 
@@ -46,19 +47,19 @@ pub struct Extends<'arena> {
 
 /// Represents PHP#'s class, interface or enum header: `:` and the base class and interfaces.
 ///
-/// Spec section 22 writes it. The checker and the engine tell the class from the interfaces. An enum's header holds
-/// only interfaces.
+/// Spec section 22 writes it. Each entry is a type, as in C#'s base list: a name, or a generic type with its type
+/// arguments. The checker and the engine tell the class from the interfaces. An enum's header holds only interfaces.
 ///
 /// # Example
 ///
 /// ```csharp
-/// public class Page : DatabaseEntity, Linkable {}
+/// public class OrderPage : PaginatedList<Order>, Linkable {}
 /// ```
 #[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Inheritance<'arena> {
     pub colon: Span,
-    pub types: TokenSeparatedSequence<'arena, Identifier<'arena>>,
+    pub types: TokenSeparatedSequence<'arena, Hint<'arena>>,
 }
 
 impl HasSpan for Inheritance<'_> {
