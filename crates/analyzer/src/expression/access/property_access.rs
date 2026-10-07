@@ -102,6 +102,8 @@ where
         && let Some(property_access_id) = &property_access_id
         && let Some(existing_type) = block_context.locals.get(property_access_id).cloned()
     {
+        // The receiver still gets its type, which the PHP# lowering reads and the reference below looks up.
+        object.analyze(context, block_context, artifacts)?;
         add_memoized_property_reference(context, block_context, artifacts, object, property_selector)?;
 
         artifacts.set_rc_expression_type(&span, existing_type);

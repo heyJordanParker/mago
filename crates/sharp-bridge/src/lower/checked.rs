@@ -1,35 +1,52 @@
-use mago_allocator::LocalArena;
+use mago_analyzer::artifacts::AnalysisArtifacts;
+use mago_codex::metadata::CodebaseMetadata;
 use mago_database::file::File;
 use mago_names::ResolvedNames;
-use mago_names::resolver::NameResolver;
-use mago_php_version::PHPVersion;
 use mago_reporting::Issue;
 use mago_reporting::Level;
-use mago_semantics::SemanticsChecker;
 use mago_syntax::cst::Program;
 use mago_syntax::error::ParseError;
 
-/// A program that parsed without errors and passed the semantic checks, `check_slice` among them, with its resolved
-/// names. Only [`check`] creates one, and the lowering takes one, so the lowering never sees a construct the parser
-/// or the checks refuse.
+use super::inline::InlineForms;
+use super::types::Types;
+
+/// A program the checker accepted, with its resolved names and the types the analysis gave it.
 ///
-/// Its fields are private to this module, so code that skips the checks cannot build one:
+/// It parsed without errors, and no check reported an error-level issue. Only [`check`] creates one, and the lowering
+/// takes one, so the lowering never sees a construct the parser or the checks refuse.
+///
+/// Its fields are private to this module, so code must build one through [`check`]. `check` trusts its caller to pass
+/// every issue the checks reported for the file. The orchestrator is that caller:
 ///
 /// ```compile_fail
+/// # mod inline {
+/// #     pub struct InlineForm;
+/// #     pub struct InlineForms;
+/// #     impl InlineForms {
+/// #         pub fn get(&self, _: &[u8]) -> Option<&InlineForm> { None }
+/// #     }
+/// #     pub fn key(_: &[u8], _: &[u8]) -> Vec<u8> { Vec::new() }
+/// # }
+/// # mod types {
+/// #     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lower/types.rs"));
+/// # }
 /// # mod checked {
 /// #     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lower/checked.rs"));
 /// # }
-/// # use mago_allocator::LocalArena;
+/// # use mago_analyzer::artifacts::AnalysisArtifacts;
+/// # use mago_codex::metadata::CodebaseMetadata;
 /// # use mago_database::file::File;
 /// # use mago_names::ResolvedNames;
 /// # use mago_syntax::cst::Program;
-/// fn skip_the_checks<'arena>(
-///     _arena: &'arena LocalArena,
-///     _file: &File,
-///     program: &'arena Program<'arena>,
-///     names: ResolvedNames<'arena>,
-/// ) -> Option<checked::CheckedProgram<'arena>> {
-///     Some(checked::CheckedProgram { program, names })
+/// fn skip_the_checks<'program>(
+///     file: &'program File,
+///     program: &'program Program<'program>,
+///     names: ResolvedNames<'program>,
+///     artifacts: &'program AnalysisArtifacts,
+///     codebase: &'program CodebaseMetadata,
+///     forms: &'program inline::InlineForms,
+/// ) -> Option<checked::CheckedProgram<'program>> {
+///     Some(checked::CheckedProgram { file, program, types: types::Types::new(names, artifacts, codebase, forms) })
 /// }
 /// # fn main() {}
 /// ```
@@ -37,95 +54,156 @@ use mago_syntax::error::ParseError;
 /// The same code compiles when the program goes through [`check`]:
 ///
 /// ```
+/// # mod inline {
+/// #     pub struct InlineForm;
+/// #     pub struct InlineForms;
+/// #     impl InlineForms {
+/// #         pub fn get(&self, _: &[u8]) -> Option<&InlineForm> { None }
+/// #     }
+/// #     pub fn key(_: &[u8], _: &[u8]) -> Vec<u8> { Vec::new() }
+/// # }
+/// # mod types {
+/// #     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lower/types.rs"));
+/// # }
 /// # mod checked {
 /// #     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lower/checked.rs"));
 /// # }
-/// # use mago_allocator::LocalArena;
+/// # use mago_analyzer::artifacts::AnalysisArtifacts;
+/// # use mago_codex::metadata::CodebaseMetadata;
 /// # use mago_database::file::File;
 /// # use mago_names::ResolvedNames;
 /// # use mago_syntax::cst::Program;
-/// fn skip_the_checks<'arena>(
-///     arena: &'arena LocalArena,
-///     file: &File,
-///     program: &'arena Program<'arena>,
-///     _names: ResolvedNames<'arena>,
-/// ) -> Option<checked::CheckedProgram<'arena>> {
-///     checked::check(arena, file, program).ok()
+/// fn skip_the_checks<'program>(
+///     file: &'program File,
+///     program: &'program Program<'program>,
+///     names: ResolvedNames<'program>,
+///     artifacts: &'program AnalysisArtifacts,
+///     codebase: &'program CodebaseMetadata,
+///     forms: &'program inline::InlineForms,
+/// ) -> Option<checked::CheckedProgram<'program>> {
+///     checked::check(file, program, names, artifacts, codebase, forms, &[]).ok()
 /// }
 /// # fn main() {}
 /// ```
-pub(super) struct CheckedProgram<'arena> {
-    program: &'arena Program<'arena>,
-    names: ResolvedNames<'arena>,
+pub struct CheckedProgram<'program> {
+    file: &'program File,
+    program: &'program Program<'program>,
+    types: Types<'program>,
 }
 
-impl<'arena> CheckedProgram<'arena> {
+impl<'program> CheckedProgram<'program> {
     /// `program` as if the checks passed, for the tests of what the lowering does with a construct they refuse.
     #[cfg(test)]
-    pub(super) fn unchecked(program: &'arena Program<'arena>, names: ResolvedNames<'arena>) -> Self {
-        Self { program, names }
+    pub(crate) fn unchecked(
+        file: &'program File,
+        program: &'program Program<'program>,
+        names: ResolvedNames<'program>,
+        artifacts: &'program AnalysisArtifacts,
+        codebase: &'program CodebaseMetadata,
+        inline_forms: &'program InlineForms,
+    ) -> Self {
+        Self { file, program, types: Types::new(names, artifacts, codebase, inline_forms) }
     }
 
-    pub(super) fn program(&self) -> &'arena Program<'arena> {
+    pub(crate) fn file(&self) -> &'program File {
+        self.file
+    }
+
+    pub(crate) fn program(&self) -> &'program Program<'program> {
         self.program
     }
 
-    pub(super) fn names(&self) -> &ResolvedNames<'arena> {
-        &self.names
+    pub(crate) fn names(&self) -> &ResolvedNames<'program> {
+        self.types.names()
+    }
+
+    pub(crate) fn types(&self) -> &Types<'program> {
+        &self.types
     }
 }
 
-/// The errors [`check`] refused a program for.
-pub(super) enum CheckError<'arena> {
-    /// The parser's errors. The semantic checks did not run.
-    Parse(&'arena [ParseError]),
-    /// The semantic checks' errors.
+/// Why [`check`] refused a program.
+#[derive(Debug)]
+pub enum Refusal<'program> {
+    /// The parser's errors.
+    Parse(&'program [ParseError]),
+    /// The error-level issues the checks reported.
     Compile(Vec<Issue>),
 }
 
-/// Refuses `program` when the parser reported errors. Otherwise resolves its names and runs the semantic checks on
-/// it, `check_slice` among them, and returns their errors, or the checked program when there are none.
-pub(super) fn check<'arena>(
-    arena: &'arena LocalArena,
-    file: &File,
-    program: &'arena Program<'arena>,
-) -> Result<CheckedProgram<'arena>, CheckError<'arena>> {
+/// Accepts `program` when it parsed without errors and the checks reported no error-level issue.
+///
+/// `program` is the orchestrator's parse of `file`, and `artifacts` and `codebase` are the file's analysis, which the
+/// lowering reads its types from. `inline_forms` are the standard library's forms the lowering may inline, empty for
+/// a standard library file. `issues` must be every issue the orchestrator reported for `file`. `check` runs no check
+/// itself, so a caller that leaves an issue out owns the program it lowers.
+///
+/// # Errors
+///
+/// Returns the parser's errors, or else the error-level issues.
+pub fn check<'program>(
+    file: &'program File,
+    program: &'program Program<'program>,
+    names: ResolvedNames<'program>,
+    artifacts: &'program AnalysisArtifacts,
+    codebase: &'program CodebaseMetadata,
+    inline_forms: &'program InlineForms,
+    issues: &[Issue],
+) -> Result<CheckedProgram<'program>, Refusal<'program>> {
     if !program.errors.is_empty() {
-        return Err(CheckError::Parse(program.errors));
+        return Err(Refusal::Parse(program.errors));
     }
 
-    let names = NameResolver::new(arena).resolve(program);
-    let errors: Vec<Issue> = SemanticsChecker::new(PHPVersion::PHP85)
-        .check(file, program, &names)
-        .into_iter()
-        .filter(|issue| issue.level == Level::Error)
-        .collect();
+    let errors: Vec<Issue> = issues.iter().filter(|issue| issue.level == Level::Error).cloned().collect();
     if !errors.is_empty() {
-        return Err(CheckError::Compile(errors));
+        return Err(Refusal::Compile(errors));
     }
 
-    Ok(CheckedProgram { program, names })
+    Ok(CheckedProgram { file, program, types: Types::new(names, artifacts, codebase, inline_forms) })
 }
 
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
 
+    use mago_allocator::LocalArena;
+    use mago_names::resolver::NameResolver;
     use mago_syntax::dialect::Dialect;
     use mago_syntax::parser::parse_file_with_dialect;
     use mago_syntax::settings::ParserSettings;
 
     use super::*;
 
+    fn file(code: &'static str) -> File {
+        File::ephemeral(Cow::Borrowed(b"src/Report.sharp"), Cow::Borrowed(code.as_bytes()))
+    }
+
     #[test]
     fn a_program_with_a_parse_error_is_not_checked() {
-        let file = File::ephemeral(
-            Cow::Borrowed(b"src/Report.sharp"),
-            Cow::Borrowed(b"class Report\n{\n    public int run()\n    {\n        return this->run();\n    }\n}\n"),
-        );
+        let file = file("class Report\n{\n    public int run()\n    {\n        return this->run();\n    }\n}\n");
         let arena = LocalArena::new();
         let program = parse_file_with_dialect(&arena, &file, Dialect::Sharp, ParserSettings::default());
+        let names = NameResolver::new(&arena).resolve(program);
+        let (artifacts, codebase, forms) = (AnalysisArtifacts::new(), CodebaseMetadata::new(), InlineForms::default());
 
-        assert!(matches!(check(&arena, &file, program), Err(CheckError::Parse(errors)) if errors.len() == 1));
+        let refusal = check(&file, program, names, &artifacts, &codebase, &forms, &[]);
+
+        assert!(matches!(refusal, Err(Refusal::Parse(errors)) if errors.len() == 1));
+    }
+
+    #[test]
+    fn a_program_with_an_error_level_issue_is_refused_with_only_its_errors() {
+        let file = file("class Report\n{\n}\n");
+        let arena = LocalArena::new();
+        let program = parse_file_with_dialect(&arena, &file, Dialect::Sharp, ParserSettings::default());
+        let names = NameResolver::new(&arena).resolve(program);
+        let (artifacts, codebase, forms) = (AnalysisArtifacts::new(), CodebaseMetadata::new(), InlineForms::default());
+        let issues = [Issue::warning("a warning"), Issue::error("an error"), Issue::help("a help")];
+
+        let refusal = check(&file, program, names, &artifacts, &codebase, &forms, &issues);
+
+        assert!(
+            matches!(&refusal, Err(Refusal::Compile(errors)) if errors.len() == 1 && errors[0].message == "an error")
+        );
     }
 }
