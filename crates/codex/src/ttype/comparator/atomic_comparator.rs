@@ -167,6 +167,12 @@ pub fn is_contained_by(
             return false;
         }
 
+        if container_refuses_null
+            && matches!(input_type_part, TAtomic::GenericParameter(parameter) if parameter.constraint.accepts_null())
+        {
+            return false;
+        }
+
         if matches!(container_type_part, TAtomic::Mixed(mixed) if mixed.is_truthy()) && input_type_part.is_falsy() {
             return false;
         }

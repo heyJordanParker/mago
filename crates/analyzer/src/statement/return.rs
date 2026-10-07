@@ -44,6 +44,7 @@ use crate::utils::expression::is_referenceable;
 use crate::utils::get_type_diff;
 use crate::utils::misc::unwrap_expression;
 use crate::utils::names::display_function_like_identifier;
+use crate::utils::names::display_sharp_accessor;
 use crate::utils::names::display_type;
 use crate::utils::template::explain_blocked_substitution;
 
@@ -626,7 +627,11 @@ fn handle_property_hook_return<'ctx, A>(
         return;
     }
 
-    let hook_name = concat_word!(class_like.original_name, "::", property_name, "::get");
+    let hook_name = if context.dialect.is_sharp() {
+        display_sharp_accessor(class_like.original_name, property_name, hook_metadata.name)
+    } else {
+        concat_word!(class_like.original_name, "::", property_name, "::get").to_string()
+    };
 
     if inferred_return_type.is_mixed() {
         let inferred_str = display_type(context, &inferred_return_type);

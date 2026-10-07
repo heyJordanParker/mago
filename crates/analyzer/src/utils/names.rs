@@ -168,6 +168,13 @@ pub(crate) fn short_name(name: Word) -> String {
     name.as_str_lossy().rsplit('\\').next().unwrap_or_default().to_owned()
 }
 
+/// The accessor `hook_name` of the property `property_name` of the class `class_name` as PHP# names it, `Box.total.get`,
+/// as C# names an accessor in its messages.
+#[must_use]
+pub(crate) fn display_sharp_accessor(class_name: Word, property_name: Word, hook_name: Word) -> String {
+    format!("{}.{}.{hook_name}", short_name(class_name), property_name.as_str_lossy().trim_start_matches('$'))
+}
+
 /// The names `names` as an English list, each in backticks: "`A`", "`A` and `B`", "`A`, `B` and `C`".
 #[must_use]
 pub(crate) fn and_list(names: &[Word]) -> String {

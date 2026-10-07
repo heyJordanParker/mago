@@ -26,7 +26,6 @@ use mago_syntax::cst::PropertyHookConcreteBody;
 use mago_syntax::cst::PropertyHookConcreteExpressionBody;
 use mago_syntax::cst::PropertyItem;
 use mago_word::Word;
-use mago_word::concat_word;
 use mago_word::word;
 
 use crate::analyzable::Analyzable;
@@ -43,6 +42,7 @@ use crate::statement::function_like::get_this_type;
 use crate::statement::function_like::report_missing_return;
 use crate::statement::function_like::report_undefined_type_references;
 use crate::statement::r#return::handle_return_value;
+use crate::utils::names::display_sharp_accessor;
 use crate::utils::names::display_type;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for Property<'arena> {
@@ -283,7 +283,8 @@ where
                 && let Some(property_type) =
                     class_like.properties.get(&property_name).and_then(|property| property.type_metadata.as_ref())
             {
-                let accessor = concat_word!(class_like.original_name, "::", property_name, "::get");
+                let accessor =
+                    word(display_sharp_accessor(class_like.original_name, property_name, word(hook.name.value)));
                 report_missing_return(
                     context,
                     "property hook",

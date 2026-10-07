@@ -77,6 +77,7 @@ use crate::statement::function_like::report_invalid_template_arguments;
 use crate::statement::function_like::report_undefined_type_references;
 use crate::utils::missing_type_hints;
 use crate::utils::names::and_list;
+use crate::utils::names::display_sharp_accessor;
 use crate::utils::names::display_type;
 use crate::utils::names::short_name;
 use crate::utils::template::find_template_uses;
@@ -312,6 +313,7 @@ fn check_unused_template_parameters<'ctx, A>(
     let class_original_name = class_like_metadata.original_name;
     let class_kind_str = class_like_metadata.kind.as_str();
     let class_name_span = class_like_metadata.name_span.unwrap_or(class_like_metadata.span);
+    let sharp_class = context.dialect.is_sharp().then(|| short_name(class_original_name));
 
     'templates: for (template_name, _) in &class_like_metadata.template_types {
         if template_name.as_bytes().starts_with(b"_") {
@@ -365,19 +367,28 @@ fn check_unused_template_parameters<'ctx, A>(
             }
         }
 
-        // Report warning if template parameter is unused
+        let (message, label, help) = match &sharp_class {
+            Some(class) => (
+                format!("Type parameter `{template_name}` is never used in {class_kind_str} `{class}`."),
+                format!("Type parameter `{template_name}` is defined on this {class_kind_str} but never referenced"),
+                format!("Remove `{template_name}` from `{class}<…>`."),
+            ),
+            None => (
+                format!(
+                    "Template parameter `{template_name}` is never used in {class_kind_str} `{class_original_name}`."
+                ),
+                format!("Template `{template_name}` is defined on this {class_kind_str} but never referenced"),
+                format!(
+                    "Remove the unused `@template {template_name}` from the docblock, or use it in a property, method signature, or inherited type."
+                ),
+            ),
+        };
+
         context.collector.report_with_code(
             IssueCode::UnusedTemplateParameter,
-            Issue::warning(format!(
-                "Template parameter `{template_name}` is never used in {class_kind_str} `{class_original_name}`."
-            ))
-            .with_annotation(
-                Annotation::primary(class_name_span)
-                    .with_message(format!("Template `{template_name}` is defined on this {class_kind_str} but never referenced")),
-            )
-            .with_help(format!(
-                "Remove the unused `@template {template_name}` from the docblock, or use it in a property, method signature, or inherited type."
-            )),
+            Issue::warning(message)
+                .with_annotation(Annotation::primary(class_name_span).with_message(label))
+                .with_help(help),
         );
     }
 }
@@ -1016,20 +1027,28 @@ where
                     if !is_implemented {
                         let fqcn = parent_metadata.original_name;
                         let hook_span = hook_metadata.span;
+                        let (missing_hook, abstract_hook) = if context.dialect.is_sharp() {
+                            let accessor = display_sharp_accessor(fqcn, *property_name, *hook_name);
+                            (accessor.clone(), accessor)
+                        } else {
+                            (
+                                format!("{property_name}::{hook_name}()"),
+                                format!("{fqcn}::{property_name}::{hook_name}()"),
+                            )
+                        };
 
                         context.collector.report_with_code(
                             IssueCode::UnimplementedAbstractPropertyHook,
                             Issue::error(format!(
-                                "Class `{name}` does not implement the abstract property hook `{property_name}::{hook_name}()`.",
+                                "Class `{name}` does not implement the abstract property hook `{missing_hook}`.",
                             ))
                             .with_annotation(
                                 Annotation::primary(name_span.unwrap_or(declaration_span))
                                     .with_message(format!("`{name}` is not abstract and must implement this hook")),
                             )
                             .with_annotation(
-                                Annotation::secondary(hook_span).with_message(
-                                    format!("`{fqcn}::{property_name}::{hook_name}()` is defined as abstract here")
-                                ),
+                                Annotation::secondary(hook_span)
+                                    .with_message(format!("`{abstract_hook}` is defined as abstract here")),
                             )
                             .with_note("When a concrete class extends an abstract class or implements an interface, it must provide an implementation for all inherited abstract property hooks.".to_string())
                             .with_help(format!(
@@ -3080,10 +3099,16 @@ fn report_signature_compatibility_issue<'ctx, A>(
             );
         }
         SignatureCompatibilityIssue::IncompatibleParameterType { parameter_index, child_type, parent_type } => {
-            let param_name: String = parent_method
-                .parameters
-                .get(parameter_index)
-                .map_or_else(|| "unknown".to_string(), |p| p.name.0.to_string());
+            let param_name = parent_method.parameters.get(parameter_index).map_or_else(
+                || word("unknown"),
+                |p| {
+                    if context.dialect.is_sharp() {
+                        word(mago_bytes::trim_start_byte(p.name.0.as_bytes(), b'$'))
+                    } else {
+                        p.name.0
+                    }
+                },
+            );
             let child_type = display_type(context, &child_type);
             let parent_type = display_type(context, &parent_type);
 
@@ -3488,18 +3513,22 @@ fn check_class_like_properties<'ctx, A>(
                 if let Some(parent_hook) = parent_property.hooks.get(hook_name)
                     && parent_hook.flags.is_final()
                 {
+                    let final_hook = if context.dialect.is_sharp() {
+                        display_sharp_accessor(parent_class_name, *property_name, *hook_name)
+                    } else {
+                        format!("{parent_class_name}::{property_name}::{hook_name}()")
+                    };
+
                     context.collector.report_with_code(
                             IssueCode::OverrideFinalPropertyHook,
-                            Issue::error(format!(
-                                "Cannot override final property hook `{parent_class_name}::{property_name}::{hook_name}()`."
-                            ))
+                            Issue::error(format!("Cannot override final property hook `{final_hook}`."))
                             .with_annotation(
                                 Annotation::primary(child_hook.span)
                                     .with_message("Attempting to override final hook here"),
                             )
                             .with_annotation(
                                 Annotation::secondary(parent_hook.span)
-                                    .with_message(format!("Hook `{parent_class_name}::{property_name}::{hook_name}()` is declared as final")),
+                                    .with_message(format!("Hook `{final_hook}` is declared as final")),
                             )
                             .with_note("Final property hooks cannot be overridden in child classes.")
                             .with_help(format!(
@@ -3936,11 +3965,22 @@ fn check_class_like_properties<'ctx, A>(
 
                 let declaring_class_name = class_like_metadata.original_name;
                 let interface_name = interface_metadata.original_name;
+                let (class_hook_name, interface_hook_name) = if context.dialect.is_sharp() {
+                    (
+                        display_sharp_accessor(declaring_class_name, *property_name, *hook_name),
+                        display_sharp_accessor(interface_name, *property_name, *hook_name),
+                    )
+                } else {
+                    (
+                        format!("{declaring_class_name}::{property_name}::{hook_name}()"),
+                        format!("{interface_name}::{property_name}::{hook_name}()"),
+                    )
+                };
 
                 context.collector.report_with_code(
                     IssueCode::IncompatiblePropertyHookSignature,
                     Issue::error(format!(
-                        "Declaration of `{declaring_class_name}::{property_name}::{hook_name}()` must be compatible with `& {interface_name}::{property_name}::{hook_name}()`."
+                        "Declaration of `{class_hook_name}` must be compatible with `& {interface_hook_name}`."
                     ))
                     .with_annotation(
                         Annotation::primary(impl_hook.span)

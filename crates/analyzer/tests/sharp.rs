@@ -4489,7 +4489,7 @@ fn a_refused_value_names_its_types_as_sharp_writes_them() {
             "11:40 invalid-return-statement Invalid return type for function `Demo\\Box::nullable`: expected `int`, but found `int?`. | This has type `int?` | The type `int?` returned here is not compatible with the declared return type `int`. | Change the return value to match `int`, or update the function's return type declaration.",
             "15:9 invalid-return-statement Function `Demo\\Box::empty` is declared to return `int` but no return value was specified. | No return value specified here. | Return type declared as `int` here. | The declared return type does not permit 'void', but the analysis indicates that this function path does not return a value. | You can either change the return type declaration of `Demo\\Box::empty` to be 'void', or ensure that this function path always returns a value.",
             "18:18 missing-return-statement Missing return statement in function `first` | This function is declared to return 'TItem'... | ...but this path can exit without returning a value. | A function that does not explicitly return a value will implicitly return `null`. | Add a `return` statement that provides a value of type 'TItem' to all paths, or change the function's return type to 'TItem?' and return `null` explicitly.",
-            "25:25 invalid-return-statement Property hook `Demo\\Box::$total::get` returns `\"text\"` but property is typed as `int`. | Expression has type `\"text\"`. | The get hook must return a value compatible with the property type `int`. | Change the returned expression to match the property type.",
+            "25:25 invalid-return-statement Property hook `Box.total.get` returns `\"text\"` but property is typed as `int`. | Expression has type `\"text\"`. | The get hook must return a value compatible with the property type `int`. | Change the returned expression to match the property type.",
             "29:22 invalid-property-assignment-value Invalid type for property `$count`: expected `int`, but got `TItem`. | This expression has type `TItem` | This property `$count` is declared with type `int` | The type `TItem` is not compatible with and cannot be assigned to `int`. | Change the assigned value to match the property's type, or update the property's type declaration.",
             "30:21 invalid-local-assignment-value Invalid assignment to `local`: it is declared as `int`. | This value has type `TItem`. | `local` is declared as `int` here. | Assign a `int` value, or change the type `local` is declared with.",
             "34:46 invalid-return-statement Invalid return type for function `Demo\\Box::boxed`: expected `Box<int>`, but found `Box<TItem>`. | This has type `Box<TItem>` | The type `Box<TItem>` returned here is not compatible with the declared return type `Box<int>`. | Change the return value to match `Box<int>`, or update the function's return type declaration.",
@@ -4516,7 +4516,7 @@ fn a_type_argument_outside_its_bound_is_named_as_sharp_writes_it() {
     assert_eq!(
         worded(("src/Demo/Report.sharp", sharp), &[]),
         [
-            "11:14 unused-template-parameter Template parameter `TItem` is never used in class `Demo\\Page`. | Template `TItem` is defined on this class but never referenced | Remove the unused `@template TItem` from the docblock, or use it in a property, method signature, or inherited type.",
+            "11:14 unused-template-parameter Type parameter `TItem` is never used in class `Page`. | Type parameter `TItem` is defined on this class but never referenced | Remove `TItem` from `Page<…>`.",
             "15:14 invalid-template-parameter Type argument for `Page` is not compatible with its bound. | In the definition of `Demo\\LinePage` | The type `Line` provided for type parameter `TItem`... | ...does not satisfy the bound `DatabaseEntity` from `Page`. | Supply a type contained by `DatabaseEntity`.",
             "23:55 template-constraint-violation Argument type mismatch for template `T`. | This argument has type `Line`, which is not compatible with the required template constraint `DatabaseEntity`. | Template parameter `T` is constrained with `DatabaseEntity`. | Ensure the argument's type satisfies the template constraint.",
             "23:55 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `T`, but found `Line`. | This has type `Line` | Arguments to this method are incorrect | The provided type `Line` is not compatible with the expected type `T`. | Change the argument value to match `T`, or update the parameter's type declaration.",
@@ -4542,7 +4542,7 @@ fn an_override_names_its_types_as_sharp_writes_them_and_the_erased_types_as_php_
     assert_eq!(
         worded(("src/Demo/Base.sharp", sharp), &[]),
         [
-            "26:26 incompatible-parameter-type Parameter `$item` of `Demo\\OrderBase::put()` expects type `Line` but parent `Demo\\Base::put()` expects type `Order` | Parameter `$item` expects type `Line` but parent expects `Order` | Parent method `Demo\\Base::put()` parameter defined here | In class `Demo\\OrderBase` | Parameter types must be contravariant: child must accept equal or wider types than parent. | Change the parameter type to be compatible with the parent method.",
+            "26:26 incompatible-parameter-type Parameter `item` of `Demo\\OrderBase::put()` expects type `Line` but parent `Demo\\Base::put()` expects type `Order` | Parameter `item` expects type `Line` but parent expects `Order` | Parent method `Demo\\Base::put()` parameter defined here | In class `Demo\\OrderBase` | Parameter types must be contravariant: child must accept equal or wider types than parent. | Change the parameter type to be compatible with the parent method.",
             "30:26 incompatible-return-type Return type `Line` of `Demo\\OrderBase::get()` is incompatible with parent return type `Order` of `Demo\\Base::get()` | Returns type `Line` but parent expects `Order` | Parent method `Demo\\Base::get()` return type defined here | In class `Demo\\OrderBase` | Return types must be covariant: child must return equal or narrower types than parent. | Change the return type to be compatible with the parent method.",
             "24:21 incompatible-property-type Property `Demo\\OrderBase::$item` has an incompatible type declaration. | This type `Line?` is incompatible with the parent's type. | The parent property is defined with type `Order?` here. | PHP requires property types to be invariant, meaning the type declaration in a child class must be exactly the same as in the parent class. | Change the type of `$item` to `Order?` to match the parent property.",
             "37:40 incompatible-parameter-type Parameter `item` of `Demo\\ListBase::put()` must take at least `mixed`, the type `Demo\\Base::put()` erases it to. | Erases to `array`. | `Demo\\Base::put()` takes `mixed` once its type parameters are erased. | PHP# erases type parameters when it compiles, and PHP refuses a parameter narrower than the one it overrides when it links the class. | Write `item` with a type that erases to `mixed`.",
@@ -4570,6 +4570,128 @@ fn a_member_access_on_a_type_parameter_names_it() {
         [
             "7:14 mixed-method-access Attempting to access a method on a non-object type (`TItem`). | Cannot call method here | This expression has type `TItem`",
             "10:42 mixed-property-access Attempting to access a property on a non-object type (`TItem`). | Cannot access property here | This expression has type `TItem`",
+        ]
+    );
+}
+
+/// A message names an accessor as C# does, `Box.total.get`, wherever the `get` returns a value of another type or
+/// can end without returning. The PHP twin keeps Mago's `Demo\Box::$total::get`.
+#[test]
+fn a_message_names_an_accessor_as_sharp_writes_it() {
+    let sharp = "namespace Demo;\n\npublic class Box\n{\n    public int total => \"text\";\n\n    public int open { get { if (this.ready()) { return 1; } } }\n\n    public int amount => this.raw();\n\n    public int size => this.maybe();\n\n    public int position => strpos(\"ab\", \"b\");\n\n    public bool ready() => true;\n\n    public Any? raw() => null;\n\n    public int? maybe() => null;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Box\n{\n    public int $total {\n        get => 'text';\n    }\n\n    public int $open {\n        get {\n            if ($this->ready()) {\n                return 1;\n            }\n        }\n    }\n\n    public int $amount {\n        get => $this->raw();\n    }\n\n    public int $size {\n        get => $this->maybe();\n    }\n\n    public int $position {\n        get => strpos('ab', 'b');\n    }\n\n    public function ready(): bool\n    {\n        return true;\n    }\n\n    public function raw(): mixed\n    {\n        return null;\n    }\n\n    public function maybe(): ?int\n    {\n        return null;\n    }\n}\n";
+
+    assert_eq!(
+        worded(("src/Demo/Box.php", php), &[]),
+        [
+            "8:16 invalid-return-statement Property hook `Demo\\Box::$total::get` returns `string('text')` but property is typed as `int`. | Expression has type `string('text')`. | The get hook must return a value compatible with the property type `int`. | Change the returned expression to match the property type.",
+            "20:16 mixed-return-statement Could not infer a precise return type for property hook `Demo\\Box::$amount::get`. Saw type `mixed`. | Type inferred as `mixed` here. | The analysis could not determine a specific type for the value returned here. | Add specific type hints to variables or properties involved in calculating the return value.",
+            "24:16 nullable-return-statement Property hook `Demo\\Box::$size::get` returns nullable value `int|null` but property type is `int`. | Nullable value returned here. | The property type does not permit null, but this expression could return null. | Ensure the hook always returns a non-null value, or change the property type to `?int`.",
+            "28:16 falsable-return-statement Property hook `Demo\\Box::$position::get` returns falsable value `false|non-negative-int` but property type is `int`. | Potentially 'false' returned here. | The property type does not permit false, but this expression could return false. | Ensure the hook never returns false, or change the property type to `int|false`.",
+        ]
+    );
+    assert_eq!(
+        worded(("src/Demo/Box.sharp", sharp), &[]),
+        [
+            "5:25 invalid-return-statement Property hook `Box.total.get` returns `\"text\"` but property is typed as `int`. | Expression has type `\"text\"`. | The get hook must return a value compatible with the property type `int`. | Change the returned expression to match the property type.",
+            "7:23 missing-return-statement Missing return statement in property hook `Box.open.get` | This property hook is declared to return 'int'... | ...but this path can exit without returning a value. | A property hook that does not explicitly return a value will implicitly return `null`. | Add a `return` statement that provides a value of type 'int' to all paths, or change the property hook's return type to 'int?' and return `null` explicitly.",
+            "9:26 mixed-return-statement Could not infer a precise return type for property hook `Box.amount.get`. Saw type `Any?`. | Type inferred as `Any?` here. | The analysis could not determine a specific type for the value returned here. | Add specific type hints to variables or properties involved in calculating the return value.",
+            "11:24 nullable-return-statement Property hook `Box.size.get` returns nullable value `int?` but property type is `int`. | Nullable value returned here. | The property type does not permit null, but this expression could return null. | Ensure the hook always returns a non-null value, or change the property type to `int?`.",
+            "13:28 falsable-return-statement Property hook `Box.position.get` returns falsable value `false|non-negative-int` but property type is `int`. | Potentially 'false' returned here. | The property type does not permit false, but this expression could return false. | Ensure the hook never returns false, or change the property type to `int|false`.",
+        ]
+    );
+}
+
+/// A plain PHP parent's abstract, final and by-reference hooks are named as PHP# names an accessor, `Priced.total.get`,
+/// when a PHP# class misses or replaces them. The PHP twin keeps Mago's text.
+#[test]
+fn a_message_names_an_inherited_accessor_as_sharp_writes_it() {
+    let library = "<?php\n\nnamespace Lib;\n\ninterface Priced\n{\n    public int $total { get; }\n}\n\nclass Counter\n{\n    public int $count = 0 {\n        final get => $this->count;\n    }\n}\n\ninterface Shared\n{\n    public array $items { &get; }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Counter;\nimport Lib.Priced;\nimport Lib.Shared;\n\npublic class Order : Priced\n{\n}\n\npublic class Tally : Counter\n{\n    public override int count { get => 1; }\n}\n\npublic class Bag : Shared\n{\n    public List<int> items { get => []; }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Counter;\nuse Lib\\Priced;\nuse Lib\\Shared;\n\nclass Order implements Priced\n{\n}\n\nclass Tally extends Counter\n{\n    public int $count {\n        get => 1;\n    }\n}\n\nclass Bag implements Shared\n{\n    public array $items {\n        get => [];\n    }\n}\n";
+    let others = [("src/Lib/Library.php", library)];
+
+    assert_eq!(
+        worded(("src/Demo/Order.php", php), &others),
+        [
+            "9:7 unimplemented-abstract-property-hook Class `Demo\\Order` does not implement the abstract property hook `$total::get()`. | `Demo\\Order` is not abstract and must implement this hook | `Lib\\Priced::$total::get()` is defined as abstract here | When a concrete class extends an abstract class or implements an interface, it must provide an implementation for all inherited abstract property hooks. | You can either implement the `get` hook for property `$total` in `Demo\\Order`, or declare `Demo\\Order` as an abstract class.",
+            "16:9 override-final-property-hook Cannot override final property hook `Lib\\Counter::$count::get()`. | Attempting to override final hook here | Hook `Lib\\Counter::$count::get()` is declared as final | Final property hooks cannot be overridden in child classes. | Remove the `get` hook from `Demo\\Tally::$count`, or remove the final modifier from the parent hook.",
+            "23:9 incompatible-property-hook-signature Declaration of `Demo\\Bag::$items::get()` must be compatible with `& Lib\\Shared::$items::get()`. | This hook does not return by reference | Interface `Lib\\Shared` requires this hook to return by reference | When an interface declares a by-reference hook (`&get`), the implementing class must also return by reference. | Add `&` to the `get` hook declaration: `&get => ...`",
+        ]
+    );
+    assert_eq!(
+        worded(("src/Demo/Order.sharp", sharp), &others),
+        [
+            "7:14 unimplemented-abstract-property-hook Class `Demo\\Order` does not implement the abstract property hook `Priced.total.get`. | `Demo\\Order` is not abstract and must implement this hook | `Priced.total.get` is defined as abstract here | When a concrete class extends an abstract class or implements an interface, it must provide an implementation for all inherited abstract property hooks. | You can either implement the `get` hook for property `$total` in `Demo\\Order`, or declare `Demo\\Order` as an abstract class.",
+            "13:33 override-final-property-hook Cannot override final property hook `Counter.count.get`. | Attempting to override final hook here | Hook `Counter.count.get` is declared as final | Final property hooks cannot be overridden in child classes. | Remove the `get` hook from `Demo\\Tally::$count`, or remove the final modifier from the parent hook.",
+            "18:30 incompatible-property-hook-signature Declaration of `Bag.items.get` must be compatible with `& Shared.items.get`. | This hook does not return by reference | Interface `Lib\\Shared` requires this hook to return by reference | When an interface declares a by-reference hook (`&get`), the implementing class must also return by reference. | Add `&` to the `get` hook declaration: `&get => ...`",
+        ]
+    );
+}
+
+/// A type parameter without a bound may hold `null`, so it is bounded by `Any?`, as Kotlin bounds an unbounded `T`
+/// by `Any?`: a `TItem` passes where `Any?` is required, and never as an `Any` argument, return value or typed local.
+/// A `TEntity : DatabaseEntity` never holds `null` and passes as `Any`. The PHP twin, whose `non-empty-mixed` takes any
+/// template, keeps Mago's silence.
+#[test]
+fn a_type_parameter_without_a_bound_passes_as_any_nullable_and_never_as_any() {
+    let sharp = "namespace Demo;\n\npublic abstract class DatabaseEntity\n{\n}\n\npublic class Sink\n{\n    public static void take(Any value)\n    {\n    }\n\n    public static void keep(Any? value)\n    {\n    }\n}\n\npublic class Box<TItem>\n{\n    public Any give(TItem item) => item;\n\n    public Any? offer(TItem item) => item;\n\n    public void pass(TItem item)\n    {\n        Sink.take(item);\n        Sink.keep(item);\n        Any held = item;\n        Any? kept = item;\n        Sink.take(held);\n        Sink.keep(kept);\n    }\n\n    public static Any send<TValue>(TValue value) => value;\n}\n\npublic class Shelf<TEntity : DatabaseEntity>\n{\n    public Any give(TEntity entity) => entity;\n\n    public void pass(TEntity entity)\n    {\n        Sink.take(entity);\n        Any held = entity;\n        Sink.take(held);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nabstract class DatabaseEntity\n{\n}\n\nclass Sink\n{\n    /** @param non-empty-mixed $value */\n    public static function take(mixed $value): void\n    {\n    }\n\n    public static function keep(mixed $value): void\n    {\n    }\n}\n\n/** @template TItem */\nclass Box\n{\n    /**\n     * @param TItem $item\n     * @return non-empty-mixed\n     */\n    public function give(mixed $item): mixed\n    {\n        return $item;\n    }\n\n    /** @param TItem $item */\n    public function offer(mixed $item): mixed\n    {\n        return $item;\n    }\n\n    /** @param TItem $item */\n    public function pass(mixed $item): void\n    {\n        Sink::take($item);\n        Sink::keep($item);\n        /** @var non-empty-mixed $held */\n        $held = $item;\n        $kept = $item;\n        Sink::take($held);\n        Sink::keep($kept);\n    }\n\n    /**\n     * @template TValue\n     * @param TValue $value\n     * @return non-empty-mixed\n     */\n    public static function send(mixed $value): mixed\n    {\n        return $value;\n    }\n}\n\n/** @template TEntity of DatabaseEntity */\nclass Shelf\n{\n    /**\n     * @param TEntity $entity\n     * @return non-empty-mixed\n     */\n    public function give(DatabaseEntity $entity): mixed\n    {\n        return $entity;\n    }\n\n    /** @param TEntity $entity */\n    public function pass(DatabaseEntity $entity): void\n    {\n        Sink::take($entity);\n        /** @var non-empty-mixed $held */\n        $held = $entity;\n        Sink::take($held);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Box.php", php), &[]), Vec::<String>::new());
+    assert_eq!(
+        issues(("src/Demo/Box.sharp", sharp), &[]),
+        [
+            "20:36 invalid-return-statement",
+            "26:19 invalid-argument",
+            "28:20 invalid-local-assignment-value",
+            "34:53 invalid-return-statement"
+        ]
+    );
+}
+
+/// An unused type parameter is named with the kind that declares it, and the help removes it from the declaration as
+/// PHP# writes it. The PHP twin keeps Mago's `@template` text.
+#[test]
+fn an_unused_type_parameter_is_named_as_sharp_declares_it() {
+    let sharp = "namespace Demo;\n\npublic class Page<TItem>\n{\n}\n\npublic interface Feed<TItem>\n{\n}\n\npublic class Report\n{\n    public static void run<TItem>()\n    {\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\n/** @template TItem */\nclass Page\n{\n}\n\n/** @template TItem */\ninterface Feed\n{\n}\n\nclass Report\n{\n    /** @template TItem */\n    public static function run(): void\n    {\n    }\n}\n";
+
+    assert_eq!(
+        worded(("src/Demo/Page.php", php), &[]),
+        [
+            "6:7 unused-template-parameter Template parameter `TItem` is never used in class `Demo\\Page`. | Template `TItem` is defined on this class but never referenced | Remove the unused `@template TItem` from the docblock, or use it in a property, method signature, or inherited type.",
+            "11:11 unused-template-parameter Template parameter `TItem` is never used in interface `Demo\\Feed`. | Template `TItem` is defined on this interface but never referenced | Remove the unused `@template TItem` from the docblock, or use it in a property, method signature, or inherited type.",
+            "18:28 unused-template-parameter Template parameter `TItem` is never used in method `Demo\\Report::run`. | Template `TItem` is defined on this method but never referenced | Remove the unused `@template TItem` from the docblock, or use it in a parameter or return type.",
+        ]
+    );
+    assert_eq!(
+        worded(("src/Demo/Page.sharp", sharp), &[]),
+        [
+            "3:14 unused-template-parameter Type parameter `TItem` is never used in class `Page`. | Type parameter `TItem` is defined on this class but never referenced | Remove `TItem` from `Page<…>`.",
+            "7:18 unused-template-parameter Type parameter `TItem` is never used in interface `Feed`. | Type parameter `TItem` is defined on this interface but never referenced | Remove `TItem` from `Feed<…>`.",
+            "13:24 unused-template-parameter Type parameter `TItem` is never used in method `run`. | Type parameter `TItem` is defined on this method but never referenced | Remove `TItem` from `run<…>`.",
+        ]
+    );
+}
+
+/// An override whose parameter does not take the parent's type names the parameter as PHP# writes it, without `$`.
+/// The PHP twin keeps Mago's `$item`.
+#[test]
+fn an_override_names_its_parameter_as_sharp_writes_it() {
+    let sharp = "namespace Demo;\n\npublic class Order\n{\n}\n\npublic class Line\n{\n}\n\npublic class Base\n{\n    public virtual void put(Order item)\n    {\n    }\n}\n\npublic class Child : Base\n{\n    public override void put(Line item)\n    {\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n}\n\nclass Line\n{\n}\n\nclass Base\n{\n    public function put(Order $item): void\n    {\n    }\n}\n\nclass Child extends Base\n{\n    public function put(Line $item): void\n    {\n    }\n}\n";
+
+    assert_eq!(
+        worded(("src/Demo/Base.php", php), &[]),
+        [
+            "22:21 incompatible-parameter-type Parameter `$item` of `Demo\\Child::put()` expects type `Demo\\Line` but parent `Demo\\Base::put()` expects type `Demo\\Order` | Parameter `$item` expects type `Demo\\Line` but parent expects `Demo\\Order` | Parent method `Demo\\Base::put()` parameter defined here | In class `Demo\\Child` | Parameter types must be contravariant: child must accept equal or wider types than parent. | Change the parameter type to be compatible with the parent method.",
+        ]
+    );
+    assert_eq!(
+        worded(("src/Demo/Base.sharp", sharp), &[]),
+        [
+            "20:26 incompatible-parameter-type Parameter `item` of `Demo\\Child::put()` expects type `Line` but parent `Demo\\Base::put()` expects type `Order` | Parameter `item` expects type `Line` but parent expects `Order` | Parent method `Demo\\Base::put()` parameter defined here | In class `Demo\\Child` | Parameter types must be contravariant: child must accept equal or wider types than parent. | Change the parameter type to be compatible with the parent method.",
         ]
     );
 }

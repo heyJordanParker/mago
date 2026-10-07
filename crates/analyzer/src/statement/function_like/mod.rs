@@ -1610,18 +1610,26 @@ pub fn check_unused_function_template_parameters<'ctx, A>(
             continue;
         }
 
+        let (message, label, help) = if context.dialect.is_sharp() {
+            let declared_name = function_like_metadata.original_name;
+            (
+                format!("Type parameter `{template_name}` is never used in {kind_str} `{declared_name}`."),
+                format!("Type parameter `{template_name}` is defined on this {kind_str} but never referenced"),
+                format!("Remove `{template_name}` from `{declared_name}<…>`."),
+            )
+        } else {
+            (
+                format!("Template parameter `{template_name}` is never used in {kind_str} `{display_name}`."),
+                format!("Template `{template_name}` is defined on this {kind_str} but never referenced"),
+                format!(
+                    "Remove the unused `@template {template_name}` from the docblock, or use it in a parameter or return type."
+                ),
+            )
+        };
+
         context.collector.report_with_code(
             IssueCode::UnusedTemplateParameter,
-            Issue::warning(format!(
-                "Template parameter `{template_name}` is never used in {kind_str} `{display_name}`."
-            ))
-            .with_annotation(
-                Annotation::primary(name_span)
-                    .with_message(format!("Template `{template_name}` is defined on this {kind_str} but never referenced")),
-            )
-            .with_help(format!(
-                "Remove the unused `@template {template_name}` from the docblock, or use it in a parameter or return type."
-            )),
+            Issue::warning(message).with_annotation(Annotation::primary(name_span).with_message(label)).with_help(help),
         );
     }
 }
