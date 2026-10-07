@@ -375,6 +375,7 @@ fn a_body_edit_keeps_the_key_until_the_inferred_return_changes() {
 const HEADER: &str = include_str!(concat!(env!("OUT_DIR"), "/sharp_unit.h"));
 
 #[test]
+#[cfg(unix)]
 fn the_c_header_lays_out_every_type_as_the_bridge_does() {
     let check = tempfile::tempdir().unwrap();
     fs::write(check.path().join("sharp_unit.h"), HEADER).unwrap();

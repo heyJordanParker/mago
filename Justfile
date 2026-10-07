@@ -26,7 +26,7 @@ regen-sharp-kinds zend_ast_h zend_compile_h:
 sharp-header destination:
     #!/usr/bin/env php
     <?php
-    $messages = shell_exec('cargo build -p mago-sharp-bridge --message-format=json') ?: '';
+    $messages = shell_exec('cargo build --locked -p mago-sharp-bridge --message-format=json') ?: '';
     foreach (explode("\n", $messages) as $line) {
         $message = json_decode($line, true);
         if (($message['reason'] ?? '') === 'build-script-executed' && str_contains($message['package_id'], 'mago-sharp-bridge')) {

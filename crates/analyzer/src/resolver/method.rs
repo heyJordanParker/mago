@@ -359,7 +359,7 @@ where
                                     result.encountered_mixed |= has_incomplete_hierarchy;
                                 } else if has_incomplete_hierarchy {
                                     result.encountered_mixed = true;
-                                } else if let Some(collection) = display_sharp_collection(obj_type) {
+                                } else if let Some(collection) = display_sharp_collection(obj_type, context.codebase) {
                                     report_non_existent_collection_method(
                                         context,
                                         object.span(),

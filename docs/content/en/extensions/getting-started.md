@@ -12,7 +12,7 @@ For a ready-to-customize PHP project, start with the [Mago extension template](h
 
 ## Requirements
 
-- A Composer project using `carthage-software/mago`.
+- A Composer project using `heyjordanparker/mago-sharp`.
 - A PHP version allowed by the installed Mago package. Mago 1.47 supports PHP 8.1 through PHP 8.6.
 - A Mago configuration file in the project root.
 

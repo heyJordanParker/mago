@@ -223,7 +223,7 @@ impl<'ctx> InvocationTarget<'ctx> {
 
         if let Some(receiver) = self.get_sharp_collection_receiver()
             && let Some(FunctionLikeIdentifier::Method(_, method_name)) = self.get_function_like_identifier()
-            && let Some(collection) = crate::utils::names::display_sharp_collection(receiver)
+            && let Some(collection) = crate::utils::names::display_sharp_collection(receiver, context.codebase)
         {
             return format!("{collection}.{method_name}");
         }

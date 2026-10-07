@@ -48,21 +48,21 @@ To opt out entirely, pass `--no-verify`. The two flags are mutually exclusive.
 
 The recommended path on Windows and a fine fallback on any system without `bash`.
 
-1. Open the [releases page](https://github.com/carthage-software/mago/releases).
+1. Open the [releases page](https://github.com/heyJordanParker/mago-sharp/releases).
 2. Download the archive for your operating system. The naming follows `mago-<version>-<target>.tar.gz` (or `.zip` on Windows).
 3. Extract the archive and place the binary somewhere on your PATH.
 
 If you keep the archive around, you can verify it yourself before extracting.
 
 ```sh
-VERSION=1.51.0
+VERSION=0.1.0
 TARGET=x86_64-unknown-linux-gnu  # adjust for your platform
 ASSET=mago-${VERSION}-${TARGET}.tar.gz
 
-gh release download "$VERSION" --repo carthage-software/mago --pattern "$ASSET"
+gh release download "$VERSION" --repo heyJordanParker/mago-sharp --pattern "$ASSET"
 gh attestation verify "$ASSET" \
-  --repo carthage-software/mago \
-  --signer-workflow carthage-software/mago/.github/workflows/cd.yml
+  --repo heyJordanParker/mago-sharp \
+  --signer-workflow heyJordanParker/mago-sharp/.github/workflows/cd.yml
 
 tar -xzf "$ASSET"
 sudo mv "mago-${VERSION}-${TARGET}/mago" /usr/local/bin/
@@ -91,7 +91,7 @@ These routes are convenient but rely on external publishing schedules that often
 For PHP projects:
 
 ```sh
-composer require --dev "carthage-software/mago:^1.51.0"
+composer require --dev "heyjordanparker/mago-sharp:^0.1.0"
 ```
 
 The Composer package is a thin wrapper. The first call to `vendor/bin/mago` downloads the matching pre-built binary from the GitHub release and caches it. Subsequent calls reuse the cache and make no network requests.
@@ -137,7 +137,7 @@ mago --version
 You can run and build Mago yourself via [Nix flakes](https://nixos.wiki/wiki/flakes):
 
 ```sh
-nix run git+https://github.com/carthage-software/mago -- --version
+nix run git+https://github.com/heyJordanParker/mago-sharp -- --version
 ```
 
 Note: the Mago main repository relies on `.gitattributes` for distribution, so you have to use `git+https`
@@ -168,8 +168,8 @@ When verification runs, the installer executes:
 
 ```sh
 gh attestation verify <archive> \
-  --repo carthage-software/mago \
-  --signer-workflow carthage-software/mago/.github/workflows/cd.yml
+  --repo heyJordanParker/mago-sharp \
+  --signer-workflow heyJordanParker/mago-sharp/.github/workflows/cd.yml
 ```
 
 The `--signer-workflow` pin matters. It binds the attestation to the exact release workflow file. A leaked GitHub Actions token that could trigger a different workflow inside the same repository would still fail verification.
@@ -187,7 +187,7 @@ For stricter supply-chain hygiene, pin the script to a specific commit you have 
 ```sh
 COMMIT=cd4cf4dfdbc72bd028ad26d11bcc815a49e27e9a  # replace with a commit you have read
 curl --proto '=https' --tlsv1.2 -sSf \
-  "https://raw.githubusercontent.com/carthage-software/mago/${COMMIT}/scripts/install.sh" \
+  "https://raw.githubusercontent.com/heyJordanParker/mago-sharp/${COMMIT}/scripts/install.sh" \
   | bash -s -- --always-verify
 ```
 

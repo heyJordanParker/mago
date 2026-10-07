@@ -30,10 +30,12 @@ use mago_syntax::cst::Closure;
 use mago_syntax::cst::CompositeString;
 use mago_syntax::cst::Conditional;
 use mago_syntax::cst::ConstantAccess;
+use mago_syntax::cst::Construct;
 use mago_syntax::cst::DirectVariable;
 use mago_syntax::cst::Enum;
 use mago_syntax::cst::EnumCase;
 use mago_syntax::cst::EnumCaseItem;
+use mago_syntax::cst::ExitConstruct;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::For;
 use mago_syntax::cst::ForBody;
@@ -244,7 +246,7 @@ enum Operands {
 pub fn lower(checked: &CheckedProgram<'_>) -> Unit {
     let lines = Lines::new(&checked.file().contents);
 
-    Lowering::new(&lines, checked.names(), checked.types()).program(checked)
+    Lowering::new(&lines, &checked.file().name, checked.names(), checked.types()).program(checked)
 }
 
 /// The offset each line starts at, counted as the Zend scanner counts: `\n`, `\r\n` and a lone `\r` each end a line.
@@ -271,13 +273,26 @@ impl Lines {
     fn last(&self) -> u32 {
         self.0.len() as u32
     }
+
+    /// The 1-based line and byte column `offset` is at.
+    fn line_and_column(&self, offset: u32) -> (u32, u32) {
+        let line = self.line(offset);
+
+        (line, offset - self.0[line as usize - 1] + 1)
+    }
 }
 
 /// Lowers one checked file. Every node is pushed after its children, and each node's children are contiguous.
 struct Lowering<'lowering, 'arena> {
     lines: &'lowering Lines,
+    /// The path of the file being lowered, as the checked file names it.
+    path: &'lowering [u8],
     names: &'lowering ResolvedNames<'arena>,
     types: &'lowering Types<'lowering>,
+    /// The full name of the class-like being lowered, as PHP writes it.
+    class: &'arena [u8],
+    /// The full dotted name of the method or property being lowered, which `Position.current()` gives as its `function`.
+    function: Vec<u8>,
     nodes: Vec<sharp_node>,
     children: Vec<u32>,
     texts: Vec<u8>,
@@ -300,13 +315,17 @@ struct Lowering<'lowering, 'arena> {
 impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     fn new(
         lines: &'lowering Lines,
+        path: &'lowering [u8],
         names: &'lowering ResolvedNames<'arena>,
         types: &'lowering Types<'lowering>,
     ) -> Self {
         Self {
             lines,
+            path,
             names,
             types,
+            class: b"",
+            function: Vec::new(),
             nodes: Vec::new(),
             children: Vec::new(),
             texts: Vec::new(),
@@ -382,6 +401,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// property, at the start of its constructor, in declaration order. A class without a constructor gets a public
     /// one that spans the class.
     fn class(&mut self, class: &Class) -> u32 {
+        self.class = self.names.get(&class.name);
+        self.enter(class.name.value);
         let mut initial_values = Vec::new();
         for member in &class.members {
             if let ClassLikeMember::Property(property) = member
@@ -480,6 +501,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// An interface is a class declaration with `ZEND_ACC_INTERFACE`, and its methods are `public`, as php-src's
     /// grammar builds `interface Measured { public function area(): float; }`.
     fn interface(&mut self, interface: &Interface) -> u32 {
+        self.class = self.names.get(&interface.name);
         let mut members = Vec::new();
         for member in &interface.members {
             let ClassLikeMember::Method(method) = member else {
@@ -506,6 +528,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// child, as php-src's grammar builds `enum Status: string implements HasLabel`. An enum has no parent, so its
     /// header needs no mark.
     fn r#enum(&mut self, r#enum: &Enum) -> u32 {
+        self.class = self.names.get(&r#enum.name);
         let mut members = Vec::new();
         for member in &r#enum.members {
             members.push(match member {
@@ -555,6 +578,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             unreachable!("check_slice refuses a method without an access modifier");
         }
 
+        self.enter(method.name.value);
         let mut parameters = Vec::new();
         for parameter in &method.parameter_list.parameters {
             parameters.push(self.parameter(parameter));
@@ -644,8 +668,11 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.hooks(hooked.item.variable().name, &hooked.hook_list),
             ),
             Property::Computed(computed) => {
-                let body = self.short_body(b"get", &computed.body);
-                let hook = self.hook(b"get", computed.body.arrow, &computed.body, body);
+                let hook = self.accessor_bodies(computed.variable.name, |lowering| {
+                    let body = lowering.short_body(b"get", &computed.body);
+
+                    lowering.hook(b"get", computed.body.arrow, &computed.body, body)
+                });
 
                 (
                     0,
@@ -692,22 +719,35 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         }
 
         let uses_field = self.names.uses_field(accessors);
-        self.property = property.to_vec();
-        let mut hooks = Vec::new();
-        for accessor in &accessors.hooks {
-            let body = match &accessor.body {
-                PropertyHookBody::Concrete(PropertyHookConcreteBody::Block(block)) => self.block(block),
-                PropertyHookBody::Concrete(PropertyHookConcreteBody::Expression(body)) => {
-                    self.short_body(accessor.name.value, body)
-                }
-                PropertyHookBody::Abstract(_) if uses_field => continue,
-                PropertyHookBody::Abstract(_) => self.storage_body(accessor),
-            };
-            hooks.push(self.hook(accessor.name.value, accessor.name, accessor, body));
-        }
-        self.property.clear();
+        self.accessor_bodies(property, |lowering| {
+            let mut hooks = Vec::new();
+            for accessor in &accessors.hooks {
+                let body = match &accessor.body {
+                    PropertyHookBody::Concrete(PropertyHookConcreteBody::Block(block)) => lowering.block(block),
+                    PropertyHookBody::Concrete(PropertyHookConcreteBody::Expression(body)) => {
+                        lowering.short_body(accessor.name.value, body)
+                    }
+                    PropertyHookBody::Abstract(_) if uses_field => continue,
+                    PropertyHookBody::Abstract(_) => lowering.storage_body(accessor),
+                };
+                hooks.push(lowering.hook(accessor.name.value, accessor.name, accessor, body));
+            }
 
-        self.node(SHARP_AST_STMT_LIST, 0, self.line(accessors), &hooks)
+            lowering.node(SHARP_AST_STMT_LIST, 0, lowering.line(accessors), &hooks)
+        })
+    }
+
+    /// Lowers a property's accessor bodies, in which `field` is the property's storage and `Position.current()` names
+    /// the property. The member around the property is the function again after them.
+    fn accessor_bodies(&mut self, property: &[u8], lower: impl FnOnce(&mut Self) -> u32) -> u32 {
+        let function = std::mem::take(&mut self.function);
+        self.property = property.to_vec();
+        self.enter(property);
+        let index = lower(self);
+        self.property.clear();
+        self.function = function;
+
+        index
     }
 
     /// A hook named `get` or `set` with its body, as php-src's grammar declares every hook.
@@ -816,17 +856,20 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
     /// A built-in type is written unqualified, and a class by its full name. `Self` is a `TYPE` node of `IS_STATIC`, as
     /// php-src's grammar builds `static`. A `List` or `Map` is a PHP array, so its type is `array`, as php-src's grammar
-    /// builds it. A function type runs as PHP's `\Closure`. A nullable type is its type with `ZEND_TYPE_NULLABLE`, as
+    /// builds it. A function type runs as PHP's `\Closure`. `Any` and `Any?` are PHP's `mixed`, which already holds
+    /// null. Any other nullable type is its type with `ZEND_TYPE_NULLABLE`, as
     /// php-src's grammar builds `?int`.
     fn hint(&mut self, hint: &Hint) -> u32 {
         match hint {
             Hint::Integer(name) | Hint::Float(name) | Hint::Bool(name) | Hint::String(name) | Hint::Void(name) => {
                 self.string(ZEND_NAME_NOT_FQ, self.line(name.span), name.value)
             }
+            Hint::Mixed(any) => self.string(ZEND_NAME_NOT_FQ, self.line(any.span), b"mixed"),
             Hint::Identifier(class) => self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class)),
             Hint::Self_(keyword) => self.node(SHARP_AST_TYPE, IS_STATIC, self.line(keyword), &[]),
             Hint::Generic(generic) => self.node(SHARP_AST_TYPE, IS_ARRAY, self.line(generic), &[]),
             Hint::Function(function) => self.string(ZEND_NAME_FQ, self.line(function), b"Closure"),
+            Hint::Nullable(NullableHint { hint: any @ Hint::Mixed(_), .. }) => self.hint(any),
             Hint::Nullable(NullableHint { question_mark, hint: Hint::Parenthesized(parenthesized) }) => {
                 self.union(parenthesized.hint, Some(*question_mark))
             }
@@ -1127,8 +1170,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                         self.node(SHARP_AST_BINARY_OP, ZEND_CONCAT, line, &[lhs, rhs])
                     }
                     (BinaryOperator::Division(_), Operands::Ints) => self.intdiv(line, lhs, rhs),
-                    (operator, _) => {
-                        let (kind, attr) = binary_kind(operator);
+                    _ => {
+                        let (kind, attr) = binary_kind(binary);
 
                         self.node(kind, attr, line, &[lhs, rhs])
                     }
@@ -1181,6 +1224,12 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                     _ => self.string(ZEND_NAME_FQ, self.line(function), function.value()),
                 };
                 let arguments = self.arguments(argument_list);
+
+                self.node(SHARP_AST_CALL, 0, line, &[function, arguments])
+            }
+            Expression::Construct(Construct::Exit(ExitConstruct { arguments: Some(arguments), .. })) => {
+                let function = self.string(ZEND_NAME_FQ, line, b"exit");
+                let arguments = self.arguments(arguments);
 
                 self.node(SHARP_AST_CALL, 0, line, &[function, arguments])
             }
@@ -1822,9 +1871,15 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     /// `Class.m()` is a static call on the class's full name, `super.m()` one on `parent`, and `Self.m()` one on
-    /// `static`. Any other `object.m()` is an instance call, or a call of the function in the property `m` when the
-    /// checker found that property, as spec section 14 calls one.
+    /// `static`, except the standard library's `Position.current()`, which is the position it is written at. Any other
+    /// `object.m()` is an instance call, or a call of the function in the property `m` when the checker found that
+    /// property, as spec section 14 calls one. A call of a standard library method with an inline form runs that form.
     fn method_call(&mut self, expression: &Expression, call: &MethodCall) -> u32 {
+        if let Some(class) = self.names.static_call_class(call)
+            && is_current_position(self.names.get(&class.name), call)
+        {
+            return self.current_position(class, call);
+        }
         if let Some(inlined) = self.inlined_call(expression, call) {
             return inlined;
         }
@@ -1857,6 +1912,32 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         }
 
         self.node(kind, 0, line, &[object, method, arguments])
+    }
+
+    /// Spec section 27: `Position.current()` in a body is the position where it is written, a new `Position` of the
+    /// file, the line and byte column of `Position`, and the function, as
+    /// `new \Sharp\Position(__FILE__, 9, 22, 'App.Tenant.Report.run')`.
+    fn current_position(&mut self, class: &ConstantAccess, call: &MethodCall) -> u32 {
+        let (line, column) = self.lines.line_and_column(class.span().start.offset);
+        let name = self.string(ZEND_NAME_FQ, line, b"Sharp\\Position");
+        let file = self.string(0, line, self.path);
+        let line_number = self.zval(line, sharp_value::SHARP_LONG, |node| node.long_value = i64::from(line));
+        let column = self.zval(line, sharp_value::SHARP_LONG, |node| node.long_value = i64::from(column));
+        let function = self.function.clone();
+        let function = self.string(0, line, &function);
+        let arguments =
+            self.node(SHARP_AST_ARG_LIST, 0, self.line(&call.argument_list), &[file, line_number, column, function]);
+
+        self.node(SHARP_AST_NEW, 0, self.line(call), &[name, arguments])
+    }
+
+    /// Makes `name`, a member of the class-like being lowered, the function `Position.current()` gives, by its full
+    /// dotted name.
+    fn enter(&mut self, name: &[u8]) {
+        self.function.clear();
+        self.function.extend(self.class.iter().map(|&byte| if byte == b'\\' { b'.' } else { byte }));
+        self.function.push(b'.');
+        self.function.extend_from_slice(name);
     }
 
     fn member(&mut self, member: &ClassLikeMemberSelector) -> u32 {
@@ -2021,6 +2102,14 @@ fn union_members<'hint, 'arena>(hint: &'hint Hint<'arena>) -> Vec<&'hint Hint<'a
     }
 }
 
+/// Whether `call`, a static call on `class`, is the standard library's `Position.current()`. PHP compares class and
+/// method names ignoring case.
+fn is_current_position(class: &[u8], call: &MethodCall) -> bool {
+    class.eq_ignore_ascii_case(b"Sharp\\Position")
+        && matches!(call.method, ClassLikeMemberSelector::Identifier(method) if method.value.eq_ignore_ascii_case(b"current"))
+        && call.argument_list.arguments.is_empty()
+}
+
 /// The flags of a member's modifiers. Every modifier is named, so a new one does not compile until it is decided.
 fn modifier_flags(modifiers: &Sequence<Modifier>) -> u32 {
     let mut flags = 0;
@@ -2126,9 +2215,11 @@ fn accessor_flags(modifiers: &Sequence<Modifier>, accessors: &PropertyHookList, 
 }
 
 /// The binary operators of the slice, as php-src's grammar builds them. Every operator is named, so a new one does
-/// not compile until it is decided.
-fn binary_kind(operator: BinaryOperator) -> (sharp_kind, u32) {
-    match operator {
+/// not compile until it is decided. `== null` and `!= null` test for null alone, as `=== null` and `!== null`.
+fn binary_kind(binary: &Binary) -> (sharp_kind, u32) {
+    match binary.operator {
+        BinaryOperator::Equal(_) if binary.is_equality_with_null() => (SHARP_AST_BINARY_OP, ZEND_IS_IDENTICAL),
+        BinaryOperator::NotEqual(_) if binary.is_equality_with_null() => (SHARP_AST_BINARY_OP, ZEND_IS_NOT_IDENTICAL),
         BinaryOperator::Addition(_) => (SHARP_AST_BINARY_OP, ZEND_ADD),
         BinaryOperator::Subtraction(_) => (SHARP_AST_BINARY_OP, ZEND_SUB),
         BinaryOperator::Multiplication(_) => (SHARP_AST_BINARY_OP, ZEND_MUL),
@@ -2157,7 +2248,7 @@ fn binary_kind(operator: BinaryOperator) -> (sharp_kind, u32) {
         | BinaryOperator::StringConcat(_)
         | BinaryOperator::Instanceof(_)
         | BinaryOperator::LowOr(_)
-        | BinaryOperator::LowXor(_) => unreachable!("check_slice refuses the operator `{operator}`"),
+        | BinaryOperator::LowXor(_) => unreachable!("check_slice refuses the operator `{}`", binary.operator),
     }
 }
 

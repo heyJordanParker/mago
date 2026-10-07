@@ -2,8 +2,13 @@
 
 use mago_allocator::Arena;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
+use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::ttype::TType;
+use mago_codex::ttype::atomic::TAtomic;
+use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::object::TObject;
+use mago_codex::ttype::get_array_parameters;
+use mago_codex::ttype::union::TUnion;
 use mago_word::Word;
 
 use crate::context::Context;
@@ -42,12 +47,65 @@ where
 /// or `Sharp\MapMethods`. The analyzer checks a method call on a `List` or `Map` against those classes, and a message
 /// names the type the code wrote instead.
 #[must_use]
-pub(crate) fn display_sharp_collection(object: &TObject) -> Option<String> {
+pub(crate) fn display_sharp_collection(object: &TObject, codebase: &CodebaseMetadata) -> Option<String> {
     let collection = sharp_collection_name(object)?;
     let parameters = object.get_type_parameters().unwrap_or_default();
-    let parameters = parameters.iter().map(|parameter| parameter.get_id().to_string()).collect::<Vec<_>>();
+    let parameters = parameters.iter().map(|parameter| display_sharp_type(parameter, codebase)).collect::<Vec<_>>();
 
     Some(format!("{collection}<{}>", parameters.join(", ")))
+}
+
+/// Returns `union` as PHP# writes the type: `List<int>`, `Map<string, int>`, `int?`, `(int|string)?`, `Any?`, and a
+/// class by its short name.
+#[must_use]
+pub(crate) fn display_sharp_type(union: &TUnion, codebase: &CodebaseMetadata) -> String {
+    if let Some(TAtomic::Mixed(mixed)) = union.types.iter().find(|atomic| atomic.is_mixed()) {
+        return if mixed.is_non_null() { "Any" } else { "Any?" }.to_owned();
+    }
+
+    let parts: Vec<String> = union
+        .types
+        .iter()
+        .filter(|atomic| !atomic.is_null())
+        .map(|atomic| display_sharp_atomic(atomic, codebase))
+        .collect();
+
+    match (union.has_null(), parts.as_slice()) {
+        (false, _) => parts.join("|"),
+        (true, []) => "null".to_owned(),
+        (true, [part]) => format!("{part}?"),
+        (true, _) => format!("({})?", parts.join("|")),
+    }
+}
+
+fn display_sharp_atomic(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String {
+    match atomic {
+        TAtomic::Array(array) => {
+            let (key, value) = get_array_parameters(array, codebase);
+            match array {
+                TArray::List(_) => format!("List<{}>", display_sharp_type(&value, codebase)),
+                TArray::Keyed(_) => {
+                    format!("Map<{}, {}>", display_sharp_type(&key, codebase), display_sharp_type(&value, codebase))
+                }
+            }
+        }
+        TAtomic::Object(object) => {
+            let Some(name) = object.get_name() else {
+                return atomic.get_id().to_string();
+            };
+            let name = String::from_utf8_lossy(name.as_bytes());
+            let short_name = name.rsplit('\\').next().unwrap_or_default();
+            match object.get_type_parameters() {
+                Some(parameters) if !parameters.is_empty() => {
+                    let parameters: Vec<String> =
+                        parameters.iter().map(|parameter| display_sharp_type(parameter, codebase)).collect();
+                    format!("{short_name}<{}>", parameters.join(", "))
+                }
+                _ => short_name.to_owned(),
+            }
+        }
+        _ => atomic.get_id().to_string(),
+    }
 }
 
 /// Returns `List` or `Map` when `object` is `Sharp\ListMethods` or `Sharp\MapMethods`.

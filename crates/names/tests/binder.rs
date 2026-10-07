@@ -255,6 +255,17 @@ fn locals_and_this_have_no_resolved_name() {
 }
 
 #[test]
+fn any_is_a_built_in_type_and_never_a_class_name() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nclass Report\n{\n    public Any run(Any? extra)\n    {\n        Any? held = extra;\n        return held ?? 1;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    for nth in 0..3 {
+        assert!(!names.contains(&Position::new(offset(CODE, "Any", nth))), "`Any` #{nth} has a resolved name");
+    }
+}
+
+#[test]
 fn a_name_before_a_partial_method_application_is_a_class() {
     const CODE: &str = "class Report\n{\n    public void run()\n    {\n        Calc.make(...);\n    }\n}\n";
     let arena = LocalArena::new();
@@ -311,6 +322,111 @@ fn an_imported_int_is_the_imported_class() {
 
     assert_eq!(binding(&names, CODE, "Int.parse", 0), Some(Binding::Class));
     assert_eq!(resolved(&names, CODE, "Int.parse", 0), b"App\\Shared\\Int");
+}
+
+#[test]
+fn a_bare_standard_library_name_is_the_class_in_the_sharp_namespace_wherever_a_class_is_named() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nclass Report\n{\n    public void run(Position here, Environment settings, string text)\n    {\n        Position.current();\n        Environment.current();\n        List.wrap(text);\n        new Int();\n        new Float();\n        new Position();\n        new Environment();\n        new List;\n        typeof(Position);\n        typeof(Environment);\n        typeof(List);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    for (needle, class) in [
+        ("Position here", "Sharp\\Position"),
+        ("Environment settings", "Sharp\\Environment"),
+        ("Position.current", "Sharp\\Position"),
+        ("Environment.current", "Sharp\\Environment"),
+        ("List.wrap", "Sharp\\List"),
+        ("Int()", "Sharp\\Int"),
+        ("Float()", "Sharp\\Float"),
+        ("Position()", "Sharp\\Position"),
+        ("Environment()", "Sharp\\Environment"),
+        ("List;", "Sharp\\List"),
+        ("Position)", "Sharp\\Position"),
+        ("Environment)", "Sharp\\Environment"),
+        ("List)", "Sharp\\List"),
+    ] {
+        assert_eq!(String::from_utf8_lossy(resolved(&names, CODE, needle, 0)), class, "`{needle}`");
+    }
+    assert_eq!(binding(&names, CODE, "List.wrap", 0), Some(Binding::Class));
+}
+
+#[test]
+fn an_imported_name_is_the_imported_class_and_not_the_standard_library_one() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nimport App.Shared.Position;\n\nclass Report\n{\n    public void run(Position here)\n    {\n        Position.current();\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    for needle in ["Position here", "Position.current"] {
+        assert_eq!(resolved(&names, CODE, needle, 0), b"App\\Shared\\Position", "`{needle}`");
+    }
+}
+
+#[test]
+fn a_class_the_file_declares_after_its_use_is_the_class_and_not_the_standard_library_one() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nclass Report\n{\n    public void run(Position here)\n    {\n        Position.current();\n    }\n}\n\nclass Position\n{\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    for needle in ["Position here", "Position.current"] {
+        assert_eq!(resolved(&names, CODE, needle, 0), b"App\\Tenant\\Store\\Position", "`{needle}`");
+    }
+}
+
+#[test]
+fn a_class_like_the_file_declares_matches_a_standard_library_name_as_php_matches_class_names() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\ninterface environment\n{\n}\n\nclass Report\n{\n    public void run()\n    {\n        Environment.current();\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(resolved(&names, CODE, "Environment.current", 0), b"App\\Tenant\\Store\\Environment");
+}
+
+#[test]
+fn a_standard_library_name_in_a_catch_a_header_or_an_attribute_is_the_class_in_the_sharp_namespace() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\n[Position]\nclass Report : Position, Environment\n{\n    public void run()\n    {\n        try {\n        } catch (Position failure) {\n        }\n    }\n}\n\nenum Suit : string, Position\n{\n}\n\ninterface Named : Environment\n{\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    for (needle, class) in [
+        ("Position]", "Sharp\\Position"),
+        ("Position, Environment", "Sharp\\Position"),
+        ("Environment\n{\n    public", "Sharp\\Environment"),
+        ("Position failure", "Sharp\\Position"),
+        ("Position\n{\n}\n\ninterface", "Sharp\\Position"),
+        ("Environment\n{\n}\n", "Sharp\\Environment"),
+    ] {
+        assert_eq!(String::from_utf8_lossy(resolved(&names, CODE, needle, 0)), class, "`{needle:?}`");
+    }
+}
+
+#[test]
+fn a_collection_type_keeps_its_written_name_unresolved() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nclass Report\n{\n    public void run(List<int> lines, Map<string, int> sizes)\n    {\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    for needle in ["List<", "Map<"] {
+        assert!(!names.contains(&Position::new(offset(CODE, needle, 0))), "`{needle}` has a resolved name");
+    }
+}
+
+#[test]
+fn a_php_file_resolves_a_standard_library_name_in_its_namespace() {
+    const CODE: &str =
+        "<?php namespace App; Position::current(); Int::parse(''); new Environment(); function run(Environment $e) {}";
+    let arena = LocalArena::new();
+    let file = File::ephemeral(Cow::Borrowed(b"src/Store.php"), Cow::Borrowed(CODE.as_bytes()));
+    let program = parse_file(&arena, &file);
+    let names = NameResolver::new(&arena).resolve(program);
+
+    for (needle, class) in [
+        ("Position::", "App\\Position"),
+        ("Int::", "App\\Int"),
+        ("Environment()", "App\\Environment"),
+        ("Environment $e", "App\\Environment"),
+    ] {
+        assert_eq!(String::from_utf8_lossy(resolved(&names, CODE, needle, 0)), class, "`{needle}`");
+    }
 }
 
 #[test]

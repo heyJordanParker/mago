@@ -49,7 +49,10 @@ foreach (array_filter(array_map(trim(...), explode(',', $body))) as $entry) {
 
 $layout = '';
 $sources = dirname(__DIR__) . '/crates/sharp-bridge/src/';
-foreach (['lib.rs' => ['sharp_str', 'sharp_value', 'sharp_node'], 'unit.rs' => ['sharp_unit_header', 'sharp_input']] as $file => $types) {
+foreach ([
+    'lib.rs' => ['sharp_str', 'sharp_value', 'sharp_node'],
+    'unit.rs' => ['sharp_unit_header', 'sharp_input'],
+] as $file => $types) {
     $source = file_get_contents($sources . $file);
     if ($source === false) {
         throw new RuntimeException("Unable to read {$sources}{$file}.");
@@ -57,9 +60,15 @@ foreach (['lib.rs' => ['sharp_str', 'sharp_value', 'sharp_node'], 'unit.rs' => [
 
     foreach ($types as $type) {
         $declaration = [];
-        preg_match('/(#\[repr\([^)]*\)\])\s*(?:#\[[^\]]*\]\s*)*pub (struct|enum) ' . $type . ' \{(.*?)\n\}/s', $source, $declaration);
+        preg_match(
+            '/(#\[repr\([^)]*\)\])\s*(?:#\[[^\]]*\]\s*)*pub (struct|enum) ' . $type . ' \{(.*?)\n\}/s',
+            $source,
+            $declaration,
+        );
         $body = $declaration[3] ?? throw new RuntimeException("Unable to locate `{$type}` in {$file}.");
-        $fields = preg_replace(['~//[^\n]*~', '/\s+/'], ['', ' '], $body) ?? throw new RuntimeException("Unable to read `{$type}`.");
+        $fields = preg_replace(['~//[^\n]*~', '/\s+/'], ['', ' '], $body) ?? throw new RuntimeException(
+            "Unable to read `{$type}`.",
+        );
 
         $layout .= "{$declaration[1]} {$declaration[2]} {$type} {" . trim($fields) . "}\n";
     }
@@ -78,7 +87,10 @@ $marks = (preg_replace('/\s+/', ' ', $marks) ?? throw new RuntimeException('Unab
 foreach ($names[1] as $name) {
     $define = [];
     preg_match('/^#define ' . $name . '\s+(.+?)\s*$/m', $compileHeader, $define);
-    $marks .= "{$name} " . ($define[1] ?? throw new RuntimeException("Unable to find the value of the mark `{$name}`.")) . "\n";
+    $marks .=
+        "{$name} "
+        . ($define[1] ?? throw new RuntimeException("Unable to find the value of the mark `{$name}`."))
+        . "\n";
 }
 
 $abi = hash('xxh128', "kinds\0{$variants}\0layout\0{$layout}\0marks\0{$marks}");

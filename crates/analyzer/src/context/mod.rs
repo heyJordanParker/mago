@@ -18,6 +18,7 @@ use mago_phpdoc_syntax::cst::Element;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_reporting::IssueCollection;
+use mago_reporting::Level;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::comments::docblock::PrecedingDocblocks;
@@ -137,6 +138,17 @@ where
     #[inline]
     pub(crate) fn check_throws(&self) -> bool {
         self.settings.check_throws && !self.dialect.is_sharp()
+    }
+
+    /// Makes an issue about a null check or a `?` that cannot matter an error in a PHP# file, as spec section 14.4
+    /// decides. A PHP file keeps the issue as Mago reports it.
+    pub(crate) fn as_null_check_error(&self, mut issue: Issue) -> Issue {
+        if !self.dialect.is_sharp() {
+            return issue;
+        }
+
+        issue.level = Level::Error;
+        issue.with_note("In PHP# a type holds null only when written with `?` (spec section 24), so a `?` or a null check that cannot matter is an error (spec section 14.4).")
     }
 
     /// Reports a PHP# condition, or an operand of `&&`, `||` or `!`, whose type is not `bool`. Spec section 21 makes each

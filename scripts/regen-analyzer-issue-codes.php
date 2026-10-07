@@ -350,6 +350,7 @@ final class AnalyzerCodeModuleGenerator
         'unavailable-enum-case',
         'not-supported-yet',
         'invalid-local-assignment-value',
+        'rejected-nullable-parameter',
     ];
 
     /**

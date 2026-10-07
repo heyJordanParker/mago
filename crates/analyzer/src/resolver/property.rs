@@ -120,11 +120,10 @@ where
         return Ok(result);
     };
 
-    let is_nullable = object_type.can_be_null() || object_type.possibly_undefined();
     let is_all_null = object_type.is_null() || object_type.is_void();
 
-    if is_null_safe && !is_nullable && !is_all_null {
-        report_redundant_nullsafe(context, operator_span, object_expression, &object_type);
+    if is_null_safe {
+        check_redundant_nullsafe(context, operator_span, object_expression, &object_type);
     }
 
     let mut property_names = Vec::new();
@@ -1404,7 +1403,8 @@ fn report_access_on_null<'ctx, A>(
     }
 }
 
-fn report_redundant_nullsafe<'arena, A>(
+/// Reports a nullsafe operator on an object that is never `null`.
+pub(crate) fn check_redundant_nullsafe<'arena, A>(
     context: &mut Context<'_, 'arena, A>,
     operator_span: Span,
     object_expr: &Expression<'arena>,
@@ -1412,24 +1412,39 @@ fn report_redundant_nullsafe<'arena, A>(
 ) where
     A: Arena,
 {
+    let is_nullable = object_type.can_be_null() || object_type.possibly_undefined();
+    let is_all_null = object_type.is_null() || object_type.is_void();
+    if is_nullable || is_all_null {
+        return;
+    }
+
+    let (nullsafe, access) = if context.dialect.is_sharp() { ("?.", ".") } else { ("?->", "->") };
+
+    // A PHP# file that writes PHP's `?->` already has a parse error at the operator.
+    let written =
+        context.source_file.contents.get(operator_span.start_offset() as usize..operator_span.end_offset() as usize);
+    if written != Some(nullsafe.as_bytes()) {
+        return;
+    }
+
     let object_type_str = object_type.get_id();
 
-    context.collector.propose_with_code(
-        IssueCode::RedundantNullsafeOperator,
-        Issue::help("Redundant nullsafe operator (`?->`) used on an expression that is never `null`.")
+    let issue = context.as_null_check_error(
+        Issue::help(format!("Redundant nullsafe operator (`{nullsafe}`) used on an expression that is never `null`."))
             .with_annotation(
-                Annotation::primary(operator_span).with_message("Nullsafe operator `?->` is unnecessary here"),
+                Annotation::primary(operator_span).with_message(format!("Nullsafe operator `{nullsafe}` is unnecessary here")),
             )
             .with_annotation(
                 Annotation::secondary(object_expr.span())
                     .with_message(format!("This expression (type `{object_type_str}`) is never `null`")),
             )
-            .with_note("The nullsafe operator (`?->`) short-circuits the access if the object is `null`. Since this expression is guaranteed not to be `null`, this check is unnecessary.")
-            .with_help("Consider using the direct property access operator (`->`) for clarity."),
-        |edits| {
-            edits.push(TextEdit::replace(operator_span.to_range(), "->"));
-        },
+            .with_note(format!("The nullsafe operator (`{nullsafe}`) short-circuits the access if the object is `null`. Since this expression is guaranteed not to be `null`, this check is unnecessary."))
+            .with_help(format!("Consider using the direct property access operator (`{access}`) for clarity.")),
     );
+
+    context.collector.propose_with_code(IssueCode::RedundantNullsafeOperator, issue, |edits| {
+        edits.push(TextEdit::replace(operator_span.to_range(), access));
+    });
 }
 
 fn report_access_on_non_object<A>(

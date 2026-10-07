@@ -28,6 +28,9 @@ pub struct ComparisonResult {
     pub replacement_atomic_type: Option<TAtomic>,
     pub type_variable_lower_bounds: Vec<(Word, TemplateBound)>,
     pub type_variable_upper_bounds: Vec<(Word, TemplateBound)>,
+    /// Whether a `nonnull` container refuses a value that may be null, as PHP#'s `Any` does. The caller sets it for a
+    /// `.sharp` file. A PHP file keeps upstream's rule, which lets any `mixed` into `nonnull`.
+    pub strict_nonnull: bool,
 }
 
 impl Default for ComparisonResult {
@@ -47,7 +50,14 @@ impl ComparisonResult {
             replacement_atomic_type: None,
             type_variable_lower_bounds: vec![],
             type_variable_upper_bounds: vec![],
+            strict_nonnull: false,
         }
+    }
+
+    /// A result whose comparison treats `nonnull` as PHP# does when `strict_nonnull` is set.
+    #[must_use]
+    pub fn with_strict_nonnull(strict_nonnull: bool) -> Self {
+        Self { strict_nonnull, ..Self::new() }
     }
 }
 

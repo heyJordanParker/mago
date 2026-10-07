@@ -96,7 +96,8 @@ pub fn inline_forms(checked: &CheckedProgram<'_>) -> Vec<(Vec<u8>, InlineForm)> 
         let name = checked.names().get(&class.name);
         for member in &class.members {
             if let ClassLikeMember::Method(method) = member
-                && let Some(form) = Lowering::new(&lines, checked.names(), checked.types()).form(name, method)
+                && let Some(form) =
+                    Lowering::new(&lines, &checked.file().name, checked.names(), checked.types()).form(name, method)
             {
                 forms.push((key(name, method.name.value), form));
             }

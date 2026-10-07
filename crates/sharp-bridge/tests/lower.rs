@@ -218,7 +218,9 @@ fn php_syntax_returns_a_parse_error_and_no_nodes() {
 
 #[test]
 fn a_construct_outside_the_slice_returns_its_not_supported_error() {
-    let lowered = Lowered::new(&method("        echo extra;\n        return 1;\n"));
+    let lowered = Lowered::new(&method(
+        "        switch (extra) {\n            default: return 1;\n        }\n        return 1;\n",
+    ));
 
     assert_eq!(lowered.diagnostics(), ["9:9 compile error: This statement is not supported yet in PHP#."]);
 }
@@ -291,18 +293,18 @@ fn a_union_of_100_000_types_returns_the_depth_error_and_no_nodes() {
 }
 
 /// A 509-term sum or `??` chain in a method nests its innermost term 512 levels deep, the most the checker allows, and
-/// so do a null-safe call chain of 509 calls and a 510-term sum as a field's initial value. Each is checked on a thread
+/// so do `this` with a chain of 508 calls, null-safe after the first, and a 510-term sum as a field's initial value. Each is checked on a thread
 /// with the 8 MiB stack `mago` gives its smallest worker, then lowers from a stack far smaller than the recursion needs,
 /// which proves `ensure_sufficient_stack` guards every recursive path of `lower` whatever stack its caller starts on.
 #[test]
 fn the_deepest_file_the_checker_accepts_lowers_from_a_small_stack() {
     let codes = [
         method(&format!("        return {};\n", vec!["extra"; 509].join(" + "))),
-        method(&format!("        return {};\n", vec!["extra"; 509].join(" ?? "))),
+        method_with("int run(int? extra)", &format!("        return {} ?? 0;\n", vec!["extra"; 508].join(" ?? "))),
         method_in(
             "Report : Base",
             RUN,
-            &format!("        this{};\n        return extra;\n", "?.total(extra)".repeat(508)),
+            &format!("        this.total(extra){};\n        return extra;\n", "?.total(extra)".repeat(507)),
         ),
         format!(
             "namespace App.Tenant;\n\nclass Report\n{{\n    private int total = {};\n}}\n",
@@ -370,7 +372,7 @@ fn every_line_is_the_line_the_zend_scanner_counts() {
     assert_eq!(lines, [("SHARP_AST_RETURN".to_owned(), 5, 0), ("SHARP_AST_METHOD".to_owned(), 3, 6)]);
 
     let refused = Lowered::new("class Report\r{\r    public void run() { echo 1; }\r}\r");
-    assert_eq!(refused.diagnostics(), ["3:25 compile error: This statement is not supported yet in PHP#."]);
+    assert_eq!(refused.diagnostics(), ["3:25 compile error: PHP# has no `echo`: write `printf` or `fwrite`."]);
 }
 
 /// ```php
@@ -1976,6 +1978,61 @@ fn literals_are_short_arrays_and_an_index_is_a_dim() {
 }
 
 /// ```php
+/// public function run(mixed $value, mixed $maybe): mixed { $held = $maybe; return $value; }
+/// ```
+///
+/// `Any` and `Any?` are both PHP's `mixed`, which already holds null and refuses `?`, so neither carries
+/// `ZEND_TYPE_NULLABLE`. `[1]` is `ZEND_NAME_NOT_FQ`.
+#[test]
+fn any_and_nullable_any_are_mixed() {
+    let lowered = Lowered::new(
+        "class Report\n{\n    public Any run(Any value, Any? maybe)\n    {\n        Any? held = maybe;\n        return value;\n    }\n}\n",
+    );
+    let method = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a method");
+
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 0)),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                ZVAL [1] "mixed"
+                ZVAL "value"
+                null
+                null
+                null
+                null
+              PARAM
+                ZVAL [1] "mixed"
+                ZVAL "maybe"
+                null
+                null
+                null
+                null
+        "#}
+    );
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 3)),
+        indoc! {r#"
+            ZVAL [1] "mixed"
+        "#}
+    );
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "held"
+                VAR
+                  ZVAL "maybe"
+              RETURN
+                VAR
+                  ZVAL "value"
+        "#}
+    );
+}
+
+/// ```php
 /// public function run(): void
 /// {
 ///     return;
@@ -2799,7 +2856,7 @@ fn super_calls_are_static_calls_on_parent() {
 /// ```php
 /// public function __construct(\Lib\Row $row) {}
 /// public static function fromSchema(\Lib\Row $row): static { return new static($row); }
-/// public static function find(\Lib\Row $row): ?static { return static::fromSchema($row); }
+/// public static function find(\Lib\Row $row): ?static { return $row->saved ? static::fromSchema($row) : null; }
 /// public static function counted(\Lib\Row $row): static|int { return static::fromSchema($row); }
 /// ```
 ///
@@ -2809,8 +2866,8 @@ fn super_calls_are_static_calls_on_parent() {
 #[test]
 fn self_is_static_and_required_adds_no_flag() {
     let lowered = Lowered::with(
-        "namespace App.Tenant;\n\nimport Lib.Row;\n\npublic abstract class DatabaseEntity\n{\n    public required DatabaseEntity(Row row)\n    {\n    }\n\n    public static Self fromSchema(Row row)\n    {\n        return new Self(row);\n    }\n\n    public static Self? find(Row row) => Self.fromSchema(row);\n\n    public static Self|int counted(Row row) => Self.fromSchema(row);\n}\n",
-        &[("src/Lib/Row.php", "<?php namespace Lib; final class Row {}")],
+        "namespace App.Tenant;\n\nimport Lib.Row;\n\npublic abstract class DatabaseEntity\n{\n    public required DatabaseEntity(Row row)\n    {\n    }\n\n    public static Self fromSchema(Row row)\n    {\n        return new Self(row);\n    }\n\n    public static Self? find(Row row) => row.saved ? Self.fromSchema(row) : null;\n\n    public static Self|int counted(Row row) => Self.fromSchema(row);\n}\n",
+        &[("src/Lib/Row.php", "<?php namespace Lib; final class Row { public bool $saved = true; }")],
     );
 
     assert_eq!(
@@ -2861,12 +2918,18 @@ fn self_is_static_and_required_adds_no_flag() {
                 null
                 STMT_LIST
                   RETURN
-                    STATIC_CALL
-                      ZVAL [1] "static"
-                      ZVAL "fromSchema"
-                      ARG_LIST
+                    CONDITIONAL
+                      PROP
                         VAR
                           ZVAL "row"
+                        ZVAL "saved"
+                      STATIC_CALL
+                        ZVAL [1] "static"
+                        ZVAL "fromSchema"
+                        ARG_LIST
+                          VAR
+                            ZVAL "row"
+                      ZVAL null
                 TYPE [271]
                 null
               METHOD [17] "counted" @18-18
@@ -3092,7 +3155,7 @@ fn a_static_field_or_property_is_a_static_property_group() {
 /// ```php
 /// \Lib\Calc::$rate = 2;
 /// \Lib\Calc::$count++;
-/// \Lib\Calc::$rate ??= 1;
+/// \Lib\Calc::$limit ??= 1;
 /// ```
 ///
 /// A static member written through its class is a static property, as php-src's grammar builds `Class::$name`. The
@@ -3100,7 +3163,14 @@ fn a_static_field_or_property_is_a_static_property_group() {
 #[test]
 fn a_static_member_written_through_its_class_is_a_static_property() {
     assert_eq!(
-        body("        Calc.rate = 2;\n        Calc.count++;\n        Calc.rate ??= 1;\n        return 1;\n"),
+        body_in(
+            RUN,
+            "        Calc.rate = 2;\n        Calc.count++;\n        Calc.limit ??= 1;\n        return 1;\n",
+            &[(
+                "src/Lib/Calc.php",
+                "<?php namespace Lib; final class Calc { public static int $rate = 0; public static int $count = 0; public static ?int $limit = null; }",
+            )],
+        ),
         indoc! {r#"
             STMT_LIST
               ASSIGN
@@ -3115,7 +3185,7 @@ fn a_static_member_written_through_its_class_is_a_static_property() {
               ASSIGN_COALESCE
                 STATIC_PROP
                   ZVAL "Lib\\Calc"
-                  ZVAL "rate"
+                  ZVAL "limit"
                 ZVAL 1
               RETURN
                 ZVAL 1
@@ -4020,6 +4090,344 @@ fn int_and_float_are_the_classes_of_the_sharp_namespace() {
 }
 
 /// ```php
+/// $here = new \Sharp\Position(__FILE__, 9, 22, 'App.Tenant.Report.run');
+/// $later = fn () => new \Sharp\Position(__FILE__, 10, 29, 'App.Tenant.Report.run');
+/// return 1;
+/// ```
+///
+/// Spec section 27: `Position.current()` in a body gives the position where it is written: the file, the line and the
+/// byte column of `Position`, and the enclosing method's full dotted name, which a lambda shares. The method's name
+/// ignores case, as PHP's does.
+#[test]
+fn position_current_is_a_new_position_of_its_file_line_column_and_enclosing_method() {
+    let source = "        const here = Position.current();\n        const later = () => Position.current();\n        return 1;\n";
+
+    assert_eq!(
+        body(source),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "here"
+                NEW
+                  ZVAL "Sharp\\Position"
+                  ARG_LIST
+                    ZVAL "src/Report.sharp"
+                    ZVAL 9
+                    ZVAL 22
+                    ZVAL "App.Tenant.Report.run"
+              ASSIGN
+                VAR
+                  ZVAL "later"
+                ARROW_FUNC "" @10-10
+                  PARAM_LIST
+                  null
+                  NEW
+                    ZVAL "Sharp\\Position"
+                    ARG_LIST
+                      ZVAL "src/Report.sharp"
+                      ZVAL 10
+                      ZVAL 29
+                      ZVAL "App.Tenant.Report.run"
+                  null
+                  null
+              RETURN
+                ZVAL 1
+        "#}
+    );
+    assert_eq!(body(&source.replace("current", "CURRENT")), body(source));
+}
+
+/// ```php
+/// public function __construct()
+/// {
+///     $this->created = new \Sharp\Position(__FILE__, 3, 32, 'Report.Report');
+/// }
+/// ```
+///
+/// An initial value runs at the start of the constructor, so `Position.current()` there names the constructor, whether
+/// or not the class writes one. A file without a namespace names the class alone.
+#[test]
+fn position_current_in_an_initial_value_names_the_constructor_the_class_gets() {
+    let lowered = Lowered::new("class Report\n{\n    private Position created = Position.current();\n}\n");
+    let class = lowered.child(lowered.root(), 1);
+    let constructor = lowered.child(lowered.child(class, 2), 1);
+
+    assert_eq!(
+        lowered.render(lowered.child(constructor, 2)),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                PROP
+                  VAR
+                    ZVAL "this"
+                  ZVAL "created"
+                NEW
+                  ZVAL "Sharp\\Position"
+                  ARG_LIST
+                    ZVAL "src/Report.sharp"
+                    ZVAL 3
+                    ZVAL 32
+                    ZVAL "Report.Report"
+        "#}
+    );
+}
+
+/// ```php
+/// public function __construct()
+/// {
+///     $this->created = new \Sharp\Position(__FILE__, 5, 32, 'App.Tenant.Report.Report');
+///     $here = new \Sharp\Position(__FILE__, 9, 22, 'App.Tenant.Report.Report');
+/// }
+/// public function run(): int
+/// {
+///     return (new \Sharp\Position(__FILE__, 14, 16, 'App.Tenant.Report.run'))->line;
+/// }
+/// ```
+///
+/// A written constructor and its initial values name the constructor, and the method after it names itself.
+#[test]
+fn position_current_in_a_written_constructor_and_its_initial_values_names_the_constructor() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    private Position created = Position.current();\n\n    public Report()\n    {\n        const here = Position.current();\n    }\n\n    public int run()\n    {\n        return Position.current().line;\n    }\n}\n",
+    );
+    let members = lowered.child(lowered.child(lowered.root(), 2), 2);
+
+    assert_eq!(
+        lowered.render(lowered.child(lowered.child(members, 1), 2)),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                PROP
+                  VAR
+                    ZVAL "this"
+                  ZVAL "created"
+                NEW
+                  ZVAL "Sharp\\Position"
+                  ARG_LIST
+                    ZVAL "src/Report.sharp"
+                    ZVAL 5
+                    ZVAL 32
+                    ZVAL "App.Tenant.Report.Report"
+              ASSIGN
+                VAR
+                  ZVAL "here"
+                NEW
+                  ZVAL "Sharp\\Position"
+                  ARG_LIST
+                    ZVAL "src/Report.sharp"
+                    ZVAL 9
+                    ZVAL 22
+                    ZVAL "App.Tenant.Report.Report"
+        "#}
+    );
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                PROP
+                  NEW
+                    ZVAL "Sharp\\Position"
+                    ARG_LIST
+                      ZVAL "src/Report.sharp"
+                      ZVAL 14
+                      ZVAL 16
+                      ZVAL "App.Tenant.Report.run"
+                  ZVAL "line"
+        "#}
+    );
+}
+
+/// ```php
+/// public string $folder { get => (new \Sharp\Position(__FILE__, 5, 29, 'App.Tenant.Report.folder'))->directory; }
+/// public function line(): int { return (new \Sharp\Position(__FILE__, 12, 26, 'App.Tenant.Status.line'))->line; }
+/// ```
+///
+/// A computed property's body names the property, and an enum's method names the enum and the method.
+#[test]
+fn position_current_in_a_computed_property_or_an_enum_method_names_its_member() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public string folder => Position.current().directory;\n}\n\nenum Status\n{\n    case Active;\n\n    public int line() => Position.current().line;\n}\n",
+    );
+
+    assert_eq!(positions(&lowered), ["5:29 App.Tenant.Report.folder", "12:26 App.Tenant.Status.line"]);
+}
+
+/// ```php
+/// public string $slug { get { return (new \Sharp\Position(__FILE__, 5, 39, 'App.Tenant.Report.slug'))->function; } }
+/// ```
+///
+/// A `get` body names its property, as C#'s `[CallerMemberName]` names a property for code in its accessors.
+#[test]
+fn position_current_in_a_get_body_names_its_property() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public string slug { get { return Position.current().function; } }\n}\n",
+    );
+
+    assert_eq!(positions(&lowered), ["5:39 App.Tenant.Report.slug"]);
+}
+
+/// ```php
+/// public string $folder { get => (new \Sharp\Position(__FILE__, 5, 29, 'App.Tenant.Report.folder'))->directory; }
+/// public string $title { set { $this->title = (new \Sharp\Position(__FILE__, 6, 46, 'App.Tenant.Report.title'))->function; } }
+/// ```
+///
+/// A `set` body names its property, and the computed property before it does not leak its name into it.
+#[test]
+fn position_current_in_a_set_body_names_its_property() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public string folder => Position.current().directory;\n    public string title { get; set { field = Position.current().function; } }\n}\n",
+    );
+
+    assert_eq!(positions(&lowered), ["5:29 App.Tenant.Report.folder", "6:46 App.Tenant.Report.title"]);
+}
+
+/// ```php
+/// public function __construct(
+///     public string $code { get { return (new \Sharp\Position(__FILE__, 5, 53, 'App.Tenant.Report.code'))->function; } set { $this->code = $value; } },
+/// ) {
+///     $here = new \Sharp\Position(__FILE__, 7, 22, 'App.Tenant.Report.Report');
+/// }
+/// ```
+///
+/// A property declared on a constructor parameter names itself in its bodies, and the constructor's body after it
+/// names the constructor again.
+#[test]
+fn position_current_in_a_constructor_parameters_get_body_names_its_property_and_the_body_after_names_the_constructor() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public Report(public string code { get { return Position.current().function; } set => field = value; })\n    {\n        const here = Position.current();\n    }\n}\n",
+    );
+
+    assert_eq!(positions(&lowered), ["5:53 App.Tenant.Report.code", "7:22 App.Tenant.Report.Report"]);
+}
+
+/// ```php
+/// public function __construct()
+/// {
+///     $this->created = new \Sharp\Position(__FILE__, 6, 32, 'App.Tenant.Report.Report');
+/// }
+/// ```
+///
+/// An initial value declared after a computed property still runs in the constructor, so it names the constructor.
+#[test]
+fn position_current_in_an_initial_value_after_a_computed_property_names_the_constructor() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public string folder => Position.current().directory;\n    private Position created = Position.current();\n}\n",
+    );
+
+    assert_eq!(positions(&lowered), ["6:32 App.Tenant.Report.Report", "5:29 App.Tenant.Report.folder"]);
+}
+
+/// Each `Position.current()` as `line:column function`, in the order the bridge lowers them.
+fn positions(lowered: &Lowered) -> Vec<String> {
+    assert_eq!(lowered.diagnostics(), Vec::<String>::new(), "the source lowers");
+
+    lowered
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.kind == sharp_kind::SHARP_AST_NEW)
+        .map(|(index, node)| {
+            let arguments = lowered.child(index as u32, 1);
+            let argument = |index| &lowered.nodes()[lowered.child(arguments, index) as usize];
+
+            format!("{}:{} {}", node.line, argument(2).long_value, lowered.text(argument(3).text))
+        })
+        .collect()
+}
+
+/// ```php
+/// $folder = (new \Sharp\Position(__FILE__, 9, 24, 'App.Tenant.Report.run'))->directory;
+/// return 1;
+/// ```
+#[test]
+fn a_member_of_position_current_is_a_property_read_on_the_new_position() {
+    assert_eq!(
+        body("        const folder = Position.current().directory;\n        return 1;\n"),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "folder"
+                PROP
+                  NEW
+                    ZVAL "Sharp\\Position"
+                    ARG_LIST
+                      ZVAL "src/Report.sharp"
+                      ZVAL 9
+                      ZVAL 24
+                      ZVAL "App.Tenant.Report.run"
+                  ZVAL "directory"
+              RETURN
+                ZVAL 1
+        "#}
+    );
+}
+
+/// ```php
+/// $settings = new \Sharp\Environment();
+/// $lines = \Sharp\List::wrap($extra);
+/// return 1;
+/// ```
+#[test]
+fn environment_and_list_are_the_classes_of_the_sharp_namespace() {
+    assert_eq!(
+        body(
+            "        const settings = new Environment();\n        const lines = List.wrap(extra);\n        return 1;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "settings"
+                NEW
+                  ZVAL "Sharp\\Environment"
+                  ARG_LIST
+              ASSIGN
+                VAR
+                  ZVAL "lines"
+                STATIC_CALL
+                  ZVAL "Sharp\\List"
+                  ZVAL "wrap"
+                  ARG_LIST
+                    VAR
+                      ZVAL "extra"
+              RETURN
+                ZVAL 1
+        "#}
+    );
+}
+
+/// ```php
+/// \App\Position::current();
+/// ```
+///
+/// Only the standard library's `Position` gives a position. An imported or declared `Position` is the file's own class.
+#[test]
+fn an_imported_or_declared_position_is_an_ordinary_static_call() {
+    let imported = Lowered::with(
+        "namespace App.Tenant;\n\nimport App.Position;\n\nclass Report\n{\n    public int run()\n    {\n        Position.current();\n        return 1;\n    }\n}\n",
+        &[(
+            "src/App/Position.php",
+            "<?php namespace App; final class Position { public static function current(): int { return 1; } }",
+        )],
+    );
+    let declared = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public int run()\n    {\n        Position.current();\n        return 1;\n    }\n}\n\nclass Position\n{\n    public static int current() => 1;\n}\n",
+    );
+
+    for (lowered, class) in [(imported, r#""App\\Position""#), (declared, r#""App\\Tenant\\Position""#)] {
+        assert_eq!(
+            lowered.body(),
+            format!(
+                "STMT_LIST\n  STATIC_CALL\n    ZVAL {class}\n    ZVAL \"current\"\n    ARG_LIST\n  RETURN\n    ZVAL 1\n"
+            )
+        );
+    }
+}
+
+/// ```php
 /// return $this->total($extra, rate: 2)->value;
 /// ```
 #[test]
@@ -4202,6 +4610,24 @@ fn comparison_operators_are_the_kinds_php_gives_them() {
 }
 
 /// ```php
+/// $a = $extra; $a === null; null !== $a; $a == $a;
+/// ```
+///
+/// `== null` and `!= null` test for null alone, so `0 == null` is false. `[16]` and `[17]` are `ZEND_IS_IDENTICAL` and
+/// `ZEND_IS_NOT_IDENTICAL`, and `==` between two values stays `ZEND_IS_EQUAL`, `[18]`.
+#[test]
+fn equality_with_null_is_identity() {
+    let tree = body_in(
+        "int run(int? extra)",
+        "        let a = extra;\n        a == null;\n        null != a;\n        a == a;\n        return 1;\n",
+        &[],
+    );
+    let operators: Vec<&str> = tree.lines().filter(|line| line.starts_with("  ") && !line.starts_with("   ")).collect();
+
+    assert_eq!(operators, ["  ASSIGN", "  BINARY_OP [16]", "  BINARY_OP [17]", "  BINARY_OP [18]", "  RETURN"]);
+}
+
+/// ```php
 /// $a && $a || !$a;
 /// ```
 ///
@@ -4298,7 +4724,7 @@ fn exponentiation_is_a_right_grouped_pow_under_unary_minus() {
 fn null_coalescing_is_coalesce() {
     assert_eq!(
         child_body(
-            RUN,
+            "int run(int? extra)",
             "        return extra ?? this.total() ?? 0;\n",
             "<?php namespace App\\Tenant; class Base { public function total(): ?int { return null; } }",
         ),
@@ -4392,7 +4818,7 @@ fn casts_between_numbers_are_casts_to_their_types() {
 fn null_coalescing_assignment_is_assign_coalesce() {
     assert_eq!(
         child_body(
-            RUN,
+            "int run(int? extra)",
             "        extra ??= 1;\n        this.count ??= extra;\n        return extra;\n",
             "<?php namespace App\\Tenant; class Base { public ?int $count = null; }",
         ),
@@ -4417,14 +4843,14 @@ fn null_coalescing_assignment_is_assign_coalesce() {
 }
 
 /// ```php
-/// return $this?->total($extra)?->value->cents;
+/// return $base?->total($extra)?->value->cents;
 /// ```
 #[test]
 fn null_safe_calls_and_reads_are_nullsafe_kinds() {
     assert_eq!(
         child_body(
-            "int? run(int extra)",
-            "        return this?.total(extra)?.value.cents;\n",
+            "int? run(Base? base, int extra)",
+            "        return base?.total(extra)?.value.cents;\n",
             "<?php namespace App\\Tenant; final class Money { public int $cents = 0; } final class Total { public Money $value; } class Base { public function total(int $a): ?Total { return null; } }",
         ),
         indoc! {r#"
@@ -4434,7 +4860,7 @@ fn null_safe_calls_and_reads_are_nullsafe_kinds() {
                   NULLSAFE_PROP
                     NULLSAFE_METHOD_CALL
                       VAR
-                        ZVAL "this"
+                        ZVAL "base"
                       ZVAL "total"
                       ARG_LIST
                         VAR
@@ -4454,7 +4880,7 @@ fn null_safe_calls_and_reads_are_nullsafe_kinds() {
 fn null_safe_access_on_an_index_coalesces_a_missing_key_to_null() {
     assert_eq!(
         body_in(
-            "int run(List<Calc> extra)",
+            "int? run(List<Calc?> extra)",
             "        return extra[0]?.value ?? (extra[1])?.total();\n",
             &[(
                 "src/Lib/Calc.php",
@@ -5018,6 +5444,36 @@ fn a_function_call_is_a_call_of_the_global_function() {
                             NAMED_ARG
                               ZVAL "mode"
                               ZVAL 0
+        "#}
+    );
+}
+
+/// ```php
+/// exit(1);
+/// exit($extra);
+/// exit();
+/// ```
+///
+/// PHP 8.4 makes `exit` a function, so php-src's grammar builds `exit(…)` as a call of the global function `exit`,
+/// named with `ZEND_NAME_FQ`, which is 0.
+#[test]
+fn exit_is_a_call_of_the_global_function_exit() {
+    assert_eq!(
+        body("        exit(1);\n        exit(extra);\n        exit();\n"),
+        indoc! {r#"
+            STMT_LIST
+              CALL
+                ZVAL "exit"
+                ARG_LIST
+                  ZVAL 1
+              CALL
+                ZVAL "exit"
+                ARG_LIST
+                  VAR
+                    ZVAL "extra"
+              CALL
+                ZVAL "exit"
+                ARG_LIST
         "#}
     );
 }
@@ -5825,6 +6281,63 @@ fn each_arm_of_a_match_that_starts_a_statement_is_on_its_pattern_line() {
     lines.sort_unstable();
 
     assert_eq!(lines, [10, 11, 11, 12]);
+}
+
+/// ```php
+/// $forced = $extra > 9;
+/// return match (true) {
+///     $extra === 0 && $forced => 1,
+///     default => 2,
+/// };
+/// ```
+///
+/// A `when` condition that ends in a bare name is the arm's `&&` operand, as `forced == true` is.
+#[test]
+fn a_when_condition_that_is_a_bare_name_is_the_arms_and_operand() {
+    let guarded = |condition: &str| {
+        body(&format!(
+            "        const forced = extra > 9;\n        return match (extra) {{\n            0 when {condition} => 1,\n            default => 2,\n        }};\n"
+        ))
+    };
+    let bare = guarded("forced");
+
+    assert_eq!(
+        bare,
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "forced"
+                GREATER
+                  VAR
+                    ZVAL "extra"
+                  ZVAL 9
+              RETURN
+                MATCH
+                  ZVAL true
+                  MATCH_ARM_LIST
+                    MATCH_ARM
+                      EXPR_LIST
+                        AND
+                          BINARY_OP [16]
+                            VAR
+                              ZVAL "extra"
+                            ZVAL 0
+                          VAR
+                            ZVAL "forced"
+                      ZVAL 1
+                    MATCH_ARM
+                      null
+                      ZVAL 2
+        "#}
+    );
+    assert_eq!(
+        guarded("forced == true"),
+        bare.replace(
+            "              VAR\n                ZVAL \"forced\"\n          ZVAL 1\n",
+            "              BINARY_OP [18]\n                VAR\n                  ZVAL \"forced\"\n                ZVAL true\n          ZVAL 1\n",
+        )
+    );
 }
 
 /// ```php
