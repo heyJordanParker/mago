@@ -1,5 +1,6 @@
 use mago_allocator::Arena;
 use mago_word::Word;
+use mago_word::ascii_lowercase_word;
 
 use mago_codex::metadata::class_like::ClassLikeMetadata;
 use mago_codex::ttype::atomic::TAtomic;
@@ -226,7 +227,11 @@ where
                 report_non_existent_class(context, fq_class_id, class_expr.span());
             }
 
-            artifacts.symbol_references.add_reference_to_symbol(&block_context.scope, fq_class_id, false);
+            artifacts.symbol_references.add_reference_to_symbol(
+                &block_context.scope,
+                ascii_lowercase_word(fq_class_id.as_bytes()),
+                false,
+            );
 
             if let Some(generic_class_string) = generic_class_string {
                 return Some(generic_class_string);

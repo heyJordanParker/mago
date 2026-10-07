@@ -4740,6 +4740,34 @@ mod tests {
         assert_matches_full(&service, &db, "the type-hinted class was added back");
     }
 
+    /// Every recorded reference names a class-like or function by the lowercase name its declaration has, however
+    /// the code wrote it, because the warm path finds changes by the declaration's name. Only a global constant
+    /// keeps its case, as its declaration does.
+    #[test]
+    fn test_references_name_class_likes_and_functions_by_their_lowercase_names() {
+        let declarations = "<?php\nnamespace App;\n\n#[\\Attribute]\nclass Marker {}\n\nclass Item\n{\n    public const KIND = 1;\n}\n\nclass BaseBox {}\n\ninterface Sized {}\n\nfunction helper(): int { return 1; }\n\nconst Limit = 3;\n";
+        let user = "<?php\nnamespace App;\n\n#[MARKER]\nconst Size = 2;\n\nenum Mode\n{\n    #[MARKER]\n    case On;\n}\n\n#[MARKER]\nfinal class Box extends BASEBOX implements SIZED\n{\n    #[MARKER]\n    public const Shape = 1;\n\n    #[MARKER]\n    public ITEM $item;\n\n    public function __construct(#[MARKER] ITEM $item)\n    {\n        $this->item = $item;\n    }\n\n    /**\n     * @param list<ITEM> $items\n     * @param ITEM::KIND $kind\n     */\n    #[MARKER]\n    public function fill(array $items, int $kind, ?MISSING $missing = null): ITEM\n    {\n        return $items[0] ?? new ITEM();\n    }\n\n    public function size(): int\n    {\n        return HELPER() + Limit + ITEM::KIND + strlen(ITEM::class);\n    }\n}\n";
+        let sharp = "namespace App;\n\nclass Report\n{\n    public static string kind()\n    {\n        return typeof(Item);\n    }\n}\n";
+        let db = make_database(vec![
+            ("src/declarations.php", declarations),
+            ("src/user.php", user),
+            ("src/report.sharp", sharp),
+        ]);
+        let mut service = make_watch_service(&db);
+        service.analyze().expect("Analysis failed.");
+
+        let codebase = &service.codebase;
+        let mut written_case = Vec::new();
+        service.native_symbol_references.for_each_reference(|origin, target, kind| {
+            let names_a_constant = target.1.is_empty() && codebase.constants.contains_key(&target.0);
+            if !names_a_constant && target.0 != mago_word::ascii_lowercase_word(target.0.as_bytes()) {
+                written_case.push(format!("{origin:?} -> {target:?} ({kind:?})"));
+            }
+        });
+
+        assert!(written_case.is_empty(), "references keep the written case:\n{}", written_case.join("\n"));
+    }
+
     /// Create a class, add a child in another cycle, then modify parent, then delete child.
     #[test]
     fn test_watch_lifecycle_create_inherit_modify_delete() {

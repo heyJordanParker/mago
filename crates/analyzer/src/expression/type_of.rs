@@ -5,6 +5,7 @@ use mago_codex::ttype::atomic::scalar::class_like_string::TClassLikeString;
 use mago_codex::ttype::union::TUnion;
 use mago_span::HasSpan;
 use mago_syntax::cst::TypeOf;
+use mago_word::ascii_lowercase_word;
 use mago_word::word;
 
 use crate::analyzable::Analyzable;
@@ -31,7 +32,11 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for TypeOf<'arena> {
             None => report_non_existent_class_like(context, self.class.span(), name),
         }
 
-        artifacts.symbol_references.add_reference_to_symbol(&block_context.scope, name, false);
+        artifacts.symbol_references.add_reference_to_symbol(
+            &block_context.scope,
+            ascii_lowercase_word(name.as_bytes()),
+            false,
+        );
         artifacts.set_expression_type(
             self,
             TUnion::from_atomic(TAtomic::Scalar(TScalar::ClassLikeString(TClassLikeString::literal(name)))),
