@@ -2,10 +2,10 @@
 
 set -euo pipefail
 
-REPO="carthage-software/mago"
+REPO="heyJordanParker/mago-sharp"
 BIN_NAME="mago"
 TMP_DIR=$(mktemp -d)
-NEW_ISSUE="https://github.com/carthage-software/mago/issues/new"
+NEW_ISSUE="https://github.com/heyJordanParker/mago-sharp/issues/new"
 SIGNER_WORKFLOW=".github/workflows/cd.yml"
 INSTALL_DIR=""
 VERSION=""

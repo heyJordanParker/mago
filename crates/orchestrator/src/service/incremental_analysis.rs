@@ -54,6 +54,7 @@ use crate::progress::create_progress_bar;
 use crate::progress::remove_progress_bar;
 use crate::service::body_return::resolve_body_returns;
 use crate::service::issue_reconciliation::DeferredIssueReconciler;
+use crate::service::issue_reconciliation::drop_follow_on_issues;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::service::telemetry::HangWatcher;
 #[cfg(not(target_arch = "wasm32"))]
@@ -1276,7 +1277,8 @@ impl IncrementalAnalysisService {
         }
 
         let semantics_checker = SemanticsChecker::new(self.settings.version);
-        issues.extend(semantics_checker.check(&file, program, &resolved_names));
+        let semantic_issues = semantics_checker.check(&file, program, &resolved_names);
+        issues.extend(semantic_issues.iter().cloned());
 
         let mut analysis_result = AnalysisResult::new(SymbolReferences::new());
         let mut analyzer =
@@ -1296,12 +1298,13 @@ impl IncrementalAnalysisService {
             }
         };
 
+        let analyzer_issues = drop_follow_on_issues(&file, &semantic_issues, analysis_result.issues);
         if self.late_symbol_references.is_empty() {
-            issues.extend(analysis_result.issues);
+            issues.extend(analyzer_issues);
         } else {
             issues.extend(
                 LateSymbolReferenceIssueReconciler::new(&self.codebase, &self.symbol_references)
-                    .reconcile(analysis_result.issues),
+                    .reconcile(analyzer_issues),
             );
         }
         Some((issues, artifacts))
@@ -1330,7 +1333,8 @@ impl IncrementalAnalysisService {
         }
 
         let semantics_checker = SemanticsChecker::new(self.settings.version);
-        issues.extend(semantics_checker.check(&file, program, &resolved_names));
+        let semantic_issues = semantics_checker.check(&file, program, &resolved_names);
+        issues.extend(semantic_issues.iter().cloned());
 
         let mut analysis_result = AnalysisResult::new(SymbolReferences::new());
         let mut analyzer =
@@ -1346,12 +1350,13 @@ impl IncrementalAnalysisService {
             issues.push(Issue::error(format!("Analysis error: {err}")));
         }
 
+        let analyzer_issues = drop_follow_on_issues(&file, &semantic_issues, analysis_result.issues);
         if self.late_symbol_references.is_empty() {
-            issues.extend(analysis_result.issues);
+            issues.extend(analyzer_issues);
         } else {
             issues.extend(
                 LateSymbolReferenceIssueReconciler::new(&self.codebase, &self.symbol_references)
-                    .reconcile(analysis_result.issues),
+                    .reconcile(analyzer_issues),
             );
         }
         issues
@@ -1453,10 +1458,6 @@ impl IncrementalAnalysisService {
                 let program = parse_file_with_settings(arena, &source_file, parser_settings);
                 let resolved_names = NameResolver::new(arena).resolve(program);
 
-                if program.has_errors() {
-                    analysis_result.issues.extend(program.errors.iter().map(Issue::from));
-                }
-
                 let semantics_checker = SemanticsChecker::new(settings.version);
                 let mut analyzer =
                     Analyzer::new(arena, &source_file, &resolved_names, codebase, plugin_registry, settings.clone());
@@ -1471,8 +1472,20 @@ impl IncrementalAnalysisService {
                     analyzer = analyzer.with_additional_symbol_references(&external_symbol_references);
                 }
 
-                analysis_result.issues.extend(semantics_checker.check(&source_file, program, &resolved_names));
-                let artifacts = analyzer.analyze_with_artifacts(program, &mut analysis_result)?;
+                let semantic_issues = semantics_checker.check(&source_file, program, &resolved_names);
+                let artifacts = if program.dialect.is_sharp() {
+                    let artifacts = analyzer.analyze_with_artifacts(program, &mut analysis_result)?;
+                    let analyzer_issues = std::mem::take(&mut analysis_result.issues);
+                    let analyzer_issues = drop_follow_on_issues(&source_file, &semantic_issues, analyzer_issues);
+                    analysis_result.issues.extend(program.errors.iter().map(Issue::from));
+                    analysis_result.issues.extend(semantic_issues);
+                    analysis_result.issues.extend(analyzer_issues);
+                    artifacts
+                } else {
+                    analysis_result.issues.extend(program.errors.iter().map(Issue::from));
+                    analysis_result.issues.extend(semantic_issues);
+                    analyzer.analyze_with_artifacts(program, &mut analysis_result)?
+                };
                 #[cfg(not(target_arch = "wasm32"))]
                 let snapshot_start = (trace_enabled && (after_file || after_analysis)).then(Instant::now);
                 let snapshot = if after_file || after_analysis {

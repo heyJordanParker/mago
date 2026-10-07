@@ -206,7 +206,8 @@ where
     }
 
     /// Parses a PHP# `match`. Its arms are written `pattern => value`, `pattern when condition => value` and
-    /// `default => value`, and an arm's value may be a block.
+    /// `default => value`, and an arm's value may be a block. A `when` condition holds operators that bind as tightly
+    /// as `??` or tighter, as in C#, so the arm's `=>` ends it, and a `? :` or a lambda in it needs parentheses.
     pub(crate) fn parse_pattern_match(&mut self) -> Result<PatternMatch<'arena>, ParseError> {
         let r#match = self.expect_keyword(T!["match"])?;
         let left_parenthesis = self.stream.eat_span(T!["("])?;
@@ -236,9 +237,10 @@ where
 
         let pattern = self.parse_pattern()?;
         let guard = match self.stream.lookahead(0)? {
-            Some(token) if token.kind == T![Identifier] && token.value == b"when" => {
-                Some(MatchGuard { when: self.expect_any_keyword()?, condition: self.parse_expression()? })
-            }
+            Some(token) if token.kind == T![Identifier] && token.value == b"when" => Some(MatchGuard {
+                when: self.expect_any_keyword()?,
+                condition: self.parse_expression_with_precedence(Precedence::NullCoalesce)?,
+            }),
             _ => None,
         };
 
