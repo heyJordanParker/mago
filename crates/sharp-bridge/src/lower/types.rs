@@ -107,10 +107,18 @@ impl<'analysis> Types<'analysis> {
         Declaration { kind, class: metadata.original_name, name: metadata.original_name, public: true }
     }
 
-    /// The fully qualified name of the backed enum every value of `atomic` is a case of, as [`get_backed_enum`] finds
-    /// it.
-    pub(crate) fn backed_enum(&self, atomic: &TAtomic) -> Option<&[u8]> {
-        get_backed_enum(atomic, self.codebase).map(|backed_enum| backed_enum.original_name.as_bytes())
+    /// The fully qualified name of the one backed enum every value of `r#type` but `null` is a case of, as
+    /// [`get_backed_enum`] finds it in each.
+    pub(crate) fn backed_enum(&self, r#type: &TUnion) -> Option<&'analysis [u8]> {
+        let classes: Vec<&[u8]> = r#type
+            .types
+            .iter()
+            .filter(|atomic| !atomic.is_null())
+            .map(|atomic| get_backed_enum(atomic, self.codebase).map(|backed_enum| backed_enum.original_name.as_bytes()))
+            .collect::<Option<_>>()?;
+        let class = *classes.first()?;
+
+        classes.iter().all(|other| *other == class).then_some(class)
     }
 
     /// The declaration `member` of the fully qualified class name `class` resolves to when code reads it: an enum case,

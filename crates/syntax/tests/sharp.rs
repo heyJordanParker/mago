@@ -837,6 +837,32 @@ fn a_call_type_argument_can_be_self_or_class_of_a_type() {
     assert_eq!(source(CODE, &decode.argument_list), "(body)");
 }
 
+/// The lexer reads `From` and `Enum` as the keywords `from` and `enum`, which the type parser reads as class names, so a
+/// call's type arguments hold them, as in `finder.find<From>(x)`.
+#[test]
+fn a_call_type_argument_can_be_a_class_named_from_or_enum() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        finder.find<From>(x);\n        finder.find<Enum>(x);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [from, r#enum] = method_body(program) else {
+        panic!("expected two statements, got {:#?}", method_body(program));
+    };
+
+    let Expression::Call(Call::Method(from)) = expression(from) else {
+        panic!("expected `finder.find<From>(x)`, got {from:#?}");
+    };
+    assert_eq!(type_arguments(CODE, from.type_arguments.as_ref()), ["From"]);
+    assert_eq!(source(CODE, &from.argument_list), "(x)");
+
+    let Expression::Call(Call::Method(r#enum)) = expression(r#enum) else {
+        panic!("expected `finder.find<Enum>(x)`, got {enum:#?}");
+    };
+    assert_eq!(type_arguments(CODE, r#enum.type_arguments.as_ref()), ["Enum"]);
+    assert_eq!(source(CODE, &r#enum.argument_list), "(x)");
+}
+
 /// PHP has no type parameters or type arguments, so its `<` stays a comparison and every PHP# field is `None`.
 #[test]
 fn php_has_no_type_parameters_or_type_arguments() {

@@ -285,7 +285,7 @@ fn is_contained_by_atomic(
         }
 
         let mut atomic_comparison_result =
-            ComparisonResult::with_strict_nonnull(union_comparison_result.strict_nonnull);
+            ComparisonResult { sharp_rules: union_comparison_result.sharp_rules, ..ComparisonResult::new() };
         let is_atomic_contained_by = atomic_comparator::is_contained_by(
             codebase,
             input_type_part,
@@ -334,7 +334,7 @@ fn is_contained_by_atomic(
             get_combined_keyed_array_union_container(codebase, input_type_part, container_atomic_types)
     {
         let mut atomic_comparison_result =
-            ComparisonResult::with_strict_nonnull(union_comparison_result.strict_nonnull);
+            ComparisonResult { sharp_rules: union_comparison_result.sharp_rules, ..ComparisonResult::new() };
         if atomic_comparator::is_contained_by(
             codebase,
             input_type_part,

@@ -1765,7 +1765,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// backing value, so a case goes in as its `->value`.
     fn key(&mut self, key: &Expression) -> u32 {
         let lowered = self.expression(key);
-        if self.backed_enum(self.types.expression_type(key)).is_none() {
+        if self.types.backed_enum(self.types.expression_type(key)).is_none() {
             return lowered;
         }
 
@@ -1779,7 +1779,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// backed enum through its `from`, or a `string` through `(string)`. None when the stored key is that value.
     fn key_read_back(&mut self, key: &ForOfVariable, key_type: &TUnion) -> Option<u32> {
         let line = self.line(key);
-        if let Some(class) = self.backed_enum(key_type) {
+        if let Some(class) = self.types.backed_enum(key_type) {
             let stored_key = self.variable(key.name.span, key.name.value);
             let class = self.string(ZEND_NAME_FQ, line, class);
             let from = self.string(0, line, b"from");
@@ -1794,20 +1794,6 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let stored_key = self.variable(key.name.span, key.name.value);
 
         Some(self.node(SHARP_AST_CAST, IS_STRING, line, &[stored_key]))
-    }
-
-    /// The backed enum every value of `r#type` but `null` is a case of, if there is one, as
-    /// [`Types::backed_enum`] finds it in each.
-    fn backed_enum(&self, r#type: &TUnion) -> Option<&'lowering [u8]> {
-        let classes: Vec<&[u8]> = r#type
-            .types
-            .iter()
-            .filter(|atomic| !atomic.is_null())
-            .map(|atomic| self.types.backed_enum(atomic))
-            .collect::<Option<_>>()?;
-        let class = *classes.first()?;
-
-        classes.iter().all(|other| *other == class).then_some(class)
     }
 
     /// Whether `element` spreads a `Map`, which keeps its keys where PHP's `...` renumbers int keys.

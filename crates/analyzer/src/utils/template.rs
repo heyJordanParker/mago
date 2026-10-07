@@ -445,13 +445,14 @@ where
     let [TAtomic::Object(TObject::Named(given_object))] = input.types.as_ref() else {
         return issue;
     };
-    let Some(wanted) = expected.types.iter().find(|atomic| {
-        matches!(atomic, TAtomic::Object(TObject::Named(object))
-            if object.name.as_bytes().eq_ignore_ascii_case(given_object.name.as_bytes()))
+    let Some((wanted, wanted_object)) = expected.types.iter().find_map(|atomic| match atomic {
+        TAtomic::Object(TObject::Named(object))
+            if object.name.as_bytes().eq_ignore_ascii_case(given_object.name.as_bytes()) =>
+        {
+            Some((atomic, object))
+        }
+        _ => None,
     }) else {
-        return issue;
-    };
-    let TAtomic::Object(TObject::Named(wanted_object)) = wanted else {
         return issue;
     };
     let Some(class) = codebase.get_class_like(given_object.name.as_bytes()).filter(|class| class.flags.is_sharp())
@@ -468,7 +469,15 @@ where
     }
 
     let contains = |input: &TUnion, container: &TUnion| {
-        union_comparator::is_contained_by(codebase, input, container, false, false, false, &mut ComparisonResult::new())
+        union_comparator::is_contained_by(
+            codebase,
+            input,
+            container,
+            false,
+            false,
+            false,
+            &mut ComparisonResult::for_dialect(context.dialect),
+        )
     };
 
     let mut blocked = None;

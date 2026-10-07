@@ -321,9 +321,9 @@ pub fn handle_return_value<'ctx, A>(
     }
 
     if let Some(return_value) = return_value {
-        let mut union_comparison_result = ComparisonResult::with_strict_nonnull(context.dialect.is_sharp());
+        let mut union_comparison_result = ComparisonResult::for_dialect(context.dialect);
 
-        if takes_any_value(&expected_return_type, &inferred_return_type, union_comparison_result.strict_nonnull) {
+        if takes_any_value(&expected_return_type, &inferred_return_type, union_comparison_result.sharp_rules) {
             return;
         }
 
@@ -578,11 +578,11 @@ fn returns_declared_parameter_variable(
         .any(|atomic| matches!(atomic, TAtomic::Variable(expected) if *expected == variable_name))
 }
 
-/// Whether a declared `mixed` return type takes the inferred value unchecked. With `strict_nonnull`, set for a `.sharp`
+/// Whether a declared `mixed` return type takes the inferred value unchecked. With `sharp_rules`, set for a `.sharp`
 /// file, `nonnull`, which PHP# writes `Any`, still refuses a value that may be null.
-fn takes_any_value(expected_return_type: &TUnion, inferred_return_type: &TUnion, strict_nonnull: bool) -> bool {
+fn takes_any_value(expected_return_type: &TUnion, inferred_return_type: &TUnion, sharp_rules: bool) -> bool {
     expected_return_type.is_mixed()
-        && !(strict_nonnull && !expected_return_type.accepts_null() && inferred_return_type.can_be_null())
+        && !(sharp_rules && !expected_return_type.accepts_null() && inferred_return_type.can_be_null())
 }
 
 fn handle_property_hook_return<'ctx, A>(
@@ -615,8 +615,8 @@ fn handle_property_hook_return<'ctx, A>(
         inferred_return_type = Rc::new(inner);
     }
 
-    let strict_nonnull = context.dialect.is_sharp();
-    if takes_any_value(&expected_return_type, &inferred_return_type, strict_nonnull) {
+    let mut comparison_result = ComparisonResult::for_dialect(context.dialect);
+    if takes_any_value(&expected_return_type, &inferred_return_type, comparison_result.sharp_rules) {
         return;
     }
 
@@ -642,7 +642,6 @@ fn handle_property_hook_return<'ctx, A>(
         return;
     }
 
-    let mut comparison_result = ComparisonResult::with_strict_nonnull(strict_nonnull);
     if is_contained_by(
         context.codebase,
         &inferred_return_type,

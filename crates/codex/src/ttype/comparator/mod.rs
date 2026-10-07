@@ -1,3 +1,4 @@
+use mago_syntax::dialect::Dialect;
 use mago_word::Word;
 
 use crate::ttype::atomic::TAtomic;
@@ -28,9 +29,11 @@ pub struct ComparisonResult {
     pub replacement_atomic_type: Option<TAtomic>,
     pub type_variable_lower_bounds: Vec<(Word, TemplateBound)>,
     pub type_variable_upper_bounds: Vec<(Word, TemplateBound)>,
-    /// Whether a `nonnull` container refuses a value that may be null, as PHP#'s `Any` does. The caller sets it for a
-    /// `.sharp` file. A PHP file keeps upstream's rule, which lets any `mixed` into `nonnull`.
-    pub strict_nonnull: bool,
+    /// Whether the comparison follows PHP#'s rules, set for a `.sharp` file: a `nonnull` container refuses a value that
+    /// may be null, as PHP#'s `Any` does, and a type parameter is opaque, as C#'s `T` is, so it takes only itself, a
+    /// type parameter whose bound reaches it, or `never`. A PHP file keeps upstream's rules, which let any `mixed` into
+    /// `nonnull` and any value into a template bounded by `mixed`.
+    pub sharp_rules: bool,
 }
 
 impl Default for ComparisonResult {
@@ -50,14 +53,14 @@ impl ComparisonResult {
             replacement_atomic_type: None,
             type_variable_lower_bounds: vec![],
             type_variable_upper_bounds: vec![],
-            strict_nonnull: false,
+            sharp_rules: false,
         }
     }
 
-    /// A result whose comparison treats `nonnull` as PHP# does when `strict_nonnull` is set.
+    /// A result whose comparison follows the rules of `dialect`.
     #[must_use]
-    pub fn with_strict_nonnull(strict_nonnull: bool) -> Self {
-        Self { strict_nonnull, ..Self::new() }
+    pub fn for_dialect(dialect: Dialect) -> Self {
+        Self { sharp_rules: dialect.is_sharp(), ..Self::new() }
     }
 }
 

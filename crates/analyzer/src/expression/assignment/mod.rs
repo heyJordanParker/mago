@@ -646,7 +646,7 @@ pub fn analyze_assignment_to_variable<'ctx, 'arena, A>(
             false,
             false,
             false,
-            &mut ComparisonResult::with_strict_nonnull(context.dialect.is_sharp()),
+            &mut ComparisonResult::for_dialect(context.dialect),
         )
     {
         let variable_name = variable_id.to_string();

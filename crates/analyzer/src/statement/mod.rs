@@ -352,9 +352,7 @@ where
     };
 
     let local_type = TypeMetadata::new(get_type_from_hint(context, block_context, artifacts, hint), hint.span());
-    if context.dialect.is_sharp() {
-        report_invalid_template_arguments(context, &local_type);
-    }
+    report_invalid_template_arguments(context, &local_type);
 
     let local_type = (Rc::new(local_type.type_union), local_type.span);
     block_context.local_types.insert(variable_id, local_type.clone());

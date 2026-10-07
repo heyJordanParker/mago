@@ -1,4 +1,5 @@
 use mago_codex::metadata::CodebaseMetadata;
+use mago_codex::metadata::class_like::ClassLikeMetadata;
 use mago_codex::metadata::function_like::FunctionLikeMetadata;
 use mago_codex::metadata::parameter::FunctionLikeParameterMetadata;
 use mago_codex::metadata::ttype::TypeMetadata;
@@ -344,27 +345,39 @@ pub fn validate_method_signature_compatibility(
     issues
 }
 
-/// Validates that a PHP# method still links against the method it overrides or implements once generics are erased, as
-/// the engine links the class PHP# compiles to: each parameter takes at least the type the parent's parameter erases
-/// to. `child_method` and `parent_method` are the declarations as written, before the type arguments of the class's
-/// header replace the parent's type parameters. PHP links a constructor against its parent's only when the parent's is
-/// abstract.
+/// Adds to `issues` the parameter of a PHP# method that no longer links against the method it overrides or implements
+/// once generics are erased, as the engine links the class PHP# compiles to: each parameter takes at least the type the
+/// parent's parameter erases to. The engine links the erased declarations whenever `child_class` or `parent_class` is
+/// PHP#, and it checks them only when `issues`, found on the substituted signatures, hold at most renamed parameters,
+/// which hide no erased type. `child_method` and `parent_method` are the declarations as written, before the type
+/// arguments of the class's header replace the parent's type parameters. PHP links a constructor against its parent's
+/// only when the parent's is abstract.
 ///
 /// A return type needs no check here: the substituted return type is contained by the parent's, and a type argument
 /// is contained by its bound, so the erased return type is contained by the parent's erased one.
 pub fn validate_erased_signature_compatibility(
     codebase: &CodebaseMetadata,
-    child_class_name: Word,
+    child_class: &ClassLikeMetadata,
+    parent_class: &ClassLikeMetadata,
     child_method: &FunctionLikeMetadata,
     parent_method: &FunctionLikeMetadata,
-) -> Option<SignatureCompatibilityIssue> {
-    let child_method_meta = child_method.method_metadata.as_ref()?;
+    issues: &mut Vec<SignatureCompatibilityIssue>,
+) {
+    if !(child_class.flags.is_sharp() || parent_class.flags.is_sharp())
+        || !issues.iter().all(|issue| matches!(issue, SignatureCompatibilityIssue::ParameterNameMismatch { .. }))
+    {
+        return;
+    }
+    let Some(child_method_meta) = child_method.method_metadata.as_ref() else {
+        return;
+    };
     if child_method.name.as_bytes().eq_ignore_ascii_case(b"__construct")
         && !parent_method.method_metadata.as_ref().is_some_and(|parent| parent.is_abstract)
     {
-        return None;
+        return;
     }
 
+    let child_class_name = child_class.name;
     let expansion_options = TypeExpansionOptions {
         self_class: Some(child_class_name),
         static_class_type: StaticClassType::Name(child_class_name),
@@ -383,7 +396,7 @@ pub fn validate_erased_signature_compatibility(
         erased
     };
 
-    parent_method.parameters.iter().zip(&child_method.parameters).enumerate().find_map(
+    issues.extend(parent_method.parameters.iter().zip(&child_method.parameters).enumerate().find_map(
         |(parameter_index, (parent_parameter, child_parameter))| {
             let parent_type = erased(parent_parameter);
             let child_type = erased(child_parameter);
@@ -406,7 +419,7 @@ pub fn validate_erased_signature_compatibility(
                 bound: bound_example(codebase, parent_parameter.type_declaration_metadata.as_ref(), &child_type),
             })
         },
-    )
+    ));
 }
 
 /// How a bound reads that makes the class's type parameter `declared`, the parent's written type, erase to `erased`,

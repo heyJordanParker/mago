@@ -55,8 +55,8 @@ pub(crate) fn display_sharp_collection(object: &TObject, codebase: &CodebaseMeta
     Some(format!("{collection}<{}>", parameters.join(", ")))
 }
 
-/// Returns `union` as PHP# writes the type: `List<int>`, `Map<string, int>`, `int?`, `(int|string)?`, `Any?`, and a
-/// class by its short name.
+/// Returns `union` as PHP# writes the type: `List<int>`, `Map<string, int>`, `int?`, `(int|string)?`, `Any?`, a class
+/// by its short name, a type parameter by its name, and an intersection as `A & B`.
 #[must_use]
 pub(crate) fn display_sharp_type(union: &TUnion, codebase: &CodebaseMetadata) -> String {
     if let Some(TAtomic::Mixed(mixed)) = union.types.iter().find(|atomic| atomic.is_mixed()) {
@@ -79,7 +79,7 @@ pub(crate) fn display_sharp_type(union: &TUnion, codebase: &CodebaseMetadata) ->
 }
 
 fn display_sharp_atomic(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String {
-    match atomic {
+    let written = match atomic {
         TAtomic::Array(array) => {
             let (key, value) = get_array_parameters(array, codebase);
             match array {
@@ -103,7 +103,16 @@ fn display_sharp_atomic(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String
                 _ => name,
             }
         }
+        TAtomic::GenericParameter(parameter) => parameter.parameter_name.to_string(),
         _ => atomic.get_id().to_string(),
+    };
+
+    match atomic.get_intersection_types() {
+        Some(intersection_types) if !intersection_types.is_empty() => std::iter::once(written)
+            .chain(intersection_types.iter().map(|intersection_type| display_sharp_atomic(intersection_type, codebase)))
+            .collect::<Vec<_>>()
+            .join(" & "),
+        _ => written,
     }
 }
 

@@ -56,6 +56,7 @@ use crate::statement::attributes::analyze_class_like_attributes;
 use crate::statement::class_like::analyze_class_like;
 use crate::statement::class_like::override_attribute;
 use crate::utils::misc::check_for_paradox;
+use crate::utils::names::short_name;
 
 pub mod access;
 pub mod argument_list;
@@ -551,12 +552,12 @@ where
         let Some(metadata) = context.codebase.get_enum(name.as_bytes()) else {
             continue;
         };
-        let short_name = metadata.original_name.as_bytes().rsplit(|byte| *byte == b'\\').next().unwrap_or_default();
+        let written_name = short_name(metadata.original_name);
         let mut declared: Vec<_> = metadata.enum_cases.values().collect();
         declared.sort_by_key(|case| case.span.start.offset);
         for case in declared {
             if cases.iter().any(|(enum_name, left)| *enum_name == name && left.is_none_or(|left| left == case.name)) {
-                missing.push(format!("{}.{}", String::from_utf8_lossy(short_name), case.name));
+                missing.push(format!("{written_name}.{}", case.name));
             }
         }
     }

@@ -304,7 +304,7 @@ pub fn verify_argument_type<'arena, A>(
         if context.dialect.is_sharp() { None } else { get_backing_array_type(parameter_type, context.codebase) };
     let parameter_type = backing_parameter_type.as_ref().unwrap_or(parameter_type);
 
-    let mut union_comparison_result = ComparisonResult::with_strict_nonnull(context.dialect.is_sharp());
+    let mut union_comparison_result = ComparisonResult::for_dialect(context.dialect);
     let type_match_found =
         is_contained_by(context.codebase, input_type, parameter_type, true, true, false, &mut union_comparison_result);
 
@@ -390,8 +390,20 @@ pub fn verify_argument_type<'arena, A>(
             .iter()
             .any(|atomic| matches!(atomic, TAtomic::Callable(callable) if callable.is_closure()));
 
+        // A PHP# type parameter is opaque, so a value of another type can share a value only with the rest of the
+        // parameter type.
+        let open_parameter_type = if context.dialect.is_sharp() {
+            let open_types: Vec<TAtomic> =
+                parameter_type.types.iter().filter(|atomic| !atomic.is_generic_parameter()).cloned().collect();
+            (!open_types.is_empty()).then(|| Cow::Owned(TUnion::from_vec(open_types)))
+        } else {
+            Some(Cow::Borrowed(parameter_type))
+        };
+
         let types_can_be_identical = (!parameter_requires_closure || input_can_be_closure)
-            && can_expression_types_be_identical(context.codebase, input_type, parameter_type, false, false);
+            && open_parameter_type.is_some_and(|open_parameter_type| {
+                can_expression_types_be_identical(context.codebase, input_type, &open_parameter_type, false, false)
+            });
 
         if types_can_be_identical && parameter_type.is_callable() && !parameter_requires_closure {
             let all_inputs_are_resolvable_aliases = input_type.types.iter().all(|atomic| {

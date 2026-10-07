@@ -24,6 +24,11 @@ pub(crate) fn is_contained_by(
     let (input_name, input_type_parameters): (Word, Option<&[TUnion]>) = match input_type_part {
         TAtomic::Object(TObject::Named(obj)) => (obj.name, obj.get_type_parameters()),
         TAtomic::Object(TObject::Enum(e)) => (e.name, None),
+        TAtomic::GenericParameter(input_generic) if atomic_comparison_result.sharp_rules => {
+            return input_generic.constraint.types.iter().any(|input_bound| {
+                is_contained_by(codebase, input_bound, container_type_part, inside_assertion, atomic_comparison_result)
+            });
+        }
         _ => return false,
     };
 
@@ -65,7 +70,8 @@ pub(crate) fn is_contained_by(
             specialized_template_type.set_from_unspecified_template(true);
         }
 
-        let mut parameter_comparison_result = ComparisonResult::new();
+        let mut parameter_comparison_result =
+            ComparisonResult { sharp_rules: atomic_comparison_result.sharp_rules, ..ComparisonResult::new() };
 
         let declared_variance =
             container_metadata.template_variance.get(parameter_offset).copied().unwrap_or(Variance::Invariant);
@@ -127,7 +133,8 @@ pub(crate) fn is_contained_by(
             && !specialized_template_type.from_template_fallback()
             && !container_type_parameter.from_template_fallback()
         {
-            let mut reverse_result = ComparisonResult::new();
+            let mut reverse_result =
+                ComparisonResult { sharp_rules: atomic_comparison_result.sharp_rules, ..ComparisonResult::new() };
             let reverse_ok = union_comparator::is_contained_by(
                 codebase,
                 container_type_parameter,

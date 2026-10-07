@@ -3479,6 +3479,13 @@ fn a_map_keyed_by_a_type_parameter_without_a_backed_enum_in_its_bound_is_an_erro
     assert_eq!(issues(("src/Demo/Tally.sharp", unbounded), &others), ["5:22 template-constraint-violation"]);
     assert_eq!(issues(("src/Demo/Tally.sharp", interfaces), &others), ["8:22 template-constraint-violation"]);
     assert_eq!(issues(("src/Demo/Tally.sharp", written), &others), ["8:22 template-constraint-violation"]);
+
+    let refusal = |key: &str| {
+        format!("A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value, and `{key}` has none.")
+    };
+    assert_eq!(messages(("src/Demo/Tally.sharp", unbounded), &others), [refusal("TKey")]);
+    assert_eq!(messages(("src/Demo/Tally.sharp", interfaces), &others), [refusal("TKey")]);
+    assert_eq!(messages(("src/Demo/Tally.sharp", written), &others), [refusal("HasLabel & Other")]);
 }
 
 /// A written key or value type checks as a typed local's does. Spec section 12 reads a `Map<string, V>` key back as a
@@ -3640,14 +3647,37 @@ fn a_type_argument_outside_its_bound_or_beyond_the_type_parameters_is_reported()
 fn a_bound_names_a_type_parameter_of_its_own_list() {
     let sharp = "namespace Demo;\n\npublic interface Comparable<TOther>\n{\n    int compareTo(TOther other);\n}\n\npublic class Version : Comparable<Version>\n{\n    public int compareTo(Any? other) => 0;\n}\n\npublic class Sorted<TItem : Comparable<TItem>>\n{\n    public bool before(TItem left, TItem right) => left.compareTo(right) < 0;\n}\n\npublic class Ranks\n{\n    public static int compare<TA : Comparable<TB>, TB>(TA left, TB right) => left.compareTo(right);\n\n    public static Sorted<Version> sorted(Sorted<Version> versions) => versions;\n\n    public static int versions(Version left, Version right) => Ranks.compare(left, right);\n}\n";
     let line = "namespace Demo;\n\npublic class Line\n{\n}\n\npublic class Report\n{\n    public static Any lines(Sorted<Line> lines) => lines;\n}\n";
-
-    assert_eq!(issues(("src/Demo/Sorted.sharp", sharp), &[]), Vec::<String>::new());
     let php = "<?php\n\nnamespace Demo;\n\nclass Line\n{\n}\n\nclass Report\n{\n    /** @param Sorted<Line> $lines */\n    public static function lines(Sorted $lines): mixed\n    {\n        return $lines;\n    }\n}\n";
     let php_sorted = "<?php\n\nnamespace Demo;\n\n/** @template TOther */\ninterface Comparable\n{\n}\n\n/** @template TItem of Comparable<TItem> */\nclass Sorted\n{\n}\n";
 
     assert_eq!(issues(("src/Demo/Sorted.sharp", sharp), &[]), Vec::<String>::new());
     assert_eq!(issues(("src/Demo/Report.sharp", line), &[("src/Demo/Sorted.sharp", sharp)]), ["9:29 template-constraint-violation"]);
     assert_eq!(issues(("src/Demo/Report.php", php), &[("src/Demo/Sorted.php", php_sorted)]), ["11:16 template-constraint-violation"]);
+}
+
+/// A type argument outside its bound or beyond the type parameters is reported in PHP#'s words, with type arguments and
+/// short class names, and its PHP twin keeps Mago's text about template arguments.
+#[test]
+fn a_type_argument_report_names_type_arguments_and_short_class_names() {
+    let sharp = "namespace Demo;\n\npublic class Report\n{\n    public static Any numbers(PaginatedList<int> page) => page;\n\n    public static Any pairs(PaginatedList<Order, Order> page) => page;\n\n    public static int counted(Store store) => store.count<int>();\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    /** @param PaginatedList<int> $page */\n    public static function numbers(PaginatedList $page): mixed\n    {\n        return $page;\n    }\n\n    /** @param PaginatedList<Order, Order> $page */\n    public static function pairs(PaginatedList $page): mixed\n    {\n        return $page;\n    }\n}\n";
+    let others = [("src/Demo/Paging.sharp", PAGING), ("src/Demo/Store.sharp", STORE)];
+
+    assert_eq!(
+        explained(("src/Demo/Report.php", php), &others),
+        [
+            "7:16 template-constraint-violation Template argument `int` does not satisfy `Demo\\PaginatedList`'s `TItem`. Supply a type contained by `Demo\\DatabaseEntity`.",
+            "13:16 excess-template-parameter Too many template arguments for `Demo\\PaginatedList`: expected 1, but found 2.",
+        ]
+    );
+    assert_eq!(
+        explained(("src/Demo/Report.sharp", sharp), &others),
+        [
+            "5:31 template-constraint-violation Type argument `int` does not satisfy `PaginatedList`'s `TItem`. Supply a type contained by `DatabaseEntity`.",
+            "7:29 excess-template-parameter Too many type arguments for `PaginatedList`: expected 1, but found 2.",
+            "9:58 excess-template-parameter Too many type arguments for `Store::count`: expected 0, but found 1.",
+        ]
+    );
 }
 
 /// `out TItem` lets a `Feed<Order>` pass as a `Feed<DatabaseEntity>`, `in TItem` lets a `Validator<DatabaseEntity>`
@@ -3936,14 +3966,84 @@ fn new_of_a_generic_class_without_type_arguments_names_them() {
 
 /// `new Self(…)` in a generic class names no type arguments: `Self` is the class with its own type parameters, so its
 /// value passes where `Repo<TItem>` is expected inside the class, as a return value and as an argument, and not where
-/// `Box<int>` is.
+/// `Box<int>` is. `1` is no `TItem`, and no `out` or `in` marker would let `Box<TItem>` pass as `Box<int>`, so the
+/// return names none.
 #[test]
 fn new_self_carries_the_type_parameters_of_its_class() {
     let repo = "namespace Demo;\n\npublic class Repo<TItem>\n{\n    public required Repo()\n    {\n    }\n\n    public Self copy() => new Self();\n\n    public Repo<TItem> same() => new Self();\n\n    public Repo<TItem> kept(Repo<TItem> repo) => repo;\n\n    public Repo<TItem> passed() => this.kept(new Self());\n}\n";
     let boxes = "namespace Demo;\n\npublic class Box<TItem>\n{\n    public required Box(TItem item)\n    {\n    }\n\n    public Box<TItem> wrapped(TItem item) => new Self(item);\n\n    public Box<int> counted() => new Self(1);\n}\n";
 
     assert_eq!(explained(("src/Demo/Repo.sharp", repo), &[]), Vec::<String>::new());
-    assert_eq!(issues(("src/Demo/Box.sharp", boxes), &[]), ["11:34 less-specific-nested-return-statement"]);
+    assert_eq!(
+        explained(("src/Demo/Box.sharp", boxes), &[]),
+        [
+            "11:43 invalid-argument Invalid argument type for argument #1 of `Demo\\Box::__construct`: expected `('TItem.demo\\box extends mixed)`, but found `int(1)`. Change the argument value to match `('TItem.demo\\box extends mixed)`, or update the parameter's type declaration.",
+            "11:34 less-specific-nested-return-statement Returned type `demo\\box<('TItem.demo\\box extends mixed)>` is less specific than the declared return type `Demo\\Box<int>` for function `Demo\\Box::counted` due to nested 'mixed'. Ensure the structure returned by `Demo\\Box::counted` strictly adheres to the types specified in the `Demo\\Box<int>` return type declaration.",
+        ]
+    );
+}
+
+/// A type parameter is opaque, as C#'s `T` is: `1` passes neither as an argument, a typed local nor a returned value
+/// where `TItem` is required, whether `TItem` is a type argument written on `new` or a call, or one `new Self` carries.
+/// `TItem` passes where `TItem` is required, and so does a type parameter whose bound reaches it. The PHP twin, which
+/// cannot write the type arguments, keeps Mago's issues.
+#[test]
+fn a_value_of_another_type_never_passes_where_a_type_parameter_is_required() {
+    let sharp = "namespace Demo;\n\npublic class Box<TBox>\n{\n    public required Box(TBox item)\n    {\n    }\n}\n\npublic class Maker\n{\n    public void take<TTake>(TTake value)\n    {\n    }\n\n    public Box<TItem> make<TItem>() => new Box<TItem>(1);\n\n    public void run<TItem>()\n    {\n        this.take<TItem>(1);\n    }\n\n    public TItem first<TItem>()\n    {\n        TItem x = 1;\n        return x;\n    }\n\n    public TItem other<TItem>()\n    {\n        return 1;\n    }\n\n    public Box<TItem> wrap<TItem>(TItem item) => new Box<TItem>(item);\n\n    public TItem pass<TItem>(TItem item)\n    {\n        this.take<TItem>(item);\n        TItem copy = item;\n        return copy;\n    }\n\n    public TOuter widen<TOuter, TInner : TOuter>(TInner inner) => inner;\n}\n\npublic class Shelf<TItem>\n{\n    public required Shelf(TItem item)\n    {\n    }\n\n    public Shelf<TItem> again() => new Self(1);\n\n    public Shelf<TItem> same(TItem item) => new Self(item);\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\n/** @template TBox */\nclass Box\n{\n    /** @param TBox $item */\n    public function __construct(mixed $item)\n    {\n    }\n}\n\nclass Maker\n{\n    /**\n     * @template TTake\n     * @param TTake $value\n     */\n    public function take(mixed $value): void\n    {\n    }\n\n    /**\n     * @template TItem\n     * @return Box<TItem>\n     */\n    public function make(): Box\n    {\n        return new Box(1);\n    }\n\n    /** @template TItem */\n    public function run(): void\n    {\n        $this->take(1);\n    }\n\n    /**\n     * @template TItem\n     * @return TItem\n     */\n    public function first(): mixed\n    {\n        /** @var TItem $x */\n        $x = 1;\n        return $x;\n    }\n\n    /**\n     * @template TItem\n     * @return TItem\n     */\n    public function other(): mixed\n    {\n        return 1;\n    }\n\n    /**\n     * @template TItem\n     * @param TItem $item\n     * @return Box<TItem>\n     */\n    public function wrap(mixed $item): Box\n    {\n        return new Box($item);\n    }\n\n    /**\n     * @template TItem\n     * @param TItem $item\n     * @return TItem\n     */\n    public function pass(mixed $item): mixed\n    {\n        $this->take($item);\n        /** @var TItem $copy */\n        $copy = $item;\n        return $copy;\n    }\n\n    /**\n     * @template TOuter\n     * @template TInner of TOuter\n     * @param TInner $inner\n     * @return TOuter\n     */\n    public function widen(mixed $inner): mixed\n    {\n        return $inner;\n    }\n}\n\n/** @template TItem */\nclass Shelf\n{\n    /** @param TItem $item */\n    public function __construct(mixed $item)\n    {\n    }\n\n    /** @return Shelf<TItem> */\n    public function again(): Shelf\n    {\n        return new self(1);\n    }\n\n    /**\n     * @param TItem $item\n     * @return Shelf<TItem>\n     */\n    public function same(mixed $item): Shelf\n    {\n        return new self($item);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Maker.php", php), &[]),
+        [
+            "30:16 less-specific-nested-return-statement",
+            "34:21 unused-template-parameter",
+            "105:16 less-specific-nested-return-statement",
+        ]
+    );
+    assert_eq!(
+        issues(("src/Demo/Maker.sharp", sharp), &[]),
+        [
+            "16:55 invalid-argument",
+            "20:26 invalid-argument",
+            "18:17 unused-template-parameter",
+            "25:19 invalid-local-assignment-value",
+            "31:16 invalid-return-statement",
+            "52:45 invalid-argument",
+        ]
+    );
+}
+
+/// Inference binds only the called method's or class's own type parameters, never the caller's: a value outside the
+/// caller's `TItem : Countable` is the invalid argument alone, with no bound violation of a type parameter the call
+/// does not declare. The PHP twin keeps Mago's issue.
+#[test]
+fn a_call_infers_its_own_type_parameters_and_never_the_callers() {
+    let sharp = "namespace Demo;\n\npublic interface Countable\n{\n    int count();\n}\n\npublic class Box<TBox>\n{\n    public required Box(TBox item)\n    {\n    }\n}\n\npublic class Maker\n{\n    public Box<TItem> make<TItem : Countable>() => new Box<TItem>(1);\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\ninterface Countable\n{\n    public function count(): int;\n}\n\n/** @template TBox */\nclass Box\n{\n    /** @param TBox $item */\n    public function __construct(mixed $item)\n    {\n    }\n}\n\nclass Maker\n{\n    /**\n     * @template TItem of Countable\n     * @return Box<TItem>\n     */\n    public function make(): Box\n    {\n        return new Box(1);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Maker.php", php), &[]), ["27:16 invalid-return-statement"]);
+    assert_eq!(issues(("src/Demo/Maker.sharp", sharp), &[]), ["17:67 invalid-argument"]);
+}
+
+/// A bound that names its own type parameter, as C#'s `T : IComparable<T>` does, holds the type parameter: a `TItem`
+/// passes as the `Comparable<TItem>` its bound names, and as the `TItem` of another `Sorted<TItem>`. The PHP twin keeps
+/// Mago's issues, which read `TItem` in its own `@template` bound as a class.
+#[test]
+fn a_type_parameter_passes_as_the_bound_that_names_it() {
+    let sharp = "namespace Demo;\n\npublic interface Comparable<TOther>\n{\n    int compareTo(TOther other);\n}\n\npublic class Sorted<TItem : Comparable<TItem>>\n{\n    public Comparable<TItem> first(TItem item) => item;\n}\n\npublic class Ranks\n{\n    public static Sorted<TItem> keep<TItem : Comparable<TItem>>(Sorted<TItem> sorted) => sorted;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\n/** @template TOther */\ninterface Comparable\n{\n    /** @param TOther $other */\n    public function compareTo(mixed $other): int;\n}\n\n/** @template TItem of Comparable<TItem> */\nclass Sorted\n{\n    /**\n     * @param TItem $item\n     * @return Comparable<TItem>\n     */\n    public function first(mixed $item): Comparable\n    {\n        return $item;\n    }\n}\n\nclass Ranks\n{\n    /**\n     * @template TItem of Comparable<TItem>\n     * @param Sorted<TItem> $sorted\n     * @return Sorted<TItem>\n     */\n    public static function keep(Sorted $sorted): Sorted\n    {\n        return $sorted;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Sorted.php", php), &[]),
+        [
+            "17:16 non-existent-class-like",
+            "16:15 non-existent-class-like",
+            "21:16 invalid-return-statement",
+            "30:16 non-existent-class-like",
+            "29:15 non-existent-class-like",
+        ]
+    );
+    assert_eq!(issues(("src/Demo/Sorted.sharp", sharp), &[]), Vec::<String>::new());
 }
 
 /// A class, a static method and a method of `Store` with type parameters of their own.

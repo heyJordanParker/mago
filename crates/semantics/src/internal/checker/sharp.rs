@@ -508,7 +508,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         // a parameter's types.
         (Node::Hint(Hint::Identifier(name)), Header) if !is_type_parameter(name, context) => Some(Header),
         (Node::Hint(hint @ Hint::Generic(generic)), Header)
-            if is_slice_type(hint) && !is_built_in_generic(generic.name.value) =>
+            if is_slice_type(hint) && built_in_generic_arity(generic.name.value).is_none() =>
         {
             Some(Parameter)
         }
@@ -2086,11 +2086,6 @@ fn built_in_generic_arity(name: &[u8]) -> Option<usize> {
     }
 }
 
-/// Whether a generic type's name is PHP#'s own `List`, `Map` or `Class`.
-fn is_built_in_generic(name: &[u8]) -> bool {
-    built_in_generic_arity(name).is_some()
-}
-
 /// Whether the binder bound a type name to a type parameter.
 fn is_type_parameter(name: &impl HasPosition, context: &Context<'_, '_, '_>) -> bool {
     matches!(context.names.binding(name), Some(Binding::TypeParameter { .. }))
@@ -2137,7 +2132,7 @@ fn is_slice_bound(hint: &Hint, context: &Context<'_, '_, '_>) -> bool {
     match hint {
         Hint::Identifier(name @ Identifier::Local(_)) => !is_type_parameter(name, context),
         Hint::Generic(generic) => {
-            !is_built_in_generic(generic.name.value) && !is_type_parameter(&generic.name, context)
+            built_in_generic_arity(generic.name.value).is_none() && !is_type_parameter(&generic.name, context)
         }
         Hint::Intersection(intersection) => {
             is_slice_bound(intersection.left, context) && is_slice_bound(intersection.right, context)

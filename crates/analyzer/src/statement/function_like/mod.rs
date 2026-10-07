@@ -44,10 +44,8 @@ use mago_codex::ttype::get_list;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_never;
 use mago_codex::ttype::get_void;
-use mago_codex::ttype::template::GenericTemplate;
 use mago_codex::ttype::template::TemplateResult;
-use mago_codex::ttype::template::definition_type_replacer;
-use mago_codex::ttype::template::definition_type_replacer::DefinitionReplacementOptions;
+use mago_codex::ttype::template::inferred_type_replacer;
 use mago_codex::ttype::union::TUnion;
 use mago_codex::ttype::wrap_atomic;
 use mago_codex::visibility::Visibility;
@@ -80,6 +78,8 @@ use crate::statement::class_like::property::analyze_property_hook;
 use crate::statement::r#return::handle_return_value;
 use crate::statement::r#static::infer_static_local_types;
 use crate::utils::expression::get_variable_id;
+use crate::utils::names::display_sharp_type;
+use crate::utils::names::short_name;
 
 pub mod function;
 pub mod rejected_nullable_parameter;
@@ -1652,7 +1652,7 @@ fn check_parameter_default_value<'ctx, 'arena, A>(
         && default_type.is_null()
         && context.settings.version.is_supported(Feature::ImplicitlyNullableParameterTypes);
 
-    let mut comparison_result = ComparisonResult::with_strict_nonnull(is_sharp);
+    let mut comparison_result = ComparisonResult::for_dialect(context.dialect);
     if union_comparator::is_contained_by(
         context.codebase,
         default_type,
@@ -1756,7 +1756,8 @@ where
 }
 
 /// Reports `arguments`, applied at `span` to the templates `owner` declares at `owner_span`, when their number differs
-/// from the templates' or an argument falls outside its template's bound. Returns whether their number fits.
+/// from the templates' or an argument falls outside its template's bound. Returns whether their number fits. In a
+/// `.sharp` file the report speaks of type arguments and names classes by their short names, as PHP# writes them.
 pub fn check_template_arguments<A>(
     context: &mut Context<'_, '_, A>,
     owner: impl std::fmt::Display,
@@ -1768,6 +1769,12 @@ pub fn check_template_arguments<A>(
 where
     A: Arena,
 {
+    let codebase = context.codebase;
+    let is_sharp = context.dialect.is_sharp();
+    let owner = if is_sharp { short_name(word(owner.to_string())) } else { owner.to_string() };
+    let (kind, sentence_kind) = if is_sharp { ("type", "Type") } else { ("template", "Template") };
+    let display = |union: &TUnion| if is_sharp { display_sharp_type(union, codebase) } else { union.get_id().to_string() };
+
     let expected = templates.len();
     let required = templates.values().take_while(|template| template.default.is_none()).count();
     if arguments.len() < required || arguments.len() > expected {
@@ -1775,17 +1782,14 @@ where
             (
                 IssueCode::MissingTemplateParameter,
                 format!(
-                    "Too few template arguments for `{owner}`: expected at least {required}, but found {}.",
+                    "Too few {kind} arguments for `{owner}`: expected at least {required}, but found {}.",
                     arguments.len()
                 ),
             )
         } else {
             (
                 IssueCode::ExcessTemplateParameter,
-                format!(
-                    "Too many template arguments for `{owner}`: expected {expected}, but found {}.",
-                    arguments.len()
-                ),
+                format!("Too many {kind} arguments for `{owner}`: expected {expected}, but found {}.", arguments.len()),
             )
         };
 
@@ -1795,26 +1799,19 @@ where
                 .with_annotation(Annotation::primary(span).with_message(format!("`{owner}` is applied here.")))
                 .with_annotation(
                     Annotation::secondary(owner_span)
-                        .with_message(format!("`{owner}` declares {expected} template parameters.")),
+                        .with_message(format!("`{owner}` declares {expected} {kind} parameters.")),
                 ),
         );
 
         return false;
     }
 
-    let codebase = context.codebase;
     // A PHP# bound may name the owner's type parameters, as `TItem : Comparable<TItem>` does, so each holds its argument
     // there. Upstream Mago leaves such a bound unchecked in PHP.
-    let mut template_result = TemplateResult::new(
-        templates
-            .iter()
-            .zip(arguments)
-            .map(|((name, template), argument)| {
-                (*name, vec![GenericTemplate::new(template.defining_entity, argument.clone())])
-            })
-            .collect(),
-        HashMap::default(),
-    );
+    let mut template_result = TemplateResult::default();
+    for (argument, (template_name, template)) in arguments.iter().zip(templates.iter()) {
+        template_result.add_lower_bound(*template_name, template.defining_entity, argument.clone());
+    }
     for (argument, (template_name, template)) in arguments.iter().zip(templates.iter()) {
         let names_a_template = template.constraint.has_template_types();
         // An explicit `mixed` argument is the written form of "any argument", which Mago accepts
@@ -1828,12 +1825,7 @@ where
         let mut expanded_argument = argument.clone();
         expander::expand_union(codebase, &mut expanded_argument, &options);
         let mut constraint = if names_a_template {
-            definition_type_replacer::replace(
-                &template.constraint,
-                &mut template_result,
-                codebase,
-                DefinitionReplacementOptions::default(),
-            )
+            inferred_type_replacer::replace(&template.constraint, &template_result, codebase)
         } else {
             template.constraint.clone()
         };
@@ -1845,16 +1837,18 @@ where
             false,
             false,
             false,
-            &mut ComparisonResult::default(),
+            &mut ComparisonResult::for_dialect(context.dialect),
         ) {
             continue;
         }
 
-        let argument_id = expanded_argument.get_id();
-        let constraint_id = constraint.get_id();
+        let argument_id = display(&expanded_argument);
+        let constraint_id = display(&constraint);
         context.collector.report_with_code(
             IssueCode::TemplateConstraintViolation,
-            Issue::error(format!("Template argument `{argument_id}` does not satisfy `{owner}`'s `{template_name}`."))
+            Issue::error(format!(
+                "{sentence_kind} argument `{argument_id}` does not satisfy `{owner}`'s `{template_name}`."
+            ))
                 .with_annotation(
                     Annotation::primary(span)
                         .with_message(format!("`{argument_id}` is supplied for `{template_name}` here...")),
@@ -1892,7 +1886,7 @@ where
             continue;
         }
 
-        let key_id = key_type.get_id();
+        let key_id = display_sharp_type(key_type, context.codebase);
         context.collector.report_with_code(
             IssueCode::TemplateConstraintViolation,
             Issue::error(format!(

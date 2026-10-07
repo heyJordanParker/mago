@@ -2297,17 +2297,14 @@ fn check_abstract_method_signatures<'ctx, A>(
                 &substituted_overridden_method,
                 context.dialect,
             );
-            // The engine links the erased declarations whenever either class is PHP#, and a rename hides no erased type.
-            if (overridden_class.flags.is_sharp() || class_like_metadata.flags.is_sharp())
-                && issues.iter().all(|issue| matches!(issue, SignatureCompatibilityIssue::ParameterNameMismatch { .. }))
-            {
-                issues.extend(method_signature::validate_erased_signature_compatibility(
-                    context.codebase,
-                    class_like_metadata.name,
-                    appearing_method,
-                    overridden_method,
-                ));
-            }
+            method_signature::validate_erased_signature_compatibility(
+                context.codebase,
+                class_like_metadata,
+                overridden_class,
+                appearing_method,
+                overridden_method,
+                &mut issues,
+            );
 
             if issues.is_empty() {
                 continue;
@@ -2904,16 +2901,14 @@ fn check_interface_method_signatures<'ctx, A>(
         );
         // Get the actual declaring class for error reporting
         let declaring_class = context.codebase.get_class_like(interface_fqcn_str).unwrap_or(interface_metadata);
-        if (declaring_class.flags.is_sharp() || class_like_metadata.flags.is_sharp())
-            && issues.iter().all(|issue| matches!(issue, SignatureCompatibilityIssue::ParameterNameMismatch { .. }))
-        {
-            issues.extend(method_signature::validate_erased_signature_compatibility(
-                context.codebase,
-                class_like_metadata.name,
-                class_method,
-                interface_method,
-            ));
-        }
+        method_signature::validate_erased_signature_compatibility(
+            context.codebase,
+            class_like_metadata,
+            declaring_class,
+            class_method,
+            interface_method,
+            &mut issues,
+        );
 
         for incompatibility in issues {
             // Use the method span as primary location (where the issue actually is)

@@ -94,6 +94,24 @@ fn expand_template_constraint<'ty>(
     Cow::Owned(expanded)
 }
 
+/// Whether inference may bind the template `parameter_name` of `defining_entity`. PHP# infers only the templates of
+/// the call's target, which `template_result` registers, and never a type parameter of the caller, which is opaque.
+fn is_inferable<A>(
+    context: &Context<'_, '_, A>,
+    template_result: &TemplateResult,
+    parameter_name: Word,
+    defining_entity: &GenericParent,
+) -> bool
+where
+    A: Arena,
+{
+    !context.dialect.is_sharp()
+        || template_result
+            .template_types
+            .get(&parameter_name)
+            .is_some_and(|templates| templates.iter().any(|template| template.defining_entity == *defining_entity))
+}
+
 /// Whether `input_object` is the very class the container is parameterizing, without carrying
 /// type parameters of its own — in which case it cannot specialize anything.
 fn names_the_same_unspecialized_class(container_constraint: &TAtomic, input_object: &TAtomic) -> bool {
@@ -156,7 +174,8 @@ fn infer_templates_from_input_and_container_types<A>(
     let top_level = options.is_top_level;
     let options = InferenceOptions { is_top_level: false, ..options };
 
-    if input_type.is_mixed() && !container_type.is_generic_parameter() {
+    // PHP# writes `mixed` as `Any?`, a type that binds a template as any other argument's type does.
+    if input_type.is_mixed() && !container_type.is_generic_parameter() && !context.dialect.is_sharp() {
         return;
     }
 
@@ -723,6 +742,15 @@ fn infer_templates_from_input_and_container_types<A>(
                         for generic_parameter in generic_parameters {
                             has_direct_generic = true;
 
+                            if !is_inferable(
+                                context,
+                                template_result,
+                                generic_parameter.parameter_name,
+                                &generic_parameter.defining_entity,
+                            ) {
+                                continue;
+                            }
+
                             let Some((template_name, _)) = container_meta.template_types.get_index(index) else {
                                 continue;
                             };
@@ -829,6 +857,10 @@ fn infer_templates_from_input_and_container_types<A>(
                 constraint: class_string_constraint,
                 ..
             })) => {
+                if !is_inferable(context, template_result, *parameter_name, defining_entity) {
+                    continue;
+                }
+
                 let should_add_bound = !options.infer_only_if_new
                     || template_result
                         .lower_bounds
@@ -900,6 +932,10 @@ fn infer_templates_from_input_and_container_types<A>(
         let TAtomic::GenericParameter(container_generic) = container_atomic_part else {
             continue;
         };
+
+        if !is_inferable(context, template_result, container_generic.parameter_name, &container_generic.defining_entity) {
+            continue;
+        }
 
         let template_parameter_name = &container_generic.parameter_name;
 
