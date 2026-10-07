@@ -26,6 +26,8 @@ use mago_syntax::dialect::Dialect;
 use mago_word::Word;
 use mago_word::word;
 
+use crate::utils::names::short_name;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignatureCompatibilityIssue {
     FinalMethodOverride,
@@ -442,11 +444,15 @@ pub(super) fn bound_example(
     Some(word(format!("{}<{marker}{name} : {bound}>", short_name(class.original_name))))
 }
 
-/// The last segment of the full name `name`, as a PHP# import writes it.
-fn short_name(name: Word) -> String {
-    let name = name.to_string();
-
-    name.rsplit('\\').next().unwrap_or_default().to_owned()
+/// The help of an issue whose `name` erases to another type than `erased_parent_type`, the type its parent's
+/// declaration erases to, naming the `bound` that `bound_example` finds when there is one.
+pub(super) fn erased_type_help(name: impl std::fmt::Display, erased_parent_type: Word, bound: Option<Word>) -> String {
+    match bound {
+        Some(bound) => format!(
+            "Write `{name}` with a type that erases to `{erased_parent_type}`, or bound the type parameter, as in `{bound}`, so both sides erase to the bound."
+        ),
+        None => format!("Write `{name}` with a type that erases to `{erased_parent_type}`."),
+    }
 }
 
 /// The type PHP sees for `r#type`, a PHP# type, once generics are erased, as the bridge's `erase` writes it: a type

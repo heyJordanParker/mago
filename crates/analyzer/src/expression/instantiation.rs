@@ -49,6 +49,8 @@ use crate::invocation::template_result::seed_type_arguments;
 use crate::resolver::class_name::ResolutionOrigin;
 use crate::resolver::class_name::ResolvedClassname;
 use crate::resolver::class_name::resolve_classnames_from_expression;
+use crate::utils::names::and_list;
+use crate::utils::names::short_name;
 use crate::utils::template::get_generic_parameter_for_offset;
 use crate::visibility::check_method_visibility;
 
@@ -570,12 +572,8 @@ fn report_missing_type_arguments<A>(context: &mut Context<'_, '_, A>, metadata: 
 where
     A: Arena,
 {
-    let class_name = metadata.original_name.as_str_lossy();
-    let class_name = class_name.rsplit('\\').next().unwrap_or_default();
-    let mut template_names: Vec<String> = metadata.template_types.keys().map(|name| format!("`{name}`")).collect();
-    let last_name = template_names.pop().unwrap_or_default();
-    let template_names =
-        if template_names.is_empty() { last_name } else { format!("{} and {last_name}", template_names.join(", ")) };
+    let class_name = short_name(metadata.original_name);
+    let template_names = and_list(&metadata.template_types.keys().copied().collect::<Vec<_>>());
 
     context.collector.report_with_code(
         IssueCode::MissingTemplateParameter,

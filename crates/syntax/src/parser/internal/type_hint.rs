@@ -181,11 +181,22 @@ where
 
     /// Parses PHP# type arguments, as a type, a `new` and a call write them: `<string, List<Line>>`.
     pub(crate) fn parse_type_argument_list(&mut self) -> Result<TypeArgumentList<'arena>, ParseError> {
+        let (less_than, arguments, greater_than) = self.parse_angle_bracket_list(Self::parse_type_hint)?;
+
+        Ok(TypeArgumentList { less_than, arguments, greater_than })
+    }
+
+    /// Parses a PHP# list in angle brackets, `<a, b>`, of the items `parse_item` reads, and returns its `<`, its items
+    /// and its `>`.
+    fn parse_angle_bracket_list<Item>(
+        &mut self,
+        parse_item: impl Fn(&mut Self) -> Result<Item, ParseError>,
+    ) -> Result<(Span, TokenSeparatedSequence<'arena, Item>, Span), ParseError> {
         let less_than = self.stream.eat_span(T!["<"])?;
-        let mut arguments = Vec::new_in(self.arena);
+        let mut items = Vec::new_in(self.arena);
         let mut commas = Vec::new_in(self.arena);
         loop {
-            arguments.push(self.parse_type_hint()?);
+            items.push(parse_item(self)?);
             if self.state.closing_angle.is_some() || !self.stream.is_at(T![","])? {
                 break;
             }
@@ -193,11 +204,7 @@ where
             commas.push(self.stream.consume()?);
         }
 
-        Ok(TypeArgumentList {
-            less_than,
-            arguments: TokenSeparatedSequence::new(arguments, commas),
-            greater_than: self.parse_closing_angle()?,
-        })
+        Ok((less_than, TokenSeparatedSequence::new(items, commas), self.parse_closing_angle()?))
     }
 
     /// Parses the PHP# type arguments after the class of `new`, as in `new PaginatedList<Order>(rows)`.
@@ -234,23 +241,9 @@ where
             return Ok(None);
         }
 
-        let less_than = self.stream.eat_span(T!["<"])?;
-        let mut parameters = Vec::new_in(self.arena);
-        let mut commas = Vec::new_in(self.arena);
-        loop {
-            parameters.push(self.parse_type_parameter()?);
-            if self.state.closing_angle.is_some() || !self.stream.is_at(T![","])? {
-                break;
-            }
+        let (less_than, parameters, greater_than) = self.parse_angle_bracket_list(Self::parse_type_parameter)?;
 
-            commas.push(self.stream.consume()?);
-        }
-
-        Ok(Some(TypeParameterList {
-            less_than,
-            parameters: TokenSeparatedSequence::new(parameters, commas),
-            greater_than: self.parse_closing_angle()?,
-        }))
+        Ok(Some(TypeParameterList { less_than, parameters, greater_than }))
     }
 
     /// Parses one PHP# type parameter. `in` and `out` are names the lexer reads as identifiers, so one is the variance

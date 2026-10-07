@@ -40,15 +40,17 @@ fn sources() -> Vec<(String, Vec<u8>)> {
         }
     }
 
-    let fixture = crates.join("semantics/tests/fixtures/slice.sharp");
-    sources.push((fixture.display().to_string(), std::fs::read(&fixture).expect("the slice fixture")));
-    sources.push(("src/Generics.sharp".to_string(), GENERICS.as_bytes().to_vec()));
+    sources.push(slice_fixture());
 
     sources
 }
 
-/// Every PHP# type parameter and type argument form, which no fixture holds yet.
-const GENERICS: &str = "public interface Validator<in TItem>\n{\n    bool validate(TItem item);\n}\n\npublic class PaginatedList<out TItem : DatabaseEntity & Shareable, TKey>\n{\n    public T first<T>(List<T> items) => items[0];\n\n    public void run()\n    {\n        new PaginatedList<Order>(rows);\n        Json.decode<WebhookPayload>(body);\n        this.repository?.find<Map<string, List<int>>>(id);\n    }\n}\n";
+/// The path and contents of the PHP# slice fixture, which holds every form of the slice.
+fn slice_fixture() -> (String, Vec<u8>) {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../semantics/tests/fixtures/slice.sharp");
+
+    (fixture.display().to_string(), std::fs::read(&fixture).expect("the slice fixture"))
+}
 
 /// The checks that run in one walk, such as PHP#'s slice check, see every node `Node::visit_children` reaches. Keywords
 /// are left out, because the walker skips some of them, such as a closure's `use`.
@@ -73,16 +75,17 @@ fn the_walker_enters_every_node_visit_children_reaches() {
         assert!(missed.is_empty(), "the walker misses these nodes of {name}: {missed:?}");
     }
 
-    assert_eq!(parsed, 469, "the number of sources without a parse error");
+    assert_eq!(parsed, 468, "the number of sources without a parse error");
 }
 
-/// The walker enters every type parameter list, type parameter, bound and type argument list of `GENERICS`: one list
-/// on the interface, the class and the method each, and the type arguments of `List<T>`, `new`, `decode`, `find` and the
-/// `Map` and `List` inside `find`'s.
+/// The walker enters every type parameter list, type parameter, bound and type argument list of the slice fixture: the
+/// lists of `Page`, `convert`, `Listing`, `Source` and `Comparable`, the bounds of `Page`, `convert` and `Listing`, and
+/// the type arguments of its types, headers, `new`, method calls and null-safe method calls.
 #[test]
 fn the_walker_enters_every_type_parameter_and_type_argument_list() {
+    let (name, contents) = slice_fixture();
     let arena = LocalArena::new();
-    let file = File::ephemeral(Cow::Borrowed(b"src/Generics.sharp"), Cow::Borrowed(GENERICS.as_bytes()));
+    let file = File::ephemeral(Cow::Owned(name.into_bytes()), Cow::Owned(contents));
     let program = parse_file(&arena, &file);
     assert!(program.errors.is_empty(), "{:#?}", program.errors);
 
@@ -97,6 +100,6 @@ fn the_walker_enters_every_type_parameter_and_type_argument_list() {
             count(NodeKind::TypeParameterBound),
             count(NodeKind::TypeArgumentList),
         ],
-        [3, 4, 1, 6]
+        [5, 6, 4, 28]
     );
 }

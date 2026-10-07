@@ -44,6 +44,10 @@ use mago_codex::ttype::get_list;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_never;
 use mago_codex::ttype::get_void;
+use mago_codex::ttype::template::GenericTemplate;
+use mago_codex::ttype::template::TemplateResult;
+use mago_codex::ttype::template::definition_type_replacer;
+use mago_codex::ttype::template::definition_type_replacer::DefinitionReplacementOptions;
 use mago_codex::ttype::union::TUnion;
 use mago_codex::ttype::wrap_atomic;
 use mago_codex::visibility::Visibility;
@@ -1799,17 +1803,40 @@ where
     }
 
     let codebase = context.codebase;
+    // A PHP# bound may name the owner's type parameters, as `TItem : Comparable<TItem>` does, so each holds its argument
+    // there. Upstream Mago leaves such a bound unchecked in PHP.
+    let mut template_result = TemplateResult::new(
+        templates
+            .iter()
+            .zip(arguments)
+            .map(|((name, template), argument)| {
+                (*name, vec![GenericTemplate::new(template.defining_entity, argument.clone())])
+            })
+            .collect(),
+        HashMap::default(),
+    );
     for (argument, (template_name, template)) in arguments.iter().zip(templates.iter()) {
+        let names_a_template = template.constraint.has_template_types();
         // An explicit `mixed` argument is the written form of "any argument", which Mago accepts
         // for every bound.
-        if argument.is_mixed() || template.constraint.is_mixed() || template.constraint.has_template_types() {
+        if argument.is_mixed() || template.constraint.is_mixed() || (names_a_template && !context.dialect.is_sharp())
+        {
             continue;
         }
 
         let options = TypeExpansionOptions::default();
         let mut expanded_argument = argument.clone();
         expander::expand_union(codebase, &mut expanded_argument, &options);
-        let mut constraint = template.constraint.clone();
+        let mut constraint = if names_a_template {
+            definition_type_replacer::replace(
+                &template.constraint,
+                &mut template_result,
+                codebase,
+                DefinitionReplacementOptions::default(),
+            )
+        } else {
+            template.constraint.clone()
+        };
         expander::expand_union(codebase, &mut constraint, &options);
         if union_comparator::is_contained_by(
             codebase,

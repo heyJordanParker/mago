@@ -60,6 +60,7 @@ use mago_syntax::cst::Property;
 use mago_syntax::cst::Trait;
 use mago_syntax::cst::TraitUse;
 use mago_word::Word;
+use mago_word::WordMap;
 use mago_word::ascii_lowercase_word;
 use mago_word::word;
 
@@ -75,6 +76,8 @@ use crate::statement::class_like::method_signature::SignatureCompatibilityIssue;
 use crate::statement::function_like::report_invalid_template_arguments;
 use crate::statement::function_like::report_undefined_type_references;
 use crate::utils::missing_type_hints;
+use crate::utils::names::and_list;
+use crate::utils::names::short_name;
 use crate::utils::template::find_template_uses;
 
 pub mod constant;
@@ -872,6 +875,7 @@ where
     // one class the populator linked as the parent. A generic type there, as in `: PaginatedList<Order>`, names its
     // class before its type arguments, and the checker refuses any other type there. `List`, `Map` and `Class` have no
     // resolved name, because no class is one.
+    let mut header_spans = WordMap::default();
     for type_hint in inheritance_ast.iter().flat_map(|inheritance| inheritance.types.iter()) {
         let type_name = match type_hint {
             Hint::Identifier(identifier) => *identifier,
@@ -881,6 +885,9 @@ where
         let Some(resolved) = context.resolved_names.resolve(&type_name) else {
             continue;
         };
+        if let Hint::Generic(generic) = type_hint {
+            header_spans.insert(ascii_lowercase_word(resolved), generic.span());
+        }
         let is_parent = class_like_metadata.kind.is_interface()
             || class_like_metadata
                 .direct_parent_class
@@ -1051,7 +1058,7 @@ where
     check_trait_property_conflicts(context, class_like_metadata, members);
     check_readonly_class_trait_properties(context, class_like_metadata, members);
     if class_like_metadata.flags.is_sharp() {
-        check_sharp_template_variance(context, class_like_metadata);
+        check_sharp_template_variance(context, class_like_metadata, &header_spans);
     } else {
         check_template_variance_positions(context, class_like_metadata);
     }
@@ -1702,42 +1709,55 @@ fn check_template_parameters<'ctx, A>(
         InheritanceKind::Use(_) => ("uses", "@use"),
     };
 
+    // A PHP# class writes its type arguments in its header, `: PaginatedList<…>`, where PHP writes a docblock tag.
+    let sharp_parent = context.dialect.is_sharp().then(|| short_name(parent_name));
+    let type_parameters = and_list(&parent_metadata.template_types.keys().copied().collect::<Vec<_>>());
     if min_required_parameters_count > actual_parameters_count {
-        let issue = Issue::error(format!(
-            "Too few template arguments for `{parent_name}`: expected at least {min_required_parameters_count}, but found {actual_parameters_count}."
-        ))
-        .with_annotation(
-            Annotation::primary(primary_annotation_span)
-                .with_message(format!("Too few template arguments provided here when `{class_name}` {inheritance_keyword} `{parent_name}`")),
-        )
-        .with_annotation(
-            Annotation::secondary(class_name_span)
-                .with_message(format!("Declaration of `{class_name}` is here")),
-        )
-        .with_annotation(
-            Annotation::secondary(parent_definition_span)
-                .with_message(format!("`{parent_name}` is defined with {expected_parameters_count} template parameters")),
-        )
-        .with_help(format!("Provide all {expected_parameters_count} required template arguments in the `{inheritance_tag}` docblock tag for `{class_name}`."));
+        let (message, label, parent_label, help) = match &sharp_parent {
+            Some(parent) => (
+                format!("Too few type arguments for `{parent}`: expected at least {min_required_parameters_count}, but found {actual_parameters_count}."),
+                "Too few type arguments here".to_owned(),
+                format!("`{parent}` declares {expected_parameters_count} type parameters"),
+                format!("Write a type for {type_parameters} in the header, as in `: {parent}<…>`."),
+            ),
+            None => (
+                format!("Too few template arguments for `{parent_name}`: expected at least {min_required_parameters_count}, but found {actual_parameters_count}."),
+                format!("Too few template arguments provided here when `{class_name}` {inheritance_keyword} `{parent_name}`"),
+                format!("`{parent_name}` is defined with {expected_parameters_count} template parameters"),
+                format!("Provide all {expected_parameters_count} required template arguments in the `{inheritance_tag}` docblock tag for `{class_name}`."),
+            ),
+        };
+        let issue = Issue::error(message)
+            .with_annotation(Annotation::primary(primary_annotation_span).with_message(label))
+            .with_annotation(
+                Annotation::secondary(class_name_span).with_message(format!("Declaration of `{class_name}` is here")),
+            )
+            .with_annotation(Annotation::secondary(parent_definition_span).with_message(parent_label))
+            .with_help(help);
 
         context.collector.report_with_code(IssueCode::MissingTemplateParameter, issue);
     } else if expected_parameters_count < actual_parameters_count {
-        let issue = Issue::error(format!(
-            "Too many template arguments for `{parent_name}`: expected {expected_parameters_count}, but found {actual_parameters_count}."
-        ))
-        .with_annotation(
-            Annotation::primary(primary_annotation_span)
-                .with_message(format!("Too many template arguments provided here when `{class_name}` {inheritance_keyword} `{parent_name}`")),
-        )
-        .with_annotation(
-            Annotation::secondary(class_name_span)
-                .with_message(format!("Declaration of `{class_name}` is here")),
-        )
-        .with_annotation(
-            Annotation::secondary(parent_definition_span)
-                .with_message(format!("`{parent_name}` is defined with {expected_parameters_count} template parameters")),
-        )
-        .with_help(format!("Remove the extra arguments from the `{inheritance_tag}` tag for `{class_name}`."));
+        let (message, label, parent_label, help) = match &sharp_parent {
+            Some(parent) => (
+                format!("Too many type arguments for `{parent}`: expected {expected_parameters_count}, but found {actual_parameters_count}."),
+                "Too many type arguments here".to_owned(),
+                format!("`{parent}` declares {expected_parameters_count} type parameters"),
+                format!("Write only a type for {type_parameters} in the header, as in `: {parent}<…>`."),
+            ),
+            None => (
+                format!("Too many template arguments for `{parent_name}`: expected {expected_parameters_count}, but found {actual_parameters_count}."),
+                format!("Too many template arguments provided here when `{class_name}` {inheritance_keyword} `{parent_name}`"),
+                format!("`{parent_name}` is defined with {expected_parameters_count} template parameters"),
+                format!("Remove the extra arguments from the `{inheritance_tag}` tag for `{class_name}`."),
+            ),
+        };
+        let issue = Issue::error(message)
+            .with_annotation(Annotation::primary(primary_annotation_span).with_message(label))
+            .with_annotation(
+                Annotation::secondary(class_name_span).with_message(format!("Declaration of `{class_name}` is here")),
+            )
+            .with_annotation(Annotation::secondary(parent_definition_span).with_message(parent_label))
+            .with_help(help);
 
         context.collector.report_with_code(IssueCode::ExcessTemplateParameter, issue);
     }
@@ -1792,10 +1812,12 @@ fn check_template_parameters<'ctx, A>(
 
             let extended_type_str = extended_type.get_id();
 
-            if parent_metadata
-                .template_variance
-                .get(i)
-                .is_some_and(mago_codex::ttype::template::variance::Variance::is_invariant)
+            // `check_sharp_template_variance` checks a PHP# header's type arguments against spec section 11.1.
+            if !class_like_metadata.flags.is_sharp()
+                && parent_metadata
+                    .template_variance
+                    .get(i)
+                    .is_some_and(mago_codex::ttype::template::variance::Variance::is_invariant)
             {
                 for extended_type_atomic in extended_type.types.as_ref() {
                     let TAtomic::GenericParameter(generic_parameter) = extended_type_atomic else {
@@ -2062,17 +2084,21 @@ fn check_template_variance_positions<'ctx, A>(
     }
 }
 
-/// Checks spec section 11.1 on every member of a PHP# class or interface another class reaches: an `out` type
-/// parameter is only handed out, and an `in` type parameter is only taken in.
-fn check_sharp_template_variance<A>(context: &mut Context<'_, '_, A>, class_like_metadata: &ClassLikeMetadata)
-where
+/// Checks spec section 11.1 on every member of a PHP# class or interface another class reaches, and on its header,
+/// whose entries stand at `header_spans`: an `out` type parameter is only handed out, and an `in` type parameter is
+/// only taken in.
+fn check_sharp_template_variance<A>(
+    context: &mut Context<'_, '_, A>,
+    class_like_metadata: &ClassLikeMetadata,
+    header_spans: &WordMap<Span>,
+) where
     A: Arena,
 {
     if !class_like_metadata.template_variance.iter().any(|variance| !variance.is_invariant()) {
         return;
     }
 
-    for template_use in find_template_uses(context.codebase, class_like_metadata) {
+    for template_use in find_template_uses(context.codebase, class_like_metadata, header_spans) {
         let Some(index) = class_like_metadata.template_types.get_index_of(&template_use.template) else {
             continue;
         };
@@ -2271,7 +2297,10 @@ fn check_abstract_method_signatures<'ctx, A>(
                 &substituted_overridden_method,
                 context.dialect,
             );
-            if issues.is_empty() && context.dialect.is_sharp() {
+            // The engine links the erased declarations whenever either class is PHP#, and a rename hides no erased type.
+            if (overridden_class.flags.is_sharp() || class_like_metadata.flags.is_sharp())
+                && issues.iter().all(|issue| matches!(issue, SignatureCompatibilityIssue::ParameterNameMismatch { .. }))
+            {
                 issues.extend(method_signature::validate_erased_signature_compatibility(
                     context.codebase,
                     class_like_metadata.name,
@@ -2873,7 +2902,11 @@ fn check_interface_method_signatures<'ctx, A>(
             &substituted_interface_method,
             context.dialect,
         );
-        if issues.is_empty() && context.dialect.is_sharp() {
+        // Get the actual declaring class for error reporting
+        let declaring_class = context.codebase.get_class_like(interface_fqcn_str).unwrap_or(interface_metadata);
+        if (declaring_class.flags.is_sharp() || class_like_metadata.flags.is_sharp())
+            && issues.iter().all(|issue| matches!(issue, SignatureCompatibilityIssue::ParameterNameMismatch { .. }))
+        {
             issues.extend(method_signature::validate_erased_signature_compatibility(
                 context.codebase,
                 class_like_metadata.name,
@@ -2885,9 +2918,6 @@ fn check_interface_method_signatures<'ctx, A>(
         for incompatibility in issues {
             // Use the method span as primary location (where the issue actually is)
             let method_span = class_method.name_span.unwrap_or(class_method.span);
-
-            // Get the actual declaring class for error reporting
-            let declaring_class = context.codebase.get_class_like(interface_fqcn_str).unwrap_or(interface_metadata);
 
             report_signature_compatibility_issue(
                 context,
@@ -3061,12 +3091,6 @@ fn report_signature_compatibility_issue<'ctx, A>(
                 .map(|p| p.name_span)
                 .filter(|span| span.file_id == primary_span.file_id)
                 .unwrap_or(primary_span);
-            let help = match bound {
-                Some(bound) => format!(
-                    "Write `{param_name}` with a type that erases to `{parent_type}`, or bound the type parameter, as in `{bound}`, so both sides erase to the bound."
-                ),
-                None => format!("Write `{param_name}` with a type that erases to `{parent_type}`."),
-            };
 
             context.collector.report_with_code(
                 IssueCode::IncompatibleParameterType,
@@ -3078,7 +3102,7 @@ fn report_signature_compatibility_issue<'ctx, A>(
                     "`{parent_name}::{method_name}()` takes `{parent_type}` once its type parameters are erased."
                 )))
                 .with_note("PHP# erases type parameters when it compiles, and PHP refuses a parameter narrower than the one it overrides when it links the class.")
-                .with_help(help),
+                .with_help(method_signature::erased_type_help(param_name, parent_type, bound)),
             );
         }
         SignatureCompatibilityIssue::IncompatibleReturnType { child_type, parent_type } => {
@@ -3636,7 +3660,9 @@ fn check_class_like_properties<'ctx, A>(
                 parent_property.type_declaration_metadata.as_ref(),
             ) {
                 (Some(declaring_type), Some(parent_type)) => {
-                    let parent_type_union = if context.dialect.is_sharp() {
+                    // A PHP# declaration may name a type parameter, which the child's header or `@extends` fills.
+                    let is_sharp = parent_metadata.flags.is_sharp() || class_like_metadata.flags.is_sharp();
+                    let parent_type_union = if is_sharp {
                         Cow::Owned(localize_parent_type(
                             context.codebase,
                             class_like_metadata,
@@ -3677,7 +3703,7 @@ fn check_class_like_properties<'ctx, A>(
                                 .with_note("PHP requires property types to be invariant, meaning the type declaration in a child class must be exactly the same as in the parent class.")
                                 .with_help(format!("Change the type of `{property_name}` to `{parent_type_id}` to match the parent property."))
                             );
-                    } else if context.dialect.is_sharp() {
+                    } else if is_sharp {
                         let erased_type = method_signature::erase(&declaring_type.type_union, context.codebase);
                         let erased_parent_type = method_signature::erase(&parent_type.type_union, context.codebase);
 
@@ -3695,18 +3721,11 @@ fn check_class_like_properties<'ctx, A>(
                             let property_name = mago_bytes::trim_start_byte(property_metadata.name.0.as_bytes(), b'$');
                             let property_name = String::from_utf8_lossy(property_name);
                             let class_name = class_like_metadata.original_name;
-                            let help = match method_signature::bound_example(
-                                context.codebase,
-                                Some(parent_type),
-                                &erased_type,
-                            ) {
-                                Some(bound) => format!(
-                                    "Write `{property_name}` with a type that erases to `{erased_parent_type_id}`, or bound the type parameter, as in `{bound}`, so both sides erase to the bound."
-                                ),
-                                None => format!(
-                                    "Write `{property_name}` with a type that erases to `{erased_parent_type_id}`."
-                                ),
-                            };
+                            let help = method_signature::erased_type_help(
+                                &property_name,
+                                erased_parent_type_id,
+                                method_signature::bound_example(context.codebase, Some(parent_type), &erased_type),
+                            );
 
                             context.collector.report_with_code(
                                 IssueCode::IncompatiblePropertyType,

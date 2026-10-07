@@ -34,6 +34,8 @@ use crate::resolver::property::resolve_method_value;
 use crate::resolver::static_property::StaticProperty;
 use crate::resolver::static_property::StaticPropertyName;
 use crate::utils::expression::get_bare_name_variable_id;
+use crate::utils::names::and_list;
+use crate::utils::names::short_name;
 
 pub mod class_constant_access;
 pub mod property_access;
@@ -311,12 +313,10 @@ where
     } else {
         format!("`{receiver}.{member}` is {} but {last}, so PHP# cannot tell how to read it.", rest.join(", "))
     };
-    let class = first_class.as_bytes().rsplit(|byte| *byte == b'\\').next().unwrap_or_default();
-
     Some((
         Issue::error(message)
             .with_annotation(Annotation::primary(name.span).with_message("Not the same kind of member on every class")),
-        String::from_utf8_lossy(class).into_owned(),
+        short_name(first_class),
     ))
 }
 
@@ -326,17 +326,6 @@ where
     A: Arena,
 {
     String::from_utf8_lossy(&context.source_file.contents[object.span().to_range_usize()]).into_owned()
-}
-
-/// The class names `classes` as an English list, each in backticks: "`A`", "`A` and `B`", "`A`, `B` and `C`".
-fn and_list(classes: &[Word]) -> String {
-    let names: Vec<String> = classes.iter().map(|class| format!("`{}`", BytesDisplay(class.as_bytes()))).collect();
-
-    match names.split_last() {
-        Some((last, [])) => last.clone(),
-        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
-        None => String::new(),
-    }
 }
 
 /// The classes `object` holds when it is a PHP# class value: `typeof(X)`, or a local holding the class-string of a

@@ -24,9 +24,6 @@ use mago_analyzer::settings::Settings;
 use mago_codex::populator::populate_codebase;
 use mago_codex::scanner::scan_program;
 use mago_codex::ttype::TType;
-use mago_codex::ttype::atomic::TAtomic;
-use mago_codex::ttype::atomic::array::TArray;
-use mago_codex::ttype::get_backed_enum;
 use mago_database::DatabaseReader;
 use mago_database::file::File;
 use mago_names::CHANGING_COLLECTION_METHODS;
@@ -3484,48 +3481,6 @@ fn a_map_keyed_by_a_type_parameter_without_a_backed_enum_in_its_bound_is_an_erro
     assert_eq!(issues(("src/Demo/Tally.sharp", written), &others), ["8:22 template-constraint-violation"]);
 }
 
-/// A key holds the backed enum it names, or the backed enum among the members of its type parameter's bound, in
-/// either order. A bound of interfaces alone, or no bound, holds none.
-#[test]
-fn a_key_holds_the_backed_enum_it_names_or_the_one_in_its_type_parameters_bound() {
-    assert_eq!(key_backed_enum("", "Status").as_deref(), Some("Lib\\Status"));
-    assert_eq!(key_backed_enum("<TKey : Status>", "TKey").as_deref(), Some("Lib\\Status"));
-    assert_eq!(key_backed_enum("<TKey : Status & HasLabel>", "TKey").as_deref(), Some("Lib\\Status"));
-    assert_eq!(key_backed_enum("<TKey : HasLabel & Status>", "TKey").as_deref(), Some("Lib\\Status"));
-    assert_eq!(key_backed_enum("<TKey : HasLabel & Other>", "TKey"), None);
-    assert_eq!(key_backed_enum("<TKey>", "TKey"), None);
-}
-
-/// The name of the backed enum `get_backed_enum` finds for the key of the `Map<key, int>` that
-/// `Demo\Tally<header>::count` takes, beside `LABELS`.
-fn key_backed_enum(header: &str, key: &str) -> Option<String> {
-    let sharp = format!(
-        "namespace Demo;\n\nimport Lib.HasLabel;\nimport Lib.Other;\nimport Lib.Status;\n\npublic class Tally{header}\n{{\n    public int count(Map<{key}, int> counts) => 0;\n}}\n"
-    );
-    let Prelude { mut database, mut metadata, mut symbol_references } = PRELUDE.clone();
-    let arena = LocalArena::new();
-    for (name, code) in [("src/Demo/Tally.sharp", sharp), ("src/Lib/Labels.php", LABELS.to_owned())] {
-        let file_id = database.add(File::ephemeral(Cow::Borrowed(name.as_bytes()), Cow::Owned(code.into_bytes())));
-        let file = database.get_ref(&file_id).expect("file was just added");
-        let program = parse_file(&arena, file);
-        let names = NameResolver::new(&arena).resolve(program);
-        metadata.extend(scan_program(&arena, file, program, &names, settings().version));
-    }
-    populate_codebase(&mut metadata, &mut symbol_references, WordSet::default(), HashSet::default());
-
-    let count = metadata.get_method(b"Demo\\Tally", b"count").expect("Tally declares count");
-    let counts = &count.parameters[0].type_declaration_metadata.as_ref().expect("counts has a written type").type_union;
-    let [TAtomic::Array(TArray::Keyed(map))] = counts.types.as_ref() else {
-        panic!("counts is a Map, not `{}`", counts.get_id());
-    };
-    let (key_type, _) = map.get_generic_parameters().expect("a Map has a key type");
-    let [key] = key_type.types.as_ref() else {
-        panic!("the key type is one type, not `{}`", key_type.get_id());
-    };
-
-    get_backed_enum(key, &metadata).map(|backed_enum| backed_enum.original_name.to_string())
-}
-
 /// A written key or value type checks as a typed local's does. Spec section 12 reads a `Map<string, V>` key back as a
 /// `string`, even the key `"5"` PHP stores as an int, because the lowering casts every key of a `Map<string, V>` loop
 /// back to `string`, written or not.
@@ -3677,6 +3632,24 @@ fn a_type_argument_outside_its_bound_or_beyond_the_type_parameters_is_reported()
     );
 }
 
+/// A bound may name a type parameter of its own list, its own or a later one, as C#'s `T : IComparable<T>` does:
+/// `Sorted<TItem : Comparable<TItem>>` takes a `Version : Comparable<Version>` and compares its items, and
+/// `compare<TA : Comparable<TB>, TB>` infers both from its arguments. A `Line`, which compares to nothing, is outside
+/// the bound. The PHP twin keeps Mago's issue, which reads `TItem` in its own `@template` bound as a class.
+#[test]
+fn a_bound_names_a_type_parameter_of_its_own_list() {
+    let sharp = "namespace Demo;\n\npublic interface Comparable<TOther>\n{\n    int compareTo(TOther other);\n}\n\npublic class Version : Comparable<Version>\n{\n    public int compareTo(Any? other) => 0;\n}\n\npublic class Sorted<TItem : Comparable<TItem>>\n{\n    public bool before(TItem left, TItem right) => left.compareTo(right) < 0;\n}\n\npublic class Ranks\n{\n    public static int compare<TA : Comparable<TB>, TB>(TA left, TB right) => left.compareTo(right);\n\n    public static Sorted<Version> sorted(Sorted<Version> versions) => versions;\n\n    public static int versions(Version left, Version right) => Ranks.compare(left, right);\n}\n";
+    let line = "namespace Demo;\n\npublic class Line\n{\n}\n\npublic class Report\n{\n    public static Any lines(Sorted<Line> lines) => lines;\n}\n";
+
+    assert_eq!(issues(("src/Demo/Sorted.sharp", sharp), &[]), Vec::<String>::new());
+    let php = "<?php\n\nnamespace Demo;\n\nclass Line\n{\n}\n\nclass Report\n{\n    /** @param Sorted<Line> $lines */\n    public static function lines(Sorted $lines): mixed\n    {\n        return $lines;\n    }\n}\n";
+    let php_sorted = "<?php\n\nnamespace Demo;\n\n/** @template TOther */\ninterface Comparable\n{\n}\n\n/** @template TItem of Comparable<TItem> */\nclass Sorted\n{\n}\n";
+
+    assert_eq!(issues(("src/Demo/Sorted.sharp", sharp), &[]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Report.sharp", line), &[("src/Demo/Sorted.sharp", sharp)]), ["9:29 template-constraint-violation"]);
+    assert_eq!(issues(("src/Demo/Report.php", php), &[("src/Demo/Sorted.php", php_sorted)]), ["11:16 template-constraint-violation"]);
+}
+
 /// `out TItem` lets a `Feed<Order>` pass as a `Feed<DatabaseEntity>`, `in TItem` lets a `Validator<DatabaseEntity>`
 /// pass as a `Validator<Order>`, and an invariant `PaginatedList<Order>` passes as neither, spec section 11.1.
 #[test]
@@ -3699,6 +3672,30 @@ fn a_header_passes_its_type_arguments_to_the_generic_base() {
     assert_eq!(
         issues(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]),
         ["15:68 invalid-argument", "19:77 invalid-argument", "23:79 possibly-invalid-argument"]
+    );
+}
+
+/// A header with too few or too many type arguments is reported in PHP#'s words, naming the header form, and its PHP
+/// twin keeps Mago's text about the `@extends` tag.
+#[test]
+fn a_header_with_the_wrong_number_of_type_arguments_names_the_header_form() {
+    let sharp = "namespace Demo;\n\npublic class EntryPage : PaginatedList\n{\n}\n\npublic class EntryPair : PaginatedList<Order, Order>\n{\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass EntryPage extends PaginatedList\n{\n}\n\n/** @extends PaginatedList<int, int> */\nclass EntryPair extends PaginatedList\n{\n}\n";
+    let paging = "<?php\n\nnamespace Demo;\n\n/**\n * @template TItem\n */\nclass PaginatedList\n{\n}\n";
+
+    assert_eq!(
+        explained(("src/Demo/Pages.php", php), &[("src/Demo/Paging.php", paging)]),
+        [
+            "5:25 missing-template-parameter Too few template arguments for `Demo\\PaginatedList`: expected at least 1, but found 0. Provide all 1 required template arguments in the `@extends` docblock tag for `Demo\\EntryPage`.",
+            "10:25 excess-template-parameter Too many template arguments for `Demo\\PaginatedList`: expected 1, but found 2. Remove the extra arguments from the `@extends` tag for `Demo\\EntryPair`.",
+        ]
+    );
+    assert_eq!(
+        explained(("src/Demo/Pages.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]),
+        [
+            "3:26 missing-template-parameter Too few type arguments for `PaginatedList`: expected at least 1, but found 0. Write a type for `TItem` in the header, as in `: PaginatedList<…>`.",
+            "7:26 excess-template-parameter Too many type arguments for `PaginatedList`: expected 1, but found 2. Write only a type for `TItem` in the header, as in `: PaginatedList<…>`.",
+        ]
     );
 }
 
@@ -3788,11 +3785,14 @@ fn a_return_type_that_would_erase_wider_than_the_parent_return_type_is_an_error(
 }
 
 /// PHP requires an overriding property to keep the type of the property it overrides, so a field that erases to
-/// another type than the field it overrides is refused, and one whose parent's bound erases to the same type is not.
+/// another type than the field it overrides is refused, from a PHP# class or a PHP class whose `@extends Slot<Order>`
+/// names it, and one whose parent's bound erases to the same type is not.
 #[test]
 fn a_field_whose_type_erases_to_another_type_than_the_parent_field_is_an_error() {
     let unbound = "namespace Demo;\n\npublic class Order\n{\n}\n\npublic class Slot<TItem>\n{\n    public TItem? item = null;\n}\n\npublic class OrderSlot : Slot<Order>\n{\n    public override Order? item = null;\n}\n";
     let bound = "namespace Demo;\n\npublic class Order\n{\n}\n\npublic class Slot<TItem : Order>\n{\n    public TItem? item = null;\n}\n\npublic class OrderSlot : Slot<Order>\n{\n    public override Order? item = null;\n}\n";
+    let slot = "namespace Demo;\n\npublic class Order\n{\n}\n\npublic class Slot<TItem>\n{\n    public TItem? item = null;\n}\n";
+    let php_order_slot = "<?php\n\nnamespace Demo;\n\n/** @extends Slot<Order> */\nclass OrderSlot extends Slot\n{\n    public ?Order $item = null;\n}\n";
 
     assert_eq!(
         explained(("src/Demo/Slot.sharp", unbound), &[]),
@@ -3801,6 +3801,12 @@ fn a_field_whose_type_erases_to_another_type_than_the_parent_field_is_an_error()
         ]
     );
     assert_eq!(issues(("src/Demo/Slot.sharp", bound), &[]), Vec::<String>::new());
+    assert_eq!(
+        explained(("src/Demo/OrderSlot.php", php_order_slot), &[("src/Demo/Slot.sharp", slot)]),
+        [
+            "8:12 incompatible-property-type Property `Demo\\OrderSlot::$item` must have the type `mixed`, the type `Demo\\Slot::$item` erases to. Write `item` with a type that erases to `mixed`, or bound the type parameter, as in `Slot<TItem : Order>`, so both sides erase to the bound."
+        ]
+    );
 }
 
 /// A signature that stays sound once generics are erased has no issue: a bound makes the parent's parameter erase to
@@ -3811,6 +3817,49 @@ fn a_signature_that_links_once_erased_has_no_issue() {
     let sharp = "namespace Demo;\n\npublic abstract class DatabaseEntity\n{\n}\n\npublic class Order : DatabaseEntity\n{\n}\n\npublic interface Validator<in TItem : DatabaseEntity>\n{\n    bool validate(TItem item);\n}\n\npublic class OrderValidator : Validator<Order>\n{\n    public bool validate(DatabaseEntity item) => true;\n}\n\npublic interface Feed<out TItem>\n{\n    TItem next();\n}\n\npublic class OrderFeed : Feed<Order>\n{\n    public Order next() => new Order();\n}\n\npublic class Box<TItem>\n{\n    public required Box(TItem item)\n    {\n    }\n}\n\npublic class OrderBox : Box<Order>\n{\n    public required OrderBox(Order item)\n    {\n    }\n}\n";
 
     assert_eq!(issues(("src/Demo/Entities.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// A renamed parameter does not hide an erased one: `put(Order order)` over the `virtual` `put(TItem item)` of a
+/// concrete `Box<TItem>`, and over an interface's `put(TItem item)`, reports the rename and the erasure in one run.
+#[test]
+fn a_renamed_parameter_reports_its_erased_type_too() {
+    let sharp = "namespace Demo;\n\npublic class Order\n{\n}\n\npublic class Box<TItem>\n{\n    public virtual void put(TItem item)\n    {\n    }\n}\n\npublic class OrderBox : Box<Order>\n{\n    public override void put(Order order)\n    {\n    }\n}\n\npublic interface Sink<TItem>\n{\n    void put(TItem item);\n}\n\npublic class OrderSink : Sink<Order>\n{\n    public void put(Order order)\n    {\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Boxes.sharp", sharp), &[]),
+        [
+            "16:26 incompatible-parameter-name",
+            "16:36 incompatible-parameter-type",
+            "28:17 incompatible-parameter-name",
+            "28:27 incompatible-parameter-type",
+        ]
+    );
+}
+
+/// The engine erases a PHP# class's type parameters whoever extends it, so a PHP class whose `@extends Box<Order>`
+/// narrows `put` to `Order` is refused as PHP refuses it when the class links, and so is a PHP# class narrowing the
+/// `mixed` parameter of a PHP `@template` class. A PHP class extending a PHP `@template` class keeps its issues.
+#[test]
+fn a_php_class_overriding_an_erased_sharp_method_is_refused() {
+    let order_box = "<?php\n\nnamespace Demo;\n\n/** @extends Box<Order> */\nclass OrderBox extends Box\n{\n    public function put(Order $item): void\n    {\n    }\n}\n";
+    let sharp_box = "namespace Demo;\n\npublic class Order\n{\n}\n\npublic class Box<TItem>\n{\n    public virtual void put(TItem item)\n    {\n    }\n}\n";
+    let php_box = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n}\n\n/** @template TItem */\nclass Box\n{\n    /** @param TItem $item */\n    public function put(mixed $item): void\n    {\n    }\n}\n";
+    let sharp_order_box =
+        "namespace Demo;\n\npublic class OrderBox : Box<Order>\n{\n    public override void put(Order item)\n    {\n    }\n}\n";
+
+    assert_eq!(explained(("src/Demo/OrderBox.php", order_box), &[("src/Demo/Box.php", php_box)]), Vec::<String>::new());
+    assert_eq!(
+        explained(("src/Demo/OrderBox.php", order_box), &[("src/Demo/Box.sharp", sharp_box)]),
+        [
+            "8:31 incompatible-parameter-type Parameter `item` of `Demo\\OrderBox::put()` must take at least `mixed`, the type `Demo\\Box::put()` erases it to. Write `item` with a type that erases to `mixed`, or bound the type parameter, as in `Box<TItem : Order>`, so both sides erase to the bound."
+        ]
+    );
+    assert_eq!(
+        explained(("src/Demo/OrderBox.sharp", sharp_order_box), &[("src/Demo/Box.php", php_box)]),
+        [
+            "5:36 incompatible-parameter-type Parameter `item` of `Demo\\OrderBox::put()` must take at least `mixed`, the type `Demo\\Box::put()` erases it to. Write `item` with a type that erases to `mixed`."
+        ]
+    );
 }
 
 /// The generic declarations written as PHP with `@template`, `@extends`, `@implements` and docblock type arguments
@@ -3923,6 +3972,38 @@ fn out_and_in_are_checked_on_every_member() {
     assert!(
         analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Feed.sharp", sharp), &[]).iter().all(|issue| issue.notes
             == ["Spec section 11.1: an `out` type parameter is only handed out, and an `in` type parameter is only taken in."]),
+    );
+}
+
+/// A header hands its type arguments out, as C# (CS1961) and Kotlin check a base type's: `Sink<in TItem> :
+/// Source<TItem>` hands `TItem` out through `Source<out TItem>`, and `Reader<out TItem> : Slot<TItem>` passes it to an
+/// invariant type parameter, which takes it in too, so each is reported once on its header. `Feed<out TItem> :
+/// Source<TItem>` and `Check<in TItem> : Validator<TItem>` keep their markers.
+#[test]
+fn out_and_in_are_checked_on_the_type_arguments_of_the_header() {
+    let sharp = "namespace Demo;\n\npublic interface Source<out TItem>\n{\n    TItem next();\n}\n\npublic interface Validator<in TItem>\n{\n    bool validate(TItem item);\n}\n\npublic interface Slot<TItem>\n{\n    TItem get();\n}\n\npublic interface Sink<in TItem> : Source<TItem>\n{\n}\n\npublic interface Reader<out TItem> : Slot<TItem>\n{\n}\n\npublic interface Feed<out TItem> : Source<TItem>\n{\n}\n\npublic interface Check<in TItem> : Validator<TItem>\n{\n}\n";
+
+    assert_eq!(
+        explained(("src/Demo/Streams.sharp", sharp), &[]),
+        [
+            "18:35 invalid-template-parameter `TItem` is declared `in`, so the header `Source<TItem>` cannot hand it out.",
+            "22:38 invalid-template-parameter `TItem` is declared `out`, so the header `Slot<TItem>` cannot take it in.",
+        ]
+    );
+}
+
+/// `Class<TItem>` hands `TItem` out, as `typeof` of a subclass passes where the class is expected, so `out TItem`
+/// refuses it as a parameter type and `in TItem` as a return type.
+#[test]
+fn out_and_in_are_checked_on_a_class_type() {
+    let sharp = "namespace Demo;\n\npublic abstract class Maker<out TItem>\n{\n    public abstract TItem make(Class<TItem> type);\n}\n\npublic abstract class Kind<in TItem>\n{\n    public abstract Class<TItem> kind();\n}\n";
+
+    assert_eq!(
+        explained(("src/Demo/Makers.sharp", sharp), &[]),
+        [
+            "5:27 invalid-template-parameter `TItem` is declared `out`, so `make` cannot take it in.",
+            "10:34 invalid-template-parameter `TItem` is declared `in`, so `kind` cannot hand it out.",
+        ]
     );
 }
 

@@ -14,6 +14,9 @@ use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::callable::TCallable;
 use mago_codex::ttype::atomic::generic::TGenericParameter;
 use mago_codex::ttype::atomic::object::TObject;
+use mago_codex::ttype::atomic::object::named::TNamedObject;
+use mago_codex::ttype::atomic::scalar::TScalar;
+use mago_codex::ttype::atomic::scalar::class_like_string::TClassLikeString;
 use mago_codex::ttype::comparator::ComparisonResult;
 use mago_codex::ttype::comparator::union_comparator;
 use mago_codex::ttype::expander;
@@ -33,6 +36,7 @@ use mago_word::word;
 
 use crate::context::Context;
 use crate::utils::names::display_sharp_type;
+use crate::utils::names::short_name;
 
 /// Type alias for template lower bounds - maps parameter names to their bounds per defining entity.
 pub type TemplateLowerBounds = HashMap<Word, HashMap<GenericParent, TUnion>>;
@@ -244,12 +248,41 @@ pub(crate) struct TemplateUse {
     pub span: Span,
 }
 
-/// Every use of a type parameter of `class` by a member it declares, one per member and type parameter. A method's
-/// parameters take their types in and its return type hands its type out, and a property hands its type out and takes
-/// it in when another class can write it. Private members and the constructor are exempt, as in Kotlin.
-pub(crate) fn find_template_uses(codebase: &CodebaseMetadata, class: &ClassLikeMetadata) -> Vec<TemplateUse> {
+/// Every use of a type parameter of `class` by a member it declares or by its header, one per member and type
+/// parameter. A method's parameters take their types in and its return type hands its type out, a property hands its
+/// type out and takes it in when another class can write it, and the header hands its type arguments out, as C# and
+/// Kotlin check a base type's. Private members and the constructor are exempt, as in Kotlin. A header entry stands at
+/// its span in `header_spans`, by its parent's lowercase name, or at the class's name without one.
+pub(crate) fn find_template_uses(
+    codebase: &CodebaseMetadata,
+    class: &ClassLikeMetadata,
+    header_spans: &WordMap<Span>,
+) -> Vec<TemplateUse> {
     let owner = GenericParent::ClassLike(class.name);
     let mut template_uses = Vec::new();
+
+    for (parent_name, arguments) in &class.template_extended_offsets {
+        let Some(parent) = codebase.get_class_like(parent_name.as_bytes()) else {
+            continue;
+        };
+
+        let header = TAtomic::Object(TObject::Named(
+            TNamedObject::new(parent.name).with_type_parameters(Some(arguments.clone())),
+        ));
+        let mut positions = Vec::new();
+        find_atomic_template_positions(codebase, &header, &owner, Variance::Covariant, &mut positions);
+
+        let arguments: Vec<String> = arguments
+            .iter()
+            .map(|argument| match argument.types.as_ref() {
+                [TAtomic::GenericParameter(parameter)] => parameter.parameter_name.to_string(),
+                _ => display_sharp_type(argument, codebase),
+            })
+            .collect();
+        let member = format!("the header `{}<{}>`", short_name(parent.original_name), arguments.join(", "));
+        let span = header_spans.get(parent_name).copied().unwrap_or(class.name_span.unwrap_or(class.span));
+        add_template_uses(&mut template_uses, positions, &member, span);
+    }
 
     for method_name in &class.methods {
         let Some(method) = codebase.get_method(class.name.as_bytes(), method_name.as_bytes()) else {
@@ -348,6 +381,12 @@ fn find_atomic_template_positions(
     match atomic {
         TAtomic::GenericParameter(parameter) if parameter.defining_entity == *owner => {
             positions.push((parameter.parameter_name, position));
+        }
+        // `Class<T>` holds `T` or a subclass, so it hands `T` out.
+        TAtomic::Scalar(TScalar::ClassLikeString(TClassLikeString::Generic {
+            parameter_name, defining_entity, ..
+        })) if defining_entity == owner => {
+            positions.push((*parameter_name, position));
         }
         TAtomic::Object(TObject::Named(named)) => {
             let variances = codebase.get_class_like(named.name.as_bytes()).map(|class| &class.template_variance);
@@ -454,9 +493,8 @@ where
         return issue;
     };
 
-    let class_name = class.original_name.as_str_lossy();
-    let class_name = class_name.rsplit('\\').next().unwrap_or_default();
-    let position = find_template_uses(codebase, class)
+    let class_name = short_name(class.original_name);
+    let position = find_template_uses(codebase, class, &WordMap::default())
         .into_iter()
         .filter(|template_use| template_use.template == template)
         .map(|template_use| template_use.position)

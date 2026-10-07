@@ -63,6 +63,7 @@ use crate::scanner::enum_case::scan_enum_case;
 use crate::scanner::property::scan_properties;
 use crate::scanner::ttype::get_type_metadata_from_hint;
 use crate::scanner::ttype::get_type_metadata_from_type;
+use crate::scanner::ttype::scan_type_parameters;
 use crate::scanner::typing_error_issue;
 use crate::scanner::version_claim::evaluate_version_attributes;
 use crate::symbol::SymbolKind;
@@ -1176,18 +1177,17 @@ where
     // A PHP# type parameter is the template a `@template` tag declares, its bound the tag's `of`, and `out` and `in`
     // its `@template-covariant` and `@template-contravariant`, spec sections 11 and 11.1.
     if let Some(type_parameters) = type_parameters {
+        let templates = scan_type_parameters(
+            type_parameters,
+            GenericParent::ClassLike(name),
+            original_name,
+            &mut type_context,
+            context,
+            scope,
+        );
         let mut template_variance = std::mem::take(&mut class_like_metadata.template_variance);
-        for parameter in &type_parameters.parameters {
-            scope.add(NameKind::Default, parameter.name.value, &(None as Option<&str>));
-
-            let template_name = word(parameter.name.value);
-            let constraint = parameter.bound.as_ref().map_or_else(get_mixed, |bound| {
-                get_type_metadata_from_hint(&bound.hint, Some(original_name), &type_context, context).type_union
-            });
-            let definition = GenericTemplate::new(GenericParent::ClassLike(name), constraint);
-
-            class_like_metadata.add_template_type(template_name, definition.clone());
-            type_context = type_context.with_template_definition(template_name, vec![definition]);
+        for ((template_name, definition), parameter) in templates.into_iter().zip(&type_parameters.parameters) {
+            class_like_metadata.add_template_type(template_name, definition);
 
             let variance = if parameter.is_covariant() {
                 Variance::Covariant

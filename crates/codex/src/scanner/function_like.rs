@@ -59,6 +59,7 @@ use crate::scanner::parameter::scan_function_like_parameter_with_constants;
 use crate::scanner::ttype::get_type_metadata_from_hint;
 use crate::scanner::ttype::get_type_metadata_from_type;
 use crate::scanner::ttype::merge_type_preserving_nullability;
+use crate::scanner::ttype::scan_type_parameters;
 use crate::scanner::typing_error_issue;
 use crate::scanner::version_claim::evaluate_version_attributes;
 use crate::ttype::atomic::TAtomic;
@@ -102,18 +103,17 @@ where
 
     // A PHP# method's type parameters are the templates its `@template` tags declare, spec section 11.
     let mut type_context = type_resolution_context.unwrap_or_default();
-    for parameter in method.type_parameters.iter().flat_map(|list| list.parameters.iter()) {
-        scope.add(NameKind::Default, parameter.name.value, &(None as Option<&str>));
-
-        let template_name = word(parameter.name.value);
-        let constraint = parameter.bound.as_ref().map_or_else(get_mixed, |bound| {
-            get_type_metadata_from_hint(&bound.hint, Some(class_like_metadata.original_name), &type_context, context)
-                .type_union
-        });
-        let definition = GenericTemplate::new(GenericParent::FunctionLike(functionlike_id), constraint);
-
-        metadata.add_template_type(template_name, definition.clone());
-        type_context = type_context.with_template_definition(template_name, vec![definition]);
+    if let Some(type_parameters) = &method.type_parameters {
+        for (template_name, definition) in scan_type_parameters(
+            type_parameters,
+            GenericParent::FunctionLike(functionlike_id),
+            class_like_metadata.original_name,
+            &mut type_context,
+            context,
+            scope,
+        ) {
+            metadata.add_template_type(template_name, definition);
+        }
     }
 
     metadata.name_span = Some(method.name.span);

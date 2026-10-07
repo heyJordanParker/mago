@@ -93,18 +93,35 @@ fn display_sharp_atomic(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String
             let Some(name) = object.get_name() else {
                 return atomic.get_id().to_string();
             };
-            let name = String::from_utf8_lossy(name.as_bytes());
-            let short_name = name.rsplit('\\').next().unwrap_or_default();
+            let name = short_name(name);
             match object.get_type_parameters() {
                 Some(parameters) if !parameters.is_empty() => {
                     let parameters: Vec<String> =
                         parameters.iter().map(|parameter| display_sharp_type(parameter, codebase)).collect();
-                    format!("{short_name}<{}>", parameters.join(", "))
+                    format!("{name}<{}>", parameters.join(", "))
                 }
-                _ => short_name.to_owned(),
+                _ => name,
             }
         }
         _ => atomic.get_id().to_string(),
+    }
+}
+
+/// The last segment of the full name `name`, as a PHP# import writes it.
+#[must_use]
+pub(crate) fn short_name(name: Word) -> String {
+    name.as_str_lossy().rsplit('\\').next().unwrap_or_default().to_owned()
+}
+
+/// The names `names` as an English list, each in backticks: "`A`", "`A` and `B`", "`A`, `B` and `C`".
+#[must_use]
+pub(crate) fn and_list(names: &[Word]) -> String {
+    let names: Vec<String> = names.iter().map(|name| format!("`{name}`")).collect();
+
+    match names.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => String::new(),
     }
 }
 

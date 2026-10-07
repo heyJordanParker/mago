@@ -3,17 +3,20 @@ use std::sync::Arc;
 use mago_allocator::Arena;
 use mago_names::ResolvedNames;
 use mago_names::binding::Binding;
+use mago_names::kind::NameKind;
 use mago_names::scope::NamespaceScope;
 use mago_phpdoc_syntax::cst::r#type::Type;
 use mago_span::HasSpan;
 use mago_syntax::cst::Hint;
 use mago_syntax::cst::Identifier;
+use mago_syntax::cst::TypeParameterList;
 use mago_syntax::cst::UnionHint;
 use mago_syntax::dialect::Dialect;
 use mago_word::Word;
 use mago_word::word;
 
 use crate::metadata::ttype::TypeMetadata;
+use crate::misc::GenericParent;
 use crate::scanner::Context;
 use crate::ttype::TType;
 use crate::ttype::atomic::TAtomic;
@@ -50,6 +53,7 @@ use crate::ttype::get_string;
 use crate::ttype::get_true;
 use crate::ttype::get_void;
 use crate::ttype::resolution::TypeResolutionContext;
+use crate::ttype::template::GenericTemplate;
 use crate::ttype::union::TUnion;
 use crate::ttype::wrap_atomic;
 
@@ -82,6 +86,47 @@ pub fn get_type_metadata_from_type(
         type_metadata.from_docblock = true;
         type_metadata
     })
+}
+
+/// The templates a PHP# type parameter list declares, in order, spec section 11: each is the template a `@template`
+/// tag declares for `defining_entity`, its bound the tag's `of`, or `mixed` without one. Every name of the list is a
+/// template while the bounds are read, so a bound names a type parameter of its own list, its own or a later one, as in
+/// `<TItem : Comparable<TItem>>`. `type_context` holds the templates once the list is read.
+pub fn scan_type_parameters<'arena, A>(
+    type_parameters: &'arena TypeParameterList<'arena>,
+    defining_entity: GenericParent,
+    classname: Word,
+    type_context: &mut TypeResolutionContext,
+    context: &Context<'_, 'arena, A>,
+    scope: &mut NamespaceScope,
+) -> Vec<(Word, GenericTemplate)>
+where
+    A: Arena,
+{
+    for parameter in &type_parameters.parameters {
+        scope.add(NameKind::Default, parameter.name.value, &(None as Option<&str>));
+        type_context
+            .get_template_definitions_mut()
+            .insert(word(parameter.name.value), vec![GenericTemplate::new(defining_entity, get_mixed())]);
+    }
+
+    let templates: Vec<(Word, GenericTemplate)> = type_parameters
+        .parameters
+        .iter()
+        .map(|parameter| {
+            let constraint = parameter.bound.as_ref().map_or_else(get_mixed, |bound| {
+                get_type_metadata_from_hint(&bound.hint, Some(classname), type_context, context).type_union
+            });
+
+            (word(parameter.name.value), GenericTemplate::new(defining_entity, constraint))
+        })
+        .collect();
+
+    for (name, definition) in &templates {
+        type_context.get_template_definitions_mut().insert(*name, vec![definition.clone()]);
+    }
+
+    templates
 }
 
 /// Converts a type written in code into its `TUnion`, resolving class names through `resolved_names`.

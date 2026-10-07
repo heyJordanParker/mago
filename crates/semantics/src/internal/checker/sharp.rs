@@ -2069,13 +2069,8 @@ fn is_slice_type(hint: &Hint) -> bool {
         Hint::Mixed(any) => any.value == ANY,
         Hint::Generic(generic) => {
             let arguments = &generic.type_arguments.arguments;
-            let arity = match generic.name.value {
-                b"List" | b"Class" => Some(1),
-                b"Map" => Some(2),
-                _ => None,
-            };
 
-            arity.is_none_or(|arity| arguments.len() == arity)
+            built_in_generic_arity(generic.name.value).is_none_or(|arity| arguments.len() == arity)
                 && !arguments.iter().any(|argument| matches!(argument, Hint::Void(_)))
         }
         Hint::Function(function) => !function.parameters.iter().any(|parameter| matches!(parameter, Hint::Void(_))),
@@ -2086,9 +2081,19 @@ fn is_slice_type(hint: &Hint) -> bool {
 /// The note of a refusal of what needs a type argument while the code runs. G1 checks generics and erases them.
 const ERASED_TYPE_ARGUMENTS: &str = "Type arguments do not reach the running program yet, so it cannot tell which type a type parameter or a generic type names.";
 
-/// Whether a generic type's name is PHP#'s own `List`, `Map` or `Class`, which name no class.
+/// The number of type arguments a generic type takes when its name is PHP#'s own `List`, `Map` or `Class`, which name
+/// no class.
+fn built_in_generic_arity(name: &[u8]) -> Option<usize> {
+    match name {
+        b"List" | b"Class" => Some(1),
+        b"Map" => Some(2),
+        _ => None,
+    }
+}
+
+/// Whether a generic type's name is PHP#'s own `List`, `Map` or `Class`.
 fn is_built_in_generic(name: &[u8]) -> bool {
-    matches!(name, b"List" | b"Map" | b"Class")
+    built_in_generic_arity(name).is_some()
 }
 
 /// Whether the binder bound a type name to a type parameter.
