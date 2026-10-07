@@ -315,6 +315,26 @@ fn a_bare_int_or_float_before_a_dot_is_the_class_in_the_sharp_namespace() {
 }
 
 #[test]
+fn a_bare_bool_before_a_dot_is_the_class_in_the_sharp_namespace() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nclass Report\n{\n    public bool? run(string text)\n    {\n        return Bool.tryParse(text);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "Bool.", 0), Some(Binding::Class));
+    assert_eq!(resolved(&names, CODE, "Bool.", 0), b"Sharp\\Bool");
+}
+
+#[test]
+fn an_import_of_sharp_bool_is_the_standard_library_class() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nimport Sharp.Bool;\n\nclass Report\n{\n    public bool? run(string text)\n    {\n        return Bool.tryParse(text);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "Bool.", 0), Some(Binding::Class));
+    assert_eq!(resolved(&names, CODE, "Bool.", 0), b"Sharp\\Bool");
+}
+
+#[test]
 fn an_imported_int_is_the_imported_class() {
     const CODE: &str = "namespace App.Tenant.Store;\n\nimport App.Shared.Int;\n\nclass Report\n{\n    public int run(string text)\n    {\n        return Int.parse(text);\n    }\n}\n";
     let arena = LocalArena::new();
@@ -326,7 +346,7 @@ fn an_imported_int_is_the_imported_class() {
 
 #[test]
 fn a_bare_standard_library_name_is_the_class_in_the_sharp_namespace_wherever_a_class_is_named() {
-    const CODE: &str = "namespace App.Tenant.Store;\n\nclass Report\n{\n    public void run(Position here, Environment settings, string text)\n    {\n        Position.current();\n        Environment.current();\n        List.wrap(text);\n        new Int();\n        new Float();\n        new Position();\n        new Environment();\n        new List;\n        typeof(Position);\n        typeof(Environment);\n        typeof(List);\n    }\n}\n";
+    const CODE: &str = "namespace App.Tenant.Store;\n\nclass Report\n{\n    public void run(Position here, Environment settings, string text)\n    {\n        Position.current();\n        Environment.current();\n        List.wrap(text);\n        new Int();\n        new Float();\n        new Bool();\n        new Position();\n        new Environment();\n        new List;\n        typeof(Position);\n        typeof(Environment);\n        typeof(List);\n        typeof(Int);\n        typeof(Bool);\n    }\n}\n";
     let arena = LocalArena::new();
     let names = bind(&arena, CODE);
 
@@ -338,12 +358,15 @@ fn a_bare_standard_library_name_is_the_class_in_the_sharp_namespace_wherever_a_c
         ("List.wrap", "Sharp\\List"),
         ("Int()", "Sharp\\Int"),
         ("Float()", "Sharp\\Float"),
+        ("Bool()", "Sharp\\Bool"),
         ("Position()", "Sharp\\Position"),
         ("Environment()", "Sharp\\Environment"),
         ("List;", "Sharp\\List"),
         ("Position)", "Sharp\\Position"),
         ("Environment)", "Sharp\\Environment"),
         ("List)", "Sharp\\List"),
+        ("Int)", "Sharp\\Int"),
+        ("Bool)", "Sharp\\Bool"),
     ] {
         assert_eq!(String::from_utf8_lossy(resolved(&names, CODE, needle, 0)), class, "`{needle}`");
     }

@@ -2272,6 +2272,64 @@ fn typeof_in_php_is_a_function_call() {
     assert!(matches!(statement.expression, Expression::Call(Call::Function(_))), "{statement:#?}");
 }
 
+/// PHP# casts are lowercase only, spec section 24, so `(Int)`, `(Float)` and `(Bool)` are a class name in parentheses,
+/// and the standard library's classes can be named there.
+#[test]
+fn a_capitalized_type_in_parentheses_is_a_class_name_and_not_a_cast() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        typeof(Int);\n        typeof(Float);\n        typeof(Bool);\n        (Int.parse(text));\n        (int)total;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [int, float, bool, parsed, cast] = method_body(program) else {
+        panic!("expected five statements, got {:#?}", method_body(program));
+    };
+    for (statement, class) in [(int, "Int"), (float, "Float"), (bool, "Bool")] {
+        let Expression::TypeOf(type_of) = expression(statement) else {
+            panic!("expected `typeof({class})`, got {statement:#?}");
+        };
+        assert_eq!(type_of.class.value(), class.as_bytes());
+    }
+    let Expression::Parenthesized(parenthesized) = expression(parsed) else {
+        panic!("expected `(Int.parse(text))`, got {parsed:#?}");
+    };
+    assert_eq!(source(CODE, parenthesized.expression), "Int.parse(text)");
+    assert!(
+        matches!(
+            expression(cast),
+            Expression::UnaryPrefix(UnaryPrefix { operator: UnaryPrefixOperator::IntCast(..), .. })
+        ),
+        "{cast:#?}"
+    );
+}
+
+/// PHP lexes its casts ignoring case, so a PHP file keeps reading `(Int) $x` as an int cast.
+#[test]
+fn php_keeps_reading_a_capitalized_cast_as_a_cast() {
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.php", "<?php (Int) $x; (Float) $x; (Bool) $x;");
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let operators: Vec<&UnaryPrefixOperator> = program
+        .statements
+        .iter()
+        .skip(1)
+        .map(|statement| match statement {
+            Statement::Expression(ExpressionStatement { expression: Expression::UnaryPrefix(prefix), .. }) => {
+                &prefix.operator
+            }
+            _ => panic!("expected a cast, got {statement:#?}"),
+        })
+        .collect();
+    assert!(
+        matches!(
+            operators.as_slice(),
+            [UnaryPrefixOperator::IntCast(..), UnaryPrefixOperator::FloatCast(..), UnaryPrefixOperator::BoolCast(..)]
+        ),
+        "{operators:#?}"
+    );
+}
+
 #[test]
 fn dot_keeps_concatenating_in_php() {
     let arena = LocalArena::new();

@@ -1641,14 +1641,56 @@ fn exit_with_a_never_value_has_the_issues_of_its_php_twin() {
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
 }
 
+/// The standard library's `Int` and `Float`, with the library's signatures, which a project reads from `vendor/`.
+const LIBRARY_TYPE_CLASSES: [(&str, &str); 2] = [
+    (
+        "vendor/heyjordanparker/php-sharp-composer/library/Sharp/Int.sharp",
+        "namespace Sharp;\n\npublic static class Int\n{\n    public static int parse(Any? value) => 0;\n\n    public static int? tryParse(Any? value) => null;\n}\n",
+    ),
+    (
+        "vendor/heyjordanparker/php-sharp-composer/library/Sharp/Float.sharp",
+        "namespace Sharp;\n\npublic static class Float\n{\n    public static float parse(Any? value) => 0.0;\n\n    public static float? tryParse(Any? value) => null;\n}\n",
+    ),
+];
+
+/// The semantic checks let any file whose namespace is `Sharp` declare `Int`, `Float` and `Bool`, as the engine does,
+/// and only the analyzer knows the file is not the standard library's. It refuses them with the semantic checks'
+/// reserved-name message, under its own code.
+#[test]
+fn a_type_class_of_the_standard_library_in_a_project_file_is_a_reserved_name() {
+    let class =
+        "namespace Sharp;\n\npublic static class Bool\n{\n    public static bool? tryParse(Any? value) => null;\n}\n";
+    let r#enum = "namespace Sharp;\n\npublic enum Int\n{\n    case One;\n}\n";
+
+    let class_issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Sharp/Bool.sharp", class), &[]);
+    let enum_issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Sharp/Int.sharp", r#enum), &[]);
+
+    let messages: Vec<String> = class_issues
+        .iter()
+        .map(|issue| format!("{} {}", located(class, issue), issue.message))
+        .chain(enum_issues.iter().map(|issue| format!("{} {}", located(r#enum, issue), issue.message)))
+        .collect();
+    assert_eq!(
+        messages,
+        [
+            "3:21 reserved-name-outside-library Cannot use `Bool` as a class name: it is reserved.",
+            "3:13 reserved-name-outside-library Cannot use `Int` as a class name: it is reserved.",
+        ]
+    );
+}
+
 #[test]
 fn int_and_float_parse_have_the_types_of_the_sharp_library_classes() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int count(string text, int? fallback)\n    {\n        const price = Float.parse(text) + (Float.tryParse(fallback) ?? 0.0);\n        const count = Int.parse(text) + (Int.tryParse(null) ?? 0);\n        return price > 1.0 ? count : Int.tryParse(text);\n    }\n}\n";
     let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function count(string $text, ?int $fallback): int\n    {\n        $price = \\Sharp\\Float::parse($text) + (\\Sharp\\Float::tryParse($fallback) ?? 0.0);\n        $count = \\Sharp\\Int::parse($text) + (\\Sharp\\Int::tryParse(null) ?? 0);\n        return $price > 1.0 ? $count : \\Sharp\\Int::tryParse($text);\n    }\n}\n";
 
     // `check_throws` skips `.sharp` files, so the PHP twin is analyzed without it.
-    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
-    let php_issues = issues_with(Settings { check_throws: false, ..settings() }, ("src/Demo/Report.php", php), &[]);
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &LIBRARY_TYPE_CLASSES);
+    let php_issues = issues_with(
+        Settings { check_throws: false, ..settings() },
+        ("src/Demo/Report.php", php),
+        &LIBRARY_TYPE_CLASSES,
+    );
 
     assert_eq!(sharp_issues, ["9:16 nullable-return-statement", "9:16 invalid-return-statement"]);
     assert_eq!(codes(&sharp_issues), codes(&php_issues));

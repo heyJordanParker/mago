@@ -259,11 +259,14 @@ const ANY: &[u8] = b"Any";
 ///   pattern of `is`. The parser reports list patterns, and enum case patterns with fields or a name, as not supported
 ///   yet.
 /// - Casts: `(int)`, `(float)` and `(string)` in a method body, as spec section 24 writes them. PHP's other casts and
-///   its cast aliases, such as `(bool)` and `(integer)`, are errors.
-/// - A bare `Int`, `Float`, `Position`, `Environment` or `List` names the class `Sharp\<Name>` of the engine's standard
+///   its cast aliases, such as `(bool)` and `(integer)`, are errors. A cast is lowercase only, so the lexer reads
+///   `(Int)` as the class `Int` in parentheses, as in `typeof(Int)`.
+/// - A bare `Int`, `Float`, `Bool`, `Position`, `Environment` or `List` names the class `Sharp\<Name>` of the standard
 ///   library wherever a class is named, unless the file imports or declares a class-like of that name, spec section 23.
-///   So `Int.parse(text)`, `Position.current()`, `new Environment()` and `List.wrap(value)` call it. PHP reserves
-///   `Int`, `Float` and `List`, so no file declares a class of those.
+///   So `Int.parse(text)`, `Bool.tryParse(value)`, `Position.current()`, `new Environment()` and `List.wrap(value)`
+///   call it. PHP reserves `Int`, `Float`, `Bool` and `List`, so no file declares or imports a class of those, except
+///   the standard library's own `Sharp.Int`, `Sharp.Float` and `Sharp.Bool`: a file whose namespace is exactly `Sharp`
+///   declares them, as the engine allows, and any file may import them.
 ///
 /// The check runs on every node the checking walk enters, and refuses any node, or any position of a node, that this
 /// list does not name. It reports each refusal once, at its outermost node, and skips the nodes inside the refusal's
@@ -278,12 +281,14 @@ const ANY: &[u8] = b"Any";
 /// constant, parameter or local. A method name that starts but does not end with `__`, as PHP's magic methods do,
 /// stays not supported yet.
 ///
-/// Sixteen more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
+/// Seventeen more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
 /// - `new` on a static class, in `analyze_class_instantiation`, and a class that extends one, in
 ///   `check_class_like_extends`, because the static class may be another file's.
 /// - an `extern` method anywhere but a standard library file whose class is under `Sharp`, in `Method`'s `analyze`,
-///   and `@` in any file that is not the standard library's, in `UnaryPrefix`'s `analyze`, because only the analyzer
-///   knows the file's package. The nearest `composer.json` above a file names it.
+///   `@` in any file that is not the standard library's, in `UnaryPrefix`'s `analyze`, and a class or enum named
+///   `Sharp.Int`, `Sharp.Float` or `Sharp.Bool` in any file that is not the standard library's, in
+///   `report_sharp_type_class_outside_library`, because only the analyzer knows the file's package. The nearest
+///   `composer.json` above a file names it.
 /// - a bare call that finds no function while the enclosing class declares a method of that name, in
 ///   `bare_member_call`, because only the codebase knows which functions exist. A bare call is the global function's.
 /// - `+` that may join a string with any other value, which spec section 18 makes an error, in
@@ -2792,7 +2797,9 @@ pub fn check_binding_errors(context: &mut Context<'_, '_, '_>) {
 }
 
 /// Checks the name of a PHP# class or enum against the names the engine reserves, beyond the keywords the PHP checks
-/// reject, and against the `__Something__` names spec section 27 removes.
+/// reject, and against the `__Something__` names spec section 27 removes. The standard library's `Sharp.Int`,
+/// `Sharp.Float` and `Sharp.Bool` are the engine's one exception, and the analyzer refuses them in any file that is not
+/// the standard library's.
 #[inline]
 pub fn check_class_name(class_name: &LocalIdentifier, context: &mut Context<'_, '_, '_>) {
     let is_keyword = RESERVED_KEYWORDS
@@ -2800,7 +2807,10 @@ pub fn check_class_name(class_name: &LocalIdentifier, context: &mut Context<'_, 
         .chain(&SOFT_RESERVED_KEYWORDS_MINUS_SYMBOL_ALLOWED)
         .any(|keyword| keyword.eq_ignore_ascii_case(class_name.value));
 
-    if is_reserved_class_name(class_name.value) && !is_keyword {
+    if is_reserved_class_name(class_name.value)
+        && !is_keyword
+        && !is_sharp_type_class(context.get_name(class_name.span.start))
+    {
         let name = BytesDisplay(class_name.value);
 
         context.report(
@@ -2823,7 +2833,7 @@ pub fn check_declarations(program: &Program, context: &mut Context<'_, '_, '_>) 
         let short_name = import.name.last_segment();
         let full_name = BytesDisplay(import.name.value());
 
-        if is_reserved_class_name(short_name) {
+        if is_reserved_class_name(short_name) && !is_sharp_type_class(&php_name(&import.name)) {
             let short_name = BytesDisplay(short_name);
 
             context.report(
@@ -3057,6 +3067,12 @@ fn check_local_name(name: &[u8], span: Span, kind: &str, context: &mut Context<'
 /// PHP# reserves PHP's type names and `Any`, its name for `mixed`.
 fn is_reserved_class_name(name: &[u8]) -> bool {
     RESERVED_CLASS_NAMES.iter().chain(&[ANY]).any(|reserved| reserved.eq_ignore_ascii_case(name))
+}
+
+/// Whether a PHP name is one of the standard library's classes that carry a reserved name, spec section 24, written
+/// exactly as the engine's `zend_is_sharp_type_class` compares it.
+fn is_sharp_type_class(full_name: &[u8]) -> bool {
+    matches!(full_name, b"Sharp\\Int" | b"Sharp\\Float" | b"Sharp\\Bool")
 }
 
 /// Returns true when the PHP name `full_name` is the class `class_name` declared in `namespace`.

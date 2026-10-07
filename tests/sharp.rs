@@ -297,6 +297,23 @@ fn analyze_fix_refuses_a_fix_that_would_edit_a_sharp_file() {
 /// its own exception.
 const TEXT: &str = "namespace Sharp.Text;\n\npublic static class Text\n{\n    public static extern string slug(string title);\n\n    public static string quiet(string title) => @trim(title);\n}\n";
 
+/// The standard library's `Int`, `Float` and `Bool`, spec section 24, with the library's signatures. Their names are
+/// reserved, and only the standard library declares them.
+const TYPE_CLASSES: [(&str, &str); 3] = [
+    (
+        "Int",
+        "namespace Sharp;\n\nimport ValueError;\n\npublic static class Int\n{\n    public static int parse(Any? value)\n    {\n        const number = Int.tryParse(value);\n        if (number is int) {\n            return number;\n        }\n        throw new ValueError(\"Sharp\\\\Int::parse(): Argument #1 ($value) must hold an int\");\n    }\n\n    public static int? tryParse(Any? value)\n    {\n        return (value is string text) ? filter_var(text, FILTER_VALIDATE_INT, FILTER_NULL_ON_FAILURE) : null;\n    }\n}\n",
+    ),
+    (
+        "Float",
+        "namespace Sharp;\n\nimport ValueError;\n\npublic static class Float\n{\n    public static float parse(Any? value)\n    {\n        const number = Float.tryParse(value);\n        if (number is float) {\n            return number;\n        }\n        throw new ValueError(\"Sharp\\\\Float::parse(): Argument #1 ($value) must hold a float\");\n    }\n\n    public static float? tryParse(Any? value)\n    {\n        const number = (value is string text) && is_numeric(text) ? floatval(text) : null;\n        return (number is float) && is_finite(number) ? number : null;\n    }\n}\n",
+    ),
+    (
+        "Bool",
+        "namespace Sharp;\n\npublic static class Bool\n{\n    public static bool? tryParse(Any? value) => filter_var(value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);\n}\n",
+    ),
+];
+
 /// The `composer.json` of the standard library's package.
 const LIBRARY_PACKAGE: &str = "{\n    \"name\": \"heyjordanparker/php-sharp-composer\"\n}\n";
 
@@ -306,8 +323,16 @@ fn write(root: &Path, name: &str, contents: &str) {
     std::fs::write(path, contents).unwrap();
 }
 
-/// A project whose `vendor/` holds the standard library's package with its `Text`, beside the project's
-/// `src/App/Page.sharp`.
+/// The standard library's package under `root`: its `composer.json`, its `Text`, and its `Int`, `Float` and `Bool`.
+fn write_library(root: &Path) {
+    write(root, "composer.json", LIBRARY_PACKAGE);
+    write(root, "library/Sharp/Text/Text.sharp", TEXT);
+    for (class, source) in TYPE_CLASSES {
+        write(root, &format!("library/Sharp/{class}.sharp"), source);
+    }
+}
+
+/// A project whose `vendor/` holds the standard library's package, beside the project's `src/App/Page.sharp`.
 fn library_workspace(page: &str) -> tempfile::TempDir {
     let directory = tempfile::tempdir().unwrap();
     write(
@@ -316,8 +341,7 @@ fn library_workspace(page: &str) -> tempfile::TempDir {
         "php-version = \"8.4\"\n\n[source]\npaths = [\"src\"]\nincludes = [\"vendor\"]\n",
     );
     write(directory.path(), "composer.json", "{\n    \"name\": \"acme/app\"\n}\n");
-    write(directory.path(), "vendor/heyjordanparker/php-sharp-composer/composer.json", LIBRARY_PACKAGE);
-    write(directory.path(), "vendor/heyjordanparker/php-sharp-composer/library/Sharp/Text/Text.sharp", TEXT);
+    write_library(&directory.path().join("vendor/heyjordanparker/php-sharp-composer"));
     write(directory.path(), "src/App/Page.sharp", page);
     directory
 }
@@ -402,14 +426,56 @@ fn analyze_reports_extern_and_silence_in_a_project_file_under_sharp() {
     );
 }
 
+/// A project calls the standard library's `Int`, `Float` and `Bool` by their bare names, with no import, spec
+/// section 24. The checker reads them from the vendored package and gives each call the library's return type.
+#[test]
+fn analyze_types_the_standard_librarys_parse_calls_from_the_vendored_package() {
+    let directory = library_workspace(
+        "namespace App;\n\npublic class Page\n{\n    public int count() => Int.parse(\"1\");\n\n    public float? price() => Float.tryParse(\"x\");\n\n    public bool? flag() => Bool.tryParse(\"yes\");\n}\n",
+    );
+
+    let output = run(directory.path(), "analyze", &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "{stdout}{stderr}");
+    assert!(stderr.contains("No issues found."), "{stdout}{stderr}");
+
+    assert_eq!(
+        page_errors(
+            "namespace App;\n\npublic class Page\n{\n    public string count() => Int.parse(\"1\");\n\n    public string price() => Float.tryParse(\"x\");\n\n    public string flag() => Bool.tryParse(\"yes\");\n}\n"
+        ),
+        [
+            "src/App/Page.sharp:5:30:error - invalid-return-statement: Invalid return type for function `App\\Page::count`: expected `string`, but found `int`.",
+            "src/App/Page.sharp:7:30:error - nullable-return-statement: Function `App\\Page::price` is declared to return `string` but possibly returns a nullable value (inferred as `float|null`).",
+            "src/App/Page.sharp:7:30:error - invalid-return-statement: Invalid return type for function `App\\Page::price`: expected `string`, but found `float|null`.",
+            "src/App/Page.sharp:9:29:error - nullable-return-statement: Function `App\\Page::flag` is declared to return `string` but possibly returns a nullable value (inferred as `bool|null`).",
+            "src/App/Page.sharp:9:29:error - invalid-return-statement: Invalid return type for function `App\\Page::flag`: expected `string`, but found `bool|null`.",
+        ]
+    );
+}
+
+/// The semantic checks let a file under the namespace `Sharp` declare the standard library's reserved type names,
+/// and the analyzer refuses them in a project file.
+#[test]
+fn analyze_reports_a_type_class_of_the_standard_library_in_a_project_file() {
+    assert_eq!(
+        page_errors(
+            "namespace Sharp;\n\npublic static class Bool\n{\n    public static bool? tryParse(Any? value) => null;\n}\n"
+        ),
+        [
+            "src/App/Page.sharp:3:21:error - reserved-name-outside-library: Cannot use `Bool` as a class name: it is reserved."
+        ]
+    );
+}
+
 /// The standard library's own repository analyzes its sources as project code, and its root `composer.json` names
-/// the package, so its `extern` methods and `@` are the library's.
+/// the package, so its `extern` methods, `@`, and its `Int`, `Float` and `Bool` are the library's.
 #[test]
 fn analyze_finds_no_issues_in_the_standard_librarys_own_repository() {
     let directory = tempfile::tempdir().unwrap();
     write(directory.path(), "mago.toml", "php-version = \"8.4\"\n\n[source]\npaths = [\"library\"]\n");
-    write(directory.path(), "composer.json", LIBRARY_PACKAGE);
-    write(directory.path(), "library/Sharp/Text/Text.sharp", TEXT);
+    write_library(directory.path());
 
     let output = run(directory.path(), "analyze", &["--reporting-format", "emacs"]);
     let stdout = String::from_utf8_lossy(&output.stdout);

@@ -108,6 +108,30 @@ fn report_duplicate_definition<A>(
     );
 }
 
+/// Refuses a class or enum named `Sharp\Int`, `Sharp\Float` or `Sharp\Bool` in a PHP# file that is not the standard
+/// library's. The semantic checks allow the three reserved names under the namespace `Sharp`, because the engine
+/// compiles the library from `vendor/` knowing only the file, so only the analyzer knows the file's package. The error
+/// carries the semantic checks' reserved-name message.
+fn report_sharp_type_class_outside_library<A>(context: &mut Context<'_, '_, A>, name: &[u8], name_span: Span)
+where
+    A: Arena,
+{
+    if !context.dialect.is_sharp()
+        || context.source_file.is_standard_library
+        || !matches!(name, b"Sharp\\Int" | b"Sharp\\Float" | b"Sharp\\Bool")
+    {
+        return;
+    }
+
+    let class_name = BytesDisplay(&name[b"Sharp\\".len()..]);
+    context.collector.report_with_code(
+        IssueCode::ReservedNameOutsideLibrary,
+        Issue::error(format!("Cannot use `{class_name}` as a class name: it is reserved."))
+            .with_annotation(Annotation::primary(name_span).with_message("Class declared here."))
+            .with_note("PHP# reserves this name for a type."),
+    );
+}
+
 /// Helper function to check if a child type is compatible with (contained by) a parent type.
 ///
 /// This is a convenience wrapper around `union_comparator::is_contained_by` with standard
@@ -384,6 +408,8 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Class<'arena> {
         A: Arena,
     {
         let name = context.resolved_names.get(&self.name);
+        report_sharp_type_class_outside_library(context, name, self.name.span);
+
         let Some(class_like_metadata) = context.codebase.get_class_like(name) else {
             tracing::warn!("Class {} not found in codebase", BytesDisplay(name));
 
@@ -686,6 +712,8 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Enum<'arena> {
         A: Arena,
     {
         let name = context.resolved_names.get(&self.name);
+        report_sharp_type_class_outside_library(context, name, self.name.span);
+
         let Some(class_like_metadata) = context.codebase.get_class_like(name) else {
             tracing::warn!("Enum {} not found in codebase", BytesDisplay(name));
 

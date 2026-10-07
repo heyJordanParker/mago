@@ -353,6 +353,7 @@ final class AnalyzerCodeModuleGenerator
         'rejected-nullable-parameter',
         'native-body-outside-library',
         'silence-outside-library',
+        'reserved-name-outside-library',
     ];
 
     /**

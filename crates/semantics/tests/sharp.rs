@@ -889,6 +889,43 @@ fn any_is_a_reserved_class_name() {
     assert_eq!(issues(code), ["3:7 Cannot use `Any` as a class name: it is reserved."]);
 }
 
+/// The standard library declares `Sharp.Int`, `Sharp.Float` and `Sharp.Bool`, spec section 24. The engine compiles
+/// the library knowing only the file, so it lets any `.sharp` file whose namespace is exactly `Sharp` declare them.
+#[test]
+fn the_sharp_namespace_declares_int_float_and_bool() {
+    for name in ["Int", "Float", "Bool"] {
+        let code = leak(format!(
+            "namespace Sharp;\n\npublic static class {name}\n{{\n    public static int one() => 1;\n}}\n"
+        ));
+
+        assert_eq!(issues(code), Vec::<String>::new(), "{name}");
+    }
+}
+
+/// The engine allows the three names in the namespace `Sharp` only, compared exactly, so every other spelling and
+/// namespace keeps the reserved-name error.
+#[test]
+fn int_float_and_bool_outside_the_sharp_namespace_are_reserved() {
+    for (namespace, name) in [
+        ("App", "Int"),
+        ("App", "Bool"),
+        ("Sharp.Text", "Float"),
+        ("sharp", "Int"),
+        ("Sharp", "INT"),
+        ("Sharp", "Mixed"),
+    ] {
+        let code = leak(format!(
+            "namespace {namespace};\n\npublic static class {name}\n{{\n    public static int one() => 1;\n}}\n"
+        ));
+
+        assert_eq!(
+            issues(code),
+            [format!("3:21 Cannot use `{name}` as a class name: it is reserved.")],
+            "{namespace}.{name}"
+        );
+    }
+}
+
 #[test]
 fn methods_whose_names_differ_only_in_case_are_an_error() {
     let code = "class Report\n{\n    public int run() { return 1; }\n\n    public int Run() { return 2; }\n}\n";
@@ -909,6 +946,15 @@ fn an_import_whose_short_name_is_reserved_is_an_error() {
             "5:8 Cannot import `Lib.Any` as `Any`: PHP# reserves `Any` for a type.",
         ]
     );
+}
+
+/// Importing a standard library type class names the class a bare name already names, spec section 23.
+#[test]
+fn an_import_of_a_standard_library_type_class_is_allowed() {
+    let code =
+        "namespace App.Tenant;\n\nimport Sharp.Int;\nimport Sharp.Float;\nimport Sharp.Bool;\n\nclass Report\n{\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
 }
 
 #[test]
