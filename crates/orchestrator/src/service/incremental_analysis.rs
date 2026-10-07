@@ -20,6 +20,7 @@ use mago_analyzer::artifacts::AnalysisArtifacts;
 use mago_analyzer::external::AFTER_FILE_ANALYSIS_BATCH_SIZE;
 use mago_analyzer::external::CodebaseScanFile;
 use mago_analyzer::external::CodebaseScanPlan;
+use mago_analyzer::external::ExternalAnalysisSession;
 use mago_analyzer::external::FileAnalysisSnapshot;
 use mago_analyzer::external::apply_refinements;
 use mago_analyzer::plugin::PluginRegistry;
@@ -37,8 +38,10 @@ use mago_codex::signature_builder;
 use mago_collector::DeferredPragmas;
 use mago_database::DatabaseReader;
 use mago_database::ReadDatabase;
+use mago_database::file::File;
 use mago_database::file::FileId;
 use mago_database::file::FileType;
+use mago_names::ResolvedNames;
 use mago_names::resolver::NameResolver;
 use mago_reporting::Issue;
 use mago_reporting::IssueCollection;
@@ -59,6 +62,8 @@ use crate::service::issue_reconciliation::drop_follow_on_issues;
 use crate::service::telemetry::HangWatcher;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::service::telemetry::SlowestFiles;
+
+pub mod compile;
 
 /// Per-file cached state for incremental analysis.
 #[derive(Debug, Clone)]
@@ -119,8 +124,12 @@ pub struct IncrementalAnalysisService {
     use_progress_bars: bool,
     scan_only: bool,
     node_analysis_files: Option<HashSet<FileId>>,
+    /// The files the last analysis analyzed, which the fanout tests compare with the inputs.
+    #[cfg(test)]
+    analyzed_files: HashSet<FileId>,
 }
 
+#[cfg_attr(test, allow(clippy::missing_fields_in_debug))]
 impl std::fmt::Debug for IncrementalAnalysisService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IncrementalAnalysisService")
@@ -191,6 +200,8 @@ impl IncrementalAnalysisService {
             use_progress_bars: false,
             scan_only: false,
             node_analysis_files: None,
+            #[cfg(test)]
+            analyzed_files: HashSet::default(),
         }
     }
 
@@ -520,6 +531,10 @@ impl IncrementalAnalysisService {
             codebase_issues: all_codebase_issues,
         } =
             self.run_analyzer_selective(&mut merged_codebase, symbol_references, &self.settings, &HashSet::default())?;
+        #[cfg(test)]
+        {
+            self.analyzed_files = per_file_issues.keys().copied().collect();
+        }
         self.external_symbol_references = external_symbol_references;
         self.late_symbol_references = late_symbol_references;
         self.native_symbol_references = native_symbol_references;
@@ -923,6 +938,10 @@ impl IncrementalAnalysisService {
                 snapshots,
                 codebase_issues: new_codebase_issues,
             } = self.run_analyzer_selective(&mut merged_codebase, symbol_references, &self.settings, &files_to_skip)?;
+            #[cfg(test)]
+            {
+                self.analyzed_files = per_file_issues.keys().copied().collect();
+            }
             self.external_symbol_references = external_symbol_references;
             self.late_symbol_references = late_symbol_references;
             self.native_symbol_references = native_symbol_references;
@@ -1014,6 +1033,20 @@ impl IncrementalAnalysisService {
         }
         self.apply_scan_results(&mut merged_codebase, &new_file_scans);
 
+        // Population turns a class name into an object type only while the class-like exists, and
+        // never turns it back. An unchanged file would keep a type resolved against a class-like
+        // that is now gone, so a full analysis resolves every type again, as a cold run does.
+        let class_like_removed = new_file_scans
+            .iter()
+            .map(|(file_id, _)| file_id)
+            .chain(self.file_states.keys().filter(|file_id| !current_file_ids.contains(file_id)))
+            .filter_map(|file_id| self.file_states.get(file_id))
+            .flat_map(|state| &state.entry_keys.class_like_names)
+            .any(|&name| merged_codebase.symbols.get_kind(name).is_none());
+        if class_like_removed {
+            return self.analyze();
+        }
+
         merged_codebase.safe_symbols.clear();
         merged_codebase.safe_symbol_members.clear();
 
@@ -1022,37 +1055,6 @@ impl IncrementalAnalysisService {
 
             return self.analyze();
         };
-
-        // Ensure classes that depend on changed class_likes are not marked safe.
-        // This handles cases where reference graph edges were lost (e.g., a parent
-        // class was deleted and later re-added — the child→parent reference edge
-        // was removed when the parent was deleted, so the cascade can't reach the child).
-        {
-            let changed_class_like_names: WordSet = diff
-                .get_changed()
-                .iter()
-                .filter(|key| key.1.is_empty() && merged_codebase.class_likes.contains_key(&key.0))
-                .map(|key| key.0)
-                .collect();
-
-            if !changed_class_like_names.is_empty() {
-                let to_unsafify: Vec<mago_word::Word> = merged_codebase
-                    .class_likes
-                    .iter()
-                    .filter(|(name, _)| merged_codebase.safe_symbols.contains(name))
-                    .filter(|(_, metadata)| {
-                        metadata.direct_parent_class.is_some_and(|p| changed_class_like_names.contains(&p))
-                            || metadata.direct_parent_interfaces.iter().any(|i| changed_class_like_names.contains(i))
-                            || metadata.used_traits.iter().any(|t| changed_class_like_names.contains(t))
-                    })
-                    .map(|(name, _)| *name)
-                    .collect();
-
-                for name in to_unsafify {
-                    merged_codebase.safe_symbols.remove(&name);
-                }
-            }
-        }
 
         let safe_symbols = std::mem::take(&mut merged_codebase.safe_symbols);
         let safe_symbol_members = std::mem::take(&mut merged_codebase.safe_symbol_members);
@@ -1083,33 +1085,7 @@ impl IncrementalAnalysisService {
             safe_symbol_members,
             dirty_symbols,
         );
-        let mut files_to_skip: HashSet<FileId> = HashSet::default();
-        for &file_id in &unchanged_file_ids {
-            let file_invalid = self
-                .database
-                .get(&file_id)
-                .is_ok_and(|file| invalid_files.contains(&mago_word::word(file.name.as_ref())));
-            if let Some(sig) = merged_codebase.get_file_signature(&file_id) {
-                let all_safe = if file_invalid {
-                    false
-                } else if sig.ast_nodes.is_empty() {
-                    true
-                } else {
-                    sig.ast_nodes.iter().all(|node| {
-                        let symbol_safe = node.name.is_empty() || merged_codebase.safe_symbols.contains(&node.name);
-                        let children_safe = node.children.iter().all(|child| {
-                            child.name.is_empty()
-                                || merged_codebase.safe_symbol_members.contains(&(node.name, child.name))
-                        });
-                        symbol_safe && children_safe
-                    })
-                };
-
-                if all_safe {
-                    files_to_skip.insert(file_id);
-                }
-            }
-        }
+        let files_to_skip = self.files_to_skip(&merged_codebase, &unchanged_file_ids, &invalid_files);
 
         let reanalyzed_file_names: WordSet = new_file_scans
             .iter()
@@ -1181,6 +1157,10 @@ impl IncrementalAnalysisService {
             snapshots,
             codebase_issues: new_codebase_issues,
         } = self.run_analyzer_selective(&mut merged_codebase, symbol_references, &self.settings, &files_to_skip)?;
+        #[cfg(test)]
+        {
+            self.analyzed_files = per_file_issues.keys().copied().collect();
+        }
         self.external_symbol_references = external_symbol_references;
         self.late_symbol_references = late_symbol_references;
         self.native_symbol_references = native_symbol_references;
@@ -1281,14 +1261,7 @@ impl IncrementalAnalysisService {
         issues.extend(semantic_issues.iter().cloned());
 
         let mut analysis_result = AnalysisResult::new(SymbolReferences::new());
-        let mut analyzer =
-            Analyzer::new(&arena, &file, &resolved_names, &self.codebase, &self.plugin_registry, self.settings.clone());
-        if let Some(session) = external_session.as_ref() {
-            analyzer = analyzer.with_external_analysis_session(session);
-        }
-        if !self.external_symbol_references.is_empty() {
-            analyzer = analyzer.with_additional_symbol_references(&self.external_symbol_references);
-        }
+        let analyzer = self.file_analyzer(&arena, &file, &resolved_names, external_session.as_ref());
 
         let artifacts = match analyzer.analyze_with_artifacts(program, &mut analysis_result) {
             Ok(artifacts) => artifacts,
@@ -1337,14 +1310,7 @@ impl IncrementalAnalysisService {
         issues.extend(semantic_issues.iter().cloned());
 
         let mut analysis_result = AnalysisResult::new(SymbolReferences::new());
-        let mut analyzer =
-            Analyzer::new(&arena, &file, &resolved_names, &self.codebase, &self.plugin_registry, self.settings.clone());
-        if let Some(session) = external_session.as_ref() {
-            analyzer = analyzer.with_external_analysis_session(session);
-        }
-        if !self.external_symbol_references.is_empty() {
-            analyzer = analyzer.with_additional_symbol_references(&self.external_symbol_references);
-        }
+        let analyzer = self.file_analyzer(&arena, &file, &resolved_names, external_session.as_ref());
 
         if let Err(err) = analyzer.analyze(program, &mut analysis_result) {
             issues.push(Issue::error(format!("Analysis error: {err}")));
@@ -1360,6 +1326,60 @@ impl IncrementalAnalysisService {
             );
         }
         issues
+    }
+
+    /// The analyzer of one file against the current codebase, with the references the before-analysis hooks
+    /// contributed, outside the full analysis's passes.
+    fn file_analyzer<'ctx, 'ast, 'arena>(
+        &'ctx self,
+        arena: &'arena LocalArena,
+        file: &'ctx File,
+        resolved_names: &'ast ResolvedNames<'arena>,
+        session: Option<&'ctx ExternalAnalysisSession>,
+    ) -> Analyzer<'ctx, 'ast, 'arena, LocalArena> {
+        let mut analyzer =
+            Analyzer::new(arena, file, resolved_names, &self.codebase, &self.plugin_registry, self.settings.clone());
+        if let Some(session) = session {
+            analyzer = analyzer.with_external_analysis_session(session);
+        }
+        if !self.external_symbol_references.is_empty() {
+            analyzer = analyzer.with_additional_symbol_references(&self.external_symbol_references);
+        }
+
+        analyzer
+    }
+
+    /// The `unchanged` files that need no new analysis once [`CodebaseMetadata::mark_safe_symbols`] marked `codebase`'s
+    /// safe symbols: each one's
+    /// top-level code is not in `invalid_files`, and every symbol and member it declares stayed safe.
+    fn files_to_skip(
+        &self,
+        codebase: &CodebaseMetadata,
+        unchanged: &[FileId],
+        invalid_files: &WordSet,
+    ) -> HashSet<FileId> {
+        unchanged
+            .iter()
+            .copied()
+            .filter(|file_id| {
+                let file_invalid = self
+                    .database
+                    .get(file_id)
+                    .is_ok_and(|file| invalid_files.contains(&mago_word::word(file.name.as_ref())));
+                let Some(sig) = codebase.get_file_signature(file_id) else {
+                    return false;
+                };
+
+                !file_invalid
+                    && sig.ast_nodes.iter().all(|node| {
+                        let symbol_safe = node.name.is_empty() || codebase.safe_symbols.contains(&node.name);
+                        let children_safe = node.children.iter().all(|child| {
+                            child.name.is_empty() || codebase.safe_symbol_members.contains(&(node.name, child.name))
+                        });
+                        symbol_safe && children_safe
+                    })
+            })
+            .collect()
     }
 
     /// Runs the analyzer on host files.
@@ -4676,6 +4696,82 @@ mod tests {
         service.update_database(db.read_only());
         service.analyze_incremental(None).expect("Incremental failed.");
         assert_matches_full(&service, &db, "function reverted");
+    }
+
+    /// A class named only in a parameter's type changes its template's bound.
+    #[test]
+    fn test_watch_type_hinted_class_signature_change_reanalyzes_the_hinting_file() {
+        let a = "<?php\nnamespace Lib;\n\nclass A\n{\n    /** @param B<int> $b */\n    public function f(B $b): void {}\n}\n";
+        let mut db = make_database(vec![
+            ("src/A.php", a),
+            ("src/B.php", "<?php\nnamespace Lib;\n\n/** @template T */\nclass B\n{\n}\n"),
+        ]);
+        let mut service = make_watch_service(&db);
+        service.analyze().expect("Initial analysis failed.");
+        assert_matches_full(&service, &db, "initial");
+
+        db.update(
+            FileId::new(b"src/B.php"),
+            Cow::Owned(b"<?php\nnamespace Lib;\n\n/** @template T of string */\nclass B\n{\n}\n".to_vec()),
+        );
+        service.update_database(db.read_only());
+        service.analyze_incremental(None).expect("Incremental failed.");
+        assert_matches_full(&service, &db, "the type-hinted class's template now takes only strings");
+    }
+
+    /// A class named only in a parameter's type is deleted, then added back.
+    #[test]
+    fn test_watch_type_hinted_class_deleted_reports_it_missing_in_the_hinting_file() {
+        let mut db = make_database(vec![
+            ("src/A.php", "<?php\nnamespace Lib;\n\nclass A\n{\n    public function f(?B $b = null): void {}\n}\n"),
+            ("src/B.php", "<?php\nnamespace Lib;\n\nclass B\n{\n}\n"),
+        ]);
+        let mut service = make_watch_service(&db);
+        service.analyze().expect("Initial analysis failed.");
+        assert_matches_full(&service, &db, "initial");
+
+        db.delete(FileId::new(b"src/B.php"));
+        service.update_database(db.read_only());
+        service.analyze_incremental(None).expect("Incremental failed.");
+        assert_matches_full(&service, &db, "the type-hinted class was deleted");
+
+        db.add(File::new(
+            Cow::Owned(b"src/B.php".to_vec()),
+            FileType::Host,
+            None,
+            Cow::Owned(b"<?php\nnamespace Lib;\n\nclass B\n{\n}\n".to_vec()),
+        ));
+        service.update_database(db.read_only());
+        service.analyze_incremental(None).expect("Incremental failed.");
+        assert_matches_full(&service, &db, "the type-hinted class was added back");
+    }
+
+    /// Every recorded reference names a class-like or function by the lowercase name its declaration has, however
+    /// the code wrote it, because the warm path finds changes by the declaration's name. Only a global constant
+    /// keeps its case, as its declaration does.
+    #[test]
+    fn test_references_name_class_likes_and_functions_by_their_lowercase_names() {
+        let declarations = "<?php\nnamespace App;\n\n#[\\Attribute]\nclass Marker {}\n\nclass Item\n{\n    public const KIND = 1;\n}\n\nclass BaseBox {}\n\ninterface Sized {}\n\nfunction helper(): int { return 1; }\n\nconst Limit = 3;\n";
+        let user = "<?php\nnamespace App;\n\n#[MARKER]\nconst Size = 2;\n\nenum Mode\n{\n    #[MARKER]\n    case On;\n}\n\n#[MARKER]\nfinal class Box extends BASEBOX implements SIZED\n{\n    #[MARKER]\n    public const Shape = 1;\n\n    #[MARKER]\n    public ITEM $item;\n\n    public function __construct(#[MARKER] ITEM $item)\n    {\n        $this->item = $item;\n    }\n\n    /**\n     * @param list<ITEM> $items\n     * @param ITEM::KIND $kind\n     */\n    #[MARKER]\n    public function fill(array $items, int $kind, ?MISSING $missing = null): ITEM\n    {\n        return $items[0] ?? new ITEM();\n    }\n\n    public function size(): int\n    {\n        return HELPER() + Limit + ITEM::KIND + strlen(ITEM::class);\n    }\n}\n";
+        let sharp = "namespace App;\n\nclass Report\n{\n    public static string kind()\n    {\n        return typeof(Item);\n    }\n}\n";
+        let db = make_database(vec![
+            ("src/declarations.php", declarations),
+            ("src/user.php", user),
+            ("src/report.sharp", sharp),
+        ]);
+        let mut service = make_watch_service(&db);
+        service.analyze().expect("Analysis failed.");
+
+        let codebase = &service.codebase;
+        let mut written_case = Vec::new();
+        service.native_symbol_references.for_each_reference(|origin, target, kind| {
+            let names_a_constant = target.1.is_empty() && codebase.constants.contains_key(&target.0);
+            if !names_a_constant && target.0 != mago_word::ascii_lowercase_word(target.0.as_bytes()) {
+                written_case.push(format!("{origin:?} -> {target:?} ({kind:?})"));
+            }
+        });
+
+        assert!(written_case.is_empty(), "references keep the written case:\n{}", written_case.join("\n"));
     }
 
     /// Create a class, add a child in another cycle, then modify parent, then delete child.

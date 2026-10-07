@@ -79,6 +79,9 @@ const _: () = {
 };
 
 /// An input before the encoder stores its path in the texts.
+///
+/// An input no file was at when it was stamped is absent: its size, modification time and hash are all zero. A file
+/// that exists never has that stamp, because the hash of an empty file is not zero.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Input {
     /// Workspace-relative, with `/` separators.
@@ -172,12 +175,9 @@ fn key_of(compiler: &[&[u8]], source_hash: [u8; 16], reads: &Reads) -> [u8; 16] 
 ///
 /// # Panics
 ///
-/// Panics when `unit` holds diagnostics, because a refused file gets no compiled file, and when a section holds more
-/// than a 32-bit size can say.
+/// Panics when a section holds more than a 32-bit size can say.
 #[must_use]
 pub fn encode(unit: &Unit, source: &[u8], key: [u8; 16], inputs: &[Input], facts: &[u8]) -> Vec<u8> {
-    assert!(unit.diagnostics.is_empty(), "a refused file gets no compiled file");
-
     let mut texts = unit.texts.clone();
     let inputs: Vec<sharp_input> = inputs
         .iter()
@@ -199,7 +199,7 @@ pub fn encode(unit: &Unit, source: &[u8], key: [u8; 16], inputs: &[Input], facts
         input_count: size("inputs", inputs.len()),
         node_count: size("nodes", unit.nodes.len()),
         children_count: size("children", unit.children.len()),
-        root: unit.abi.root,
+        root: unit.root,
         texts_size: size("texts", texts.len()),
         facts_size: size("facts", facts.len()),
     };
@@ -322,6 +322,20 @@ fn input_bytes(input: &sharp_input) -> [u8; size_of::<sharp_input>()] {
 }
 
 /// A node's fields at their offsets, with its padding zero.
+/// The xxh3-64 of an inline form's nodes, children and texts, each written as `encode` writes them.
+pub(crate) fn form_fingerprint(nodes: &[sharp_node], children: &[u32], texts: &[u8]) -> u64 {
+    let mut hasher = Xxh3::new();
+    for node in nodes {
+        hasher.update(&node_bytes(node));
+    }
+    for child in children {
+        hasher.update(&child.to_le_bytes());
+    }
+    hasher.update(texts);
+
+    hasher.digest()
+}
+
 fn node_bytes(node: &sharp_node) -> [u8; size_of::<sharp_node>()] {
     let mut bytes = [0; size_of::<sharp_node>()];
     put(&mut bytes, offset_of!(sharp_node, kind), &(node.kind as u16).to_le_bytes());

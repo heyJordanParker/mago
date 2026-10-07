@@ -12,7 +12,9 @@ use mago_database::file::FileId;
 use mago_database::membership::WorkspaceMatcher;
 use mago_orchestrator::error::OrchestratorError;
 use mago_orchestrator::service::incremental_analysis::IncrementalAnalysisService;
+use mago_orchestrator::service::incremental_analysis::compile::Compilation;
 use mago_reporting::Issue;
+use mago_sharp_bridge::unit::Input;
 
 use crate::error::ServerError;
 use crate::settings::Settings;
@@ -102,6 +104,20 @@ impl Server {
         } else {
             self.pass(IncrementalAnalysisService::analyze)
         }
+    }
+
+    /// Compile each `.sharp` file of the last analysis into the bytes of its `.sharpc` file, or the errors that
+    /// refuse it. `stamp` gives the size, modification time and hash of the file at a workspace-relative path, or
+    /// none when no file is there.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError`] when no analysis ran yet, or when re-analyzing a file or `stamp` fails.
+    pub fn compile(
+        &mut self,
+        stamp: impl FnMut(&[u8]) -> std::io::Result<Option<Input>>,
+    ) -> Result<Vec<(FileId, Compilation)>, ServerError> {
+        self.service.compile(stamp).map_err(ServerError::from)
     }
 
     /// Run one analysis pass with the node-analysis hooks only in the scope's files, and report

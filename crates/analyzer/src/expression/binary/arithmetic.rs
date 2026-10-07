@@ -415,6 +415,7 @@ where
                     &left_atomic,
                     &right_atomic,
                     block_context.flags.inside_loop(),
+                    context.dialect.is_sharp(),
                 );
 
                 if numeric_results.iter().any(|a| matches!(a, TAtomic::Never)) {
@@ -651,7 +652,33 @@ where
     None
 }
 
-fn determine_numeric_result(op: &BinaryOperator<'_>, left: &TAtomic, right: &TAtomic, in_loop: bool) -> Vec<TAtomic> {
+fn determine_numeric_result(
+    op: &BinaryOperator<'_>,
+    left: &TAtomic,
+    right: &TAtomic,
+    in_loop: bool,
+    is_sharp: bool,
+) -> Vec<TAtomic> {
+    // In PHP# `/` on two integers truncates toward zero, as spec section 24 decides, so it gives an int.
+    if is_sharp
+        && matches!(op, BinaryOperator::Division(_))
+        && let (TAtomic::Scalar(TScalar::Integer(left_int)), TAtomic::Scalar(TScalar::Integer(right_int))) =
+            (left, right)
+    {
+        if right_int.is_zero() {
+            return vec![TAtomic::Never];
+        }
+
+        let quotient = match (left_int.get_literal_value(), right_int.get_literal_value()) {
+            (Some(left_value), Some(right_value)) => {
+                left_value.checked_div(right_value).map_or(TInteger::Unspecified, TInteger::Literal)
+            }
+            _ => TInteger::Unspecified,
+        };
+
+        return vec![TAtomic::Scalar(TScalar::Integer(quotient))];
+    }
+
     if in_loop
         && (matches!(left, TAtomic::Scalar(TScalar::Integer(i)) if i.is_unspecified())
             || matches!(right, TAtomic::Scalar(TScalar::Integer(i)) if i.is_unspecified()))

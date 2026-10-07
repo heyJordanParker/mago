@@ -240,7 +240,7 @@ impl ReportingArgs {
 }
 
 /// Returns the default reporting format based on the detected environment.
-fn default_reporting_format() -> ReportingFormat {
+pub(crate) fn default_reporting_format() -> ReportingFormat {
     if is_github_actions() {
         ReportingFormat::Github
     } else if is_gitlab_ci() {

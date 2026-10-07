@@ -1,5 +1,5 @@
-//! Each test lowers a PHP# file and checks the compiled file the bridge encodes from it, or the unit `sharp_lower`
-//! returns, against the layout `ext/sharp` reads.
+//! Each test lowers a PHP# file and checks the compiled file the bridge encodes from it, or the lowered unit, against
+//! the layout `ext/sharp` reads.
 
 #![allow(
     clippy::panic,
@@ -9,7 +9,8 @@
     clippy::little_endian_bytes
 )]
 
-use std::ffi::c_char;
+mod common;
+
 use std::fmt::Write;
 use std::fs;
 use std::mem::align_of;
@@ -22,12 +23,10 @@ use std::slice;
 use mago_build_id::BUILD_ID;
 use mago_sharp_bridge::SHARP_UNIT_ABI;
 use mago_sharp_bridge::Unit;
+use mago_sharp_bridge::lower;
 use mago_sharp_bridge::sharp_kind;
-use mago_sharp_bridge::sharp_lower;
 use mago_sharp_bridge::sharp_node;
 use mago_sharp_bridge::sharp_str;
-use mago_sharp_bridge::sharp_unit;
-use mago_sharp_bridge::sharp_unit_free;
 use mago_sharp_bridge::sharp_value;
 use mago_sharp_bridge::unit::FormatError;
 use mago_sharp_bridge::unit::Input;
@@ -44,51 +43,14 @@ use xxhash_rust::xxh3::xxh3_128;
 
 const SOURCE: &str = "namespace App.Tenant;\n\nclass Report\n{\n    public string title()\n    {\n        return \"weekly\";\n    }\n}\n";
 
-/// A unit `sharp_lower` returned, freed on drop.
-struct Lowered(*mut sharp_unit);
+/// The unit the bridge lowers from `source`, which the checker accepts.
+fn lowered(source: &str) -> Unit {
+    common::checked("src/Report.sharp", source, &[], lower).expect("the checker accepts the source")
+}
 
-impl Lowered {
-    fn new(source: &str) -> Self {
-        let path = "src/Report.sharp";
-
-        // SAFETY: both pointers point to as many bytes as their lengths say.
-        Self(unsafe {
-            sharp_lower(path.as_ptr().cast::<c_char>(), path.len(), source.as_ptr().cast::<c_char>(), source.len())
-        })
-    }
-
-    fn unit(&self) -> &sharp_unit {
-        // SAFETY: `sharp_lower` returns a valid unit, freed only on drop.
-        unsafe { &*self.0 }
-    }
-
-    fn nodes(&self) -> &[sharp_node] {
-        // SAFETY: the unit owns `node_count` nodes.
-        unsafe { slice::from_raw_parts(self.unit().nodes, self.unit().node_count) }
-    }
-
-    fn texts(&self) -> &[u8] {
-        // SAFETY: the unit owns `texts_size` bytes of texts.
-        unsafe { slice::from_raw_parts(self.unit().texts.cast::<u8>(), self.unit().texts_size) }
-    }
-
-    fn children(&self) -> &[u32] {
-        // SAFETY: the unit owns `children_count` children.
-        unsafe { slice::from_raw_parts(self.unit().children, self.unit().children_count) }
-    }
-
-    fn lowered(&self) -> &Unit {
-        // SAFETY: `sharp_lower` returns the `sharp_unit` that is the first field of a boxed, `#[repr(C)]` `Unit`.
-        unsafe { &*self.0.cast::<Unit>() }
-    }
-
-    fn encode(&self, source: &str) -> Vec<u8> {
-        encode(self.lowered(), source.as_bytes(), KEY, &inputs(), FACTS)
-    }
-
-    fn text(&self, text: sharp_str) -> &[u8] {
-        &self.texts()[text.offset as usize..(text.offset + text.len) as usize]
-    }
+/// The compiled file of `source`, with the test key, inputs and facts.
+fn encoded(source: &str) -> Vec<u8> {
+    encode(&lowered(source), source.as_bytes(), KEY, &inputs(), FACTS)
 }
 
 const KEY: [u8; 16] = *b"0123456789abcdef";
@@ -163,16 +125,9 @@ where
     unsafe { slice::from_raw_parts(start, count) }.to_vec()
 }
 
-impl Drop for Lowered {
-    fn drop(&mut self) {
-        // SAFETY: `sharp_lower` returned the unit, and only this drop frees it.
-        unsafe { sharp_unit_free(self.0) };
-    }
-}
-
 #[test]
 fn every_text_of_a_lowered_unit_is_an_offset_into_its_texts() {
-    let lowered = Lowered::new(SOURCE);
+    let lowered = lowered(SOURCE);
     let texts = lowered.texts();
 
     let resolved: Vec<&[u8]> = lowered
@@ -189,9 +144,21 @@ fn every_text_of_a_lowered_unit_is_an_offset_into_its_texts() {
 }
 
 #[test]
+fn an_absent_input_reads_back_as_an_all_zero_stamp_that_no_existing_file_has() {
+    let absent = Input { path: b"composer.lock".to_vec(), size: 0, mtime_ns: 0, hash: [0; 16] };
+
+    let decoded = Decoded::new(&encode(&lowered(SOURCE), SOURCE.as_bytes(), KEY, &[absent], FACTS));
+
+    let [input] = decoded.inputs[..] else { panic!("one input: {:?}", decoded.inputs.len()) };
+    assert_eq!(decoded.text(input.path), b"composer.lock");
+    assert_eq!((input.size, input.mtime_ns, input.hash), (0, 0, [0; 16]));
+    assert_ne!(source_hash(b""), [0; 16], "an empty file that exists is never stamped as absent");
+}
+
+#[test]
 fn a_compiled_file_reads_back_through_the_c_layout() {
-    let lowered = Lowered::new(SOURCE);
-    let decoded = Decoded::new(&lowered.encode(SOURCE));
+    let lowered = lowered(SOURCE);
+    let decoded = Decoded::new(&encode(&lowered, SOURCE.as_bytes(), KEY, &inputs(), FACTS));
     let header = decoded.header;
 
     assert_eq!(header.magic, *b"SHARPC\0\0");
@@ -201,7 +168,7 @@ fn a_compiled_file_reads_back_through_the_c_layout() {
     assert_eq!(header.key, KEY);
     assert_eq!(header.source_hash, xxh3_128(SOURCE.as_bytes()).to_be_bytes());
     assert_eq!(header.source_size, SOURCE.len() as u64);
-    assert_eq!(header.root, lowered.unit().root);
+    assert_eq!(header.root, lowered.root());
 
     let read_inputs: Vec<(&[u8], u64, i64, [u8; 16])> =
         decoded.inputs.iter().map(|input| (decoded.text(input.path), input.size, input.mtime_ns, input.hash)).collect();
@@ -243,7 +210,7 @@ fn a_compiled_file_reads_back_through_the_c_layout() {
 
 #[test]
 fn every_node_child_and_text_lies_inside_its_section() {
-    let decoded = Decoded::new(&Lowered::new(SOURCE).encode(SOURCE));
+    let decoded = Decoded::new(&encoded(SOURCE));
     let nodes = decoded.nodes.len() as u64;
     let children = decoded.children.len() as u64;
     let texts = decoded.texts.len() as u64;
@@ -279,9 +246,9 @@ fn every_header_field_and_section_starts_aligned_for_its_type() {
         assert_eq!(offset % align, 0, "{field}");
     }
 
-    let lowered = Lowered::new(SOURCE);
+    let lowered = lowered(SOURCE);
     for count in 0..=inputs().len() {
-        let decoded = Decoded::new(&encode(lowered.lowered(), SOURCE.as_bytes(), KEY, &inputs()[..count], FACTS));
+        let decoded = Decoded::new(&encode(&lowered, SOURCE.as_bytes(), KEY, &inputs()[..count], FACTS));
         let [inputs_at, nodes_at, children_at, ..] = decoded.offsets;
 
         assert_eq!(inputs_at % align_of::<sharp_input>(), 0, "{count} inputs");
@@ -292,8 +259,8 @@ fn every_header_field_and_section_starts_aligned_for_its_type() {
 
 #[test]
 fn encoding_one_lowering_twice_gives_the_same_bytes_with_zero_padding() {
-    let first = Lowered::new(SOURCE).encode(SOURCE);
-    let second = Lowered::new(SOURCE).encode(SOURCE);
+    let first = encoded(SOURCE);
+    let second = encoded(SOURCE);
     assert_eq!(first, second);
 
     let decoded = Decoded::new(&first);
@@ -308,16 +275,8 @@ fn encoding_one_lowering_twice_gives_the_same_bytes_with_zero_padding() {
 }
 
 #[test]
-#[should_panic(expected = "a refused file gets no compiled file")]
-fn encoding_a_refused_file_panics() {
-    let source = "class Report\n{\n    public int run()\n    {\n        echo 1;\n    }\n}\n";
-
-    let _ = Lowered::new(source).encode(source);
-}
-
-#[test]
 fn header_reads_the_fields_of_a_current_file() {
-    let bytes = Lowered::new(SOURCE).encode(SOURCE);
+    let bytes = encoded(SOURCE);
     let header = header(&bytes).unwrap();
 
     assert_eq!(header.abi, SHARP_UNIT_ABI);
@@ -330,7 +289,7 @@ fn header_reads_the_fields_of_a_current_file() {
 
 #[test]
 fn header_refuses_a_short_file_a_wrong_magic_a_wrong_abi_and_a_wrong_length() {
-    let bytes = Lowered::new(SOURCE).encode(SOURCE);
+    let bytes = encoded(SOURCE);
     let changed = |offset: usize| {
         let mut changed = bytes.clone();
         changed[offset] ^= 1;
@@ -545,9 +504,9 @@ const ZEND_COMPILE_H: &str = "#define ZEND_ISEMPTY\t\t\t(1<<0)
 #define ZEND_LAST_CATCH\t\t\t(1<<0)
 ";
 
-/// The `SHARP_UNIT_ABI` line `just regen-sharp-kinds` prints for the two headers, run in a copy of the repository's
-/// script and bridge sources after `edit` changes one of those sources.
-fn generated_abi(zend_ast: &str, zend_compile: &str, edit: Option<(&str, &str, &str)>) -> String {
+/// `just regen-sharp-kinds` for `zend_ast`, run in a copy of the repository's script and bridge sources after `edit`
+/// changes one of those sources. The copy lives as long as the returned folder.
+fn generator(zend_ast: &str, edit: Option<(&str, &str, &str)>) -> (tempfile::TempDir, Command) {
     let root = tempfile::tempdir().unwrap();
     let sources = root.path().join("crates/sharp-bridge/src");
     fs::create_dir_all(root.path().join("scripts")).unwrap();
@@ -563,14 +522,17 @@ fn generated_abi(zend_ast: &str, zend_compile: &str, edit: Option<(&str, &str, &
         fs::write(sources.join(file), source.replacen(from, to, 1)).unwrap();
     }
     fs::write(root.path().join("zend_ast.h"), zend_ast).unwrap();
-    fs::write(root.path().join("zend_compile.h"), zend_compile).unwrap();
 
-    let output = Command::new("php")
-        .arg(root.path().join("scripts/regen-sharp-kinds.php"))
-        .arg(root.path().join("zend_ast.h"))
-        .arg(root.path().join("zend_compile.h"))
-        .output()
-        .unwrap();
+    let mut command = Command::new("php");
+    command.arg(root.path().join("scripts/regen-sharp-kinds.php")).arg(root.path().join("zend_ast.h"));
+
+    (root, command)
+}
+
+/// The `SHARP_UNIT_ABI` line the generator prints for `zend_ast` after `edit`.
+fn generated_abi(zend_ast: &str, edit: Option<(&str, &str, &str)>) -> String {
+    let (_root, mut command) = generator(zend_ast, edit);
+    let output = command.output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 
     String::from_utf8(output.stdout)
@@ -582,15 +544,15 @@ fn generated_abi(zend_ast: &str, zend_compile: &str, edit: Option<(&str, &str, &
 }
 
 #[test]
-fn the_unit_abi_changes_with_the_kind_table_the_layouts_and_the_mark_register() {
-    if !php_is_available("the_unit_abi_changes_with_the_kind_table_the_layouts_and_the_mark_register") {
+fn the_unit_abi_changes_with_the_kind_table_and_the_layouts() {
+    if !php_is_available("the_unit_abi_changes_with_the_kind_table_and_the_layouts") {
         return;
     }
 
-    let base = generated_abi(ZEND_AST_H, ZEND_COMPILE_H, None);
-    assert_eq!(generated_abi(ZEND_AST_H, ZEND_COMPILE_H, None), base);
+    let base = generated_abi(ZEND_AST_H, None);
+    assert_eq!(generated_abi(ZEND_AST_H, None), base);
     assert_eq!(
-        generated_abi(ZEND_AST_H, ZEND_COMPILE_H, Some(("lib.rs", "/// First line.", "/// The first line."))),
+        generated_abi(ZEND_AST_H, Some(("lib.rs", "/// First line.", "/// The first line."))),
         base,
         "a comment is not layout"
     );
@@ -598,46 +560,39 @@ fn the_unit_abi_changes_with_the_kind_table_the_layouts_and_the_mark_register() 
     for (change, abi) in [
         (
             "a kind",
-            generated_abi(
-                &ZEND_AST_H.replace("ZEND_AST_CONSTANT,", "ZEND_AST_CONSTANT,\n\tZEND_AST_ZNODE,"),
-                ZEND_COMPILE_H,
-                None,
-            ),
+            generated_abi(&ZEND_AST_H.replace("ZEND_AST_CONSTANT,", "ZEND_AST_CONSTANT,\n\tZEND_AST_ZNODE,"), None),
         ),
-        (
-            "a sharp_node field",
-            generated_abi(ZEND_AST_H, ZEND_COMPILE_H, Some(("lib.rs", "pub line: u32,", "pub line: u64,"))),
-        ),
+        ("a sharp_node field", generated_abi(ZEND_AST_H, Some(("lib.rs", "pub line: u32,", "pub line: u64,")))),
         (
             "a sharp_value case",
-            generated_abi(ZEND_AST_H, ZEND_COMPILE_H, Some(("lib.rs", "SHARP_LONG,", "SHARP_LONG,\n    SHARP_ARRAY,"))),
+            generated_abi(ZEND_AST_H, Some(("lib.rs", "SHARP_LONG,", "SHARP_LONG,\n    SHARP_ARRAY,"))),
         ),
-        (
-            "a sharp_str field",
-            generated_abi(ZEND_AST_H, ZEND_COMPILE_H, Some(("lib.rs", "pub len: u32,", "pub len: u64,"))),
-        ),
+        ("a sharp_str field", generated_abi(ZEND_AST_H, Some(("lib.rs", "pub len: u32,", "pub len: u64,")))),
         (
             "a header field",
-            generated_abi(
-                ZEND_AST_H,
-                ZEND_COMPILE_H,
-                Some(("unit.rs", "pub facts_size: u32,", "pub facts_size: u64,")),
-            ),
+            generated_abi(ZEND_AST_H, Some(("unit.rs", "pub facts_size: u32,", "pub facts_size: u64,"))),
         ),
         (
             "a sharp_input field",
-            generated_abi(ZEND_AST_H, ZEND_COMPILE_H, Some(("unit.rs", "pub mtime_ns: i64,", "pub mtime_ns: u64,"))),
-        ),
-        ("a mark's bit", generated_abi(ZEND_AST_H, &ZEND_COMPILE_H.replace("(1<<15)", "(1<<16)"), None)),
-        (
-            "a mark's field",
-            generated_abi(
-                ZEND_AST_H,
-                &ZEND_COMPILE_H.replace("extended_value of ZEND_ADD", "result_type of ZEND_ADD"),
-                None,
-            ),
+            generated_abi(ZEND_AST_H, Some(("unit.rs", "pub mtime_ns: i64,", "pub mtime_ns: u64,"))),
         ),
     ] {
         assert_ne!(abi, base, "{change}");
     }
+}
+
+/// The generator reads one header, so a second argument is an error.
+#[test]
+fn the_kind_generator_takes_only_zend_ast_h() {
+    if !php_is_available("the_kind_generator_takes_only_zend_ast_h") {
+        return;
+    }
+
+    let (root, mut command) = generator(ZEND_AST_H, None);
+    fs::write(root.path().join("zend_compile.h"), ZEND_COMPILE_H).unwrap();
+    let output = command.arg(root.path().join("zend_compile.h")).output().unwrap();
+
+    assert!(!output.status.success(), "a second argument is an error");
+    let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(printed.contains("Pass only the path to php-src's `Zend/zend_ast.h`."), "{printed}");
 }

@@ -523,6 +523,14 @@ impl CodebaseMetadata {
         self.constants.get(&lowercase_name)
     }
 
+    /// Retrieves the constant an unqualified read reaches, as PHP finds it: `resolved`, the name in the reading file's
+    /// namespace, or else the global constant named `written`, as the code wrote it.
+    #[inline]
+    #[must_use]
+    pub fn get_constant_or_global(&self, resolved: &[u8], written: &[u8]) -> Option<&ConstantMetadata> {
+        self.get_constant(resolved).or_else(|| self.get_constant(written))
+    }
+
     /// The declaration name span of a top-level symbol named `name`: a
     /// class-like (class/interface/trait/enum), a function, or a constant.
     ///
@@ -1047,7 +1055,7 @@ impl CodebaseMetadata {
     /// Returns the logical names of files whose top-level code references an invalidated
     /// symbol. Returns `None` if the cascade was too large to compute.
     pub fn mark_safe_symbols(&mut self, diff: &CodebaseDiff, references: &SymbolReferences) -> Option<WordSet> {
-        let (invalid_symbols, partially_invalid, invalid_files) = references.get_invalid_symbols(diff)?;
+        let (invalid_symbols, partially_invalid, invalid_files) = references.get_invalid_symbols(self, diff)?;
 
         // Mark all symbols in 'keep' set as safe (unless invalidated by cascade)
         for keep_symbol in diff.get_keep() {
@@ -1861,5 +1869,43 @@ mod should_replace_metadata_tests {
         assert!(class.flags.is_user_defined());
         // No issues should be emitted.
         assert!(class.issues.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod get_constant_or_global_tests {
+    use super::*;
+
+    fn codebase_with(names: &[&str]) -> CodebaseMetadata {
+        let mut codebase = CodebaseMetadata::new();
+        for name in names {
+            codebase.constants.insert(
+                ascii_lowercase_constant_name_word(name.as_bytes()),
+                ConstantMetadata::new(word(name), Span::dummy(0, 1), MetadataFlags::empty()),
+            );
+        }
+
+        codebase
+    }
+
+    fn found(codebase: &CodebaseMetadata, resolved: &str, written: &str) -> Option<String> {
+        codebase
+            .get_constant_or_global(resolved.as_bytes(), written.as_bytes())
+            .map(|constant| constant.name.to_string())
+    }
+
+    #[test]
+    fn a_namespaced_constant_wins_over_the_global_one_of_its_name() {
+        let codebase = codebase_with(&["Lib\\LIMIT", "LIMIT"]);
+
+        assert_eq!(found(&codebase, "Lib\\LIMIT", "LIMIT").as_deref(), Some("Lib\\LIMIT"));
+    }
+
+    #[test]
+    fn the_global_constant_is_the_fallback_when_the_namespace_declares_none() {
+        let codebase = codebase_with(&["LIMIT"]);
+
+        assert_eq!(found(&codebase, "Lib\\LIMIT", "LIMIT").as_deref(), Some("LIMIT"));
+        assert_eq!(found(&codebase, "Lib\\OTHER", "OTHER"), None);
     }
 }

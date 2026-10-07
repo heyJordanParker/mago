@@ -42,7 +42,7 @@ use crate::utils::symbol_existence::extract_function_constant_existence;
 
 /// Merges variables assigned by a short-circuiting right-hand side back into the
 /// enclosing context.
-fn merge_short_circuited_assignments<'ctx, A>(
+pub(crate) fn merge_short_circuited_assignments<'ctx, A>(
     context: &Context<'ctx, '_, A>,
     block_context: &mut BlockContext<'ctx>,
     left_locals: &WordMap<Rc<TUnion>>,

@@ -237,6 +237,9 @@ pub struct Issue {
     pub edits: HashMap<FileId, IssueEdits>,
 }
 
+/// The code of [`Issue::unsuppressible_error`].
+pub const UNSUPPRESSIBLE_ERROR: &str = "unsuppressible-error";
+
 /// A collection of issues.
 #[derive(Debug, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -587,6 +590,25 @@ impl Issue {
     #[must_use]
     pub fn primary_span(&self) -> Option<Span> {
         self.primary_annotation().map(|annotation| annotation.span)
+    }
+
+    /// Returns `true` when a suppression may hide this issue in the file named `file_name`.
+    ///
+    /// This is the one place Mago decides it. An error in a PHP# file keeps the file from running, so an
+    /// `@mago-ignore` or `@mago-expect` pragma can't hide it. Every other issue may be suppressed.
+    #[must_use]
+    pub fn can_be_suppressed_in(&self, file_name: &[u8]) -> bool {
+        self.level < Level::Error || !file_name.ends_with(b".sharp")
+    }
+
+    /// The warning that a suppression targets an error in a PHP# file, which it can't hide. The `annotations` point
+    /// at the suppression and the error.
+    #[must_use]
+    pub fn unsuppressible_error(annotations: impl IntoIterator<Item = Annotation>) -> Self {
+        Self::warning("An error can't be suppressed in PHP#.")
+            .with_code(UNSUPPRESSIBLE_ERROR)
+            .with_annotations(annotations)
+            .with_help("Fix the error, then remove the suppression.")
     }
 
     /// Add a note to this issue.
