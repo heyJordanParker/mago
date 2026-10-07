@@ -7,19 +7,18 @@ use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::ttype::TypeMetadata;
 use mago_codex::scanner::get_union_from_hint;
-use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::array::keyed::TKeyedArray;
 use mago_codex::ttype::atomic::array::list::TList;
 use mago_codex::ttype::atomic::callable::TCallable;
-use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::cast::cast_atomic_to_callable;
 use mago_codex::ttype::combiner;
 use mago_codex::ttype::combiner::CombinerOptions;
 use mago_codex::ttype::expander;
 use mago_codex::ttype::expander::TypeExpansionOptions;
 use mago_codex::ttype::get_array_parameters;
+use mago_codex::ttype::get_backed_enum;
 use mago_codex::ttype::get_backing_key_type;
 use mago_codex::ttype::union::TUnion;
 use mago_codex::ttype::union::populate_union_type;
@@ -442,8 +441,8 @@ where
 }
 
 /// Reports a loop over a `Map` whose key type mixes a backed enum with other types. The engine holds each key as its
-/// backing value, and the lowering reads it back as a case only through one enum's `from`. A type parameter key is
-/// its bound, and a bound that joins classes with `&` reads back through its enum member.
+/// backing value, and the lowering reads it back as a case only through one enum's `from`, the backed enum
+/// [`get_backed_enum`] finds in each member of the key type.
 fn report_key_mixing_a_backed_enum<A>(
     context: &mut Context<'_, '_, A>,
     artifacts: &AnalysisArtifacts,
@@ -455,21 +454,7 @@ fn report_key_mixing_a_backed_enum<A>(
     let Some(collection_type) = artifacts.get_expression_type(for_of.expression) else {
         return;
     };
-    let enum_of = |atomic: &TAtomic| {
-        let bound = match atomic {
-            TAtomic::GenericParameter(parameter) => match parameter.constraint.types.as_ref() {
-                [bound] => bound,
-                _ => return None,
-            },
-            _ => atomic,
-        };
-
-        std::iter::once(bound).chain(bound.get_intersection_types().unwrap_or_default()).find_map(|member| match member
-        {
-            TAtomic::Object(TObject::Enum(enum_object)) => Some(enum_object.name),
-            _ => None,
-        })
-    };
+    let enum_of = |atomic: &TAtomic| get_backed_enum(atomic, context.codebase).map(|backed_enum| backed_enum.name);
     let is_one_enum = |key_type: &TUnion| {
         key_type
             .types

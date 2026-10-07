@@ -1399,27 +1399,10 @@ pub fn get_iterable_parameters(atomic: &TAtomic, codebase: &CodebaseMetadata) ->
 /// Returns the key type plain PHP sees for `key_type`.
 ///
 /// A PHP# `Map` keyed by a backed enum holds each case's backing value at runtime, as spec section 12 writes it, so
-/// plain PHP sees an enum key as the enum's backing type. A type parameter key is its bound, and a bound that joins
-/// classes with `&` is keyed by the backed enum among them, whichever member is written first.
+/// plain PHP sees a key that holds a backed enum, as [`get_backed_enum`] finds it, as the enum's backing type.
 #[must_use]
 pub fn get_backing_key_type<'key>(key_type: &'key TUnion, codebase: &CodebaseMetadata) -> Cow<'key, TUnion> {
-    let backing_type = |atomic: &TAtomic| {
-        let bound = match atomic {
-            TAtomic::GenericParameter(parameter) => match parameter.constraint.types.as_ref() {
-                [bound] => bound,
-                _ => return None,
-            },
-            _ => atomic,
-        };
-
-        std::iter::once(bound).chain(bound.get_intersection_types().unwrap_or_default()).find_map(|member| match member
-        {
-            TAtomic::Object(TObject::Enum(enum_object)) => {
-                codebase.get_class_like(enum_object.name.as_bytes())?.enum_type.clone()
-            }
-            _ => None,
-        })
-    };
+    let backing_type = |atomic: &TAtomic| get_backed_enum(atomic, codebase)?.enum_type.clone();
 
     if !key_type.types.iter().any(|atomic| backing_type(atomic).is_some()) {
         return Cow::Borrowed(key_type);
@@ -1428,6 +1411,34 @@ pub fn get_backing_key_type<'key>(key_type: &'key TUnion, codebase: &CodebaseMet
     Cow::Owned(TUnion::from_vec(
         key_type.types.iter().map(|atomic| backing_type(atomic).unwrap_or_else(|| atomic.clone())).collect(),
     ))
+}
+
+/// The backed enum whose cases every value of `atomic` is: the enum itself, or the backed enum among the members
+/// of a type parameter's bound, whichever member the bound writes first.
+#[must_use]
+pub fn get_backed_enum<'codebase>(
+    atomic: &TAtomic,
+    codebase: &'codebase CodebaseMetadata,
+) -> Option<&'codebase ClassLikeMetadata> {
+    let bound = match atomic {
+        TAtomic::GenericParameter(parameter) => match parameter.constraint.types.as_ref() {
+            [bound] => bound,
+            _ => return None,
+        },
+        _ => atomic,
+    };
+
+    std::iter::once(bound).chain(bound.get_intersection_types().unwrap_or_default()).find_map(|member| {
+        let name = match member {
+            TAtomic::Object(TObject::Named(object)) => object.name,
+            TAtomic::Object(TObject::Enum(object)) => object.name,
+            _ => return None,
+        };
+
+        codebase
+            .get_class_like(name.as_bytes())
+            .filter(|class_like| class_like.kind.is_enum() && class_like.enum_type.is_some())
+    })
 }
 
 #[must_use]

@@ -24,6 +24,9 @@ use mago_analyzer::settings::Settings;
 use mago_codex::populator::populate_codebase;
 use mago_codex::scanner::scan_program;
 use mago_codex::ttype::TType;
+use mago_codex::ttype::atomic::TAtomic;
+use mago_codex::ttype::atomic::array::TArray;
+use mago_codex::ttype::get_backed_enum;
 use mago_database::DatabaseReader;
 use mago_database::file::File;
 use mago_names::CHANGING_COLLECTION_METHODS;
@@ -3479,6 +3482,48 @@ fn a_map_keyed_by_a_type_parameter_without_a_backed_enum_in_its_bound_is_an_erro
     assert_eq!(issues(("src/Demo/Tally.sharp", unbounded), &others), ["5:22 template-constraint-violation"]);
     assert_eq!(issues(("src/Demo/Tally.sharp", interfaces), &others), ["8:22 template-constraint-violation"]);
     assert_eq!(issues(("src/Demo/Tally.sharp", written), &others), ["8:22 template-constraint-violation"]);
+}
+
+/// A key holds the backed enum it names, or the backed enum among the members of its type parameter's bound, in
+/// either order. A bound of interfaces alone, or no bound, holds none.
+#[test]
+fn a_key_holds_the_backed_enum_it_names_or_the_one_in_its_type_parameters_bound() {
+    assert_eq!(key_backed_enum("", "Status").as_deref(), Some("Lib\\Status"));
+    assert_eq!(key_backed_enum("<TKey : Status>", "TKey").as_deref(), Some("Lib\\Status"));
+    assert_eq!(key_backed_enum("<TKey : Status & HasLabel>", "TKey").as_deref(), Some("Lib\\Status"));
+    assert_eq!(key_backed_enum("<TKey : HasLabel & Status>", "TKey").as_deref(), Some("Lib\\Status"));
+    assert_eq!(key_backed_enum("<TKey : HasLabel & Other>", "TKey"), None);
+    assert_eq!(key_backed_enum("<TKey>", "TKey"), None);
+}
+
+/// The name of the backed enum `get_backed_enum` finds for the key of the `Map<key, int>` that
+/// `Demo\Tally<header>::count` takes, beside `LABELS`.
+fn key_backed_enum(header: &str, key: &str) -> Option<String> {
+    let sharp = format!(
+        "namespace Demo;\n\nimport Lib.HasLabel;\nimport Lib.Other;\nimport Lib.Status;\n\npublic class Tally{header}\n{{\n    public int count(Map<{key}, int> counts) => 0;\n}}\n"
+    );
+    let Prelude { mut database, mut metadata, mut symbol_references } = PRELUDE.clone();
+    let arena = LocalArena::new();
+    for (name, code) in [("src/Demo/Tally.sharp", sharp), ("src/Lib/Labels.php", LABELS.to_owned())] {
+        let file_id = database.add(File::ephemeral(Cow::Borrowed(name.as_bytes()), Cow::Owned(code.into_bytes())));
+        let file = database.get_ref(&file_id).expect("file was just added");
+        let program = parse_file(&arena, file);
+        let names = NameResolver::new(&arena).resolve(program);
+        metadata.extend(scan_program(&arena, file, program, &names, settings().version));
+    }
+    populate_codebase(&mut metadata, &mut symbol_references, WordSet::default(), HashSet::default());
+
+    let count = metadata.get_method(b"Demo\\Tally", b"count").expect("Tally declares count");
+    let counts = &count.parameters[0].type_declaration_metadata.as_ref().expect("counts has a written type").type_union;
+    let [TAtomic::Array(TArray::Keyed(map))] = counts.types.as_ref() else {
+        panic!("counts is a Map, not `{}`", counts.get_id());
+    };
+    let (key_type, _) = map.get_generic_parameters().expect("a Map has a key type");
+    let [key] = key_type.types.as_ref() else {
+        panic!("the key type is one type, not `{}`", key_type.get_id());
+    };
+
+    get_backed_enum(key, &metadata).map(|backed_enum| backed_enum.original_name.to_string())
 }
 
 /// A written key or value type checks as a typed local's does. Spec section 12 reads a `Map<string, V>` key back as a

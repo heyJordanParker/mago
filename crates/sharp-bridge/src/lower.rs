@@ -2,9 +2,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use mago_allocator::LocalArena;
-use mago_codex::ttype::TType;
-use mago_codex::ttype::atomic::TAtomic;
-use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::union::TUnion;
 use mago_names::ResolvedNames;
 use mago_names::binding::Binding;
@@ -1806,37 +1803,18 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         Some(self.node(SHARP_AST_CAST, IS_STRING, line, &[stored_key]))
     }
 
-    /// The backed enum every value of `r#type` is a case of, if there is one: the enum itself, or the member of a
-    /// type parameter's bound that is a backed enum, whichever member the bound writes first.
-    fn backed_enum<'r#type>(&self, r#type: &'r#type TUnion) -> Option<&'r#type [u8]> {
+    /// The backed enum every value of `r#type` but `null` is a case of, if there is one, as
+    /// [`Types::backed_enum`] finds it in each.
+    fn backed_enum(&self, r#type: &TUnion) -> Option<&'lowering [u8]> {
         let classes: Vec<&[u8]> = r#type
             .types
             .iter()
             .filter(|atomic| !atomic.is_null())
-            .map(|atomic| {
-                let bound = match atomic {
-                    TAtomic::GenericParameter(parameter) => match parameter.constraint.types.as_ref() {
-                        [bound] => bound,
-                        _ => return None,
-                    },
-                    _ => atomic,
-                };
-
-                std::iter::once(bound).chain(bound.get_intersection_types().unwrap_or_default()).find_map(|member| {
-                    let class = match member {
-                        TAtomic::Object(TObject::Named(object)) => object.name.as_bytes(),
-                        TAtomic::Object(TObject::Enum(object)) => object.name.as_bytes(),
-                        _ => return None,
-                    };
-
-                    (self.types.class_declaration(class).kind == DeclarationKind::Enum { backed: true })
-                        .then_some(class)
-                })
-            })
+            .map(|atomic| self.types.backed_enum(atomic))
             .collect::<Option<_>>()?;
         let class = *classes.first()?;
 
-        classes.iter().all(|other| other.eq_ignore_ascii_case(class)).then_some(class)
+        classes.iter().all(|other| *other == class).then_some(class)
     }
 
     /// Whether `element` spreads a `Map`, which keeps its keys where PHP's `...` renumbers int keys.

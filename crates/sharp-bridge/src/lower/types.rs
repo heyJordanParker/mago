@@ -8,6 +8,7 @@ use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::atomic::scalar::class_like_string::TClassLikeString;
 use mago_codex::ttype::get_array_parameters;
+use mago_codex::ttype::get_backed_enum;
 use mago_codex::ttype::union::TUnion;
 use mago_names::ResolvedNames;
 use mago_span::HasSpan;
@@ -49,10 +50,7 @@ pub(crate) struct Declaration {
 pub(crate) enum DeclarationKind {
     Class,
     Interface,
-    /// `backed` is whether each case has a backing value, which a `Map` keyed by the enum holds for the case.
-    Enum {
-        backed: bool,
-    },
+    Enum,
     Constant,
     EnumCase,
     StaticProperty,
@@ -101,12 +99,18 @@ impl<'analysis> Types<'analysis> {
         let kind = if metadata.kind.is_interface() {
             DeclarationKind::Interface
         } else if metadata.kind.is_enum() {
-            DeclarationKind::Enum { backed: metadata.enum_type.is_some() }
+            DeclarationKind::Enum
         } else {
             DeclarationKind::Class
         };
 
         Declaration { kind, class: metadata.original_name, name: metadata.original_name, public: true }
+    }
+
+    /// The fully qualified name of the backed enum every value of `atomic` is a case of, as [`get_backed_enum`] finds
+    /// it.
+    pub(crate) fn backed_enum(&self, atomic: &TAtomic) -> Option<&[u8]> {
+        get_backed_enum(atomic, self.codebase).map(|backed_enum| backed_enum.original_name.as_bytes())
     }
 
     /// The declaration `member` of the fully qualified class name `class` resolves to when code reads it: an enum case,
