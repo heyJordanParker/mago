@@ -1352,10 +1352,121 @@ fn super_in_a_class_without_a_base_class_is_an_error_as_in_php() {
 /// The checker refuses a member of `typeof(X)` once, so the analyzer adds no issue on the refused read, its chain, or
 /// the value it gives.
 #[test]
-fn reading_a_member_of_typeof_adds_no_issue() {
-    let sharp = "namespace Demo;\n\nclass Report\n{\n    public string label()\n    {\n        return typeof(Report).name;\n    }\n\n    public string first()\n    {\n        return typeof(Report).name.first;\n    }\n\n    public string called()\n    {\n        return typeof(Report).name();\n    }\n}\n";
+fn a_member_read_through_a_class_value_is_checked_as_the_static_member_in_php() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public const int MAX = 3;\n    private static int count = 0;\n\n    public static string tag() => \"div\";\n\n    public int total()\n    {\n        const type = typeof(Report);\n        const max = type.MAX;\n        const seen = type.count;\n        return typeof(Report).MAX + max + seen;\n    }\n\n    public string label()\n    {\n        const type = typeof(Report);\n        return type.tag();\n    }\n\n    public int missing()\n    {\n        const type = typeof(Report);\n        return type.absent;\n    }\n\n    public void named()\n    {\n        const type = typeof(Report);\n        type.attributes();\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public const int MAX = 3;\n    private static int $count = 0;\n\n    public static function tag(): string\n    {\n        return \"div\";\n    }\n\n    public function total(): int\n    {\n        $type = Report::class;\n        $max = $type::MAX;\n        $seen = $type::$count;\n        return Report::MAX + $max + $seen;\n    }\n\n    public function label(): string\n    {\n        $type = Report::class;\n        return $type::tag();\n    }\n\n    public function missing(): int\n    {\n        $type = Report::class;\n        return $type::$absent;\n    }\n\n    public function named(): void\n    {\n        $type = Report::class;\n        $type::attributes();\n    }\n}\n";
 
-    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
+    let (issues, artifacts) =
+        analyze_with_artifacts(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[]);
+    let sharp_issues: Vec<String> = issues.iter().map(|issue| issue.code.clone().unwrap_or_default()).collect();
+    let php_issues = issues_with(settings(), ("src/Demo/Report.php", php), &[]);
+    let type_at = |text: &str| {
+        let start = sharp.find(text).unwrap() as u32;
+        artifacts.expression_types.get(&(start, start + text.len() as u32)).map(|r#type| r#type.get_id().to_string())
+    };
+
+    assert_eq!(sharp_issues, codes(&php_issues), "{php_issues:?}");
+    assert_eq!(sharp_issues, ["non-existent-property", "invalid-return-statement", "non-existent-method"]);
+    assert_eq!(type_at("type.MAX").as_deref(), Some("int(3)"));
+    assert_eq!(type_at("type.count").as_deref(), Some("int"));
+    assert_eq!(type_at("type.tag()").as_deref(), Some("string"));
+    assert_eq!(type_at("typeof(Report).MAX").as_deref(), Some("int(3)"));
+}
+
+/// A member of `typeof(x)` of a parameter or `this` is the static member of the class its value holds, as PHP's
+/// `$x::y` reads it.
+#[test]
+fn a_member_of_typeof_a_value_is_checked_as_the_static_member_in_php() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public const int MAX = 3;\n    private static int count = 0;\n\n    public static string tag() => \"div\";\n\n    public int total(Report report)\n    {\n        return typeof(this).MAX + typeof(report).count + strlen(typeof(report).tag());\n    }\n\n    public int missing(Report report)\n    {\n        return typeof(report).absent;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public const int MAX = 3;\n    private static int $count = 0;\n\n    public static function tag(): string\n    {\n        return \"div\";\n    }\n\n    public function total(Report $report): int\n    {\n        return $this::MAX + $report::$count + strlen($report::tag());\n    }\n\n    public function missing(Report $report): int\n    {\n        return $report::$absent;\n    }\n}\n";
+
+    let (issues, artifacts) =
+        analyze_with_artifacts(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[]);
+    let sharp_issues: Vec<String> = issues.iter().map(|issue| issue.code.clone().unwrap_or_default()).collect();
+    let php_issues = issues_with(settings(), ("src/Demo/Report.php", php), &[]);
+    let type_at = |text: &str| {
+        let start = sharp.find(text).unwrap() as u32;
+        artifacts.expression_types.get(&(start, start + text.len() as u32)).map(|r#type| r#type.get_id().to_string())
+    };
+
+    assert_eq!(sharp_issues, codes(&php_issues), "{php_issues:?}");
+    assert_eq!(sharp_issues, ["non-existent-property", "invalid-return-statement"]);
+    assert_eq!(type_at("typeof(report).count").as_deref(), Some("int"));
+    assert_eq!(type_at("typeof(report).tag()").as_deref(), Some("string"));
+}
+
+/// The receiver of a class value read is a class value: `typeof(X)` and a `const` local holding it are the class-string
+/// of `X`.
+#[test]
+fn a_local_holding_typeof_is_the_class_string_of_its_class() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public const int MAX = 3;\n\n    public int total()\n    {\n        const type = typeof(Report);\n        return type.MAX;\n    }\n}\n";
+    let (issues, artifacts) =
+        analyze_with_artifacts(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[]);
+    let start = sharp.find("type.MAX").unwrap() as u32;
+
+    assert!(issues.is_empty(), "{issues:?}");
+    assert_eq!(
+        artifacts.expression_types.get(&(start, start + 4)).map(|r#type| r#type.get_id().to_string()).as_deref(),
+        Some("class-string('Demo\\Report')")
+    );
+}
+
+/// PHP reads a class-string's members only through `::`. An arrow read of one stays the error it is in PHP.
+#[test]
+fn an_arrow_read_of_a_class_string_stays_an_error_in_php() {
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public const int MAX = 3;\n\n    public function total(): mixed\n    {\n        $type = Report::class;\n        return $type->MAX;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[]), ["12:23 invalid-property-access"]);
+}
+
+/// A null-safe read or call through a class value that may be null reads the member when the value holds a class, and
+/// is `null` otherwise, as spec section 14.4 defines `a?.b`.
+#[test]
+fn a_null_safe_member_read_through_a_class_value_is_the_member_or_null() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public const int MAX = 3;\n    private static int count = 0;\n\n    public static string tag() => \"div\";\n\n    public int? max(bool flag)\n    {\n        const type = flag ? typeof(Report) : null;\n        return type?.MAX;\n    }\n\n    public int? seen(bool flag)\n    {\n        const type = flag ? typeof(Report) : null;\n        return type?.count;\n    }\n\n    public string? label(bool flag)\n    {\n        const type = flag ? typeof(Report) : null;\n        return type?.tag();\n    }\n}\n";
+    let (issues, artifacts) =
+        analyze_with_artifacts(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[]);
+    let type_at = |text: &str| {
+        let start = sharp.find(text).unwrap() as u32;
+        artifacts.expression_types.get(&(start, start + text.len() as u32)).map(|r#type| r#type.get_id().to_string())
+    };
+
+    assert!(issues.is_empty(), "{issues:?}");
+    assert_eq!(type_at("type?.MAX").as_deref(), Some("int(3)|null"));
+    assert_eq!(type_at("type?.count").as_deref(), Some("int|null"));
+    assert_eq!(type_at("type?.tag()").as_deref(), Some("null|string"));
+}
+
+/// A null receiver skips a null-safe call's arguments, so a local an argument writes may keep its value from before.
+#[test]
+fn a_local_a_null_safe_call_through_a_class_value_writes_may_keep_its_value() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static string make(int? value) => \"made\";\n\n    public int? last(bool flag)\n    {\n        let seen = null;\n        const type = flag ? typeof(Report) : null;\n        type?.make(seen = 5);\n        return seen;\n    }\n}\n";
+    let (issues, artifacts) =
+        analyze_with_artifacts(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[]);
+    let start = sharp.rfind("seen;").unwrap() as u32;
+
+    assert!(issues.is_empty(), "{issues:?}");
+    assert_eq!(
+        artifacts.expression_types.get(&(start, start + 4)).map(|r#type| r#type.get_id().to_string()).as_deref(),
+        Some("int(5)|null")
+    );
+}
+
+/// A class value that may be null is refused before a member read, as PHP's `$type::MAX` throws "Cannot use null as
+/// class" when `$type` is null.
+#[test]
+fn a_member_read_through_a_class_value_that_may_be_null_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public const int MAX = 3;\n\n    public int read(bool flag)\n    {\n        const type = flag ? typeof(Report) : null;\n        return type.MAX;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public const int MAX = 3;\n\n    public function read(bool $flag): int\n    {\n        $type = $flag ? Report::class : null;\n        return $type::MAX;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+
+    assert_eq!(codes(&sharp_issues), codes(&issues(("src/Demo/Report.php", php), &[])));
+    assert_eq!(
+        messages(("src/Demo/Report.sharp", sharp), &[]),
+        ["Attempting static access on a possibly `null` value."]
+    );
+    assert_eq!(sharp_issues.len(), 1, "{sharp_issues:?}");
 }
 
 #[test]
@@ -1455,6 +1566,28 @@ fn exponentiation_has_the_type_it_has_in_php() {
 
     assert!(!php_issues.is_empty(), "{php_issues:?}");
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+/// Spec section 24 truncates `/` on two integers toward zero, so in PHP# it gives an `int`, as `/=` does on an `int`
+/// field. PHP gives `float|int`, which an `int` hook or field refuses.
+#[test]
+fn division_of_two_ints_gives_an_int_in_php_sharp_and_float_or_int_in_php() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    private int total = 7;\n\n    public int half => this.total / 2;\n\n    public int shrink(int by)\n    {\n        this.total /= by;\n        return this.total;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    private int $total = 7;\n\n    public int $half { get => $this->total / 2; }\n\n    public function shrink(int $by): int\n    {\n        $this->total /= $by;\n        return $this->total;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
+    assert_eq!(
+        issues(("src/Demo/Report.php", php), &[]),
+        ["9:31 invalid-return-statement", "13:25 invalid-property-assignment-value"]
+    );
+}
+
+/// A `float` operand keeps `/` a float division in PHP#, as spec section 24 says.
+#[test]
+fn division_with_a_float_operand_gives_a_float_in_php_sharp() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public float share(int total, float parts) => total / parts;\n\n    public int whole(int total, float parts) => total / parts;\n}\n";
+
+    assert_eq!(codes(&issues(("src/Demo/Report.sharp", sharp), &[])), ["invalid-return-statement"]);
 }
 
 #[test]
@@ -3280,16 +3413,13 @@ fn a_value_that_is_not_an_object_passed_to_an_object_is_an_invalid_argument() {
 }
 
 /// `for (const [k, v] of x)` reads the keys of a `Map`. A `List`'s indexes come from `entries()`, as spec section 12
-/// writes. PHP stores an all-digit string key as an `int`, so the key of a `Map<string, V>` reads back as
-/// `int|string`.
+/// writes. The key of a `Map<string, V>` reads back as a `string`, because the lowering casts a key PHP stored as an
+/// `int`.
 #[test]
-fn a_key_and_value_loop_reads_a_map_and_its_keys_as_php_stores_them() {
+fn a_key_and_value_loop_reads_a_map_and_its_keys_as_the_map_types_them() {
     let sharp = "namespace Demo;\n\nclass Loops\n{\n    public int run(List<int> sizes, Map<string, int> counts)\n    {\n        let total = 0;\n        for (const [index, size] of sizes) {\n            total += index + size;\n        }\n        for (const [name, count] of counts) {\n            total += strlen(name) + count;\n        }\n        return total;\n    }\n}\n";
 
-    assert_eq!(
-        issues(("src/Demo/Loops.sharp", sharp), &[]),
-        ["8:37 invalid-iterator", "12:29 possibly-invalid-argument"]
-    );
+    assert_eq!(issues(("src/Demo/Loops.sharp", sharp), &[]), ["8:37 invalid-iterator"]);
 }
 
 /// A `List` has `add`, `set`, `get` and `entries()`, and a `Map` has `delete` and `get`, each typed by the elements of
@@ -3526,50 +3656,48 @@ fn a_loop_over_a_map_keyed_by_a_backed_enum_reads_the_key_as_the_case_it_writes(
     assert_eq!(issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]), Vec::<String>::new());
 }
 
-/// The engine holds a backed enum key as its backing value, and the loop reads it back as the case only through a
-/// written key type that names the enum. A written type that cannot hold the case is refused once, as a typed local's.
+/// The engine holds a backed enum key as its backing value, and the lowering reads it back as the case from the
+/// `Map`'s key type, so a loop reads each key as its case with its type written or not. A written type that cannot
+/// hold the case is refused once, as a typed local's.
 #[test]
-fn a_loop_over_a_map_keyed_by_a_backed_enum_needs_the_key_type_written() {
-    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Tally\n{\n    public void read(Map<Status, int> counts)\n    {\n        for (const [status, n] of counts) {\n        }\n        for (const [Status? status, int n] of counts) {\n        }\n        for (const [string status, int n] of counts) {\n        }\n        for (const [Status status, string n] of counts) {\n        }\n    }\n}\n";
+fn a_loop_over_a_map_keyed_by_a_backed_enum_reads_each_key_as_its_case() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Tally\n{\n    public void read(Map<Status, int> counts)\n    {\n        for (const [status, n] of counts) {\n            this.weigh(status);\n        }\n        for (const [Status? status, int n] of counts) {\n        }\n        for (const [string status, int n] of counts) {\n        }\n        for (const [Status status, string n] of counts) {\n        }\n    }\n\n    private void weigh(Status status)\n    {\n    }\n}\n";
 
     assert_eq!(
         issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
-        [
-            "9:21 invalid-foreach-key",
-            "11:21 invalid-foreach-key",
-            "13:28 invalid-local-assignment-value",
-            "15:43 invalid-local-assignment-value",
-        ]
+        ["14:28 invalid-local-assignment-value", "16:43 invalid-local-assignment-value"]
     );
 }
 
-/// The message writes the loop over again with the enum's name, the value's type and the collection.
+/// A loop reads a backed enum key back through one enum's `from`, so a key type that mixes a backed enum with other
+/// types cannot be read back, written on the key or not.
 #[test]
-fn a_backed_key_without_its_type_names_the_loop_that_compiles() {
-    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Tally\n{\n    public void read(Map<Status, int> counts)\n    {\n        for (const [status, n] of counts) {\n        }\n    }\n}\n";
+fn a_loop_over_a_map_whose_keys_mix_a_backed_enum_with_other_types_is_an_error() {
+    let sharp = "namespace Demo;\n\nimport Lib.Size;\nimport Lib.Status;\n\nclass Tally\n{\n    public void read(Map<Status|Size, int> counts, Map<int|Status, int> totals, Map<Status, int> statuses)\n    {\n        for (const [key, n] of counts) {\n        }\n        for (const [key, n] of totals) {\n        }\n        for (const [key, n] of statuses) {\n        }\n    }\n}\n";
 
-    let issue =
-        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)])
-            .remove(0);
-
-    assert_eq!(issue.message, "A `Status` key needs its type written: `for (const [Status status, int n] of counts)`.");
+    assert_eq!(
+        messages(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
+        [
+            "The keys of `counts` mix a backed enum with other types, so the loop cannot read them back.",
+            "The keys of `totals` mix a backed enum with other types, so the loop cannot read them back.",
+        ]
+    );
+    assert_eq!(
+        issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
+        ["10:21 invalid-foreach-key", "12:21 invalid-foreach-key"]
+    );
 }
 
 /// A written key or value type checks as a typed local's does. Spec section 12 reads a `Map<string, V>` key back as a
-/// `string`, even the key `"5"` PHP stores as an int, so a key written `string` reads back through `(string)`. An
-/// unwritten key stays `int|string` until typed compilation casts it, and so does a key written `string?`, which
-/// nothing casts.
+/// `string`, even the key `"5"` PHP stores as an int, because the lowering casts every key of a `Map<string, V>` loop
+/// back to `string`, written or not.
 #[test]
 fn a_written_loop_variable_type_checks_as_a_typed_local_does() {
     let sharp = "namespace Demo;\n\nimport Lib.Line;\n\nclass Tally\n{\n    public void read(Map<string, int> stock, List<Line> lines)\n    {\n        for (const [int|string sku, int n] of stock) {\n        }\n        for (const [string sku, int n] of stock) {\n            this.reserve(sku);\n        }\n        for (const [sku, n] of stock) {\n            this.reserve(sku);\n        }\n        for (const [string? sku, int n] of stock) {\n        }\n        for (const Line line of lines) {\n        }\n        for (const int line of lines) {\n        }\n    }\n\n    private void reserve(string sku)\n    {\n    }\n}\n";
 
     assert_eq!(
         issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
-        [
-            "15:26 possibly-invalid-argument",
-            "17:29 invalid-local-assignment-value",
-            "21:24 invalid-local-assignment-value",
-        ]
+        ["21:24 invalid-local-assignment-value"]
     );
 }
 
@@ -3587,13 +3715,29 @@ fn a_list_spread_appends_into_a_list_literal() {
 /// A `Map` spread copies the entries with their keys, which needs the literal's type when it runs, so it waits for
 /// typed compilation. A plain PHP `array<string, int>` is a `Map`.
 #[test]
-fn a_map_spread_is_not_supported_yet() {
-    let sharp = "namespace Demo;\n\nimport Lib.Prices;\n\nclass Report\n{\n    public void merge(Map<string, int> defaults, Map<string, int> overrides)\n    {\n        const merged = [...defaults, ...overrides];\n        const rooted = [...defaults, \"root\": 0];\n        const named = [...Prices.named()];\n    }\n}\n";
+fn a_map_spread_keeps_every_key_of_the_map() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public Map<string, int> merge(Map<string, int> defaults, Map<string, int> overrides)\n    {\n        return [...defaults, \"root\": 0, ...overrides];\n    }\n\n    public Map<int, string> byId(Map<int, string> first, Map<int, string> second)\n    {\n        return [...first, ...second];\n    }\n}\n";
+    let (issues, artifacts) =
+        analyze_with_artifacts(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[]);
+    let type_at = |text: &str| {
+        let start = sharp.find(text).unwrap() as u32;
+        artifacts.expression_types.get(&(start, start + text.len() as u32)).map(|r#type| r#type.get_id().to_string())
+    };
 
+    assert!(issues.is_empty(), "{issues:?}");
     assert_eq!(
-        issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Prices.php", PRICES)]),
-        ["9:25 not-supported-yet", "10:25 not-supported-yet", "11:24 not-supported-yet"]
+        type_at("[...defaults, \"root\": 0, ...overrides]").as_deref(),
+        Some("array{'root': int, ...<string, int>}")
     );
+    assert_eq!(type_at("[...first, ...second]").as_deref(), Some("array<int, string>"));
+}
+
+/// PHP renumbers the int keys a spread brings in, so a PHP literal spreading an int-keyed array keeps its list type.
+#[test]
+fn a_php_spread_of_an_int_keyed_array_renumbers_its_keys() {
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    /**\n     * @param array<int, string> $first\n     * @param array<int, string> $second\n     * @return list<string>\n     */\n    public function byId(array $first, array $second): array\n    {\n        return [...$first, ...$second];\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
 }
 
 /// A literal is one collection, so a `List`'s values and a `Map`'s entries never share one.
@@ -3657,6 +3801,43 @@ fn the_inferred_type_arguments_of_a_generic_call_and_a_generic_new_are_recorded_
     assert!(issues.is_empty(), "{issues:?}");
     assert_eq!(type_arguments(call), ["int", "string"]);
     assert_eq!(type_arguments(instantiation), ["float"]);
+}
+
+/// The lowering reads the type of a property read's receiver to tell a property from a method value, so the analysis
+/// types the receiver when it already knows the property's type, as it does after a write or for a property of `this`.
+#[test]
+fn the_receiver_of_a_property_read_the_analysis_already_knows_is_typed() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public int count = 0;\n\n    public int total() => this.count + 1;\n\n    public int copy(Report other)\n    {\n        other.count = 2;\n        return other.count;\n    }\n}\n";
+    let this = sharp.find("this.count").unwrap() as u32;
+    let other = sharp.rfind("other.count").unwrap() as u32;
+
+    let (issues, artifacts) =
+        analyze_with_artifacts(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[]);
+    let receiver = |start: u32, name: &str| {
+        let span = (start, start + name.len() as u32);
+        artifacts.expression_types.get(&span).map(|r#type| r#type.get_id().to_string())
+    };
+
+    assert!(issues.is_empty(), "{issues:?}");
+    assert_eq!(receiver(this, "this"), Some("$this(Demo\\Report)".to_owned()));
+    assert_eq!(receiver(other, "other"), Some("Demo\\Report".to_owned()));
+}
+
+/// The lowering reads or calls a member by its kind, so a receiver that can be several classes needs the member to be
+/// one kind on all of them: a method on each, or a property on each. Each kind names its classes once.
+#[test]
+fn a_member_whose_kind_differs_across_the_receivers_classes_is_an_error() {
+    let sharp = "namespace Demo;\n\nimport Lib.Invoice;\nimport Lib.Order;\nimport Lib.Quote;\n\nclass Report\n{\n    public int run(Order|Invoice doc, Order|Quote|Invoice three)\n    {\n        const Function<int()> total = doc.total;\n        const Function<int()> again = three.total;\n        return doc.total();\n    }\n}\n";
+    let library = "<?php\n\nnamespace Lib;\n\nfinal class Order\n{\n    public function total(): int\n    {\n        return 1;\n    }\n}\n\nfinal class Quote\n{\n    public function total(): int\n    {\n        return 2;\n    }\n}\n\nfinal class Invoice\n{\n    /** @var \\Closure(): int */\n    public \\Closure $total;\n\n    public function __construct()\n    {\n        $this->total = fn (): int => 3;\n    }\n}\n";
+
+    assert_eq!(
+        messages(("src/Demo/Report.sharp", sharp), &[("src/Lib/Order.php", library)]),
+        [
+            "`doc.total` is a method on `Lib\\Order` but a property on `Lib\\Invoice`, so PHP# cannot tell how to read it.",
+            "`three.total` is a method on `Lib\\Order` and `Lib\\Quote` but a property on `Lib\\Invoice`, so PHP# cannot tell how to read it.",
+            "`doc.total()` calls a method on `Lib\\Order` but a function in a property on `Lib\\Invoice`, so PHP# cannot tell how to call it.",
+        ]
+    );
 }
 
 /// The type arguments of the call in the analyzed file, with `library` beside it.

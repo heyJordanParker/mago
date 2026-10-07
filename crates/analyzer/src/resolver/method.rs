@@ -303,6 +303,15 @@ where
             );
 
             for &method_name in &method_names {
+                // A PHP# call of a declared property holding a function runs it, ahead of the class's `__call`.
+                if let Some(classname) = obj_type.get_name()
+                    && !context.codebase.method_exists(classname.as_bytes(), method_name.as_bytes())
+                    && let Some(property) = resolve_called_property(context, block_context, classname, selector)
+                {
+                    result.called_properties.push(property);
+                    continue;
+                }
+
                 let resolved_methods = resolve_method_from_object(
                     context,
                     block_context,
@@ -351,10 +360,6 @@ where
                                     result.encountered_mixed |= has_incomplete_hierarchy;
                                 } else if has_incomplete_hierarchy {
                                     result.encountered_mixed = true;
-                                } else if let Some(property) =
-                                    resolve_called_property(context, block_context, classname, selector)
-                                {
-                                    result.called_properties.push(property);
                                 } else if let Some(collection) = display_sharp_collection(obj_type, context.codebase) {
                                     report_non_existent_collection_method(
                                         context,

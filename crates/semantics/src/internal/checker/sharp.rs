@@ -231,10 +231,11 @@ const ANY: &[u8] = b"Any";
 ///   `super.method(...)`, which calls the parent's method, and `Self.method(...)`, which calls a static method of the
 ///   class a static method is called on, each with positional, named and spread arguments, as in
 ///   `Money.sum(...prices)` and `max(...prices)`, `throw`, which is an expression as in PHP, `exit(code)` and
-///   `exit()`, which spec section 8 keeps as PHP 8.4's built-in function, and `typeof(X)`, without a member read or
-///   called on it, where `X` is the value of a local, a parameter or `this` in scope, as in PHP's `$order::class`, and
-///   otherwise a class written by its short name. `typeof(field)` is not supported yet. `new Self(...)` in an enum is
-///   an error, because an enum has no constructor. `Self.name` read or written is not supported yet, as `super.name` is not. PHP's own check reports a
+///   `exit()`, which spec section 8 keeps as PHP 8.4's built-in function, and `typeof(X)`, where `X` is the value of a
+///   local, a parameter or `this` in scope, as in PHP's `$order::class`, and otherwise a class written by its short
+///   name, whose members are the static members of the class it holds, as `check_member_access` says.
+///   `typeof(field)` is not supported yet. `new Self(...)` in an enum is an error, because an enum has no constructor.
+///   `Self.name` read or written is not supported yet, as `super.name` is not. PHP's own check reports a
 ///   positional argument after a spread and a spread after a named argument, and `check_function_call` reports
 ///   `assert` with a spread as its only argument, after which PHP adds a positional description. `?.` never follows a
 ///   class. A function is the global function of that name, PHP's own or one a library or the app declares, as spec
@@ -2883,7 +2884,8 @@ fn check_variable(variable: &Variable, context: &mut Context<'_, '_, '_>) {
 /// member name spans of the accesses it checks go into the context's `slice_members`, because each access has its own
 /// member name and an access's own span grows with the chain before it.
 ///
-/// A chain rooted at a class reaches its constants, enum cases and static members. One file cannot tell a full name,
+/// A chain rooted at a class reaches its constants, enum cases and static members, and one rooted at a class value,
+/// `typeof(X)` or a local holding one, reaches those of the class it holds. One file cannot tell a full name,
 /// `App.Status`, from a class and its member, `Status.Active`, so the analyzer reports a full name.
 fn check_member_access(object: &Expression, member: &ClassLikeMemberSelector, context: &mut Context<'_, '_, '_>) {
     if !context.slice_members.insert(member.span()) {
@@ -2896,19 +2898,6 @@ fn check_member_access(object: &Expression, member: &ClassLikeMemberSelector, co
     {
         context.slice_members.insert(name.span);
         root = property.object;
-    }
-
-    if let Expression::TypeOf(type_of) = root {
-        context.report(
-            Issue::error(format!(
-                "Reading a member of `typeof({})` is not supported yet.",
-                BytesDisplay(type_of.class.value())
-            ))
-            .with_annotation(
-                Annotation::primary(Span::between(object.span(), member.span())).with_message("Read here."),
-            )
-            .with_note("The engine runs `typeof(X)` as the class name `X::class`, which has no members yet."),
-        );
     }
 }
 

@@ -1,11 +1,11 @@
 #!/bin/sh
 # Counts the instructions the front end spends on a generated class of 10,000 and of 20,000 methods, as `.sharp`
-# through `sharp_lower` and as `.php` through the checker, and the instructions PHP's own compile spends on the `.php`
-# class through `php -l`. Each count is the "instructions retired" of `/usr/bin/time -l` on macOS, three runs each.
-# The first lines count each process on an empty file, the startup every later count includes. The `.sharp` class is
-# also counted stopped after parsing, after binding names and after the semantic checks, so each difference is one
-# pass, and `sharp_lower` adds the lowering. A third class, whose methods each read a constant, counts the lookup of
-# a bare name among the class's members.
+# through the checker, the analysis and `lower` and as `.php` through the checker, and the instructions PHP's own
+# compile spends on the `.php` class through `php -l`. Each count is the "instructions retired" of `/usr/bin/time -l`
+# on macOS, three runs each. The first lines count each process on an empty file, the startup every later count
+# includes, the prelude among it. The `.sharp` class is also counted stopped after parsing, after binding names and
+# after the semantic checks, so each difference is one pass, and `lower .sharp` adds the analysis and the lowering. A
+# third class, whose methods each read a constant, counts the lookup of a bare name among the class's members.
 #
 # A folder argument, such as Laravel's `src`, counts the checker and `php -l` on every `.php` file in it, each in one
 # process. Each command first runs once on its own, so a failing file stops the bench before any count.
@@ -36,7 +36,7 @@ count() {
 : > "$classes/Empty.sharp"
 echo "<?php" > "$classes/Empty.php"
 echo "empty file, the startup of each process:"
-count "sharp_lower .sharp:" "$front_end" "$classes/Empty.sharp"
+count "lower .sharp:" "$front_end" "$classes/Empty.sharp"
 count "front end .php:" "$front_end" "$classes/Empty.php"
 count "php -l .php:" php -l "$classes/Empty.php"
 
@@ -68,7 +68,7 @@ for argument in "$@"; do
     count "parse .sharp:" "$front_end" --until parse "$classes/Big$methods.sharp"
     count "+ names .sharp:" "$front_end" --until names "$classes/Big$methods.sharp"
     count "+ checks .sharp:" "$front_end" --until checks "$classes/Big$methods.sharp"
-    count "sharp_lower .sharp:" "$front_end" "$classes/Big$methods.sharp"
+    count "lower .sharp:" "$front_end" "$classes/Big$methods.sharp"
     count "front end .php:" "$front_end" "$classes/Big$methods.php"
     count "php -l .php:" php -l "$classes/Big$methods.php"
 
@@ -80,5 +80,5 @@ for argument in "$@"; do
     }' > "$classes/Constants$methods.sharp"
 
     echo "$methods methods that each read a constant:"
-    count "sharp_lower .sharp:" "$front_end" "$classes/Constants$methods.sharp"
+    count "lower .sharp:" "$front_end" "$classes/Constants$methods.sharp"
 done

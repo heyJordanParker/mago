@@ -19,8 +19,6 @@ use mago_reporting::Level;
 use mago_span::HasPosition;
 use mago_span::HasSpan;
 use mago_span::Span;
-use mago_syntax::cst::Access;
-use mago_syntax::cst::Call;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::Parenthesized;
@@ -193,7 +191,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
                 Expression::Construct(expr) => expr.analyze(context, block_context, artifacts),
                 Expression::Throw(expr) => expr.analyze(context, block_context, artifacts),
                 Expression::Clone(expr) => expr.analyze(context, block_context, artifacts),
-                Expression::Error(_) | Expression::Access(_) | Expression::Call(_) if is_refused(self) => {
+                Expression::Error(_) => {
                     artifacts.set_expression_type(&self, get_never());
 
                     Ok(())
@@ -594,21 +592,9 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Parenthesized<'arena> {
     }
 }
 
-/// Whether an error already refuses `expression`: it failed to parse, or it reads or calls a member of `typeof(X)`
-/// through any chain of property reads, which `check_slice` refuses. Its type is `never`, and it adds no issue.
-pub(crate) fn is_refused(expression: &Expression<'_>) -> bool {
-    let mut object = match expression {
-        Expression::Error(_) => return true,
-        Expression::Access(Access::Property(access)) => access.object,
-        Expression::Call(Call::Method(call)) => call.object,
-        _ => return false,
-    };
-
-    while let Expression::Access(Access::Property(access)) = object {
-        object = access.object;
-    }
-
-    matches!(object, Expression::TypeOf(_))
+/// Whether an error already refuses `expression`, because it failed to parse. Its type is `never`, and it adds no issue.
+pub(crate) const fn is_refused(expression: &Expression<'_>) -> bool {
+    matches!(expression, Expression::Error(_))
 }
 
 pub fn find_expression_logic_issues<'ctx, 'arena, A>(
