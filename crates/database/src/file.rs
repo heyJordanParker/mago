@@ -69,8 +69,9 @@ pub struct File {
     pub file_type: FileType,
 
     /// Whether the file is a PHP# source of the standard library: a `.sharp` file whose nearest `composer.json` names
-    /// the package `heyjordanparker/php-sharp-composer`, vendored or in the package's own repository. The loader sets
-    /// it, and only the library may declare native bodies and write `@`.
+    /// the standard library's Composer package, vendored or in the package's own repository. The loader sets it, only
+    /// the library may declare native bodies and write `@`, and `mago compile` lowers the library first and inlines its
+    /// forms into the other files.
     pub is_standard_library: bool,
 
     /// The contents of the file, if available.

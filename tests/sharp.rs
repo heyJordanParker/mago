@@ -295,7 +295,7 @@ fn analyze_fix_refuses_a_fix_that_would_edit_a_sharp_file() {
 
 /// The standard library's `Text`, with a native body, spec section 29, and the `@` the library writes before it throws
 /// its own exception.
-const TEXT: &str = "namespace Sharp.Text;\n\npublic static class Text\n{\n    public static extern string slug(string title);\n\n    public static string quiet(string title) => @trim(title);\n}\n";
+const TEXT: &str = "namespace Sharp.Text;\n\npublic static class Text\n{\n    public static extern string slug(string title);\n\n    public static string quiet(string title) => @trim(title);\n\n    public static string shout(string title) => strtoupper(title);\n}\n";
 
 /// The standard library's `Int`, `Float` and `Bool`, spec section 24, with the library's signatures. Their names are
 /// reserved, and only the standard library declares them.
@@ -388,6 +388,74 @@ fn compile_accepts_the_vendored_standard_librarys_extern_method_and_silence() {
     {
         assert!(directory.path().join(".sharp").join(compiled).is_file(), "{compiled}: {printed}");
     }
+}
+
+/// `mago compile` lowers the vendored library first, and a project file runs the library's one-call method as its
+/// body: `Text.shout(name)` compiles to `strtoupper($name)`.
+#[test]
+fn compile_inlines_a_vendored_library_form_into_a_project_caller() {
+    let directory = library_workspace(
+        "namespace App;\n\nimport Sharp.Text.Text;\n\npublic class Page\n{\n    public string title(string name) => Text.shout(name);\n}\n",
+    );
+
+    let output = run(directory.path(), "compile", &[]);
+    let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+
+    assert!(output.status.success(), "{printed}");
+    let page = std::fs::read(directory.path().join(".sharp/src/App/Page.sharpc")).unwrap();
+    assert!(page.windows(b"strtoupper".len()).any(|window| window == b"strtoupper"), "the form is inlined");
+}
+
+/// In the standard library's own repository, whose root `composer.json` names the package, `library/Sharp/` is the
+/// library: its `extern` method and its `@` compile, and a file of another package in the same repository inlines its
+/// one-call method. That package is still a project, so its own `extern` method under `Sharp` is refused.
+#[test]
+fn compile_treats_the_standard_librarys_own_repository_as_the_library() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    write(root, "mago.toml", "php-version = \"8.4\"\n");
+    write_library(root);
+    write(root, "example/composer.json", "{\n    \"name\": \"acme/example\"\n}\n");
+    write(
+        root,
+        "example/App/Title.sharp",
+        "namespace App;\n\nimport Sharp.Text.Text;\n\npublic class Title\n{\n    public string of(string name) => Text.shout(name);\n}\n",
+    );
+    write(
+        root,
+        "example/App/Native.sharp",
+        "namespace Sharp.Example;\n\npublic static class Native\n{\n    public static extern string run(string value);\n}\n",
+    );
+
+    let output = run(root, "compile", &[]);
+    let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+
+    assert_eq!(output.status.code(), Some(1), "{printed}");
+    assert!(printed.contains("Compiled 5 PHP# files into .sharp/. 1 PHP# file was refused"), "{printed}");
+    assert!(root.join(".sharp/library/Sharp/Text/Text.sharpc").is_file(), "{printed}");
+    let title = std::fs::read(root.join(".sharp/example/App/Title.sharpc")).unwrap();
+    assert!(title.windows(b"strtoupper".len()).any(|window| window == b"strtoupper"), "the form is inlined");
+    assert!(!root.join(".sharp/example/App/Native.sharpc").exists(), "{printed}");
+    assert!(printed.contains("native-body-outside-library"), "{printed}");
+    assert!(!printed.contains("silence-outside-library"), "{printed}");
+}
+
+/// Without a `composer.json` that names the package, `library/Sharp/` is project code: its `extern` method and its `@`
+/// are refused.
+#[test]
+fn compile_refuses_extern_and_silence_under_library_sharp_without_the_librarys_composer_json() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    write(root, "mago.toml", "php-version = \"8.4\"\n");
+    write(root, "library/Sharp/Text/Text.sharp", TEXT);
+
+    let output = run(root, "compile", &[]);
+    let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+
+    assert_eq!(output.status.code(), Some(1), "{printed}");
+    assert!(!root.join(".sharp/library/Sharp/Text/Text.sharpc").exists(), "{printed}");
+    assert!(printed.contains("native-body-outside-library"), "{printed}");
+    assert!(printed.contains("silence-outside-library"), "{printed}");
 }
 
 #[test]

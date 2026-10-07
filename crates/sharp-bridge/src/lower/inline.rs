@@ -1,9 +1,8 @@
 //! Inline forms: a standard library method whose body is one expression runs at its call as that expression, with
 //! the call's receiver and arguments in the expression's slots, the way a compiler inlines a one-line method.
 //!
-//! The orchestrator passes [`inline_forms`] only the standard library's files, under
-//! `vendor/heyjordanparker/php-sharp-composer/`, and lowers each of them with an empty [`InlineForms`], so in v1 one
-//! library form never inlines another.
+//! The orchestrator takes forms only from the standard library's files, those `File::is_standard_library` marks, and
+//! lowers each of them with an empty [`InlineForms`], so in v1 one library form never inlines another.
 
 use std::collections::HashMap;
 
