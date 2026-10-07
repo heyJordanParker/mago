@@ -139,6 +139,8 @@ pub struct ReportingArgs {
     /// Available formats: rich (colorful, detailed), medium (balanced),
     /// short (compact), json (machine-readable), and others.
     ///
+    /// Defaults to the format `MAGO_REPORTING_FORMAT` names, which `mago compile` follows too.
+    ///
     /// Not available when using --fix mode.
     #[arg(
         long,
@@ -239,8 +241,18 @@ impl ReportingArgs {
     }
 }
 
-/// Returns the default reporting format based on the detected environment.
+/// The variable that names the reporting format, ahead of the one the environment suggests.
+const ENV_REPORTING_FORMAT: &str = "MAGO_REPORTING_FORMAT";
+
+/// Returns the reporting format `MAGO_REPORTING_FORMAT` names, or else the default for the detected environment.
 pub(crate) fn default_reporting_format() -> ReportingFormat {
+    if let Ok(name) = std::env::var(ENV_REPORTING_FORMAT) {
+        match name.to_ascii_lowercase().parse() {
+            Ok(format) => return format,
+            Err(_) => tracing::warn!("{ENV_REPORTING_FORMAT}={name} is not a reporting format, so it is ignored."),
+        }
+    }
+
     if is_github_actions() {
         ReportingFormat::Github
     } else if is_gitlab_ci() {

@@ -20,6 +20,16 @@ Values: `trace`, `debug`, `info`, `warn`, `error`.
 MAGO_LOG=trace mago lint
 ```
 
+### `MAGO_REPORTING_FORMAT`
+
+The reporting format, when no `--reporting-format` flag names one. It wins over the format Mago picks for GitHub Actions, GitLab CI and AI agents, and `mago compile` follows it too.
+
+Values: the `--reporting-format` values, such as `rich`, `emacs` or `json`.
+
+```sh
+MAGO_REPORTING_FORMAT=json mago compile
+```
+
 ### `NO_COLOR`
 
 Set to anything truthy to disable all coloured output. Follows the [no-color.org](https://no-color.org/) convention.
