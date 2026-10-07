@@ -779,9 +779,15 @@ fn handle_variadic_array_element<'arena, A>(
                 continue;
             }
 
+            // A PHP# `Map` keyed by a backed enum holds each key as its backing value.
+            let stored_key_type = if context.dialect.is_sharp() {
+                get_backing_key_type(&key_type, context.codebase)
+            } else {
+                Cow::Borrowed(&*key_type)
+            };
             let is_string_key = union_comparator::is_contained_by(
                 context.codebase,
-                &key_type,
+                &stored_key_type,
                 &get_string(),
                 false,
                 false,
@@ -792,7 +798,7 @@ fn handle_variadic_array_element<'arena, A>(
             let is_array_key_key = is_string_key
                 || union_comparator::is_contained_by(
                     context.codebase,
-                    &key_type,
+                    &stored_key_type,
                     &get_arraykey(),
                     false,
                     false,

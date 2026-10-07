@@ -1734,15 +1734,15 @@ fn a_list_or_map_type_is_the_array_type() {
 }
 
 /// ```php
-/// $counts = [\Lib\Calc::Active => 1];
-/// $counts[\Lib\Calc::Closed] = 2;
-/// return $counts[\Lib\Calc::Active] ?? 0;
+/// $counts = [\Lib\Calc::Active->value => 1];
+/// $counts[\Lib\Calc::Closed->value] = 2;
+/// return $counts[\Lib\Calc::Active->value] ?? 0;
 /// ```
 ///
-/// A `Map` keyed by a backed enum lowers as any `Map` does. The engine stores each case as its backing value, because
-/// `ext/sharp` marks every PHP# index and literal.
+/// A `Map` keyed by a backed enum holds each key as its backing value, so a case going in as a key, in a literal or
+/// an index, is its `->value`.
 #[test]
-fn a_map_keyed_by_a_backed_enum_lowers_as_any_map() {
+fn a_backed_enum_key_goes_into_a_map_as_its_backing_value() {
     assert_eq!(
         body_in(
             RUN,
@@ -1757,26 +1757,65 @@ fn a_map_keyed_by_a_backed_enum_lowers_as_any_map() {
                 ARRAY [3]
                   ARRAY_ELEM
                     ZVAL 1
-                    CLASS_CONST
-                      ZVAL "Lib\\Calc"
-                      ZVAL "Active"
+                    PROP
+                      CLASS_CONST
+                        ZVAL "Lib\\Calc"
+                        ZVAL "Active"
+                      ZVAL "value"
               ASSIGN
                 DIM
                   VAR
                     ZVAL "counts"
-                  CLASS_CONST
-                    ZVAL "Lib\\Calc"
-                    ZVAL "Closed"
+                  PROP
+                    CLASS_CONST
+                      ZVAL "Lib\\Calc"
+                      ZVAL "Closed"
+                    ZVAL "value"
                 ZVAL 2
               RETURN
                 COALESCE
                   DIM
                     VAR
                       ZVAL "counts"
-                    CLASS_CONST
-                      ZVAL "Lib\\Calc"
-                      ZVAL "Active"
+                    PROP
+                      CLASS_CONST
+                        ZVAL "Lib\\Calc"
+                        ZVAL "Active"
+                      ZVAL "value"
                   ZVAL 0
+        "#}
+    );
+}
+
+/// ```php
+/// return \array_replace($defaults, [\Lib\Calc::Active->value => 1]);
+/// ```
+///
+/// The entries a `Map` spread's `\array_replace` takes put a backed enum key in as its backing value too.
+#[test]
+fn a_backed_enum_key_beside_a_map_spread_goes_in_as_its_backing_value() {
+    assert_eq!(
+        body_in(
+            "Map<Calc, int> run(Map<Calc, int> defaults)",
+            "        return [...defaults, Calc.Active: 1];\n",
+            &[("src/Lib/Calc.php", "<?php namespace Lib; enum Calc: string { case Active = 'a'; case Closed = 'c'; }")]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CALL
+                  ZVAL "array_replace"
+                  ARG_LIST
+                    VAR
+                      ZVAL "defaults"
+                    ARRAY [3]
+                      ARRAY_ELEM
+                        ZVAL 1
+                        PROP
+                          CLASS_CONST
+                            ZVAL "Lib\\Calc"
+                            ZVAL "Active"
+                          ZVAL "value"
         "#}
     );
 }

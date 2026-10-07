@@ -1281,7 +1281,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             Expression::Array(array) => self.array(array),
             Expression::ArrayAccess(access) => {
                 let value = self.expression(access.array);
-                let key = self.expression(access.index);
+                let key = self.key(access.index);
 
                 self.node(SHARP_AST_DIM, 0, line, &[value, key])
             }
@@ -1616,13 +1616,27 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let (kind, value_and_key) = match element {
             ArrayElement::Value(element) => (SHARP_AST_ARRAY_ELEM, vec![self.expression(element.value), NULL]),
             ArrayElement::KeyValue(element) => {
-                (SHARP_AST_ARRAY_ELEM, vec![self.expression(element.value), self.expression(element.key)])
+                (SHARP_AST_ARRAY_ELEM, vec![self.expression(element.value), self.key(element.key)])
             }
             ArrayElement::Variadic(element) => (SHARP_AST_UNPACK, vec![self.expression(element.value)]),
             ArrayElement::Missing(_) => unreachable!("check_slice refuses a missing literal element"),
         };
 
         self.node(kind, 0, self.line(element), &value_and_key)
+    }
+
+    /// A key going into a `Map`, in a literal or an index. A `Map` keyed by a backed enum holds each case as its
+    /// backing value, so a case goes in as its `->value`.
+    fn key(&mut self, key: &Expression) -> u32 {
+        let lowered = self.expression(key);
+        if !self.types.is_backed_enum(self.types.expression_type(key)) {
+            return lowered;
+        }
+
+        let line = self.line(key);
+        let value = self.string(0, line, b"value");
+
+        self.node(SHARP_AST_PROP, 0, line, &[lowered, value])
     }
 
     /// Whether `element` spreads a `Map`, which keeps its keys where PHP's `...` renumbers int keys.
@@ -1718,7 +1732,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             },
             Expression::ArrayAccess(access) => {
                 let value = self.target(access.array);
-                let key = self.expression(access.index);
+                let key = self.key(access.index);
 
                 self.node(SHARP_AST_DIM, 0, self.line(target), &[value, key])
             }

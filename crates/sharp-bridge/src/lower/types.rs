@@ -127,6 +127,18 @@ impl<'analysis> Types<'analysis> {
             })
     }
 
+    /// Whether every value of `r#type` is a case of a backed enum, which a `Map` holds as a key by its backing value.
+    pub(crate) fn is_backed_enum(&self, r#type: &TUnion) -> bool {
+        !r#type.types.is_empty()
+            && r#type.types.iter().all(|atomic| match atomic {
+                TAtomic::Object(TObject::Enum(r#enum)) => self
+                    .codebase
+                    .get_class_like(r#enum.name.as_bytes())
+                    .is_some_and(|metadata| metadata.enum_type.is_some()),
+                _ => false,
+            })
+    }
+
     /// The kind of the property `class` declares by that name, if any.
     fn property_kind(&self, class: &[u8], property: &[u8]) -> Option<DeclarationKind> {
         let property = self.codebase.get_declaring_property(class, &[b"$", property].concat())?;
