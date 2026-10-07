@@ -2340,6 +2340,13 @@ fn a_type_argument_takes_a_question_mark_in_a_field() {
 }
 
 #[test]
+fn a_type_argument_takes_a_question_mark_in_a_signature_and_a_local() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public List<Calc?> run(List<Order?> orders, Map<string, List<int?>> sizes, Any value)\n    {\n        List<Calc?> calcs = [];\n        Map<string, int?> prices = [:];\n        List<(int|string)?> keys = [];\n        const List<int?> counts = [];\n        Function<int?(List<string?>)> first = (List<string?> names) => null;\n        const listed = value as List<int?>;\n        return calcs;\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
 fn an_interface_method_takes_and_returns_list_and_map_types() {
     let code = "interface Grouped\n{\n    List<int> sizes(Map<string, List<int>> groups);\n\n    Map<float, int> rounded();\n}\n";
 

@@ -16,6 +16,7 @@ use mago_syntax::cst::PartialArgument;
 use mago_syntax::cst::Sequence;
 use mago_syntax::cst::UnaryPrefix;
 use mago_syntax::cst::UnaryPrefixOperator;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_word::Word;
 use mago_word::word;
 
@@ -92,7 +93,7 @@ where
         _ => None,
     };
 
-    match expression {
+    ensure_sufficient_stack(|| match expression {
         Expression::Parenthesized(parenthesized) => evaluate(context, parenthesized.expression, enclosing_class),
         Expression::Literal(Literal::Null(_)) => ConstantExpression::Null,
         Expression::Literal(Literal::True(_)) => ConstantExpression::Bool(true),
@@ -174,7 +175,7 @@ where
             ConstantExpression::New(class, arguments)
         }
         _ => unsupported(),
-    }
+    })
 }
 
 #[inline]
