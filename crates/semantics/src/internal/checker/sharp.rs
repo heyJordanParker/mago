@@ -588,6 +588,8 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
             Some(place)
         }
+        // A collection type's arguments are checked where the collection type is.
+        (Node::TypeArgumentList(_), FieldOrProperty | Method | Signature | Parameter | Body) => Some(place),
         // A function type's parts are checked as a parameter's type is, so its return type may be `void`, which
         // `is_slice_type` refuses for its parameters, and `Self` in it is an error, because `Self` is a method's return
         // type only.

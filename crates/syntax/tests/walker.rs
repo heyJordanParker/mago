@@ -75,3 +75,28 @@ fn the_walker_enters_every_node_visit_children_reaches() {
 
     assert_eq!(parsed, 469, "the number of sources without a parse error");
 }
+
+/// The walker enters every type parameter list, type parameter, bound and type argument list of `GENERICS`: one list
+/// on the interface, the class and the method each, and the type arguments of `List<T>`, `new`, `decode`, `find` and the
+/// `Map` and `List` inside `find`'s.
+#[test]
+fn the_walker_enters_every_type_parameter_and_type_argument_list() {
+    let arena = LocalArena::new();
+    let file = File::ephemeral(Cow::Borrowed(b"src/Generics.sharp"), Cow::Borrowed(GENERICS.as_bytes()));
+    let program = parse_file(&arena, &file);
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+
+    let mut walked = HashSet::new();
+    Entering.walk_program(program, &mut walked);
+    let count = |kind: NodeKind| walked.iter().filter(|(entered, _, _)| *entered == kind).count();
+
+    assert_eq!(
+        [
+            count(NodeKind::TypeParameterList),
+            count(NodeKind::TypeParameter),
+            count(NodeKind::TypeParameterBound),
+            count(NodeKind::TypeArgumentList),
+        ],
+        [3, 4, 1, 6]
+    );
+}

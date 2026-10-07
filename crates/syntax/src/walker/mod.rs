@@ -227,7 +227,11 @@ use crate::cst::cst::TraitUseSpecification;
 use crate::cst::cst::Try;
 use crate::cst::cst::TryCatchClause;
 use crate::cst::cst::TryFinallyClause;
+use crate::cst::cst::TypeArgumentList;
 use crate::cst::cst::TypeOf;
+use crate::cst::cst::TypeParameter;
+use crate::cst::cst::TypeParameterBound;
+use crate::cst::cst::TypeParameterList;
 use crate::cst::cst::TypePattern;
 use crate::cst::cst::TypedUseItemList;
 use crate::cst::cst::TypedUseItemSequence;
@@ -732,6 +736,10 @@ generate_ast_walker! {
 
         walker.walk_keyword(&class.class, context);
         walker.walk_local_identifier(&class.name, context);
+        if let Some(type_parameters) = &class.type_parameters {
+            walker.walk_type_parameter_list(type_parameters, context);
+        }
+
         if let Some(extends) = &class.extends {
             walker.walk_extends(extends, context);
         }
@@ -760,6 +768,9 @@ generate_ast_walker! {
 
         walker.walk_keyword(&interface.interface, context);
         walker.walk_local_identifier(&interface.name, context);
+        if let Some(type_parameters) = &interface.type_parameters {
+            walker.walk_type_parameter_list(type_parameters, context);
+        }
 
         if let Some(extends) = &interface.extends {
             walker.walk_extends(extends, context);
@@ -1207,6 +1218,10 @@ generate_ast_walker! {
             }
 
             walker.walk_local_identifier(&method.name, context);
+            if let Some(type_parameters) = &method.type_parameters {
+                walker.walk_type_parameter_list(type_parameters, context);
+            }
+
             walker.walk_function_like_parameter_list(&method.parameter_list, context);
         }
 
@@ -2445,12 +2460,20 @@ generate_ast_walker! {
     'arena MethodCall as method_call => {
         walker.walk_expression(method_call.object, context);
         walker.walk_class_like_member_selector(&method_call.method, context);
+        if let Some(type_arguments) = &method_call.type_arguments {
+            walker.walk_type_argument_list(type_arguments, context);
+        }
+
         walker.walk_argument_list(&method_call.argument_list, context);
     }
 
     'arena NullSafeMethodCall as null_safe_method_call => {
         walker.walk_expression(null_safe_method_call.object, context);
         walker.walk_class_like_member_selector(&null_safe_method_call.method, context);
+        if let Some(type_arguments) = &null_safe_method_call.type_arguments {
+            walker.walk_type_argument_list(type_arguments, context);
+        }
+
         walker.walk_argument_list(&null_safe_method_call.argument_list, context);
     }
 
@@ -2589,6 +2612,10 @@ generate_ast_walker! {
     'arena Instantiation as instantiation => {
         walker.walk_keyword(&instantiation.new, context);
         walker.walk_expression(instantiation.class, context);
+        if let Some(type_arguments) = &instantiation.type_arguments {
+            walker.walk_type_argument_list(type_arguments, context);
+        }
+
         if let Some(argument_list) = &instantiation.argument_list {
             walker.walk_argument_list(argument_list, context);
         }
@@ -2657,9 +2684,34 @@ generate_ast_walker! {
 
     'arena GenericHint as generic_hint => {
         walker.walk_local_identifier(&generic_hint.name, context);
-        for argument in &generic_hint.type_arguments.arguments {
+        walker.walk_type_argument_list(&generic_hint.type_arguments, context);
+    }
+
+    'arena TypeArgumentList as type_argument_list => {
+        for argument in &type_argument_list.arguments {
             walker.walk_hint(argument, context);
         }
+    }
+
+    'arena TypeParameterList as type_parameter_list => {
+        for parameter in &type_parameter_list.parameters {
+            walker.walk_type_parameter(parameter, context);
+        }
+    }
+
+    'arena TypeParameter as type_parameter => {
+        if let Some(variance) = &type_parameter.variance {
+            walker.walk_keyword(variance, context);
+        }
+
+        walker.walk_local_identifier(&type_parameter.name, context);
+        if let Some(bound) = &type_parameter.bound {
+            walker.walk_type_parameter_bound(bound, context);
+        }
+    }
+
+    'arena TypeParameterBound as type_parameter_bound => {
+        walker.walk_hint(&type_parameter_bound.hint, context);
     }
 
     'arena FunctionHint as function_hint => {

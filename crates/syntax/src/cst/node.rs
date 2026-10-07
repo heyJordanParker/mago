@@ -233,7 +233,11 @@ use crate::cst::cst::TraitUseSpecification;
 use crate::cst::cst::Try;
 use crate::cst::cst::TryCatchClause;
 use crate::cst::cst::TryFinallyClause;
+use crate::cst::cst::TypeArgumentList;
 use crate::cst::cst::TypeOf;
+use crate::cst::cst::TypeParameter;
+use crate::cst::cst::TypeParameterBound;
+use crate::cst::cst::TypeParameterList;
 use crate::cst::cst::TypePattern;
 use crate::cst::cst::TypedUseItemList;
 use crate::cst::cst::TypedUseItemSequence;
@@ -494,6 +498,10 @@ pub enum NodeKind {
     NullableHint,
     GenericHint,
     FunctionHint,
+    TypeArgumentList,
+    TypeParameterList,
+    TypeParameter,
+    TypeParameterBound,
     ParenthesizedHint,
     UnionHint,
     Unset,
@@ -759,6 +767,10 @@ pub enum Node<'ast, 'arena> {
     NullableHint(&'ast NullableHint<'arena>),
     GenericHint(&'ast GenericHint<'arena>),
     FunctionHint(&'ast FunctionHint<'arena>),
+    TypeArgumentList(&'ast TypeArgumentList<'arena>),
+    TypeParameterList(&'ast TypeParameterList<'arena>),
+    TypeParameter(&'ast TypeParameter<'arena>),
+    TypeParameterBound(&'ast TypeParameterBound<'arena>),
     ParenthesizedHint(&'ast ParenthesizedHint<'arena>),
     UnionHint(&'ast UnionHint<'arena>),
     Unset(&'ast Unset<'arena>),
@@ -1100,6 +1112,10 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Self::NullableHint(_) => NodeKind::NullableHint,
             Self::GenericHint(_) => NodeKind::GenericHint,
             Self::FunctionHint(_) => NodeKind::FunctionHint,
+            Self::TypeArgumentList(_) => NodeKind::TypeArgumentList,
+            Self::TypeParameterList(_) => NodeKind::TypeParameterList,
+            Self::TypeParameter(_) => NodeKind::TypeParameter,
+            Self::TypeParameterBound(_) => NodeKind::TypeParameterBound,
             Self::ParenthesizedHint(_) => NodeKind::ParenthesizedHint,
             Self::UnionHint(_) => NodeKind::UnionHint,
             Self::Unset(_) => NodeKind::Unset,
@@ -1263,11 +1279,17 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Node::MethodCall(node) => {
                 f(Node::Expression(node.object));
                 f(Node::ClassLikeMemberSelector(&node.method));
+                for item in node.type_arguments.iter() {
+                    f(Node::TypeArgumentList(item));
+                }
                 f(Node::ArgumentList(&node.argument_list));
             }
             Node::NullSafeMethodCall(node) => {
                 f(Node::Expression(node.object));
                 f(Node::ClassLikeMemberSelector(&node.method));
+                for item in node.type_arguments.iter() {
+                    f(Node::TypeArgumentList(item));
+                }
                 f(Node::ArgumentList(&node.argument_list));
             }
             Node::StaticMethodCall(node) => {
@@ -1393,6 +1415,9 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                         f(Node::FunctionLikeReturnTypeHint(item));
                     }
                     f(Node::LocalIdentifier(&node.name));
+                    for item in node.type_parameters.iter() {
+                        f(Node::TypeParameterList(item));
+                    }
                     f(Node::FunctionLikeParameterList(&node.parameter_list));
                 }
                 f(Node::MethodBody(&node.body));
@@ -1611,6 +1636,9 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 }
                 f(Node::Keyword(&node.class));
                 f(Node::LocalIdentifier(&node.name));
+                for item in node.type_parameters.iter() {
+                    f(Node::TypeParameterList(item));
+                }
                 for item in node.extends.iter() {
                     f(Node::Extends(item));
                 }
@@ -1658,6 +1686,9 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 }
                 f(Node::Keyword(&node.interface));
                 f(Node::LocalIdentifier(&node.name));
+                for item in node.type_parameters.iter() {
+                    f(Node::TypeParameterList(item));
+                }
                 for item in node.extends.iter() {
                     f(Node::Extends(item));
                 }
@@ -2200,6 +2231,9 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Node::Instantiation(node) => {
                 f(Node::Keyword(&node.new));
                 f(Node::Expression(node.class));
+                for item in node.type_arguments.iter() {
+                    f(Node::TypeArgumentList(item));
+                }
 
                 if let Some(argument_list) = &node.argument_list {
                     f(Node::ArgumentList(argument_list));
@@ -2649,10 +2683,28 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             },
             Node::GenericHint(node) => {
                 f(Node::LocalIdentifier(&node.name));
-                for argument in node.type_arguments.arguments.iter() {
+                f(Node::TypeArgumentList(&node.type_arguments));
+            }
+            Node::TypeArgumentList(node) => {
+                for argument in node.arguments.iter() {
                     f(Node::Hint(argument));
                 }
             }
+            Node::TypeParameterList(node) => {
+                for parameter in node.parameters.iter() {
+                    f(Node::TypeParameter(parameter));
+                }
+            }
+            Node::TypeParameter(node) => {
+                for variance in node.variance.iter() {
+                    f(Node::Keyword(variance));
+                }
+                f(Node::LocalIdentifier(&node.name));
+                for bound in node.bound.iter() {
+                    f(Node::TypeParameterBound(bound));
+                }
+            }
+            Node::TypeParameterBound(node) => f(Node::Hint(&node.hint)),
             Node::FunctionHint(node) => {
                 f(Node::Keyword(&node.function));
                 f(Node::Hint(node.return_type));
@@ -2954,6 +3006,10 @@ impl HasSpan for Node<'_, '_> {
             Self::NullableHint(node) => node.span(),
             Self::GenericHint(node) => node.span(),
             Self::FunctionHint(node) => node.span(),
+            Self::TypeArgumentList(node) => node.span(),
+            Self::TypeParameterList(node) => node.span(),
+            Self::TypeParameter(node) => node.span(),
+            Self::TypeParameterBound(node) => node.span(),
             Self::ParenthesizedHint(node) => node.span(),
             Self::UnionHint(node) => node.span(),
             Self::Unset(node) => node.span(),

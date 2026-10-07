@@ -408,7 +408,7 @@ impl Registration {
             Arc::from(self.class_like_analysis_hooks.clone().into_boxed_slice());
         any |= !class_like_hooks.is_empty();
 
-        any.then(|| NodeAnalysisRequirements::new(targets, requirements, method_call_hooks, class_like_hooks))
+        any.then(|| NodeAnalysisRequirements::new(&targets, &requirements, method_call_hooks, class_like_hooks))
     }
 }
 
@@ -547,15 +547,21 @@ pub struct NodeAnalysisRequirements {
 
 impl NodeAnalysisRequirements {
     fn new(
-        targets: [bool; NodeKind::COUNT],
-        requirements: [u8; NodeKind::COUNT],
+        targets: &[bool; NodeKind::COUNT],
+        requirements: &[u8; NodeKind::COUNT],
         method_call_hooks: Arc<[MethodCallAnalysisHookRegistration]>,
         class_like_hooks: Arc<[ClassLikeAnalysisHookRegistration]>,
     ) -> Self {
         let variable_definedness_targets =
-            Self::create_variable_definedness_targets(&requirements, &method_call_hooks, &class_like_hooks);
+            Self::create_variable_definedness_targets(requirements, &method_call_hooks, &class_like_hooks);
 
-        Self { targets, requirements, method_call_hooks, class_like_hooks, variable_definedness_targets }
+        Self {
+            targets: *targets,
+            requirements: *requirements,
+            method_call_hooks,
+            class_like_hooks,
+            variable_definedness_targets,
+        }
     }
 
     #[inline]
@@ -1683,7 +1689,7 @@ impl<T> ExternalAnalyzer<T> {
             .into();
         any |= !class_like_hooks.is_empty();
 
-        any.then(|| NodeAnalysisRequirements::new(targets, requirements, method_call_hooks, class_like_hooks))
+        any.then(|| NodeAnalysisRequirements::new(&targets, &requirements, method_call_hooks, class_like_hooks))
     }
 }
 
