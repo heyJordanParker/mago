@@ -144,6 +144,18 @@ fn every_text_of_a_lowered_unit_is_an_offset_into_its_texts() {
 }
 
 #[test]
+fn an_absent_input_reads_back_as_an_all_zero_stamp_that_no_existing_file_has() {
+    let absent = Input { path: b"composer.lock".to_vec(), size: 0, mtime_ns: 0, hash: [0; 16] };
+
+    let decoded = Decoded::new(&encode(&lowered(SOURCE), SOURCE.as_bytes(), KEY, &[absent], FACTS));
+
+    let [input] = decoded.inputs[..] else { panic!("one input: {:?}", decoded.inputs.len()) };
+    assert_eq!(decoded.text(input.path), b"composer.lock");
+    assert_eq!((input.size, input.mtime_ns, input.hash), (0, 0, [0; 16]));
+    assert_ne!(source_hash(b""), [0; 16], "an empty file that exists is never stamped as absent");
+}
+
+#[test]
 fn a_compiled_file_reads_back_through_the_c_layout() {
     let lowered = lowered(SOURCE);
     let decoded = Decoded::new(&encode(&lowered, SOURCE.as_bytes(), KEY, &inputs(), FACTS));
