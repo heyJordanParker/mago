@@ -7226,7 +7226,9 @@ fn a_fully_qualified_null_true_or_false_in_a_library_body_is_refused() {
         let library = format!(
             "namespace Sharp;\n\npublic class Padding\n{{\n    public static Any? tail(Any? value) => {value};\n}}\n"
         );
-        let refusal = common::checked(PADDING.0, &library, &[], inline_forms).map(|_| ()).unwrap_err();
+        let refusal = common::checked(PADDING.0, &library, &[], inline_forms)
+            .map(|_| ())
+            .expect_err("PHP# refuses a `\\` name in a library body");
 
         assert_eq!(refusal.len(), 1, "{refusal:?}");
         assert!(refusal[0].contains("parse error: A `\\` name is PHP syntax"), "{refusal:?}");
