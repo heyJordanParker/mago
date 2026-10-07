@@ -263,25 +263,52 @@ fn a_return_taken_from_the_body_reaches_callers_and_follows_body_edits() {
     assert_eq!(edited, fresh, "incremental analysis after a body edit matches a fresh analysis");
 }
 
-const SHARP_CONSUMER: &str = r"namespace Proof;
+/// A refined class whose `make` returns what the `make` of class `inner` returns, which the worker takes from its body.
+/// Only the body names `inner`, so no signature edge leads from this class to it.
+fn relay(class: &str, inner: &str) -> String {
+    let arguments = if inner == "Factory" { "new Box(new Special()), new Box(new Spec())" } else { "" };
+    format!(
+        r"<?php
 
-public class SharpConsumer
-{
-    public Box unwrap(Factory factory)
-    {
-        return factory.make();
-    }
+namespace Proof;
+
+#[Refined]
+final class {class}
+{{
+    public function make(): Box
+    {{
+        return (new {inner}({arguments}))->make();
+    }}
+}}
+"
+    )
 }
-";
 
-/// The key and input paths of `src/SharpConsumer.sharp` compiled beside a factory whose `make` returns `$this->{returned}`.
-fn compiled_consumer(repository: &Path, returned: &str) -> ([u8; 16], Vec<Vec<u8>>) {
+/// The key and input paths of `src/SharpConsumer.sharp`, which returns what the `make` of class `read` returns,
+/// compiled beside a factory whose `make` returns `$this->{returned}` and each relay class with the class it reads.
+fn compiled_consumer(
+    repository: &Path,
+    returned: &str,
+    relays: &[(&str, &str)],
+    read: &str,
+) -> ([u8; 16], Vec<String>) {
     let (mut database, _) = factory_database(returned);
+    for (class, inner) in relays {
+        database.add(File::new(
+            Cow::Owned(format!("src/{class}.php").into_bytes()),
+            FileType::Host,
+            None,
+            Cow::Owned(relay(class, inner).into_bytes()),
+        ));
+    }
+    let consumer = format!(
+        "namespace Proof;\n\npublic class SharpConsumer\n{{\n    public Box unwrap({read} source)\n    {{\n        return source.make();\n    }}\n}}\n"
+    );
     database.add(File::new(
         Cow::Borrowed(b"src/SharpConsumer.sharp"),
         FileType::Host,
         None,
-        Cow::Borrowed(SHARP_CONSUMER.as_bytes()),
+        Cow::Owned(consumer.into_bytes()),
     ));
     let mut incremental = service(&database, registry(repository));
     incremental.analyze().expect("body return analysis should succeed");
@@ -289,7 +316,7 @@ fn compiled_consumer(repository: &Path, returned: &str) -> ([u8; 16], Vec<Vec<u8
     let mut inputs = Vec::new();
     let compiled = incremental
         .compile(|path| {
-            inputs.push(path.to_vec());
+            inputs.push(String::from_utf8_lossy(path).into_owned());
             Ok(None)
         })
         .expect("the compile runs");
@@ -301,15 +328,36 @@ fn compiled_consumer(repository: &Path, returned: &str) -> ([u8; 16], Vec<Vec<u8
 }
 
 #[test]
-fn a_sharp_caller_of_a_return_taken_from_the_body_names_its_file_and_changes_key_with_the_return() {
+fn a_sharp_caller_of_a_chain_of_returns_taken_from_bodies_names_every_file_and_changes_key_with_the_return() {
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
     if !common::php_sdk_is_available(repository, "the body return compile test") {
         return;
     }
 
-    let (special, inputs) = compiled_consumer(repository, "special");
-    let (plain, _) = compiled_consumer(repository, "plain");
+    let assert_chain = |relays: &[(&str, &str)], read: &str, files: &[&str]| {
+        let (special, inputs) = compiled_consumer(repository, "special", relays, read);
+        let (plain, _) = compiled_consumer(repository, "plain", relays, read);
 
-    assert!(inputs.contains(&b"src/Factory.php".to_vec()), "{inputs:?}");
-    assert_ne!(special, plain, "the body edit changed the return the caller read");
+        assert_ne!(special, plain, "{read}: the factory's body edit changed the return the caller read");
+        for file in files {
+            assert!(inputs.contains(&file.to_string()), "{read}: {file} in {inputs:?}");
+        }
+    };
+    assert_chain(&[], "Factory", &["src/Factory.php"]);
+    assert_chain(&[("Relay", "Factory")], "Relay", &["src/Factory.php", "src/Relay.php"]);
+    assert_chain(
+        &[("Relay", "Factory"), ("Outer", "Relay")],
+        "Outer",
+        &["src/Factory.php", "src/Outer.php", "src/Relay.php"],
+    );
+    assert_chain(
+        &[("Relay", "Factory"), ("Outer", "Relay"), ("Top", "Outer")],
+        "Top",
+        &["src/Factory.php", "src/Outer.php", "src/Relay.php", "src/Top.php"],
+    );
+
+    let (_, inputs) = compiled_consumer(repository, "special", &[("Ping", "Pong"), ("Pong", "Ping")], "Ping");
+    for file in ["src/Ping.php", "src/Pong.php"] {
+        assert!(inputs.contains(&file.to_string()), "a cycle of body returns: {file} in {inputs:?}");
+    }
 }

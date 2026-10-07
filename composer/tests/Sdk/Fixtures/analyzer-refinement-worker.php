@@ -73,6 +73,10 @@ final class DeclarationRefinementProofPlugin implements CodebaseScanHook, Plugin
                         'Proof\Box' => self::box($file, $attribute->location->span),
                         'Proof\Holder' => self::holder($file, $attribute->location->span),
                         'Proof\Factory' => self::factory($file, $attribute->location->span),
+                        'Proof\Relay', 'Proof\Outer', 'Proof\Top', 'Proof\Ping', 'Proof\Pong' => self::relay(
+                            $file,
+                            $classLike->originalName,
+                        ),
                         default => throw new LogicException("Unexpected refined class `{$classLike->originalName}`."),
                     });
                 }
@@ -140,6 +144,13 @@ final class DeclarationRefinementProofPlugin implements CodebaseScanHook, Plugin
             ],
             methods: ['make' => new SignatureRefinement(returnFromBody: true)],
         );
+    }
+
+    private static function relay(CodebaseScanFile $file, string $class): ClassLikeRefinement
+    {
+        return new ClassLikeRefinement($file->path, $class, methods: [
+            'make' => new SignatureRefinement(returnFromBody: true),
+        ]);
     }
 
     private static function symbol(string $class, Type ...$arguments): Type

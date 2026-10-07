@@ -74,8 +74,8 @@ impl IncrementalAnalysisService {
     ///
     /// An accepted file's inputs are `composer.lock` and each file outside `vendor/` whose edit makes the warm path
     /// re-analyze it: each file whose signature edit reaches it through the cascade, each file that declares a class
-    /// alias or a patch, and each file that declares a method whose return it reads from that method's body, with that
-    /// file's own inputs.
+    /// alias or a patch, and each file that declares a method whose return it reads from that method's body, along
+    /// every chain of such returns, with that file's own inputs.
     ///
     /// `stamp` gives the size, modification time and hash of the file at a workspace-relative path, or none when no
     /// file is there. It is called once per input.
@@ -136,7 +136,17 @@ impl IncrementalAnalysisService {
         let dependencies = Dependencies::new(self);
         let mut input_paths: HashMap<FileId, Vec<Vec<u8>>> = HashMap::default();
         for file in files.iter().filter(|file| lowered.get(&file.id).is_some_and(Result::is_ok)) {
-            let body_files = reads.get(&file.id).map(|(_, body_files)| body_files.clone()).unwrap_or_default();
+            // A method whose return comes from its body can return another such method's return, so the body files
+            // close over the body files of each file they hold.
+            let mut body_files: HashSet<FileId> = HashSet::default();
+            let mut pending = vec![file.id];
+            while let Some(next) = pending.pop() {
+                for body_file in reads.get(&next).into_iter().flat_map(|(_, body_files)| body_files) {
+                    if body_files.insert(*body_file) {
+                        pending.push(*body_file);
+                    }
+                }
+            }
             let mut sources: HashSet<FileId> = read_by_every_file.clone();
             for source in std::iter::once(file.id).chain(body_files.iter().copied()) {
                 sources.extend(dependencies.reached_by(source));
