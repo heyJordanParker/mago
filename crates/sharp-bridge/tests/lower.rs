@@ -3727,6 +3727,63 @@ fn string_plus_is_a_concatenation_and_int_division_is_intdiv() {
 }
 
 /// ```php
+/// return 'Class: ' . \App\Tenant\Order::class;
+/// ```
+///
+/// A class value is a string, so `+` joins it to a string, as the checker accepts it. `[8]` is `ZEND_CONCAT`.
+#[test]
+fn a_string_plus_a_class_value_is_a_concatenation() {
+    assert_eq!(
+        body_in(
+            "string run()",
+            "        return \"Class: \" + typeof(Order);\n",
+            &[("src/App/Tenant/Order.php", "<?php namespace App\\Tenant; final class Order {}")]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                BINARY_OP [8]
+                  ZVAL "Class: "
+                  CLASS_NAME
+                    ZVAL "App\\Tenant\\Order"
+        "#}
+    );
+}
+
+/// ```php
+/// $label = 'Class: ';
+/// $label .= \App\Tenant\Order::class;
+/// return $label;
+/// ```
+///
+/// `+=` of a class value on a string joins them, as `+` does. `[8]` is `ZEND_CONCAT`.
+#[test]
+fn a_string_plus_equals_a_class_value_is_a_concatenating_assignment() {
+    assert_eq!(
+        body_in(
+            "string run()",
+            "        string label = \"Class: \";\n        label += typeof(Order);\n        return label;\n",
+            &[("src/App/Tenant/Order.php", "<?php namespace App\\Tenant; final class Order {}")]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "label"
+                ZVAL "Class: "
+              ASSIGN_OP [8]
+                VAR
+                  ZVAL "label"
+                CLASS_NAME
+                  ZVAL "App\\Tenant\\Order"
+              RETURN
+                VAR
+                  ZVAL "label"
+        "#}
+    );
+}
+
+/// ```php
 /// $this->total = \intdiv($this->total, 2);
 /// ($receiver#1 = $this->next())->total = \intdiv($receiver#1->total, 2);
 /// ```
