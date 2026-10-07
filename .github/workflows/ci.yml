@@ -115,6 +115,35 @@ jobs:
         if: matrix.rust == 'stable'
         run: cargo build --release --locked
 
+      # git archive ships what Packagist ships, and a mirrored copy finds the project's autoloader the way a real install does.
+      - name: install the Composer package by name
+        if: matrix.rust == 'stable' && matrix.os == 'ubuntu-latest'
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "mago") | .version')
+          package="$RUNNER_TEMP/mago-sharp-package"
+          project="$RUNNER_TEMP/mago-sharp-project"
+          mkdir -p "$package" "$project"
+          git archive HEAD | tar -x -C "$package"
+          cat > "$project/composer.json" <<JSON
+          {
+              "repositories": [
+                  {
+                      "type": "path",
+                      "url": "$package",
+                      "options": {"symlink": false, "versions": {"heyjordanparker/mago-sharp": "$version"}}
+                  }
+              ],
+              "require": {"heyjordanparker/mago-sharp": "$version"}
+          }
+          JSON
+          composer install --no-interaction --working-dir="$project"
+          binary_dir="$project/vendor/heyjordanparker/mago-sharp/composer/bin/$version/mago-$version-$(rustc -vV | sed -n 's/^host: //p')"
+          mkdir -p "$binary_dir"
+          cp target/release/mago "$binary_dir/mago"
+          output=$("$project/vendor/bin/mago" --version 2>&1)
+          echo "$output"
+          test "$output" = "mago $version"
+
       - name: Validate composer code format
         if: matrix.rust == 'stable' && matrix.os == 'ubuntu-latest'
         run: ./target/release/mago format --dry-run

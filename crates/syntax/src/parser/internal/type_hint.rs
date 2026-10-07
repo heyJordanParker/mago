@@ -81,7 +81,9 @@ where
             T!["static"] => Hint::Static(self.expect_any_keyword()?),
             T!["self"] => Hint::Self_(self.expect_any_keyword()?),
             T!["parent"] => Hint::Parent(self.expect_any_keyword()?),
-            T![Identifier | "list" | "class"] if self.is_at_generic_hint()? => Hint::Generic(self.parse_generic_hint()?),
+            T![Identifier | "list" | "class"] if self.is_at_generic_hint()? => {
+                Hint::Generic(self.parse_generic_hint()?)
+            }
             T!["function"] if self.is_at_function_hint()? => Hint::Function(self.parse_function_hint()?),
             T!["enum" | "from" | QualifiedIdentifier | FullyQualifiedIdentifier] => {
                 Hint::Identifier(self.parse_identifier()?)

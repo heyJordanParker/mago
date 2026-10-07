@@ -452,6 +452,7 @@ where
 
     std::mem::swap(&mut context.type_resolution_context, &mut previous_type_resolution_context);
     parent_artifacts.expression_types.extend(std::mem::take(&mut artifacts.expression_types));
+    parent_artifacts.inferred_type_arguments.extend(std::mem::take(&mut artifacts.inferred_type_arguments));
     parent_artifacts.variable_definedness.extend(std::mem::take(&mut artifacts.variable_definedness));
     parent_artifacts.resolved_method_calls.append(&mut artifacts.resolved_method_calls);
     parent_artifacts.symbol_references.extend(std::mem::take(&mut artifacts.symbol_references));
@@ -1777,7 +1778,10 @@ where
         } else {
             (
                 IssueCode::ExcessTemplateParameter,
-                format!("Too many template arguments for `{owner}`: expected {expected}, but found {}.", arguments.len()),
+                format!(
+                    "Too many template arguments for `{owner}`: expected {expected}, but found {}.",
+                    arguments.len()
+                ),
             )
         };
 

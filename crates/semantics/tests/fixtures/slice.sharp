@@ -14,7 +14,7 @@ public class Report
     protected const int NEXT = Calc.MAX + 1;
     private const string? NAME = "report";
     private static int made = 0;
-    public static string last { get; private set; } = "none";
+    public static string? last { get; private set; } = "none";
     [Field] private int count = 0;
     protected float rate = 2.5 * -PHP_INT_MAX;
     private string label;
@@ -116,7 +116,7 @@ public class Report
         Report.made += 2;
         Report.last ??= "touched";
         const limit = Report.MAX;
-        const rate = Calc.rate.cents;
+        const rate = Calc.standard.cents;
         const label = Status.Active.label();
         const active = Status.Default === Status.Active;
         return;
@@ -145,21 +145,24 @@ public class Report
         let second = id;
         second ??= first;
         id ??= 1;
-        fallback.rate ??= rate;
+        this.calc.rate ??= rate;
         Calc? kept = fallback;
         int count = 2;
         const float? share = rate;
         const Calc made = Calc.make();
         kept = null;
         const sum = fallback?.add(1, 2) ?? fallback?.rate;
-        const again = this?.find(id)?.rate.cents;
-        return fallback ?? throw new Calc(0);
+        const again = this.find(id)?.price.cents;
+        return label == null ? null : (fallback ?? throw new Calc(0));
     }
 
     public int branch(int value)
     {
         if (value > 100) {
             throw new Calc(value);
+        }
+        if (value < -100) {
+            exit(value);
         }
         if (value > 10) {
             return 1;
@@ -248,7 +251,7 @@ public class Report
         (int|string)? found = null;
         const made = new Calc(first, ...values);
         made.add(...values);
-        return Report.part(...values) + max(1, ...values);
+        return label == null ? null : Report.part(2, ...values) + max(1, ...values);
     }
 
     [Entity(["a", "b"], ["x": 1])]
@@ -262,17 +265,17 @@ public class Report
         this.sizes["b"] = array_sum(numbers);
         const nested = ["x": ["a": 1]];
         nested["x"]["a"] = items[0]?.rate ?? items[1].rate;
-        for (const [name, size] of sizes) {
+        for (const [string name, size] of sizes) {
             this.sizes[name] = size;
         }
-        return ["all": numbers];
+        return items[0]?.rate == null ? null : ["all": numbers];
     }
 
     public Function<int(int)> lambdas(int extra, Function<bool(string, int)> check)
     {
         let count = 0;
         Function<int(int)> twice = a => a * extra;
-        const half = b => b / 2;
+        const half = (int b) => b / 2;
         const add = (int step, int by = 1) => {
             count += step * by;
             const inner = () => count + extra;
@@ -406,29 +409,53 @@ abstract class Record
         return new Self(id);
     }
 
-    public static Self? find(int id) => Self.make(id);
+    public static Self? find(int id) => id > 0 ? Self.make(id) : null;
 
     public static (Self|int)? either(int id) => Self.find(id);
 }
 
-public class Page<out TItem : Record & Sized, TKey : Comparable<TKey>> : Listing<TItem>, Sized
+public class Page<TItem : Record & Sized, TKey : Comparable<Version>> : Listing<TItem>, Source<TItem>, Sized
 {
     private Map<string, Class<TItem>> kinds = [:];
+    private Page<TItem, TKey>? previous = null;
     public List<TItem> items { get; private set; } = [];
 
-    public TItem? first(TKey key, PaginatedList<Order>? fallback = null)
+    public TItem? first(TKey key, Page<Entry, Version>? fallback = null)
     {
-        const page = new Page<Calc, int>(1);
-        const found = this.convert<Calc>(this.items[0]);
-        const again = this?.convert<List<Calc>>(found);
+        const page = new Page<Entry, Version>();
+        const found = this.convert<Entry>(this.items[0]);
+        const again = this.previous?.convert<Entry>(this.items[0]);
         Class<TItem>? kind = null;
         return null;
     }
 
     public TResult convert<TResult : Record>(TItem item) => this.convert<TResult>(item);
+
+    public bool accepts(TItem item) => true;
+
+    public TItem next() => this.items[0];
 }
 
 public interface Listing<in TItem> : Sized
 {
     bool accepts(TItem item);
+}
+
+public interface Source<out TItem>
+{
+    TItem next();
+}
+
+public interface Comparable<TOther>
+{
+    int compareTo(TOther other);
+}
+
+final class Entry : Record, Sized
+{
+}
+
+final class Version : Comparable<Version>
+{
+    public int compareTo(Version other) => 0;
 }

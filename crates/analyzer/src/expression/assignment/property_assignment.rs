@@ -157,8 +157,9 @@ where
                     issue = issue.with_note(type_diff);
                 }
 
-                let issue = issue
-                    .with_help("Consider adding a type assertion to narrow the type of the value before the assignment.");
+                let issue = issue.with_help(
+                    "Consider adding a type assertion to narrow the type of the value before the assignment.",
+                );
 
                 context.collector.report_with_code(
                     issue_kind,

@@ -12,6 +12,8 @@ use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::reference::SymbolReferences;
 use mago_codex::ttype::combine_union_types;
 use mago_codex::ttype::combiner::CombinerOptions;
+use mago_codex::ttype::combiner::combine;
+use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::union::TUnion;
 use mago_span::HasSpan;
 use mago_span::Span;
@@ -52,6 +54,8 @@ pub struct ResolvedMethodCall {
 #[derive(Debug, Clone)]
 pub struct AnalysisArtifacts {
     pub expression_types: HashMap<(u32, u32), Rc<TUnion>>,
+    /// The type arguments of each generic call and `new`, keyed by its span, one per template in declaration order.
+    pub inferred_type_arguments: HashMap<(u32, u32), Vec<TUnion>>,
     pub if_true_assertions: HashMap<(u32, u32), WordMap<AssertionSet>>,
     pub if_false_assertions: HashMap<(u32, u32), WordMap<AssertionSet>>,
     pub true_branch_only_assertions: HashMap<(u32, u32), WordMap<AssertionSet>>,
@@ -88,6 +92,7 @@ impl AnalysisArtifacts {
     pub fn new() -> Self {
         Self {
             expression_types: HashMap::default(),
+            inferred_type_arguments: HashMap::default(),
             inferred_return_types: Vec::new(),
             inferred_yield_key_types: Vec::new(),
             inferred_yield_value_types: Vec::new(),
@@ -229,6 +234,28 @@ impl AnalysisArtifacts {
 
             loop_scope = scope.parent_loop.as_deref_mut();
         }
+    }
+
+    /// Records the type arguments of the generic call or `new` at `span`, one per template in declaration order. A
+    /// template no argument bound is `mixed`, and a literal is its scalar type, as in `int` for `5`.
+    pub(crate) fn record_type_arguments(
+        &mut self,
+        span: Span,
+        type_arguments: impl Iterator<Item = Option<TUnion>>,
+        codebase: &CodebaseMetadata,
+    ) {
+        let type_arguments = type_arguments
+            .map(|type_argument| match type_argument {
+                Some(mut type_argument) if !type_argument.is_placeholder() => {
+                    type_argument.widen_scalars();
+
+                    TUnion::from_vec(combine(type_argument.types.into_owned(), codebase, CombinerOptions::default()))
+                }
+                _ => get_mixed(),
+            })
+            .collect();
+
+        self.inferred_type_arguments.insert((span.start.offset, span.end.offset), type_arguments);
     }
 
     /// Set the type of expression `expression` to `t`.

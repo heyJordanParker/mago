@@ -48,21 +48,21 @@ Pour désactiver entièrement, passez `--no-verify`. Les deux drapeaux sont mutu
 
 La voie recommandée sur Windows et un bon repli sur tout système sans `bash`.
 
-1. Ouvrez la [page des releases](https://github.com/carthage-software/mago/releases).
+1. Ouvrez la [page des releases](https://github.com/heyJordanParker/mago-sharp/releases).
 2. Téléchargez l'archive correspondant à votre système d'exploitation. Le nom suit `mago-<version>-<target>.tar.gz` (ou `.zip` sous Windows).
 3. Extrayez l'archive et placez le binaire quelque part dans votre PATH.
 
 Si vous gardez l'archive, vous pouvez la vérifier vous-même avant l'extraction.
 
 ```sh
-VERSION=1.51.0
+VERSION=0.1.0
 TARGET=x86_64-unknown-linux-gnu  # adjust for your platform
 ASSET=mago-${VERSION}-${TARGET}.tar.gz
 
-gh release download "$VERSION" --repo carthage-software/mago --pattern "$ASSET"
+gh release download "$VERSION" --repo heyJordanParker/mago-sharp --pattern "$ASSET"
 gh attestation verify "$ASSET" \
-  --repo carthage-software/mago \
-  --signer-workflow carthage-software/mago/.github/workflows/cd.yml
+  --repo heyJordanParker/mago-sharp \
+  --signer-workflow heyJordanParker/mago-sharp/.github/workflows/cd.yml
 
 tar -xzf "$ASSET"
 sudo mv "mago-${VERSION}-${TARGET}/mago" /usr/local/bin/
@@ -91,7 +91,7 @@ Ces voies sont pratiques mais dépendent de calendriers de publication externes 
 Pour les projets PHP :
 
 ```sh
-composer require --dev "carthage-software/mago:^1.51.0"
+composer require --dev "heyjordanparker/mago-sharp:^0.1.0"
 ```
 
 Le paquet Composer est un fin wrapper. Le premier appel à `vendor/bin/mago` télécharge le binaire pré-construit correspondant depuis la release GitHub et le met en cache. Les appels suivants réutilisent le cache et ne font aucune requête réseau.
@@ -138,8 +138,8 @@ Quand la vérification s'exécute, le script lance :
 
 ```sh
 gh attestation verify <archive> \
-  --repo carthage-software/mago \
-  --signer-workflow carthage-software/mago/.github/workflows/cd.yml
+  --repo heyJordanParker/mago-sharp \
+  --signer-workflow heyJordanParker/mago-sharp/.github/workflows/cd.yml
 ```
 
 L'épinglage `--signer-workflow` est important. Il lie l'attestation au fichier exact du workflow de release. Un jeton GitHub Actions compromis qui pourrait déclencher un workflow différent dans le même dépôt échouerait quand même à la vérification.
@@ -157,7 +157,7 @@ Pour une hygiène de chaîne d'approvisionnement plus stricte, épinglez le scri
 ```sh
 COMMIT=cd4cf4dfdbc72bd028ad26d11bcc815a49e27e9a  # replace with a commit you have read
 curl --proto '=https' --tlsv1.2 -sSf \
-  "https://raw.githubusercontent.com/carthage-software/mago/${COMMIT}/scripts/install.sh" \
+  "https://raw.githubusercontent.com/heyJordanParker/mago-sharp/${COMMIT}/scripts/install.sh" \
   | bash -s -- --always-verify
 ```
 

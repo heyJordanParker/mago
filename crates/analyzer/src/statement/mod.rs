@@ -3,12 +3,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use mago_allocator::Arena;
-use mago_bytes::BytesDisplay;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::ttype::TypeMetadata;
 use mago_codex::scanner::get_union_from_hint;
-use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::array::keyed::TKeyedArray;
@@ -18,8 +16,6 @@ use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::cast::cast_atomic_to_callable;
 use mago_codex::ttype::combiner;
 use mago_codex::ttype::combiner::CombinerOptions;
-use mago_codex::ttype::comparator::ComparisonResult;
-use mago_codex::ttype::comparator::union_comparator;
 use mago_codex::ttype::expander;
 use mago_codex::ttype::expander::TypeExpansionOptions;
 use mago_codex::ttype::get_array_parameters;
@@ -434,18 +430,16 @@ where
     foreach.analyze(context, block_context, artifacts)?;
 
     if let ForOfTarget::KeyValue(pair) = &for_of.target {
-        report_backed_key_without_its_enum(context, block_context, artifacts, for_of, pair);
+        report_key_mixing_a_backed_enum(context, artifacts, for_of, pair);
     }
 
     Ok(())
 }
 
-/// Reports a loop over a `Map` keyed by a backed enum whose key's written type is not the enum's name. The engine
-/// holds each key as its backing value, and reads it back as the case only through the class the loop names. A written
-/// type that cannot hold the case is already refused where the loop assigns the key.
-fn report_backed_key_without_its_enum<A>(
+/// Reports a loop over a `Map` whose key type mixes a backed enum with other types. The engine holds each key as its
+/// backing value, and the lowering reads it back as a case only through one enum's `from`.
+fn report_key_mixing_a_backed_enum<A>(
     context: &mut Context<'_, '_, A>,
-    block_context: &BlockContext<'_>,
     artifacts: &AnalysisArtifacts,
     for_of: &ForOf<'_>,
     pair: &ForOfKeyValueTarget<'_>,
@@ -455,69 +449,42 @@ fn report_backed_key_without_its_enum<A>(
     let Some(collection_type) = artifacts.get_expression_type(for_of.expression) else {
         return;
     };
-    let Some((key_type, value_type)) = collection_type.types.iter().find_map(|atomic| match atomic {
-        TAtomic::Array(TArray::Keyed(keyed_array)) => keyed_array
-            .get_generic_parameters()
-            .filter(|(key_type, _)| matches!(get_backing_key_type(key_type, context.codebase), Cow::Owned(_))),
-        _ => None,
-    }) else {
-        return;
+    let is_one_enum = |key_type: &TUnion| match key_type.types.first() {
+        Some(TAtomic::Object(TObject::Enum(first))) => key_type
+            .types
+            .iter()
+            .all(|atomic| matches!(atomic, TAtomic::Object(TObject::Enum(other)) if other.name == first.name)),
+        _ => false,
     };
-
-    let enum_name = match key_type.types.as_ref() {
-        [TAtomic::Object(TObject::Enum(enum_object))] => Some(enum_object.name),
-        _ => None,
-    };
-    if let (Some(Hint::Identifier(identifier)), Some(enum_name)) = (pair.key.hint, enum_name)
-        && context.resolved_names.get(identifier).eq_ignore_ascii_case(enum_name.as_bytes())
-    {
-        return;
-    }
-
-    if let Some((written_type, _)) = block_context.local_types.get(&php_variable_name(pair.key.name.value))
-        && !union_comparator::is_contained_by(
-            context.codebase,
-            key_type,
-            written_type,
-            false,
-            false,
-            false,
-            &mut ComparisonResult::default(),
-        )
-    {
-        return;
-    }
-
-    let source = |span: Span| {
-        context
-            .source_file
-            .contents
-            .get(span.start.offset as usize..span.end.offset as usize)
-            .map(|text| String::from_utf8_lossy(text).into_owned())
-            .unwrap_or_default()
-    };
-    let key_type_name = match enum_name {
-        Some(enum_name) => {
-            String::from_utf8_lossy(enum_name.as_bytes()).rsplit('\\').next().unwrap_or_default().to_owned()
+    let mixes_a_backed_enum = collection_type.types.iter().any(|atomic| match atomic {
+        TAtomic::Array(TArray::Keyed(keyed_array)) => {
+            keyed_array.get_generic_parameters().is_some_and(|(key_type, _)| {
+                matches!(get_backing_key_type(key_type, context.codebase), Cow::Owned(_)) && !is_one_enum(key_type)
+            })
         }
-        None => key_type.get_id().to_string(),
-    };
-    let value_type_name = pair.value.hint.map_or_else(|| value_type.get_id().to_string(), |hint| source(hint.span()));
-    let rewritten = format!(
-        "for (const [{key_type_name} {}, {value_type_name} {}] of {})",
-        BytesDisplay(pair.key.name.value),
-        BytesDisplay(pair.value.name.value),
-        source(for_of.expression.span()),
-    );
+        _ => false,
+    });
+    if !mixes_a_backed_enum {
+        return;
+    }
+
+    let collection = context
+        .source_file
+        .contents
+        .get(for_of.expression.span().start.offset as usize..for_of.expression.span().end.offset as usize)
+        .map(|text| String::from_utf8_lossy(text).into_owned())
+        .unwrap_or_default();
 
     context.collector.report_with_code(
         IssueCode::InvalidForeachKey,
-        Issue::error(format!("A `{key_type_name}` key needs its type written: `{rewritten}`."))
-            .with_annotation(
-                Annotation::primary(pair.key.span()).with_message(format!("Written without `{key_type_name}`.")),
-            )
-            .with_note("The engine holds each key as its backing value, and the loop reads it back as the case only through the class it names.")
-            .with_help(format!("Write `{rewritten}`.")),
+        Issue::error(format!(
+            "The keys of `{collection}` mix a backed enum with other types, so the loop cannot read them back."
+        ))
+        .with_annotation(Annotation::primary(pair.key.span()).with_message("Its key is read here."))
+        .with_note(
+            "The engine holds each key as its backing value, and reads it back as a case through one enum's `from`.",
+        )
+        .with_help("Key the `Map` by one backed enum alone."),
     );
 }
 

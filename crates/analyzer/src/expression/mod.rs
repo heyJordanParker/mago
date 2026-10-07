@@ -603,9 +603,9 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Parenthesized<'arena> {
     }
 }
 
-/// Whether an error already refuses `expression`, which `check_slice` refuses: it failed to parse, it reads or calls a
-/// member of `typeof(X)` or of a type parameter through any chain of property reads, or it is `typeof` or `new` of a
-/// type parameter. Its type is `never`, and it adds no issue.
+/// Whether an error already refuses `expression`, which `check_slice` refuses: it failed to parse, it is `typeof` or
+/// `new` of a type parameter, or it reads or calls a member of a type parameter or of `typeof` of one through any chain
+/// of property reads. Its type is `never`, and it adds no issue.
 pub(crate) fn is_refused(expression: &Expression<'_>, resolved_names: &ResolvedNames<'_>) -> bool {
     let is_type_parameter =
         |name: &Identifier<'_>| matches!(resolved_names.binding(name), Some(Binding::TypeParameter { .. }));
@@ -626,7 +626,7 @@ pub(crate) fn is_refused(expression: &Expression<'_>, resolved_names: &ResolvedN
     }
 
     match object {
-        Expression::TypeOf(_) => true,
+        Expression::TypeOf(type_of) => is_type_parameter(&type_of.class),
         Expression::ConstantAccess(access) => is_type_parameter(&access.name),
         _ => false,
     }

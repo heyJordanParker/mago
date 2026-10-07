@@ -29,6 +29,7 @@ use mago_syntax::cst::SwitchCase;
 use mago_syntax::cst::Variable;
 use mago_syntax::cst::WhileBody;
 use mago_syntax::utils;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_word::Word;
 use mago_word::WordMap;
 use mago_word::WordSet;
@@ -333,11 +334,9 @@ where
     let mut metadata =
         FunctionLikeMetadata::new(FunctionLikeKind::Closure, synthetic_name, synthetic_name, span, flags)
             .with_parameters(
-                closure
-                    .parameter_list
-                    .parameters
-                    .iter()
-                    .filter_map(|p| scan_function_like_parameter(p, classname, &type_resolution_context, context, scope)),
+                closure.parameter_list.parameters.iter().filter_map(|p| {
+                    scan_function_like_parameter(p, classname, &type_resolution_context, context, scope)
+                }),
             );
     collect_globals_into(&closure.body, &mut metadata.globals_accessed);
 
@@ -395,11 +394,9 @@ where
     let mut metadata =
         FunctionLikeMetadata::new(FunctionLikeKind::ArrowFunction, synthetic_name, synthetic_name, span, flags)
             .with_parameters(
-                arrow_function
-                    .parameter_list
-                    .parameters
-                    .iter()
-                    .filter_map(|p| scan_function_like_parameter(p, classname, &type_resolution_context, context, scope)),
+                arrow_function.parameter_list.parameters.iter().filter_map(|p| {
+                    scan_function_like_parameter(p, classname, &type_resolution_context, context, scope)
+                }),
             );
 
     metadata.attributes = scan_attribute_lists(&arrow_function.attribute_lists, context, scope, classname);
@@ -959,7 +956,7 @@ pub fn collect_globals_into(block: &Block, globals: &mut WordSet) {
 }
 
 fn collect_globals_from_statement(statement: &Statement, globals: &mut WordSet) {
-    match statement {
+    ensure_sufficient_stack(|| match statement {
         Statement::Global(global) => {
             for variable in &global.variables {
                 if let Variable::Direct(direct) = variable {
@@ -1060,5 +1057,5 @@ fn collect_globals_from_statement(statement: &Statement, globals: &mut WordSet) 
             }
         }
         _ => {}
-    }
+    })
 }

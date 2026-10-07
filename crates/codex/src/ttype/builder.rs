@@ -1059,7 +1059,10 @@ pub(crate) fn get_class_strings_of(
             ) => class_strings
                 .push(TAtomic::Scalar(TScalar::ClassLikeString(TClassLikeString::of_type(kind, constraint)))),
             TAtomic::GenericParameter(TGenericParameter {
-                parameter_name, defining_entity, constraint: nested_constraint, ..
+                parameter_name,
+                defining_entity,
+                constraint: nested_constraint,
+                ..
             }) => {
                 for constraint_atomic in Arc::unwrap_or_clone(nested_constraint).types.into_owned() {
                     class_strings.push(TAtomic::Scalar(TScalar::ClassLikeString(TClassLikeString::generic(

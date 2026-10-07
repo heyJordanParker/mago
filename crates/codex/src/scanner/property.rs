@@ -249,11 +249,9 @@ where
                     metadata.set_name_span(Some(name_span));
                     metadata.set_default_type_metadata(default_type);
                     metadata.set_visibility(read_visibility, write_visibility);
-                    metadata.set_type_declaration_metadata(
-                        plain_property.hint.as_ref().map(|hint| {
-                            get_type_metadata_from_hint(hint, Some(class_like_metadata.name), type_context, context)
-                        }),
-                    );
+                    metadata.set_type_declaration_metadata(plain_property.hint.as_ref().map(|hint| {
+                        get_type_metadata_from_hint(hint, Some(class_like_metadata.name), type_context, context)
+                    }));
 
                     if let Some(document) = document.as_ref() {
                         update_property_metadata_from_docblock(
@@ -341,10 +339,9 @@ where
             metadata.set_span(Some(hooked_property.span()));
             metadata.set_visibility(read_visibility, write_visibility);
             metadata.set_type_declaration_metadata(
-                hooked_property
-                    .hint
-                    .as_ref()
-                    .map(|hint| get_type_metadata_from_hint(hint, Some(class_like_metadata.name), type_context, context)),
+                hooked_property.hint.as_ref().map(|hint| {
+                    get_type_metadata_from_hint(hint, Some(class_like_metadata.name), type_context, context)
+                }),
             );
 
             if let Some(document) = document.as_ref() {
@@ -390,10 +387,9 @@ where
             metadata.set_span(Some(computed_property.span()));
             metadata.set_visibility(read_visibility, read_visibility);
             metadata.set_type_declaration_metadata(
-                computed_property
-                    .hint
-                    .as_ref()
-                    .map(|hint| get_type_metadata_from_hint(hint, Some(class_like_metadata.name), type_context, context)),
+                computed_property.hint.as_ref().map(|hint| {
+                    get_type_metadata_from_hint(hint, Some(class_like_metadata.name), type_context, context)
+                }),
             );
 
             if let Some(document) = document.as_ref() {

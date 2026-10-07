@@ -255,15 +255,23 @@ pub(crate) fn find_template_uses(codebase: &CodebaseMetadata, class: &ClassLikeM
         let Some(method) = codebase.get_method(class.name.as_bytes(), method_name.as_bytes()) else {
             continue;
         };
-        if method.method_metadata.as_ref().is_some_and(|metadata| {
-            metadata.is_constructor || matches!(metadata.visibility, Visibility::Private)
-        }) {
+        if method
+            .method_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.is_constructor || matches!(metadata.visibility, Visibility::Private))
+        {
             continue;
         }
 
         let mut positions = Vec::new();
         for parameter_type in method.parameters.iter().filter_map(|parameter| parameter.type_metadata.as_ref()) {
-            find_template_positions(codebase, &parameter_type.type_union, &owner, Variance::Contravariant, &mut positions);
+            find_template_positions(
+                codebase,
+                &parameter_type.type_union,
+                &owner,
+                Variance::Contravariant,
+                &mut positions,
+            );
         }
         if let Some(return_type) = &method.return_type_metadata {
             find_template_positions(codebase, &return_type.type_union, &owner, Variance::Covariant, &mut positions);
@@ -299,7 +307,9 @@ pub(crate) fn find_template_uses(codebase: &CodebaseMetadata, class: &ClassLikeM
 /// Adds one use per type parameter in `positions`, which a member uses at each of them.
 fn add_template_uses(template_uses: &mut Vec<TemplateUse>, positions: Vec<(Word, Variance)>, member: &str, span: Span) {
     for (template, position) in positions {
-        match template_uses.iter_mut().find(|template_use| template_use.span == span && template_use.template == template)
+        match template_uses
+            .iter_mut()
+            .find(|template_use| template_use.span == span && template_use.template == template)
         {
             Some(template_use) => template_use.position = join_positions(template_use.position, position),
             None => template_uses.push(TemplateUse { template, position, member: member.to_string(), span }),
@@ -365,7 +375,9 @@ fn find_atomic_template_positions(
             for child in atomic.get_child_nodes() {
                 match child {
                     TypeRef::Union(child) => find_template_positions(codebase, child, owner, position, positions),
-                    TypeRef::Atomic(child) => find_atomic_template_positions(codebase, child, owner, position, positions),
+                    TypeRef::Atomic(child) => {
+                        find_atomic_template_positions(codebase, child, owner, position, positions)
+                    }
                 }
             }
         }
@@ -391,7 +403,7 @@ where
     }
 
     let codebase = context.codebase;
-    let [given @ TAtomic::Object(TObject::Named(given_object))] = input.types.as_ref() else {
+    let [TAtomic::Object(TObject::Named(given_object))] = input.types.as_ref() else {
         return issue;
     };
     let Some(wanted) = expected.types.iter().find(|atomic| {
@@ -450,9 +462,15 @@ where
         .map(|template_use| template_use.position)
         .reduce(join_positions);
 
-    issue.message = format!("{} cannot be used as {}.", display_sharp_type(given), display_sharp_type(wanted));
+    issue.message = format!(
+        "{} cannot be used as {}.",
+        display_sharp_type(input, codebase),
+        display_sharp_type(&wrap_atomic(wanted.clone()), codebase)
+    );
     issue.help = Some(match position {
-        Some(Variance::Covariant) => format!("{template} is only returned by {class_name}, so declare it `out {template}`."),
+        Some(Variance::Covariant) => {
+            format!("{template} is only returned by {class_name}, so declare it `out {template}`.")
+        }
         Some(Variance::Contravariant) => {
             format!("{template} is only taken in by {class_name}, so declare it `in {template}`.")
         }
