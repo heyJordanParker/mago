@@ -213,7 +213,8 @@ fn write_by_rename(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     drop(file);
 
     // `NamedTempFile::persist` renames with `MoveFileExW` alone, which fails on Windows while a reader holds the old
-    // file open. `std::fs::rename` then falls back to a POSIX rename, which replaces it and leaves the reader the old file.
+    // file open. `std::fs::rename` then falls back to a POSIX rename, which replaces it when every reader opened it with
+    // `FILE_SHARE_DELETE`, as Rust's `File::open` does, and leaves each reader the old file.
     std::fs::rename(&written, path).inspect_err(|_| {
         let _ = std::fs::remove_file(&written);
     })

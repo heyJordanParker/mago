@@ -192,6 +192,7 @@ fn compile_replaces_a_compiled_file_by_rename_so_no_reader_sees_a_partial_file()
     let root = directory.path();
     assert!(compile(root).status.success());
     let before = std::fs::read(compiled(root, "app/Order.sharp")).unwrap();
+    // On Windows, `File::open` shares the file for deletion, which lets a rename replace it while it is open.
     let mut open = std::fs::File::open(compiled(root, "app/Order.sharp")).unwrap();
 
     write(root, "app/Order.sharp", &ORDER.replace("extra + 1", "extra + 2"));
