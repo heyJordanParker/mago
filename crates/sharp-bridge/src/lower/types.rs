@@ -8,6 +8,7 @@ use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::atomic::scalar::class_like_string::TClassLikeString;
 use mago_codex::ttype::get_array_parameters;
 use mago_codex::ttype::union::TUnion;
+use mago_names::ResolvedNames;
 use mago_span::HasSpan;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::ClassLikeMemberSelector;
@@ -22,6 +23,8 @@ use super::inline::key;
 /// The checker's types for one file. The lowering reads a type only through these queries, so `--assert-types` can
 /// turn each answer it used into a runtime guard.
 pub struct Types<'analysis> {
+    /// The file's resolved names, which name the class of a `Class.m()` call.
+    names: ResolvedNames<'analysis>,
     artifacts: &'analysis AnalysisArtifacts,
     codebase: &'analysis CodebaseMetadata,
     inline_forms: &'analysis InlineForms,
@@ -64,11 +67,16 @@ pub(crate) enum DeclarationKind {
 
 impl<'analysis> Types<'analysis> {
     pub(crate) fn new(
+        names: ResolvedNames<'analysis>,
         artifacts: &'analysis AnalysisArtifacts,
         codebase: &'analysis CodebaseMetadata,
         inline_forms: &'analysis InlineForms,
     ) -> Self {
-        Self { artifacts, codebase, inline_forms }
+        Self { names, artifacts, codebase, inline_forms }
+    }
+
+    pub(crate) fn names(&self) -> &ResolvedNames<'analysis> {
+        &self.names
     }
 
     /// The type the analysis gave `expression`.
@@ -100,8 +108,7 @@ impl<'analysis> Types<'analysis> {
 
     /// The declaration `member` of the fully qualified class name `class` resolves to when code reads it: an enum case,
     /// a constant, a property, then a method, which the read takes as a first-class callable. Only when the class
-    /// declares none of them is it a property its `__get` serves, or else a static method its `__callStatic` serves,
-    /// which `Class.m()` calls and the checker refuses to read.
+    /// declares none of them is it a property its `__get` serves. A call is [`Self::call_target`]'s.
     pub(crate) fn member_declaration(&self, class: &[u8], member: &[u8]) -> Declaration {
         let declared = |kind, public| Declaration { kind, class: word(class), name: word(member), public };
 
@@ -115,8 +122,6 @@ impl<'analysis> Types<'analysis> {
             declaration
         } else if self.codebase.method_exists(class, b"__get") {
             declared(DeclarationKind::Property { typed: false }, true)
-        } else if self.codebase.method_exists(class, b"__callStatic") {
-            declared(DeclarationKind::StaticMethod, true)
         } else {
             unreachable!(
                 "the checker refuses `{}.{}`, which names no member",
@@ -126,22 +131,39 @@ impl<'analysis> Types<'analysis> {
         }
     }
 
-    /// The declaration the method call `call`, null-safe or not, runs: the receiver's method, or else its property
-    /// holding a function, as spec section 14 calls one. Only when the class declares neither is it a method its
+    /// The declaration the method call `call`, null-safe or not, runs, as PHP finds it. `Class.m()` and a class value's
+    /// `type.m()` run the class's method, or else a static method its `__callStatic` serves. `object.m()` runs the
+    /// receiver's method, or else its property holding a function, as spec section 14 calls one, or else a method its
     /// `__call` serves. Every class the receiver can be has the same kind of member, and `class` is the first's.
+    /// `Self.m()` and `super.m()` lower to `static::` and `parent::`, and no caller asks their target.
     pub(crate) fn call_target(&self, call: &Expression) -> Declaration {
-        let (object, method) = match call {
-            Expression::Call(Call::Method(call)) => (call.object, &call.method),
-            Expression::Call(Call::NullSafeMethod(call)) => (call.object, &call.method),
+        let (object, method, class) = match call {
+            Expression::Call(Call::Method(call)) => (call.object, &call.method, self.names.static_call_class(call)),
+            Expression::Call(Call::NullSafeMethod(call)) => (call.object, &call.method, None),
             _ => unreachable!("only a method call has a typed call target yet"),
         };
         let ClassLikeMemberSelector::Identifier(method) = method else {
             unreachable!("check_slice refuses the method name `{method}`");
         };
-        let classes = receiver_classes(self.expression_type(object))
-            .unwrap_or_else(|| unreachable!("the lowering asks only for a receiver whose type names classes"));
-        let declarations: Vec<Declaration> =
-            classes.iter().map(|class| self.call_declaration(class, method.value)).collect();
+        if let Some(class) = class {
+            return self.static_call_declaration(self.names.get(&class.name), method.value);
+        }
+        if matches!(object, Expression::Self_(_) | Expression::Parent(_)) {
+            unreachable!(
+                "`Self.m()` and `super.m()` lower to `static::` and `parent::`, and no caller asks their target"
+            );
+        }
+
+        let r#type = self.expression_type(object);
+        let declarations: Vec<Declaration> = if let Some(classes) = class_value_classes(r#type) {
+            classes.iter().map(|class| self.static_call_declaration(class, method.value)).collect()
+        } else {
+            receiver_classes(r#type)
+                .unwrap_or_else(|| unreachable!("the lowering asks only for a receiver whose type names classes"))
+                .iter()
+                .map(|class| self.call_declaration(class, method.value))
+                .collect()
+        };
         agreed_kind(declarations.iter().map(|declaration| declaration.kind));
 
         declarations[0]
@@ -154,6 +176,26 @@ impl<'analysis> Types<'analysis> {
         }
 
         self.inline_forms.get(&key(declaration.class.as_bytes(), declaration.name.as_bytes()))
+    }
+
+    /// What a static call of `class`'s `method` runs: its method, or else a static method its `__callStatic` serves.
+    fn static_call_declaration(&self, class: &[u8], method: &[u8]) -> Declaration {
+        let served = || Declaration {
+            kind: DeclarationKind::StaticMethod,
+            class: word(class),
+            name: word(method),
+            public: true,
+        };
+
+        self.method_declaration(class, method)
+            .or_else(|| self.codebase.method_exists(class, b"__callStatic").then(served))
+            .unwrap_or_else(|| {
+                unreachable!(
+                    "the checker refuses `{}.{}()`, which names no method",
+                    String::from_utf8_lossy(class),
+                    String::from_utf8_lossy(method)
+                )
+            })
     }
 
     /// What `class`'s call of `method` runs: its method, its property holding a function, or else a method its

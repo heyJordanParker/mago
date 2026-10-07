@@ -46,7 +46,7 @@ use super::types::Types;
 ///     codebase: &'program CodebaseMetadata,
 ///     forms: &'program inline::InlineForms,
 /// ) -> Option<checked::CheckedProgram<'program>> {
-///     Some(checked::CheckedProgram { file, program, names, types: types::Types::new(artifacts, codebase, forms) })
+///     Some(checked::CheckedProgram { file, program, types: types::Types::new(names, artifacts, codebase, forms) })
 /// }
 /// # fn main() {}
 /// ```
@@ -88,7 +88,6 @@ use super::types::Types;
 pub struct CheckedProgram<'program> {
     file: &'program File,
     program: &'program Program<'program>,
-    names: ResolvedNames<'program>,
     types: Types<'program>,
 }
 
@@ -103,7 +102,7 @@ impl<'program> CheckedProgram<'program> {
         codebase: &'program CodebaseMetadata,
         inline_forms: &'program InlineForms,
     ) -> Self {
-        Self { file, program, names, types: Types::new(artifacts, codebase, inline_forms) }
+        Self { file, program, types: Types::new(names, artifacts, codebase, inline_forms) }
     }
 
     pub(crate) fn file(&self) -> &'program File {
@@ -115,7 +114,7 @@ impl<'program> CheckedProgram<'program> {
     }
 
     pub(crate) fn names(&self) -> &ResolvedNames<'program> {
-        &self.names
+        self.types.names()
     }
 
     pub(crate) fn types(&self) -> &Types<'program> {
@@ -160,7 +159,7 @@ pub fn check<'program>(
         return Err(Refusal::Compile(errors));
     }
 
-    Ok(CheckedProgram { file, program, names, types: Types::new(artifacts, codebase, inline_forms) })
+    Ok(CheckedProgram { file, program, types: Types::new(names, artifacts, codebase, inline_forms) })
 }
 
 #[cfg(test)]

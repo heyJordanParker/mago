@@ -4008,6 +4008,41 @@ fn a_static_call_only_call_static_serves_is_a_static_call() {
     );
 }
 
+/// ```php
+/// \Lib\Order::where($extra);
+/// ```
+///
+/// `Order.where(x)` calls the static method `__callStatic` serves, though `__get` would serve a property read of the
+/// same name, as PHP runs `Order::where($x)`. So the call lowers to a static call of its name, and a standard library
+/// method whose body is that call gives an inline form.
+#[test]
+fn a_static_call_beside_a_get_is_the_static_method_call_static_serves() {
+    let library = "namespace Sharp;\n\nimport Lib.Order;\n\npublic class Text\n{\n    public static Any? found(int id) => Order.where(id);\n}\n";
+    let forms: Vec<String> = common::checked(TEXT.0, library, &[MAGIC_ORDER], inline_forms)
+        .expect("the library file is checked")
+        .into_iter()
+        .map(|(name, _)| String::from_utf8_lossy(&name).into_owned())
+        .collect();
+
+    assert_eq!(forms, ["sharp\\text::found"]);
+    assert_eq!(
+        Lowered::with(
+            "namespace App.Tenant;\n\nimport Lib.Order;\n\nclass Report\n{\n    public void run(int extra)\n    {\n        Order.where(extra);\n    }\n}\n",
+            &[MAGIC_ORDER],
+        )
+        .body(),
+        indoc! {r#"
+            STMT_LIST
+              STATIC_CALL
+                ZVAL "Lib\\Order"
+                ZVAL "where"
+                ARG_LIST
+                  VAR
+                    ZVAL "extra"
+        "#}
+    );
+}
+
 /// `Class.y` reads only a member the class declares. One its `__callStatic` would serve is refused, so the lowering of
 /// `Class.y` never meets a magic member.
 #[test]

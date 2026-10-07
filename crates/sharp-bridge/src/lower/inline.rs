@@ -12,7 +12,6 @@ use mago_syntax::cst::Argument;
 use mago_syntax::cst::ArgumentList;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::ClassLikeMember;
-use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::Method;
@@ -223,30 +222,24 @@ impl Lowering<'_, '_> {
         names: &[&[u8]],
         steps: &mut Vec<Step>,
     ) -> bool {
-        let ClassLikeMemberSelector::Identifier(method) = &call.method else {
+        if self.names.static_call_class(call).is_none()
+            && !(self.takes_receiver(call.object) && self.steps(call.object, names, steps))
+        {
             return false;
-        };
-        let declaration = match self.names.static_call_class(call) {
-            Some(class) => self.types.member_declaration(self.names.get(&class.name), method.value),
-            None if matches!(call.object, Expression::Parent(_) | Expression::Self_(_)) => return false,
-            None if self.is_class_value(call.object)
-                || receiver_classes(self.types.expression_type(call.object)).is_none() =>
-            {
-                return false;
-            }
-            None => {
-                if !self.steps(call.object, names, steps) {
-                    return false;
-                }
-
-                self.types.call_target(expression)
-            }
-        };
+        }
+        let declaration = self.types.call_target(expression);
 
         declaration.public
             && matches!(declaration.kind, DeclarationKind::Method { .. } | DeclarationKind::StaticMethod)
             && self.argument_steps(&call.argument_list, names, steps)
             && self.call_step(steps)
+    }
+
+    /// Whether the inlining rule takes `object` as a call's receiver: a value of classes. `Self` and `super`, which the
+    /// analysis gives no type, name another class once the form is copied, and a class value is no value of classes.
+    fn takes_receiver(&self, object: &Expression) -> bool {
+        !matches!(object, Expression::Parent(_) | Expression::Self_(_))
+            && receiver_classes(self.types.expression_type(object)).is_some()
     }
 
     fn argument_steps(&self, list: &ArgumentList, names: &[&[u8]], steps: &mut Vec<Step>) -> bool {
@@ -266,19 +259,12 @@ impl Lowering<'_, '_> {
     /// each parameter one positional argument. A form that reads its slots out of order, or after a call, takes only
     /// values that do nothing when read, since inlined they run in the form's order instead of the call's.
     pub(super) fn inlined_call(&mut self, expression: &Expression, call: &MethodCall) -> Option<u32> {
-        let ClassLikeMemberSelector::Identifier(method) = &call.method else {
-            return None;
+        let receiver = match self.names.static_call_class(call) {
+            Some(_) => None,
+            None if self.takes_receiver(call.object) => Some(call.object),
+            None => return None,
         };
-        let (declaration, receiver) = match self.names.static_call_class(call) {
-            Some(class) => (self.types.member_declaration(self.names.get(&class.name), method.value), None),
-            None if matches!(call.object, Expression::Parent(_) | Expression::Self_(_)) => return None,
-            None if self.is_class_value(call.object)
-                || receiver_classes(self.types.expression_type(call.object)).is_none() =>
-            {
-                return None;
-            }
-            None => (self.types.call_target(expression), Some(call.object)),
-        };
+        let declaration = self.types.call_target(expression);
         let form = self.types.inline_form(&declaration)?;
         let mut values: Vec<&Expression> = receiver.into_iter().collect();
         for argument in &call.argument_list.arguments {
