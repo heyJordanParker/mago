@@ -31,6 +31,7 @@ use mago_codex::ttype::union::TUnion;
 use mago_names::ResolvedNames;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
+use mago_reporting::Level;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::ClassLikeMemberSelector;
@@ -1459,6 +1460,8 @@ fn report_access_on_non_object<A>(
     );
 }
 
+/// Reports a property read on a value of a general object type. A PHP# `Object` has no members until `is` narrows it,
+/// as an `Any` has none, spec section 24, so in a PHP# file the read is an error.
 fn report_ambiguous_access<A>(
     context: &mut Context<'_, '_, A>,
     selector: &ClassLikeMemberSelector,
@@ -1467,9 +1470,11 @@ fn report_ambiguous_access<A>(
 ) where
     A: Arena,
 {
+    let level = if context.dialect.is_sharp() { Level::Error } else { Level::Warning };
+
     context.collector.report_with_code(
         IssueCode::AmbiguousObjectPropertyAccess,
-        Issue::warning(format!("Cannot statically verify property access on a generic `{object_type}` type."))
+        Issue::new(level, format!("Cannot statically verify property access on a generic `{object_type}` type."))
             .with_annotation(Annotation::primary(selector.span()).with_message("Accessing property here"))
             .with_annotation(
                 Annotation::secondary(object_span).with_message(format!("This expression has type `{object_type}`")),

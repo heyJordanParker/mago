@@ -902,6 +902,54 @@ fn typeof_is_the_class_name_as_in_php() {
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
 }
 
+const ORDER: &str = "<?php\n\nnamespace Lib;\n\nclass Order\n{\n}\n";
+
+const REGISTRY: &str = "<?php\n\nnamespace Lib;\n\nfinal class Registry\n{\n    public static function keep(string $class): string\n    {\n        return $class;\n    }\n\n    /** @param class-string<Calc> $class */\n    public static function calc(string $class): string\n    {\n        return $class;\n    }\n}\n";
+
+#[test]
+fn typeof_of_a_local_or_this_is_a_class_name_string_as_in_php() {
+    let sharp = "namespace Demo;\n\nimport Lib.Order;\nimport Lib.Registry;\n\nclass Report\n{\n    public string total(Order order)\n    {\n        Registry.keep(typeof(this));\n        return Registry.keep(typeof(order));\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Order;\nuse Lib\\Registry;\n\nclass Report\n{\n    public function total(Order $order): string\n    {\n        Registry::keep($this::class);\n        return Registry::keep($order::class);\n    }\n}\n";
+    let others = [("src/Lib/Order.php", ORDER), ("src/Lib/Registry.php", REGISTRY)];
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &others);
+    let php_issues = issues(("src/Demo/Report.php", php), &others);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+#[test]
+fn typeof_of_a_local_is_the_class_string_of_its_type_as_in_php() {
+    let sharp = "namespace Demo;\n\nimport Lib.Order;\nimport Lib.Registry;\n\nclass Report\n{\n    public string total(Order order)\n    {\n        return Registry.calc(typeof(order));\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Order;\nuse Lib\\Registry;\n\nclass Report\n{\n    public function total(Order $order): string\n    {\n        return Registry::calc($order::class);\n    }\n}\n";
+    let others = [("src/Lib/Calc.php", CALC), ("src/Lib/Order.php", ORDER), ("src/Lib/Registry.php", REGISTRY)];
+
+    let sharp_messages = messages(("src/Demo/Report.sharp", sharp), &others);
+
+    assert_eq!(
+        sharp_messages,
+        [
+            "Invalid argument type for argument #1 of `Lib\\Registry::calc`: expected `class-string<Lib\\Calc>`, but found `class-string<Lib\\Order>`."
+        ]
+    );
+    assert_eq!(sharp_messages, messages(("src/Demo/Report.php", php), &others));
+}
+
+#[test]
+fn typeof_of_an_int_local_is_reported_as_in_php() {
+    let sharp = "namespace Demo;\n\nimport Lib.Registry;\n\nclass Report\n{\n    public string total(int count)\n    {\n        return Registry.keep(typeof(count));\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Registry;\n\nclass Report\n{\n    public function total(int $count): string\n    {\n        return Registry::keep($count::class);\n    }\n}\n";
+    let others = [("src/Lib/Registry.php", REGISTRY)];
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &others);
+    let php_issues = issues(("src/Demo/Report.php", php), &others);
+
+    assert_eq!(sharp_issues, ["9:37 invalid-class-string-expression", "9:30 no-value"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+    assert_eq!(messages(("src/Demo/Report.sharp", sharp), &others), messages(("src/Demo/Report.php", php), &others));
+}
+
 /// A static member written through its class name is checked as PHP checks `Class::$name`.
 #[test]
 fn a_static_member_write_is_checked_as_in_php() {
@@ -2932,6 +2980,155 @@ fn an_index_write_to_a_list_is_an_error() {
             "10:9 invalid-array-access"
         ]
     );
+}
+
+/// An `Object` has no members until `is` narrows it, as an `Any` has none, spec section 24, so a member read or call on
+/// it is an error where PHP warns that a member of `object` is ambiguous.
+#[test]
+fn a_member_of_an_object_is_an_error_where_php_warns_it_is_ambiguous() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static Any? read(Object source)\n    {\n        source.run();\n        return source.id;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function read(object $source): mixed\n    {\n        $source->run();\n        return $source->id;\n    }\n}\n";
+    let levelled = |(name, code): (&'static str, &'static str)| {
+        analyze(&PLUGIN_REGISTRY, settings(), (name, code), &[])
+            .iter()
+            .map(|issue| (issue.level, located(code, issue)))
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        levelled(("src/Demo/Report.sharp", sharp)),
+        [
+            (Level::Error, "7:16 ambiguous-object-method-access".to_owned()),
+            (Level::Error, "8:23 ambiguous-object-property-access".to_owned()),
+        ]
+    );
+    assert_eq!(
+        levelled(("src/Demo/Report.php", php)),
+        [
+            (Level::Warning, "9:18 ambiguous-object-method-access".to_owned()),
+            (Level::Warning, "10:25 ambiguous-object-property-access".to_owned()),
+        ]
+    );
+}
+
+/// `is` narrows an `Object` to a class, whose members it then has, spec sections 21 and 24.
+#[test]
+fn is_narrows_an_object_to_a_class_whose_members_it_has() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int sync(Object source)\n    {\n        if (source is Order order) {\n            return order.total();\n        }\n        return 0;\n    }\n}\n\nclass Order\n{\n    public int total()\n    {\n        return 1;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// A plain PHP value typed `object` arrives as an `Object`, spec section 24: it passes to an `Object` and has no members.
+#[test]
+fn a_plain_php_object_arrives_as_an_object() {
+    let source = "<?php\n\nnamespace Lib;\n\nfinal class Source\n{\n    public static function make(): object\n    {\n        return new \\stdClass();\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Source;\n\nclass Report\n{\n    public static Any? run()\n    {\n        const made = Source.make();\n        Report.keep(made);\n        return made.id;\n    }\n\n    public static void keep(Object source)\n    {\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Source.php", source)]),
+        ["11:21 ambiguous-object-property-access"]
+    );
+}
+
+/// An `Object` passes where an `Any` is expected, spec section 24, as PHP's `object` passes to `mixed`.
+#[test]
+fn an_object_passes_where_an_any_is_expected() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static Any run(Object source, Object? maybe)\n    {\n        Report.keep(source);\n        Report.hold(maybe);\n        return source;\n    }\n\n    public static void keep(Any value)\n    {\n    }\n\n    public static void hold(Any? value)\n    {\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// A `List<T>` and a `Set<T>` are an `Iterable<T>`, and a `Map<TKey, TValue>` is an `Iterable<TValue>` of its values,
+/// spec section 12, so they pass where an `Iterable` is expected and a loop over one reads each element as `T`. A
+/// `List<int>` is no `Iterable<string>`.
+#[test]
+fn a_list_or_a_map_is_an_iterable_of_its_values_that_a_loop_reads() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(Iterable<Order> orders)\n    {\n        let sum = 0;\n        for (const order of orders) {\n            sum += order.total();\n            order.missing();\n        }\n        return sum;\n    }\n\n    public static int run(List<Order> items, Map<string, Order> byNumber, List<int> numbers)\n    {\n        return Report.total(items) + Report.total(byNumber) + Report.count(numbers);\n    }\n\n    public static int count(Iterable<string> names)\n    {\n        return 0;\n    }\n}\n\nclass Order\n{\n    public int total()\n    {\n        return 1;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[]),
+        ["10:19 non-existent-method", "17:76 possibly-invalid-argument"]
+    );
+}
+
+/// Each yielded value is checked against `T`, spec section 12, as PHP checks a value yielded from a method that
+/// returns `iterable<Order>`.
+#[test]
+fn a_yielded_value_that_is_not_the_element_type_is_reported_as_in_php() {
+    let sharp = "namespace Demo;\n\nclass OrderImport\n{\n    public OrderImport(private List<Order> pending, private Order latest)\n    {\n    }\n\n    public Iterable<Order> all()\n    {\n        yield ...this.pending;\n        yield this.latest;\n    }\n\n    public Iterable<Order> numbers()\n    {\n        yield this.latest.number();\n    }\n}\n\nclass Order\n{\n    public string number()\n    {\n        return \"1\";\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass OrderImport\n{\n    /** @param list<Order> $pending */\n    public function __construct(private array $pending, private Order $latest)\n    {\n    }\n\n    /** @return iterable<Order> */\n    public function all(): iterable\n    {\n        yield from $this->pending;\n        yield $this->latest;\n    }\n\n    /** @return iterable<Order> */\n    public function numbers(): iterable\n    {\n        yield $this->latest->number();\n    }\n}\n\nclass Order\n{\n    public function number(): string\n    {\n        return \"1\";\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/OrderImport.sharp", sharp), &[]);
+
+    assert_eq!(sharp_issues, ["17:15 invalid-yield-value-type"]);
+    assert_eq!(codes(&sharp_issues), codes(&issues(("src/Demo/OrderImport.php", php), &[])));
+    assert_eq!(messages(("src/Demo/OrderImport.sharp", sharp), &[]), messages(("src/Demo/OrderImport.php", php), &[]));
+}
+
+/// A method that yields anywhere in its body, as in a `for … of` loop or a block arm of a `match` statement, is a
+/// generator, which returns no value, as a PHP method that yields in a `foreach` is.
+#[test]
+fn a_method_that_yields_only_inside_a_loop_or_a_match_arm_returns_no_value() {
+    let sharp = "namespace Demo;\n\nclass OrderImport\n{\n    public Iterable<Order> paid(List<Order> orders)\n    {\n        for (const order of orders) {\n            yield order;\n        }\n    }\n\n    public Iterable<Order> picked(Order latest, int count)\n    {\n        match (count) {\n            0 => {\n                yield latest;\n            },\n            default => {},\n        }\n    }\n}\n\nclass Order\n{\n}\n";
+
+    assert_eq!(issues(("src/Demo/OrderImport.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// PHP compiles a generator of `?iterable`, so `check_slice` lets `Iterable<T>?` yield, and the analyzer reports it as
+/// it reports a plain PHP generator of `?iterable`: a generator never returns null.
+#[test]
+fn a_nullable_iterable_that_yields_is_reported_as_a_php_nullable_iterable_generator() {
+    let sharp = "namespace Demo;\n\nclass OrderImport\n{\n    public Iterable<Order>? maybe(Order latest)\n    {\n        yield latest;\n    }\n}\n\nclass Order\n{\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass OrderImport\n{\n    /** @return ?iterable<Order> */\n    public function maybe(Order $latest): ?iterable\n    {\n        yield $latest;\n    }\n}\n\nclass Order\n{\n}\n";
+
+    let sharp_issues = issues(("src/Demo/OrderImport.sharp", sharp), &[]);
+
+    assert_eq!(sharp_issues, ["5:12 invalid-generator-return-type"]);
+    assert_eq!(codes(&sharp_issues), codes(&issues(("src/Demo/OrderImport.php", php), &[])));
+}
+
+/// `yield ...other;` needs `other` to be an `Iterable<T>` of the method's element type, spec section 12: a `List<T>`,
+/// a `Map<TKey, T>` or an `Iterable<T>`. It runs as PHP's `yield from`, and is checked as PHP checks it.
+#[test]
+fn a_yielded_spread_of_another_element_type_is_reported_as_php_reports_yield_from() {
+    let sharp = "namespace Demo;\n\nclass OrderImport\n{\n    public Iterable<Order> all(List<Order> pending, Map<string, Order> byNumber, Iterable<Order> more, List<string> numbers)\n    {\n        yield ...pending;\n        yield ...byNumber;\n        yield ...more;\n        yield ...numbers;\n    }\n}\n\nclass Order\n{\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass OrderImport\n{\n    /**\n     * @param list<Order> $pending\n     * @param array<string, Order> $byNumber\n     * @param iterable<Order> $more\n     * @param list<string> $numbers\n     *\n     * @return iterable<Order>\n     */\n    public function all(array $pending, array $byNumber, iterable $more, array $numbers): iterable\n    {\n        yield from $pending;\n        yield from $byNumber;\n        yield from $more;\n        yield from $numbers;\n    }\n}\n\nclass Order\n{\n}\n";
+
+    let sharp_issues = issues(("src/Demo/OrderImport.sharp", sharp), &[]);
+
+    assert_eq!(sharp_issues, ["10:18 yield-from-invalid-value-type"]);
+    assert_eq!(codes(&sharp_issues), codes(&issues(("src/Demo/OrderImport.php", php), &[])));
+    assert_eq!(messages(("src/Demo/OrderImport.sharp", sharp), &[]), messages(("src/Demo/OrderImport.php", php), &[]));
+}
+
+/// An `Iterable` has no index, spec section 12, so `orders[0]` is the error PHP reports for an index read on an
+/// `iterable`.
+#[test]
+fn an_index_read_on_an_iterable_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int first(Iterable<Order> orders)\n    {\n        return orders[0].total();\n    }\n}\n\nclass Order\n{\n    public int total()\n    {\n        return 1;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    /** @param iterable<mixed, Order> $orders */\n    public static function first(iterable $orders): int\n    {\n        return $orders[0]->total();\n    }\n}\n\nclass Order\n{\n    public function total(): int\n    {\n        return 1;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+
+    assert_eq!(sharp_issues, ["7:16 invalid-array-access", "7:26 mixed-method-access", "7:16 mixed-return-statement"]);
+    assert_eq!(codes(&sharp_issues), codes(&issues(("src/Demo/Report.php", php), &[])));
+    assert_eq!(messages(("src/Demo/Report.sharp", sharp), &[]), messages(("src/Demo/Report.php", php), &[]));
+}
+
+/// `Object` holds any object and nothing else, spec section 24, so `5` passed to an `Object` is reported as PHP reports
+/// `5` passed to `object`.
+#[test]
+fn a_value_that_is_not_an_object_passed_to_an_object_is_an_invalid_argument() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static void run()\n    {\n        Report.keep(5);\n    }\n\n    public static void keep(Object source)\n    {\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function run(): void\n    {\n        Report::keep(5);\n    }\n\n    public static function keep(object $source): void\n    {\n    }\n}\n";
+
+    assert_eq!(
+        messages(("src/Demo/Report.sharp", sharp), &[]),
+        ["Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `object`, but found `int(5)`."]
+    );
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[]), ["7:21 invalid-argument"]);
+    assert_eq!(messages(("src/Demo/Report.sharp", sharp), &[]), messages(("src/Demo/Report.php", php), &[]));
 }
 
 /// `for (const [k, v] of x)` reads the keys of a `Map`. A `List`'s indexes come from `entries()`, as spec section 12

@@ -81,9 +81,12 @@ use mago_syntax::cst::UnaryPostfixOperator;
 use mago_syntax::cst::UnaryPrefixOperator;
 use mago_syntax::cst::Variable;
 use mago_syntax::cst::WhileBody;
+use mago_syntax::cst::Yield;
+use mago_syntax::cst::YieldValue;
 use mago_syntax::dialect::Dialect;
 use mago_syntax::parser::parse_file_with_dialect;
 use mago_syntax::settings::ParserSettings;
+use mago_syntax::utils::block_has_yield;
 use mago_syntax::utils::pattern::PhpShape;
 use mago_syntax::utils::pattern::php_shape;
 use mago_syntax_core::stack::ensure_sufficient_stack;
@@ -177,6 +180,8 @@ use crate::sharp_kind::SHARP_AST_UNPACK;
 use crate::sharp_kind::SHARP_AST_UNSET;
 use crate::sharp_kind::SHARP_AST_VAR;
 use crate::sharp_kind::SHARP_AST_WHILE;
+use crate::sharp_kind::SHARP_AST_YIELD;
+use crate::sharp_kind::SHARP_AST_YIELD_FROM;
 use crate::sharp_kind::SHARP_AST_ZVAL;
 use crate::sharp_node;
 use crate::sharp_severity;
@@ -200,6 +205,7 @@ const ZEND_ACC_INTERFACE: u32 = 1 << 0;
 const ZEND_ACC_READONLY: u32 = 1 << 7;
 const ZEND_ACC_PROTECTED_SET: u32 = 1 << 11;
 const ZEND_ACC_PRIVATE_SET: u32 = 1 << 12;
+const ZEND_ACC_GENERATOR: u32 = 1 << 24;
 const ZEND_ACC_ENUM: u32 = 1 << 28;
 const ZEND_TYPE_NULLABLE: u32 = 1 << 8;
 const IS_STATIC: u32 = 15;
@@ -570,7 +576,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// A method is a `function` with its return type after its parameters, and with `flags`. Its first line is where
     /// PHP writes `function`: the return type, or the name of the constructor, which runs as `__construct` and has
     /// no return type. The constructor's body starts with the class's initial values that are not constant, and an
-    /// abstract method has no statement list.
+    /// abstract method has no statement list. A method whose body yields is a generator, as php-src's grammar flags a
+    /// function whose body holds a `yield`.
     fn method(&mut self, method: &Method, flags: u32, initial_values: &[u32]) -> u32 {
         if flags & (ZEND_ACC_PUBLIC | ZEND_ACC_PROTECTED | ZEND_ACC_PRIVATE) == 0 {
             unreachable!("check_slice refuses a method without an access modifier");
@@ -611,10 +618,14 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         };
         let r#override = method.modifiers.iter().find(|modifier| matches!(modifier, Modifier::Override(_)));
         let attributes = self.attributes(&method.attribute_lists, r#override);
+        let generator = match &method.body {
+            MethodBody::Concrete(block) if block_has_yield(block) => ZEND_ACC_GENERATOR,
+            _ => 0,
+        };
 
         self.declaration(
             SHARP_AST_METHOD,
-            flags,
+            flags | generator,
             start,
             method.body.span(),
             php_method_name(method),
@@ -853,19 +864,23 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_ASSIGN, 0, line, &[property, value])
     }
 
-    /// A built-in type is written unqualified, and a class by its full name. `Self` is a `TYPE` node of `IS_STATIC`, as
-    /// php-src's grammar builds `static`. A `List` or `Map` is a PHP array, so its type is `array`, as php-src's grammar
-    /// builds it. A function type runs as PHP's `\Closure`. `Any` and `Any?` are PHP's `mixed`, which already holds
-    /// null. Any other nullable type is its type with `ZEND_TYPE_NULLABLE`, as
-    /// php-src's grammar builds `?int`.
+    /// A built-in type is written unqualified, and a class by its full name. `Object` is PHP's `object`. `Self` is a
+    /// `TYPE` node of `IS_STATIC`, as php-src's grammar builds `static`. A `List` or `Map` is a PHP array, so its type is
+    /// `array`, as php-src's grammar builds it, and an `Iterable` is PHP's `iterable`, which php-src compiles as
+    /// `Traversable|array`. A function type runs as PHP's `\Closure`. `Any` and `Any?` are PHP's `mixed`, which already
+    /// holds null. Any other nullable type is its type with `ZEND_TYPE_NULLABLE`, as php-src's grammar builds `?int`.
     fn hint(&mut self, hint: &Hint) -> u32 {
         match hint {
             Hint::Integer(name) | Hint::Float(name) | Hint::Bool(name) | Hint::String(name) | Hint::Void(name) => {
                 self.string(ZEND_NAME_NOT_FQ, self.line(name.span), name.value)
             }
             Hint::Mixed(any) => self.string(ZEND_NAME_NOT_FQ, self.line(any.span), b"mixed"),
+            Hint::Object(name) => self.string(ZEND_NAME_NOT_FQ, self.line(name.span), b"object"),
             Hint::Identifier(class) => self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class)),
             Hint::Self_(keyword) => self.node(SHARP_AST_TYPE, IS_STATIC, self.line(keyword), &[]),
+            Hint::Generic(generic) if generic.name.value == b"Iterable" => {
+                self.string(ZEND_NAME_NOT_FQ, self.line(generic), b"iterable")
+            }
             Hint::Generic(generic) => self.node(SHARP_AST_TYPE, IS_ARRAY, self.line(generic), &[]),
             Hint::Function(function) => self.string(ZEND_NAME_FQ, self.line(function), b"Closure"),
             Hint::Nullable(NullableHint { hint: any @ Hint::Mixed(_), .. }) => self.hint(any),
@@ -1263,7 +1278,12 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.node(SHARP_AST_NULLSAFE_PROP, 0, line, &[object, property])
             }
             Expression::TypeOf(type_of) => {
-                let class = self.string(ZEND_NAME_FQ, self.line(type_of.class), self.names.get(&type_of.class));
+                let class = match self.names.binding(&type_of.class) {
+                    Some(Binding::Local(_) | Binding::This) => {
+                        self.variable(type_of.class.span(), type_of.class.value())
+                    }
+                    _ => self.string(ZEND_NAME_FQ, self.line(type_of.class), self.names.get(&type_of.class)),
+                };
 
                 self.node(SHARP_AST_CLASS_NAME, 0, line, &[class])
             }
@@ -1271,6 +1291,18 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 let exception = self.expression(throw.exception);
 
                 self.node(SHARP_AST_THROW, 0, line, &[exception])
+            }
+            // `yield value;` is php-src's `yield $value;`, a `YIELD` of its value and no key, and `yield ...other;` is
+            // `yield from $other;`. `check_slice` keeps both as statements of a method that returns `Iterable<T>`.
+            Expression::Yield(Yield::Value(YieldValue { value: Some(value), .. })) => {
+                let value = self.expression(value);
+
+                self.node(SHARP_AST_YIELD, 0, line, &[value, NULL])
+            }
+            Expression::Yield(Yield::Spread(spread)) => {
+                let iterator = self.expression(spread.iterator);
+
+                self.node(SHARP_AST_YIELD_FROM, 0, line, &[iterator])
             }
             Expression::CompositeString(CompositeString::Interpolated(template)) => self.template(template),
             Expression::ArrowFunction(arrow_function) => self.arrow_function(arrow_function),

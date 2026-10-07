@@ -19,6 +19,7 @@ use crate::ttype::atomic::TAtomic;
 use crate::ttype::atomic::callable::TCallable;
 use crate::ttype::atomic::callable::TCallableSignature;
 use crate::ttype::atomic::callable::parameter::TCallableParameter;
+use crate::ttype::atomic::iterable::TIterable;
 use crate::ttype::atomic::mixed::TMixed;
 use crate::ttype::atomic::object::TObject;
 use crate::ttype::atomic::object::named::TNamedObject;
@@ -202,6 +203,9 @@ fn union_from_hint(
             match (generic.name.value, arguments.next(), arguments.next(), arguments.next()) {
                 (b"List", Some(element), None, None) => get_list(element),
                 (b"Map", Some(key), Some(value), None) => get_keyed_array(key, value),
+                (b"Iterable", Some(element), None, None) => {
+                    wrap_atomic(TAtomic::Iterable(TIterable::of_value(Arc::new(element))))
+                }
                 _ => get_mixed_keyed_array(),
             }
         }

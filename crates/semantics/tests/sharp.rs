@@ -1688,7 +1688,7 @@ fn a_field_or_a_property_may_be_static_with_a_constant_initial_value() {
 #[test]
 fn a_nullable_field_of_a_type_outside_the_slice_is_not_supported_yet() {
     let code =
-        "namespace App.Tenant;\n\nclass Report\n{\n    private iterable? items;\n    private (int|iterable)? key;\n}\n";
+        "namespace App.Tenant;\n\nclass Report\n{\n    private array? items;\n    private (int|array)? key;\n}\n";
 
     assert_eq!(
         issues(code),
@@ -1758,7 +1758,7 @@ fn a_class_constant_has_an_access_modifier_an_optional_type_and_a_constant_value
 
 #[test]
 fn a_class_constant_outside_the_slice_is_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nclass Report\n{\n    const A = 1;\n    public const B = 1, C = 2;\n    final public const D = 1;\n    public const E = 2 << 3;\n    public const iterable F = [];\n}\n";
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    const A = 1;\n    public const B = 1, C = 2;\n    final public const D = 1;\n    public const E = 2 << 3;\n    public const array F = [];\n}\n";
 
     assert_eq!(
         issues(code),
@@ -1796,7 +1796,7 @@ fn a_class_constant_may_have_a_union_type_or_a_nullable_union_type() {
 
 #[test]
 fn a_union_typed_class_constant_follows_the_union_rules() {
-    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public const int|null NONE = null;\n    public const int|iterable ITEMS = 1;\n    public const int|string|int TWICE = 1;\n}\n";
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public const int|null NONE = null;\n    public const int|array ITEMS = 1;\n    public const int|string|int TWICE = 1;\n}\n";
 
     assert_eq!(
         issues(code),
@@ -2200,18 +2200,18 @@ fn a_member_name_written_as_an_expression_is_not_supported_yet() {
 
 #[test]
 fn types_outside_the_slice_are_not_supported_yet() {
-    let code = "class Report\n{\n    public object run(iterable? a, int|iterable b, iterable c, callable d, (Lib&Other)|null e)\n    {\n        return 1;\n    }\n\n    public self make(Lib f, float g, bool h, string i)\n    {\n        return this;\n    }\n}\n";
+    let code = "class Report\n{\n    public array run(array? a, int|array b, array c, callable d, (Lib&Other)|null e)\n    {\n        return 1;\n    }\n\n    public self make(Lib f, float g, bool h, string i)\n    {\n        return this;\n    }\n}\n";
 
     assert_eq!(
         issues(code),
         [
             "3:12 This type is not supported yet in PHP#.",
-            "3:23 This type is not supported yet in PHP#.",
-            "3:40 This type is not supported yet in PHP#.",
-            "3:52 This type is not supported yet in PHP#.",
-            "3:64 This type is not supported yet in PHP#.",
-            "3:76 This type is not supported yet in PHP#.",
-            "3:88 This union that holds null is not supported yet in PHP#.",
+            "3:22 This type is not supported yet in PHP#.",
+            "3:36 This type is not supported yet in PHP#.",
+            "3:45 This type is not supported yet in PHP#.",
+            "3:54 This type is not supported yet in PHP#.",
+            "3:66 This type is not supported yet in PHP#.",
+            "3:78 This union that holds null is not supported yet in PHP#.",
             "8:12 PHP# has no `self`: write the class's own name, `Report`, for the declaring class, or `Self` for the class a static method is called on.",
         ]
     );
@@ -2220,7 +2220,7 @@ fn types_outside_the_slice_are_not_supported_yet() {
 #[test]
 fn a_typed_local_takes_the_types_of_the_slice_but_not_void() {
     let code = leak(method(
-        "        void nothing = null;\n        iterable items = null;\n        mixed? anything = null;\n        const int? kept = null;\n        kept = 1;\n        return 1;\n",
+        "        void nothing = null;\n        never items = null;\n        mixed? anything = null;\n        const int? kept = null;\n        kept = 1;\n        return 1;\n",
     ));
 
     assert_eq!(
@@ -2237,7 +2237,7 @@ fn a_typed_local_takes_the_types_of_the_slice_but_not_void() {
 #[test]
 fn a_typed_for_counter_takes_the_types_of_the_slice_but_not_void() {
     let code = leak(method(
-        "        for (void step = null; ; ) {\n        }\n        for (iterable items = null; ; ) {\n        }\n        for (const int? kept = null; ; kept = 1) {\n        }\n        return 1;\n",
+        "        for (void step = null; ; ) {\n        }\n        for (never items = null; ; ) {\n        }\n        for (const int? kept = null; ; kept = 1) {\n        }\n        return 1;\n",
     ));
 
     assert_eq!(
@@ -2253,7 +2253,7 @@ fn a_typed_for_counter_takes_the_types_of_the_slice_but_not_void() {
 #[test]
 fn a_typed_loop_variable_takes_the_types_of_the_slice_but_not_void() {
     let code = leak(method(
-        "        for (const [Status status, int n] of Store.counts()) {\n        }\n        for (const Map<string, List<int>> group of Store.groups()) {\n        }\n        for (const void step of Store.values()) {\n        }\n        for (const iterable items of Store.values()) {\n        }\n        return 1;\n",
+        "        for (const [Status status, int n] of Store.counts()) {\n        }\n        for (const Map<string, List<int>> group of Store.groups()) {\n        }\n        for (const void step of Store.values()) {\n        }\n        for (const never items of Store.values()) {\n        }\n        return 1;\n",
     ));
 
     assert_eq!(
@@ -2412,6 +2412,103 @@ fn a_map_key_that_is_not_int_string_or_a_named_type_is_an_error() {
 }
 
 #[test]
+fn object_and_iterable_of_a_type_are_in_the_slice_wherever_a_type_is() {
+    let code = "class Report\n{\n    private Object? last = null;\n    public Iterable<Line> lines { get; }\n\n    public Iterable<int> run(Object source, Iterable<Line>? more, Object|int either, List<Object> all)\n    {\n        Iterable<string> names = [];\n        return [];\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn php_object_and_iterable_are_errors_that_name_the_php_sharp_types() {
+    let code = "class Report\n{\n    public iterable run(object a, OBJECT b, Iterable c, iterable<int> d, Iterable<int, int> e, int|object f)\n    {\n        return [];\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "3:12 PHP# writes `Iterable<T>`, with the type of its elements, for PHP's `iterable`.",
+            "3:25 PHP# writes `Object` for PHP's `object`.",
+            "3:35 PHP# writes `Object` for PHP's `object`.",
+            "3:45 PHP# writes `Iterable<T>`, with the type of its elements, for PHP's `iterable`.",
+            "3:57 This type is not supported yet in PHP#.",
+            "3:74 This type is not supported yet in PHP#.",
+            "3:100 PHP# writes `Object` for PHP's `object`.",
+        ]
+    );
+}
+
+/// Spec section 12: a method that returns `Iterable<T>` produces its values with `yield value;` and every element of
+/// another `Iterable<T>` with `yield ...other;`, and a bare `return;` ends it. PHP compiles a `?iterable` generator, so
+/// `Iterable<T>?` takes `yield` too. In PHP#, `=>` is the lambda arrow, so `yield x => x;` yields a lambda.
+#[test]
+fn yield_and_yield_spread_are_statements_of_a_method_that_returns_an_iterable() {
+    let code = "namespace App.Tenant;\n\nclass OrderImport\n{\n    public Iterable<Order> all(List<Order> pending, Order latest)\n    {\n        yield ...pending;\n        yield latest;\n        if (count(pending) > 1) {\n            return;\n        }\n    }\n\n    public Iterable<Order>? maybe(Order latest)\n    {\n        yield latest;\n    }\n\n    public Iterable<Function<int(int)>> lambdas()\n    {\n        yield x => x;\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+/// A constructor, a method that returns another type and a lambda produce no `Iterable<T>`, so `yield` in them is an
+/// error, spec section 12.
+#[test]
+fn yield_outside_a_method_that_returns_an_iterable_is_an_error() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public Report(Order latest)\n    {\n        yield latest;\n    }\n\n    public List<Order> recent(Order latest)\n    {\n        yield latest;\n    }\n\n    public Iterable<Order> lazy(Order latest)\n    {\n        const read = () => { yield latest; };\n        const arrow = () => yield latest;\n        yield latest;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:9 `yield` needs a method that returns `Iterable<T>`.",
+            "12:9 `yield` needs a method that returns `Iterable<T>`.",
+            "17:30 `yield` needs a method that returns `Iterable<T>`.",
+            "18:29 `yield` needs a method that returns `Iterable<T>`.",
+        ]
+    );
+}
+
+/// PHP's `send()` and two-way generators are not part of PHP#, spec section 12, so `yield` is a statement with a value.
+#[test]
+fn yield_as_a_value_or_without_a_value_is_an_error() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public Iterable<Order> all(Order latest)\n    {\n        const kept = yield latest;\n        Store.keep(yield latest);\n        yield;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:22 `yield` gives no value back: write it as a statement, as in `yield value;`.",
+            "8:20 `yield` gives no value back: write it as a statement, as in `yield value;`.",
+            "9:9 PHP# has no `yield;`: write `yield value;`.",
+        ]
+    );
+}
+
+#[test]
+fn php_yield_from_and_a_yielded_key_are_errors_that_name_the_php_sharp_form() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public Iterable<Order> all(List<Order> pending, Order latest)\n    {\n        yield from pending;\n        yield 1 => latest;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:9 PHP# has no `yield from`: write `yield ...other;`.",
+            "8:9 PHP# has no `yield key => value`: write `yield value;`.",
+        ]
+    );
+}
+
+/// A method that yields produces only the values it yields, as C#'s CS1622 "Cannot return a value from an iterator"
+/// says, so `return value;` there is an error and a bare `return;` ends it. A method that returns `Iterable<T>` without
+/// yielding returns its value, and a lambda in a method that yields returns its own.
+#[test]
+fn a_return_with_a_value_in_a_method_that_yields_is_an_error() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public Iterable<Order> all(List<Order> pending, Order latest)\n    {\n        yield latest;\n        const read = () => { return latest; };\n        if (count(pending) > 0) {\n            return;\n        }\n        return pending;\n    }\n\n    public Iterable<Order> copy(List<Order> pending)\n    {\n        return pending;\n    }\n}\n";
+
+    assert_eq!(issues(code), ["12:9 A method that yields cannot return a value: write `return;` to end it."]);
+}
+
+#[test]
+fn php_keeps_every_form_of_yield() {
+    let code = "<?php\n\nfunction rows(): iterable\n{\n    $sent = yield 1;\n    yield 2 => $sent;\n    yield from [3];\n    yield;\n    return 4;\n}\n";
+
+    assert_eq!(issues_in("src/rows.php", code), Vec::<String>::new());
+}
+
+#[test]
 fn a_literal_element_outside_the_slice_is_not_supported_yet() {
     let code = leak(method(
         "        const reference = [&extra];\n        const missing = [, extra];\n        let list = [1];\n        list[] = 2;\n        return 1;\n",
@@ -2483,6 +2580,29 @@ fn typeof_names_a_class_in_a_method_body() {
     let code = leak(method("        Store.keep(typeof(Order));\n        return extra;\n"));
 
     assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn typeof_names_a_local_or_this_in_a_method_body() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public string run(Order order)\n    {\n        Store.keep(typeof(this));\n        return typeof(order);\n    }\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+/// A parameter default is a constant expression, where PHP refuses `$order::class` as it refuses `$order`, so
+/// `typeof(order)` there is not supported, as `order` is not. `typeof(field)` is not supported yet.
+#[test]
+fn typeof_of_a_value_in_a_parameter_default_or_of_field_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public Order last\n    {\n        get\n        {\n            Store.keep(typeof(field));\n            return field;\n        }\n        set;\n    }\n\n    public string run(Order order, string name = typeof(order), string other = order)\n    {\n        return name;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "9:24 This expression is not supported yet in PHP#.",
+            "15:50 This expression is not supported yet in PHP#.",
+            "15:80 This expression is not supported yet in PHP#.",
+        ]
+    );
 }
 
 #[test]

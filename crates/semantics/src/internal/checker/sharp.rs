@@ -69,6 +69,7 @@ use mago_syntax::cst::PropertyHookBody;
 use mago_syntax::cst::PropertyHookConcreteBody;
 use mago_syntax::cst::PropertyHookList;
 use mago_syntax::cst::PropertyItem;
+use mago_syntax::cst::Return;
 use mago_syntax::cst::Sequence;
 use mago_syntax::cst::Statement;
 use mago_syntax::cst::StringPart;
@@ -86,6 +87,9 @@ use mago_syntax::cst::UseItems;
 use mago_syntax::cst::Variable;
 use mago_syntax::cst::While;
 use mago_syntax::cst::WhileBody;
+use mago_syntax::cst::Yield;
+use mago_syntax::cst::YieldSpread;
+use mago_syntax::cst::YieldValue;
 use mago_syntax_core::stack::ensure_sufficient_stack;
 
 use crate::internal::consts::RESERVED_CLASS_NAMES;
@@ -165,23 +169,26 @@ const ANY: &[u8] = b"Any";
 ///   alone may be `required`, which keeps it callable as `new Self(…)` on every subclass, spec section 25. The parser
 ///   reports `required` on any other member as not supported yet.
 /// - A parameter: always a type, a name and an optional default, and never by reference. A default is a constant
-///   expression: a literal, a constant, `typeof(X)`, a list or map literal of them, or the operators below on them,
-///   without `++` and `--`. A parameter written `int ...values` is variadic, as spec section 7 writes it, and PHP's
-///   own checks report a variadic parameter that is not the last or has a default. `check_parameter_list` reports a
-///   variadic parameter that declares a member or has a `void` type in a `.sharp` file only, as upstream Mago reports
-///   neither. An optional parameter before a required one is an error, because PHP would make it required. A
-///   variadic parameter is not a required one, as in PHP. A default of `Position.current()` of the standard library is
-///   not supported yet, because as a default it gives the caller's position, spec section 27, which waits for typed
-///   compilation.
-/// - Types: `int`, `float`, `bool`, `string`, `Any`, a class written by its short name, `List<T>` and
-///   `Map<TKey, TValue>` of these, function types `Function<R(P1, P2)>` of these, and `void` as a return type, a
-///   function type's too. A `Map`'s key is `int` or `string`. PHP's own check reports a `void` parameter and a `void`
-///   field. Each of them is nullable when written with `?` after it, as in `int?` or `Map<string, Any?>`, and PHP's
-///   own check reports `void?`. PHP's `mixed` is an error, because spec section 24 writes it `Any?`. A union of them but
-///   `void`, written inline as spec section 24 writes it, as in `int|string` or `List<int>|string`, goes wherever a
-///   type goes. PHP's own check reports `void` and a nullable type, as in `int?|string`, in a union, and
-///   `check_union` reports a type written twice, which the engine refuses. A union holds null only when written in
-///   parentheses with `?` after it, as in `(int|string)?`, which the engine compiles as `int|string|null`.
+///   expression: a literal, a constant, `typeof(X)` of a class, a list or map literal of them, or the operators below
+///   on them, without `++` and `--`. A parameter written `int ...values` is variadic, as spec section 7 writes it, and
+///   PHP's own checks report a variadic parameter that is not the last or has a default. `check_parameter_list`
+///   reports a variadic parameter that declares a member or has a `void` type in a `.sharp` file only, as upstream
+///   Mago reports neither. An optional parameter before a required one is an error, because PHP would make it
+///   required. A variadic parameter is not a required one, as in PHP. A default of `Position.current()` of the
+///   standard library is not supported yet, because as a default it gives the caller's position, spec section 27,
+///   which waits for typed compilation.
+/// - Types: `int`, `float`, `bool`, `string`, `Any`, `Object`, which holds any object, a class written by its short
+///   name, `List<T>`, `Map<TKey, TValue>` and `Iterable<T>`, which is anything a loop reads, of these, function types
+///   `Function<R(P1, P2)>` of these, and `void` as a return type, a function type's too. A `Map`'s key is `int` or
+///   `string`. PHP's own check reports a `void` parameter and a `void` field. Each of them is nullable when written
+///   with `?` after it, as in `int?` or `Map<string, Any?>`, and PHP's own check reports `void?`. PHP's `mixed` is an
+///   error, because spec section 24 writes it `Any?`. PHP's `object` in any spelling but `Object`, and PHP's
+///   `iterable`, are errors that name the PHP# type, and a lowercase type with type arguments, as in `iterable<int>`,
+///   is not supported yet. A union of them but `void`, written inline as spec section 24 writes it, as in `int|string`
+///   or `List<int>|string`, goes wherever a type goes. PHP's own check reports `void` and a nullable type, as in
+///   `int?|string`, in a union, and `check_union` reports a type written twice, which the engine refuses. A union
+///   holds null only when written in parentheses with `?` after it, as in `(int|string)?`, which the engine compiles
+///   as `int|string|null`.
 ///   `check_union` reports `null` written in a union, as in `int|null`, as not supported yet. PHP's own check reports
 ///   a nullable union inside another union, and a single type in parentheses, as in `(Calc)?`, which PHP# writes
 ///   `Calc?`. `(int)?` is a parse error, as PHP lexes `(int)` as a cast. A field, or a property with storage and `set`,
@@ -203,6 +210,11 @@ const ANY: &[u8] = b"Any";
 ///   by `|`, and an optional variable written without `$`, which lives until the clause's block ends. A local
 ///   statement can have its type written, as in `Money? total = null;` or `const int base = 2;`, from the types
 ///   above but `void`.
+/// - `yield value;` and `yield ...other;`, spec section 12: statements of a method that returns `Iterable<T>` or
+///   `Iterable<T>?`, which PHP compiles as a generator too and the analyzer reports as it reports PHP's `?iterable`
+///   generator, outside any lambda in it. `yield` gives no value back, so
+///   any other use of it is an error, and so is `return value;` in a method that yields, as C#'s CS1622. PHP's
+///   `yield from`, `yield key => value` and bare `yield` are errors that name the PHP# form.
 /// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter, a member written
 ///   `object.name` or, when static, `Class.name`, or an index of one of them written `target[key]`. The analyzer,
 ///   which knows the types, allows an index write only on a `Map`, and a read not under `??` or `?.` only on a `List`,
@@ -219,16 +231,17 @@ const ANY: &[u8] = b"Any";
 ///   `super.method(...)`, which calls the parent's method, and `Self.method(...)`, which calls a static method of the
 ///   class a static method is called on, each with positional, named and spread arguments, as in
 ///   `Money.sum(...prices)` and `max(...prices)`, `throw`, which is an expression as in PHP, `exit(code)` and
-///   `exit()`, which spec section 8 keeps as PHP 8.4's built-in function, and `typeof(X)` on a class written by its
-///   short name, without a member read or called on it. `new Self(...)` in an enum is an error, because an enum has
-///   no constructor. `Self.name` read or written is not supported yet, as `super.name` is not. PHP's own check
-///   reports a positional argument after a spread and a spread after a named argument, and `check_function_call`
-///   reports `assert` with a spread as its only argument, after which PHP adds a positional description. `?.` never
-///   follows a class. A function is the global function of that name, PHP's own or one a library or the app
-///   declares, as spec sections 8 and 29 keep them, and the engine calls the global one. A string literal's `\u{...}`
-///   escapes are valid codepoints, as PHP requires. A `"…"` string never interpolates, and a template,
-///   `` `Order ${number}` ``, interpolates any expression of this list in each `${…}` and takes JavaScript's escapes,
-///   as spec section 18 writes them.
+///   `exit()`, which spec section 8 keeps as PHP 8.4's built-in function, and `typeof(X)`, without a member read or
+///   called on it, where `X` is the value of a local, a parameter or `this` in scope, as in PHP's `$order::class`, and
+///   otherwise a class written by its short name. `typeof(field)` is not supported yet. `new Self(...)` in an enum is
+///   an error, because an enum has no constructor. `Self.name` read or written is not supported yet, as `super.name` is not. PHP's own check reports a
+///   positional argument after a spread and a spread after a named argument, and `check_function_call` reports
+///   `assert` with a spread as its only argument, after which PHP adds a positional description. `?.` never follows a
+///   class. A function is the global function of that name, PHP's own or one a library or the app declares, as spec
+///   sections 8 and 29 keep them, and the engine calls the global one. A string literal's `\u{...}` escapes are valid
+///   codepoints, as PHP requires. A `"…"` string never interpolates, and a template, `` `Order ${number}` ``,
+///   interpolates any expression of this list in each `${…}` and takes JavaScript's escapes, as spec section 18
+///   writes them.
 /// - Lambdas, as spec section 3 writes them: `x => x.id`, `(a, b) => a + b` and `() => { … }`, whose body is an
 ///   expression or a block of a method body. A parameter is a method's, with its type optional, so the last one can
 ///   be variadic, as in `(int ...values) => count(values)`. A lambda captures the variable itself, except a loop
@@ -612,17 +625,6 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             ),
             FieldOrProperty,
         ) => Some(FieldOrProperty),
-        (Node::Hint(Hint::Mixed(mixed)), FieldOrProperty | ClassConstant | Method | Signature | Parameter | Body)
-            if mixed.value != ANY =>
-        {
-            context.report(
-                Issue::error("PHP# has no `mixed`: write `Any?`, or `Any` for a value that is never null.")
-                    .with_annotation(Annotation::primary(mixed.span).with_message("Written here."))
-                    .with_note("Spec section 24 removes PHP's `mixed`: `Any` holds a value of any type but null, and `Any?` also allows null."),
-            );
-
-            None
-        }
         (Node::GenericHint(generic), FieldOrProperty | Method | Signature | Parameter | Body) => {
             // The analyzer refuses a named key type without an `int` or `string` backing value. A key type outside the
             // slice, nullable or not, is refused once, by the walk, as that type.
@@ -673,6 +675,8 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
                 if method.return_type_hint.is_some() {
                     check_declared_name(method.name.value, method.name.span, context);
                 }
+
+                check_iterator_returns(method, context);
 
                 Some(Method)
             }
@@ -771,6 +775,11 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
                 check_union(union, place, context);
             }
 
+            None
+        }
+        (Node::Hint(hint), FieldOrProperty | ClassConstant | Method | Signature | Parameter | Body)
+            if report_php_type(hint, context) =>
+        {
             None
         }
         (Node::Hint(hint), FieldOrProperty | Method | Signature | Parameter | Body) if is_slice_type(hint) => {
@@ -1056,8 +1065,19 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         ) => Some(place),
         (Node::Expression(Expression::ArrayAccess(_)) | Node::ArrayAccess(_), Body) => Some(Body),
         (Node::ConstantAccess(_), Body) => Some(Body),
-        // `typeof(X)` is `X::class`, which PHP takes as a constant expression too.
-        (Node::Expression(Expression::TypeOf(_)) | Node::TypeOf(_), Body | Constant) => Some(place),
+        // `typeof(X)` of a class is `X::class`, which PHP takes as a constant expression too. `typeof(x)` of a local, a
+        // parameter or `this` is `$x::class`, which PHP takes only in a method body. `typeof(field)` is not supported
+        // yet.
+        (Node::Expression(Expression::TypeOf(type_of)), Body | Constant)
+            if match context.names.binding(&type_of.class) {
+                None => true,
+                Some(Binding::Local(_) | Binding::This) => matches!(place, Body),
+                Some(_) => false,
+            } =>
+        {
+            Some(place)
+        }
+        (Node::TypeOf(_), Body | Constant) => Some(place),
         (Node::ConstantAccess(constant), Constant)
             if context.names.binding(&constant.name) == Some(Binding::Constant) =>
         {
@@ -1096,6 +1116,15 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         (Node::FunctionLikeParameterList(_), Lambda) => Some(Lambda),
         (Node::Block(_), Lambda) => Some(Body),
         (Node::Expression(_), Lambda) => enter(node, Body, context),
+        // `check_yield` reports a `yield` at its keyword, so its value is still checked as the method body's.
+        (Node::Expression(Expression::Yield(r#yield)), Body) => {
+            check_yield(r#yield, context);
+
+            Some(Body)
+        }
+        (Node::Yield(_) | Node::YieldValue(_) | Node::YieldSpread(_) | Node::YieldFrom(_) | Node::YieldPair(_), Body) => {
+            Some(Body)
+        }
         (Node::BinaryOperator(operator), Body | Constant) if is_slice_binary_operator(operator) => Some(place),
         // `check_cast` decided the cast at its `UnaryPrefix`.
         (Node::UnaryPrefixOperator(operator), Body | Constant) if operator.is_cast() => Some(place),
@@ -1956,9 +1985,9 @@ fn is_slice_target(target: &Expression, context: &Context<'_, '_, '_>) -> bool {
     }
 }
 
-/// Whether the slice has a type: the built-in types of spec section 24, or a class written by its short name, or a
-/// nullable type, or `List<T>` or `Map<TKey, TValue>` of spec section 12, or a function type of spec section 14.1
-/// without a `void` parameter, whose inner types the walk checks next.
+/// Whether the slice has a type: the built-in types of spec section 24, `Object`, a class written by its short name, a
+/// nullable type, `List<T>`, `Map<TKey, TValue>` or `Iterable<T>` of spec section 12, or a function type of spec
+/// section 14.1 without a `void` parameter, whose inner types the walk checks next.
 fn is_slice_type(hint: &Hint) -> bool {
     match hint {
         Hint::Integer(_)
@@ -1969,10 +1998,11 @@ fn is_slice_type(hint: &Hint) -> bool {
         | Hint::Identifier(Identifier::Local(_))
         | Hint::Nullable(_) => true,
         Hint::Mixed(any) => any.value == ANY,
+        Hint::Object(name) => name.value == b"Object",
         Hint::Generic(generic) => {
             let arguments = generic.arguments.len();
 
-            ((generic.name.value == b"List" && arguments == 1) || (generic.name.value == b"Map" && arguments == 2))
+            matches!((generic.name.value, arguments), (b"List" | b"Iterable", 1) | (b"Map", 2))
                 && !generic.arguments.iter().any(|argument| matches!(argument, Hint::Void(_)))
         }
         Hint::Function(function) => !function.parameters.iter().any(|parameter| matches!(parameter, Hint::Void(_))),
@@ -2005,6 +2035,7 @@ fn check_union(union: &UnionHint, place: Place, context: &mut Context<'_, '_, '_
 
                 false
             }
+            _ if report_php_type(member, context) => false,
             _ if is_slice_type(member) => true,
             _ => {
                 report_not_supported(member.span(), "type", supported(place), context);
@@ -2073,6 +2104,26 @@ fn report_php_static(keyword: &Keyword, context: &mut Context<'_, '_, '_>) {
         Issue::error("PHP# writes `Self` for PHP's `static`.")
             .with_annotation(Annotation::primary(keyword.span).with_message("Written here.")),
     );
+}
+
+/// Reports a PHP type that PHP# writes another way, spec section 24, and whether it reported one.
+fn report_php_type(hint: &Hint, context: &mut Context<'_, '_, '_>) -> bool {
+    let issue = match hint {
+        Hint::Mixed(mixed) if mixed.value != ANY => {
+            Issue::error("PHP# has no `mixed`: write `Any?`, or `Any` for a value that is never null.").with_note(
+                "Spec section 24 removes PHP's `mixed`: `Any` holds a value of any type but null, and `Any?` also allows null.",
+            )
+        }
+        Hint::Object(name) if name.value != b"Object" => Issue::error("PHP# writes `Object` for PHP's `object`."),
+        Hint::Iterable(_) => {
+            Issue::error("PHP# writes `Iterable<T>`, with the type of its elements, for PHP's `iterable`.")
+        }
+        _ => return false,
+    };
+
+    context.report(issue.with_annotation(Annotation::primary(hint.span()).with_message("Written here.")));
+
+    true
 }
 
 /// Decides `new` on a class written by its short name, on `Self`, or on PHP's `self` or `static`. `new Self(…)` needs
@@ -2464,22 +2515,22 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# interface has an optional `public`, a name, an optional `: Interface` header and methods, with no attributes, other modifiers, `extends`, constants or properties."
         }
         Place::Signature => {
-            "A PHP# interface method has no modifier, parameters, a return type of `int`, `float`, `bool`, `string`, `Any`, `void`, a class, `List<T>`, `Map<TKey, TValue>` or `Self`, each but `void` nullable as in `int?`, or a union of them but `void`, as in `int|string`, and no body."
+            "A PHP# interface method has no modifier, parameters, a return type of `int`, `float`, `bool`, `string`, `Any`, `Object`, `void`, a class, `List<T>`, `Map<TKey, TValue>`, `Iterable<T>` or `Self`, each but `void` nullable as in `int?`, or a union of them but `void`, as in `int|string`, and no body."
         }
         Place::Enum => {
             "A PHP# enum has attributes, an optional `public`, a name, an optional `: string, Interface` header whose `int` or `string` comes first, constants, cases and methods, with no other modifiers or `implements`."
         }
         Place::FieldOrProperty => {
-            "A PHP# field is `private` or `protected`, and a property has the accessors `get` and an optional `set`, each `;`, `=> expr;` or a block. Both may be `static`, and have a type of `int`, `float`, `bool`, `string`, `Any`, a class, `List<T>`, `Map<TKey, TValue>` or `Function<R(P)>`, nullable as in `int?` or not, or a union of them as in `int|string`, a name, and an optional initial value."
+            "A PHP# field is `private` or `protected`, and a property has the accessors `get` and an optional `set`, each `;`, `=> expr;` or a block. Both may be `static`, and have a type of `int`, `float`, `bool`, `string`, `Any`, `Object`, a class, `List<T>`, `Map<TKey, TValue>`, `Iterable<T>` or `Function<R(P)>`, nullable as in `int?` or not, or a union of them as in `int|string`, a name, and an optional initial value."
         }
         Place::ClassConstant => {
             "A PHP# constant has `public`, `protected` or `private`, an optional type of `int`, `float`, `bool`, `string`, `Any` or a class, nullable as in `int?` or not, or a union of them as in `int|string`, one name, and a constant value."
         }
         Place::Method => {
-            "A PHP# method takes `public`, `protected`, `private`, `static`, `abstract`, `virtual` and `override`, a constructor also `required`, parameters, and a return type of `int`, `float`, `bool`, `string`, `Any`, `void`, a class, `List<T>`, `Map<TKey, TValue>`, `Function<R(P)>` or `Self`, each but `void` nullable as in `int?`, or a union of them but `void`, as in `int|string`."
+            "A PHP# method takes `public`, `protected`, `private`, `static`, `abstract`, `virtual` and `override`, a constructor also `required`, parameters, and a return type of `int`, `float`, `bool`, `string`, `Any`, `Object`, `void`, a class, `List<T>`, `Map<TKey, TValue>`, `Iterable<T>`, `Function<R(P)>` or `Self`, each but `void` nullable as in `int?`, or a union of them but `void`, as in `int|string`."
         }
         Place::Parameter => {
-            "A PHP# parameter has a type of `int`, `float`, `bool`, `string`, `Any`, a class, `List<T>`, `Map<TKey, TValue>` or `Function<R(P)>`, nullable as in `int?` or not, or a union of them as in `int|string`, a name, and an optional default. The last parameter can be variadic, as in `int ...values`."
+            "A PHP# parameter has a type of `int`, `float`, `bool`, `string`, `Any`, `Object`, a class, `List<T>`, `Map<TKey, TValue>`, `Iterable<T>` or `Function<R(P)>`, nullable as in `int?` or not, or a union of them as in `int|string`, a name, and an optional default. The last parameter can be variadic, as in `int ...values`."
         }
         Place::Lambda => {
             "A PHP# lambda is a bare arrow after one name or parenthesized parameters, each with an optional type, and its body is an expression or a block, as in `(a, b) => a + b`. The last parameter can be variadic, as in `(int ...values) => count(values)`."
@@ -2491,7 +2542,7 @@ const fn supported(place: Place) -> &'static str {
         | Place::SuperCall
         | Place::SelfCall
         | Place::RefusedPart(_) => {
-            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, `break` and `continue` without a level, and `try` with `catch` and `finally`, with literals, list and map literals, index reads, templates, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, the ternary `c ? a : b`, `(int)`, `(float)` and `(string)`, `++` and `--`, method calls and property reads written with `.` or `?.`, lambdas as in `x => x.id`, `new Class(...)` and, with a `required` constructor, `new Self(...)`, calls of global functions and of a local that holds a lambda, `super.method(...)` and `Self.method(...)`, each with positional, named and spread arguments as in `max(...prices)`, `throw`, `exit(code)`, `typeof(Class)`, `is`, `as` and `match`."
+            "In a method body, PHP# supports blocks, expression statements, `return`, `let` and `const` and typed locals, `if` with `else if` and `else`, `while`, `do … while`, `for`, `for … of`, `break` and `continue` without a level, `try` with `catch` and `finally`, and `yield value;` and `yield ...other;` in a method that returns `Iterable<T>`, with literals, list and map literals, index reads, templates, parentheses, bare names, assignment, arithmetic, comparison and logical operators, `??`, the ternary `c ? a : b`, `(int)`, `(float)` and `(string)`, `++` and `--`, method calls and property reads written with `.` or `?.`, lambdas as in `x => x.id`, `new Class(...)` and, with a `required` constructor, `new Self(...)`, calls of global functions and of a local that holds a lambda, `super.method(...)` and `Self.method(...)`, each with positional, named and spread arguments as in `max(...prices)`, `throw`, `exit(code)`, `typeof(Class)`, `typeof(value)`, `is`, `as` and `match`."
         }
         Place::Attribute => {
             "A PHP# attribute is a class name with optional positional and named arguments, as in `[Field(\"Name\", searchable: true)]`."
@@ -3066,6 +3117,134 @@ fn check_lambda_captures(lambda: Node<'_, '_>, context: &mut Context<'_, '_, '_>
             "capture of a loop variable that changes",
             "Each loop pass has its own loop variable, which the engine cannot give a lambda yet when code changes it. Copy it into a `const` in the loop body, and capture that.",
             context,
+        );
+    }
+}
+
+/// Decides `yield`, spec section 12. `yield value;` and `yield ...other;` are statements of a method that returns
+/// `Iterable<T>`, outside any lambda in it, because `yield` gives no value back. PHP's `yield from other`,
+/// `yield key => value` and a bare `yield` are errors that name the PHP# form. Each error is reported at the `yield`
+/// keyword, so the value is still checked.
+fn check_yield(r#yield: &Yield, context: &mut Context<'_, '_, '_>) {
+    let span = r#yield.span();
+    let keyword = match r#yield {
+        Yield::From(from) => {
+            return report_removed(
+                from.r#yield.span.join(from.from.span),
+                b"yield from",
+                "write `yield ...other;`.",
+                "Spec section 12 replaces `yield from` with PHP#'s spread: `yield ...other;` produces every element of `other`.",
+                context,
+            );
+        }
+        Yield::Pair(pair) => {
+            return report_removed(
+                pair.r#yield.span,
+                b"yield key => value",
+                "write `yield value;`.",
+                "An `Iterable<T>` produces values, spec section 12, and `=>` is the lambda arrow in PHP#.",
+                context,
+            );
+        }
+        Yield::Value(YieldValue { r#yield, value: None }) => {
+            return report_removed(
+                r#yield.span,
+                b"yield;",
+                "write `yield value;`.",
+                "PHP's bare `yield` produces null, and a method that returns `Iterable<T>` produces values of `T`, spec section 12.",
+                context,
+            );
+        }
+        Yield::Value(YieldValue { r#yield, .. }) | Yield::Spread(YieldSpread { r#yield, .. }) => r#yield.span,
+    };
+
+    let Some(method) = enclosing_iterator_method(context.program, span) else {
+        return context.report(
+            Issue::error("`yield` needs a method that returns `Iterable<T>`.")
+                .with_annotation(Annotation::primary(keyword).with_message("Written here."))
+                .with_note("Spec section 12: a method that returns `Iterable<T>` produces its values with `yield value;` and `yield ...other;`. A lambda never yields."),
+        );
+    };
+
+    let is_statement = !Node::Method(method)
+        .filter_map(|node| match node {
+            Node::ExpressionStatement(statement) if statement.expression.span() == span => Some(()),
+            _ => None,
+        })
+        .is_empty();
+    if !is_statement {
+        context.report(
+            Issue::error("`yield` gives no value back: write it as a statement, as in `yield value;`.")
+                .with_annotation(Annotation::primary(keyword).with_message("Used as a value here."))
+                .with_note("PHP's `send()` and two-way generators are not part of PHP#, spec section 12."),
+        );
+    }
+}
+
+/// The method that returns `Iterable<T>` or `Iterable<T>?` and whose body holds `span` outside any lambda in it. PHP
+/// compiles a generator of `?iterable`, so a nullable `Iterable<T>` takes `yield` too.
+fn enclosing_iterator_method<'ast, 'arena>(program: &'ast Program<'arena>, span: Span) -> Option<&'ast Method<'arena>> {
+    let method = enclosing_class(program, span)?.members.iter().find_map(|member| match member {
+        ClassLikeMember::Method(method) if method.span().contains(&span.start) => Some(method),
+        _ => None,
+    })?;
+    let in_lambda = !Node::Method(method)
+        .filter_map(|node| {
+            (matches!(node, Node::ArrowFunction(_) | Node::Closure(_)) && node.span().contains(&span.start))
+                .then_some(())
+        })
+        .is_empty();
+
+    (returns_iterable(method) && !in_lambda).then_some(method)
+}
+
+/// Whether a method's declared return type is `Iterable<T>` or `Iterable<T>?`.
+fn returns_iterable(method: &Method) -> bool {
+    let Some(return_type) = &method.return_type_hint else {
+        return false;
+    };
+    let hint = match &return_type.hint {
+        Hint::Nullable(nullable) => nullable.hint,
+        hint => hint,
+    };
+
+    matches!(hint, Hint::Generic(generic) if generic.name.value == b"Iterable")
+}
+
+/// Reports `return value;` in a method that returns `Iterable<T>` and yields, outside the lambdas in it. Its values
+/// are the ones it yields, spec section 12, as C#'s CS1622 says: "Cannot return a value from an iterator". A bare
+/// `return;` ends it.
+fn check_iterator_returns(method: &Method, context: &mut Context<'_, '_, '_>) {
+    if !returns_iterable(method) {
+        return;
+    }
+
+    let mut lambdas = Vec::new();
+    let mut yields = Vec::new();
+    let mut returns = Vec::new();
+    for node in Node::Method(method).filter_map(|node| match node {
+        Node::ArrowFunction(_) | Node::Closure(_) | Node::Yield(_) | Node::Return(Return { value: Some(_), .. }) => {
+            Some(*node)
+        }
+        _ => None,
+    }) {
+        match node {
+            Node::Yield(_) => yields.push(node.span()),
+            Node::Return(_) => returns.push(node.span()),
+            _ => lambdas.push(node.span()),
+        }
+    }
+
+    let outside_lambdas = |span: &Span| !lambdas.iter().any(|lambda| lambda.contains(&span.start));
+    if !yields.iter().any(outside_lambdas) {
+        return;
+    }
+
+    for span in returns.into_iter().filter(outside_lambdas) {
+        context.report(
+            Issue::error("A method that yields cannot return a value: write `return;` to end it.")
+                .with_annotation(Annotation::primary(span).with_message("Returns a value here."))
+                .with_note("A method that yields produces only the values it yields, spec section 12, as in C#."),
         );
     }
 }

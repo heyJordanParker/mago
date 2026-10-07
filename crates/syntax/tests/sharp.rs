@@ -1987,6 +1987,56 @@ fn typeof_names_a_class_by_its_short_name() {
 }
 
 #[test]
+fn yield_spread_produces_every_element_of_another_iterable() {
+    const CODE: &str = "class OrderImport\n{\n    Iterable<Order> all()\n    {\n        yield ...this.pending;\n        yield this.latest;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/OrderImport.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [spread, value] = method_body(program) else {
+        panic!("expected two statements, got {:#?}", method_body(program));
+    };
+    let Expression::Yield(Yield::Spread(spread)) = expression(spread) else {
+        panic!("expected `yield ...this.pending`, got {spread:#?}");
+    };
+    assert_eq!(source(CODE, spread), "yield ...this.pending");
+    assert_eq!(source(CODE, &spread.ellipsis), "...");
+    assert_eq!(source(CODE, spread.iterator), "this.pending");
+    let Expression::Yield(Yield::Value(YieldValue { value: Some(value), .. })) = expression(value) else {
+        panic!("expected `yield this.latest`, got {value:#?}");
+    };
+    assert_eq!(source(CODE, *value), "this.latest");
+}
+
+#[test]
+fn a_name_before_an_arrow_after_yield_is_a_lambda() {
+    const CODE: &str = "class Report\n{\n    Iterable<Function<int(int)>> all()\n    {\n        yield x => x;\n        yield \"key\" => 1;\n        yield from rows;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [lambda, pair, from] = method_body(program) else {
+        panic!("expected three statements, got {:#?}", method_body(program));
+    };
+    let Expression::Yield(Yield::Value(YieldValue { value: Some(Expression::ArrowFunction(lambda)), .. })) =
+        expression(lambda)
+    else {
+        panic!("expected `yield` of a lambda, got {lambda:#?}");
+    };
+    assert_eq!(source(CODE, lambda), "x => x");
+    assert!(matches!(expression(pair), Expression::Yield(Yield::Pair(_))), "{pair:#?}");
+    assert!(matches!(expression(from), Expression::Yield(Yield::From(_))), "{from:#?}");
+}
+
+#[test]
+fn yield_spread_in_php_is_a_parse_error() {
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.php", "<?php function all() { yield ...$pending; }\n");
+
+    assert!(!program.errors.is_empty());
+}
+
+#[test]
 fn a_class_or_an_interface_names_its_base_class_and_interfaces_after_a_colon() {
     const CODE: &str = "public class Page : Entity, Linkable\n{\n}\n\npublic interface Linkable : Named\n{\n}\n";
     let arena = LocalArena::new();

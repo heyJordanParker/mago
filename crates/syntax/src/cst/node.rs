@@ -258,6 +258,7 @@ use crate::cst::cst::WhileColonDelimitedBody;
 use crate::cst::cst::Yield;
 use crate::cst::cst::YieldFrom;
 use crate::cst::cst::YieldPair;
+use crate::cst::cst::YieldSpread;
 use crate::cst::cst::YieldValue;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord, Display, EnumIter, EnumString)]
@@ -472,6 +473,7 @@ pub enum NodeKind {
     Yield,
     YieldFrom,
     YieldPair,
+    YieldSpread,
     YieldValue,
     Statement,
     ExpressionStatement,
@@ -733,6 +735,7 @@ pub enum Node<'ast, 'arena> {
     Yield(&'ast Yield<'arena>),
     YieldFrom(&'ast YieldFrom<'arena>),
     YieldPair(&'ast YieldPair<'arena>),
+    YieldSpread(&'ast YieldSpread<'arena>),
     YieldValue(&'ast YieldValue<'arena>),
     Statement(&'ast Statement<'arena>),
     ExpressionStatement(&'ast ExpressionStatement<'arena>),
@@ -1073,6 +1076,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Self::Yield(_) => NodeKind::Yield,
             Self::YieldFrom(_) => NodeKind::YieldFrom,
             Self::YieldPair(_) => NodeKind::YieldPair,
+            Self::YieldSpread(_) => NodeKind::YieldSpread,
             Self::YieldValue(_) => NodeKind::YieldValue,
             Self::Statement(_) => NodeKind::Statement,
             Self::ExpressionStatement(_) => NodeKind::ExpressionStatement,
@@ -2508,6 +2512,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 Yield::Value(node) => Node::YieldValue(node),
                 Yield::Pair(node) => Node::YieldPair(node),
                 Yield::From(node) => Node::YieldFrom(node),
+                Yield::Spread(node) => Node::YieldSpread(node),
             }),
             Node::YieldFrom(node) => {
                 f(Node::Keyword(&node.r#yield));
@@ -2518,6 +2523,10 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 f(Node::Keyword(&node.r#yield));
                 f(Node::Expression(node.key));
                 f(Node::Expression(node.value));
+            }
+            Node::YieldSpread(node) => {
+                f(Node::Keyword(&node.r#yield));
+                f(Node::Expression(node.iterator));
             }
             Node::YieldValue(node) => {
                 f(Node::Keyword(&node.r#yield));
@@ -2927,6 +2936,7 @@ impl HasSpan for Node<'_, '_> {
             Self::Yield(node) => node.span(),
             Self::YieldFrom(node) => node.span(),
             Self::YieldPair(node) => node.span(),
+            Self::YieldSpread(node) => node.span(),
             Self::YieldValue(node) => node.span(),
             Self::Statement(node) => node.span(),
             Self::ExpressionStatement(node) => node.span(),

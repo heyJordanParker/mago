@@ -5,6 +5,7 @@ use crate::cst::cst::UnaryPrefixOperator;
 use crate::cst::cst::Yield;
 use crate::cst::cst::YieldFrom;
 use crate::cst::cst::YieldPair;
+use crate::cst::cst::YieldSpread;
 use crate::cst::cst::YieldValue;
 use crate::error::ParseError;
 use crate::parser::Parser;
@@ -25,6 +26,15 @@ where
             return Ok(Yield::From(YieldFrom {
                 r#yield,
                 from: self.expect_keyword(T!["from"])?,
+                iterator: self.arena.alloc(self.parse_expression_with_precedence(Precedence::YieldFrom)?),
+            }));
+        }
+
+        // `yield ...other` produces every element of `other`, spec section 12, as PHP's `yield from other` does.
+        if self.dialect.is_sharp() && T!["..."] == next.kind {
+            return Ok(Yield::Spread(YieldSpread {
+                r#yield,
+                ellipsis: self.stream.eat_span(T!["..."])?,
                 iterator: self.arena.alloc(self.parse_expression_with_precedence(Precedence::YieldFrom)?),
             }));
         }

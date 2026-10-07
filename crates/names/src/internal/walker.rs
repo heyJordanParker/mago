@@ -184,6 +184,21 @@ impl<'arena> NameWalker<'arena> {
         }
     }
 
+    fn bind_variable(&mut self, name: &'arena [u8], span: Span) -> bool {
+        if name == b"this" {
+            self.resolved_names.bind(span, Binding::This);
+        } else if let Some(local) = self.locals.lookup(name) {
+            self.bind_local(name, span, local);
+        } else if let Some(local) = self.locals.lookup_closed(name) {
+            self.resolved_names.report_binding_error(BindingError::OutOfScope { name: span, local });
+            self.resolved_names.bind(span, Binding::Local(local));
+        } else {
+            return false;
+        }
+
+        true
+    }
+
     /// Records a write to `target` when it is a bare name of a local whose block is open, or an index of one, as in
     /// `counts[key] = 1`, which changes the collection the local holds.
     fn record_write(&mut self, target: &Expression<'arena>) {
@@ -1064,6 +1079,10 @@ where
     }
 
     fn walk_in_type_of(&mut self, type_of: &'ast TypeOf<'arena>, context: &mut NameResolutionContext<'arena, A>) {
+        if self.bind_variable(type_of.class.value(), type_of.class.span()) {
+            return;
+        }
+
         let (name, imported) = self.resolve_class(context, type_of.class.value());
 
         self.resolved_names.insert_at(type_of.class.span(), name, imported);
@@ -1135,22 +1154,7 @@ where
         if self.sharp {
             let name = identifier.value();
             let span = identifier.span();
-            if name == b"this" {
-                self.resolved_names.bind(span, Binding::This);
-
-                return;
-            }
-
-            if let Some(local) = self.locals.lookup(name) {
-                self.bind_local(name, span, local);
-
-                return;
-            }
-
-            if let Some(local) = self.locals.lookup_closed(name) {
-                self.resolved_names.report_binding_error(BindingError::OutOfScope { name: span, local });
-                self.resolved_names.bind(span, Binding::Local(local));
-
+            if self.bind_variable(name, span) {
                 return;
             }
 

@@ -301,6 +301,27 @@ public class Report
         const total = pick(1, null, ...values) + pick(key: "a", fallback: null);
         return (a, b) => total > 0 ? a : null;
     }
+
+    public Object? keep(Object source, Object? fallback, List<Object> all)
+    {
+        const Object kept = source;
+        return fallback ?? kept;
+    }
+
+    public Iterable<Calc> stream(Iterable<int>? numbers, List<Calc> items)
+    {
+        Iterable<Calc> rows = items;
+        for (const row of rows) {
+            row.add(1, 2);
+        }
+        return rows;
+    }
+
+    public Iterable<Calc> produce(List<Calc> items, Calc last)
+    {
+        yield ...items;
+        yield last;
+    }
 }
 
 [Entity("status"), Searchable]

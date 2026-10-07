@@ -30,6 +30,7 @@ use mago_names::binding::Binding;
 use mago_names::binding::php_variable_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
+use mago_reporting::Level;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::Access;
@@ -1234,13 +1235,17 @@ fn report_call_on_non_object<A>(
     );
 }
 
+/// Reports a method call on a value of the general type `object`. A PHP# `Object` has no members until `is` narrows it,
+/// as an `Any` has none, spec section 24, so in a PHP# file the call is an error.
 fn report_call_on_ambiguous_object<A>(context: &mut Context<'_, '_, A>, obj_span: Span, selector_span: Span)
 where
     A: Arena,
 {
+    let level = if context.dialect.is_sharp() { Level::Error } else { Level::Warning };
+
     context.collector.report_with_code(
         IssueCode::AmbiguousObjectMethodAccess,
-        Issue::warning("Cannot statically verify method call on a generic `object` type.")
+        Issue::new(level, "Cannot statically verify method call on a generic `object` type.")
             .with_annotation(Annotation::primary(selector_span).with_message("Cannot verify this method call"))
             .with_annotation(
                 Annotation::secondary(obj_span).with_message("This expression has the general type `object`"),

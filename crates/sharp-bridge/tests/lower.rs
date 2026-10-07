@@ -2519,6 +2519,89 @@ fn abstract_and_final_classes_and_interfaces_are_class_declarations_with_their_f
 }
 
 /// ```php
+/// public function keep(object $first, ?object $source = null): object { return $first; }
+/// ```
+///
+/// `Object` is PHP's `object`, a built-in type, so its type is the name `object` with `ZEND_NAME_NOT_FQ`, which is 1,
+/// as php-src's grammar builds it, and `[257]` adds `ZEND_TYPE_NULLABLE`.
+#[test]
+fn an_object_type_is_the_object_name() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public Object keep(Object first, Object? source = null) { return first; }\n}\n",
+    );
+    let method = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a method");
+
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 0)),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                ZVAL [1] "object"
+                ZVAL "first"
+                null
+                null
+                null
+                null
+              PARAM
+                ZVAL [257] "object"
+                ZVAL "source"
+                ZVAL null
+                null
+                null
+                null
+        "#}
+    );
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 3)),
+        indoc! {r#"
+            ZVAL [1] "object"
+        "#}
+    );
+}
+
+/// ```php
+/// public function lines(iterable $rows, ?iterable $more = null): iterable { return $rows; }
+/// ```
+///
+/// `Iterable<T>` is PHP's `iterable`, so its type is the name `iterable` with `ZEND_NAME_NOT_FQ`, which php-src
+/// compiles as `Traversable|array`, and `[257]` adds `ZEND_TYPE_NULLABLE`. Its type argument lowers to nothing, as a
+/// `List`'s does.
+#[test]
+fn an_iterable_type_is_the_iterable_name() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Line;\n\nclass Report\n{\n    public Iterable<Line> lines(Iterable<int> rows, Iterable<Line>? more = null) { return rows; }\n}\n",
+    );
+    let method = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a method");
+
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 0)),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                ZVAL [1] "iterable"
+                ZVAL "rows"
+                null
+                null
+                null
+                null
+              PARAM
+                ZVAL [257] "iterable"
+                ZVAL "more"
+                ZVAL null
+                null
+                null
+                null
+        "#}
+    );
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 3)),
+        indoc! {r#"
+            ZVAL [1] "iterable"
+        "#}
+    );
+}
+
+/// ```php
 /// interface Linkable extends \Lib\Named { }
 /// class Page implements \Lib\Entity, \App\Tenant\Linkable { }
 /// ```
@@ -3732,6 +3815,32 @@ fn logical_operators_are_and_or_and_bool_not() {
 }
 
 /// ```php
+/// $this::class; return $order::class;
+/// ```
+///
+/// A local or `this` is the variable whose class `CLASS_NAME` names, as php-src's grammar builds `$order::class`.
+#[test]
+fn typeof_a_local_or_this_is_the_class_name_of_its_variable() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public string run(Order order)\n    {\n        typeof(this);\n        return typeof(order);\n    }\n}\n",
+    );
+
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              CLASS_NAME
+                VAR
+                  ZVAL "this"
+              RETURN
+                CLASS_NAME
+                  VAR
+                    ZVAL "order"
+        "#}
+    );
+}
+
+/// ```php
 /// -$a; +$a; ++$a; --$a; $a++; $a--;
 /// ```
 #[test]
@@ -4341,6 +4450,71 @@ fn a_loop_key_written_as_a_class_or_string_reads_back_through_from_or_a_cast() {
                 ZVAL 1
         "#}
     );
+}
+
+/// ```php
+/// yield from $pending; yield $latest; yield fn($x) => $x; return;
+/// ```
+///
+/// `yield value;` is a `YIELD` of its value and a null key, alone as a statement, as php-src's grammar builds
+/// `yield $value;`, and `yield ...other;` is PHP's `yield from`, a `YIELD_FROM` of `other`. `yield x => x;` yields a
+/// lambda, because `=>` is the lambda arrow in PHP#.
+#[test]
+fn yield_is_a_yield_statement_and_yield_spread_is_yield_from() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Order;\n\nclass OrderImport\n{\n    public Iterable<Any> run(List<Order> pending, Order latest)\n    {\n        yield ...pending;\n        yield latest;\n        yield x => x;\n        return;\n    }\n}\n",
+    );
+
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              YIELD_FROM
+                VAR
+                  ZVAL "pending"
+              YIELD
+                VAR
+                  ZVAL "latest"
+                null
+              YIELD
+                ARROW_FUNC "" @11-11
+                  PARAM_LIST
+                    PARAM
+                      null
+                      ZVAL "x"
+                      null
+                      null
+                      null
+                      null
+                  null
+                  VAR
+                    ZVAL "x"
+                  null
+                  null
+                null
+              RETURN
+                null
+        "#}
+    );
+}
+
+/// A method that yields is a generator: `[16777217]` is `ZEND_ACC_PUBLIC | ZEND_ACC_GENERATOR`, which php-src's grammar
+/// puts on a function whose body holds a `yield`, so the engine compiles it to start with `GENERATOR_CREATE`. A yield
+/// nested in a loop or an `if` counts, and a method that returns an `Iterable<T>` without a yield stays `[1]`.
+#[test]
+fn a_method_that_yields_is_a_generator() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass OrderImport\n{\n    public Iterable<int> lines(List<int> rows)\n    {\n        for (const row of rows) {\n            if (row > 0) {\n                yield row;\n            }\n        }\n    }\n\n    public Iterable<int> all(List<int> rows)\n    {\n        yield ...rows;\n    }\n\n    public Iterable<int> kept(List<int> rows)\n    {\n        return rows;\n    }\n}\n",
+    );
+
+    assert_eq!(lowered.diagnostics(), Vec::<String>::new());
+    let methods: Vec<String> = lowered
+        .nodes()
+        .iter()
+        .filter(|node| node.kind == sharp_kind::SHARP_AST_METHOD)
+        .map(|node| format!("{} [{}]", lowered.text(node.text), node.attr))
+        .collect();
+    assert_eq!(methods, ["lines [16777217]", "all [16777217]", "kept [1]"]);
 }
 
 /// ```php

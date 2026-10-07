@@ -111,6 +111,46 @@ fn the_class_in_typeof_resolves_like_any_class_name() {
 }
 
 #[test]
+fn a_name_in_typeof_binds_as_a_local_or_this_in_scope_and_resolves_as_a_class_otherwise() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nclass Report\n{\n    public void total(Order order)\n    {\n        {\n            let inner = 1;\n        }\n        Store.keep(typeof(order), typeof(Order), typeof(missing), typeof(this), typeof(inner));\n        const read = () => typeof(order);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    let order = local(CODE, "order", 0, LocalKind::Parameter);
+    assert_eq!(binding(&names, CODE, "order", 1), Some(order));
+    assert_eq!(binding(&names, CODE, "order", 2), Some(order));
+    assert_eq!(binding(&names, CODE, "this", 0), Some(Binding::This));
+
+    assert_eq!(resolved(&names, CODE, "Order", 1), b"App\\Tenant\\Store\\Order");
+    assert_eq!(binding(&names, CODE, "Order", 1), None);
+    assert_eq!(resolved(&names, CODE, "missing", 0), b"App\\Tenant\\Store\\missing");
+    assert_eq!(binding(&names, CODE, "missing", 0), None);
+
+    assert_eq!(binding(&names, CODE, "inner", 1), Some(local(CODE, "inner", 0, LocalKind::Let)));
+    assert_eq!(
+        names.binding_errors(),
+        [BindingError::OutOfScope { name: span(CODE, "inner", 1), local: declared(CODE, "inner", 0, LocalKind::Let) }]
+    );
+
+    assert_eq!(
+        names.captures(&span(CODE, "() =>", 0)),
+        [(&b"order"[..], declared(CODE, "order", 0, LocalKind::Parameter))]
+    );
+}
+
+#[test]
+fn a_yielded_value_and_a_yielded_spread_bind_their_names_as_any_value_does() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nclass OrderImport\n{\n    public Iterable<Order> all(List<Order> pending, Order latest)\n    {\n        yield ...pending;\n        yield latest;\n        yield Store.first();\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "pending", 1), Some(local(CODE, "pending", 0, LocalKind::Parameter)));
+    assert_eq!(binding(&names, CODE, "latest", 1), Some(local(CODE, "latest", 0, LocalKind::Parameter)));
+    assert_eq!(resolved(&names, CODE, "Store", 1), b"App\\Tenant\\Store\\Store");
+    assert!(names.binding_errors().is_empty(), "{:#?}", names.binding_errors());
+}
+
+#[test]
 fn a_typed_local_binds_like_let_or_const_and_its_type_resolves() {
     const CODE: &str = "namespace App.Tenant.Store;\n\nimport App.Shared.Money;\n\nclass Report\n{\n    public int total()\n    {\n        Money? found = null;\n        const int base = 2;\n        found = null;\n        return base;\n    }\n}\n";
     let arena = LocalArena::new();

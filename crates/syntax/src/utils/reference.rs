@@ -408,6 +408,7 @@ where
                 references
             }
             Yield::From(yield_from) => find_method_references_in_expression(yield_from.iterator, predicate),
+            Yield::Spread(yield_spread) => find_method_references_in_expression(yield_spread.iterator, predicate),
         },
         Expression::Throw(throw) => find_method_references_in_expression(throw.exception, predicate),
         Expression::Clone(clone) => find_method_references_in_expression(clone.object, predicate),
