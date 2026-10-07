@@ -25,6 +25,7 @@ use mago_syntax::cst::MagicConstant;
 use mago_syntax::cst::StringPart;
 use mago_syntax::cst::UnaryPrefix;
 use mago_syntax::cst::UnaryPrefixOperator;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_word::Word;
 use mago_word::WordMap;
 use mago_word::ascii_lowercase_constant_name_word;
@@ -249,7 +250,7 @@ fn infer_with_constant_sources<'arena, A>(
 where
     A: Arena,
 {
-    match expression {
+    ensure_sufficient_stack(|| match expression {
         Expression::MagicConstant(magic_constant) => Some(match magic_constant {
             MagicConstant::Line(_) => {
                 get_literal_int(i64::from(context.file.line_number(magic_constant.start_position().offset())) + 1)
@@ -699,7 +700,7 @@ where
             FunctionLikeIdentifier::for_closure(context.file, arrow_func.span()),
         )))),
         _ => None,
-    }
+    })
 }
 
 #[inline]

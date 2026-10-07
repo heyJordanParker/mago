@@ -30,6 +30,7 @@ mago-word = { workspace = true }
 mago-bytes = { workspace = true }
 mago-span = { workspace = true }
 mago-syntax = { workspace = true }
+mago-syntax-core = { workspace = true }
 mago-names = { workspace = true }
 mago-database = { workspace = true }
 mago-fingerprint = { workspace = true }

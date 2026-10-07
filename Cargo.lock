@@ -1554,6 +1554,7 @@ dependencies = [
  "mago-reporting",
  "mago-span",
  "mago-syntax",
+ "mago-syntax-core",
  "mago-word",
  "memchr",
  "ordered-float",
