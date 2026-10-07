@@ -2790,6 +2790,81 @@ fn an_override_of_a_property_with_no_type_has_no_type() {
     );
 }
 
+/// The members of `RushOrder : Order : Model`, where the PHP# class `Order` overrides `table` with `string?` and
+/// `model` is the plain PHP class `Model`.
+fn rush_order_members(model: &str) -> String {
+    let lowered = Lowered::with(
+        "class RushOrder : Order\n{\n    protected override string? table = \"rush_orders\";\n}\n",
+        &[
+            ("src/Model.php", model),
+            (
+                "src/Order.sharp",
+                "public class Order : Model\n{\n    protected override string? table = \"orders\";\n}\n",
+            ),
+        ],
+    );
+
+    lowered.render(lowered.child(lowered.child(lowered.root(), 1), 2))
+}
+
+/// ```php
+/// #[\Override] protected $table = 'rush_orders';
+/// ```
+///
+/// `Order::$table` runs untyped, because `Model::$table` has no type, so PHP refuses a type on an override of it too.
+/// The root declaration of a property, at the bottom of the chain, decides the type of every override above it
+/// (decision 028).
+#[test]
+fn an_override_of_an_override_of_a_property_with_no_type_has_no_type() {
+    assert_eq!(
+        rush_order_members("<?php class Model { protected $table = ''; }"),
+        indoc! {r#"
+            STMT_LIST
+              PROP_GROUP [2]
+                null
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "table"
+                    ZVAL "rush_orders"
+                    null
+                    null
+                ATTRIBUTE_LIST
+                  ATTRIBUTE_GROUP
+                    ATTRIBUTE
+                      ZVAL "Override"
+                      null
+        "#}
+    );
+}
+
+/// ```php
+/// #[\Override] protected ?string $table = 'rush_orders';
+/// ```
+///
+/// An override of an override keeps its written type when the root declaration has a type.
+#[test]
+fn an_override_of_an_override_of_a_typed_property_keeps_its_type() {
+    assert_eq!(
+        rush_order_members("<?php class Model { protected ?string $table = ''; }"),
+        indoc! {r#"
+            STMT_LIST
+              PROP_GROUP [2]
+                ZVAL [257] "string"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "table"
+                    ZVAL "rush_orders"
+                    null
+                    null
+                ATTRIBUTE_LIST
+                  ATTRIBUTE_GROUP
+                    ATTRIBUTE
+                      ZVAL "Override"
+                      null
+        "#}
+    );
+}
+
 /// ```php
 /// class Account extends \Lib\Ledger
 /// {
