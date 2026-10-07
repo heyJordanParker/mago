@@ -29,6 +29,7 @@
 //! - **`list-files`** ([`ListFilesCommand`]): List files that will be processed
 //! - **`lint`** ([`LintCommand`]): Run linting rules on PHP code
 //! - **`analyze`** ([`AnalyzeCommand`]): Perform static analysis
+//! - **`compile`** ([`CompileCommand`]): Compile every PHP# file into the `.sharp` folder
 //! - **`format`** ([`FormatCommand`]): Format PHP code
 //! - **`guard`** ([`GuardCommand`]): Enforce architectural rules
 //! - **`inspect-baseline`** ([`InspectBaselineCommand`]): Visualize a baseline file
@@ -58,6 +59,7 @@ use clap::builder::styling::Effects;
 use mago_php_version::PHPVersion;
 
 use crate::commands::analyze::AnalyzeCommand;
+use crate::commands::compile::CompileCommand;
 use crate::commands::config::ConfigCommand;
 use crate::commands::cst::CstCommand;
 use crate::commands::extension::ExtensionCommand;
@@ -75,6 +77,7 @@ use crate::error::Error;
 mod args;
 
 pub mod analyze;
+pub mod compile;
 pub mod config;
 pub mod cst;
 pub mod extension;
@@ -208,6 +211,16 @@ pub enum MagoCommand {
     /// **Usage**: `mago analyze [OPTIONS]`
     #[command(name = "analyze")]
     Analyze(AnalyzeCommand),
+
+    /// Compile every PHP# file into the `.sharp` folder the engine runs.
+    ///
+    /// Checks every `.sharp` file, the ones in `vendor/` too, and writes each accepted
+    /// file as a `.sharpc` file into one `.sharp` folder at the workspace root. A file
+    /// with an error gets no compiled file, and the command fails.
+    ///
+    /// **Usage**: `mago compile`
+    #[command(name = "compile")]
+    Compile(CompileCommand),
 
     /// Enforce architectural rules and layer dependencies.
     ///
