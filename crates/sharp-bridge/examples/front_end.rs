@@ -28,6 +28,7 @@ use mago_names::resolver::NameResolver;
 use mago_php_version::PHPVersion;
 use mago_prelude::Prelude;
 use mago_semantics::SemanticsChecker;
+use mago_sharp_bridge::InlineForms;
 use mago_sharp_bridge::check;
 use mago_sharp_bridge::lower;
 use mago_syntax::parser::parse_file;
@@ -75,7 +76,8 @@ fn main() {
             .expect("the analysis runs");
         let issues: Vec<_> = issues.into_iter().chain(result.issues).collect();
 
-        let checked = check(&file, program, names, &artifacts, &metadata, &issues)
+        let forms = InlineForms::default();
+        let checked = check(&file, program, names, &artifacts, &metadata, &forms, &issues)
             .unwrap_or_else(|refusal| panic!("{path} is accepted: {refusal:?}"));
         println!("{path}: {} nodes", lower(&checked).nodes().len());
     }

@@ -1,4 +1,5 @@
 use mago_analyzer::artifacts::AnalysisArtifacts;
+use mago_codex::identifier::method::MethodIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::ttype::add_optional_union_type;
 use mago_codex::ttype::atomic::TAtomic;
@@ -11,18 +12,31 @@ use mago_span::HasSpan;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
+use mago_word::Word;
+use mago_word::word;
+
+use super::inline::InlineForm;
+use super::inline::InlineForms;
+use super::inline::key;
 
 /// The checker's types for one file. The lowering reads a type only through these queries, so `--assert-types` can
 /// turn each answer it used into a runtime guard.
 pub struct Types<'analysis> {
     artifacts: &'analysis AnalysisArtifacts,
     codebase: &'analysis CodebaseMetadata,
+    inline_forms: &'analysis InlineForms,
 }
 
 /// The declaration a class or member name resolves to, as the checker found it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Declaration {
     pub(crate) kind: DeclarationKind,
+    /// The class that declares it: a class itself, or the class an inherited member is declared in.
+    pub(crate) class: Word,
+    /// The member's name, or a class's own name.
+    pub(crate) name: Word,
+    /// Whether code outside the class may use it. A class is public.
+    pub(crate) public: bool,
 }
 
 /// What a declaration is.
@@ -42,12 +56,19 @@ pub(crate) enum DeclarationKind {
         typed: bool,
     },
     StaticMethod,
-    Method,
+    /// `overridable` is whether a subclass can declare its own body, which keeps a call from being inlined.
+    Method {
+        overridable: bool,
+    },
 }
 
 impl<'analysis> Types<'analysis> {
-    pub(crate) fn new(artifacts: &'analysis AnalysisArtifacts, codebase: &'analysis CodebaseMetadata) -> Self {
-        Self { artifacts, codebase }
+    pub(crate) fn new(
+        artifacts: &'analysis AnalysisArtifacts,
+        codebase: &'analysis CodebaseMetadata,
+        inline_forms: &'analysis InlineForms,
+    ) -> Self {
+        Self { artifacts, codebase, inline_forms }
     }
 
     /// The type the analysis gave `expression`.
@@ -74,37 +95,40 @@ impl<'analysis> Types<'analysis> {
             DeclarationKind::Class
         };
 
-        Declaration { kind }
+        Declaration { kind, class: metadata.original_name, name: metadata.original_name, public: true }
     }
 
     /// The declaration `member` of the fully qualified class name `class` resolves to when code reads it: an enum case,
     /// a constant, a property, then a method, which the read takes as a first-class callable. Only when the class
-    /// declares none of them is it a property its `__get` serves.
+    /// declares none of them is it a property its `__get` serves, or else a static method its `__callStatic` serves,
+    /// which `Class.m()` calls and the checker refuses to read.
     pub(crate) fn member_declaration(&self, class: &[u8], member: &[u8]) -> Declaration {
-        let kind = if self.codebase.get_enum_case(class, member).is_some() {
-            DeclarationKind::EnumCase
-        } else if self.codebase.class_constant_exists(class, member) {
-            DeclarationKind::Constant
-        } else if let Some(kind) = self.property_kind(class, member) {
-            kind
-        } else if let Some(kind) = self.method_kind(class, member) {
-            kind
+        let declared = |kind, public| Declaration { kind, class: word(class), name: word(member), public };
+
+        if self.codebase.get_enum_case(class, member).is_some() {
+            declared(DeclarationKind::EnumCase, true)
+        } else if let Some(constant) = self.codebase.get_class_constant(class, member) {
+            declared(DeclarationKind::Constant, constant.visibility.is_public())
+        } else if let Some(declaration) = self.property_declaration(class, member) {
+            declaration
+        } else if let Some(declaration) = self.method_declaration(class, member) {
+            declaration
         } else if self.codebase.method_exists(class, b"__get") {
-            DeclarationKind::Property { typed: false }
+            declared(DeclarationKind::Property { typed: false }, true)
+        } else if self.codebase.method_exists(class, b"__callStatic") {
+            declared(DeclarationKind::StaticMethod, true)
         } else {
             unreachable!(
                 "the checker refuses `{}.{}`, which names no member",
                 String::from_utf8_lossy(class),
                 String::from_utf8_lossy(member)
             )
-        };
-
-        Declaration { kind }
+        }
     }
 
     /// The declaration the method call `call`, null-safe or not, runs: the receiver's method, or else its property
     /// holding a function, as spec section 14 calls one. Only when the class declares neither is it a method its
-    /// `__call` serves. The receiver's type names one class.
+    /// `__call` serves. Every class the receiver can be has the same kind of member, and `class` is the first's.
     pub(crate) fn call_target(&self, call: &Expression) -> Declaration {
         let (object, method) = match call {
             Expression::Call(Call::Method(call)) => (call.object, &call.method),
@@ -116,16 +140,35 @@ impl<'analysis> Types<'analysis> {
         };
         let classes = receiver_classes(self.expression_type(object))
             .unwrap_or_else(|| unreachable!("the lowering asks only for a receiver whose type names classes"));
+        let declarations: Vec<Declaration> =
+            classes.iter().map(|class| self.call_declaration(class, method.value)).collect();
+        agreed_kind(declarations.iter().map(|declaration| declaration.kind));
 
-        Declaration { kind: agreed_kind(classes.into_iter().map(|class| self.call_kind(class, method.value))) }
+        declarations[0]
     }
 
-    /// The kind of what `class`'s call of `method` runs: its method, its property holding a function, or else a method
-    /// its `__call` serves.
-    fn call_kind(&self, class: &[u8], method: &[u8]) -> DeclarationKind {
-        self.method_kind(class, method)
-            .or_else(|| self.property_kind(class, method))
-            .or_else(|| self.codebase.method_exists(class, b"__call").then_some(DeclarationKind::Method))
+    /// The inline form of the standard library method `declaration` names, if it has one.
+    pub(crate) fn inline_form(&self, declaration: &Declaration) -> Option<&'analysis InlineForm> {
+        if !matches!(declaration.kind, DeclarationKind::Method { .. } | DeclarationKind::StaticMethod) {
+            return None;
+        }
+
+        self.inline_forms.get(&key(declaration.class.as_bytes(), declaration.name.as_bytes()))
+    }
+
+    /// What `class`'s call of `method` runs: its method, its property holding a function, or else a method its
+    /// `__call` serves.
+    fn call_declaration(&self, class: &[u8], method: &[u8]) -> Declaration {
+        let called = || Declaration {
+            kind: DeclarationKind::Method { overridable: true },
+            class: word(class),
+            name: word(method),
+            public: true,
+        };
+
+        self.method_declaration(class, method)
+            .or_else(|| self.property_declaration(class, method))
+            .or_else(|| self.codebase.method_exists(class, b"__call").then(called))
             .unwrap_or_else(|| {
                 unreachable!(
                     "the checker refuses `{}.{}()`, which names no method or property",
@@ -149,22 +192,41 @@ impl<'analysis> Types<'analysis> {
         key_type
     }
 
-    /// The kind of the property `class` declares by that name, if any.
-    fn property_kind(&self, class: &[u8], property: &[u8]) -> Option<DeclarationKind> {
-        let property = self.codebase.get_declaring_property(class, &[b"$", property].concat())?;
-
-        Some(if property.flags.is_static() {
+    /// The property `class` declares or inherits by the name `property`, if any.
+    fn property_declaration(&self, class: &[u8], property: &[u8]) -> Option<Declaration> {
+        let variable = [b"$", property].concat();
+        let metadata = self.codebase.get_declaring_property(class, &variable)?;
+        let kind = if metadata.flags.is_static() {
             DeclarationKind::StaticProperty
         } else {
-            DeclarationKind::Property { typed: property.type_declaration_metadata.is_some() }
+            DeclarationKind::Property { typed: metadata.type_declaration_metadata.is_some() }
+        };
+
+        Some(Declaration {
+            kind,
+            class: self.codebase.get_declaring_property_class(class, &variable).unwrap_or_else(|| word(class)),
+            name: word(property),
+            public: metadata.read_visibility.is_public(),
         })
     }
 
-    /// The kind of the method `class` declares by that name, if any.
-    fn method_kind(&self, class: &[u8], method: &[u8]) -> Option<DeclarationKind> {
-        let method = self.codebase.get_declaring_method(class, method)?.method_metadata.as_ref()?;
+    /// The method `class` declares or inherits by the name `method`, if any.
+    fn method_declaration(&self, class: &[u8], method: &[u8]) -> Option<Declaration> {
+        let metadata = self.codebase.get_declaring_method(class, method)?.method_metadata.as_ref()?;
+        let kind = if metadata.is_static {
+            DeclarationKind::StaticMethod
+        } else {
+            DeclarationKind::Method { overridable: !metadata.is_final }
+        };
+        let declaring =
+            self.codebase.get_declaring_method_identifier(&MethodIdentifier::new(word(class), word(method)));
 
-        Some(if method.is_static { DeclarationKind::StaticMethod } else { DeclarationKind::Method })
+        Some(Declaration {
+            kind,
+            class: declaring.get_class_name(),
+            name: word(method),
+            public: metadata.visibility.is_public(),
+        })
     }
 }
 

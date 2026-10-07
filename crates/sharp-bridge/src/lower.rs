@@ -176,8 +176,10 @@ use crate::sharp_node;
 use crate::sharp_str;
 use crate::sharp_value;
 use crate::store_text;
+use crate::unit::Read;
 
 pub(crate) mod checked;
+pub(crate) mod inline;
 mod types;
 
 use types::DeclarationKind;
@@ -291,6 +293,8 @@ struct Lowering<'lowering, 'arena> {
     loop_depth: u32,
     /// The name of the property whose accessor body is being lowered, which `field` reads and writes.
     property: Vec<u8>,
+    /// Each inline form the lowering copied, with its fingerprint, as often as it copied it.
+    inlined: Vec<Read>,
 }
 
 impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
@@ -312,6 +316,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             by_reference: HashSet::default(),
             loop_depth: 0,
             property: Vec::new(),
+            inlined: Vec::new(),
         }
     }
 
@@ -337,8 +342,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
         let root = self.node(SHARP_AST_STMT_LIST, 0, 1, &statements);
         self.nodes[root as usize].end_line = self.lines.last();
+        self.inlined.sort();
+        self.inlined.dedup();
 
-        Unit { nodes: self.nodes, children: self.children, root, texts: self.texts }
+        Unit { nodes: self.nodes, children: self.children, root, texts: self.texts, inlined: self.inlined }
     }
 
     fn strict_types(&mut self) -> u32 {
@@ -1339,7 +1346,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         };
         let kind = agreed_kind(classes.into_iter().map(|class| self.types.member_declaration(class, name.value).kind));
 
-        matches!(kind, DeclarationKind::Method | DeclarationKind::StaticMethod)
+        matches!(kind, DeclarationKind::Method { .. } | DeclarationKind::StaticMethod)
     }
 
     /// Whether the method call `call` on `object` runs the function the property of that name holds.
@@ -1818,6 +1825,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// `static`. Any other `object.m()` is an instance call, or a call of the function in the property `m` when the
     /// checker found that property, as spec section 14 calls one.
     fn method_call(&mut self, expression: &Expression, call: &MethodCall) -> u32 {
+        if let Some(inlined) = self.inlined_call(expression, call) {
+            return inlined;
+        }
+
         let line = self.line(call);
         let (kind, object) = match (self.names.static_call_class(call), call.object) {
             (Some(class), _) => {
@@ -2211,6 +2222,7 @@ mod tests {
     use mago_syntax::parser::parse_file_with_dialect;
     use mago_syntax::settings::ParserSettings;
 
+    use super::inline::InlineForms;
     use super::*;
 
     /// Lowers a class holding `method`, skipping the checks that would refuse it. A construct the checks refuse that
@@ -2220,13 +2232,14 @@ mod tests {
         let file = File::ephemeral(Cow::Borrowed(b"src/Report.sharp"), Cow::Owned(source.into_bytes()));
         let arena = LocalArena::new();
         let program = parse_file_with_dialect(&arena, &file, Dialect::Sharp, ParserSettings::default());
-        let (artifacts, codebase) = (AnalysisArtifacts::new(), CodebaseMetadata::new());
+        let (artifacts, codebase, forms) = (AnalysisArtifacts::new(), CodebaseMetadata::new(), InlineForms::default());
         let checked = CheckedProgram::unchecked(
             &file,
             program,
             NameResolver::new(&arena).resolve(program),
             &artifacts,
             &codebase,
+            &forms,
         );
 
         let _ = lower(&checked);

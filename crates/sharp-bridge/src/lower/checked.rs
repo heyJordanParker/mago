@@ -7,6 +7,7 @@ use mago_reporting::Level;
 use mago_syntax::cst::Program;
 use mago_syntax::error::ParseError;
 
+use super::inline::InlineForms;
 use super::types::Types;
 
 /// A program the checker accepted, with its resolved names and the types the analysis gave it.
@@ -18,6 +19,14 @@ use super::types::Types;
 /// every issue the checks reported for the file. The orchestrator is that caller:
 ///
 /// ```compile_fail
+/// # mod inline {
+/// #     pub struct InlineForm;
+/// #     pub struct InlineForms;
+/// #     impl InlineForms {
+/// #         pub fn get(&self, _: &[u8]) -> Option<&InlineForm> { None }
+/// #     }
+/// #     pub fn key(_: &[u8], _: &[u8]) -> Vec<u8> { Vec::new() }
+/// # }
 /// # mod types {
 /// #     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lower/types.rs"));
 /// # }
@@ -35,8 +44,9 @@ use super::types::Types;
 ///     names: ResolvedNames<'program>,
 ///     artifacts: &'program AnalysisArtifacts,
 ///     codebase: &'program CodebaseMetadata,
+///     forms: &'program inline::InlineForms,
 /// ) -> Option<checked::CheckedProgram<'program>> {
-///     Some(checked::CheckedProgram { file, program, names, types: types::Types::new(artifacts, codebase) })
+///     Some(checked::CheckedProgram { file, program, names, types: types::Types::new(artifacts, codebase, forms) })
 /// }
 /// # fn main() {}
 /// ```
@@ -44,6 +54,14 @@ use super::types::Types;
 /// The same code compiles when the program goes through [`check`]:
 ///
 /// ```
+/// # mod inline {
+/// #     pub struct InlineForm;
+/// #     pub struct InlineForms;
+/// #     impl InlineForms {
+/// #         pub fn get(&self, _: &[u8]) -> Option<&InlineForm> { None }
+/// #     }
+/// #     pub fn key(_: &[u8], _: &[u8]) -> Vec<u8> { Vec::new() }
+/// # }
 /// # mod types {
 /// #     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lower/types.rs"));
 /// # }
@@ -61,8 +79,9 @@ use super::types::Types;
 ///     names: ResolvedNames<'program>,
 ///     artifacts: &'program AnalysisArtifacts,
 ///     codebase: &'program CodebaseMetadata,
+///     forms: &'program inline::InlineForms,
 /// ) -> Option<checked::CheckedProgram<'program>> {
-///     checked::check(file, program, names, artifacts, codebase, &[]).ok()
+///     checked::check(file, program, names, artifacts, codebase, forms, &[]).ok()
 /// }
 /// # fn main() {}
 /// ```
@@ -82,8 +101,9 @@ impl<'program> CheckedProgram<'program> {
         names: ResolvedNames<'program>,
         artifacts: &'program AnalysisArtifacts,
         codebase: &'program CodebaseMetadata,
+        inline_forms: &'program InlineForms,
     ) -> Self {
-        Self { file, program, names, types: Types::new(artifacts, codebase) }
+        Self { file, program, names, types: Types::new(artifacts, codebase, inline_forms) }
     }
 
     pub(crate) fn file(&self) -> &'program File {
@@ -115,8 +135,9 @@ pub enum Refusal<'program> {
 /// Accepts `program` when it parsed without errors and the checks reported no error-level issue.
 ///
 /// `program` is the orchestrator's parse of `file`, and `artifacts` and `codebase` are the file's analysis, which the
-/// lowering reads its types from. `issues` must be every issue the orchestrator reported for `file`. `check` runs no
-/// check itself, so a caller that leaves an issue out owns the program it lowers.
+/// lowering reads its types from. `inline_forms` are the standard library's forms the lowering may inline, empty for
+/// a standard library file. `issues` must be every issue the orchestrator reported for `file`. `check` runs no check
+/// itself, so a caller that leaves an issue out owns the program it lowers.
 ///
 /// # Errors
 ///
@@ -127,6 +148,7 @@ pub fn check<'program>(
     names: ResolvedNames<'program>,
     artifacts: &'program AnalysisArtifacts,
     codebase: &'program CodebaseMetadata,
+    inline_forms: &'program InlineForms,
     issues: &[Issue],
 ) -> Result<CheckedProgram<'program>, Refusal<'program>> {
     if !program.errors.is_empty() {
@@ -138,7 +160,7 @@ pub fn check<'program>(
         return Err(Refusal::Compile(errors));
     }
 
-    Ok(CheckedProgram { file, program, names, types: Types::new(artifacts, codebase) })
+    Ok(CheckedProgram { file, program, names, types: Types::new(artifacts, codebase, inline_forms) })
 }
 
 #[cfg(test)]
@@ -163,9 +185,9 @@ mod tests {
         let arena = LocalArena::new();
         let program = parse_file_with_dialect(&arena, &file, Dialect::Sharp, ParserSettings::default());
         let names = NameResolver::new(&arena).resolve(program);
-        let (artifacts, codebase) = (AnalysisArtifacts::new(), CodebaseMetadata::new());
+        let (artifacts, codebase, forms) = (AnalysisArtifacts::new(), CodebaseMetadata::new(), InlineForms::default());
 
-        let refusal = check(&file, program, names, &artifacts, &codebase, &[]);
+        let refusal = check(&file, program, names, &artifacts, &codebase, &forms, &[]);
 
         assert!(matches!(refusal, Err(Refusal::Parse(errors)) if errors.len() == 1));
     }
@@ -176,10 +198,10 @@ mod tests {
         let arena = LocalArena::new();
         let program = parse_file_with_dialect(&arena, &file, Dialect::Sharp, ParserSettings::default());
         let names = NameResolver::new(&arena).resolve(program);
-        let (artifacts, codebase) = (AnalysisArtifacts::new(), CodebaseMetadata::new());
+        let (artifacts, codebase, forms) = (AnalysisArtifacts::new(), CodebaseMetadata::new(), InlineForms::default());
         let issues = [Issue::warning("a warning"), Issue::error("an error"), Issue::help("a help")];
 
-        let refusal = check(&file, program, names, &artifacts, &codebase, &issues);
+        let refusal = check(&file, program, names, &artifacts, &codebase, &forms, &issues);
 
         assert!(
             matches!(&refusal, Err(Refusal::Compile(errors)) if errors.len() == 1 && errors[0].message == "an error")

@@ -319,6 +319,20 @@ fn input_bytes(input: &sharp_input) -> [u8; size_of::<sharp_input>()] {
 }
 
 /// A node's fields at their offsets, with its padding zero.
+/// The xxh3-64 of an inline form's nodes, children and texts, each written as `encode` writes them.
+pub(crate) fn form_fingerprint(nodes: &[sharp_node], children: &[u32], texts: &[u8]) -> u64 {
+    let mut hasher = Xxh3::new();
+    for node in nodes {
+        hasher.update(&node_bytes(node));
+    }
+    for child in children {
+        hasher.update(&child.to_le_bytes());
+    }
+    hasher.update(texts);
+
+    hasher.digest()
+}
+
 fn node_bytes(node: &sharp_node) -> [u8; size_of::<sharp_node>()] {
     let mut bytes = [0; size_of::<sharp_node>()];
     put(&mut bytes, offset_of!(sharp_node, kind), &(node.kind as u16).to_le_bytes());

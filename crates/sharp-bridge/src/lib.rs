@@ -12,11 +12,16 @@ mod kind;
 mod lower;
 pub mod unit;
 
+use unit::Read;
+
 pub use kind::SHARP_UNIT_ABI;
 pub use kind::sharp_kind;
 pub use lower::checked::CheckedProgram;
 pub use lower::checked::Refusal;
 pub use lower::checked::check;
+pub use lower::inline::InlineForm;
+pub use lower::inline::InlineForms;
+pub use lower::inline::inline_forms;
 pub use lower::lower;
 
 /// `len` bytes of UTF-8 at `offset` in the unit's texts, not NUL-terminated.
@@ -69,6 +74,8 @@ pub struct Unit {
     /// A `SHARP_AST_STMT_LIST`.
     root: u32,
     texts: Vec<u8>,
+    /// Each standard library method the file inlines, once, with its form's fingerprint.
+    inlined: Vec<Read>,
 }
 
 impl Unit {
@@ -96,6 +103,13 @@ impl Unit {
     #[must_use]
     pub fn text(&self, text: sharp_str) -> &[u8] {
         &self.texts[text.offset as usize..(text.offset + text.len) as usize]
+    }
+
+    /// Each standard library method the file inlines, once, named `class::method` in lowercase, with its form's
+    /// fingerprint. The orchestrator stores them as `Reads::inlined`.
+    #[must_use]
+    pub fn inlined(&self) -> &[Read] {
+        &self.inlined
     }
 }
 

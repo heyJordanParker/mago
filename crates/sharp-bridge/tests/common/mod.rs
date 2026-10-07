@@ -23,8 +23,10 @@ use mago_prelude::Prelude;
 use mago_reporting::Issue;
 use mago_semantics::SemanticsChecker;
 use mago_sharp_bridge::CheckedProgram;
+use mago_sharp_bridge::InlineForms;
 use mago_sharp_bridge::Refusal;
 use mago_sharp_bridge::check;
+use mago_sharp_bridge::inline_forms;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::dialect::Dialect;
@@ -76,6 +78,28 @@ pub fn checked<R>(
     library: &[(&str, &str)],
     then: impl FnOnce(&CheckedProgram<'_>) -> R,
 ) -> Result<R, Vec<String>> {
+    checked_inlining(path, code, library, &InlineForms::default(), then)
+}
+
+/// The inline forms of the standard library files in `library`, each checked alone first, as the orchestrator lowers
+/// the library before the files that call it.
+pub fn library_forms(library: &[(&str, &str)]) -> InlineForms {
+    library
+        .iter()
+        .flat_map(|(path, code)| {
+            checked(path, code, &[], inline_forms).unwrap_or_else(|refusal| panic!("{path} is checked: {refusal:?}"))
+        })
+        .collect()
+}
+
+/// [`checked`], with the inline forms the lowering of `code` may inline.
+pub fn checked_inlining<R>(
+    path: &str,
+    code: &str,
+    library: &[(&str, &str)],
+    forms: &InlineForms,
+    then: impl FnOnce(&CheckedProgram<'_>) -> R,
+) -> Result<R, Vec<String>> {
     let Prelude { mut metadata, mut symbol_references, .. } = PRELUDE.clone();
     let settings = Settings::default();
     let arena = LocalArena::new();
@@ -100,7 +124,7 @@ pub fn checked<R>(
         .expect("the analysis runs");
     let issues: Vec<Issue> = semantic_issues.into_iter().chain(result.issues).collect();
 
-    match check(&file, program, names, &artifacts, &metadata, &issues) {
+    match check(&file, program, names, &artifacts, &metadata, forms, &issues) {
         Ok(checked) => Ok(then(&checked)),
         Err(Refusal::Parse(errors)) => {
             Err(errors.iter().map(|error| diagnostic(code, Some(error.span()), "parse", &error.to_string())).collect())

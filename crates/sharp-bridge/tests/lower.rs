@@ -14,6 +14,7 @@ use std::thread;
 use indoc::indoc;
 
 use mago_sharp_bridge::Unit;
+use mago_sharp_bridge::inline_forms;
 use mago_sharp_bridge::lower;
 use mago_sharp_bridge::sharp_kind;
 use mago_sharp_bridge::sharp_node;
@@ -31,6 +32,14 @@ impl Lowered {
     /// Lowers `code` beside the `library` files, each a path and its code, which declare what `code` uses.
     fn with(code: &str, library: &[(&str, &str)]) -> Self {
         Self(common::checked("src/Report.sharp", code, library, lower))
+    }
+
+    /// Lowers `code` beside the `library` files and the standard library files `standard`, inlining the forms the
+    /// standard library files give.
+    fn inlining(code: &str, library: &[(&str, &str)], standard: &[(&str, &str)]) -> Self {
+        let declarations: Vec<(&str, &str)> = library.iter().chain(standard).copied().collect();
+
+        Self(common::checked_inlining("src/Report.sharp", code, &declarations, &common::library_forms(standard), lower))
     }
 
     fn unit(&self) -> Option<&Unit> {
@@ -132,6 +141,28 @@ impl Lowered {
 
 /// The signature `method` declares `run` with.
 const RUN: &str = "int run(int extra)";
+
+/// `Sharp\Text` at the standard library's path, with methods each inlining rule takes or leaves.
+const TEXT: (&str, &str) = (
+    "vendor/heyjordanparker/php-sharp-composer/library/Sharp/Text.sharp",
+    "namespace Sharp;\n\npublic class Text\n{\n    public static string shout(string text) => strtoupper(text);\n\n    public static string padded(string text, int width = 8) => str_pad(trim(text), width);\n\n    public static string twice(string text) => str_repeat(text, strlen(text));\n\n    public static string trimmed(string text)\n    {\n        const trimmed = trim(text);\n        return trimmed;\n    }\n\n    public static Text make() => new Text();\n\n    public string label() => \"text\";\n\n    public string wrapped(string format) => sprintf(format, this.label());\n\n    public string secret(string text) => this.hidden(text);\n\n    private string hidden(string text) => strtolower(text);\n\n    public static string quiet(string text) => Text.muted(text);\n\n    protected static string muted(string text) => strtolower(text);\n\n    public virtual string echoed(string text) => this.wrapped(text);\n\n    public static string again(string text) => Self.shout(text);\n}\n",
+);
+
+/// `Lib\Loud`, a project file with a method the inlining rule would take in the standard library.
+const LOUD: (&str, &str) = (
+    "src/Lib/Loud.sharp",
+    "namespace Lib;\n\npublic class Loud\n{\n    public static string shout(string text) => strtoupper(text);\n}\n",
+);
+
+/// The statements of `run`, declared with `signature` and holding `statements` in a class that imports `Sharp.Text`
+/// and `Lib.Loud`, lowered with the inline forms of `TEXT`.
+fn inlined_body(signature: &str, statements: &str) -> String {
+    let code = format!(
+        "namespace App.Tenant;\n\nimport Lib.Loud;\nimport Sharp.Text;\n\nclass Report\n{{\n    public {signature}\n    {{\n{statements}    }}\n}}\n"
+    );
+
+    Lowered::inlining(&code, &[LOUD], &[TEXT]).body()
+}
 
 /// A file declaring the method `run` with `body`. Its body starts on line 9.
 fn method(body: &str) -> String {
@@ -3879,6 +3910,34 @@ const MAGIC_ORDER: (&str, &str) = (
     "<?php namespace Lib; final class Order { public static int $max = 3; public static function twice(int $n): int { return $n * 2; } public function __get(string $name): mixed { return null; } public static function __callStatic(string $name, array $arguments): mixed { return null; } }",
 );
 
+/// ```php
+/// \Lib\Calc::remember($extra);
+/// ```
+///
+/// A static call only `__callStatic` serves is a static call of its name, as PHP calls a facade's methods.
+#[test]
+fn a_static_call_only_call_static_serves_is_a_static_call() {
+    assert_eq!(
+        body_in(
+            "void run(int extra)",
+            "        Calc.remember(extra);\n",
+            &[(
+                "src/Lib/Calc.php",
+                "<?php namespace Lib; final class Calc { public static function __callStatic(string $name, array $arguments): mixed { return null; } }",
+            )],
+        ),
+        indoc! {r#"
+            STMT_LIST
+              STATIC_CALL
+                ZVAL "Lib\\Calc"
+                ZVAL "remember"
+                ARG_LIST
+                  VAR
+                    ZVAL "extra"
+        "#}
+    );
+}
+
 /// `Class.y` reads only a member the class declares. One its `__callStatic` would serve is refused, so the lowering of
 /// `Class.y` never meets a magic member.
 #[test]
@@ -6451,4 +6510,242 @@ fn each_node_carries_the_line_of_its_first_token() {
         lines,
         [("extra".to_owned(), 7), ("total".to_owned(), 9), ("extra".to_owned(), 10), ("total".to_owned(), 11)]
     );
+}
+
+/// The keys of the inline forms the standard library file `code` gives, in the order its methods are declared.
+fn form_names(code: &str) -> Vec<String> {
+    common::checked(TEXT.0, code, &[], inline_forms)
+        .expect("the library file is checked")
+        .into_iter()
+        .map(|(name, _)| String::from_utf8_lossy(&name).into_owned())
+        .collect()
+}
+
+/// A public method gives an inline form when it returns the value of one expression built only from calls of public
+/// members, literals and reads of its receiver and parameters, each read exactly once. `twice` reads `text` twice,
+/// `trimmed` has two statements, `make` creates an object, and `label` never reads its receiver. `secret` calls a
+/// private method and `quiet` a protected one, which the caller's class cannot call. `echoed` can be overridden, and
+/// `again` calls `Self`, which names the caller's class once copied there. `hidden` and `muted` are not public.
+#[test]
+fn a_method_whose_body_is_one_call_reading_each_slot_once_gives_an_inline_form() {
+    assert_eq!(form_names(TEXT.1), ["sharp\\text::shout", "sharp\\text::padded", "sharp\\text::wrapped"]);
+}
+
+/// ```php
+/// return \strtoupper($text->label());
+/// ```
+///
+/// A form that reads every slot in order before its first call runs its arguments in the order the call would, so
+/// it inlines whatever its arguments are.
+#[test]
+fn a_form_that_reads_its_slots_in_order_first_inlines_with_any_arguments() {
+    assert_eq!(
+        inlined_body("string run(Text text)", "        return Text.shout(text.label());\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CALL
+                  ZVAL "strtoupper"
+                  ARG_LIST
+                    METHOD_CALL
+                      VAR
+                        ZVAL "text"
+                      ZVAL "label"
+                      ARG_LIST
+        "#}
+    );
+}
+
+/// ```php
+/// return \str_pad(\trim($name), 4);
+/// ```
+///
+/// `padded` calls `trim` before it reads `width`, which the call would have read first. With arguments that do
+/// nothing when read, the order cannot show, so it inlines.
+#[test]
+fn a_form_that_calls_before_its_last_slot_read_inlines_with_pure_arguments() {
+    assert_eq!(
+        inlined_body("string run(string name)", "        return Text.padded(name, 4);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CALL
+                  ZVAL "str_pad"
+                  ARG_LIST
+                    CALL
+                      ZVAL "trim"
+                      ARG_LIST
+                        VAR
+                          ZVAL "name"
+                    ZVAL 4
+        "#}
+    );
+}
+
+/// ```php
+/// return \Sharp\Text::padded($text->label(), 4);
+/// ```
+///
+/// Inlined, `trim` would run before `label()`. The call runs `label()` first, so it stays a call.
+#[test]
+fn a_form_that_calls_before_its_last_slot_read_keeps_the_call_with_an_impure_argument() {
+    assert_eq!(
+        inlined_body("string run(Text text)", "        return Text.padded(text.label(), 4);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                STATIC_CALL
+                  ZVAL "Sharp\\Text"
+                  ZVAL "padded"
+                  ARG_LIST
+                    METHOD_CALL
+                      VAR
+                        ZVAL "text"
+                      ZVAL "label"
+                      ARG_LIST
+                    ZVAL 4
+        "#}
+    );
+}
+
+/// ```php
+/// return \sprintf($name, $text->label()) . \Sharp\Text::make()->wrapped($name);
+/// ```
+///
+/// `wrapped` reads `format` before its receiver. With a receiver that does nothing when read it inlines, and with
+/// `Text.make()` as its receiver it stays a call, because inlined, `make()` would run after `name` is read.
+#[test]
+fn a_form_that_reads_its_slots_out_of_order_keeps_the_call_with_an_impure_receiver() {
+    assert_eq!(
+        inlined_body(
+            "string run(Text text, string name)",
+            "        return text.wrapped(name) + Text.make().wrapped(name);\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                BINARY_OP [8]
+                  CALL
+                    ZVAL "sprintf"
+                    ARG_LIST
+                      VAR
+                        ZVAL "name"
+                      METHOD_CALL
+                        VAR
+                          ZVAL "text"
+                        ZVAL "label"
+                        ARG_LIST
+                  METHOD_CALL
+                    STATIC_CALL
+                      ZVAL "Sharp\\Text"
+                      ZVAL "make"
+                      ARG_LIST
+                    ZVAL "wrapped"
+                    ARG_LIST
+                      VAR
+                        ZVAL "name"
+        "#}
+    );
+}
+
+/// A named argument, an omitted default, a method without a form and a method of a project file each keep the call:
+/// a body that calls a private or a protected method, calls `Self`, or can be overridden has no form.
+#[test]
+fn a_call_the_inlining_rule_does_not_take_keeps_its_call() {
+    let static_call = |class: &str, method: &str, arguments: &str| {
+        format!(
+            "STMT_LIST\n  RETURN\n    STATIC_CALL\n      ZVAL \"{class}\"\n      ZVAL \"{method}\"\n      ARG_LIST\n{arguments}"
+        )
+    };
+    let method_call = |method: &str| {
+        format!(
+            "STMT_LIST\n  RETURN\n    METHOD_CALL\n      VAR\n        ZVAL \"text\"\n      ZVAL \"{method}\"\n      ARG_LIST\n        VAR\n          ZVAL \"name\"\n"
+        )
+    };
+    let name = "        VAR\n          ZVAL \"name\"\n";
+    let named = "        NAMED_ARG\n          ZVAL \"text\"\n          VAR\n            ZVAL \"name\"\n";
+    let cases = [
+        ("Text.shout(text: name)", static_call("Sharp\\\\Text", "shout", named)),
+        ("Text.padded(name)", static_call("Sharp\\\\Text", "padded", name)),
+        ("Text.twice(name)", static_call("Sharp\\\\Text", "twice", name)),
+        ("Text.trimmed(name)", static_call("Sharp\\\\Text", "trimmed", name)),
+        ("Loud.shout(name)", static_call("Lib\\\\Loud", "shout", name)),
+        ("Text.quiet(name)", static_call("Sharp\\\\Text", "quiet", name)),
+        ("Text.again(name)", static_call("Sharp\\\\Text", "again", name)),
+        ("text.secret(name)", method_call("secret")),
+        ("text.echoed(name)", method_call("echoed")),
+    ];
+
+    for (call, tree) in cases {
+        assert_eq!(
+            inlined_body("string run(Text text, string name)", &format!("        return {call};\n")),
+            tree,
+            "{call}"
+        );
+    }
+}
+
+/// The unit names each form it inlines once, with the form's fingerprint, which `Reads::inlined` takes.
+#[test]
+fn the_unit_names_each_form_it_inlines_with_its_fingerprint() {
+    let forms = common::checked(TEXT.0, TEXT.1, &[], inline_forms).expect("the library file is checked");
+    let (_, shout) = forms.iter().find(|(name, _)| name == b"sharp\\text::shout").expect("shout has a form");
+    let code = "namespace App.Tenant;\n\nimport Sharp.Text;\n\nclass Report\n{\n    public string run(string name) => Text.shout(name) + Text.shout(name);\n}\n";
+    let lowered = Lowered::inlining(code, &[], &[TEXT]);
+    let inlined: Vec<(String, u64)> = lowered
+        .unit()
+        .expect("the source lowers")
+        .inlined()
+        .iter()
+        .map(|read| (String::from_utf8_lossy(&read.name).into_owned(), read.fingerprint))
+        .collect();
+
+    assert_eq!(inlined, [("sharp\\text::shout".to_owned(), shout.fingerprint())]);
+}
+
+/// Each node an inlined form copies takes the line of its call, as the call's own nodes would, and each value keeps
+/// its own line.
+#[test]
+fn an_inlined_form_runs_on_the_line_of_its_call() {
+    let code = "namespace App.Tenant;\n\nimport Sharp.Text;\n\nclass Report\n{\n    public string run(string name)\n    {\n        return Text.padded(\n            name,\n            4\n        );\n    }\n}\n";
+    let lowered = Lowered::inlining(code, &[], &[TEXT]);
+    let unit = lowered.unit().expect("the source lowers");
+    let lines: Vec<(String, u32)> = unit
+        .nodes()
+        .iter()
+        .filter(|node| node.kind == sharp_kind::SHARP_AST_ZVAL)
+        .map(|node| match node.value {
+            sharp_value::SHARP_STRING => (String::from_utf8_lossy(unit.text(node.text)).into_owned(), node.line),
+            _ => (node.long_value.to_string(), node.line),
+        })
+        .filter(|(text, _)| ["str_pad", "trim", "name", "4"].contains(&text.as_str()))
+        .collect();
+
+    assert_eq!(
+        lines,
+        [
+            ("name".to_owned(), 7),
+            ("name".to_owned(), 10),
+            ("4".to_owned(), 11),
+            ("str_pad".to_owned(), 9),
+            ("trim".to_owned(), 9)
+        ]
+    );
+}
+
+/// A form's fingerprint changes with what it runs, and not with the line the library writes it on, because each
+/// inlined node takes the line of its call.
+#[test]
+fn a_form_fingerprint_follows_its_body_and_not_its_lines() {
+    let fingerprint = |code: &str| {
+        common::checked(TEXT.0, code, &[], inline_forms)
+            .expect("the library file is checked")
+            .into_iter()
+            .find(|(name, _)| name == b"sharp\\text::shout")
+            .map(|(_, form)| form.fingerprint())
+            .expect("shout has a form")
+    };
+
+    assert_eq!(fingerprint(&TEXT.1.replacen("{\n", "{\n\n\n", 1)), fingerprint(TEXT.1));
+    assert_ne!(fingerprint(&TEXT.1.replace("strtoupper", "strtolower")), fingerprint(TEXT.1));
 }
