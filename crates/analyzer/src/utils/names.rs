@@ -6,7 +6,10 @@ use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
+use mago_codex::ttype::atomic::callable::TCallable;
 use mago_codex::ttype::atomic::object::TObject;
+use mago_codex::ttype::atomic::scalar::TScalar;
+use mago_codex::ttype::atomic::scalar::class_like_string::TClassLikeString;
 use mago_codex::ttype::get_array_parameters;
 use mago_codex::ttype::union::TUnion;
 use mago_word::Word;
@@ -55,8 +58,19 @@ pub(crate) fn display_sharp_collection(object: &TObject, codebase: &CodebaseMeta
     Some(format!("{collection}<{}>", parameters.join(", ")))
 }
 
+/// Returns `union` as the analyzed file writes types: as PHP# writes it in a `.sharp` file, and by its Mago type id in
+/// PHP.
+#[must_use]
+pub(crate) fn display_type<A>(context: &Context<'_, '_, A>, union: &TUnion) -> String
+where
+    A: Arena,
+{
+    if context.dialect.is_sharp() { display_sharp_type(union, context.codebase) } else { union.get_id().to_string() }
+}
+
 /// Returns `union` as PHP# writes the type: `List<int>`, `Map<string, int>`, `int?`, `(int|string)?`, `Any?`, a class
-/// by its short name, a type parameter by its name, and an intersection as `A & B`.
+/// by its short name, a type parameter by its name, an intersection as `A & B`, a function type as
+/// `Function<void(int)>`, `Class<Order>`, and a literal as `1` or `"text"`.
 #[must_use]
 pub(crate) fn display_sharp_type(union: &TUnion, codebase: &CodebaseMetadata) -> String {
     if let Some(TAtomic::Mixed(mixed)) = union.types.iter().find(|atomic| atomic.is_mixed()) {
@@ -93,7 +107,7 @@ fn display_sharp_atomic(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String
             let Some(name) = object.get_name() else {
                 return atomic.get_id().to_string();
             };
-            let name = short_name(name);
+            let name = short_name(codebase.get_class_like(name.as_bytes()).map_or(name, |class| class.original_name));
             match object.get_type_parameters() {
                 Some(parameters) if !parameters.is_empty() => {
                     let parameters: Vec<String> =
@@ -104,6 +118,38 @@ fn display_sharp_atomic(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String
             }
         }
         TAtomic::GenericParameter(parameter) => parameter.parameter_name.to_string(),
+        TAtomic::Callable(TCallable::Signature(signature)) => {
+            let written = |union: Option<&TUnion>| {
+                union.map_or_else(|| "Any?".to_owned(), |union| display_sharp_type(union, codebase))
+            };
+            let parameters: Vec<String> =
+                signature.get_parameters().iter().map(|parameter| written(parameter.get_type_signature())).collect();
+
+            format!("Function<{}({})>", written(signature.get_return_type()), parameters.join(", "))
+        }
+        TAtomic::Scalar(TScalar::ClassLikeString(class_string)) => match class_string {
+            TClassLikeString::Literal { value } => {
+                let class =
+                    short_name(codebase.get_class_like(value.as_bytes()).map_or(*value, |class| class.original_name));
+                format!("Class<{class}>")
+            }
+            TClassLikeString::OfType { constraint, .. } => {
+                format!("Class<{}>", display_sharp_atomic(constraint, codebase))
+            }
+            TClassLikeString::Generic { parameter_name, .. } => format!("Class<{parameter_name}>"),
+            TClassLikeString::Any { .. } => atomic.get_id().to_string(),
+        },
+        TAtomic::Scalar(scalar) => {
+            if let Some(value) = scalar.get_literal_int_value() {
+                value.to_string()
+            } else if let Some(value) = scalar.get_literal_float_value() {
+                value.to_string()
+            } else if let Some(value) = scalar.get_known_literal_string_value() {
+                format!("\"{}\"", String::from_utf8_lossy(value))
+            } else {
+                atomic.get_id().to_string()
+            }
+        }
         _ => atomic.get_id().to_string(),
     };
 

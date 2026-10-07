@@ -57,6 +57,7 @@ use crate::utils::expression::is_this;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_method_name;
 use crate::utils::names::display_sharp_collection;
+use crate::utils::names::display_sharp_type;
 use crate::visibility::check_method_visibility;
 use crate::visibility::is_method_visible;
 use crate::visibility::is_visible_from_scope;
@@ -222,11 +223,11 @@ where
     }
 
     if let Some(object_type) = artifacts.get_expression_type(object) {
-        let mut object_atomics = object_type.types.iter().collect::<Vec<_>>();
+        let mut object_atomics = object_type.types.iter().map(|atomic| (atomic, atomic)).collect::<Vec<_>>();
 
-        while let Some(object_atomic) = object_atomics.pop() {
+        while let Some((object_atomic, written_atomic)) = object_atomics.pop() {
             if let TAtomic::GenericParameter(TGenericParameter { constraint, .. }) = object_atomic {
-                object_atomics.extend(constraint.types.iter());
+                object_atomics.extend(constraint.types.iter().map(|bound| (bound, written_atomic)));
                 continue;
             }
 
@@ -284,7 +285,7 @@ where
                         result.has_invalid_target = true;
                     }
 
-                    report_call_on_non_object(context, object_atomic, object.span(), selector.span());
+                    report_call_on_non_object(context, object_atomic, written_atomic, object.span(), selector.span());
                     continue;
                 }
             };
@@ -442,7 +443,8 @@ where
     } else {
         result.has_invalid_target = true;
         result.encountered_mixed = true;
-        report_call_on_non_object(context, &TAtomic::Mixed(TMixed::new()), object.span(), selector.span());
+        let mixed = TAtomic::Mixed(TMixed::new());
+        report_call_on_non_object(context, &mixed, &mixed, object.span(), selector.span());
     }
 
     for method_id in asserted_descendant_method_references {
@@ -1219,15 +1221,22 @@ fn get_collection_methods(array: &TArray, codebase: &CodebaseMetadata) -> TObjec
     })
 }
 
+/// Reports a method call on `atomic_type`, which is not an object. A PHP# message names the type the code wrote,
+/// `written_type`, such as the type parameter whose bound `atomic_type` is.
 fn report_call_on_non_object<A>(
     context: &mut Context<'_, '_, A>,
     atomic_type: &TAtomic,
+    written_type: &TAtomic,
     obj_span: Span,
     selector_span: Span,
 ) where
     A: Arena,
 {
-    let type_str = atomic_type.get_id();
+    let type_str = if context.dialect.is_sharp() {
+        display_sharp_type(&TUnion::from_atomic(written_type.clone()), context.codebase)
+    } else {
+        atomic_type.get_id().to_string()
+    };
 
     context.collector.report_with_code(
         if atomic_type.is_mixed() { IssueCode::MixedMethodAccess } else { IssueCode::InvalidMethodAccess },

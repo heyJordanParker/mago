@@ -91,7 +91,7 @@ pub(crate) fn is_contained_by(
             continue;
         };
 
-        let mut parameter_comparison_result = ComparisonResult::new();
+        let mut parameter_comparison_result = atomic_comparison_result.nested();
 
         if !union_comparator::is_contained_by_with_erased_template_arguments(
             codebase,
@@ -117,7 +117,7 @@ pub(crate) fn is_contained_by(
 
     if container_return_type.is_void()
         || container_return_type.is_vanilla_mixed()
-        || container_return_type.is_templated_as_vanilla_mixed()
+        || (!atomic_comparison_result.sharp_rules && container_return_type.is_templated_as_vanilla_mixed())
     {
         return true;
     }

@@ -184,7 +184,7 @@ pub(crate) fn is_array_contained_by_array(
                     false,
                     input_key_type.ignore_falsable_issues(),
                     inside_assertion,
-                    &mut ComparisonResult::new(),
+                    &mut atomic_comparison_result.nested(),
                 ) =>
             {
                 Some(backing_key_type)

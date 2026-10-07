@@ -40,7 +40,20 @@ use crate::invocation::InvocationTarget;
 use crate::statement::function_like::closure_parameter_types;
 use crate::utils::expression::is_referenceable;
 use crate::utils::get_type_diff;
+use crate::utils::names::display_type;
 use crate::utils::template::explain_blocked_substitution;
+
+/// The part of `union` that may share a value with another type. A PHP# type parameter is opaque, so with `is_sharp`
+/// it shares a value with no other type, and a union of type parameters alone has no such part.
+fn shareable_part(union: &TUnion, is_sharp: bool) -> Option<Cow<'_, TUnion>> {
+    if !is_sharp {
+        return Some(Cow::Borrowed(union));
+    }
+
+    let types: Vec<TAtomic> = union.types.iter().filter(|atomic| !atomic.is_generic_parameter()).cloned().collect();
+
+    (!types.is_empty()).then(|| Cow::Owned(TUnion::from_vec(types)))
+}
 
 /// Checks if an argument can be passed by reference.
 pub(super) fn is_argument_referenceable(
@@ -217,7 +230,12 @@ pub fn verify_argument_type<'arena, A>(
     if !parameter_type.accepts_null() {
         if input_type.is_null() {
             let target_name_str = invocation_target.guess_name(context);
-            let parameter_type_str = parameter_type.get_id();
+            let parameter_type_str = display_type(context, parameter_type);
+            let nullable_parameter_type_str = if context.dialect.is_sharp() {
+                display_type(context, &parameter_type.clone().as_nullable())
+            } else {
+                format!("{parameter_type_str}|null")
+            };
             let call_site = Annotation::secondary(invocation_target.span())
                 .with_message(format!("Arguments to this {target_kind_str} are incorrect"));
             context.collector.report_with_code(
@@ -228,7 +246,7 @@ pub fn verify_argument_type<'arena, A>(
                 .with_annotation(Annotation::primary(input_expression.span()).with_message("This argument is `null`"))
                 .with_annotation(call_site)
                 .with_help(format!(
-                    "Provide a non-null value, or declare the parameter as nullable (e.g., `{parameter_type_str}|null`)."
+                    "Provide a non-null value, or declare the parameter as nullable (e.g., `{nullable_parameter_type_str}`)."
                 )),
             );
 
@@ -237,8 +255,8 @@ pub fn verify_argument_type<'arena, A>(
 
         if input_type.is_nullable() && !input_type.ignore_nullable_issues() {
             let target_name_str = invocation_target.guess_name(context);
-            let input_type_str = input_type.get_id();
-            let parameter_type_str = parameter_type.get_id();
+            let input_type_str = display_type(context, input_type);
+            let parameter_type_str = display_type(context, parameter_type);
             let call_site = Annotation::secondary(invocation_target.span())
                 .with_message(format!("Arguments to this {target_kind_str} are incorrect"));
             context.collector.report_with_code(
@@ -259,7 +277,7 @@ pub fn verify_argument_type<'arena, A>(
     if !parameter_type.accepts_false() {
         if input_type.is_false() {
             let target_name_str = invocation_target.guess_name(context);
-            let parameter_type_str = parameter_type.get_id();
+            let parameter_type_str = display_type(context, parameter_type);
             let call_site = Annotation::secondary(invocation_target.span())
                 .with_message(format!("Arguments to this {target_kind_str} are incorrect"));
             context.collector.report_with_code(
@@ -279,8 +297,8 @@ pub fn verify_argument_type<'arena, A>(
 
         if input_type.is_falsable() && !input_type.ignore_falsable_issues() {
             let target_name_str = invocation_target.guess_name(context);
-            let input_type_str = input_type.get_id();
-            let parameter_type_str = parameter_type.get_id();
+            let input_type_str = display_type(context, input_type);
+            let parameter_type_str = display_type(context, parameter_type);
             let call_site = Annotation::secondary(invocation_target.span())
                 .with_message(format!("Arguments to this {target_kind_str} are incorrect"));
             context.collector.report_with_code(
@@ -313,8 +331,8 @@ pub fn verify_argument_type<'arena, A>(
     }
 
     let target_name_str = invocation_target.guess_name(context);
-    let input_type_str = input_type.get_id();
-    let parameter_type_str = parameter_type.get_id();
+    let input_type_str = display_type(context, input_type);
+    let parameter_type_str = display_type(context, parameter_type);
     let call_site = Annotation::secondary(invocation_target.span())
         .with_message(format!("Arguments to this {target_kind_str} are incorrect"));
 
@@ -390,20 +408,13 @@ pub fn verify_argument_type<'arena, A>(
             .iter()
             .any(|atomic| matches!(atomic, TAtomic::Callable(callable) if callable.is_closure()));
 
-        // A PHP# type parameter is opaque, so a value of another type can share a value only with the rest of the
-        // parameter type.
-        let open_parameter_type = if context.dialect.is_sharp() {
-            let open_types: Vec<TAtomic> =
-                parameter_type.types.iter().filter(|atomic| !atomic.is_generic_parameter()).cloned().collect();
-            (!open_types.is_empty()).then(|| Cow::Owned(TUnion::from_vec(open_types)))
-        } else {
-            Some(Cow::Borrowed(parameter_type))
-        };
-
+        let is_sharp = context.dialect.is_sharp();
         let types_can_be_identical = (!parameter_requires_closure || input_can_be_closure)
-            && open_parameter_type.is_some_and(|open_parameter_type| {
-                can_expression_types_be_identical(context.codebase, input_type, &open_parameter_type, false, false)
-            });
+            && shareable_part(input_type, is_sharp).zip(shareable_part(parameter_type, is_sharp)).is_some_and(
+                |(input_type, parameter_type)| {
+                    can_expression_types_be_identical(context.codebase, &input_type, &parameter_type, false, false)
+                },
+            );
 
         if types_can_be_identical && parameter_type.is_callable() && !parameter_requires_closure {
             let all_inputs_are_resolvable_aliases = input_type.types.iter().all(|atomic| {

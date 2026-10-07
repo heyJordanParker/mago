@@ -2,7 +2,6 @@ use mago_allocator::Arena;
 use std::rc::Rc;
 
 use mago_codex::context::ScopeContext;
-use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::comparator::ComparisonResult;
 use mago_codex::ttype::comparator::union_comparator;
@@ -44,6 +43,7 @@ use crate::statement::function_like::get_this_type;
 use crate::statement::function_like::report_missing_return;
 use crate::statement::function_like::report_undefined_type_references;
 use crate::statement::r#return::handle_return_value;
+use crate::utils::names::display_type;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for Property<'arena> {
     fn analyze<'ctx, A>(
@@ -140,15 +140,16 @@ where
         value.analyze(context, block_context, artifacts)?;
     }
 
-    // A PHP# type holds null only when it is written with `?`, so its `Any` and its null defaults are checked too.
+    // A PHP# type holds null only when it is written with `?`, so its `Any`, its type parameters and its null defaults
+    // are checked too.
     let is_sharp = context.dialect.is_sharp();
 
     if let Some(class_metadata) = block_context.scope.get_class_like()
         && let Some(property_metadata) = class_metadata.properties.get(&php_variable_name(variable_name))
         && let Some(declared_type_metadata) = property_metadata.type_metadata.as_ref()
-        && (is_sharp || !declared_type_metadata.type_union.is_mixed())
-        && !declared_type_metadata.type_union.has_template_types()
-        && !declared_type_metadata.type_union.is_generic_parameter()
+        && (is_sharp
+            || !(declared_type_metadata.type_union.is_mixed()
+                || declared_type_metadata.type_union.has_template_types()))
         && let Some(value_type) = artifacts.get_expression_type(value)
         && !value_type.is_never()
     {
@@ -173,8 +174,8 @@ where
             false,
             &mut comparison_result,
         ) {
-            let value_type_str = value_type.get_id();
-            let declared_type_str = declared_type.get_id();
+            let value_type_str = display_type(context, value_type);
+            let declared_type_str = display_type(context, &declared_type);
             let class_name = class_metadata.original_name;
             let property_name = mago_bytes::BytesDisplay(variable_name);
 

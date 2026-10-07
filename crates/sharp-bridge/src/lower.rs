@@ -503,10 +503,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
     /// A header's names, which PHP compiles as the interface list.
     fn name_list(&mut self, inheritance: &Inheritance) -> u32 {
-        let names: Vec<u32> = inheritance
-            .names()
-            .map(|name| self.string(ZEND_NAME_FQ, self.line(name), self.names.get(&name)))
-            .collect();
+        let names: Vec<u32> =
+            inheritance.names().map(|name| self.string(ZEND_NAME_FQ, self.line(name), self.names.get(&name))).collect();
 
         self.node(SHARP_AST_NAME_LIST, 0, self.line(inheritance), &names)
     }

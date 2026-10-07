@@ -1,7 +1,6 @@
 use mago_allocator::Arena;
 use std::rc::Rc;
 
-use mago_codex::ttype::TType;
 use mago_codex::ttype::add_optional_union_type;
 use mago_codex::ttype::add_union_type;
 use mago_codex::ttype::combiner::CombinerOptions;
@@ -28,6 +27,7 @@ use crate::resolver::property::resolve_instance_properties;
 use crate::utils::expression::get_property_access_expression_id;
 use crate::utils::expression::is_this;
 use crate::utils::get_type_diff;
+use crate::utils::names::display_type;
 use crate::utils::template::explain_blocked_substitution;
 
 #[inline]
@@ -113,8 +113,8 @@ where
 
         if !type_match_found {
             let property_name = resolved_property.property_name;
-            let property_type_str = resolved_property.property_type.get_id();
-            let assigned_type_str = assigned_value_type.get_id();
+            let property_type_str = display_type(context, &resolved_property.property_type);
+            let assigned_type_str = display_type(context, assigned_value_type);
 
             let mut issue;
 

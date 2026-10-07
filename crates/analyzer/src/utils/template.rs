@@ -384,7 +384,9 @@ fn find_atomic_template_positions(
         }
         // `Class<T>` holds `T` or a subclass, so it hands `T` out.
         TAtomic::Scalar(TScalar::ClassLikeString(TClassLikeString::Generic {
-            parameter_name, defining_entity, ..
+            parameter_name,
+            defining_entity,
+            ..
         })) if defining_entity == owner => {
             positions.push((*parameter_name, position));
         }

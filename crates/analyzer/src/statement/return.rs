@@ -44,6 +44,7 @@ use crate::utils::expression::is_referenceable;
 use crate::utils::get_type_diff;
 use crate::utils::misc::unwrap_expression;
 use crate::utils::names::display_function_like_identifier;
+use crate::utils::names::display_type;
 use crate::utils::template::explain_blocked_substitution;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for Return<'arena> {
@@ -280,8 +281,8 @@ pub fn handle_return_value<'ctx, A>(
     if function_like_metadata.flags.has_yield() {
         if let Some((return_type, is_from_generator)) = get_generator_return_type(context, &expected_return_type) {
             if !is_from_generator && function_like_metadata.return_type_metadata.is_some() {
-                let inferred_return_type_str = inferred_return_type.get_id();
-                let expected_return_type_str = expected_return_type.get_id();
+                let inferred_return_type_str = display_type(context, &inferred_return_type);
+                let expected_return_type_str = display_type(context, &expected_return_type);
 
                 let type_declaration_span = function_like_metadata
                     .return_type_metadata
@@ -354,16 +355,16 @@ pub fn handle_return_value<'ctx, A>(
         if inferred_return_type.is_mixed()
             && !returns_declared_parameter_variable(return_value, &expected_return_type, context.resolved_names)
         {
+            let inferred_return_type_str = display_type(context, &inferred_return_type);
+            let mixed_str = if context.dialect.is_sharp() { &inferred_return_type_str } else { "mixed" };
             context.collector.report_with_code(
                 IssueCode::MixedReturnStatement,
                 Issue::error(format!(
-                    "Could not infer a precise return type for function `{}`. Saw type `{}`.",
-                    function_name,
-                    inferred_return_type.get_id()
+                    "Could not infer a precise return type for function `{function_name}`. Saw type `{inferred_return_type_str}`."
                 ))
                 .with_annotation(
                     Annotation::primary(return_value.span())
-                        .with_message("Type inferred as `mixed` here.")
+                        .with_message(format!("Type inferred as `{mixed_str}` here."))
                 )
                 .with_note(
                     "The analysis could not determine a specific type for the value returned here, resulting in `mixed`. This can happen with complex code paths or unannotated data.".to_string()
@@ -390,17 +391,16 @@ pub fn handle_return_value<'ctx, A>(
             return;
         }
 
-        let expected_return_type_str = expected_return_type.get_id();
-        let inferred_return_type_str = inferred_return_type.get_id();
+        let expected_return_type_str = display_type(context, &expected_return_type);
+        let inferred_return_type_str = display_type(context, &inferred_return_type);
 
         if inferred_return_type.is_nullable()
             && !inferred_return_type.ignore_nullable_issues()
             && !expected_return_type.is_nullable()
             && !expected_return_type.has_template()
         {
-            // PHP# writes a nullable type with `?` after it.
             let nullable_return_type_str = if context.dialect.is_sharp() {
-                format!("{expected_return_type_str}?")
+                display_type(context, &expected_return_type.clone().as_nullable())
             } else {
                 format!("?{expected_return_type_str}")
             };
@@ -536,7 +536,7 @@ pub fn handle_return_value<'ctx, A>(
             if name.as_bytes().eq_ignore_ascii_case(b"__construct")
         )
     {
-        let expected_return_type_str = expected_return_type.get_id();
+        let expected_return_type_str = display_type(context, &expected_return_type);
 
         context.collector.report_with_code(
             IssueCode::InvalidReturnStatement,
@@ -629,13 +629,16 @@ fn handle_property_hook_return<'ctx, A>(
     let hook_name = concat_word!(class_like.original_name, "::", property_name, "::get");
 
     if inferred_return_type.is_mixed() {
+        let inferred_str = display_type(context, &inferred_return_type);
+        let mixed_str = if context.dialect.is_sharp() { &inferred_str } else { "mixed" };
         context.collector.report_with_code(
             IssueCode::MixedReturnStatement,
             Issue::error(format!(
-                "Could not infer a precise return type for property hook `{hook_name}`. Saw type `{}`.",
-                inferred_return_type.get_id()
+                "Could not infer a precise return type for property hook `{hook_name}`. Saw type `{inferred_str}`."
             ))
-            .with_annotation(Annotation::primary(return_value.span()).with_message("Type inferred as `mixed` here."))
+            .with_annotation(
+                Annotation::primary(return_value.span()).with_message(format!("Type inferred as `{mixed_str}` here.")),
+            )
             .with_note("The analysis could not determine a specific type for the value returned here.")
             .with_help("Add specific type hints to variables or properties involved in calculating the return value."),
         );
@@ -654,14 +657,19 @@ fn handle_property_hook_return<'ctx, A>(
         return;
     }
 
-    let expected_str = expected_return_type.get_id();
-    let inferred_str = inferred_return_type.get_id();
+    let expected_str = display_type(context, &expected_return_type);
+    let inferred_str = display_type(context, &inferred_return_type);
 
     if inferred_return_type.is_nullable()
         && !inferred_return_type.ignore_nullable_issues()
         && !expected_return_type.is_nullable()
         && !expected_return_type.has_template()
     {
+        let nullable_str = if context.dialect.is_sharp() {
+            display_type(context, &expected_return_type.clone().as_nullable())
+        } else {
+            format!("?{expected_str}")
+        };
         context.collector.report_with_code(
             IssueCode::NullableReturnStatement,
             Issue::error(format!(
@@ -670,7 +678,7 @@ fn handle_property_hook_return<'ctx, A>(
             .with_annotation(Annotation::primary(return_value.span()).with_message("Nullable value returned here."))
             .with_note("The property type does not permit null, but this expression could return null.")
             .with_help(format!(
-                "Ensure the hook always returns a non-null value, or change the property type to `?{expected_str}`."
+                "Ensure the hook always returns a non-null value, or change the property type to `{nullable_str}`."
             )),
         );
         return;

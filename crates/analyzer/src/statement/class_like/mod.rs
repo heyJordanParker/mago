@@ -77,6 +77,7 @@ use crate::statement::function_like::report_invalid_template_arguments;
 use crate::statement::function_like::report_undefined_type_references;
 use crate::utils::missing_type_hints;
 use crate::utils::names::and_list;
+use crate::utils::names::display_type;
 use crate::utils::names::short_name;
 use crate::utils::template::find_template_uses;
 
@@ -1706,16 +1707,24 @@ fn check_template_parameters<'ctx, A>(
     if min_required_parameters_count > actual_parameters_count {
         let (message, label, parent_label, help) = match &sharp_parent {
             Some(parent) => (
-                format!("Too few type arguments for `{parent}`: expected at least {min_required_parameters_count}, but found {actual_parameters_count}."),
+                format!(
+                    "Too few type arguments for `{parent}`: expected at least {min_required_parameters_count}, but found {actual_parameters_count}."
+                ),
                 "Too few type arguments here".to_owned(),
                 format!("`{parent}` declares {expected_parameters_count} type parameters"),
                 format!("Write a type for {type_parameters} in the header, as in `: {parent}<…>`."),
             ),
             None => (
-                format!("Too few template arguments for `{parent_name}`: expected at least {min_required_parameters_count}, but found {actual_parameters_count}."),
-                format!("Too few template arguments provided here when `{class_name}` {inheritance_keyword} `{parent_name}`"),
+                format!(
+                    "Too few template arguments for `{parent_name}`: expected at least {min_required_parameters_count}, but found {actual_parameters_count}."
+                ),
+                format!(
+                    "Too few template arguments provided here when `{class_name}` {inheritance_keyword} `{parent_name}`"
+                ),
                 format!("`{parent_name}` is defined with {expected_parameters_count} template parameters"),
-                format!("Provide all {expected_parameters_count} required template arguments in the `{inheritance_tag}` docblock tag for `{class_name}`."),
+                format!(
+                    "Provide all {expected_parameters_count} required template arguments in the `{inheritance_tag}` docblock tag for `{class_name}`."
+                ),
             ),
         };
         let issue = Issue::error(message)
@@ -1730,14 +1739,20 @@ fn check_template_parameters<'ctx, A>(
     } else if expected_parameters_count < actual_parameters_count {
         let (message, label, parent_label, help) = match &sharp_parent {
             Some(parent) => (
-                format!("Too many type arguments for `{parent}`: expected {expected_parameters_count}, but found {actual_parameters_count}."),
+                format!(
+                    "Too many type arguments for `{parent}`: expected {expected_parameters_count}, but found {actual_parameters_count}."
+                ),
                 "Too many type arguments here".to_owned(),
                 format!("`{parent}` declares {expected_parameters_count} type parameters"),
                 format!("Write only a type for {type_parameters} in the header, as in `: {parent}<…>`."),
             ),
             None => (
-                format!("Too many template arguments for `{parent_name}`: expected {expected_parameters_count}, but found {actual_parameters_count}."),
-                format!("Too many template arguments provided here when `{class_name}` {inheritance_keyword} `{parent_name}`"),
+                format!(
+                    "Too many template arguments for `{parent_name}`: expected {expected_parameters_count}, but found {actual_parameters_count}."
+                ),
+                format!(
+                    "Too many template arguments provided here when `{class_name}` {inheritance_keyword} `{parent_name}`"
+                ),
                 format!("`{parent_name}` is defined with {expected_parameters_count} template parameters"),
                 format!("Remove the extra arguments from the `{inheritance_tag}` tag for `{class_name}`."),
             ),
@@ -1801,7 +1816,7 @@ fn check_template_parameters<'ctx, A>(
                 &TypeExpansionOptions { self_class: Some(class_like_metadata.original_name), ..Default::default() },
             );
 
-            let extended_type_str = extended_type.get_id();
+            let extended_type_str = display_type(context, &extended_type);
 
             // `check_sharp_template_variance` checks a PHP# header's type arguments against spec section 11.1.
             if !class_like_metadata.flags.is_sharp()
@@ -1899,22 +1914,34 @@ fn check_template_parameters<'ctx, A>(
                         .or_default()
                         .push(GenericTemplate::new(GenericParent::ClassLike(parent_metadata.name), extended_type));
                 } else {
-                    let replaced_type_str = replaced_template_type.get_id();
+                    let replaced_type_str = display_type(context, &replaced_template_type);
+                    let (message, provided, bound, help) = match &sharp_parent {
+                        Some(parent) => (
+                            format!("Type argument for `{parent}` is not compatible with its bound."),
+                            format!("The type `{extended_type_str}` provided for type parameter `{template_name}`..."),
+                            format!("...does not satisfy the bound `{replaced_type_str}` from `{parent}`."),
+                            format!("Supply a type contained by `{replaced_type_str}`."),
+                        ),
+                        None => (
+                            format!("Template argument for `{parent_name}` is not compatible with its constraint."),
+                            format!("The type `{extended_type_str}` provided for template `{template_name}`..."),
+                            format!(
+                                "...does not satisfy the required constraint of `{replaced_type_str}` from `{parent_name}`."
+                            ),
+                            "Change the provided type to be compatible with the template constraint.".to_owned(),
+                        ),
+                    };
 
                     context.collector.report_with_code(
                         IssueCode::InvalidTemplateParameter,
-                        Issue::error(format!(
-                            "Template argument for `{parent_name}` is not compatible with its constraint."
-                        ))
-                        .with_annotation(
-                            Annotation::primary(class_name_span)
-                                .with_message(format!("In the definition of `{class_name}`")),
-                        )
-                        .with_note(format!("The type `{extended_type_str}` provided for template `{template_name}`..."))
-                        .with_note(format!(
-                            "...does not satisfy the required constraint of `{replaced_type_str}` from `{parent_name}`."
-                        ))
-                        .with_help("Change the provided type to be compatible with the template constraint."),
+                        Issue::error(message)
+                            .with_annotation(
+                                Annotation::primary(class_name_span)
+                                    .with_message(format!("In the definition of `{class_name}`")),
+                            )
+                            .with_note(provided)
+                            .with_note(bound)
+                            .with_help(help),
                     );
                 }
             }
@@ -3057,6 +3084,8 @@ fn report_signature_compatibility_issue<'ctx, A>(
                 .parameters
                 .get(parameter_index)
                 .map_or_else(|| "unknown".to_string(), |p| p.name.0.to_string());
+            let child_type = display_type(context, &child_type);
+            let parent_type = display_type(context, &parent_type);
 
             context.collector.report_with_code(
                 IssueCode::IncompatibleParameterType,
@@ -3101,6 +3130,8 @@ fn report_signature_compatibility_issue<'ctx, A>(
             );
         }
         SignatureCompatibilityIssue::IncompatibleReturnType { child_type, parent_type } => {
+            let child_type = display_type(context, &child_type);
+            let parent_type = display_type(context, &parent_type);
             context.collector.report_with_code(
                 IssueCode::IncompatibleReturnType,
                 Issue::error(format!(
@@ -3121,6 +3152,7 @@ fn report_signature_compatibility_issue<'ctx, A>(
             );
         }
         SignatureCompatibilityIssue::MissingReturnTypeDeclaration { parent_type } => {
+            let parent_type = display_type(context, &parent_type);
             context.collector.report_with_code(
                 IssueCode::IncompatibleReturnType,
                 Issue::error(format!(
@@ -3677,8 +3709,8 @@ fn check_class_like_properties<'ctx, A>(
                     ) {
                         has_type_incompatibility = true;
 
-                        let declaring_type_id = declaring_type.type_union.get_id();
-                        let parent_type_id = parent_type_union.get_id();
+                        let declaring_type_id = display_type(context, &declaring_type.type_union);
+                        let parent_type_id = display_type(context, &parent_type_union);
                         let property_name = property_metadata.name.0;
                         let class_name = class_like_metadata.original_name;
 
@@ -3711,8 +3743,8 @@ fn check_class_like_properties<'ctx, A>(
                         ) {
                             has_type_incompatibility = true;
 
-                            let erased_type_id = erased_type.get_id();
-                            let erased_parent_type_id = erased_parent_type.get_id();
+                            let erased_type_id = method_signature::display_erased(&erased_type);
+                            let erased_parent_type_id = method_signature::display_erased(&erased_parent_type);
                             let property_name = mago_bytes::trim_start_byte(property_metadata.name.0.as_bytes(), b'$');
                             let property_name = String::from_utf8_lossy(property_name);
                             let class_name = class_like_metadata.original_name;

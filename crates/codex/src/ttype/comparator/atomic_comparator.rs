@@ -145,12 +145,7 @@ pub fn is_contained_by(
         && let TAtomic::GenericParameter(container_generic) = container_type_part
     {
         return match input_type_part {
-            TAtomic::GenericParameter(input_generic) => {
-                is_same_type_parameter(input_generic, container_generic)
-                    || input_generic.constraint.types.iter().any(|input_bound| {
-                        is_contained_by(codebase, input_bound, container_type_part, inside_assertion, atomic_comparison_result)
-                    })
-            }
+            TAtomic::GenericParameter(input_generic) => is_same_type_parameter(input_generic, container_generic),
             TAtomic::Never => true,
             _ => false,
         };
@@ -189,7 +184,7 @@ pub fn is_contained_by(
             input_type_part,
             container_type_part,
             inside_assertion,
-            &mut ComparisonResult::new(),
+            &mut atomic_comparison_result.nested(),
         );
     }
 
@@ -211,6 +206,22 @@ pub fn is_contained_by(
 
     if matches!(container_type_part, TAtomic::Placeholder) || matches!(input_type_part, TAtomic::Placeholder) {
         return true;
+    }
+
+    if atomic_comparison_result.sharp_rules
+        && let TAtomic::GenericParameter(input_generic) = input_type_part
+    {
+        return matches!(container_type_part, TAtomic::Object(_))
+            && input_generic.constraint.types.iter().any(|input_bound| {
+                matches!(input_bound, TAtomic::Object(_))
+                    && is_contained_by(
+                        codebase,
+                        input_bound,
+                        container_type_part,
+                        inside_assertion,
+                        atomic_comparison_result,
+                    )
+            });
     }
 
     if matches!(input_type_part, TAtomic::Never) {

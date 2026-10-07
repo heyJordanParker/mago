@@ -79,6 +79,7 @@ use crate::statement::r#return::handle_return_value;
 use crate::statement::r#static::infer_static_local_types;
 use crate::utils::expression::get_variable_id;
 use crate::utils::names::display_sharp_type;
+use crate::utils::names::display_type;
 use crate::utils::names::short_name;
 
 pub mod function;
@@ -737,13 +738,19 @@ pub(crate) fn report_missing_return<A>(
 ) where
     A: Arena,
 {
-    let expected_return_type_id = expected_type.get_id();
+    let expected_return_type_id = display_type(context, expected_type);
 
     let help_message = if expected_type.is_nullable() {
         "Ensure all code paths end with a `return` statement. You may need to add `return null;` to the paths that currently don't return a value.".to_string()
     } else {
+        let nullable_return_type_id = if context.dialect.is_sharp() {
+            display_type(context, &expected_type.clone().as_nullable())
+        } else {
+            format!("{expected_return_type_id}|null")
+        };
+
         format!(
-            "Add a `return` statement that provides a value of type '{expected_return_type_id}' to all paths, or change the {kind}'s return type to '{expected_return_type_id}|null' and return `null` explicitly."
+            "Add a `return` statement that provides a value of type '{expected_return_type_id}' to all paths, or change the {kind}'s return type to '{nullable_return_type_id}' and return `null` explicitly."
         )
     };
 
@@ -1629,14 +1636,11 @@ fn check_parameter_default_value<'ctx, 'arena, A>(
 ) where
     A: Arena,
 {
-    // A PHP# type holds null only when it is written with `?`, so its `Any` is checked and it has no implicitly
-    // nullable parameter.
+    // A PHP# type holds null only when it is written with `?`, so its `Any` and its type parameters are checked and it
+    // has no implicitly nullable parameter.
     let is_sharp = context.dialect.is_sharp();
 
-    if (declared_type.is_mixed() && !is_sharp)
-        || declared_type.has_template_types()
-        || declared_type.is_generic_parameter()
-    {
+    if !is_sharp && (declared_type.is_mixed() || declared_type.has_template_types()) {
         return;
     }
 
@@ -1665,8 +1669,8 @@ fn check_parameter_default_value<'ctx, 'arena, A>(
         return;
     }
 
-    let default_type_str = default_type.get_id();
-    let declared_type_str = declared_type.get_id();
+    let default_type_str = display_type(context, default_type);
+    let declared_type_str = display_type(context, declared_type);
     let param_name = parameter_metadata.name.0;
 
     let issue = Issue::error(format!(
@@ -1773,7 +1777,6 @@ where
     let is_sharp = context.dialect.is_sharp();
     let owner = if is_sharp { short_name(word(owner.to_string())) } else { owner.to_string() };
     let (kind, sentence_kind) = if is_sharp { ("type", "Type") } else { ("template", "Template") };
-    let display = |union: &TUnion| if is_sharp { display_sharp_type(union, codebase) } else { union.get_id().to_string() };
 
     let expected = templates.len();
     let required = templates.values().take_while(|template| template.default.is_none()).count();
@@ -1816,8 +1819,7 @@ where
         let names_a_template = template.constraint.has_template_types();
         // An explicit `mixed` argument is the written form of "any argument", which Mago accepts
         // for every bound.
-        if argument.is_mixed() || template.constraint.is_mixed() || (names_a_template && !context.dialect.is_sharp())
-        {
+        if argument.is_mixed() || template.constraint.is_mixed() || (names_a_template && !context.dialect.is_sharp()) {
             continue;
         }
 
@@ -1842,22 +1844,22 @@ where
             continue;
         }
 
-        let argument_id = display(&expanded_argument);
-        let constraint_id = display(&constraint);
+        let argument_id = display_type(context, &expanded_argument);
+        let constraint_id = display_type(context, &constraint);
         context.collector.report_with_code(
             IssueCode::TemplateConstraintViolation,
             Issue::error(format!(
                 "{sentence_kind} argument `{argument_id}` does not satisfy `{owner}`'s `{template_name}`."
             ))
-                .with_annotation(
-                    Annotation::primary(span)
-                        .with_message(format!("`{argument_id}` is supplied for `{template_name}` here...")),
-                )
-                .with_annotation(
-                    Annotation::secondary(owner_span)
-                        .with_message(format!("...but `{template_name}` is bounded by `{constraint_id}`.")),
-                )
-                .with_help(format!("Supply a type contained by `{constraint_id}`.")),
+            .with_annotation(
+                Annotation::primary(span)
+                    .with_message(format!("`{argument_id}` is supplied for `{template_name}` here...")),
+            )
+            .with_annotation(
+                Annotation::secondary(owner_span)
+                    .with_message(format!("...but `{template_name}` is bounded by `{constraint_id}`.")),
+            )
+            .with_help(format!("Supply a type contained by `{constraint_id}`.")),
         );
     }
 

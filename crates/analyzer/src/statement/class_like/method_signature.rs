@@ -29,16 +29,16 @@ use mago_word::word;
 
 use crate::utils::names::short_name;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SignatureCompatibilityIssue {
     FinalMethodOverride,
     StaticModifierMismatch { child_is_static: bool, parent_is_static: bool },
     VisibilityNarrowed { child_visibility: Visibility, parent_visibility: Visibility },
     ParameterCountMismatch { child_required_count: usize, parent_required_count: usize },
     MissingVariadicParameter { parameter_index: usize },
-    IncompatibleParameterType { parameter_index: usize, child_type: Word, parent_type: Word },
-    IncompatibleReturnType { child_type: Word, parent_type: Word },
-    MissingReturnTypeDeclaration { parent_type: Word },
+    IncompatibleParameterType { parameter_index: usize, child_type: TUnion, parent_type: TUnion },
+    IncompatibleReturnType { child_type: TUnion, parent_type: TUnion },
+    MissingReturnTypeDeclaration { parent_type: TUnion },
     ParameterNameMismatch { parameter_index: usize, child_name: Word, parent_name: Word },
     ErasedParameterNarrowed { parameter_index: usize, child_type: Word, parent_type: Word, bound: Option<Word> },
 }
@@ -216,8 +216,8 @@ pub fn validate_method_signature_compatibility(
         if !is_compatible {
             issues.push(SignatureCompatibilityIssue::IncompatibleParameterType {
                 parameter_index: index,
-                child_type: expanded_child_param_type.get_id(),
-                parent_type: expanded_parent_param_type.get_id(),
+                child_type: expanded_child_param_type,
+                parent_type: expanded_parent_param_type,
             });
 
             return issues;
@@ -256,7 +256,7 @@ pub fn validate_method_signature_compatibility(
         }
 
         issues.push(SignatureCompatibilityIssue::MissingReturnTypeDeclaration {
-            parent_type: expanded_parent_return_type.get_id(),
+            parent_type: expanded_parent_return_type,
         });
         return issues;
     }
@@ -294,8 +294,8 @@ pub fn validate_method_signature_compatibility(
 
         if !is_compatible {
             issues.push(SignatureCompatibilityIssue::IncompatibleReturnType {
-                child_type: expanded_child_return_type.get_id(),
-                parent_type: expanded_parent_return_type.get_id(),
+                child_type: expanded_child_return_type,
+                parent_type: expanded_parent_return_type,
             });
             return issues;
         }
@@ -334,8 +334,8 @@ pub fn validate_method_signature_compatibility(
 
             if !is_compatible {
                 issues.push(SignatureCompatibilityIssue::IncompatibleReturnType {
-                    child_type: expanded_child_return_type.get_id(),
-                    parent_type: expanded_parent_return_type.get_id(),
+                    child_type: expanded_child_return_type,
+                    parent_type: expanded_parent_return_type,
                 });
                 return issues;
             }
@@ -414,8 +414,8 @@ pub fn validate_erased_signature_compatibility(
 
             Some(SignatureCompatibilityIssue::ErasedParameterNarrowed {
                 parameter_index,
-                child_type: child_type.get_id(),
-                parent_type: parent_type.get_id(),
+                child_type: display_erased(&child_type),
+                parent_type: display_erased(&parent_type),
                 bound: bound_example(codebase, parent_parameter.type_declaration_metadata.as_ref(), &child_type),
             })
         },
@@ -499,6 +499,23 @@ pub(super) fn erase(r#type: &TUnion, codebase: &CodebaseMetadata) -> TUnion {
         .collect();
 
     TUnion::from_vec(combiner::combine(erased, codebase, CombinerOptions::default()))
+}
+
+/// The type `erased`, which `erase` returns, as PHP writes it in a declaration: `array`, `iterable`, `Closure`,
+/// `mixed`, or a class by its full name.
+pub(super) fn display_erased(erased: &TUnion) -> Word {
+    let members: Vec<String> = erased
+        .types
+        .iter()
+        .map(|atomic| match atomic {
+            TAtomic::Array(_) => "array".to_owned(),
+            TAtomic::Iterable(_) => "iterable".to_owned(),
+            TAtomic::Callable(_) => "Closure".to_owned(),
+            atomic => atomic.get_id().to_string(),
+        })
+        .collect();
+
+    word(members.join("|"))
 }
 
 const fn is_visibility_narrowed(child_visibility: Visibility, parent_visibility: Visibility) -> bool {

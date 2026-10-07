@@ -53,6 +53,7 @@ use crate::resolver::selector::resolve_member_selector;
 use crate::utils::expression::analyze_member_object;
 use crate::utils::expression::is_this;
 use crate::utils::names::display_class_like_name;
+use crate::utils::names::display_sharp_type;
 use crate::utils::template::get_template_types_for_class_member;
 use crate::visibility::check_method_visibility;
 use crate::visibility::check_resolved_property_read_visibility;
@@ -139,10 +140,10 @@ where
         }
     }
 
-    let mut object_atomics = object_type.types.iter().collect::<Vec<_>>();
-    while let Some(object_atomic) = object_atomics.pop() {
+    let mut object_atomics = object_type.types.iter().map(|atomic| (atomic, atomic)).collect::<Vec<_>>();
+    while let Some((object_atomic, written_atomic)) = object_atomics.pop() {
         if let TAtomic::GenericParameter(TGenericParameter { constraint, .. }) = object_atomic {
-            object_atomics.extend(constraint.types.iter());
+            object_atomics.extend(constraint.types.iter().map(|bound| (bound, written_atomic)));
 
             continue;
         }
@@ -178,7 +179,13 @@ where
                 }
 
                 if !block_context.flags.inside_isset() || !object_atomic.is_mixed() {
-                    report_access_on_non_object(context, object_atomic, property_selector, object_expression.span());
+                    report_access_on_non_object(
+                        context,
+                        object_atomic,
+                        written_atomic,
+                        property_selector,
+                        object_expression.span(),
+                    );
                 }
 
                 continue;
@@ -1447,15 +1454,22 @@ pub(crate) fn check_redundant_nullsafe<'arena, A>(
     });
 }
 
+/// Reports a property access on `atomic_type`, which is not an object. A PHP# message names the type the code wrote,
+/// `written_type`, such as the type parameter whose bound `atomic_type` is.
 fn report_access_on_non_object<A>(
     context: &mut Context<'_, '_, A>,
     atomic_type: &TAtomic,
+    written_type: &TAtomic,
     selector: &ClassLikeMemberSelector,
     object_span: Span,
 ) where
     A: Arena,
 {
-    let type_str = atomic_type.get_id();
+    let type_str = if context.dialect.is_sharp() {
+        display_sharp_type(&TUnion::from_atomic(written_type.clone()), context.codebase)
+    } else {
+        atomic_type.get_id().to_string()
+    };
     context.collector.report_with_code(
         if atomic_type.is_mixed() { IssueCode::MixedPropertyAccess } else { IssueCode::InvalidPropertyAccess },
         Issue::error(format!("Attempting to access a property on a non-object type (`{type_str}`)."))

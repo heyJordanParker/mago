@@ -71,7 +71,7 @@ pub fn is_contained_by_with_erased_template_arguments(
     container_type: &TUnion,
     union_comparison_result: &mut ComparisonResult,
 ) -> bool {
-    let mut direct_result = ComparisonResult::new();
+    let mut direct_result = union_comparison_result.nested();
     if is_contained_by(codebase, input_type, container_type, false, false, false, &mut direct_result) {
         *union_comparison_result = direct_result;
         return true;
@@ -166,7 +166,7 @@ fn is_contained_by_atomic(
             return true;
         }
         TAtomic::GenericParameter(TGenericParameter { intersection_types: None, constraint, .. })
-            if !container_has_template =>
+            if !container_has_template && !union_comparison_result.sharp_rules =>
         {
             let mut all_matched = true;
             for constraint_type_part in constraint.types.as_ref() {
@@ -284,8 +284,7 @@ fn is_contained_by_atomic(
             continue;
         }
 
-        let mut atomic_comparison_result =
-            ComparisonResult { sharp_rules: union_comparison_result.sharp_rules, ..ComparisonResult::new() };
+        let mut atomic_comparison_result = union_comparison_result.nested();
         let is_atomic_contained_by = atomic_comparator::is_contained_by(
             codebase,
             input_type_part,
@@ -333,8 +332,7 @@ fn is_contained_by_atomic(
         && let Some(combined_container_type) =
             get_combined_keyed_array_union_container(codebase, input_type_part, container_atomic_types)
     {
-        let mut atomic_comparison_result =
-            ComparisonResult { sharp_rules: union_comparison_result.sharp_rules, ..ComparisonResult::new() };
+        let mut atomic_comparison_result = union_comparison_result.nested();
         if atomic_comparator::is_contained_by(
             codebase,
             input_type_part,

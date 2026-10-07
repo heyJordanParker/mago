@@ -30,9 +30,9 @@ pub struct ComparisonResult {
     pub type_variable_lower_bounds: Vec<(Word, TemplateBound)>,
     pub type_variable_upper_bounds: Vec<(Word, TemplateBound)>,
     /// Whether the comparison follows PHP#'s rules, set for a `.sharp` file: a `nonnull` container refuses a value that
-    /// may be null, as PHP#'s `Any` does, and a type parameter is opaque, as C#'s `T` is, so it takes only itself, a
-    /// type parameter whose bound reaches it, or `never`. A PHP file keeps upstream's rules, which let any `mixed` into
-    /// `nonnull` and any value into a template bounded by `mixed`.
+    /// may be null, as PHP#'s `Any` does, and a type parameter is opaque, as C#'s `T` is, so it takes only itself or
+    /// `never`, and passes only as itself or as a class type its bound reaches. A PHP file keeps upstream's rules,
+    /// which let any `mixed` into `nonnull` and any value into a template bounded by `mixed`.
     pub sharp_rules: bool,
 }
 
@@ -61,6 +61,12 @@ impl ComparisonResult {
     #[must_use]
     pub fn for_dialect(dialect: Dialect) -> Self {
         Self { sharp_rules: dialect.is_sharp(), ..Self::new() }
+    }
+
+    /// An empty result for a comparison nested in this one, which follows the same rules.
+    #[must_use]
+    pub fn nested(&self) -> Self {
+        Self { sharp_rules: self.sharp_rules, ..Self::new() }
     }
 }
 

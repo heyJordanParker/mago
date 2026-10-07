@@ -114,7 +114,9 @@ impl<'analysis> Types<'analysis> {
             .types
             .iter()
             .filter(|atomic| !atomic.is_null())
-            .map(|atomic| get_backed_enum(atomic, self.codebase).map(|backed_enum| backed_enum.original_name.as_bytes()))
+            .map(|atomic| {
+                get_backed_enum(atomic, self.codebase).map(|backed_enum| backed_enum.original_name.as_bytes())
+            })
             .collect::<Option<_>>()?;
         let class = *classes.first()?;
 
