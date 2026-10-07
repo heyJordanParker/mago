@@ -7169,6 +7169,21 @@ fn a_form_that_passes_null_inlines_it_as_a_literal() {
     );
 }
 
+/// PHP reads `\null`, `\true` and `\false` as constants, which the codebase declares no metadata for. PHP# refuses a
+/// `\` name, so a standard library form never holds one, and only the literals `null`, `true` and `false` reach it.
+#[test]
+fn a_fully_qualified_null_true_or_false_in_a_library_body_is_refused() {
+    for value in ["\\null", "\\true", "\\false"] {
+        let library = format!(
+            "namespace Sharp;\n\npublic class Padding\n{{\n    public static Any? tail(Any? value) => {value};\n}}\n"
+        );
+        let refusal = common::checked(PADDING.0, &library, &[], inline_forms).map(|_| ()).unwrap_err();
+
+        assert_eq!(refusal.len(), 1, "{refusal:?}");
+        assert!(refusal[0].contains("parse error: A `\\` name is PHP syntax"), "{refusal:?}");
+    }
+}
+
 /// A form's constant names the same constant in every namespace that calls it, so its tree is the same in each.
 #[test]
 fn a_form_that_reads_a_global_constant_inlines_the_same_tree_in_any_namespace() {
