@@ -72,6 +72,9 @@
 //! - `MAGO_NO_VERSION_CHECK` → `no-version-check`
 //! - `MAGO_EDITOR_URL` → `editor-url`
 //!
+//! `MAGO_REPORTING_FORMAT` is checked with them, though no configuration key holds it: it sets the reporting
+//! format's default.
+//!
 //! For anything deeper, edit the config file.
 //!
 //! # Normalization and validation
@@ -97,6 +100,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use mago_php_version::PHPVersion;
+use mago_reporting::ReportingFormat;
 use serde::de::IgnoredAny;
 use serde_json::Value;
 
@@ -147,6 +151,23 @@ const ENV_STACK_SIZE: &str = "MAGO_STACK_SIZE";
 const ENV_ALLOW_UNSUPPORTED_PHP_VERSION: &str = "MAGO_ALLOW_UNSUPPORTED_PHP_VERSION";
 const ENV_NO_VERSION_CHECK: &str = "MAGO_NO_VERSION_CHECK";
 const ENV_EDITOR_URL: &str = "MAGO_EDITOR_URL";
+const ENV_REPORTING_FORMAT: &str = "MAGO_REPORTING_FORMAT";
+
+/// Returns the reporting format `MAGO_REPORTING_FORMAT` names, or `None` when it is unset.
+///
+/// # Errors
+///
+/// Returns `EnvVarParse` when the variable names no reporting format.
+pub(crate) fn env_reporting_format() -> Result<Option<ReportingFormat>, Error> {
+    let Ok(name) = std::env::var(ENV_REPORTING_FORMAT) else {
+        return Ok(None);
+    };
+
+    name.to_ascii_lowercase()
+        .parse()
+        .map(Some)
+        .map_err(|e| Error::EnvVarParse { name: ENV_REPORTING_FORMAT, source: Box::new(e) })
+}
 
 const _: () = {
     // Compile-time guard: if anyone changes `ENVIRONMENT_PREFIX`, this file must be updated
@@ -558,6 +579,9 @@ impl Configuration {
     /// - `MAGO_ALLOW_UNSUPPORTED_PHP_VERSION` — overrides `allow-unsupported-php-version`
     /// - `MAGO_NO_VERSION_CHECK` — overrides `no-version-check`
     /// - `MAGO_EDITOR_URL` — overrides `editor-url`
+    ///
+    /// It also checks `MAGO_REPORTING_FORMAT`, which the reporting format's default reads, so a value that names
+    /// no format stops the command here.
     fn apply_env_overrides(&mut self) -> Result<(), Error> {
         // Env-var names are static — no per-call allocation.
         if let Ok(v) = std::env::var(ENV_PHP_VERSION) {
@@ -582,6 +606,7 @@ impl Configuration {
         if let Ok(v) = std::env::var(ENV_EDITOR_URL) {
             self.editor_url = Some(v);
         }
+        env_reporting_format()?;
         Ok(())
     }
 
