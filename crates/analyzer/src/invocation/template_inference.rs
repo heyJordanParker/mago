@@ -1214,17 +1214,23 @@ pub fn infer_parameter_templates_from_argument<A>(
         &mut violations,
     );
 
+    let (kind, sentence_kind, constrained, constraint_kind) = if context.dialect.is_sharp() {
+        ("type parameter", "Type parameter", "is bounded by", "bound")
+    } else {
+        ("template", "Template parameter", "is constrained with", "template constraint")
+    };
     for violation in violations {
+        let template_name = violation.template_name;
         let inferred_bound = display_type(context, &violation.inferred_bound);
         let constraint = display_type(context, &violation.constraint);
         context.collector.report_with_code(
             IssueCode::TemplateConstraintViolation,
-            Issue::error(format!("Argument type mismatch for template `{}`.", violation.template_name,))
+            Issue::error(format!("Argument type mismatch for {kind} `{template_name}`."))
                 .with_annotation(Annotation::primary(argument_span).with_message(format!(
-                    "This argument has type `{inferred_bound}`, which is not compatible with the required template constraint `{constraint}`."
+                    "This argument has type `{inferred_bound}`, which is not compatible with the required {constraint_kind} `{constraint}`."
                 )))
-                .with_note(format!("Template parameter `{}` is constrained with `{constraint}`.", violation.template_name))
-                .with_help("Ensure the argument's type satisfies the template constraint."),
+                .with_note(format!("{sentence_kind} `{template_name}` {constrained} `{constraint}`."))
+                .with_help(format!("Ensure the argument's type satisfies the {constraint_kind}.")),
         );
     }
 }

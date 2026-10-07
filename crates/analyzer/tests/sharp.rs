@@ -1103,23 +1103,27 @@ fn an_override_that_does_not_match_the_plain_php_property_is_an_error() {
 }
 
 /// An override keeps its written type instead of inheriting the parent's `@var` type, so a type that does not fit is
-/// one issue, not a second one for its initial value against the inherited type.
+/// one issue, not a second one for its initial value against the inherited type. Both types are named as PHP# writes
+/// them. The PHP twin keeps Mago's text.
 #[test]
 fn an_override_whose_type_does_not_fit_the_parent_is_reported_once() {
     let sharp = "namespace Demo;\n\nimport Lib.Model;\n\npublic class Order : Model\n{\n    protected override int table = 5;\n}\n";
-
-    let issues =
-        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Order.sharp", sharp), &[("src/Lib/Model.php", MODEL)]);
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Model;\n\nclass Order extends Model\n{\n    #[\\Override]\n    protected int $table = 5;\n}\n";
+    let others = [("src/Lib/Model.php", MODEL)];
 
     assert_eq!(
-        issues
-            .iter()
-            .map(|issue| (issue.code.as_deref().unwrap_or("none"), issue.message.as_str()))
-            .collect::<Vec<_>>(),
-        [(
-            "incompatible-property-type",
-            "The override `Demo\\Order::$table` has type `int`, which does not fit `null|string`, the type of `Lib\\Model::$table`.",
-        )]
+        worded(("src/Demo/Order.php", php), &others),
+        [
+            "10:15 incompatible-property-type Property `Demo\\Order::$table` adds a type that is missing on the parent property. | This type declaration is not present on the parent property | The parent property is defined here without a type | Adding a type to a property that was untyped in a parent class is an incompatible change. | You can either remove the type from this property or add an identical type to the property in the parent class.",
+            "10:15 docblock-type-mismatch Docblock property type `null|string` is incompatible with native property type `int`. | Native type is `int`... | ...but docblock declares `null|string` | The docblock type must be compatible with the native type declaration. | Either change the docblock type to match `int`, or update the native type to be compatible with `null|string`.",
+            "10:28 invalid-property-default-value Default value for property `Demo\\Order::$table` is not assignable to its declared type. | This default value has type `int(5)` | Property is declared with type `null|string` | A property's default value must be assignable to the property's declared type. | Change the default value to match the declared type, or update the property type to accept the default.",
+        ]
+    );
+    assert_eq!(
+        worded(("src/Demo/Order.sharp", sharp), &others),
+        [
+            "7:24 incompatible-property-type The override `Demo\\Order::$table` has type `int`, which does not fit `string?`, the type of `Lib\\Model::$table`. | `int` is written here. | `string?` is the parent's `@var` type. | PHP does not check this property's type, so the override's type must fit the one the parent's code relies on. | Write a type that fits `string?`."
+        ]
     );
 }
 
@@ -3810,8 +3814,9 @@ fn a_parameter_narrower_than_the_erased_parent_parameter_is_an_error() {
 }
 
 /// PHP refuses a return type wider than the one it overrides, and a return type that would erase wider than the
-/// parent's erased return type is already an error before generics are erased: `pick<T>()` returns a `T` wider than
-/// `pick<T : DatabaseEntity>()`'s, and `Wrapper<TItem> : Feed<TItem>` passes a type argument outside `Feed`'s bound.
+/// parent's erased return type is already an error before generics are erased: `pick<T>()` declares a `T` that is not
+/// `pick<T : DatabaseEntity>()`'s, as an override keeps its parent's bounds, so the `T` it takes is refused first, and
+/// `Wrapper<TItem> : Feed<TItem>` passes a type argument outside `Feed`'s bound.
 #[test]
 fn a_return_type_that_would_erase_wider_than_the_parent_return_type_is_an_error() {
     let picker = "namespace Demo;\n\npublic abstract class DatabaseEntity\n{\n}\n\npublic interface Picker\n{\n    T pick<T : DatabaseEntity>(T item);\n}\n\npublic class AnyPicker : Picker\n{\n    public T pick<T>(T item) => item;\n}\n";
@@ -3823,7 +3828,7 @@ fn a_return_type_that_would_erase_wider_than_the_parent_return_type_is_an_error(
             .collect::<Vec<_>>()
     };
 
-    assert_eq!(errors(("src/Demo/Picker.sharp", picker)), ["14:14 incompatible-return-type Error"]);
+    assert_eq!(errors(("src/Demo/Picker.sharp", picker)), ["14:14 incompatible-parameter-type Error"]);
     assert_eq!(errors(("src/Demo/Feed.sharp", feed)), ["12:23 invalid-template-parameter Error"]);
 }
 
@@ -3929,7 +3934,7 @@ fn generic_declarations_infer_what_their_php_template_twins_infer() {
             "Invalid argument type for argument #1 of `Demo\\Report::keepInt`: expected `int`, but found `Order`.",
             "Invalid argument type for argument #1 of `Demo\\Report::keepInt`: expected `int`, but found `Order`.",
             "Possible argument type mismatch for argument #1 of `Demo\\Report::lined`: expected `Validator<Line>`, but possibly received `OrderValidator`.",
-            "Argument type mismatch for template `TItem`.",
+            "Argument type mismatch for type parameter `TItem`.",
         ]
     );
     assert_eq!(
@@ -4448,7 +4453,7 @@ fn a_refused_argument_names_its_types_as_sharp_writes_them() {
             "21:21 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `int`, but found `TItem`. | This has type `TItem` | Arguments to this method are incorrect | The provided type `TItem` is not compatible with the expected type `int`. | Change the argument value to match `int`, or update the parameter's type declaration.",
             "22:21 mixed-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `int`, but found `Any?`. | Argument has type `Any?` | Arguments to this method are incorrect | The type `Any?` is too general and does not match the expected type `int`. | Add specific type hints or assertions to the argument value.",
             "23:20 less-specific-argument Argument type mismatch for argument #1 of `Demo\\Report::pet`: expected `Dog`, but provided type `Animal` is less specific. | Provided type `Animal` is too general. | Arguments to this method are incorrect | The provided type `Animal` can be assigned to `Dog`, but is wider (less specific). | Provide a value that more precisely matches `Dog` or adjust the parameter type.",
-            "24:23 less-specific-nested-argument-type Argument type mismatch for argument #1 of `Demo\\Report::counts`: expected `List<int>`, but provided type `List<Any?>` is less specific. | Provided type `List<Any?>` is too general due to nested `mixed`. | Arguments to this method are incorrect | The structure contains `mixed`, making it incompatible. | Provide a value that more precisely matches `List<int>` or adjust the parameter type.",
+            "24:23 less-specific-nested-argument-type Argument type mismatch for argument #1 of `Demo\\Report::counts`: expected `List<int>`, but provided type `List<Any?>` is less specific. | Provided type `List<Any?>` is too general due to nested `Any?`. | Arguments to this method are incorrect | The structure contains `Any?`, making it incompatible. | Provide a value that more precisely matches `List<int>` or adjust the parameter type.",
             "25:21 possibly-invalid-argument Possible argument type mismatch for argument #1 of `Demo\\Report::keep`: expected `int`, but possibly received `int|string`. | This might not be type `int` | Arguments to this method are incorrect | The provided type `int|string` overlaps with `int` but is not fully contained. | Ensure the argument always has the expected type using checks or assertions.",
             "26:21 null-argument Argument #1 of method `Demo\\Report::keep` is `null`, but parameter type `int` does not accept it. | This argument is `null` | Arguments to this method are incorrect | Provide a non-null value, or declare the parameter as nullable (e.g., `int?`).",
             "27:21 possibly-null-argument Argument #1 of method `Demo\\Report::keep` is possibly `null`, but parameter type `int` does not accept it. | This argument of type `int?` might be `null` | Arguments to this method are incorrect | Add a `null` check before this call to ensure the value is not `null`.",
@@ -4459,12 +4464,12 @@ fn a_refused_argument_names_its_types_as_sharp_writes_them() {
     );
 }
 
-/// A refused return value, a missing return, a computed property, a typed local and a property write name their types
-/// as PHP# writes them. The PHP twin keeps Mago's text.
+/// A refused return value, a missing return, a computed property, a typed local, a property write and a list of
+/// `Any?` returned as a `List<int>` name their types as PHP# writes them. The PHP twin keeps Mago's text.
 #[test]
 fn a_refused_value_names_its_types_as_sharp_writes_them() {
-    let sharp = "namespace Demo;\n\npublic class Box<TItem>\n{\n    public int count = 0;\n\n    public int returned(TItem item) => item;\n\n    public int mixed(Any? value) => value;\n\n    public int nullable(int? value) => value;\n\n    public int empty()\n    {\n        return;\n    }\n\n    public TItem first(bool found, TItem item)\n    {\n        if (found) {\n            return item;\n        }\n    }\n\n    public int total => \"text\";\n\n    public int written(TItem item)\n    {\n        this.count = item;\n        int local = item;\n        return local;\n    }\n\n    public Box<int> boxed(Box<TItem> box) => box;\n}\n";
-    let php = "<?php\n\nnamespace Demo;\n\n/** @template TItem */\nclass Box\n{\n    public int $count = 0;\n\n    /** @param TItem $item */\n    public function returned(mixed $item): int\n    {\n        return $item;\n    }\n\n    public function mixed(mixed $value): int\n    {\n        return $value;\n    }\n\n    public function nullable(?int $value): int\n    {\n        return $value;\n    }\n\n    public function empty(): int\n    {\n        return;\n    }\n\n    /**\n     * @param TItem $item\n     * @return TItem\n     */\n    public function first(bool $found, mixed $item): mixed\n    {\n        if ($found) {\n            return $item;\n        }\n    }\n\n    public int $total {\n        get => 'text';\n    }\n\n    /** @param TItem $item */\n    public function written(mixed $item): int\n    {\n        $this->count = $item;\n        /** @var int $local */\n        $local = $item;\n        return $local;\n    }\n\n    /**\n     * @param Box<TItem> $box\n     * @return Box<int>\n     */\n    public function boxed(Box $box): Box\n    {\n        return $box;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\npublic class Box<TItem>\n{\n    public int count = 0;\n\n    public int returned(TItem item) => item;\n\n    public int mixed(Any? value) => value;\n\n    public int nullable(int? value) => value;\n\n    public int empty()\n    {\n        return;\n    }\n\n    public TItem first(bool found, TItem item)\n    {\n        if (found) {\n            return item;\n        }\n    }\n\n    public int total => \"text\";\n\n    public int written(TItem item)\n    {\n        this.count = item;\n        int local = item;\n        return local;\n    }\n\n    public Box<int> boxed(Box<TItem> box) => box;\n\n    public List<int> counts(List<Any?> values) => values;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\n/** @template TItem */\nclass Box\n{\n    public int $count = 0;\n\n    /** @param TItem $item */\n    public function returned(mixed $item): int\n    {\n        return $item;\n    }\n\n    public function mixed(mixed $value): int\n    {\n        return $value;\n    }\n\n    public function nullable(?int $value): int\n    {\n        return $value;\n    }\n\n    public function empty(): int\n    {\n        return;\n    }\n\n    /**\n     * @param TItem $item\n     * @return TItem\n     */\n    public function first(bool $found, mixed $item): mixed\n    {\n        if ($found) {\n            return $item;\n        }\n    }\n\n    public int $total {\n        get => 'text';\n    }\n\n    /** @param TItem $item */\n    public function written(mixed $item): int\n    {\n        $this->count = $item;\n        /** @var int $local */\n        $local = $item;\n        return $local;\n    }\n\n    /**\n     * @param Box<TItem> $box\n     * @return Box<int>\n     */\n    public function boxed(Box $box): Box\n    {\n        return $box;\n    }\n\n    /**\n     * @param list<mixed> $values\n     * @return list<int>\n     */\n    public function counts(array $values): array\n    {\n        return $values;\n    }\n}\n";
 
     assert_eq!(
         worded(("src/Demo/Box.php", php), &[]),
@@ -4478,13 +4483,14 @@ fn a_refused_value_names_its_types_as_sharp_writes_them() {
             "43:16 invalid-return-statement Property hook `Demo\\Box::$total::get` returns `string('text')` but property is typed as `int`. | Expression has type `string('text')`. | The get hook must return a value compatible with the property type `int`. | Change the returned expression to match the property type.",
             "49:24 mixed-property-type-coercion A value with a less specific type `('TItem.demo\\box extends mixed)` is being assigned to property `$count` (int). | This value has the less specific type `('TItem.demo\\box extends mixed)` | This property `$count` is declared with type `int` | The assigned value contains a nested `mixed` type, which can hide potential bugs. | Consider adding a type assertion to narrow the type of the value before the assignment.",
             "61:16 less-specific-nested-return-statement Returned type `Demo\\Box<('TItem.demo\\box extends mixed)>` is less specific than the declared return type `Demo\\Box<int>` for function `Demo\\Box::boxed` due to nested 'mixed'. | Returned value's type is too general here due to nested mixed | The analysis detected 'mixed' within the structure of the returned value, making the overall type less specific than what the function declared. | Ensure the structure returned by `Demo\\Box::boxed` strictly adheres to the types specified in the `Demo\\Box<int>` return type declaration.",
+            "70:16 less-specific-nested-return-statement Returned type `list<mixed>` is less specific than the declared return type `list<int>` for function `Demo\\Box::counts` due to nested 'mixed'. | Returned value's type is too general here due to nested mixed | The analysis detected 'mixed' within the structure of the returned value, making the overall type less specific than what the function declared. | Ensure the structure returned by `Demo\\Box::counts` strictly adheres to the types specified in the `list<int>` return type declaration.",
         ]
     );
     assert_eq!(
         worded(("src/Demo/Box.sharp", sharp), &[]),
         [
             "7:40 invalid-return-statement Invalid return type for function `Demo\\Box::returned`: expected `int`, but found `TItem`. | This has type `TItem` | The type `TItem` returned here is not compatible with the declared return type `int`. | Change the return value to match `int`, or update the function's return type declaration.",
-            "9:37 mixed-return-statement Could not infer a precise return type for function `Demo\\Box::mixed`. Saw type `Any?`. | Type inferred as `Any?` here. | The analysis could not determine a specific type for the value returned here, resulting in `mixed`. This can happen with complex code paths or unannotated data. | Add specific type hints to variables, parameters, or properties involved in calculating the return value. Consider adding a specific return type declaration to the function signature to catch potential mismatches earlier.",
+            "9:37 mixed-return-statement Could not infer a precise return type for function `Demo\\Box::mixed`. Saw type `Any?`. | Type inferred as `Any?` here. | The analysis could not determine a specific type for the value returned here, resulting in `Any?`. This can happen with complex code paths or unannotated data. | Add specific type hints to variables, parameters, or properties involved in calculating the return value. Consider adding a specific return type declaration to the function signature to catch potential mismatches earlier.",
             "11:40 nullable-return-statement Function `Demo\\Box::nullable` is declared to return `int` but possibly returns a nullable value (inferred as `int?`). | Nullable value returned here. | Return type declared as non-nullable `int` here. | The declared return type does not permit null, but the analysis indicates that 'null' or a nullable type could be returned from this path. | You can either change the return type declaration of `Demo\\Box::nullable` to be nullable (e.g., 'int?'), or ensure that this function path always returns a non-null value.",
             "11:40 invalid-return-statement Invalid return type for function `Demo\\Box::nullable`: expected `int`, but found `int?`. | This has type `int?` | The type `int?` returned here is not compatible with the declared return type `int`. | Change the return value to match `int`, or update the function's return type declaration.",
             "15:9 invalid-return-statement Function `Demo\\Box::empty` is declared to return `int` but no return value was specified. | No return value specified here. | Return type declared as `int` here. | The declared return type does not permit 'void', but the analysis indicates that this function path does not return a value. | You can either change the return type declaration of `Demo\\Box::empty` to be 'void', or ensure that this function path always returns a value.",
@@ -4493,6 +4499,7 @@ fn a_refused_value_names_its_types_as_sharp_writes_them() {
             "29:22 invalid-property-assignment-value Invalid type for property `$count`: expected `int`, but got `TItem`. | This expression has type `TItem` | This property `$count` is declared with type `int` | The type `TItem` is not compatible with and cannot be assigned to `int`. | Change the assigned value to match the property's type, or update the property's type declaration.",
             "30:21 invalid-local-assignment-value Invalid assignment to `local`: it is declared as `int`. | This value has type `TItem`. | `local` is declared as `int` here. | Assign a `int` value, or change the type `local` is declared with.",
             "34:46 invalid-return-statement Invalid return type for function `Demo\\Box::boxed`: expected `Box<int>`, but found `Box<TItem>`. | This has type `Box<TItem>` | The type `Box<TItem>` returned here is not compatible with the declared return type `Box<int>`. | Change the return value to match `Box<int>`, or update the function's return type declaration.",
+            "36:51 less-specific-nested-return-statement Returned type `List<Any?>` is less specific than the declared return type `List<int>` for function `Demo\\Box::counts` due to nested 'Any?'. | Returned value's type is too general here due to nested Any? | The analysis detected 'Any?' within the structure of the returned value, making the overall type less specific than what the function declared. | Ensure the structure returned by `Demo\\Box::counts` strictly adheres to the types specified in the `List<int>` return type declaration.",
         ]
     );
 }
@@ -4518,7 +4525,7 @@ fn a_type_argument_outside_its_bound_is_named_as_sharp_writes_it() {
         [
             "11:14 unused-template-parameter Type parameter `TItem` is never used in class `Page`. | Type parameter `TItem` is defined on this class but never referenced | Remove `TItem` from `Page<…>`.",
             "15:14 invalid-template-parameter Type argument for `Page` is not compatible with its bound. | In the definition of `Demo\\LinePage` | The type `Line` provided for type parameter `TItem`... | ...does not satisfy the bound `DatabaseEntity` from `Page`. | Supply a type contained by `DatabaseEntity`.",
-            "23:55 template-constraint-violation Argument type mismatch for template `T`. | This argument has type `Line`, which is not compatible with the required template constraint `DatabaseEntity`. | Template parameter `T` is constrained with `DatabaseEntity`. | Ensure the argument's type satisfies the template constraint.",
+            "23:55 template-constraint-violation Argument type mismatch for type parameter `T`. | This argument has type `Line`, which is not compatible with the required bound `DatabaseEntity`. | Type parameter `T` is bounded by `DatabaseEntity`. | Ensure the argument's type satisfies the bound.",
             "23:55 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `T`, but found `Line`. | This has type `Line` | Arguments to this method are incorrect | The provided type `Line` is not compatible with the expected type `T`. | Change the argument value to match `T`, or update the parameter's type declaration.",
         ]
     );
@@ -4597,7 +4604,7 @@ fn a_message_names_an_accessor_as_sharp_writes_it() {
             "7:23 missing-return-statement Missing return statement in property hook `Box.open.get` | This property hook is declared to return 'int'... | ...but this path can exit without returning a value. | A property hook that does not explicitly return a value will implicitly return `null`. | Add a `return` statement that provides a value of type 'int' to all paths, or change the property hook's return type to 'int?' and return `null` explicitly.",
             "9:26 mixed-return-statement Could not infer a precise return type for property hook `Box.amount.get`. Saw type `Any?`. | Type inferred as `Any?` here. | The analysis could not determine a specific type for the value returned here. | Add specific type hints to variables or properties involved in calculating the return value.",
             "11:24 nullable-return-statement Property hook `Box.size.get` returns nullable value `int?` but property type is `int`. | Nullable value returned here. | The property type does not permit null, but this expression could return null. | Ensure the hook always returns a non-null value, or change the property type to `int?`.",
-            "13:28 falsable-return-statement Property hook `Box.position.get` returns falsable value `false|non-negative-int` but property type is `int`. | Potentially 'false' returned here. | The property type does not permit false, but this expression could return false. | Ensure the hook never returns false, or change the property type to `int|false`.",
+            "13:28 falsable-return-statement Property hook `Box.position.get` returns falsable value `false|int` but property type is `int`. | Potentially 'false' returned here. | The property type does not permit false, but this expression could return false. | Ensure the hook never returns false, or change the property type to `int|false`.",
         ]
     );
 }
@@ -4692,6 +4699,209 @@ fn an_override_names_its_parameter_as_sharp_writes_it() {
         worded(("src/Demo/Base.sharp", sharp), &[]),
         [
             "20:26 incompatible-parameter-type Parameter `item` of `Demo\\Child::put()` expects type `Line` but parent `Demo\\Base::put()` expects type `Order` | Parameter `item` expects type `Line` but parent expects `Order` | Parent method `Demo\\Base::put()` parameter defined here | In class `Demo\\Child` | Parameter types must be contravariant: child must accept equal or wider types than parent. | Change the parameter type to be compatible with the parent method.",
+        ]
+    );
+}
+
+/// An override returns what the member it overrides returns, as C# requires: `int` is no `T` and no `TItem`. A method
+/// that declares its own `T` overrides one that declares `T` at the same position, and a class header's type arguments
+/// replace the interface's. The PHP twin keeps Mago's issues.
+#[test]
+fn an_override_returns_the_type_parameter_the_member_it_overrides_returns() {
+    let sharp = "namespace Demo;\n\npublic class Order\n{\n}\n\npublic interface Picker\n{\n    T pick<T>(T item);\n}\n\npublic class IntPicker : Picker\n{\n    public int pick<T>(T item) => 1;\n}\n\npublic class SamePicker : Picker\n{\n    public T pick<T>(T item) => item;\n}\n\npublic interface Source<TItem>\n{\n    TItem next();\n}\n\npublic class Counter<TItem> : Source<TItem>\n{\n    public int next() => 1;\n}\n\npublic abstract class Relay<TItem> : Source<TItem>\n{\n    public abstract TItem next();\n}\n\npublic class OrderSource : Source<Order>\n{\n    public Order next() => new Order();\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n}\n\ninterface Picker\n{\n    /**\n     * @template T\n     * @param T $item\n     * @return T\n     */\n    public function pick(mixed $item): mixed;\n}\n\nclass IntPicker implements Picker\n{\n    /**\n     * @template T\n     * @param T $item\n     */\n    public function pick(mixed $item): int\n    {\n        return 1;\n    }\n}\n\nclass SamePicker implements Picker\n{\n    /**\n     * @template T\n     * @param T $item\n     * @return T\n     */\n    public function pick(mixed $item): mixed\n    {\n        return $item;\n    }\n}\n\n/** @template TItem */\ninterface Source\n{\n    /** @return TItem */\n    public function next(): mixed;\n}\n\n/**\n * @template TItem\n * @implements Source<TItem>\n */\nclass Counter implements Source\n{\n    public function next(): int\n    {\n        return 1;\n    }\n}\n\n/**\n * @template TItem\n * @implements Source<TItem>\n */\nabstract class Relay implements Source\n{\n    /** @return TItem */\n    abstract public function next(): mixed;\n}\n\n/** @implements Source<Order> */\nclass OrderSource implements Source\n{\n    public function next(): Order\n    {\n        return new Order();\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Picker.php", php), &[]), Vec::<String>::new());
+    assert_eq!(
+        issues(("src/Demo/Picker.sharp", sharp), &[]),
+        ["14:16 incompatible-return-type", "29:16 incompatible-return-type"]
+    );
+}
+
+/// A collection method called on a property takes the property's type for the receiver: `Shelf<Order>`'s `items` is a
+/// `List<Order>`, so it takes an `Order` and never a `TItem`, whether the receiver is a parameter or `this` of a class
+/// whose header names `Shelf<Order>`. A lambda written for such a property takes its parameter types the same way.
+/// The PHP twin keeps Mago's issues.
+#[test]
+fn a_property_of_a_generic_receiver_has_the_receivers_type_arguments() {
+    let sharp = "namespace Demo;\n\npublic class Order\n{\n    public void save()\n    {\n    }\n}\n\npublic class Shelf<TItem>\n{\n    public List<TItem> items { get; set; } = [];\n\n    public Function<void(TItem)>? visit { get; set; }\n\n    public void leak(Shelf<Order> other, TItem item)\n    {\n        other.items.add(item);\n    }\n\n    public void keep(TItem item)\n    {\n        this.items.add(item);\n    }\n}\n\npublic class Stocker\n{\n    public static void fill(Shelf<Order> shelf)\n    {\n        shelf.items.add(new Order());\n    }\n}\n\npublic class OrderShelf : Shelf<Order>\n{\n    public void stock()\n    {\n        this.items.add(new Order());\n    }\n\n    public void watch()\n    {\n        this.visit = (item) => item.save();\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    public function save(): void\n    {\n    }\n}\n\n/** @template TItem */\nclass Shelf\n{\n    /** @var list<TItem> */\n    public array $items = [];\n\n    /** @var (\\Closure(TItem): void)|null */\n    public ?\\Closure $visit = null;\n\n    /**\n     * @param Shelf<Order> $other\n     * @param TItem $item\n     */\n    public function leak(Shelf $other, mixed $item): void\n    {\n        $other->items[] = $item;\n    }\n\n    /** @param TItem $item */\n    public function keep(mixed $item): void\n    {\n        $this->items[] = $item;\n    }\n}\n\nclass Stocker\n{\n    /** @param Shelf<Order> $shelf */\n    public static function fill(Shelf $shelf): void\n    {\n        $shelf->items[] = new Order();\n    }\n}\n\n/** @extends Shelf<Order> */\nclass OrderShelf extends Shelf\n{\n    public function stock(): void\n    {\n        $this->items[] = new Order();\n    }\n\n    public function watch(): void\n    {\n        $this->visit = fn($item) => $item->save();\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Shelf.php", php), &[]),
+        ["27:9 mixed-property-type-coercion", "56:44 mixed-method-access"]
+    );
+    assert_eq!(issues(("src/Demo/Shelf.sharp", sharp), &[]), ["18:25 invalid-argument"]);
+}
+
+/// A function type takes in what its parameter types take and hands out what its return type hands out, `Any` and
+/// `Any?` included: a `Function<void(TItem)>` takes no `Any?`, a `Function<TItem()>` may return null where `Any`
+/// refuses it, and a lambda that returns nothing is no `Function<TItem()>`. The PHP twin keeps Mago's issues.
+#[test]
+fn a_function_type_checks_its_any_parameters_and_its_any_return() {
+    let sharp = "namespace Demo;\n\npublic class Box<TItem>\n{\n    public Function<void(Any?)> widen(Function<void(TItem)> visit) => visit;\n\n    public Function<Any()> sure(Function<TItem()> make) => make;\n\n    public Function<TItem()> empty() => () => { };\n\n    public Function<Any?()> loose(Function<TItem()> make) => make;\n\n    public Function<void(TItem)> kept(Function<void(TItem)> visit) => visit;\n}\n\npublic class Plain\n{\n    public Function<void(Any)> any(Function<void(int)> visit) => visit;\n\n    public Function<void(int)> narrow(Function<void(Any?)> visit) => visit;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\n/** @template TItem */\nclass Box\n{\n    /**\n     * @param \\Closure(TItem): void $visit\n     * @return \\Closure(mixed): void\n     */\n    public function widen(\\Closure $visit): \\Closure\n    {\n        return $visit;\n    }\n\n    /**\n     * @param \\Closure(): TItem $make\n     * @return \\Closure(): non-empty-mixed\n     */\n    public function sure(\\Closure $make): \\Closure\n    {\n        return $make;\n    }\n\n    /** @return \\Closure(): TItem */\n    public function empty(): \\Closure\n    {\n        return function (): void {\n        };\n    }\n\n    /**\n     * @param \\Closure(): TItem $make\n     * @return \\Closure(): mixed\n     */\n    public function loose(\\Closure $make): \\Closure\n    {\n        return $make;\n    }\n\n    /**\n     * @param \\Closure(TItem): void $visit\n     * @return \\Closure(TItem): void\n     */\n    public function kept(\\Closure $visit): \\Closure\n    {\n        return $visit;\n    }\n}\n\nclass Plain\n{\n    /**\n     * @param \\Closure(int): void $visit\n     * @return \\Closure(non-empty-mixed): void\n     */\n    public function any(\\Closure $visit): \\Closure\n    {\n        return $visit;\n    }\n\n    /**\n     * @param \\Closure(mixed): void $visit\n     * @return \\Closure(int): void\n     */\n    public function narrow(\\Closure $visit): \\Closure\n    {\n        return $visit;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Box.php", php), &[]), Vec::<String>::new());
+    assert_eq!(
+        issues(("src/Demo/Box.sharp", sharp), &[]),
+        [
+            "5:71 invalid-return-statement",
+            "7:60 invalid-return-statement",
+            "9:41 invalid-return-statement",
+            "18:66 invalid-return-statement",
+        ]
+    );
+}
+
+/// `Class<TItem>` takes only `Class<TItem>`, as `TItem` takes only a `TItem`: `typeof(Order)` and a `Class<TOther>`
+/// are refused, and a class whose header names `Factory<Order>` passes `typeof(Order)`. The PHP twin keeps Mago's
+/// issues.
+#[test]
+fn a_class_type_of_a_type_parameter_takes_only_that_type_parameter() {
+    let sharp = "namespace Demo;\n\npublic class Order\n{\n}\n\npublic abstract class Factory<TItem>\n{\n    public abstract TItem create(Class<TItem> type);\n\n    public TItem wrong() => this.create(typeof(Order));\n\n    public TItem other<TOther>(Class<TOther> type) => this.create(type);\n\n    public TItem same(Class<TItem> type) => this.create(type);\n}\n\npublic abstract class OrderFactory : Factory<Order>\n{\n    public Order made() => this.create(typeof(Order));\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n}\n\n/** @template TItem */\nabstract class Factory\n{\n    /**\n     * @param class-string<TItem> $type\n     * @return TItem\n     */\n    abstract public function create(string $type): mixed;\n\n    /** @return TItem */\n    public function wrong(): mixed\n    {\n        return $this->create(Order::class);\n    }\n\n    /**\n     * @template TOther\n     * @param class-string<TOther> $type\n     * @return TItem\n     */\n    public function other(string $type): mixed\n    {\n        return $this->create($type);\n    }\n\n    /**\n     * @param class-string<TItem> $type\n     * @return TItem\n     */\n    public function same(string $type): mixed\n    {\n        return $this->create($type);\n    }\n}\n\n/** @extends Factory<Order> */\nabstract class OrderFactory extends Factory\n{\n    public function made(): Order\n    {\n        return $this->create(Order::class);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Factory.php", php), &[]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Factory.sharp", sharp), &[]), ["11:41 invalid-argument", "13:67 invalid-argument"]);
+}
+
+/// A written `Any?` or `Any` type argument is checked against the bound as any other type: neither is a
+/// `DatabaseEntity`. The `List<Any?>` passed to `new Page<Any?>` is then checked against the bound too, as it was
+/// before. The PHP twin, whose `mixed` type argument Mago accepts for every bound, keeps its silence.
+#[test]
+fn a_written_any_type_argument_is_checked_against_the_bound() {
+    let sharp = "namespace Demo;\n\npublic abstract class DatabaseEntity\n{\n}\n\npublic class Page<TItem : DatabaseEntity>\n{\n    public Page(List<TItem> rows)\n    {\n    }\n}\n\npublic class Report\n{\n    public static Any wide(List<Any?> values) => new Page<Any?>(values);\n\n    public static Any sure(Page<Any> page) => page;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nabstract class DatabaseEntity\n{\n}\n\n/** @template TItem of DatabaseEntity */\nclass Page\n{\n    /** @param list<TItem> $rows */\n    public function __construct(array $rows)\n    {\n    }\n}\n\nclass Report\n{\n    /** @param Page<mixed> $page */\n    public static function sure(Page $page): mixed\n    {\n        return $page;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Page.php", php), &[]), Vec::<String>::new());
+    assert_eq!(
+        issues(("src/Demo/Page.sharp", sharp), &[]),
+        [
+            "16:58 template-constraint-violation",
+            "16:65 less-specific-nested-argument-type",
+            "18:28 template-constraint-violation",
+        ]
+    );
+}
+
+/// A pattern variable over a type parameter has the pattern's type, as C#'s `item is int n` does: `n` is an `int` and
+/// `s` a `string`. A `TItem` that no pattern narrowed stays opaque, with or without a bound. The PHP twin keeps Mago's
+/// issues.
+#[test]
+fn a_pattern_variable_over_a_type_parameter_has_the_pattern_type() {
+    let sharp = "namespace Demo;\n\npublic class Order\n{\n}\n\npublic class Box<TItem>\n{\n    public int number(TItem item) => item is int n ? n : 0;\n\n    public string label(TItem item) => item is string s ? s : \"\";\n\n    public int raw(TItem item) => item;\n}\n\npublic class Shelf<TEntity : Order>\n{\n    public int raw(TEntity entity) => entity;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n}\n\n/** @template TItem */\nclass Box\n{\n    /** @param TItem $item */\n    public function number(mixed $item): int\n    {\n        return is_int($item) ? $item : 0;\n    }\n\n    /** @param TItem $item */\n    public function label(mixed $item): string\n    {\n        return is_string($item) ? $item : '';\n    }\n\n    /** @param TItem $item */\n    public function raw(mixed $item): int\n    {\n        return $item;\n    }\n}\n\n/** @template TEntity of Order */\nclass Shelf\n{\n    /** @param TEntity $entity */\n    public function raw(Order $entity): int\n    {\n        return $entity;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Box.php", php), &[]),
+        ["27:16 less-specific-nested-return-statement", "37:16 invalid-return-statement"]
+    );
+    assert_eq!(
+        issues(("src/Demo/Box.sharp", sharp), &[]),
+        ["13:35 invalid-return-statement", "18:39 invalid-return-statement"]
+    );
+}
+
+/// A null guard on an unbounded `TItem` parameter rejects a null that only the type parameter's `Any?` bound allows,
+/// so no `?` can be dropped and the guard is no rejected nullable parameter. A `string? name` with the same guard
+/// still is one. The PHP twin keeps Mago's issues.
+#[test]
+fn a_null_guard_on_an_unbounded_type_parameter_rejects_no_nullable_parameter() {
+    let sharp = "namespace Demo;\n\nimport InvalidArgumentException;\n\npublic class Box<TItem>\n{\n    public List<TItem> items { get; set; } = [];\n\n    public string label { get; set; } = \"\";\n\n    public void put(TItem item)\n    {\n        if (item == null) {\n            throw new InvalidArgumentException(\"null\");\n        }\n        this.items.add(item);\n    }\n\n    public void name(string? name)\n    {\n        if (name == null) {\n            throw new InvalidArgumentException(\"null\");\n        }\n        this.label = name;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse InvalidArgumentException;\n\n/** @template TItem */\nclass Box\n{\n    /** @var list<TItem> */\n    public array $items = [];\n\n    public string $label = '';\n\n    /** @param TItem $item */\n    public function put(mixed $item): void\n    {\n        if ($item == null) {\n            throw new InvalidArgumentException('null');\n        }\n        $this->items[] = $item;\n    }\n\n    public function name(?string $name): void\n    {\n        if ($name == null) {\n            throw new InvalidArgumentException('null');\n        }\n        $this->label = $name;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Box.php", php), &[]),
+        [
+            "18:13 possibly-null-operand",
+            "18:22 null-operand",
+            "19:13 unhandled-thrown-type",
+            "26:13 possibly-null-operand",
+            "26:22 null-operand",
+            "27:13 unhandled-thrown-type",
+        ]
+    );
+    assert_eq!(issues(("src/Demo/Box.sharp", sharp), &[]), ["19:22 rejected-nullable-parameter"]);
+}
+
+/// A plain PHP refinement is named by the PHP# type that holds it: a `non-empty-string` is a `string`, a
+/// `positive-int` an `int`, a `class-string` a `Class<Object>` and an `object` an `Object`, spec section 24. The PHP
+/// twin keeps Mago's text.
+#[test]
+fn a_refined_scalar_a_class_string_and_an_object_are_named_as_sharp_writes_them() {
+    let values = "<?php\n\nnamespace Lib;\n\nfinal class Values\n{\n    /** @return non-empty-string */\n    public static function name(): string\n    {\n        return 'a';\n    }\n\n    /** @return positive-int */\n    public static function count(): int\n    {\n        return 1;\n    }\n\n    /** @return class-string */\n    public static function kind(): string\n    {\n        return self::class;\n    }\n\n    public static function thing(): object\n    {\n        return new self();\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Values;\n\npublic class Report\n{\n    public static bool keep(bool flag) => flag;\n\n    public static void run()\n    {\n        Report.keep(Values.name());\n        Report.keep(Values.count());\n        Report.keep(Values.kind());\n        Report.keep(Values.thing());\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Values;\n\nclass Report\n{\n    public static function keep(bool $flag): bool\n    {\n        return $flag;\n    }\n\n    public static function run(): void\n    {\n        Report::keep(Values::name());\n        Report::keep(Values::count());\n        Report::keep(Values::kind());\n        Report::keep(Values::thing());\n    }\n}\n";
+    let others = [("src/Lib/Values.php", values)];
+
+    assert_eq!(
+        worded(("src/Demo/Report.php", php), &others),
+        [
+            "16:22 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `bool`, but found `non-empty-string`. | This has type `non-empty-string` | Arguments to this method are incorrect | The provided type `non-empty-string` is not compatible with the expected type `bool`. | Change the argument value to match `bool`, or update the parameter's type declaration.",
+            "17:22 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `bool`, but found `positive-int`. | This has type `positive-int` | Arguments to this method are incorrect | The provided type `positive-int` is not compatible with the expected type `bool`. | Change the argument value to match `bool`, or update the parameter's type declaration.",
+            "18:22 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `bool`, but found `class-string`. | This has type `class-string` | Arguments to this method are incorrect | The provided type `class-string` is not compatible with the expected type `bool`. | Change the argument value to match `bool`, or update the parameter's type declaration.",
+            "19:22 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `bool`, but found `object`. | This has type `object` | Arguments to this method are incorrect | The provided type `object` is not compatible with the expected type `bool`. | Change the argument value to match `bool`, or update the parameter's type declaration.",
+        ]
+    );
+    assert_eq!(
+        worded(("src/Demo/Report.sharp", sharp), &others),
+        [
+            "11:21 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `bool`, but found `string`. | This has type `string` | Arguments to this method are incorrect | The provided type `string` is not compatible with the expected type `bool`. | Change the argument value to match `bool`, or update the parameter's type declaration.",
+            "12:21 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `bool`, but found `int`. | This has type `int` | Arguments to this method are incorrect | The provided type `int` is not compatible with the expected type `bool`. | Change the argument value to match `bool`, or update the parameter's type declaration.",
+            "13:21 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `bool`, but found `Class<Object>`. | This has type `Class<Object>` | Arguments to this method are incorrect | The provided type `Class<Object>` is not compatible with the expected type `bool`. | Change the argument value to match `bool`, or update the parameter's type declaration.",
+            "14:21 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `bool`, but found `Object`. | This has type `Object` | Arguments to this method are incorrect | The provided type `Object` is not compatible with the expected type `bool`. | Change the argument value to match `bool`, or update the parameter's type declaration.",
+        ]
+    );
+}
+
+/// A null check on a type parameter names the type parameter: `item == null`, `item ?? other` and `item?.total` on a
+/// `TItem : Order` that is never null, and `number == item` on a `TItem` that may be null. The `int?` that `total`
+/// declares and never fills with null is named as PHP# writes it too. The PHP twin keeps Mago's text.
+#[test]
+fn a_null_check_on_a_type_parameter_names_it() {
+    let sharp = "namespace Demo;\n\npublic class Order\n{\n    public int total = 0;\n}\n\npublic class Box<TItem : Order>\n{\n    public bool empty(TItem item) => item == null;\n\n    public Order pick(TItem item, Order other) => item ?? other;\n\n    public int? total(TItem item) => item?.total;\n}\n\npublic class Holder<TItem>\n{\n    public bool same(int number, TItem item) => number == item;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    public int $total = 0;\n}\n\n/** @template TItem of Order */\nclass Box\n{\n    /** @param TItem $item */\n    public function empty(Order $item): bool\n    {\n        return $item == null;\n    }\n\n    /** @param TItem $item */\n    public function pick(Order $item, Order $other): Order\n    {\n        return $item ?? $other;\n    }\n\n    /** @param TItem $item */\n    public function total(Order $item): ?int\n    {\n        return $item?->total;\n    }\n}\n\n/** @template TItem */\nclass Holder\n{\n    /** @param TItem $item */\n    public function same(int $number, mixed $item): bool\n    {\n        return $number == $item;\n    }\n}\n";
+
+    assert_eq!(
+        worded(("src/Demo/Box.php", php), &[]),
+        [
+            "16:25 null-operand Right operand in `==` comparison is `null`. | This is `null` | Comparing `null` with `==` can lead to unexpected results due to PHP's type coercion rules (e.g., `null == 0` is true). | Ensure this operand is non-null and has a comparable type. Explicitly check for `null` if it's an expected state.",
+            "22:16 redundant-null-coalesce Redundant null coalesce: left-hand side can never be `null` or undefined. | This expression (type `('TItem.demo\\box extends Demo\\Order)`) is never `null` or undefined | This right-hand side will never be evaluated | The null coalesce operator `??` only evaluates the right-hand side if the left-hand side is `null` or not set. | Consider removing the `??` operator and the right-hand side expression.",
+            "28:21 redundant-nullsafe-operator Redundant nullsafe operator (`?->`) used on an expression that is never `null`. | Nullsafe operator `?->` is unnecessary here | This expression (type `('TItem.demo\\box extends Demo\\Order)`) is never `null` | The nullsafe operator (`?->`) short-circuits the access if the object is `null`. Since this expression is guaranteed not to be `null`, this check is unnecessary. | Consider using the direct property access operator (`->`) for clarity.",
+            "38:27 possibly-null-operand Right operand in `==` comparison might be `null` (type `('TItem.demo\\holder extends mixed)`). | This might be `null` | If this operand is `null` at runtime, PHP's specific comparison rules for `null` with `==` will apply. | Ensure this operand is non-null or that comparison with `null` is intended and handled safely.",
+        ]
+    );
+    assert_eq!(
+        worded(("src/Demo/Box.sharp", sharp), &[]),
+        [
+            "10:38 redundant-comparison Redundant `==` comparison: `TItem` is never `null`. | This is `TItem`, which is never `null` | This null check cannot matter | In PHP# a type holds null only when written with `?` (spec section 24), so a `?` or a null check that cannot matter is an error (spec section 14.4). | Remove the null check.",
+            "12:51 redundant-null-coalesce Redundant null coalesce: left-hand side can never be `null` or undefined. | This expression (type `TItem`) is never `null` or undefined | This right-hand side will never be evaluated | The null coalesce operator `??` only evaluates the right-hand side if the left-hand side is `null` or not set. | In PHP# a type holds null only when written with `?` (spec section 24), so a `?` or a null check that cannot matter is an error (spec section 14.4). | Consider removing the `??` operator and the right-hand side expression.",
+            "14:42 redundant-nullsafe-operator Redundant nullsafe operator (`?.`) used on an expression that is never `null`. | Nullsafe operator `?.` is unnecessary here | This expression (type `TItem`) is never `null` | The nullsafe operator (`?.`) short-circuits the access if the object is `null`. Since this expression is guaranteed not to be `null`, this check is unnecessary. | In PHP# a type holds null only when written with `?` (spec section 24), so a `?` or a null check that cannot matter is an error (spec section 14.4). | Consider using the direct property access operator (`.`) for clarity.",
+            "14:12 overly-wide-return-type Declared return type `int?` for `total` has unused branches: `null`. | Declared as `int?`, but `null` is never returned. | No path in this body produces that value. | A return type wider than the body produces is misleading. | Callers must handle branches the function never actually returns. | It can hide dead code paths meant to produce the missing variant. | In PHP# a type holds null only when written with `?` (spec section 24), so a `?` or a null check that cannot matter is an error (spec section 14.4). | Remove `null` from the return type, giving `int`.",
+            "19:59 possibly-null-operand Right operand in `==` comparison might be `null` (type `TItem`). | This might be `null` | If this operand is `null` at runtime, PHP's specific comparison rules for `null` with `==` will apply. | Ensure this operand is non-null or that comparison with `null` is intended and handled safely.",
+        ]
+    );
+}
+
+/// A spread of a type parameter names the type parameter, and the help names the PHP# list type to spread. The PHP
+/// twin keeps Mago's text.
+#[test]
+fn a_spread_of_a_type_parameter_names_it_and_the_list_to_spread() {
+    let sharp = "namespace Demo;\n\npublic class Numbers\n{\n    public static int sum(int ...numbers) => 0;\n}\n\npublic class Box<TItem>\n{\n    public int total(TItem item) => Numbers.sum(...item);\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Numbers\n{\n    public static function sum(int ...$numbers): int\n    {\n        return 0;\n    }\n}\n\n/** @template TItem */\nclass Box\n{\n    /** @param TItem $item */\n    public function total(mixed $item): int\n    {\n        return Numbers::sum(...$item);\n    }\n}\n";
+
+    assert_eq!(
+        worded(("src/Demo/Box.php", php), &[]),
+        [
+            "19:32 invalid-argument Cannot unpack argument of type `'TItem.demo\\box extends mixed` because it is not an iterable type. | Type `'TItem.demo\\box extends mixed` is not `iterable` | Argument unpacking `...` requires an `iterable` (e.g., `array` or `Traversable`). | Ensure the value being unpacked is an `iterable`.",
+            "19:32 mixed-argument Invalid argument type for argument #1 of `Demo\\Numbers::sum`: expected `int`, but found `mixed`. | Argument has type `mixed` | Arguments to this method are incorrect | The type `mixed` is too general and does not match the expected type `int`. | Add specific type hints or assertions to the argument value.",
+        ]
+    );
+    assert_eq!(
+        worded(("src/Demo/Box.sharp", sharp), &[]),
+        [
+            "10:52 invalid-argument Cannot spread a value of type `TItem`: PHP# spreads only a list. | Type `TItem` is not a list | Spec section 7 spreads an existing list into a call, as in `Money.sum(...prices)`. | Spread a list, such as a variadic parameter or a `List<int>` from plain PHP."
         ]
     );
 }

@@ -48,6 +48,7 @@ use crate::error::AnalysisError;
 use crate::expression::constant_access::field_storage;
 use crate::resolver::class_name::report_non_existent_class_like;
 use crate::resolver::property::DeclaredPropertyKind;
+use crate::resolver::property::get_localized_property_type;
 use crate::resolver::property::localize_property_type;
 use crate::resolver::property::resolve_declared_property;
 use crate::resolver::selector::resolve_member_selector;
@@ -1185,18 +1186,18 @@ where
                 return None;
             };
             let property_name = concat_word!(b"$", property.value);
-            let property_type =
-                |class: Word| context.codebase.get_property_type(class.as_bytes(), property_name.as_bytes());
 
-            // `this` keeps no expression type: its class is the scope's.
-            if is_this(access.object, context.resolved_names) {
-                property_type(block_context.scope.get_class_like_name()?)?.clone()
+            // `this` keeps no expression type: it is the `$this` local, the scope's class with its type parameters.
+            let receiver = if is_this(access.object, context.resolved_names) {
+                block_context.locals.get(&word("$this"))?.as_ref()
             } else {
-                artifacts.get_expression_type(access.object)?.types.iter().find_map(|atomic| match atomic {
-                    TAtomic::Object(object) => property_type(object.get_name()?).cloned(),
-                    _ => None,
-                })?
-            }
+                artifacts.get_expression_type(access.object)?
+            };
+
+            receiver.types.iter().find_map(|atomic| match atomic {
+                TAtomic::Object(object) => get_localized_property_type(context, object, property_name),
+                _ => None,
+            })?
         }
         _ => return None,
     };

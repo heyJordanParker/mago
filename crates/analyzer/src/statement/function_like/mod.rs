@@ -1243,9 +1243,13 @@ fn check_return_type_metadata_width<'ctx, A>(
         return;
     }
 
-    let unused_list = unused_atomics.iter().map(|a| a.get_id().to_string()).collect::<Vec<_>>().join("`, `");
+    let unused_list = unused_atomics
+        .iter()
+        .map(|atomic| display_type(context, &TUnion::from_atomic((*atomic).clone())))
+        .collect::<Vec<_>>()
+        .join("`, `");
 
-    let declared_str = expanded_declared.get_id();
+    let declared_str = display_type(context, &expanded_declared);
     let return_span = return_type_metadata.span;
     let function_label = function_like_metadata.name;
 
@@ -1825,9 +1829,9 @@ where
     }
     for (argument, (template_name, template)) in arguments.iter().zip(templates.iter()) {
         let names_a_template = template.constraint.has_template_types();
-        // An explicit `mixed` argument is the written form of "any argument", which Mago accepts
-        // for every bound.
-        if argument.is_mixed() || template.constraint.is_mixed() || (names_a_template && !context.dialect.is_sharp()) {
+        // An explicit `mixed` argument is the written form of "any argument", which Mago accepts for every bound in
+        // PHP. A written PHP# `Any` or `Any?` is a type like any other, so its bound checks it.
+        if template.constraint.is_mixed() || (!is_sharp && (argument.is_mixed() || names_a_template)) {
             continue;
         }
 

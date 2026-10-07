@@ -40,6 +40,7 @@ use crate::expression::binary::utils::is_always_less_than;
 use crate::expression::binary::utils::is_always_less_than_or_equal;
 use crate::utils::expression::get_literal_array_key;
 use crate::utils::misc::unwrap_expression;
+use crate::utils::names::display_type;
 
 /// Analyzes standard comparison operations (e.g., `==`, `===`, `<`, `<=`, `>`, `>=`).
 ///
@@ -571,7 +572,7 @@ fn check_comparison_operand<'ast, 'arena, A>(
             IssueCode::PossiblyNullOperand,
             Issue::warning(format!(
                 "{} operand in `{}` comparison might be `null` (type `{}`).",
-                side, op_str, operand_type.get_id()
+                side, op_str, display_type(context, operand_type)
             ))
             .with_annotation(Annotation::primary(operand.span()).with_message("This might be `null`"))
             .with_note(format!("If this operand is `null` at runtime, PHP's specific comparison rules for `null` with `{op_str}` will apply."))
@@ -604,7 +605,7 @@ fn check_comparison_operand<'ast, 'arena, A>(
             IssueCode::PossiblyFalseOperand,
             Issue::warning(format!(
                 "{} operand in `{}` comparison might be `false` (type `{}`).",
-                side, op_str, operand_type.get_id()
+                side, op_str, display_type(context, operand_type)
             ))
             .with_annotation(Annotation::primary(operand.span()).with_message("This might be `false`"))
             .with_note(format!("If this operand is `false` at runtime, PHP's specific comparison rules for `false` with `{op_str}` will apply."))
@@ -664,7 +665,7 @@ fn report_redundant_null_comparison<'arena, A>(
         return;
     }
 
-    let operand_type_str = operand_type.get_id();
+    let operand_type_str = display_type(context, operand_type);
     let issue = context.as_null_check_error(
         Issue::help(format!(
             "Redundant `{}` comparison: `{operand_type_str}` is never `null`.",

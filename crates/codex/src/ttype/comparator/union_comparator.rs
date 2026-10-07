@@ -123,6 +123,10 @@ fn replace_erased_template_arguments(input_type: &TUnion, container_type: &TUnio
     replaced.then_some(relaxed)
 }
 
+/// Whether a function that returns `input_type` may stand where one that returns `container_type` is expected.
+///
+/// A `void` return gives null, so it fits a container that takes null. Under PHP#'s rules, an opaque type parameter
+/// does not take null through its `Any?` bound.
 #[inline]
 pub fn is_return_type_contained_by(
     codebase: &CodebaseMetadata,
@@ -131,7 +135,17 @@ pub fn is_return_type_contained_by(
     ignore_false: bool,
     union_comparison_result: &mut ComparisonResult,
 ) -> bool {
-    (input_type.is_void() && container_type.accepts_null())
+    let takes_void = if union_comparison_result.sharp_rules {
+        container_type.types.iter().any(|atomic| match atomic {
+            TAtomic::Null | TAtomic::Placeholder => true,
+            TAtomic::Mixed(mixed) => !mixed.is_non_null(),
+            _ => false,
+        })
+    } else {
+        container_type.accepts_null()
+    };
+
+    (input_type.is_void() && takes_void)
         || is_contained_by(codebase, input_type, container_type, false, ignore_false, false, union_comparison_result)
 }
 

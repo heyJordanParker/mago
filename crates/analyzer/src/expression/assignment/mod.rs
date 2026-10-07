@@ -54,6 +54,7 @@ use crate::error::AnalysisError;
 use crate::expression::constant_access::field_storage;
 use crate::expression::find_expression_logic_issues;
 use crate::formula::get_formula;
+use crate::resolver::property::get_localized_property_type;
 use crate::resolver::static_property::StaticProperty;
 use crate::statement::function_like::expect_function_type;
 use crate::utils::docblock::check_docblock_type_incompatibility;
@@ -1334,7 +1335,8 @@ fn handle_assignment_with_boolean_logic<'ctx, 'arena, A>(
     );
 }
 
-/// The type an assignment's target declares: a typed PHP# local's type, or the type of a property of `this`.
+/// The type an assignment's target declares: a typed PHP# local's type, or the type of a property of `this` as `this`
+/// reads it, with the type arguments its class's header names.
 fn declared_target_type<A>(
     target_expression: &Expression<'_>,
     target_variable_id: Option<&Word>,
@@ -1364,11 +1366,11 @@ where
         return None;
     }
 
-    let class_name = block_context.scope.get_class_like_name()?;
-    let property_type =
-        context.codebase.get_property_type(class_name.as_bytes(), php_variable_name(property.value).as_bytes())?;
-
-    Some(Rc::new(property_type.clone()))
+    let property_name = php_variable_name(property.value);
+    block_context.locals.get(&Word::from("$this"))?.types.iter().find_map(|atomic| match atomic {
+        TAtomic::Object(object) => get_localized_property_type(context, object, property_name).map(Rc::new),
+        _ => None,
+    })
 }
 
 fn is_closure_expression<'arena>(expression: &'arena Expression<'arena>) -> bool {

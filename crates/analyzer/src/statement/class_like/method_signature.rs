@@ -1,3 +1,6 @@
+use std::borrow::Cow;
+use std::sync::Arc;
+
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
 use mago_codex::metadata::function_like::FunctionLikeMetadata;
@@ -6,6 +9,7 @@ use mago_codex::metadata::ttype::TypeMetadata;
 use mago_codex::misc::GenericParent;
 use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
+use mago_codex::ttype::atomic::generic::TGenericParameter;
 use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::combiner;
@@ -20,8 +24,11 @@ use mago_codex::ttype::get_mixed_closure;
 use mago_codex::ttype::get_mixed_iterable;
 use mago_codex::ttype::get_mixed_keyed_array;
 use mago_codex::ttype::get_string;
+use mago_codex::ttype::template::TemplateResult;
+use mago_codex::ttype::template::inferred_type_replacer;
 use mago_codex::ttype::template::variance::Variance;
 use mago_codex::ttype::union::TUnion;
+use mago_codex::ttype::wrap_atomic;
 use mago_codex::visibility::Visibility;
 use mago_syntax::dialect::Dialect;
 use mago_word::Word;
@@ -79,6 +86,12 @@ pub fn validate_method_signature_compatibility(
         // The child method is not user-defined; skip validation.
         return Vec::new();
     }
+
+    let child_method = &if dialect.is_sharp() {
+        with_parent_type_parameters(codebase, child_method, parent_method)
+    } else {
+        Cow::Borrowed(child_method)
+    };
 
     let mut issues = Vec::new();
 
@@ -210,7 +223,7 @@ pub fn validate_method_signature_compatibility(
             false,
             false,
             false,
-            &mut ComparisonResult::new(),
+            &mut ComparisonResult::for_dialect(dialect),
         );
 
         if !is_compatible {
@@ -281,7 +294,7 @@ pub fn validate_method_signature_compatibility(
             expand_union(codebase, &mut expanded_child_return_type, &expansion_options);
         }
 
-        let mut comparison_result = ComparisonResult::new();
+        let mut comparison_result = ComparisonResult::for_dialect(dialect);
         let is_compatible = union_comparator::is_contained_by(
             codebase,
             &expanded_child_return_type,
@@ -323,7 +336,7 @@ pub fn validate_method_signature_compatibility(
         }
 
         if !expanded_parent_return_type.has_template_types() && !expanded_child_return_type.has_template_types() {
-            let mut comparison_result = ComparisonResult::new();
+            let mut comparison_result = ComparisonResult::for_dialect(dialect);
             let is_compatible = union_comparator::is_return_type_contained_by(
                 codebase,
                 &expanded_child_return_type,
@@ -343,6 +356,59 @@ pub fn validate_method_signature_compatibility(
     }
 
     issues
+}
+
+/// `child_method` with each of its own type parameters replaced by the type parameter `parent_method` declares at the
+/// same position, as C# matches a generic method's type parameters, so `T pick<T>(T item)` overriding
+/// `T pick<T>(T item)` returns the parent's `T`. C# lets no override write its own bound, so the type parameters
+/// match only when each pair has the same bound. Otherwise `child_method` keeps its own, which take no other type.
+fn with_parent_type_parameters<'method>(
+    codebase: &CodebaseMetadata,
+    child_method: &'method FunctionLikeMetadata,
+    parent_method: &FunctionLikeMetadata,
+) -> Cow<'method, FunctionLikeMetadata> {
+    if child_method.template_types.is_empty() || child_method.template_types.len() != parent_method.template_types.len()
+    {
+        return Cow::Borrowed(child_method);
+    }
+
+    let pairs = || child_method.template_types.iter().zip(&parent_method.template_types);
+    let mut template_result = TemplateResult::default();
+    for ((child_name, child_template), (parent_name, parent_template)) in pairs() {
+        template_result.add_lower_bound(
+            *child_name,
+            child_template.defining_entity,
+            wrap_atomic(TAtomic::GenericParameter(TGenericParameter::new(
+                *parent_name,
+                Arc::new(parent_template.constraint.clone()),
+                parent_template.defining_entity,
+            ))),
+        );
+    }
+
+    let is_same_bound = |child_bound: &TUnion, parent_bound: &TUnion| {
+        let child_bound = inferred_type_replacer::replace(child_bound, &template_result, codebase);
+        let contains = |input: &TUnion, container: &TUnion| {
+            union_comparator::is_contained_by(
+                codebase,
+                input,
+                container,
+                false,
+                false,
+                false,
+                &mut ComparisonResult::for_dialect(Dialect::Sharp),
+            )
+        };
+
+        contains(&child_bound, parent_bound) && contains(parent_bound, &child_bound)
+    };
+    if !pairs().all(|((_, child_template), (_, parent_template))| {
+        is_same_bound(&child_template.constraint, &parent_template.constraint)
+    }) {
+        return Cow::Borrowed(child_method);
+    }
+
+    Cow::Owned(super::apply_template_substitution_to_method(child_method, &template_result, codebase))
 }
 
 /// Adds to `issues` the parameter of a PHP# method that no longer links against the method it overrides or implements

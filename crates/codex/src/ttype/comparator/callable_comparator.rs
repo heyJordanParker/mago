@@ -83,7 +83,7 @@ pub(crate) fn is_contained_by(
             continue;
         };
 
-        if container_parameter_type.is_mixed() {
+        if container_parameter_type.is_mixed() && !atomic_comparison_result.sharp_rules {
             continue;
         }
 
@@ -115,10 +115,12 @@ pub(crate) fn is_contained_by(
         return true;
     };
 
-    if container_return_type.is_void()
-        || container_return_type.is_vanilla_mixed()
-        || (!atomic_comparison_result.sharp_rules && container_return_type.is_templated_as_vanilla_mixed())
-    {
+    let returns_anything = if atomic_comparison_result.sharp_rules {
+        container_return_type.is_vanilla_mixed() && container_return_type.accepts_null()
+    } else {
+        container_return_type.is_vanilla_mixed() || container_return_type.is_templated_as_vanilla_mixed()
+    };
+    if container_return_type.is_void() || returns_anything {
         return true;
     }
 

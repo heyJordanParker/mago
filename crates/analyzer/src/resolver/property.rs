@@ -54,6 +54,7 @@ use crate::utils::expression::analyze_member_object;
 use crate::utils::expression::is_this;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_sharp_type;
+use crate::utils::names::display_type;
 use crate::utils::template::get_template_types_for_class_member;
 use crate::visibility::check_method_visibility;
 use crate::visibility::check_resolved_property_read_visibility;
@@ -1263,6 +1264,35 @@ where
     )
 }
 
+/// The declared type of the property `property_name` read through `object`, as `find_property_in_class` localizes a
+/// read: the declaring class's type parameters become `object`'s type arguments, or the ones `object`'s class names in
+/// its header.
+pub(crate) fn get_localized_property_type<A>(
+    context: &Context<'_, '_, A>,
+    object: &TObject,
+    property_name: Word,
+) -> Option<TUnion>
+where
+    A: Arena,
+{
+    let class_name = object.get_name()?;
+    let property_type = context.codebase.get_property_type(class_name.as_bytes(), property_name.as_bytes())?;
+    let declaring_class_name =
+        context.codebase.get_declaring_property_class(class_name.as_bytes(), property_name.as_bytes())?;
+    let declaring_class = context.codebase.get_class_like(declaring_class_name.as_bytes())?;
+    if declaring_class.template_types.is_empty() {
+        return Some(property_type.clone());
+    }
+
+    Some(localize_property_type(
+        context,
+        property_type,
+        object.get_type_parameters().unwrap_or_default(),
+        context.codebase.get_class_like(class_name.as_bytes())?,
+        declaring_class,
+    ))
+}
+
 fn update_template_types<A>(
     context: &Context<'_, '_, A>,
     template_types: &mut HashMap<Word, HashMap<GenericParent, TUnion>>,
@@ -1434,7 +1464,7 @@ pub(crate) fn check_redundant_nullsafe<'arena, A>(
         return;
     }
 
-    let object_type_str = object_type.get_id();
+    let object_type_str = display_type(context, object_type);
 
     let issue = context.as_null_check_error(
         Issue::help(format!("Redundant nullsafe operator (`{nullsafe}`) used on an expression that is never `null`."))

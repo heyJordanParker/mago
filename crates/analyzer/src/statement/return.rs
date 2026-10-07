@@ -358,6 +358,7 @@ pub fn handle_return_value<'ctx, A>(
         {
             let inferred_return_type_str = display_type(context, &inferred_return_type);
             let mixed_str = if context.dialect.is_sharp() { &inferred_return_type_str } else { "mixed" };
+            let mixed = display_type(context, &get_mixed());
             context.collector.report_with_code(
                 IssueCode::MixedReturnStatement,
                 Issue::error(format!(
@@ -367,9 +368,9 @@ pub fn handle_return_value<'ctx, A>(
                     Annotation::primary(return_value.span())
                         .with_message(format!("Type inferred as `{mixed_str}` here."))
                 )
-                .with_note(
-                    "The analysis could not determine a specific type for the value returned here, resulting in `mixed`. This can happen with complex code paths or unannotated data.".to_string()
-                )
+                .with_note(format!(
+                    "The analysis could not determine a specific type for the value returned here, resulting in `{mixed}`. This can happen with complex code paths or unannotated data."
+                ))
                 .with_help(
                     "Add specific type hints to variables, parameters, or properties involved in calculating the return value. Consider adding a specific return type declaration to the function signature to catch potential mismatches earlier."
                 ),
@@ -463,16 +464,17 @@ pub fn handle_return_value<'ctx, A>(
             }
 
             if union_comparison_result.type_coerced_from_nested_mixed.unwrap_or(false) {
+                let mixed = display_type(context, &get_mixed());
                 let issue = Issue::error(format!(
-                    "Returned type `{inferred_return_type_str}` is less specific than the declared return type `{expected_return_type_str}` for function `{function_name}` due to nested 'mixed'."
+                    "Returned type `{inferred_return_type_str}` is less specific than the declared return type `{expected_return_type_str}` for function `{function_name}` due to nested '{mixed}'."
                 ))
                 .with_annotation(
                     Annotation::primary(return_value.span())
-                        .with_message("Returned value's type is too general here due to nested mixed")
+                        .with_message(format!("Returned value's type is too general here due to nested {mixed}"))
                 )
-                .with_note(
-                    "The analysis detected 'mixed' within the structure of the returned value, making the overall type less specific than what the function declared."
-                )
+                .with_note(format!(
+                    "The analysis detected '{mixed}' within the structure of the returned value, making the overall type less specific than what the function declared."
+                ))
                 .with_help(
                     format!(
                         "Ensure the structure returned by `{function_name}` strictly adheres to the types specified in the `{expected_return_type_str}` return type declaration."

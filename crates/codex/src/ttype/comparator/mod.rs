@@ -31,8 +31,9 @@ pub struct ComparisonResult {
     pub type_variable_upper_bounds: Vec<(Word, TemplateBound)>,
     /// Whether the comparison follows PHP#'s rules, set for a `.sharp` file: a `nonnull` container refuses a value that
     /// may be null, as PHP#'s `Any` does, and a type parameter is opaque, as C#'s `T` is, so it takes only itself or
-    /// `never`, and passes only as itself or as a class type its bound reaches. A PHP file keeps upstream's rules,
-    /// which let any `mixed` into `nonnull` and any value into a template bounded by `mixed`.
+    /// `never`, and passes only as itself, as `Any?`, or as a type that holds its whole bound, such as a class its bound
+    /// reaches or the `int` that `is int n` narrows it to. A PHP file keeps upstream's rules, which let any `mixed` into
+    /// `nonnull` and any value into a template bounded by `mixed`.
     pub sharp_rules: bool,
 }
 

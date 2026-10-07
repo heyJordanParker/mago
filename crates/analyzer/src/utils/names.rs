@@ -70,19 +70,22 @@ where
 
 /// Returns `union` as PHP# writes the type: `List<int>`, `Map<string, int>`, `int?`, `(int|string)?`, `Any?`, a class
 /// by its short name, a type parameter by its name, an intersection as `A & B`, a function type as
-/// `Function<void(int)>`, `Class<Order>`, and a literal as `1` or `"text"`.
+/// `Function<void(int)>`, `Class<Order>`, `Object`, and a literal as `1` or `"text"`. A refinement that PHP# cannot
+/// write is the type that holds it, such as `int` for a `positive-int`, and is named once.
 #[must_use]
 pub(crate) fn display_sharp_type(union: &TUnion, codebase: &CodebaseMetadata) -> String {
     if let Some(TAtomic::Mixed(mixed)) = union.types.iter().find(|atomic| atomic.is_mixed()) {
         return if mixed.is_non_null() { "Any" } else { "Any?" }.to_owned();
     }
 
-    let parts: Vec<String> = union
-        .types
-        .iter()
-        .filter(|atomic| !atomic.is_null())
-        .map(|atomic| display_sharp_atomic(atomic, codebase))
-        .collect();
+    let mut parts: Vec<String> = Vec::new();
+    for part in
+        union.types.iter().filter(|atomic| !atomic.is_null()).map(|atomic| display_sharp_atomic(atomic, codebase))
+    {
+        if !parts.contains(&part) {
+            parts.push(part);
+        }
+    }
 
     match (union.has_null(), parts.as_slice()) {
         (false, _) => parts.join("|"),
@@ -103,6 +106,7 @@ fn display_sharp_atomic(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String
                 }
             }
         }
+        TAtomic::Object(TObject::Any) => "Object".to_owned(),
         TAtomic::Object(object) => {
             let Some(name) = object.get_name() else {
                 return atomic.get_id().to_string();
@@ -137,7 +141,7 @@ fn display_sharp_atomic(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String
                 format!("Class<{}>", display_sharp_atomic(constraint, codebase))
             }
             TClassLikeString::Generic { parameter_name, .. } => format!("Class<{parameter_name}>"),
-            TClassLikeString::Any { .. } => atomic.get_id().to_string(),
+            TClassLikeString::Any { .. } => "Class<Object>".to_owned(),
         },
         TAtomic::Scalar(scalar) => {
             if let Some(value) = scalar.get_literal_int_value() {
@@ -147,7 +151,11 @@ fn display_sharp_atomic(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String
             } else if let Some(value) = scalar.get_known_literal_string_value() {
                 format!("\"{}\"", String::from_utf8_lossy(value))
             } else {
-                atomic.get_id().to_string()
+                match scalar {
+                    TScalar::Integer(_) => "int".to_owned(),
+                    TScalar::String(_) => "string".to_owned(),
+                    _ => atomic.get_id().to_string(),
+                }
             }
         }
         _ => atomic.get_id().to_string(),

@@ -3819,8 +3819,8 @@ fn check_class_like_properties<'ctx, A>(
                             );
 
                             if !is_type_compatible(context.codebase, &declaring_type.type_union, &parent_type_union) {
-                                let declaring_type_id = declaring_type.type_union.get_id();
-                                let parent_type_id = parent_type_union.get_id();
+                                let declaring_type_id = display_type(context, &declaring_type.type_union);
+                                let parent_type_id = display_type(context, &parent_type_union);
 
                                 context.collector.report_with_code(
                                     IssueCode::IncompatiblePropertyType,

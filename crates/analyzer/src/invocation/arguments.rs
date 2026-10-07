@@ -12,6 +12,7 @@ use mago_codex::ttype::add_union_type;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::callable::TCallable;
+use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::cast::cast_atomic_to_callable;
 use mago_codex::ttype::combiner::CombinerOptions;
 use mago_codex::ttype::comparator::ComparisonResult;
@@ -43,14 +44,23 @@ use crate::utils::get_type_diff;
 use crate::utils::names::display_type;
 use crate::utils::template::explain_blocked_substitution;
 
-/// The part of `union` that may share a value with another type. A PHP# type parameter is opaque, so with `is_sharp`
-/// it shares a value with no other type, and a union of type parameters alone has no such part.
+/// The part of `union` that may share a value with another type. A PHP# type parameter and its class type, as `TItem`
+/// and `Class<TItem>`, are opaque, so with `is_sharp` they share a value with no other type, and a union of them alone
+/// has no such part.
 fn shareable_part(union: &TUnion, is_sharp: bool) -> Option<Cow<'_, TUnion>> {
     if !is_sharp {
         return Some(Cow::Borrowed(union));
     }
 
-    let types: Vec<TAtomic> = union.types.iter().filter(|atomic| !atomic.is_generic_parameter()).cloned().collect();
+    let types: Vec<TAtomic> = union
+        .types
+        .iter()
+        .filter(|atomic| {
+            !atomic.is_generic_parameter()
+                && !matches!(atomic, TAtomic::Scalar(TScalar::ClassLikeString(class_string)) if class_string.is_generic())
+        })
+        .cloned()
+        .collect();
 
     (!types.is_empty()).then(|| Cow::Owned(TUnion::from_vec(types)))
 }
@@ -370,10 +380,11 @@ pub fn verify_argument_type<'arena, A>(
             .type_coerced_from_nested_mixed
             .unwrap_or(false)
         {
+            let mixed = display_type(context, &get_mixed());
             (
                 IssueCode::LessSpecificNestedArgumentType,
-                format!("Provided type `{input_type_str}` is too general due to nested `mixed`."),
-                "The structure contains `mixed`, making it incompatible.".to_string(),
+                format!("Provided type `{input_type_str}` is too general due to nested `{mixed}`."),
+                format!("The structure contains `{mixed}`, making it incompatible."),
             )
         } else {
             (
@@ -592,13 +603,13 @@ where
     else {
         return;
     };
-    let type_str = atomic_type.get_id();
+    let type_str = display_type(context, &TUnion::from_atomic(atomic_type.clone()));
 
     context.collector.report_with_code(
         IssueCode::InvalidArgument,
         Issue::error(format!("Cannot spread a value of type `{type_str}`: PHP# spreads only a list."))
             .with_annotation(Annotation::primary(span).with_message(format!("Type `{type_str}` is not a list")))
             .with_note("Spec section 7 spreads an existing list into a call, as in `Money.sum(...prices)`.")
-            .with_help("Spread a list, such as a variadic parameter or a `list<int>` from plain PHP."),
+            .with_help("Spread a list, such as a variadic parameter or a `List<int>` from plain PHP."),
     );
 }
