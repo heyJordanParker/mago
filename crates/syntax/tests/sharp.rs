@@ -372,6 +372,18 @@ fn a_sharp_parse_error_shows_its_message_as_the_issue_title() {
             "class Report\n{\n    public void run() { for (const line in lines) {} }\n}\n",
             "PHP# loops over a collection with `of`, as in `for (const line of lines)`.",
         ),
+        (
+            "class Report\n{\n    public void run() { const check = handler ?? item => item.ready; }\n}\n",
+            "A lambda after an operator needs parentheses, as in `handler ?? (item => item.ready)`.",
+        ),
+        (
+            "class Report\n{\n    public void run() { const check = handler ?? (item) => { return item.ready; }; }\n}\n",
+            "A lambda after an operator needs parentheses, as in `handler ?? (item => item.ready)`.",
+        ),
+        (
+            "class Report\n{\n    public void run() { match (status) { Status.Open when strict ? forced : ready => {}, default => {}, } }\n}\n",
+            "A `? :` in a `when` condition needs parentheses, as in `when (strict ? forced : ready) =>`.",
+        ),
     ] {
         let arena = LocalArena::new();
         let program = parse(&arena, "src/Report.sharp", code);
@@ -655,6 +667,42 @@ fn a_local_and_a_field_can_have_a_collection_type_written() {
         })
         .collect();
     assert_eq!(locals, [("List<Line>", "lines"), ("Map<string, List<int>>?", "groups")]);
+}
+
+#[test]
+fn a_local_can_have_a_nullable_type_argument_written() {
+    const CODE: &str = "class Report\n{\n    public void run()\n    {\n        List<Order?> orders = [];\n        Map<string, int?> prices = [:];\n        Map<string, List<int?>> sizes = [:];\n        List<(int|string)?> keys = [];\n        const List<Calc?> calcs = [];\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(ClassLikeMember::Method(run)) = class_members(program).first() else {
+        panic!("expected a method, got {:#?}", class_members(program));
+    };
+    let MethodBody::Concrete(body) = &run.body else {
+        panic!("expected a method body, got {:#?}", run.body);
+    };
+    let locals: Vec<(&str, Vec<&str>)> = body
+        .statements
+        .iter()
+        .map(|statement| {
+            let Statement::LocalDeclaration(local) = statement else {
+                panic!("expected a local, got {statement:#?}");
+            };
+
+            generic_type(CODE, local.hint.expect("a type"))
+        })
+        .collect();
+    assert_eq!(
+        locals,
+        [
+            ("List", vec!["Order?"]),
+            ("Map", vec!["string", "int?"]),
+            ("Map", vec!["string", "List<int?>"]),
+            ("List", vec!["(int|string)?"]),
+            ("List", vec!["Calc?"]),
+        ]
+    );
 }
 
 #[test]
@@ -2502,12 +2550,54 @@ fn a_lambda_after_an_operator_needs_parentheses_as_in_csharp() {
         panic!("expected `strict ? handler : item => item.ready`, got {:#?}", method_body(program));
     };
 
-    let unparenthesized = parse(
-        &arena,
-        "src/Report.sharp",
-        "class Report\n{\n    void run()\n    {\n        const first = handler ?? item => item.ready;\n    }\n}\n",
+    const UNPARENTHESIZED: &str = "class Report\n{\n    void run()\n    {\n        const first = handler ?? item => item.ready;\n        lines->count();\n    }\n}\n";
+    let unparenthesized = parse(&arena, "src/Report.sharp", UNPARENTHESIZED);
+    let errors: Vec<(String, &str)> =
+        unparenthesized.errors.iter().map(|error| (error.to_string(), source(UNPARENTHESIZED, error))).collect();
+    assert_eq!(
+        errors,
+        [
+            (
+                "A lambda after an operator needs parentheses, as in `handler ?? (item => item.ready)`.".to_owned(),
+                "item =>"
+            ),
+            ("`->` is PHP syntax: PHP# writes member access with `.`".to_owned(), "->"),
+        ]
     );
-    assert!(!unparenthesized.errors.is_empty(), "{:#?}", unparenthesized.statements);
+}
+
+/// A `? :` binds more loosely than a `when` condition reads, as in C#, so the arm's `=>` would end its `else` value.
+/// The parser reports it once, reads both branches, and parses on.
+#[test]
+fn a_conditional_at_the_top_of_a_guard_needs_parentheses_as_in_csharp() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        match (status) {\n            Status.Open when strict ? forced : ready => {},\n            default => {},\n        }\n        lines->count();\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    let errors: Vec<(String, &str)> =
+        program.errors.iter().map(|error| (error.to_string(), source(CODE, error))).collect();
+    assert_eq!(
+        errors,
+        [
+            (
+                "A `? :` in a `when` condition needs parentheses, as in `when (strict ? forced : ready) =>`."
+                    .to_owned(),
+                "strict ? forced : ready"
+            ),
+            ("`->` is PHP syntax: PHP# writes member access with `.`".to_owned(), "->"),
+        ]
+    );
+}
+
+#[test]
+fn a_conditional_in_parentheses_is_a_guard() {
+    let arena = LocalArena::new();
+
+    for condition in guard_conditions(&arena, "(strict ? forced : ready)") {
+        let Expression::Parenthesized(Parenthesized { expression: Expression::Conditional(_), .. }) = condition else {
+            panic!("expected `(strict ? forced : ready)`, got {condition:#?}");
+        };
+    }
 }
 
 #[test]

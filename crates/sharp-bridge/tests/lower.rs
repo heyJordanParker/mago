@@ -64,7 +64,7 @@ impl Lowered {
                     sharp_severity::SHARP_COMPILE_ERROR => "compile error",
                 };
 
-                format!("{}:{} {severity}: {}", diagnostic.line, diagnostic.column, text(diagnostic.message))
+                format!("{}:{} {severity}: {}", diagnostic.line, diagnostic.column, self.text(diagnostic.message))
             })
             .collect()
     }
@@ -81,7 +81,7 @@ impl Lowered {
         let method = self
             .nodes()
             .iter()
-            .position(|node| node.kind == sharp_kind::SHARP_AST_METHOD && text(node.text) == "run")
+            .position(|node| node.kind == sharp_kind::SHARP_AST_METHOD && self.text(node.text) == "run")
             .expect("the source declares `run`");
 
         self.render(self.child(method as u32, 2))
@@ -120,7 +120,7 @@ impl Lowered {
                     sharp_value::SHARP_TRUE => write!(tree, " true"),
                     sharp_value::SHARP_LONG => write!(tree, " {}", node.long_value),
                     sharp_value::SHARP_DOUBLE => write!(tree, " {:?}", node.double_value),
-                    sharp_value::SHARP_STRING => write!(tree, " {:?}", text(node.text)),
+                    sharp_value::SHARP_STRING => write!(tree, " {:?}", self.text(node.text)),
                 };
             }
             sharp_kind::SHARP_AST_CLASS
@@ -128,7 +128,7 @@ impl Lowered {
             | sharp_kind::SHARP_AST_PROPERTY_HOOK
             | sharp_kind::SHARP_AST_CLOSURE
             | sharp_kind::SHARP_AST_ARROW_FUNC => {
-                let _ = write!(tree, " {:?} @{}-{}", text(node.text), node.line, node.end_line);
+                let _ = write!(tree, " {:?} @{}-{}", self.text(node.text), node.line, node.end_line);
             }
             _ => {}
         }
@@ -137,6 +137,13 @@ impl Lowered {
         for child in 0..node.child_count {
             self.render_into(self.child(index, child), depth + 1, tree);
         }
+    }
+
+    fn text(&self, text: sharp_str) -> String {
+        // SAFETY: the unit owns `texts_size` bytes at `texts`, and `text` lies inside them.
+        let texts = unsafe { array(self.unit().texts.cast::<u8>(), self.unit().texts_size) };
+
+        String::from_utf8_lossy(&texts[text.offset as usize..(text.offset + text.len) as usize]).into_owned()
     }
 }
 
@@ -157,11 +164,6 @@ unsafe fn array<'unit, T>(pointer: *const T, len: usize) -> &'unit [T] {
 
     // SAFETY: the caller passes `len` values at `pointer`.
     unsafe { slice::from_raw_parts(pointer, len) }
-}
-
-fn text(text: sharp_str) -> String {
-    // SAFETY: the unit owns `len` bytes at `ptr`.
-    String::from_utf8_lossy(unsafe { array(text.ptr.cast::<u8>(), text.len) }).into_owned()
 }
 
 /// A file declaring the method `run` with `body`. Its body starts on line 9.
@@ -197,7 +199,9 @@ fn php_syntax_returns_a_parse_error_and_no_nodes() {
 
 #[test]
 fn a_construct_outside_the_slice_returns_its_not_supported_error() {
-    let lowered = Lowered::new(&method("        echo extra;\n        return 1;\n"));
+    let lowered = Lowered::new(&method(
+        "        switch (extra) {\n            default: return 1;\n        }\n        return 1;\n",
+    ));
 
     assert_eq!(lowered.diagnostics(), ["9:9 compile error: This statement is not supported yet in PHP#."]);
 }
@@ -305,7 +309,7 @@ fn a_file_of_any_name_is_parsed_and_checked_as_php_sharp() {
     assert_eq!(lowered.diagnostics(), Vec::<String>::new());
 
     let refused = Lowered::named("src/Upper.SHARP", &method("        echo extra;\n        return 1;\n"));
-    assert_eq!(refused.diagnostics(), ["9:9 compile error: This statement is not supported yet in PHP#."]);
+    assert_eq!(refused.diagnostics(), ["9:9 compile error: PHP# has no `echo`: write `printf` or `fwrite`."]);
 }
 
 /// The Zend scanner ends a line at `\n`, `\r\n` and a lone `\r`, and stops on the line after the last line ending.
@@ -348,7 +352,7 @@ fn every_line_is_the_line_the_zend_scanner_counts() {
     assert_eq!(lines, [("SHARP_AST_RETURN".to_owned(), 5, 0), ("SHARP_AST_METHOD".to_owned(), 3, 6)]);
 
     let refused = Lowered::new("class Report\r{\r    public void run() { echo 1; }\r}\r");
-    assert_eq!(refused.diagnostics(), ["3:25 compile error: This statement is not supported yet in PHP#."]);
+    assert_eq!(refused.diagnostics(), ["3:25 compile error: PHP# has no `echo`: write `printf` or `fwrite`."]);
 }
 
 /// ```php
@@ -1300,7 +1304,7 @@ fn a_constructor_parameter_with_an_access_modifier_is_a_promoted_parameter() {
         .map(|(index, node)| {
             assert_eq!(lowered.child(index as u32, 5), u32::MAX, "a promoted parameter has no hooks");
 
-            (text(lowered.nodes()[lowered.child(index as u32, 1) as usize].text), node.attr)
+            (lowered.text(lowered.nodes()[lowered.child(index as u32, 1) as usize].text), node.attr)
         })
         .collect();
 
@@ -1591,7 +1595,7 @@ fn method_modifiers_become_the_method_flags() {
         .nodes()
         .iter()
         .filter(|node| node.kind == sharp_kind::SHARP_AST_METHOD)
-        .map(|node| (text(node.text), node.attr))
+        .map(|node| (lowered.text(node.text), node.attr))
         .collect();
 
     assert_eq!(methods, [("make".to_owned(), 17), ("hide".to_owned(), 4), ("share".to_owned(), 2)]);
@@ -1717,6 +1721,54 @@ fn a_list_or_map_type_is_the_array_type() {
                   ARRAY_ELEM
                     ZVAL 1
                     ZVAL "a"
+                null
+                null
+                null
+        "#}
+    );
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 3)),
+        indoc! {"
+            TYPE [263]
+        "}
+    );
+}
+
+/// ```php
+/// public function group(array $sizes, array $calcs, array $keys): ?array { return null; }
+/// ```
+///
+/// A nullable type argument lowers as any other, so each collection is `array`: a `TYPE` with `IS_ARRAY`, which is
+/// 7, and `[263]` adds `ZEND_TYPE_NULLABLE` to the collection itself.
+#[test]
+fn a_collection_with_a_nullable_type_argument_is_the_array_type() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public Map<string, Any?>? group(List<int?> sizes, Map<string, List<Calc?>> calcs, List<(int|string)?> keys) { return null; }\n}\n",
+    );
+    let method = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a method");
+
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 0)),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                TYPE [7]
+                ZVAL "sizes"
+                null
+                null
+                null
+                null
+              PARAM
+                TYPE [7]
+                ZVAL "calcs"
+                null
+                null
+                null
+                null
+              PARAM
+                TYPE [7]
+                ZVAL "keys"
+                null
                 null
                 null
                 null
@@ -2760,6 +2812,42 @@ fn an_override_is_a_field_marked_to_follow_the_parent_type() {
     );
 }
 
+/// An override of a PHP# parent's override is marked the same way. One file cannot tell whether `Order::$table` runs
+/// untyped, and the engine links `Order` first, so `RushOrder::$table` follows the type `Order::$table` runs with.
+#[test]
+fn an_override_of_an_override_is_marked_to_follow_the_parent_type() {
+    let lowered = Lowered::new(
+        "class Order : Model\n{\n    protected override string? table = \"orders\";\n}\n\nclass RushOrder : Order\n{\n    protected override string? table = \"rush_orders\";\n}\n",
+    );
+
+    for (class, value) in [(1, "orders"), (2, "rush_orders")] {
+        let class = lowered.child(lowered.unit().root, class);
+
+        assert_eq!(
+            lowered.render(lowered.child(class, 2)),
+            format!(
+                indoc! {r#"
+                    STMT_LIST
+                      PROP_GROUP [8194]
+                        ZVAL [257] "string"
+                        PROP_DECL
+                          PROP_ELEM
+                            ZVAL "table"
+                            ZVAL "{}"
+                            null
+                            null
+                        ATTRIBUTE_LIST
+                          ATTRIBUTE_GROUP
+                            ATTRIBUTE
+                              ZVAL "Override"
+                              null
+                "#},
+                value
+            )
+        );
+    }
+}
+
 /// ```php
 /// class Account extends \Lib\Ledger
 /// {
@@ -3267,6 +3355,340 @@ fn int_and_float_are_the_classes_of_the_sharp_namespace() {
                         ZVAL "extra"
         "#}
     );
+}
+
+/// ```php
+/// $here = new \Sharp\Position(__FILE__, 9, 22, 'App.Tenant.Report.run');
+/// $later = fn () => new \Sharp\Position(__FILE__, 10, 29, 'App.Tenant.Report.run');
+/// return 1;
+/// ```
+///
+/// Spec section 27: `Position.current()` in a body gives the position where it is written: the file, the line and the
+/// byte column of `Position`, and the enclosing method's full dotted name, which a lambda shares. The method's name
+/// ignores case, as PHP's does.
+#[test]
+fn position_current_is_a_new_position_of_its_file_line_column_and_enclosing_method() {
+    let source = "        const here = Position.current();\n        const later = () => Position.current();\n        return 1;\n";
+
+    assert_eq!(
+        body(source),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "here"
+                NEW
+                  ZVAL "Sharp\\Position"
+                  ARG_LIST
+                    ZVAL "src/Report.sharp"
+                    ZVAL 9
+                    ZVAL 22
+                    ZVAL "App.Tenant.Report.run"
+              ASSIGN
+                VAR
+                  ZVAL "later"
+                ARROW_FUNC "" @10-10
+                  PARAM_LIST
+                  null
+                  NEW
+                    ZVAL "Sharp\\Position"
+                    ARG_LIST
+                      ZVAL "src/Report.sharp"
+                      ZVAL 10
+                      ZVAL 29
+                      ZVAL "App.Tenant.Report.run"
+                  null
+                  null
+              RETURN
+                ZVAL 1
+        "#}
+    );
+    assert_eq!(body(&source.replace("current", "CURRENT")), body(source));
+}
+
+/// ```php
+/// public function __construct()
+/// {
+///     $this->created = new \Sharp\Position(__FILE__, 3, 32, 'Report.Report');
+/// }
+/// ```
+///
+/// An initial value runs at the start of the constructor, so `Position.current()` there names the constructor, whether
+/// or not the class writes one. A file without a namespace names the class alone.
+#[test]
+fn position_current_in_an_initial_value_names_the_constructor_the_class_gets() {
+    let lowered = Lowered::new("class Report\n{\n    private Position created = Position.current();\n}\n");
+    let class = lowered.child(lowered.unit().root, 1);
+    let constructor = lowered.child(lowered.child(class, 2), 1);
+
+    assert_eq!(
+        lowered.render(lowered.child(constructor, 2)),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                PROP
+                  VAR
+                    ZVAL "this"
+                  ZVAL "created"
+                NEW
+                  ZVAL "Sharp\\Position"
+                  ARG_LIST
+                    ZVAL "src/Report.sharp"
+                    ZVAL 3
+                    ZVAL 32
+                    ZVAL "Report.Report"
+        "#}
+    );
+}
+
+/// ```php
+/// public function __construct()
+/// {
+///     $this->created = new \Sharp\Position(__FILE__, 5, 32, 'App.Tenant.Report.Report');
+///     $here = new \Sharp\Position(__FILE__, 9, 22, 'App.Tenant.Report.Report');
+/// }
+/// public function run(): int
+/// {
+///     return (new \Sharp\Position(__FILE__, 14, 16, 'App.Tenant.Report.run'))->line;
+/// }
+/// ```
+///
+/// A written constructor and its initial values name the constructor, and the method after it names itself.
+#[test]
+fn position_current_in_a_written_constructor_and_its_initial_values_names_the_constructor() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    private Position created = Position.current();\n\n    public Report()\n    {\n        const here = Position.current();\n    }\n\n    public int run()\n    {\n        return Position.current().line;\n    }\n}\n",
+    );
+    let members = lowered.child(lowered.child(lowered.unit().root, 2), 2);
+
+    assert_eq!(
+        lowered.render(lowered.child(lowered.child(members, 1), 2)),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                PROP
+                  VAR
+                    ZVAL "this"
+                  ZVAL "created"
+                NEW
+                  ZVAL "Sharp\\Position"
+                  ARG_LIST
+                    ZVAL "src/Report.sharp"
+                    ZVAL 5
+                    ZVAL 32
+                    ZVAL "App.Tenant.Report.Report"
+              ASSIGN
+                VAR
+                  ZVAL "here"
+                NEW
+                  ZVAL "Sharp\\Position"
+                  ARG_LIST
+                    ZVAL "src/Report.sharp"
+                    ZVAL 9
+                    ZVAL 22
+                    ZVAL "App.Tenant.Report.Report"
+        "#}
+    );
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                PROP
+                  NEW
+                    ZVAL "Sharp\\Position"
+                    ARG_LIST
+                      ZVAL "src/Report.sharp"
+                      ZVAL 14
+                      ZVAL 16
+                      ZVAL "App.Tenant.Report.run"
+                  ZVAL "line"
+        "#}
+    );
+}
+
+/// ```php
+/// public string $folder { get => (new \Sharp\Position(__FILE__, 5, 29, 'App.Tenant.Report.folder'))->directory; }
+/// public function line(): int { return (new \Sharp\Position(__FILE__, 12, 26, 'App.Tenant.Status.line'))->line; }
+/// ```
+///
+/// A computed property's body names the property, and an enum's method names the enum and the method.
+#[test]
+fn position_current_in_a_computed_property_or_an_enum_method_names_its_member() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public string folder => Position.current().directory;\n}\n\nenum Status\n{\n    case Active;\n\n    public int line() => Position.current().line;\n}\n",
+    );
+
+    assert_eq!(positions(&lowered), ["5:29 App.Tenant.Report.folder", "12:26 App.Tenant.Status.line"]);
+}
+
+/// ```php
+/// public string $slug { get { return (new \Sharp\Position(__FILE__, 5, 39, 'App.Tenant.Report.slug'))->function; } }
+/// ```
+///
+/// A `get` body names its property, as C#'s `[CallerMemberName]` names a property for code in its accessors.
+#[test]
+fn position_current_in_a_get_body_names_its_property() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public string slug { get { return Position.current().function; } }\n}\n",
+    );
+
+    assert_eq!(positions(&lowered), ["5:39 App.Tenant.Report.slug"]);
+}
+
+/// ```php
+/// public string $folder { get => (new \Sharp\Position(__FILE__, 5, 29, 'App.Tenant.Report.folder'))->directory; }
+/// public string $title { set { $this->title = (new \Sharp\Position(__FILE__, 6, 46, 'App.Tenant.Report.title'))->function; } }
+/// ```
+///
+/// A `set` body names its property, and the computed property before it does not leak its name into it.
+#[test]
+fn position_current_in_a_set_body_names_its_property() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public string folder => Position.current().directory;\n    public string title { get; set { field = Position.current().function; } }\n}\n",
+    );
+
+    assert_eq!(positions(&lowered), ["5:29 App.Tenant.Report.folder", "6:46 App.Tenant.Report.title"]);
+}
+
+/// ```php
+/// public function __construct(
+///     public string $code { get { return (new \Sharp\Position(__FILE__, 5, 53, 'App.Tenant.Report.code'))->function; } set { $this->code = $value; } },
+/// ) {
+///     $here = new \Sharp\Position(__FILE__, 7, 22, 'App.Tenant.Report.Report');
+/// }
+/// ```
+///
+/// A property declared on a constructor parameter names itself in its bodies, and the constructor's body after it
+/// names the constructor again.
+#[test]
+fn position_current_in_a_constructor_parameters_get_body_names_its_property_and_the_body_after_names_the_constructor() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public Report(public string code { get { return Position.current().function; } set => field = value; })\n    {\n        const here = Position.current();\n    }\n}\n",
+    );
+
+    assert_eq!(positions(&lowered), ["5:53 App.Tenant.Report.code", "7:22 App.Tenant.Report.Report"]);
+}
+
+/// ```php
+/// public function __construct()
+/// {
+///     $this->created = new \Sharp\Position(__FILE__, 6, 32, 'App.Tenant.Report.Report');
+/// }
+/// ```
+///
+/// An initial value declared after a computed property still runs in the constructor, so it names the constructor.
+#[test]
+fn position_current_in_an_initial_value_after_a_computed_property_names_the_constructor() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public string folder => Position.current().directory;\n    private Position created = Position.current();\n}\n",
+    );
+
+    assert_eq!(positions(&lowered), ["6:32 App.Tenant.Report.Report", "5:29 App.Tenant.Report.folder"]);
+}
+
+/// Each `Position.current()` as `line:column function`, in the order the bridge lowers them.
+fn positions(lowered: &Lowered) -> Vec<String> {
+    assert_eq!(lowered.diagnostics(), Vec::<String>::new(), "the source lowers");
+
+    lowered
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.kind == sharp_kind::SHARP_AST_NEW)
+        .map(|(index, node)| {
+            let arguments = lowered.child(index as u32, 1);
+            let argument = |index| &lowered.nodes()[lowered.child(arguments, index) as usize];
+
+            format!("{}:{} {}", node.line, argument(2).long_value, lowered.text(argument(3).text))
+        })
+        .collect()
+}
+
+/// ```php
+/// $folder = (new \Sharp\Position(__FILE__, 9, 24, 'App.Tenant.Report.run'))->directory;
+/// return 1;
+/// ```
+#[test]
+fn a_member_of_position_current_is_a_property_read_on_the_new_position() {
+    assert_eq!(
+        body("        const folder = Position.current().directory;\n        return 1;\n"),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "folder"
+                PROP
+                  NEW
+                    ZVAL "Sharp\\Position"
+                    ARG_LIST
+                      ZVAL "src/Report.sharp"
+                      ZVAL 9
+                      ZVAL 24
+                      ZVAL "App.Tenant.Report.run"
+                  ZVAL "directory"
+              RETURN
+                ZVAL 1
+        "#}
+    );
+}
+
+/// ```php
+/// $settings = new \Sharp\Environment();
+/// $lines = \Sharp\List::wrap($extra);
+/// return 1;
+/// ```
+#[test]
+fn environment_and_list_are_the_classes_of_the_sharp_namespace() {
+    assert_eq!(
+        body(
+            "        const settings = new Environment();\n        const lines = List.wrap(extra);\n        return 1;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "settings"
+                NEW
+                  ZVAL "Sharp\\Environment"
+                  ARG_LIST
+              ASSIGN
+                VAR
+                  ZVAL "lines"
+                STATIC_CALL
+                  ZVAL "Sharp\\List"
+                  ZVAL "wrap"
+                  ARG_LIST
+                    VAR
+                      ZVAL "extra"
+              RETURN
+                ZVAL 1
+        "#}
+    );
+}
+
+/// ```php
+/// \App\Position::current();
+/// ```
+///
+/// Only the standard library's `Position` gives a position. An imported or declared `Position` is the file's own class.
+#[test]
+fn an_imported_or_declared_position_is_an_ordinary_static_call() {
+    let imported = Lowered::new(
+        "namespace App.Tenant;\n\nimport App.Position;\n\nclass Report\n{\n    public int run()\n    {\n        Position.current();\n        return 1;\n    }\n}\n",
+    );
+    let declared = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public int run()\n    {\n        Position.current();\n        return 1;\n    }\n}\n\nclass Position\n{\n    public static int current() => 1;\n}\n",
+    );
+
+    for (lowered, class) in [(imported, r#""App\\Position""#), (declared, r#""App\\Tenant\\Position""#)] {
+        assert_eq!(
+            lowered.body(),
+            format!(
+                "STMT_LIST\n  STATIC_CALL\n    ZVAL {class}\n    ZVAL \"current\"\n    ARG_LIST\n  RETURN\n    ZVAL 1\n"
+            )
+        );
+    }
 }
 
 /// ```php
@@ -4251,6 +4673,36 @@ fn a_bare_call_named_like_a_method_of_its_class_is_a_call_of_the_global_function
                   ARG_LIST
                     VAR
                       ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
+/// exit(1);
+/// exit($extra);
+/// exit();
+/// ```
+///
+/// PHP 8.4 makes `exit` a function, so php-src's grammar builds `exit(…)` as a call of the global function `exit`,
+/// named with `ZEND_NAME_FQ`, which is 0.
+#[test]
+fn exit_is_a_call_of_the_global_function_exit() {
+    assert_eq!(
+        body("        exit(1);\n        exit(extra);\n        exit();\n"),
+        indoc! {r#"
+            STMT_LIST
+              CALL
+                ZVAL "exit"
+                ARG_LIST
+                  ZVAL 1
+              CALL
+                ZVAL "exit"
+                ARG_LIST
+                  VAR
+                    ZVAL "extra"
+              CALL
+                ZVAL "exit"
+                ARG_LIST
         "#}
     );
 }
@@ -5770,7 +6222,7 @@ fn each_node_carries_the_line_of_its_first_token() {
         .nodes()
         .iter()
         .filter(|node| node.kind == sharp_kind::SHARP_AST_ZVAL && node.value == sharp_value::SHARP_STRING)
-        .map(|node| (text(node.text), node.line))
+        .map(|node| (lowered.text(node.text), node.line))
         .filter(|(name, _)| name == "total" || name == "extra")
         .collect();
 

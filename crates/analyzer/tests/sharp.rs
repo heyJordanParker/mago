@@ -1100,20 +1100,126 @@ fn an_override_whose_type_does_not_fit_the_parent_is_reported_once() {
     );
 }
 
-/// A PHP# parent's property is overridden as a property, spec section 6.1, which is not supported yet. A field that
-/// replaces one without `override` keeps PHP's own checks.
-#[test]
-fn overriding_a_sharp_property_is_not_supported_yet() {
-    let sharp = "namespace Demo;\n\npublic class Base\n{\n    protected string label = \"base\";\n    protected int size = 1;\n}\n\npublic class Child : Base\n{\n    protected override string label = \"child\";\n    protected int size = 2;\n}\n";
+/// A PHP# class that overrides a plain PHP parent's property, for a subclass to override it again.
+const ORDER: &str = "namespace Demo;\n\nimport Lib.Model;\n\npublic class Order : Model\n{\n    protected override string? table = \"orders\";\n}\n";
 
-    let issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Base.sharp", sharp), &[]);
+/// A plain PHP base class that types the property `ORDER` overrides.
+const TYPED_MODEL: &str =
+    "<?php\n\nnamespace Lib;\n\nabstract class Model\n{\n    protected ?string $table = null;\n}\n";
+
+/// A field overrides a PHP# parent's field as it overrides a plain PHP parent's property, spec section 6.1, whether the
+/// plain PHP root of the chain leaves the property untyped or types it. Its PHP twin overrides the PHP twin of `ORDER`.
+#[test]
+fn a_field_overrides_a_sharp_field_with_its_type_and_access_level() {
+    let sharp = "namespace Demo;\n\npublic class RushOrder : Order\n{\n    protected override string? table = \"rush_orders\";\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass RushOrder extends Order\n{\n    #[\\Override]\n    protected $table = 'rush_orders';\n}\n";
+    let php_order = "<?php\n\nnamespace Demo;\n\nuse Lib\\Model;\n\nclass Order extends Model\n{\n    #[\\Override]\n    protected $table = 'orders';\n}\n";
+
+    for model in [MODEL, TYPED_MODEL] {
+        let others = [("src/Demo/Order.sharp", ORDER), ("src/Lib/Model.php", model)];
+
+        assert_eq!(issues(("src/Demo/RushOrder.sharp", sharp), &others), Vec::<String>::new());
+    }
+    assert_eq!(
+        issues(("src/Demo/RushOrder.php", php), &[("src/Demo/Order.php", php_order), ("src/Lib/Model.php", MODEL)]),
+        Vec::<String>::new()
+    );
+}
+
+/// An override of a PHP# parent's field writes `override`, the parent's written type and its access level, spec section
+/// 6.1, measured against that field alone, so each break is one error. A property with accessors keeps its type, so it
+/// cannot replace the field while the plain PHP root of the chain leaves the property untyped.
+#[test]
+fn an_override_that_does_not_match_the_sharp_field_is_an_error() {
+    let reported = |sharp: &'static str| {
+        analyze(
+            &PLUGIN_REGISTRY,
+            settings(),
+            ("src/Demo/RushOrder.sharp", sharp),
+            &[("src/Demo/Order.sharp", ORDER), ("src/Lib/Model.php", MODEL)],
+        )
+        .into_iter()
+        .map(|issue| (issue.code.unwrap_or_default(), issue.message))
+        .collect::<Vec<_>>()
+    };
+    let error = |code: &str, message: &str| vec![(code.to_owned(), message.to_owned())];
 
     assert_eq!(
-        issues
-            .iter()
-            .map(|issue| (issue.code.as_deref().unwrap_or("none"), issue.message.as_str()))
+        reported(
+            "namespace Demo;\n\npublic class RushOrder : Order\n{\n    protected override string table = \"rush_orders\";\n}\n"
+        ),
+        error("incompatible-property-type", "Property `Demo\\RushOrder::$table` has an incompatible type declaration.")
+    );
+    assert_eq!(
+        reported("namespace Demo;\n\npublic class RushOrder : Order\n{\n    protected override int table = 5;\n}\n"),
+        error("incompatible-property-type", "Property `Demo\\RushOrder::$table` has an incompatible type declaration.")
+    );
+    assert_eq!(
+        reported(
+            "namespace Demo;\n\npublic class RushOrder : Order\n{\n    public override string? table = \"rush_orders\";\n}\n"
+        ),
+        error(
+            "incompatible-property-access",
+            "The override `Demo\\RushOrder::$table` is `public`, but `Demo\\Order::$table` is `protected`."
+        )
+    );
+    assert_eq!(
+        reported(
+            "namespace Demo;\n\npublic class RushOrder : Order\n{\n    protected string? table = \"rush_orders\";\n}\n"
+        ),
+        error(
+            "missing-override-attribute",
+            "Missing `override` modifier on overriding field `Demo\\RushOrder::$table`."
+        )
+    );
+    assert_eq!(
+        reported(
+            "namespace Demo;\n\npublic class RushOrder : Order\n{\n    protected string? table { get; set; } = \"rush_orders\";\n}\n"
+        ),
+        error(
+            "not-supported-yet",
+            "A property that replaces the untyped PHP property `Lib\\Model::$table` is not supported yet."
+        )
+    );
+}
+
+/// PHP makes a property whose `set` is private final, so a field cannot override one, whether a PHP# parent writes it
+/// `{ get; private set; }` or a plain PHP parent writes `private(set)`, as the engine refuses the class when it links.
+#[test]
+fn a_field_cannot_override_a_property_whose_set_is_private() {
+    let php = "<?php\n\nnamespace Lib;\n\nclass Tally\n{\n    public private(set) int $views = 0;\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Tally;\n\npublic class Counter\n{\n    public int views { get; private set; } = 0;\n    public int likes { get; set; } = 0;\n}\n\npublic class PageCounter : Counter\n{\n    public override int views = 1;\n    public override int likes = 1;\n}\n\npublic class PageTally : Tally\n{\n    public override int views = 1;\n}\n";
+
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counter.sharp", sharp), &[("src/Lib/Tally.php", php)])
+            .into_iter()
+            .map(|issue| (issue.code.unwrap_or_default(), issue.message))
             .collect::<Vec<_>>(),
-        [("not-supported-yet", "Overriding the PHP# property `Demo\\Base::$label` is not supported yet.")]
+        [
+            (
+                "override-final-property".to_owned(),
+                "Cannot override final property `Demo\\Counter::$views`.".to_owned()
+            ),
+            ("override-final-property".to_owned(), "Cannot override final property `Lib\\Tally::$views`.".to_owned()),
+        ]
+    );
+}
+
+/// A field cannot override a PHP# parent's property with accessor bodies yet: spec section 6.1 overrides it as a
+/// property, and PHP would keep the parent's accessors on the field.
+#[test]
+fn overriding_a_sharp_property_with_accessor_bodies_is_not_supported_yet() {
+    let sharp = "namespace Demo;\n\npublic class Base\n{\n    public string slug => \"base\";\n    protected string label = \"base\";\n}\n\npublic class Child : Base\n{\n    public override string slug = \"child\";\n    protected override string label = \"child\";\n}\n";
+
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Base.sharp", sharp), &[])
+            .into_iter()
+            .map(|issue| (issue.code.unwrap_or_default(), issue.message))
+            .collect::<Vec<_>>(),
+        [(
+            "not-supported-yet".to_owned(),
+            "Overriding the PHP# property `Demo\\Base::$slug` is not supported yet.".to_owned()
+        )]
     );
 }
 
@@ -1433,6 +1539,99 @@ fn a_cast_of_a_value_that_is_not_a_number_is_an_invalid_operand() {
     );
 }
 
+/// In a `.sharp` file, an `exit` argument that can hold a string gets the `die` message, because `exit("…")` prints the
+/// message and exits with status 0, which reports success. A `.php` file still takes it.
+#[test]
+fn exit_with_a_value_that_is_not_an_int_names_the_message_to_write_and_exit_1() {
+    let any = "<?php\n\nnamespace Lib;\n\nfinal class Any\n{\n    public static function value(): mixed\n    {\n        return 1;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Any;\n\nclass Shutdown\n{\n    public void reason(string reason)\n    {\n        exit(reason);\n    }\n\n    public void either(int|string status)\n    {\n        exit(status);\n    }\n\n    public void any()\n    {\n        exit(Any.value());\n    }\n\n    public void named(string reason)\n    {\n        exit(status: reason);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Shutdown\n{\n    public function reason(string $reason): void\n    {\n        exit($reason);\n    }\n\n    public function either(int|string $status): void\n    {\n        exit($status);\n    }\n}\n";
+    let others = [("src/Lib/Any.php", any)];
+
+    assert_eq!(
+        issues(("src/Demo/Shutdown.sharp", sharp), &others),
+        ["9:9 invalid-argument", "14:9 invalid-argument", "19:9 invalid-argument", "24:9 invalid-argument"]
+    );
+    let refusals = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Shutdown.sharp", sharp), &others);
+    for refusal in &refusals {
+        assert_eq!(refusal.message, "PHP# has no `die`: write the message to STDERR, then `exit(1)`.");
+        assert_eq!(
+            refusal.notes,
+            ["`die(\"…\")` and `exit(\"…\")` print the message and exit with status 0, which reports success."]
+        );
+    }
+    let annotations: Vec<String> =
+        refusals.iter().filter_map(|issue| issue.primary_annotation()?.message.clone()).collect();
+    assert_eq!(
+        annotations,
+        [
+            "This is `string`, not an `int`.",
+            "This is `int|string`, not an `int`.",
+            "This is `mixed`, not an `int`.",
+            "This is `string`, not an `int`.",
+        ]
+    );
+    assert_eq!(issues(("src/Demo/Shutdown.php", php), &[]), Vec::<String>::new());
+}
+
+/// An `exit` argument that cannot hold a string is no message, so it names the `int` status `exit` takes.
+#[test]
+fn exit_with_a_value_that_cannot_be_a_message_names_the_int_status() {
+    let sharp = "namespace Demo;\n\nclass Shutdown\n{\n    public void maybe(int? code)\n    {\n        exit(code);\n    }\n\n    public void fraction(float code)\n    {\n        exit(code);\n    }\n\n    public void flag(bool done)\n    {\n        exit(done);\n    }\n\n    public void listed(List<int> codes)\n    {\n        exit(codes);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Shutdown.sharp", sharp), &[]),
+        ["7:9 invalid-argument", "12:9 invalid-argument", "17:9 invalid-argument", "22:9 invalid-argument"]
+    );
+    let refusals = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Shutdown.sharp", sharp), &[]);
+    let messages: Vec<&str> = refusals.iter().map(|issue| issue.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [
+            "`exit` takes an `int` status: this is `int|null`.",
+            "`exit` takes an `int` status: this is `float`.",
+            "`exit` takes an `int` status: this is `bool`.",
+            "`exit` takes an `int` status: this is `list<int>`.",
+        ]
+    );
+    for refusal in &refusals {
+        assert_eq!(
+            refusal.primary_annotation().and_then(|annotation| annotation.message.as_deref()),
+            Some("This status is not an `int`.")
+        );
+        assert!(refusal.notes.is_empty(), "{:?}", refusal.notes);
+    }
+}
+
+#[test]
+fn exit_with_an_int_or_no_value_adds_no_issue() {
+    let sharp = "namespace Demo;\n\nclass Shutdown\n{\n    public void code(int code)\n    {\n        exit(code);\n    }\n\n    public void failed()\n    {\n        exit(1);\n    }\n\n    public void done()\n    {\n        exit();\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Shutdown.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn exit_checks_only_its_first_argument() {
+    let sharp =
+        "namespace Demo;\n\nclass Shutdown\n{\n    public void stop()\n    {\n        exit(1, 2.5);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Shutdown.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn exit_with_a_never_value_has_the_issues_of_its_php_twin() {
+    let halt = "<?php\n\nnamespace Lib;\n\nfinal class Halt\n{\n    public static function now(): never\n    {\n        exit(1);\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Halt;\n\nclass Shutdown\n{\n    public void stop()\n    {\n        exit(Halt.now());\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Halt;\n\nclass Shutdown\n{\n    public function stop(): void\n    {\n        exit(Halt::now());\n    }\n}\n";
+    let others = [("src/Lib/Halt.php", halt)];
+
+    let sharp_issues = issues(("src/Demo/Shutdown.sharp", sharp), &others);
+    let php_issues = issues(("src/Demo/Shutdown.php", php), &others);
+
+    assert_eq!(sharp_issues, ["9:14 no-value"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
 #[test]
 fn int_and_float_parse_have_the_types_of_the_sharp_library_classes() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int count(string text, int? fallback)\n    {\n        const price = Float.parse(text) + (Float.tryParse(fallback) ?? 0.0);\n        const count = Int.parse(text) + (Int.tryParse(null) ?? 0);\n        return price > 1.0 ? count : Int.tryParse(text);\n    }\n}\n";
@@ -1444,6 +1643,105 @@ fn int_and_float_parse_have_the_types_of_the_sharp_library_classes() {
 
     assert_eq!(sharp_issues, ["9:16 nullable-return-statement", "9:16 invalid-return-statement"]);
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+/// `Position.current()` replaces `__DIR__`, `__FILE__` and `__LINE__`, spec section 27.
+#[test]
+fn position_current_has_the_types_of_the_sharp_library_class() {
+    let sharp = "namespace Demo;\n\nclass Reports\n{\n    public string stubsFolder()\n    {\n        const stubs = Position.current().directory + \"/stubs\";\n        return stubs;\n    }\n\n    public int line() => Position.current().line;\n\n    public int wrong() => Position.current().directory;\n}\n";
+
+    assert_eq!(issues(("src/Demo/Reports.sharp", sharp), &[]), ["13:27 invalid-return-statement"]);
+}
+
+/// `Environment` replaces `$_ENV` and `getenv()`, spec section 29.
+#[test]
+fn an_environment_variable_is_a_nullable_string() {
+    let sharp = "namespace Demo;\n\nclass Deploy\n{\n    public Deploy(private Environment environment) { }\n\n    public static Deploy make() => new Deploy(new Environment());\n\n    public string region() => this.environment.variable(\"X\") ?? \"d\";\n\n    public int wrong() => this.environment.variable(\"X\") ?? \"d\";\n}\n";
+
+    assert_eq!(issues(("src/Demo/Deploy.sharp", sharp), &[]), ["11:27 invalid-return-statement"]);
+}
+
+/// `arguments` and `currentDirectory` are `{ get; }` properties, so the process environment is read, never written.
+#[test]
+fn the_environment_arguments_and_current_directory_are_read_only() {
+    let sharp = "namespace Demo;\n\nclass Deploy\n{\n    public Deploy(private Environment environment) { }\n\n    public List<string> arguments() => this.environment.arguments;\n\n    public string folder() => this.environment.currentDirectory;\n\n    public List<int> numbers() => this.environment.arguments;\n\n    public void change()\n    {\n        this.environment.arguments = [\"deploy\"];\n        this.environment.currentDirectory = \"/tmp\";\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Deploy.sharp", sharp), &[]),
+        ["11:35 invalid-return-statement", "15:26 invalid-property-write", "16:26 invalid-property-write"]
+    );
+    assert_eq!(
+        messages(("src/Demo/Deploy.sharp", sharp), &[])[1..],
+        [
+            "Cannot initialize readonly property `Sharp\\Environment::$arguments` from within `Demo\\Deploy`.",
+            "Cannot initialize readonly property `Sharp\\Environment::$currentDirectory` from within `Demo\\Deploy`.",
+        ]
+    );
+}
+
+/// `List.wrap` replaces `(array)value`, spec section 24: a value that is never itself a list wraps as one call.
+#[test]
+fn list_wrap_of_a_value_or_a_list_of_it_is_a_list_of_the_value() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public List<string> read(string|List<string> value)\n    {\n        List<string> tags = List.wrap(value);\n        return tags;\n    }\n\n    public List<int> wrong(string|List<string> value) => List.wrap(value);\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["11:58 invalid-return-statement"]);
+}
+
+/// A `List` runs as a PHP array, so `wrap` cannot tell a list of lists from a list to wrap. The refusal names the `is`
+/// form that decides it, and the call keeps the type the code asked for, so the assignment adds no second issue.
+#[test]
+fn list_wrap_of_a_list_is_refused_with_the_is_form_that_decides_it() {
+    let sharp = "namespace Demo;\n\nclass Rows\n{\n    public List<List<int>> read(List<int> numbers)\n    {\n        List<List<int>> rows = List.wrap(numbers);\n        return rows;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Rows.sharp", sharp), &[]), ["7:42 invalid-argument"]);
+    assert_eq!(
+        messages(("src/Demo/Rows.sharp", sharp), &[]),
+        ["T is List<int>, itself a list; write `numbers is List<int> one ? [one] : numbers`"]
+    );
+}
+
+/// A value from plain PHP typed `mixed` arrives as `Any?`, which could hold a list.
+#[test]
+fn list_wrap_of_a_value_of_any_type_is_refused() {
+    let settings = "<?php\n\nnamespace Lib;\n\nfinal class Settings\n{\n    public static function raw(string $key): mixed\n    {\n        return $key;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Settings;\n\nclass Plans\n{\n    public void read()\n    {\n        List.wrap(Settings.raw(\"plan\"));\n        List.wrap(Settings.raw(\"plan\") ?? \"free\");\n    }\n}\n";
+    let others = [("src/Lib/Settings.php", settings)];
+
+    assert_eq!(issues(("src/Demo/Plans.sharp", sharp), &others), ["9:19 invalid-argument", "10:19 invalid-argument"]);
+    assert_eq!(
+        messages(("src/Demo/Plans.sharp", sharp), &others),
+        [
+            "T is Any?, which could itself be a list; check what `Settings.raw(\"plan\")` is with `is` first",
+            "T is Any, which could itself be a list; check what `Settings.raw(\"plan\") ?? \"free\"` is with `is` first",
+        ]
+    );
+}
+
+/// A `Map` runs as a PHP array too, so `wrap` would return it as the list it was asked to build.
+#[test]
+fn list_wrap_of_a_map_or_a_list_of_lists_is_refused() {
+    let sharp = "namespace Demo;\n\nclass Rows\n{\n    public void read(Map<string, int> counts, List<List<int>> rows, string|Map<string, int> either)\n    {\n        List.wrap(counts);\n        List.wrap(rows);\n        List.wrap(either);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Rows.sharp", sharp), &[]),
+        ["7:19 invalid-argument", "8:19 invalid-argument", "9:19 invalid-argument"]
+    );
+    assert_eq!(
+        messages(("src/Demo/Rows.sharp", sharp), &[]),
+        [
+            "T is Map<string, int>, itself a map; write `counts is Map<string, int> one ? [one] : counts`",
+            "T is List<List<int>>, itself a list; write `rows is List<List<int>> one ? [one] : rows`",
+            "T is string|Map<string, int>, which can be a map; write `either is Map<string, int> one ? [one] : either`",
+        ]
+    );
+}
+
+/// Plain PHP calls `\Sharp\List::wrap` under PHP's rules, with no PHP# refusal.
+#[test]
+fn list_wrap_called_from_php_keeps_the_php_checks() {
+    let php = "<?php\n\nnamespace Demo;\n\nclass Rows\n{\n    /**\n     * @param list<int> $numbers\n     * @param array<string, int> $counts\n     */\n    public function read(array $numbers, array $counts, mixed $raw): void\n    {\n        \\Sharp\\List::wrap($numbers);\n        \\Sharp\\List::wrap($counts);\n        \\Sharp\\List::wrap($raw);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Rows.php", php), &[]), Vec::<String>::new());
 }
 
 #[test]
@@ -2073,7 +2371,7 @@ fn written_errors(sharp: &'static str, issues: &[Issue]) -> Vec<String> {
 
 #[test]
 fn a_match_without_default_names_the_enum_cases_it_misses() {
-    let sharp = "namespace Demo;\n\nimport Lib.Limits;\nimport Lib.Status;\n\nclass Report\n{\n    public static string label(Status status) => match (status) {\n        Status.Open => \"open\",\n        Status.Closed => \"closed\",\n    };\n\n    public static void close(Status? status, bool forced)\n    {\n        match (status) {\n            Status.Open when forced == true => {},\n            Status.Closed => {},\n        }\n    }\n\n    public static int level(int count) => match (count) {\n        Limits.LOW => 1,\n        Limits.HIGH => 2,\n    };\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Limits;\nimport Lib.Status;\n\nclass Report\n{\n    public static string label(Status status) => match (status) {\n        Status.Open => \"open\",\n        Status.Closed => \"closed\",\n    };\n\n    public static void close(Status? status, bool forced)\n    {\n        match (status) {\n            Status.Open when forced => {},\n            Status.Closed => {},\n        }\n    }\n\n    public static int level(int count) => match (count) {\n        Limits.LOW => 1,\n        Limits.HIGH => 2,\n    };\n}\n";
 
     let issues =
         analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Status.php", TICKETS)]);
@@ -2812,7 +3110,7 @@ fn a_collection_method_message_names_the_sharp_type() {
     assert_eq!(
         messages,
         [
-            "Invalid argument type for argument #1 of `List<Demo\\Line>.add`: expected `Demo\\Line`, but found `int(1)`.",
+            "Invalid argument type for argument #1 of `List<Line>.add`: expected `Demo\\Line`, but found `int(1)`.",
             "Invalid argument type for argument #1 of `List<int>.set`: expected `int`, but found `string('a')`.",
             "Method `add` does not exist on `Map<string, int>`.",
             "Method `delete` does not exist on `List<int>`.",
@@ -2836,6 +3134,16 @@ fn a_collection_method_takes_values_of_the_type_its_place_is_declared_with() {
     let shapes = "<?php\n\nnamespace Lib;\n\ninterface Shape\n{\n}\n\nfinal class Circle implements Shape\n{\n}\n\nfinal class Square implements Shape\n{\n}\n";
 
     assert_eq!(issues(("src/Demo/Board.sharp", sharp), &[("src/Lib/Shape.php", shapes)]), ["26:24 invalid-argument"]);
+}
+
+#[test]
+fn a_list_of_a_nullable_type_takes_null_and_refuses_another_type() {
+    let sharp = "namespace Demo;\n\nimport Lib.Calc;\n\nclass Tray\n{\n    public void fill(List<int?> sizes, List<Calc?> calcs)\n    {\n        sizes.add(null);\n        sizes.add(1);\n        sizes.add(\"x\");\n        calcs.add(null);\n        calcs.add(Calc.make());\n        calcs.add(\"x\");\n        List<int?> held = [null, 2];\n        held.add(\"y\");\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tray.sharp", sharp), &[("src/Lib/Calc.php", CALC)]),
+        ["11:19 invalid-argument", "14:19 invalid-argument", "16:18 invalid-argument"]
+    );
 }
 
 /// The semantic checks refuse an empty literal declared without a type, so a method called on it reports nothing

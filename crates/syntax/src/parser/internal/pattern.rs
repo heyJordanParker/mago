@@ -1,5 +1,6 @@
 use mago_allocator::prelude::*;
 use mago_database::file::HasFileId;
+use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax_core::stack::ensure_sufficient_stack;
 
@@ -8,6 +9,7 @@ use crate::cst::cst::As;
 use crate::cst::cst::BinaryOperator;
 use crate::cst::cst::BinaryPattern;
 use crate::cst::cst::ComparisonPattern;
+use crate::cst::cst::Conditional;
 use crate::cst::cst::Expression;
 use crate::cst::cst::Is;
 use crate::cst::cst::LocalIdentifier;
@@ -237,10 +239,12 @@ where
 
         let pattern = self.parse_pattern()?;
         let guard = match self.stream.lookahead(0)? {
-            Some(token) if token.kind == T![Identifier] && token.value == b"when" => Some(MatchGuard {
-                when: self.expect_any_keyword()?,
-                condition: self.parse_expression_with_precedence(Precedence::NullCoalesce)?,
-            }),
+            Some(token) if token.kind == T![Identifier] && token.value == b"when" => {
+                let when = self.expect_any_keyword()?;
+                let condition = self.parse_expression_with_precedence(Precedence::NullCoalesce)?;
+
+                Some(MatchGuard { when, condition: self.parse_conditional_in_guard(condition)? })
+            }
             _ => None,
         };
 
@@ -250,6 +254,29 @@ where
             arrow: self.stream.eat_span(T!["=>"])?,
             body: self.parse_pattern_match_arm_body()?,
         }))
+    }
+
+    /// Reads a `? :` written at the top of a `when` condition, as in `when strict ? forced : ready =>`. A `? :` needs
+    /// parentheses there, so this reports it and reads both branches as operands of `??`, so the arm's `=>` still ends
+    /// the condition and the rest of the file parses on. It returns `condition` itself when no `?` follows it.
+    fn parse_conditional_in_guard(
+        &mut self,
+        condition: &'arena Expression<'arena>,
+    ) -> Result<&'arena Expression<'arena>, ParseError> {
+        if !self.stream.is_at(T!["?"])? {
+            return Ok(condition);
+        }
+
+        let conditional = Conditional {
+            condition,
+            question_mark: self.stream.consume_span()?,
+            then: Some(self.parse_expression_with_precedence(Precedence::NullCoalesce)?),
+            colon: self.stream.eat_span(T![":"])?,
+            r#else: self.parse_expression_with_precedence(Precedence::NullCoalesce)?,
+        };
+        self.errors.push(ParseError::ConditionalInGuardInSharp(conditional.span()));
+
+        Ok(self.arena.alloc(Expression::Conditional(conditional)))
     }
 
     fn parse_pattern_match_arm_body(&mut self) -> Result<PatternMatchArmBody<'arena>, ParseError> {

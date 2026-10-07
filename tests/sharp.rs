@@ -128,6 +128,108 @@ fn analyze_reports_only_the_parse_error_for_php_syntax() {
     assert!(errors[0].starts_with("src/Demo/Report.sharp:7:20:error - parse:"), "{stdout}");
 }
 
+/// The issues `mago analyze --reporting-format emacs` printed for `file`, as `line:column code`.
+fn issues_in(stdout: &str, file: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix(file)?.strip_prefix(':'))
+        .map(|line| {
+            let mut parts = line.splitn(3, ':');
+            let (row, column, rest) = (parts.next().unwrap(), parts.next().unwrap(), parts.next().unwrap());
+            let code = rest.split_once(" - ").map_or("", |(_, rest)| rest.split(':').next().unwrap());
+
+            format!("{row}:{column} {code}")
+        })
+        .collect()
+}
+
+/// A semantic error stops a PHP# file from running, so the analyzer issues its refused code causes add nothing:
+/// each refused line shows its refusal alone. The analyzer still refuses `exit` with a `string`, which the semantic
+/// checks accept, and a PHP file keeps every issue.
+#[test]
+fn analyze_reports_only_the_refusal_on_each_refused_line() {
+    let directory = workspace(
+        "namespace Demo;\n\nclass Report\n{\n    public const int LIMIT = __Foo__.y;\n\n    public void host()\n    {\n        const host = _SERVER[\"HTTP_HOST\"];\n    }\n\n    public void count()\n    {\n        _GET[\"n\"]++;\n    }\n\n    public void fallback(string host = _SERVER[\"x\"])\n    {\n    }\n\n    public void code()\n    {\n        exit(_SERVER[\"code\"]);\n    }\n\n    public void file()\n    {\n        exit(__FILE__);\n    }\n\n    public void call()\n    {\n        _SERVER.read();\n    }\n\n    public void rows(int row)\n    {\n        const data = (array)row;\n    }\n\n    public void names()\n    {\n        const all = GLOBALS;\n        const env = _ENV;\n        const magic = __Something__;\n        const dollar = $_SERVER[\"HTTP_HOST\"];\n        const member = _SERVER.x;\n        __Foo__.bar();\n    }\n\n    public void reason(string reason)\n    {\n        exit(reason);\n    }\n\n    public void status(int code)\n    {\n        exit(code);\n    }\n\n    public void message()\n    {\n        exit(\"m\");\n    }\n\n    public void template()\n    {\n        exit(`m`);\n    }\n\n    public void parenthesized()\n    {\n        exit(((\"m\")));\n    }\n\n    public void wrapped()\n    {\n        exit(\n            _SERVER[\"code\"]\n        );\n    }\n}\n",
+    );
+    std::fs::write(
+        directory.path().join("src/Demo/Twin.php"),
+        "<?php\n\nnamespace Demo;\n\nclass Twin\n{\n    public const int LIMIT = __Foo__::y;\n\n    public function read(): void\n    {\n        $host = _SERVER[\"HTTP_HOST\"];\n        $all = GLOBALS;\n        $env = _ENV;\n        $magic = __Something__;\n        $dollar = $_SERVER[\"HTTP_HOST\"];\n        $member = _SERVER::x;\n        _SERVER::read();\n        __Foo__::bar();\n    }\n\n    public function reason(string $reason): void\n    {\n        exit($reason);\n    }\n}\n",
+    )
+    .unwrap();
+
+    let output = run(directory.path(), "analyze", &["--reporting-format", "emacs"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert_eq!(
+        issues_in(&stdout, "src/Demo/Report.sharp"),
+        [
+            "5:30 semantics",
+            "9:22 semantics",
+            "14:9 semantics",
+            "17:40 semantics",
+            "23:14 semantics",
+            "28:14 semantics",
+            "33:9 semantics",
+            "38:22 semantics",
+            "43:21 semantics",
+            "44:21 semantics",
+            "45:23 semantics",
+            "46:24 semantics",
+            "47:24 semantics",
+            "48:9 semantics",
+            "63:9 semantics",
+            "68:9 semantics",
+            "73:9 semantics",
+            "79:13 semantics",
+            "53:9 invalid-argument",
+        ],
+        "{stdout}"
+    );
+    assert_eq!(
+        issues_in(&stdout, "src/Demo/Twin.php"),
+        [
+            "7:30 non-existent-class-like",
+            "11:17 non-existent-constant",
+            "11:9 mixed-assignment",
+            "12:16 non-existent-constant",
+            "12:9 mixed-assignment",
+            "13:16 non-existent-constant",
+            "13:9 mixed-assignment",
+            "14:18 non-existent-constant",
+            "14:9 mixed-assignment",
+            "16:19 non-existent-class-like",
+            "16:9 impossible-assignment",
+            "17:18 non-existent-method",
+            "18:18 non-existent-method",
+        ],
+        "{stdout}"
+    );
+}
+
+/// A bare call is the global function's, so the analyzer names the member to write when no function of that name
+/// exists. On a line that holds a refusal, the refusal shows alone.
+#[test]
+fn analyze_names_the_member_a_bare_call_meant_on_a_line_without_a_refusal() {
+    let directory = workspace(
+        "namespace Demo;\n\nclass Report\n{\n    public static int total() => 1;\n\n    public static int run() => total();\n\n    public static int line() => total(__LINE__);\n}\n",
+    );
+
+    let output = run(directory.path(), "analyze", &["--reporting-format", "emacs"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert_eq!(
+        issues_in(&stdout, "src/Demo/Report.sharp"),
+        ["9:39 semantics", "7:32 non-existent-function", "7:32 mixed-return-statement"],
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(
+            "Write `Report.total()`: a static method reaches the members of its class through the class name."
+        ),
+        "{stdout}"
+    );
+}
+
 /// A PHP sum and call chain 1,000 levels deep overflowed the stack of a debug `mago analyze`, and a PHP# sum 100,000
 /// levels deep overflowed any build. Now the PHP file analyzes, and the PHP# file gets its nesting error.
 #[test]
