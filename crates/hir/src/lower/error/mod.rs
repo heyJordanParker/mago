@@ -19,6 +19,8 @@ pub(crate) fn lower_parse_error(error: &ParseError) -> Error {
         ParseError::UnexpectedToken(..)
         | ParseError::PhpSyntaxInSharp(..)
         | ParseError::PhpLambdaInSharp(..)
+        | ParseError::LambdaAfterOperatorInSharp(..)
+        | ParseError::ConditionalInGuardInSharp(..)
         | ParseError::QualifiedNameInSharp(..)
         | ParseError::UntypedParameterInSharp(..)
         | ParseError::UntypedFieldInSharp(..)
