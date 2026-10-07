@@ -26,6 +26,7 @@ use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::MethodCall;
 use mago_syntax::cst::NullSafeMethodCall;
+use mago_syntax::cst::TypeArgumentList;
 use mago_syntax_core::stack::ensure_sufficient_stack;
 
 use crate::analyzable::Analyzable;
@@ -52,6 +53,7 @@ use crate::invocation::return_type_fetcher::fetch_declared_invocation_return_typ
 use crate::invocation::return_type_fetcher::fetch_function_like_provider_return_type;
 use crate::invocation::return_type_fetcher::fetch_invocation_return_type;
 use crate::invocation::template_result::populate_template_result_from_invocation;
+use crate::invocation::template_result::seed_method_type_arguments;
 use crate::plugin::ExpressionHookResult;
 use crate::plugin::context::HookContext;
 use crate::resolver::method::UndocumentedMethod;
@@ -99,6 +101,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for MethodCall<'arena> {
             artifacts,
             self.object,
             &self.method,
+            self.type_arguments.as_ref(),
             &self.argument_list,
             false, // is_nullsafe
             self.span(),
@@ -151,6 +154,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for NullSafeMethodCall<'arena> {
             artifacts,
             self.object,
             &self.method,
+            self.type_arguments.as_ref(),
             &self.argument_list,
             true, // is_nullsafe
             self.span(),
@@ -292,6 +296,7 @@ fn analyze_method_call<'ctx, 'ast, 'arena, A>(
     artifacts: &mut AnalysisArtifacts,
     object: &'ast Expression<'arena>,
     selector: &'ast ClassLikeMemberSelector<'arena>,
+    type_arguments: Option<&'ast TypeArgumentList<'arena>>,
     argument_list: &'ast ArgumentList<'arena>,
     is_null_safe: bool,
     span: Span,
@@ -407,6 +412,17 @@ where
             .entry(*var_id)
             .or_default()
             .push(vec![mago_codex::assertion::Assertion::IsNotType(mago_codex::ttype::atomic::TAtomic::Null)]);
+    }
+
+    if let Some(type_arguments) = type_arguments {
+        seed_method_type_arguments(
+            context,
+            block_context,
+            artifacts,
+            type_arguments,
+            &invocation_targets,
+            &mut method_resolution.template_result,
+        );
     }
 
     if has_resolved_methods || method_resolution.undocumented_methods.is_empty() {

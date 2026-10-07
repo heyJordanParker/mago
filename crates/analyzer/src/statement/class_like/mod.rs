@@ -33,6 +33,7 @@ use mago_codex::ttype::template::TemplateResult;
 use mago_codex::ttype::template::definition_type_replacer;
 use mago_codex::ttype::template::definition_type_replacer::DefinitionReplacementOptions;
 use mago_codex::ttype::template::inferred_type_replacer;
+use mago_codex::ttype::template::variance::Variance;
 use mago_codex::ttype::union::TUnion;
 use mago_codex::visibility::Visibility;
 use mago_names::binding::php_variable_name;
@@ -72,6 +73,7 @@ use crate::statement::class_like::method_signature::SignatureCompatibilityIssue;
 use crate::statement::function_like::report_invalid_template_arguments;
 use crate::statement::function_like::report_undefined_type_references;
 use crate::utils::missing_type_hints;
+use crate::utils::template::find_template_uses;
 
 pub mod constant;
 pub mod enum_case;
@@ -1043,7 +1045,11 @@ where
 
     check_trait_property_conflicts(context, class_like_metadata, members);
     check_readonly_class_trait_properties(context, class_like_metadata, members);
-    check_template_variance_positions(context, class_like_metadata);
+    if class_like_metadata.flags.is_sharp() {
+        check_sharp_template_variance(context, class_like_metadata);
+    } else {
+        check_template_variance_positions(context, class_like_metadata);
+    }
     check_uninhabitable_diamonds(context, class_like_metadata);
 
     if !class_like_metadata.template_types.is_empty() {
@@ -1958,8 +1964,6 @@ fn check_template_variance_positions<'ctx, A>(
 ) where
     A: Arena,
 {
-    use mago_codex::ttype::template::variance::Variance;
-
     if class_like_metadata.template_variance.is_empty() {
         return;
     }
@@ -2050,6 +2054,44 @@ fn check_template_variance_positions<'ctx, A>(
                 );
             }
         }
+    }
+}
+
+/// Checks spec section 11.1 on every member of a PHP# class or interface another class reaches: an `out` type
+/// parameter is only handed out, and an `in` type parameter is only taken in.
+fn check_sharp_template_variance<A>(context: &mut Context<'_, '_, A>, class_like_metadata: &ClassLikeMetadata)
+where
+    A: Arena,
+{
+    if !class_like_metadata.template_variance.iter().any(|variance| !variance.is_invariant()) {
+        return;
+    }
+
+    for template_use in find_template_uses(context.codebase, class_like_metadata) {
+        let Some(index) = class_like_metadata.template_types.get_index_of(&template_use.template) else {
+            continue;
+        };
+        let (marker, refused) = match (class_like_metadata.template_variance.get(index), template_use.position) {
+            (Some(Variance::Covariant), Variance::Contravariant | Variance::Invariant) => ("out", "take it in"),
+            (Some(Variance::Contravariant), Variance::Covariant | Variance::Invariant) => ("in", "hand it out"),
+            _ => continue,
+        };
+
+        let template_name = template_use.template;
+        context.collector.report_with_code(
+            IssueCode::InvalidTemplateParameter,
+            Issue::error(format!(
+                "`{template_name}` is declared `{marker}`, so {} cannot {refused}.",
+                template_use.member
+            ))
+            .with_annotation(Annotation::primary(template_use.span).with_message(format!(
+                "{} uses `{template_name}` here",
+                template_use.member
+            )))
+            .with_note(
+                "Spec section 11.1: an `out` type parameter is only handed out, and an `in` type parameter is only taken in.",
+            ),
+        );
     }
 }
 

@@ -6,6 +6,7 @@ use mago_allocator::Arena;
 use mago_bytes::BytesDisplay;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
+use mago_codex::metadata::ttype::TypeMetadata;
 use mago_codex::scanner::get_union_from_hint;
 use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
@@ -65,7 +66,7 @@ use crate::expression::analyze_php_shape;
 use crate::expression::assignment::analyze_assignment;
 use crate::plugin::HookAction;
 use crate::plugin::context::HookContext;
-use crate::statement::function_like::report_map_keys_without_backing_value;
+use crate::statement::function_like::report_invalid_template_arguments;
 use crate::utils::docblock::populate_docblock_variables;
 use crate::utils::docblock::populate_docblock_variables_excluding;
 use crate::utils::expression::expression_has_observable_side_effect;
@@ -350,14 +351,36 @@ where
         return None;
     };
 
-    let mut local_type = get_union_from_hint(
+    let local_type = TypeMetadata::new(get_type_from_hint(context, block_context, artifacts, hint), hint.span());
+    if context.dialect.is_sharp() {
+        report_invalid_template_arguments(context, &local_type);
+    }
+
+    let local_type = (Rc::new(local_type.type_union), local_type.span);
+    block_context.local_types.insert(variable_id, local_type.clone());
+
+    Some(local_type)
+}
+
+/// The type a PHP# `hint` writes inside the scope of `block_context`, where it may name the type parameters of the
+/// enclosing method and class.
+pub(crate) fn get_type_from_hint<A>(
+    context: &Context<'_, '_, A>,
+    block_context: &BlockContext<'_>,
+    artifacts: &mut AnalysisArtifacts,
+    hint: &Hint<'_>,
+) -> TUnion
+where
+    A: Arena,
+{
+    let mut hint_type = get_union_from_hint(
         hint,
         block_context.scope.get_class_like_name(),
         context.resolved_names,
         &context.type_resolution_context,
     );
     populate_union_type(
-        &mut local_type,
+        &mut hint_type,
         &context.codebase.symbols,
         block_context.scope.get_reference_source().as_ref(),
         &mut artifacts.symbol_references,
@@ -365,15 +388,11 @@ where
     );
     expander::expand_union(
         context.codebase,
-        &mut local_type,
+        &mut hint_type,
         &TypeExpansionOptions { self_class: block_context.scope.get_class_like_name(), ..Default::default() },
     );
 
-    let local_type = (Rc::new(local_type), hint.span());
-    report_map_keys_without_backing_value(context, &local_type.0, local_type.1);
-    block_context.local_types.insert(variable_id, local_type.clone());
-
-    Some(local_type)
+    hint_type
 }
 
 /// Analyzes a PHP# `for … of` as the PHP `foreach` over its collection, into the variables it declares. A written type

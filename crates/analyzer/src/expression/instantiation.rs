@@ -28,6 +28,7 @@ use mago_span::Span;
 use mago_syntax::cst::ArgumentList;
 use mago_syntax::cst::Instantiation;
 use mago_syntax::cst::PartialArgumentList;
+use mago_syntax::cst::TypeArgumentList;
 use mago_word::WordMap;
 use mago_word::word;
 
@@ -44,6 +45,7 @@ use crate::invocation::MethodInvocationKind;
 use crate::invocation::MethodTargetContext;
 use crate::invocation::analyzer::analyze_invocation;
 use crate::invocation::post_process::post_invocation_process;
+use crate::invocation::template_result::seed_type_arguments;
 use crate::resolver::class_name::ResolutionOrigin;
 use crate::resolver::class_name::ResolvedClassname;
 use crate::resolver::class_name::resolve_classnames_from_expression;
@@ -114,6 +116,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Instantiation<'arena> {
                 &classname,
                 instantiation_span,
                 class_expression_span,
+                self.type_arguments.as_ref(),
                 argument_list,
             )?;
 
@@ -137,6 +140,7 @@ fn analyze_class_instantiation<'ctx, 'arena, A>(
     classname: &ResolvedClassname,
     instantiation_span: Span,
     class_expression_span: Span,
+    type_arguments: Option<&TypeArgumentList<'arena>>,
     argument_list: Option<&ArgumentList<'arena>>,
 ) -> Result<TUnion, AnalysisError>
 where
@@ -304,6 +308,26 @@ where
     let mut constructor_span = None;
 
     let mut template_result = TemplateResult::new(IndexMap::with_hasher(RandomState::default()), HashMap::default());
+
+    let written_type_parameters = match type_arguments {
+        Some(type_arguments) => seed_type_arguments(
+            context,
+            block_context,
+            artifacts,
+            type_arguments,
+            classname_str,
+            metadata.name_span.unwrap_or(metadata.span),
+            &metadata.template_types,
+            &mut template_result,
+        ),
+        None => {
+            if context.dialect.is_sharp() && metadata.flags.is_sharp() && !metadata.template_types.is_empty() {
+                report_missing_type_arguments(context, metadata, class_expression_span);
+            }
+
+            None
+        }
+    };
 
     let is_spl_object_storage = classname_str.as_bytes().eq_ignore_ascii_case(b"splobjectstorage");
 
@@ -504,6 +528,10 @@ where
         return Ok(get_never());
     }
 
+    if written_type_parameters.is_some() {
+        type_parameters = written_type_parameters;
+    }
+
     let constraint_object = TAtomic::Object(TObject::Named(TNamedObject {
         name: metadata.original_name,
         type_parameters,
@@ -526,6 +554,28 @@ where
         };
 
     Ok(wrap_atomic(result_atomic))
+}
+
+/// Reports a PHP# `new` of the generic class `metadata` that names no type arguments, which spec section 11 requires.
+fn report_missing_type_arguments<A>(context: &mut Context<'_, '_, A>, metadata: &ClassLikeMetadata, span: Span)
+where
+    A: Arena,
+{
+    let class_name = metadata.original_name.as_str_lossy();
+    let class_name = class_name.rsplit('\\').next().unwrap_or_default();
+    let mut template_names: Vec<String> = metadata.template_types.keys().map(|name| format!("`{name}`")).collect();
+    let last_name = template_names.pop().unwrap_or_default();
+    let template_names =
+        if template_names.is_empty() { last_name } else { format!("{} and {last_name}", template_names.join(", ")) };
+
+    context.collector.report_with_code(
+        IssueCode::MissingTemplateParameter,
+        Issue::error(format!(
+            "`new {class_name}` names its type arguments: write `new {class_name}<…>(…)` with a type for {template_names}."
+        ))
+        .with_annotation(Annotation::primary(span).with_message(format!("`{class_name}` has type parameters")))
+        .with_note("Spec section 11: `new` always names the type arguments of a generic class."),
+    );
 }
 
 /// Analyzes the constructor invocation for an anonymous class.

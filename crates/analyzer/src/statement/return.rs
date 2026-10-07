@@ -44,6 +44,7 @@ use crate::utils::expression::is_referenceable;
 use crate::utils::get_type_diff;
 use crate::utils::misc::unwrap_expression;
 use crate::utils::names::display_function_like_identifier;
+use crate::utils::template::explain_blocked_substitution;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for Return<'arena> {
     fn analyze<'ctx, A>(
@@ -74,7 +75,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Return<'arena> {
             // A refused value is `never`, and its error already reports it.
             if let Some(inferred_return_type) = &inferred_return_type
                 && inferred_return_type.is_never()
-                && !is_refused(return_value)
+                && !is_refused(return_value, context.resolved_names)
             {
                 context.collector.report_with_code(
                     IssueCode::NeverReturn,
@@ -455,13 +456,13 @@ pub fn handle_return_value<'ctx, A>(
             );
         }
 
-        if union_comparison_result.type_coerced.unwrap_or(false) {
+        let (code, mut issue) = if union_comparison_result.type_coerced.unwrap_or(false) {
             if union_comparison_result.type_coerced_from_as_mixed.unwrap_or(false) {
                 return;
             }
 
             if union_comparison_result.type_coerced_from_nested_mixed.unwrap_or(false) {
-                let mut issue = Issue::error(format!(
+                let issue = Issue::error(format!(
                     "Returned type `{inferred_return_type_str}` is less specific than the declared return type `{expected_return_type_str}` for function `{function_name}` due to nested 'mixed'."
                 ))
                 .with_annotation(
@@ -477,13 +478,9 @@ pub fn handle_return_value<'ctx, A>(
                     )
                 );
 
-                if let Some(type_diff) = get_type_diff(context, &expected_return_type, &inferred_return_type) {
-                    issue = issue.with_note(type_diff);
-                }
-
-                context.collector.report_with_code(IssueCode::LessSpecificNestedReturnStatement, issue);
+                (IssueCode::LessSpecificNestedReturnStatement, issue)
             } else {
-                let mut issue = Issue::error(format!(
+                let issue = Issue::error(format!(
                     "Returned type `{inferred_return_type_str}` is less specific than the declared return type `{expected_return_type_str}` for function `{function_name}`."
                 ))
                 .with_annotation(
@@ -501,14 +498,10 @@ pub fn handle_return_value<'ctx, A>(
                     )
                );
 
-                if let Some(type_diff) = get_type_diff(context, &expected_return_type, &inferred_return_type) {
-                    issue = issue.with_note(type_diff);
-                }
-
-                context.collector.report_with_code(IssueCode::LessSpecificReturnStatement, issue);
+                (IssueCode::LessSpecificReturnStatement, issue)
             }
         } else {
-            let mut issue = Issue::error(format!(
+            let issue = Issue::error(format!(
                 "Invalid return type for function `{function_name}`: expected `{expected_return_type_str}`, but found `{inferred_return_type_str}`."
             ))
             .with_annotation(
@@ -526,12 +519,15 @@ pub fn handle_return_value<'ctx, A>(
                 )
             );
 
-            if let Some(type_diff) = get_type_diff(context, &expected_return_type, &inferred_return_type) {
-                issue = issue.with_note(type_diff);
-            }
+            (IssueCode::InvalidReturnStatement, issue)
+        };
 
-            context.collector.report_with_code(IssueCode::InvalidReturnStatement, issue);
+        if let Some(type_diff) = get_type_diff(context, &expected_return_type, &inferred_return_type) {
+            issue = issue.with_note(type_diff);
         }
+
+        let issue = explain_blocked_substitution(context, &inferred_return_type, &expected_return_type, issue);
+        context.collector.report_with_code(code, issue);
     } else if require_return_value
         && !function_like_metadata.flags.has_yield()
         && !matches!(

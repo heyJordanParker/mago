@@ -66,6 +66,7 @@ use crate::utils::expression::get_nullsafe_base_expressions;
 use crate::utils::expression::get_root_expression_id;
 use crate::utils::expression::is_variable;
 use crate::utils::misc::unwrap_expression;
+use crate::utils::template::explain_blocked_substitution;
 
 mod array_assignment;
 pub(crate) mod property_assignment;
@@ -652,18 +653,20 @@ pub fn analyze_assignment_to_variable<'ctx, 'arena, A>(
         let name = variable_name.trim_start_matches('$');
         let local_type_str = local_type.get_id();
 
+        let issue = Issue::error(format!("Invalid assignment to `{name}`: it is declared as `{local_type_str}`."))
+            .with_annotation(
+                Annotation::primary(source_expression.map_or(variable_span, HasSpan::span))
+                    .with_message(format!("This value has type `{}`.", assigned_type.get_id())),
+            )
+            .with_annotation(
+                Annotation::secondary(local_type_span)
+                    .with_message(format!("`{name}` is declared as `{local_type_str}` here.")),
+            )
+            .with_help(format!("Assign a `{local_type_str}` value, or change the type `{name}` is declared with."));
+
         context.collector.report_with_code(
             IssueCode::InvalidLocalAssignmentValue,
-            Issue::error(format!("Invalid assignment to `{name}`: it is declared as `{local_type_str}`."))
-                .with_annotation(
-                    Annotation::primary(source_expression.map_or(variable_span, HasSpan::span))
-                        .with_message(format!("This value has type `{}`.", assigned_type.get_id())),
-                )
-                .with_annotation(
-                    Annotation::secondary(local_type_span)
-                        .with_message(format!("`{name}` is declared as `{local_type_str}` here.")),
-                )
-                .with_help(format!("Assign a `{local_type_str}` value, or change the type `{name}` is declared with.")),
+            explain_blocked_substitution(context, &assigned_type, &local_type, issue),
         );
 
         // The local keeps its written type, as the engine never checks it.

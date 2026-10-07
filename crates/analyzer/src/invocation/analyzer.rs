@@ -181,6 +181,11 @@ where
 
     populate_template_result_from_invocation(context, invocation, template_result);
 
+    // In PHP# the type arguments of the receiver and those the call writes bind their templates before any argument,
+    // so an argument infers only the others, as `map`'s `R` from `paid.map(this.format)`, and a wrong argument is the
+    // invalid-argument issue alone.
+    let bound_before_arguments = context.dialect.is_sharp().then(|| template_result.clone());
+
     let arg_count = invocation.arguments_source.argument_count();
     let mut analyzed_argument_types = HashMap::default();
 
@@ -253,12 +258,11 @@ where
                 method_class_type,
             );
 
-            // A PHP# collection's receiver binds the templates of its class, so an argument infers only the method's
-            // own, as `map`'s `R` from `paid.map(this.format)`, and a wrong element is the invalid-argument issue alone.
-            let parameter_type = if invocation.target.get_sharp_collection_receiver().is_some() {
-                inferred_type_replacer::replace(&parameter_type, template_result, context.codebase)
-            } else {
-                parameter_type
+            let parameter_type = match &bound_before_arguments {
+                Some(bound_before_arguments) => {
+                    inferred_type_replacer::replace(&parameter_type, bound_before_arguments, context.codebase)
+                }
+                None => parameter_type,
             };
 
             if parameter_type.has_template_types() {

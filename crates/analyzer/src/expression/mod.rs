@@ -13,6 +13,8 @@ use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_named_object;
 use mago_codex::ttype::get_never;
 use mago_codex::ttype::union::TUnion;
+use mago_names::ResolvedNames;
+use mago_names::binding::Binding;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_reporting::Level;
@@ -22,6 +24,7 @@ use mago_span::Span;
 use mago_syntax::cst::Access;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::Expression;
+use mago_syntax::cst::Identifier;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::Parenthesized;
 use mago_syntax::cst::PatternMatch;
@@ -193,7 +196,13 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
                 Expression::Construct(expr) => expr.analyze(context, block_context, artifacts),
                 Expression::Throw(expr) => expr.analyze(context, block_context, artifacts),
                 Expression::Clone(expr) => expr.analyze(context, block_context, artifacts),
-                Expression::Error(_) | Expression::Access(_) | Expression::Call(_) if is_refused(self) => {
+                Expression::Error(_)
+                | Expression::Access(_)
+                | Expression::Call(_)
+                | Expression::TypeOf(_)
+                | Expression::Instantiation(_)
+                    if is_refused(self, context.resolved_names) =>
+                {
                     artifacts.set_expression_type(&self, get_never());
 
                     Ok(())
@@ -594,11 +603,19 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Parenthesized<'arena> {
     }
 }
 
-/// Whether an error already refuses `expression`: it failed to parse, or it reads or calls a member of `typeof(X)`
-/// through any chain of property reads, which `check_slice` refuses. Its type is `never`, and it adds no issue.
-pub(crate) fn is_refused(expression: &Expression<'_>) -> bool {
+/// Whether an error already refuses `expression`, which `check_slice` refuses: it failed to parse, it reads or calls a
+/// member of `typeof(X)` or of a type parameter through any chain of property reads, or it is `typeof` or `new` of a
+/// type parameter. Its type is `never`, and it adds no issue.
+pub(crate) fn is_refused(expression: &Expression<'_>, resolved_names: &ResolvedNames<'_>) -> bool {
+    let is_type_parameter =
+        |name: &Identifier<'_>| matches!(resolved_names.binding(name), Some(Binding::TypeParameter { .. }));
+
     let mut object = match expression {
         Expression::Error(_) => return true,
+        Expression::TypeOf(type_of) => return is_type_parameter(&type_of.class),
+        Expression::Instantiation(instantiation) => {
+            return matches!(instantiation.class, Expression::Identifier(class) if is_type_parameter(class));
+        }
         Expression::Access(Access::Property(access)) => access.object,
         Expression::Call(Call::Method(call)) => call.object,
         _ => return false,
@@ -608,7 +625,11 @@ pub(crate) fn is_refused(expression: &Expression<'_>) -> bool {
         object = access.object;
     }
 
-    matches!(object, Expression::TypeOf(_))
+    match object {
+        Expression::TypeOf(_) => true,
+        Expression::ConstantAccess(access) => is_type_parameter(&access.name),
+        _ => false,
+    }
 }
 
 pub fn find_expression_logic_issues<'ctx, 'arena, A>(

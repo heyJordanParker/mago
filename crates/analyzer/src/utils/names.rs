@@ -3,7 +3,10 @@
 use mago_allocator::Arena;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::ttype::TType;
+use mago_codex::ttype::atomic::TAtomic;
+use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::object::TObject;
+use mago_codex::ttype::union::TUnion;
 use mago_word::Word;
 
 use crate::context::Context;
@@ -48,6 +51,38 @@ pub(crate) fn display_sharp_collection(object: &TObject) -> Option<String> {
     let parameters = parameters.iter().map(|parameter| parameter.get_id().to_string()).collect::<Vec<_>>();
 
     Some(format!("{collection}<{}>", parameters.join(", ")))
+}
+
+/// Returns `atomic` as PHP# writes it, as in `PaginatedList<Order>`: a class by its short name, PHP's lists and maps as
+/// `List<T>` and `Map<TKey, TValue>`, `T?` for a type that may be `null`, and every other type by its id.
+#[must_use]
+pub(crate) fn display_sharp_type(atomic: &TAtomic) -> String {
+    match atomic {
+        TAtomic::Object(TObject::Named(object)) => {
+            let name = object.name.as_str_lossy();
+            let name = name.rsplit('\\').next().unwrap_or_default();
+
+            match object.get_type_parameters() {
+                Some(arguments) if !arguments.is_empty() => {
+                    format!("{name}<{}>", arguments.iter().map(display_sharp_union).collect::<Vec<_>>().join(", "))
+                }
+                _ => name.to_string(),
+            }
+        }
+        TAtomic::Array(TArray::List(list)) => format!("List<{}>", display_sharp_union(&list.element_type)),
+        TAtomic::Array(TArray::Keyed(keyed)) => match keyed.get_generic_parameters() {
+            Some((key, value)) => format!("Map<{}, {}>", display_sharp_union(key), display_sharp_union(value)),
+            None => atomic.get_id().to_string(),
+        },
+        _ => atomic.get_id().to_string(),
+    }
+}
+
+fn display_sharp_union(union: &TUnion) -> String {
+    match union.types.as_ref() {
+        [TAtomic::Null, atomic] | [atomic, TAtomic::Null] => format!("{}?", display_sharp_type(atomic)),
+        atomics => atomics.iter().map(display_sharp_type).collect::<Vec<_>>().join("|"),
+    }
 }
 
 /// Returns `List` or `Map` when `object` is `Sharp\ListMethods` or `Sharp\MapMethods`.

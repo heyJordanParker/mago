@@ -122,7 +122,13 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Call<'arena> {
                 if context.dialect.is_sharp()
                     && let Some(static_call) = StaticCall::from_method_call(call, context.resolved_names) =>
             {
-                static_method_call::analyze_static_method_call(context, block_context, artifacts, static_call)
+                static_method_call::analyze_static_method_call(
+                    context,
+                    block_context,
+                    artifacts,
+                    static_call,
+                    call.type_arguments.as_ref(),
+                )
             }
             Call::Method(call) => call.analyze(context, block_context, artifacts),
             Call::NullSafeMethod(call) => call.analyze(context, block_context, artifacts),

@@ -1,11 +1,17 @@
+use std::fmt::Display;
+
 use mago_allocator::Arena;
 
 use foldhash::fast::RandomState;
 use indexmap::IndexMap;
 
+use mago_span::HasSpan;
+use mago_span::Span;
+use mago_syntax::cst::TypeArgumentList;
 use mago_word::Word;
 
 use mago_codex::metadata::class_like::ClassLikeMetadata;
+use mago_codex::metadata::class_like::TemplateTypes;
 use mago_codex::metadata::function_like::FunctionLikeMetadata;
 use mago_codex::misc::GenericParent;
 use mago_codex::ttype::atomic::TAtomic;
@@ -16,12 +22,18 @@ use mago_codex::ttype::get_specialized_template_type;
 use mago_codex::ttype::template::GenericTemplate;
 use mago_codex::ttype::template::TemplateResult;
 use mago_codex::ttype::template::bounds::get_most_specific_type_from_bounds;
+use mago_codex::ttype::union::TUnion;
 
+use crate::artifacts::AnalysisArtifacts;
 use crate::context::Context;
+use crate::context::block::BlockContext;
 use crate::invocation::Invocation;
 use crate::invocation::InvocationTarget;
 use crate::invocation::MethodTargetContext;
 use crate::invocation::template_inference::infer_templates_for_method_call;
+use crate::statement::function_like::check_template_arguments;
+use crate::statement::get_type_from_hint;
+use crate::utils::names::display_function_like_identifier;
 use crate::utils::template::get_template_types_for_class_member;
 
 /// Populates the `TemplateResult` with template types from the invocation target.
@@ -208,6 +220,71 @@ pub fn populate_template_result_from_invocation<'ctx, 'arena, A>(
     };
 
     infer_templates_for_method_call(context, instance_type, method_context, method_metadata, metadata, template_result);
+}
+
+/// Seeds the type arguments PHP# writes on a method call, `x.m<A>(…)`, as the bounds of each target method's own
+/// templates, through [`seed_type_arguments`].
+pub fn seed_method_type_arguments<'ctx, A>(
+    context: &mut Context<'ctx, '_, A>,
+    block_context: &BlockContext<'ctx>,
+    artifacts: &mut AnalysisArtifacts,
+    type_arguments: &TypeArgumentList<'_>,
+    targets: &[InvocationTarget<'ctx>],
+    template_result: &mut TemplateResult,
+) where
+    A: Arena,
+{
+    for target in targets {
+        let InvocationTarget::FunctionLike { identifier, metadata, .. } = target else {
+            continue;
+        };
+
+        let owner = display_function_like_identifier(context, identifier);
+        seed_type_arguments(
+            context,
+            block_context,
+            artifacts,
+            type_arguments,
+            owner,
+            metadata.name_span.unwrap_or(metadata.span),
+            &metadata.template_types,
+            template_result,
+        );
+    }
+}
+
+/// Converts the type arguments PHP# writes on `new` or a method call with the caller's type parameters in scope,
+/// reports them unless they fit the `templates` that `owner` declares at `owner_span`, and seeds each into
+/// `template_result` as the shallowest bound of its template, so it wins over inference from the arguments as a
+/// receiver's type arguments do. Returns the type arguments when their number fits.
+pub fn seed_type_arguments<A>(
+    context: &mut Context<'_, '_, A>,
+    block_context: &BlockContext<'_>,
+    artifacts: &mut AnalysisArtifacts,
+    type_arguments: &TypeArgumentList<'_>,
+    owner: impl Display,
+    owner_span: Span,
+    templates: &TemplateTypes,
+    template_result: &mut TemplateResult,
+) -> Option<Vec<TUnion>>
+where
+    A: Arena,
+{
+    let arguments: Vec<TUnion> = type_arguments
+        .arguments
+        .iter()
+        .map(|argument| get_type_from_hint(context, block_context, artifacts, argument))
+        .collect();
+
+    if !check_template_arguments(context, owner, owner_span, templates, &arguments, type_arguments.span()) {
+        return None;
+    }
+
+    for (argument, (template_name, template)) in arguments.iter().zip(templates) {
+        template_result.add_lower_bound(*template_name, template.defining_entity, argument.clone());
+    }
+
+    Some(arguments)
 }
 
 fn get_named_static_class_type(class_type: &StaticClassType) -> Option<&TNamedObject> {

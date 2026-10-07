@@ -4,6 +4,7 @@ use mago_span::HasSpan;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::StaticMethodCall;
+use mago_syntax::cst::TypeArgumentList;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
@@ -19,6 +20,7 @@ use crate::invocation::InvocationArgumentsSource;
 use crate::invocation::InvocationTarget;
 use crate::invocation::MethodInvocationKind;
 use crate::invocation::MethodTargetContext;
+use crate::invocation::template_result::seed_method_type_arguments;
 use crate::plugin::ExpressionHookResult;
 use crate::plugin::context::HookContext;
 use crate::plugin::hook::StaticCall;
@@ -42,17 +44,19 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for StaticMethodCall<'arena> {
             span: self.span(),
         };
 
-        analyze_static_method_call(context, block_context, artifacts, call)
+        analyze_static_method_call(context, block_context, artifacts, call, None)
     }
 }
 
-/// Analyzes a static method call from its parts, whether PHP wrote it as `Class::m()` or PHP# as `Class.m()`.
+/// Analyzes a static method call from its parts, whether PHP wrote it as `Class::m()` or PHP# as `Class.m()`, with
+/// the type arguments PHP# writes as `Class.m<A>()`.
 #[allow(clippy::expect_used)]
 pub(super) fn analyze_static_method_call<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
     block_context: &mut BlockContext<'ctx>,
     artifacts: &mut AnalysisArtifacts,
     call: StaticCall<'_, 'arena>,
+    type_arguments: Option<&TypeArgumentList<'arena>>,
 ) -> Result<(), AnalysisError>
 where
     A: Arena,
@@ -167,6 +171,17 @@ where
     }
 
     let class_has_nullsafe_null = artifacts.get_expression_type(call.class).is_some_and(|t| t.has_nullsafe_null());
+
+    if let Some(type_arguments) = type_arguments {
+        seed_method_type_arguments(
+            context,
+            block_context,
+            artifacts,
+            type_arguments,
+            &invocation_targets,
+            &mut method_resolution.template_result,
+        );
+    }
 
     if has_resolved_methods || method_resolution.undocumented_methods.is_empty() {
         analyze_invocation_targets(

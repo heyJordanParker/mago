@@ -40,6 +40,7 @@ use crate::invocation::InvocationTarget;
 use crate::statement::function_like::closure_parameter_types;
 use crate::utils::expression::is_referenceable;
 use crate::utils::get_type_diff;
+use crate::utils::template::explain_blocked_substitution;
 
 /// Checks if an argument can be passed by reference.
 pub(super) fn is_argument_referenceable(
@@ -341,8 +342,12 @@ pub fn verify_argument_type<'arena, A>(
         return;
     }
 
-    let is_empty_container = input_type.is_empty_array() || is_empty_container_construction(input_expression);
-    if union_comparison_result.type_coerced.unwrap_or(false) && !input_type.is_mixed() && !is_empty_container {
+    let is_coerced = union_comparison_result.type_coerced.unwrap_or(false);
+    if is_coerced && (input_type.is_empty_array() || is_empty_container_construction(input_expression)) {
+        return;
+    }
+
+    let (kind, mut issue) = if is_coerced {
         let (issue_kind, annotation_msg, note_msg) = if union_comparison_result
             .type_coerced_from_nested_mixed
             .unwrap_or(false)
@@ -362,7 +367,7 @@ pub fn verify_argument_type<'arena, A>(
             )
         };
 
-        let mut issue = Issue::error(format!(
+        let issue = Issue::error(format!(
             "Argument type mismatch for {} of `{}`: expected `{}`, but provided type `{}` is less specific.",
             argument_label, target_name_str, parameter_type_str, input_type_str
         ))
@@ -373,12 +378,8 @@ pub fn verify_argument_type<'arena, A>(
             "Provide a value that more precisely matches `{parameter_type_str}` or adjust the parameter type."
         ));
 
-        if let Some(type_diff) = get_type_diff(context, parameter_type, input_type) {
-            issue = issue.with_note(type_diff);
-        }
-
-        context.collector.report_with_code(issue_kind, issue);
-    } else if !union_comparison_result.type_coerced.unwrap_or(false) {
+        (issue_kind, issue)
+    } else {
         let parameter_requires_closure = parameter_type
             .types
             .iter()
@@ -413,12 +414,8 @@ pub fn verify_argument_type<'arena, A>(
             }
         }
 
-        let kind;
-        let mut issue;
         if types_can_be_identical {
-            kind = IssueCode::PossiblyInvalidArgument;
-
-            issue = Issue::error(format!(
+            let issue = Issue::error(format!(
                 "Possible argument type mismatch for {} of `{}`: expected `{}`, but possibly received `{}`.",
                 argument_label, target_name_str, parameter_type_str, input_type_str
             ))
@@ -431,9 +428,10 @@ pub fn verify_argument_type<'arena, A>(
                 "The provided type `{input_type_str}` overlaps with `{parameter_type_str}` but is not fully contained."
             ))
             .with_help("Ensure the argument always has the expected type using checks or assertions.");
+
+            (IssueCode::PossiblyInvalidArgument, issue)
         } else {
-            kind = IssueCode::InvalidArgument;
-            issue = Issue::error(format!(
+            let issue = Issue::error(format!(
                 "Invalid argument type for {} of `{}`: expected `{}`, but found `{}`.",
                 argument_label, target_name_str, parameter_type_str, input_type_str
             ))
@@ -447,14 +445,16 @@ pub fn verify_argument_type<'arena, A>(
             .with_help(format!(
                 "Change the argument value to match `{parameter_type_str}`, or update the parameter's type declaration."
             ));
-        }
 
-        if let Some(type_diff) = get_type_diff(context, parameter_type, input_type) {
-            issue = issue.with_note(type_diff);
+            (IssueCode::InvalidArgument, issue)
         }
+    };
 
-        context.collector.report_with_code(kind, issue);
+    if let Some(type_diff) = get_type_diff(context, parameter_type, input_type) {
+        issue = issue.with_note(type_diff);
     }
+
+    context.collector.report_with_code(kind, explain_blocked_substitution(context, input_type, parameter_type, issue));
 }
 
 /// Returns `parameter_type` with each `Map` keyed by a backed enum keyed by the backing type instead, or `None` when

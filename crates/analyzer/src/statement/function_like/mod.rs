@@ -10,6 +10,7 @@ use mago_word::word;
 
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
+use mago_codex::metadata::class_like::TemplateTypes;
 use mago_codex::metadata::function_like::FunctionLikeMetadata;
 use mago_codex::metadata::parameter::FunctionLikeParameterMetadata;
 use mago_codex::metadata::ttype::TypeMetadata;
@@ -1738,86 +1739,104 @@ where
             continue;
         };
 
-        let class_name = class.original_name;
-        let expected = class.template_types.len();
-        let required = class.template_types.values().take_while(|template| template.default.is_none()).count();
-        if arguments.len() < required || arguments.len() > expected {
-            let (code, message) = if arguments.len() < required {
-                (
-                    IssueCode::MissingTemplateParameter,
-                    format!(
-                        "Too few template arguments for `{class_name}`: expected at least {required}, but found {}.",
-                        arguments.len()
-                    ),
-                )
-            } else {
-                (
-                    IssueCode::ExcessTemplateParameter,
-                    format!(
-                        "Too many template arguments for `{class_name}`: expected {expected}, but found {}.",
-                        arguments.len()
-                    ),
-                )
-            };
+        check_template_arguments(
+            context,
+            class.original_name,
+            class.name_span.unwrap_or(class.span),
+            &class.template_types,
+            arguments,
+            type_metadata.span,
+        );
+    }
+}
 
-            context.collector.report_with_code(
-                code,
-                Issue::error(message)
-                    .with_annotation(
-                        Annotation::primary(type_metadata.span)
-                            .with_message(format!("`{class_name}` is applied here.")),
-                    )
-                    .with_annotation(
-                        Annotation::secondary(class.name_span.unwrap_or(class.span))
-                            .with_message(format!("`{class_name}` declares {expected} template parameters.")),
-                    ),
-            );
+/// Reports `arguments`, applied at `span` to the templates `owner` declares at `owner_span`, when their number differs
+/// from the templates' or an argument falls outside its template's bound. Returns whether their number fits.
+pub fn check_template_arguments<A>(
+    context: &mut Context<'_, '_, A>,
+    owner: impl std::fmt::Display,
+    owner_span: Span,
+    templates: &TemplateTypes,
+    arguments: &[TUnion],
+    span: Span,
+) -> bool
+where
+    A: Arena,
+{
+    let expected = templates.len();
+    let required = templates.values().take_while(|template| template.default.is_none()).count();
+    if arguments.len() < required || arguments.len() > expected {
+        let (code, message) = if arguments.len() < required {
+            (
+                IssueCode::MissingTemplateParameter,
+                format!(
+                    "Too few template arguments for `{owner}`: expected at least {required}, but found {}.",
+                    arguments.len()
+                ),
+            )
+        } else {
+            (
+                IssueCode::ExcessTemplateParameter,
+                format!("Too many template arguments for `{owner}`: expected {expected}, but found {}.", arguments.len()),
+            )
+        };
+
+        context.collector.report_with_code(
+            code,
+            Issue::error(message)
+                .with_annotation(Annotation::primary(span).with_message(format!("`{owner}` is applied here.")))
+                .with_annotation(
+                    Annotation::secondary(owner_span)
+                        .with_message(format!("`{owner}` declares {expected} template parameters.")),
+                ),
+        );
+
+        return false;
+    }
+
+    let codebase = context.codebase;
+    for (argument, (template_name, template)) in arguments.iter().zip(templates.iter()) {
+        // An explicit `mixed` argument is the written form of "any argument", which Mago accepts
+        // for every bound.
+        if argument.is_mixed() || template.constraint.is_mixed() || template.constraint.has_template_types() {
             continue;
         }
 
-        for (argument, (template_name, template)) in arguments.iter().zip(class.template_types.iter()) {
-            // An explicit `mixed` argument is the written form of "any argument", which Mago accepts
-            // for every bound.
-            if argument.is_mixed() || template.constraint.is_mixed() || template.constraint.has_template_types() {
-                continue;
-            }
+        let options = TypeExpansionOptions::default();
+        let mut expanded_argument = argument.clone();
+        expander::expand_union(codebase, &mut expanded_argument, &options);
+        let mut constraint = template.constraint.clone();
+        expander::expand_union(codebase, &mut constraint, &options);
+        if union_comparator::is_contained_by(
+            codebase,
+            &expanded_argument,
+            &constraint,
+            false,
+            false,
+            false,
+            &mut ComparisonResult::default(),
+        ) {
+            continue;
+        }
 
-            let options = TypeExpansionOptions::default();
-            let mut expanded_argument = argument.clone();
-            expander::expand_union(codebase, &mut expanded_argument, &options);
-            let mut constraint = template.constraint.clone();
-            expander::expand_union(codebase, &mut constraint, &options);
-            if union_comparator::is_contained_by(
-                codebase,
-                &expanded_argument,
-                &constraint,
-                false,
-                false,
-                false,
-                &mut ComparisonResult::default(),
-            ) {
-                continue;
-            }
-
-            let argument_id = expanded_argument.get_id();
-            let constraint_id = constraint.get_id();
-            context.collector.report_with_code(
-                IssueCode::TemplateConstraintViolation,
-                Issue::error(format!(
-                    "Template argument `{argument_id}` does not satisfy `{class_name}`'s `{template_name}`."
-                ))
+        let argument_id = expanded_argument.get_id();
+        let constraint_id = constraint.get_id();
+        context.collector.report_with_code(
+            IssueCode::TemplateConstraintViolation,
+            Issue::error(format!("Template argument `{argument_id}` does not satisfy `{owner}`'s `{template_name}`."))
                 .with_annotation(
-                    Annotation::primary(type_metadata.span)
+                    Annotation::primary(span)
                         .with_message(format!("`{argument_id}` is supplied for `{template_name}` here...")),
                 )
                 .with_annotation(
-                    Annotation::secondary(class.name_span.unwrap_or(class.span))
+                    Annotation::secondary(owner_span)
                         .with_message(format!("...but `{template_name}` is bounded by `{constraint_id}`.")),
                 )
                 .with_help(format!("Supply a type contained by `{constraint_id}`.")),
-            );
-        }
+        );
     }
+
+    true
 }
 
 /// Reports each PHP# `Map` written in `type_union` whose key type is a class or an enum without a backing value.
