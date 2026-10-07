@@ -1611,6 +1611,22 @@ fn a_qualified_name_is_a_parse_error_that_names_the_import() {
 }
 
 #[test]
+fn a_qualified_null_true_or_false_is_a_parse_error_that_names_the_keyword() {
+    for (code, keyword) in [
+        ("class Report\n{\n    Any? run()\n    {\n        return \\null;\n    }\n}\n", "null"),
+        ("class Report\n{\n    bool run()\n    {\n        return \\true;\n    }\n}\n", "true"),
+        ("class Report\n{\n    bool run()\n    {\n        return \\false;\n    }\n}\n", "false"),
+        ("class Report\n{\n    bool run()\n    {\n        return \\FALSE;\n    }\n}\n", "false"),
+    ] {
+        let arena = LocalArena::new();
+        let program = parse(&arena, "src/Report.sharp", code);
+
+        let messages: Vec<String> = program.errors.iter().map(ToString::to_string).collect();
+        assert_eq!(messages, [format!("A `\\` name is PHP syntax: write `{keyword}`")], "{code}");
+    }
+}
+
+#[test]
 fn a_method_written_with_function_is_a_parse_error() {
     let arena = LocalArena::new();
     let program =
