@@ -257,20 +257,20 @@ fn analyze_reports_a_class_that_extends_a_static_class() {
     );
 }
 
-/// Semantics refuses an `extern` method outside the namespace `Sharp`, and the analyzer refuses one in a project file
-/// under it, which semantics cannot tell from the standard library.
+/// Only the standard library declares native bodies, so a project file declares no `extern` method, whatever its
+/// namespace.
 #[test]
 fn analyze_reports_an_extern_method_in_a_project_file() {
-    for (namespace, code) in [("App", "semantics"), ("Sharp.Mine", "native-body-outside-library")] {
+    for namespace in ["App", "Sharp.Mine"] {
         let page = format!(
             "namespace {namespace};\n\npublic static class Page\n{{\n    public static extern string slug(string title);\n}}\n"
         );
 
         assert_eq!(
             page_errors(&page),
-            [format!(
-                "src/App/Page.sharp:5:33:error - {code}: Only the standard library declares native bodies: give `slug` a body."
-            )],
+            [
+                "src/App/Page.sharp:5:33:error - native-body-outside-library: Only the standard library declares native bodies: give `slug` a body."
+            ],
             "{namespace}"
         );
     }

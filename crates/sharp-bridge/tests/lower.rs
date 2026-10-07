@@ -2575,6 +2575,34 @@ fn an_extern_void_method_calls_without_return_and_forwards_a_variadic_parameter_
     );
 }
 
+/// The analyzer refuses an `extern` method in a project file, and the engine does not run the analyzer. A class outside
+/// `Sharp` keeps its whole name in the native function's name, which the engine never registers, so the call fails
+/// at run time.
+#[test]
+fn an_extern_method_outside_sharp_calls_a_native_function_named_after_its_whole_class_name() {
+    let lowered = Lowered::named(
+        "src/App/Tools.sharp",
+        "namespace App;\n\npublic static class Tools\n{\n    public static extern string slug(string title);\n}\n",
+    );
+    assert_eq!(lowered.diagnostics(), Vec::<String>::new());
+
+    let method =
+        lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("the method's node");
+
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 2)),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CALL
+                  ZVAL "Sharp\\Internal\\App\\Tools\\slug"
+                  ARG_LIST
+                    VAR
+                      ZVAL "title"
+        "#}
+    );
+}
+
 /// ```php
 /// interface Linkable extends \Lib\Named { }
 /// class Page implements \Lib\Entity, \App\Tenant\Linkable { }

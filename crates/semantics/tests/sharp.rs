@@ -1171,34 +1171,36 @@ fn a_php_file_keeps_refusing_a_static_class() {
     );
 }
 
+/// Only the analyzer knows which files are the standard library's, so it decides where an `extern` method goes.
 #[test]
-fn an_extern_method_outside_the_sharp_namespace_is_an_error() {
+fn an_extern_method_outside_the_sharp_namespace_is_left_to_the_analyzer() {
     for namespace in ["App", "Sharpen.Text", "App.Sharp"] {
         let code = leak(format!(
             "namespace {namespace};\n\npublic static class Text\n{{\n    public static extern string slug(string title);\n}}\n"
         ));
 
-        assert_eq!(
-            issues(code),
-            ["5:33 Only the standard library declares native bodies: give `slug` a body."],
-            "{namespace}"
-        );
+        assert_eq!(issues(code), Vec::<String>::new(), "{namespace}");
     }
 }
 
 #[test]
-fn an_extern_method_is_public_static_in_a_static_class_with_no_body() {
-    let code = "namespace Sharp.Text;\n\npublic class Plain\n{\n    public static extern string slug(string title);\n}\n\npublic static class Text\n{\n    private static extern string trim(string title);\n    public static extern string pad(string title) => title;\n    public extern string cut(string title);\n}\n";
+fn an_extern_method_is_public_static_in_a_static_class_with_no_body_in_any_namespace() {
+    for namespace in ["Sharp.Text", "App"] {
+        let code = leak(format!(
+            "namespace {namespace};\n\npublic class Plain\n{{\n    public static extern string slug(string title);\n}}\n\npublic static class Text\n{{\n    private static extern string trim(string title);\n    public static extern string pad(string title) => title;\n    public extern string cut(string title);\n}}\n"
+        ));
 
-    assert_eq!(
-        issues(code),
-        [
-            "5:33 An `extern` method is `public static`, in a static class, with no body.",
-            "10:34 An `extern` method is `public static`, in a static class, with no body.",
-            "11:33 An `extern` method is `public static`, in a static class, with no body.",
-            "12:26 An `extern` method is `public static`, in a static class, with no body.",
-        ]
-    );
+        assert_eq!(
+            issues(code),
+            [
+                "5:33 An `extern` method is `public static`, in a static class, with no body.",
+                "10:34 An `extern` method is `public static`, in a static class, with no body.",
+                "11:33 An `extern` method is `public static`, in a static class, with no body.",
+                "12:26 An `extern` method is `public static`, in a static class, with no body.",
+            ],
+            "{namespace}"
+        );
+    }
 }
 
 #[test]

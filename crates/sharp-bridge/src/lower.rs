@@ -615,10 +615,12 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// The statement an `extern` method's body runs, as php-src's grammar builds
     /// `return \Sharp\Internal\Text\Text\slug($title);`: a call of the native function the engine registers under
     /// `Sharp\Internal`, then the class's full name after `Sharp\`, then the method's name. It passes each parameter on,
-    /// a variadic one as a spread, and returns the result unless the method is `void`.
+    /// a variadic one as a spread, and returns the result unless the method is `void`. A class outside `Sharp`, which
+    /// the analyzer refuses, keeps its whole name, so the engine registers no such function and the call fails.
     fn native_call(&mut self, method: &Method, class: &[u8]) -> u32 {
-        let Some(class_in_library) = class.get(b"Sharp\\".len()..) else {
-            unreachable!("check_slice keeps an `extern` method under the namespace `Sharp`");
+        let class_in_library = match class.split_at_checked(b"Sharp\\".len()) {
+            Some((root, rest)) if root.eq_ignore_ascii_case(b"Sharp\\") => rest,
+            _ => class,
         };
         let line = self.line(method.name.span);
         let function = [b"Sharp\\Internal\\".as_slice(), class_in_library, b"\\", method.name.value].concat();

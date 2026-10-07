@@ -3222,19 +3222,26 @@ fn a_class_that_extends_a_static_class_is_an_error() {
     assert_eq!(issues(("src/App/Slug.sharp", code), &[TEXT]), ["5:21 extend-final-class"]);
 }
 
-/// Semantics takes an `extern` method under the namespace `Sharp`, because the engine compiles the standard library
-/// from `vendor/` without knowing it is vendored. The analyzer knows a project file, and refuses it there. Semantics
-/// refuses one outside `Sharp`, so the analyzer leaves it.
+/// Semantics takes a well-formed `extern` method in any namespace, because the engine compiles the standard library
+/// from `vendor/` without knowing it is vendored. The analyzer knows a project file, and refuses it there.
 #[test]
-fn an_extern_method_in_a_project_file_is_an_error_even_under_sharp() {
-    let code = "namespace Sharp.Mine;\n\npublic static class Text\n{\n    public static extern string slug(string title);\n}\n";
-    let outside =
-        "namespace App;\n\npublic static class Text\n{\n    public static extern string slug(string title);\n}\n";
-
-    assert_eq!(
-        messages(("src/Sharp/Mine/Text.sharp", code), &[]),
-        ["Only the standard library declares native bodies: give `slug` a body."]
-    );
-    assert_eq!(issues(("src/Sharp/Mine/Text.sharp", code), &[]), ["5:33 native-body-outside-library"]);
-    assert_eq!(issues(("src/App/Text.sharp", outside), &[]), Vec::<String>::new());
+fn an_extern_method_in_a_project_file_is_an_error_in_any_namespace() {
+    for analyzed in [
+        (
+            "src/Sharp/Mine/Text.sharp",
+            "namespace Sharp.Mine;\n\npublic static class Text\n{\n    public static extern string slug(string title);\n}\n",
+        ),
+        (
+            "src/App/Text.sharp",
+            "namespace App;\n\npublic static class Text\n{\n    public static extern string slug(string title);\n}\n",
+        ),
+    ] {
+        assert_eq!(
+            messages(analyzed, &[]),
+            ["Only the standard library declares native bodies: give `slug` a body."],
+            "{}",
+            analyzed.0
+        );
+        assert_eq!(issues(analyzed, &[]), ["5:33 native-body-outside-library"], "{}", analyzed.0);
+    }
 }

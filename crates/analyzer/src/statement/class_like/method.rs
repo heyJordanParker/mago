@@ -86,11 +86,10 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
             return Ok(());
         }
 
-        // Semantics takes a PHP# `extern` method in the namespace `Sharp`, and refuses one elsewhere, because the engine
-        // compiles the standard library from `vendor/` as any other code. Only the analyzer knows a project file, which
-        // spec section 29 keeps from declaring a native body.
+        // Spec section 29 keeps native bodies to the standard library. The engine compiles the library from `vendor/` as
+        // any other code, so only the analyzer knows a project file, and it refuses a PHP# `extern` method there in any
+        // namespace.
         if context.source_file.file_type.is_host()
-            && class_like_metadata.name.as_bytes().starts_with(b"sharp\\")
             && self.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Extern(_)))
         {
             context.collector.report_with_code(

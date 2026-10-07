@@ -160,9 +160,8 @@ const ANY: &[u8] = b"Any";
 ///   compared ignoring case, which PHP# gives to the constructor, nor, compared ignoring case, a property's of its
 ///   class.
 /// - An `extern` method, `public static extern string slug(string title);`, whose body is native, compiled into the
-///   engine, as spec section 29 writes it. Only the standard library declares one: a `public static` method of a
-///   static class whose namespace is `Sharp` or below it, with no body. The engine compiles the library's files from
-///   `vendor/` as any other, so the namespace is all this check knows of them.
+///   engine, as spec section 29 writes it: a `public static` method of a static class, with no body. Only the
+///   standard library declares one, and the analyzer refuses one in a project file.
 /// - The constructor: a method named exactly after its class, without a return type and not `static`. A method
 ///   without a return type named otherwise is an error. A constructor parameter with an access modifier declares a
 ///   member: a field when `private` or `protected` without accessors, and a property with accessors, which follow the
@@ -263,8 +262,8 @@ const ANY: &[u8] = b"Any";
 /// Thirteen more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
 /// - `new` on a static class, in `analyze_class_instantiation`, and a class that extends one, in
 ///   `check_class_like_extends`, because the static class may be another file's.
-/// - an `extern` method in a project file, even under the namespace `Sharp`, in `Method`'s `analyze`, because only the
-///   analyzer knows the file is the project's and not the standard library's.
+/// - an `extern` method in a project file, in any namespace, in `Method`'s `analyze`, because only the analyzer knows
+///   the file is the project's and not the standard library's.
 /// - `+` that may join a string with any other value, which spec section 18 makes an error, in
 ///   `analyze_arithmetic_operation`. `+` on two strings joins them.
 /// - a condition of `if`, `while`, `do … while`, `for` or `? :`, or an operand of `&&`, `||` or `!`, that is not
@@ -1187,33 +1186,21 @@ fn is_extern(method: &Method) -> bool {
     method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Extern(_)))
 }
 
-/// Whether the slice has a method's `extern`, reporting it when it does not. Only the standard library, whose
-/// namespace is `Sharp` or below it, declares native bodies, and an `extern` method is `public static`, in a static
-/// class, with no body. The engine compiles the library's files from `vendor/` as any other, so the namespace is all
-/// this check knows of them, and the analyzer refuses an `extern` method in a project file under `Sharp`.
+/// Whether the slice has a method's `extern`, reporting it when it does not: an `extern` method is `public static`, in
+/// a static class, with no body. Only the standard library declares native bodies, but the engine compiles the
+/// library's files from `vendor/` as any other, so the analyzer, which knows a project file, refuses one there.
 fn check_extern(method: &Method, context: &mut Context<'_, '_, '_>) -> bool {
-    if !is_extern(method) {
+    if !is_extern(method)
+        || (enclosing_class(context.program, method.span()).is_some_and(|class| class.is_static)
+            && method.modifiers.contains_public()
+            && method.is_static()
+            && matches!(method.body, MethodBody::Abstract(_)))
+    {
         return true;
     }
 
-    let class = enclosing_class(context.program, method.span());
-    let in_library = class.is_some_and(|class| {
-        context.get_name(class.name.span.start).get(..6).is_some_and(|root| root.eq_ignore_ascii_case(b"Sharp\\"))
-    });
-    let message = if !in_library {
-        format!("Only the standard library declares native bodies: give `{}` a body.", BytesDisplay(method.name.value))
-    } else if class.is_some_and(|class| class.is_static)
-        && method.modifiers.contains_public()
-        && method.is_static()
-        && matches!(method.body, MethodBody::Abstract(_))
-    {
-        return true;
-    } else {
-        "An `extern` method is `public static`, in a static class, with no body.".to_owned()
-    };
-
     context.report(
-        Issue::error(message)
+        Issue::error("An `extern` method is `public static`, in a static class, with no body.")
             .with_annotation(Annotation::primary(method.name.span).with_message("Declared `extern` here.")),
     );
 
