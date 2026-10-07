@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 use mago_allocator::LocalArena;
@@ -38,6 +39,7 @@ use mago_syntax::cst::Expression;
 use mago_syntax::cst::For;
 use mago_syntax::cst::ForBody;
 use mago_syntax::cst::ForOfTarget;
+use mago_syntax::cst::ForOfVariable;
 use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::FunctionLikeParameter;
 use mago_syntax::cst::FunctionLikeParameterList;
@@ -168,6 +170,7 @@ use crate::sharp_kind::SHARP_AST_STMT_LIST;
 use crate::sharp_kind::SHARP_AST_THROW;
 use crate::sharp_kind::SHARP_AST_TRY;
 use crate::sharp_kind::SHARP_AST_TYPE;
+use crate::sharp_kind::SHARP_AST_TYPE_INTERSECTION;
 use crate::sharp_kind::SHARP_AST_TYPE_UNION;
 use crate::sharp_kind::SHARP_AST_UNARY_MINUS;
 use crate::sharp_kind::SHARP_AST_UNARY_OP;
@@ -325,6 +328,9 @@ struct Lowering<'lowering, 'arena> {
     in_constant_expression: bool,
     /// The name of the property whose accessor body is being lowered, which `field` reads and writes.
     property: Vec<u8>,
+    /// The type PHP writes for each type parameter, by the offset of its declared name: its bound, or `mixed` without
+    /// one.
+    type_parameters: HashMap<u32, PhpType<'arena>>,
 }
 
 impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
@@ -340,6 +346,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             loop_depth: 0,
             in_constant_expression: false,
             property: Vec::new(),
+            type_parameters: HashMap::default(),
         }
     }
 
@@ -354,12 +361,20 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
     /// `declare(strict_types=1);` first, then the namespaces and classes. Imports are not lowered: every class name
     /// in the tree is fully qualified.
-    fn program(mut self, checked: &CheckedProgram) -> Box<Unit> {
-        for lambda in Node::Program(checked.program()).filter_map(|node| match node {
-            Node::ArrowFunction(arrow_function) => Some(arrow_function.span()),
-            Node::Closure(closure) => Some(closure.span()),
-            _ => None,
+    fn program(mut self, checked: &CheckedProgram<'arena>) -> Box<Unit> {
+        for node in Node::Program(checked.program()).filter_map(|node| {
+            matches!(node, Node::ArrowFunction(_) | Node::Closure(_) | Node::TypeParameter(_)).then_some(*node)
         }) {
+            let lambda = match node {
+                Node::TypeParameter(parameter) => {
+                    let php_type = parameter.bound.as_ref().map_or(PhpType::Mixed, |bound| self.erase(&bound.hint));
+                    self.type_parameters.insert(parameter.name.span.start.offset, php_type);
+
+                    continue;
+                }
+                lambda => lambda.span(),
+            };
+
             for (_, local) in self.names.captures(&lambda) {
                 if self.names.is_written(local) {
                     self.by_reference.insert(local.declaration.start.offset);
@@ -828,50 +843,120 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_ASSIGN, 0, line, &[property, value])
     }
 
-    /// A built-in type is written unqualified, and a class by its full name. `Self` is a `TYPE` node of `IS_STATIC`, as
-    /// php-src's grammar builds `static`. A `List` or `Map` is a PHP array, so its type is `array`, as php-src's grammar
-    /// builds it. A function type runs as PHP's `\Closure`. `Any` and `Any?` are PHP's `mixed`, which already holds
-    /// null. Any other nullable type is its type with `ZEND_TYPE_NULLABLE`, as
-    /// php-src's grammar builds `?int`.
+    /// A type is the type PHP writes for it once generics are erased, as [`Lowering::erase`] gives it.
+    ///
+    /// A union is one `TYPE_UNION` list of its types in the order they are written, on the line of its first type, as
+    /// php-src's `union_type` rule builds `int|string`. A type another type of the union holds is left out, because PHP
+    /// refuses a union that names a type twice or an intersection beside one of its classes, so a union that holds
+    /// `mixed` is `mixed`. One type left is that type alone.
+    ///
+    /// `?` after a type, or after a union in parentheses, adds null, which `mixed` already holds, and PHP refuses
+    /// `?mixed`. One type takes `ZEND_TYPE_NULLABLE`, as php-src's grammar builds `?int`. An intersection, which PHP
+    /// refuses after `?`, or several types end the `TYPE_UNION` list with the name `null` on the line of the `?`, as
+    /// php-src builds `int|string|null` and the DNF type `(A&B)|null`.
     fn hint(&mut self, hint: &Hint) -> u32 {
+        let (union, question_mark) = match hint {
+            Hint::Nullable(NullableHint { question_mark, hint: Hint::Parenthesized(parenthesized) }) => {
+                (parenthesized.hint, Some(*question_mark))
+            }
+            Hint::Nullable(nullable) => (nullable.hint, Some(nullable.question_mark)),
+            _ => (hint, None),
+        };
+
+        let mut types: Vec<(PhpType, u32)> = Vec::new();
+        for member in union_members(union) {
+            let php_type = self.erase(member);
+            if types.iter().any(|(kept, _)| kept.holds(&php_type)) {
+                continue;
+            }
+
+            types.retain(|(kept, _)| !php_type.holds(kept));
+            types.push((php_type, self.line(member)));
+        }
+
+        let mut nodes: Vec<u32> = types.iter().map(|(php_type, line)| self.php_type(php_type, *line)).collect();
+        let question_mark = question_mark.filter(|_| !matches!(types.as_slice(), [(PhpType::Mixed, _)]));
+        if let [single] = nodes[..] {
+            if question_mark.is_none() {
+                return single;
+            }
+
+            if self.nodes[single as usize].kind != SHARP_AST_TYPE_INTERSECTION {
+                self.nodes[single as usize].attr |= ZEND_TYPE_NULLABLE;
+
+                return single;
+            }
+        }
+
+        if let Some(question_mark) = question_mark {
+            nodes.push(self.string(ZEND_NAME_NOT_FQ, self.line(question_mark), b"null"));
+        }
+        let line = self.nodes[nodes[0] as usize].line;
+
+        self.node(SHARP_AST_TYPE_UNION, 0, line, &nodes)
+    }
+
+    /// The type PHP writes for a type that is not a union, with generics erased. A built-in type is its name, and `Any`
+    /// is `mixed`. A class is its full name. `Self` is `static`. A `List` or `Map` is a PHP array, so its type is
+    /// `array`. A generic class type is its class, and `Class<T>` is `string`, because plain PHP receives a class
+    /// value as its class-name string (spec section 25). A function type runs as PHP's `\Closure`. A type parameter is
+    /// its bound, or `mixed` without one, as the PHP twin written with `@template` declares it, and the classes a bound
+    /// joins with `&` are one intersection.
+    fn erase<'hint>(&self, hint: &'hint Hint<'_>) -> PhpType<'hint>
+    where
+        'arena: 'hint,
+    {
         match hint {
             Hint::Integer(name) | Hint::Float(name) | Hint::Bool(name) | Hint::String(name) | Hint::Void(name) => {
-                self.string(ZEND_NAME_NOT_FQ, self.line(name.span), name.value)
+                PhpType::Named(name.value)
             }
-            Hint::Mixed(any) => self.string(ZEND_NAME_NOT_FQ, self.line(any.span), b"mixed"),
-            Hint::Identifier(class) => self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class)),
-            Hint::Self_(keyword) => self.node(SHARP_AST_TYPE, IS_STATIC, self.line(keyword), &[]),
-            Hint::Generic(generic) => self.node(SHARP_AST_TYPE, IS_ARRAY, self.line(generic), &[]),
-            Hint::Function(function) => self.string(ZEND_NAME_FQ, self.line(function), b"Closure"),
-            Hint::Nullable(NullableHint { hint: any @ Hint::Mixed(_), .. }) => self.hint(any),
-            Hint::Nullable(NullableHint { question_mark, hint: Hint::Parenthesized(parenthesized) }) => {
-                self.union(parenthesized.hint, Some(*question_mark))
-            }
-            Hint::Nullable(nullable) => {
-                let index = self.hint(nullable.hint);
-                self.nodes[index as usize].attr |= ZEND_TYPE_NULLABLE;
+            Hint::Mixed(_) => PhpType::Mixed,
+            Hint::Identifier(name) => match self.names.binding(name) {
+                Some(Binding::TypeParameter { declaration }) => {
+                    match self.type_parameters.get(&declaration.start.offset) {
+                        Some(php_type) => php_type.clone(),
+                        None => unreachable!("the binder binds `{name}` to a type parameter the file declares"),
+                    }
+                }
+                _ => PhpType::Classes(vec![self.names.get(name)]),
+            },
+            Hint::Intersection(intersection) => {
+                let (PhpType::Classes(mut classes), PhpType::Classes(right)) =
+                    (self.erase(intersection.left), self.erase(intersection.right))
+                else {
+                    unreachable!("check_slice joins only classes with `&`");
+                };
+                classes.extend(right);
 
-                index
+                PhpType::Classes(classes)
             }
-            Hint::Union(_) => self.union(hint, None),
+            Hint::Self_(_) => PhpType::Keyword(IS_STATIC),
+            Hint::Generic(generic) => match generic.name.value {
+                b"List" | b"Map" => PhpType::Keyword(IS_ARRAY),
+                b"Class" => PhpType::Named(b"string"),
+                _ => PhpType::Classes(vec![self.names.get(&generic.name)]),
+            },
+            Hint::Function(_) => PhpType::Classes(vec![b"Closure"]),
             _ => unreachable!("check_slice refuses the type `{hint}`"),
         }
     }
 
-    /// A union is one `TYPE_UNION` list of its types in the order they are written, on the line of its first type, as
-    /// php-src's `union_type` rule builds `int|string`. A union in parentheses with `?` after it, `(int|string)?`,
-    /// ends its list with the name `null` on the line of the `?`, as php-src builds `int|string|null`.
-    fn union(&mut self, union: &Hint, question_mark: Option<Span>) -> u32 {
-        let mut types = Vec::new();
-        for member in union_members(union) {
-            types.push(self.hint(member));
+    /// The node of a type PHP writes, on `line`: a built-in type by its name with `ZEND_NAME_NOT_FQ`, a keyword type as
+    /// a `TYPE` node of its type code, a class by its full name with `ZEND_NAME_FQ`, and several classes as the
+    /// `TYPE_INTERSECTION` list php-src's `intersection_type` rule builds for `A&B`.
+    fn php_type(&mut self, php_type: &PhpType, line: u32) -> u32 {
+        match php_type {
+            PhpType::Mixed => self.string(ZEND_NAME_NOT_FQ, line, b"mixed"),
+            PhpType::Named(name) => self.string(ZEND_NAME_NOT_FQ, line, name),
+            PhpType::Keyword(code) => self.node(SHARP_AST_TYPE, *code, line, &[]),
+            PhpType::Classes(classes) => {
+                let classes: Vec<u32> = classes.iter().map(|class| self.string(ZEND_NAME_FQ, line, class)).collect();
+                match classes[..] {
+                    [class] => class,
+                    _ => self.node(SHARP_AST_TYPE_INTERSECTION, 0, line, &classes),
+                }
+            }
         }
-        if let Some(question_mark) = question_mark {
-            types.push(self.string(ZEND_NAME_NOT_FQ, self.line(question_mark), b"null"));
-        }
-        let line = self.nodes[types[0] as usize].line;
-
-        self.node(SHARP_AST_TYPE_UNION, 0, line, &types)
     }
 
     fn block(&mut self, block: &Block) -> u32 {
@@ -906,25 +991,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 };
                 let mut body = self.loop_body(for_of.body);
 
-                // A `Map` keyed by a backed enum holds each key as its backing value, and the analyzer requires a loop
-                // over one to name the enum as its key's type, so a key that names a class reads back as its case.
-                // PHP stores an all-digit `string` key as an `int`, so a key written `string` reads back through
-                // `(string)`, as spec section 12 reads a `Map<string, V>` key.
                 if let ForOfTarget::KeyValue(pair) = &for_of.target
-                    && let Some(hint @ (Hint::Identifier(_) | Hint::String(_))) = pair.key.hint
+                    && let Some(read_back) = self.read_back(&pair.key)
                 {
                     let line = self.line(&pair.key);
-                    let stored_key = self.variable(pair.key.name.span, pair.key.name.value);
-                    let read_back = match hint {
-                        Hint::Identifier(class) => {
-                            let class = self.string(ZEND_NAME_FQ, line, self.names.get(class));
-                            let from = self.string(0, line, b"from");
-                            let arguments = self.node(SHARP_AST_ARG_LIST, 0, line, &[stored_key]);
-
-                            self.node(SHARP_AST_STATIC_CALL, 0, line, &[class, from, arguments])
-                        }
-                        _ => self.node(SHARP_AST_CAST, IS_STRING, line, &[stored_key]),
-                    };
                     let key = self.variable(pair.key.name.span, pair.key.name.value);
                     let assignment = self.node(SHARP_AST_ASSIGN, 0, line, &[key, read_back]);
 
@@ -962,6 +1032,38 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.loop_depth -= 1;
 
         body
+    }
+
+    /// What a loop key reads back as from the key PHP stores, or none when it is the stored key. A `Map` keyed by a
+    /// backed enum holds each key as its backing value, and the analyzer requires a loop over one to name the enum as
+    /// its key's type, so a key whose type erases to one class, as a type parameter erases to its bound, reads back as
+    /// its case. PHP stores an all-digit `string` key as an `int`, so a key written `string` reads back through
+    /// `(string)`, as spec section 12 reads a `Map<string, V>` key.
+    fn read_back(&mut self, key: &ForOfVariable) -> Option<u32> {
+        let line = self.line(key);
+
+        match key.hint? {
+            Hint::String(_) => {
+                let stored_key = self.variable(key.name.span, key.name.value);
+
+                Some(self.node(SHARP_AST_CAST, IS_STRING, line, &[stored_key]))
+            }
+            hint @ Hint::Identifier(_) => {
+                let PhpType::Classes(classes) = self.erase(hint) else {
+                    return None;
+                };
+                let [class] = classes[..] else {
+                    return None;
+                };
+                let stored_key = self.variable(key.name.span, key.name.value);
+                let class = self.string(ZEND_NAME_FQ, line, class);
+                let from = self.string(0, line, b"from");
+                let arguments = self.node(SHARP_AST_ARG_LIST, 0, line, &[stored_key]);
+
+                Some(self.node(SHARP_AST_STATIC_CALL, 0, line, &[class, from, arguments]))
+            }
+            _ => None,
+        }
     }
 
     /// A `let` or `const` local is the assignment of its value to its variable. Spec section 3 gives each loop pass
@@ -1646,6 +1748,36 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
     fn line(&self, node: impl HasSpan) -> u32 {
         self.lines.line(node.span().start.offset)
+    }
+}
+
+/// The type PHP writes for a PHP# type that is not a union, once generics are erased.
+#[derive(Clone)]
+enum PhpType<'name> {
+    /// `mixed`, which holds every value.
+    Mixed,
+    /// A built-in type php-src's grammar reads as a name, such as `int` or `string`.
+    Named(&'name [u8]),
+    /// A type php-src's grammar reads as a keyword and builds as a `TYPE` node of its type code: `IS_ARRAY` for
+    /// `array`, or `IS_STATIC` for `static`.
+    Keyword(u32),
+    /// One class, or the classes of an intersection, each by its full name.
+    Classes(Vec<&'name [u8]>),
+}
+
+impl PhpType<'_> {
+    /// Whether every value of `other` is a value of this type, so a union that holds this type needs no `other`. Names
+    /// are compared as the engine compares them, ignoring case.
+    fn holds(&self, other: &PhpType) -> bool {
+        match (self, other) {
+            (PhpType::Mixed, _) => true,
+            (PhpType::Named(name), PhpType::Named(other)) => name.eq_ignore_ascii_case(other),
+            (PhpType::Keyword(code), PhpType::Keyword(other)) => code == other,
+            (PhpType::Classes(classes), PhpType::Classes(others)) => {
+                classes.iter().all(|class| others.iter().any(|other| class.eq_ignore_ascii_case(other)))
+            }
+            _ => false,
+        }
     }
 }
 

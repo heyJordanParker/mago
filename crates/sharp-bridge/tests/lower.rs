@@ -1817,6 +1817,376 @@ fn a_function_type_is_the_closure_class() {
 }
 
 /// ```php
+/// /** @template TItem of \Lib\DatabaseEntity */
+/// class PaginatedList
+/// {
+///     /** @var list<TItem> */
+///     private array $rows;
+///
+///     public function __construct(array $rows)
+///     {
+///         $this->rows = $rows;
+///     }
+///
+///     public function first(): \Lib\DatabaseEntity { return $this->rows[0]; }
+///
+///     public function find(int $id): ?\Lib\DatabaseEntity { return null; }
+/// }
+/// ```
+///
+/// Generics are erased, so a type parameter is the type of its bound, its list lowers to nothing, and a `List` of it
+/// is still `array`, as the PHP twin a developer writes with `@template` declares it.
+#[test]
+fn a_type_parameter_is_its_bound_and_its_list_lowers_to_nothing() {
+    let lowered = Lowered::new(indoc! {"
+        namespace App.Tenant;
+
+        import Lib.DatabaseEntity;
+
+        public class PaginatedList<TItem : DatabaseEntity>
+        {
+            private List<TItem> rows;
+
+            public PaginatedList(List<TItem> rows)
+            {
+                this.rows = rows;
+            }
+
+            public TItem first() => this.rows[0];
+
+            public TItem? find(int id) { return null; }
+        }
+    "});
+    let tree = lowered.tree();
+
+    assert_eq!(
+        lowered.render(lowered.child(lowered.unit().root, 2)),
+        indoc! {r#"
+            CLASS "PaginatedList" @5-17
+              null
+              null
+              STMT_LIST
+                PROP_GROUP [4]
+                  TYPE [7]
+                  PROP_DECL
+                    PROP_ELEM
+                      ZVAL "rows"
+                      null
+                      null
+                      null
+                  null
+                METHOD [1] "__construct" @9-12
+                  PARAM_LIST
+                    PARAM
+                      TYPE [7]
+                      ZVAL "rows"
+                      null
+                      null
+                      null
+                      null
+                  null
+                  STMT_LIST
+                    ASSIGN
+                      PROP
+                        VAR
+                          ZVAL "this"
+                        ZVAL "rows"
+                      VAR
+                        ZVAL "rows"
+                  null
+                  null
+                METHOD [1] "first" @14-14
+                  PARAM_LIST
+                  null
+                  STMT_LIST
+                    RETURN
+                      DIM
+                        PROP
+                          VAR
+                            ZVAL "this"
+                          ZVAL "rows"
+                        ZVAL 0
+                  ZVAL "Lib\\DatabaseEntity"
+                  null
+                METHOD [1] "find" @16-16
+                  PARAM_LIST
+                    PARAM
+                      ZVAL [1] "int"
+                      ZVAL "id"
+                      null
+                      null
+                      null
+                      null
+                  null
+                  STMT_LIST
+                    RETURN
+                      ZVAL null
+                  ZVAL [256] "Lib\\DatabaseEntity"
+                  null
+              null
+              null
+        "#}
+    );
+    assert!(!tree.contains("TItem"), "{tree}");
+}
+
+/// ```php
+/// /** @template T */
+/// public function first(array $items): mixed { return $items[0]; }
+/// /** @template T */
+/// public function maybe(): mixed { return null; }
+/// /** @template T */
+/// public function pick(mixed $a): mixed { return $a; }
+/// ```
+///
+/// A type parameter without a bound is `mixed`. PHP refuses `?mixed` and `mixed` in a union, and `mixed` already holds
+/// null and every other type, so `T?` and a union that holds `T` are `mixed` too.
+#[test]
+fn a_type_parameter_without_a_bound_is_mixed_alone_nullable_or_in_a_union() {
+    let lowered = Lowered::new(indoc! {"
+        class Report
+        {
+            public T first<T>(List<T> items) => items[0];
+
+            public T? maybe<T>() { return null; }
+
+            public T|int pick<T>(T a) { return a; }
+        }
+    "});
+    let members = lowered.child(lowered.child(lowered.unit().root, 1), 2);
+    let signature = |index: u32| {
+        let method = lowered.child(members, index);
+
+        format!("{}{}", lowered.render(lowered.child(method, 0)), lowered.render(lowered.child(method, 3)))
+    };
+
+    assert_eq!(
+        signature(0),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                TYPE [7]
+                ZVAL "items"
+                null
+                null
+                null
+                null
+            ZVAL [1] "mixed"
+        "#}
+    );
+    assert_eq!(
+        signature(1),
+        indoc! {r#"
+            PARAM_LIST
+            ZVAL [1] "mixed"
+        "#}
+    );
+    assert_eq!(
+        signature(2),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                ZVAL [1] "mixed"
+                ZVAL "a"
+                null
+                null
+                null
+                null
+            ZVAL [1] "mixed"
+        "#}
+    );
+}
+
+/// ```php
+/// /** @template TItem of \Lib\DatabaseEntity&\Lib\Shareable */
+/// public function share(\Lib\DatabaseEntity&\Lib\Shareable $item): (\Lib\DatabaseEntity&\Lib\Shareable)|null
+/// ```
+///
+/// A type parameter bound by several classes is their `TYPE_INTERSECTION`, as php-src's `intersection_type` rule
+/// builds `A&B`. PHP refuses `?` before an intersection, so a nullable one is the DNF type `(A&B)|null`: a
+/// `TYPE_UNION` of the intersection and `null`.
+#[test]
+fn a_type_parameter_bound_by_several_classes_is_their_intersection() {
+    let lowered = Lowered::new(indoc! {"
+        namespace App.Tenant;
+
+        import Lib.DatabaseEntity;
+        import Lib.Shareable;
+
+        class Report<TItem : DatabaseEntity & Shareable>
+        {
+            public TItem? share(TItem item) { return null; }
+        }
+    "});
+    let method = lowered.child(lowered.child(lowered.child(lowered.unit().root, 2), 2), 0);
+
+    assert_eq!(
+        lowered.render(lowered.child(method, 0)),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                TYPE_INTERSECTION
+                  ZVAL "Lib\\DatabaseEntity"
+                  ZVAL "Lib\\Shareable"
+                ZVAL "item"
+                null
+                null
+                null
+                null
+        "#}
+    );
+    assert_eq!(
+        lowered.render(lowered.child(method, 3)),
+        indoc! {r#"
+            TYPE_UNION
+              TYPE_INTERSECTION
+                ZVAL "Lib\\DatabaseEntity"
+                ZVAL "Lib\\Shareable"
+              ZVAL [1] "null"
+        "#}
+    );
+}
+
+/// ```php
+/// /** @template TItem of \Lib\Order */
+/// public function keep(\Lib\Order $order, ?\Lib\Order $other): string { return 'kept'; }
+/// /** @template TShared of \Lib\Order&\Lib\Shareable */
+/// public function share(\Lib\Order $order, string $type): string { return 'shared'; }
+/// ```
+///
+/// PHP refuses a union that names a type twice, or names an intersection beside one of its classes. So members that
+/// erase to one type appear once, and a member another member already holds is left out: `TItem|Order` is `Order`,
+/// `(TShared|Order)` is `Order`, and `Class<Order>|string` is `string`.
+#[test]
+fn union_members_that_erase_to_one_type_appear_once() {
+    let lowered = Lowered::new(indoc! {"
+        namespace App.Tenant;
+
+        import Lib.Order;
+        import Lib.Shareable;
+
+        class Report<TItem : Order>
+        {
+            public string keep(TItem|Order order, (Order|TItem)? other) { return \"kept\"; }
+
+            public string share<TShared : Order & Shareable>(TShared|Order order, Class<Order>|string type)
+            {
+                return \"shared\";
+            }
+        }
+    "});
+    let members = lowered.child(lowered.child(lowered.unit().root, 2), 2);
+    let parameter_types = |index: u32| {
+        let parameters = lowered.child(lowered.child(members, index), 0);
+
+        format!(
+            "{}{}",
+            lowered.render(lowered.child(lowered.child(parameters, 0), 0)),
+            lowered.render(lowered.child(lowered.child(parameters, 1), 0))
+        )
+    };
+
+    assert_eq!(
+        parameter_types(0),
+        indoc! {r#"
+            ZVAL "Lib\\Order"
+            ZVAL [256] "Lib\\Order"
+        "#}
+    );
+    assert_eq!(
+        parameter_types(1),
+        indoc! {r#"
+            ZVAL "Lib\\Order"
+            ZVAL [1] "string"
+        "#}
+    );
+}
+
+/// ```php
+/// /** @var array<string, class-string<\Lib\Element>> */
+/// private array $elements = [];
+///
+/// /** @param class-string<\Lib\Model> $type */
+/// public function load(string $type, ?string $other = null): ?string { return $type; }
+///
+/// /** @param \Lib\PaginatedList<\Lib\Order> $rows */
+/// public function page(\Lib\PaginatedList $rows): ?\Lib\PaginatedList { return $rows; }
+/// ```
+///
+/// A generic class type is its class by its full name. Plain PHP receives a class value as its class-name string,
+/// spec section 25, so `Class<T>` is `string`, and a `Map` of class values is still `array`.
+#[test]
+fn a_generic_class_type_is_its_class_and_a_class_value_type_is_string() {
+    let lowered = Lowered::new(indoc! {"
+        namespace App.Tenant;
+
+        import Lib.Element;
+        import Lib.Model;
+        import Lib.Order;
+        import Lib.PaginatedList;
+
+        class Report
+        {
+            private Map<string, Class<Element>> elements = [:];
+
+            public Class<Model>? load(Class<Model> type, Class<Model>? other = null) { return type; }
+
+            public PaginatedList<Order>? page(PaginatedList<Order> rows) { return rows; }
+        }
+    "});
+    let members = lowered.child(lowered.child(lowered.unit().root, 2), 2);
+    let load = lowered.child(members, 1);
+    let page = lowered.child(members, 2);
+
+    assert_eq!(
+        lowered.render(lowered.child(lowered.child(members, 0), 0)),
+        indoc! {"
+            TYPE [7]
+        "}
+    );
+    assert_eq!(
+        lowered.render(lowered.child(load, 0)),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                ZVAL [1] "string"
+                ZVAL "type"
+                null
+                null
+                null
+                null
+              PARAM
+                ZVAL [257] "string"
+                ZVAL "other"
+                ZVAL null
+                null
+                null
+                null
+        "#}
+    );
+    assert_eq!(
+        lowered.render(lowered.child(load, 3)),
+        indoc! {r#"
+            ZVAL [257] "string"
+        "#}
+    );
+    assert_eq!(
+        format!("{}{}", lowered.render(lowered.child(page, 0)), lowered.render(lowered.child(page, 3))),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                ZVAL "Lib\\PaginatedList"
+                ZVAL "rows"
+                null
+                null
+                null
+                null
+            ZVAL [256] "Lib\\PaginatedList"
+        "#}
+    );
+}
+
+/// ```php
 /// $numbers = [1, $extra];
 /// $named = ['a' => 1, 2 => $numbers[0]];
 /// $empty = [];
@@ -2378,6 +2748,66 @@ fn new_creates_the_imported_class_by_its_full_name() {
     );
 }
 
+/// A file whose `run` creates, calls statically and calls null-safely with the type arguments `arguments` writes.
+fn type_arguments_file(arguments: [&str; 3]) -> String {
+    let [created, decoded, found] = arguments;
+
+    format!(
+        "namespace App.Tenant;\n\nimport Lib.Json;\nimport Lib.Order;\nimport Lib.PaginatedList;\nimport Lib.Repository;\nimport Lib.WebhookPayload;\n\nclass Report\n{{\n    private Repository? repository = null;\n\n    public void run(List<Order> rows, string body, int id)\n    {{\n        const page = new PaginatedList{created}(rows);\n        const payload = Json.decode{decoded}(body);\n        const found = this.repository?.find{found}(id);\n    }}\n}}\n"
+    )
+}
+
+/// ```php
+/// $page = new \Lib\PaginatedList($rows);
+/// $payload = \Lib\Json::decode($body);
+/// $found = $this->repository?->find($id);
+/// ```
+///
+/// Generics are erased, so the type arguments of `new`, a static call and a null-safe call lower to nothing, and each
+/// is the node it is without them.
+#[test]
+fn type_arguments_of_new_and_calls_lower_to_nothing() {
+    let generic = Lowered::new(&type_arguments_file(["<Order>", "<WebhookPayload>", "<Order>"]));
+    let plain = Lowered::new(&type_arguments_file(["", "", ""]));
+
+    assert_eq!(
+        generic.body(),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "page"
+                NEW
+                  ZVAL "Lib\\PaginatedList"
+                  ARG_LIST
+                    VAR
+                      ZVAL "rows"
+              ASSIGN
+                VAR
+                  ZVAL "payload"
+                STATIC_CALL
+                  ZVAL "Lib\\Json"
+                  ZVAL "decode"
+                  ARG_LIST
+                    VAR
+                      ZVAL "body"
+              ASSIGN
+                VAR
+                  ZVAL "found"
+                NULLSAFE_METHOD_CALL
+                  PROP
+                    VAR
+                      ZVAL "this"
+                    ZVAL "repository"
+                  ZVAL "find"
+                  ARG_LIST
+                    VAR
+                      ZVAL "id"
+        "#}
+    );
+    assert_eq!(generic.tree(), plain.tree());
+}
+
 /// PHP has no class visibility, so a `public` class is the same class.
 #[test]
 fn a_public_class_is_a_class() {
@@ -2512,6 +2942,26 @@ fn a_header_is_the_interface_name_list_and_marks_a_class_to_find_its_parent_ther
                 null
         "#}
     );
+}
+
+/// ```php
+/// /** @extends \Lib\PaginatedList<\Lib\Order> */
+/// class OrderPage implements \Lib\PaginatedList { }
+/// ```
+///
+/// A header entry with type arguments is its class, as the same entry without them.
+#[test]
+fn a_header_entry_with_type_arguments_is_its_class() {
+    let source = |header: &str| {
+        format!(
+            "namespace App.Tenant;\n\nimport Lib.Order;\nimport Lib.PaginatedList;\n\npublic class OrderPage : {header}\n{{\n}}\n"
+        )
+    };
+    let generic = Lowered::new(&source("PaginatedList<Order>"));
+    let plain = Lowered::new(&source("PaginatedList"));
+
+    assert_eq!(generic.tree(), plain.tree());
+    assert!(generic.tree().contains(r#"ZVAL "Lib\\PaginatedList""#), "{}", generic.tree());
 }
 
 /// ```php
@@ -3955,6 +4405,27 @@ fn a_loop_key_written_as_a_class_or_string_reads_back_through_from_or_a_cast() {
                 ZVAL 1
         "#}
     );
+}
+
+/// ```php
+/// foreach ($counts as $key => $value) { $key = \Lib\Status::from($key); $total += $value; }
+/// foreach ($others as $other => $value) { $total += $value; }
+/// ```
+///
+/// A loop key written as a type parameter reads back as its bound does, and one without a bound is `mixed`, which
+/// reads back as stored, as a key written `int` does.
+#[test]
+fn a_loop_key_written_as_a_type_parameter_reads_back_as_its_bound() {
+    let source = |class: &str, key: &str, other: &str| {
+        format!(
+            "namespace App.Tenant;\n\nimport Lib.Status;\n\nclass {class}\n{{\n    public int count(Map<{key}, int> counts, Map<{other}, int> others)\n    {{\n        let total = 0;\n        for (const [{key} key, int value] of counts) {{\n            total += value;\n        }}\n        for (const [{other} other, int value] of others) {{\n            total += value;\n        }}\n\n        return total;\n    }}\n}}\n"
+        )
+    };
+    let generic = Lowered::new(&source("Report<TKey : Status, TOther>", "TKey", "TOther"));
+    let erased = Lowered::new(&source("Report", "Status", "int"));
+
+    assert_eq!(generic.tree(), erased.tree());
+    assert!(generic.tree().contains(r#"ZVAL "Lib\\Status""#), "{}", generic.tree());
 }
 
 /// ```php
