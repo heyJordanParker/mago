@@ -7104,6 +7104,85 @@ fn a_form_that_reads_its_slots_in_order_first_inlines_with_any_arguments() {
     );
 }
 
+/// `Sharp\Padding` at the standard library's path, with a method whose body reads the global constant `STR_PAD_LEFT`.
+const PADDING: (&str, &str) = (
+    "vendor/heyjordanparker/php-sharp-composer/library/Sharp/Padding.sharp",
+    "namespace Sharp;\n\npublic class Padding\n{\n    public static string left(string text, int width) => str_pad(text, width, \" \", STR_PAD_LEFT);\n}\n",
+);
+
+/// The statements of `run`, declared with `signature` and holding `statements` in a class of `namespace` that imports
+/// `Sharp.Padding`, lowered with the inline forms of `PADDING`.
+fn padded_body(namespace: &str, signature: &str, statements: &str) -> String {
+    let code = format!(
+        "namespace {namespace};\n\nimport Sharp.Padding;\n\nclass Report\n{{\n    public {signature}\n    {{\n{statements}    }}\n}}\n"
+    );
+
+    Lowered::inlining(&code, &[], &[PADDING]).body()
+}
+
+/// ```php
+/// return \str_pad($name, 4, ' ', \STR_PAD_LEFT);
+/// ```
+///
+/// A form may read a global constant, as it reads a literal. The form is copied out of the standard library file's
+/// namespace, so it names the constant by its full name, `ZEND_NAME_FQ`, which is 0.
+#[test]
+fn a_form_that_reads_a_global_constant_names_it_by_its_full_name() {
+    assert_eq!(
+        padded_body("App.Tenant", "string run(string name)", "        return Padding.left(name, 4);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CALL
+                  ZVAL "str_pad"
+                  ARG_LIST
+                    VAR
+                      ZVAL "name"
+                    ZVAL 4
+                    ZVAL " "
+                    CONST
+                      ZVAL "STR_PAD_LEFT"
+        "#}
+    );
+}
+
+/// A form's constant names the same constant in every namespace that calls it, so its tree is the same in each.
+#[test]
+fn a_form_that_reads_a_global_constant_inlines_the_same_tree_in_any_namespace() {
+    let [library, tenant] = ["Lib.Reports", "App.Tenant"]
+        .map(|namespace| padded_body(namespace, "string run(string name)", "        return Padding.left(name, 4);\n"));
+
+    assert!(tenant.contains("CONST\n          ZVAL \"STR_PAD_LEFT\"\n"), "{tenant}");
+    assert_eq!(library, tenant);
+}
+
+/// ```php
+/// return \str_pad($name, PHP_INT_SIZE, ' ', \STR_PAD_LEFT);
+/// ```
+///
+/// A constant the caller passes keeps the caller's short name, `[1]` `ZEND_NAME_NOT_FQ`, which the engine looks up
+/// in the caller's namespace first, as the caller wrote it. Only the form's own constant takes its full name.
+#[test]
+fn a_constant_the_caller_passes_keeps_its_short_name_beside_the_forms_full_name() {
+    assert_eq!(
+        padded_body("App.Tenant", "string run(string name)", "        return Padding.left(name, PHP_INT_SIZE);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CALL
+                  ZVAL "str_pad"
+                  ARG_LIST
+                    VAR
+                      ZVAL "name"
+                    CONST
+                      ZVAL [1] "PHP_INT_SIZE"
+                    ZVAL " "
+                    CONST
+                      ZVAL "STR_PAD_LEFT"
+        "#}
+    );
+}
+
 /// ```php
 /// return \str_pad(\trim($name), 4);
 /// ```

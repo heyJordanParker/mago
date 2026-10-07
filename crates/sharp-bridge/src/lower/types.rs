@@ -12,6 +12,7 @@ use mago_names::ResolvedNames;
 use mago_span::HasSpan;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::ClassLikeMemberSelector;
+use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Expression;
 use mago_word::Word;
 use mago_word::word;
@@ -167,6 +168,15 @@ impl<'analysis> Types<'analysis> {
         agreed_kind(declarations.iter().map(|declaration| declaration.kind));
 
         declarations[0]
+    }
+
+    /// The full name of the constant the read `constant` reaches, as the analysis found it: the constant of that name
+    /// in the file's namespace, or else the global one.
+    pub(crate) fn constant_target(&self, constant: &ConstantAccess) -> Word {
+        self.codebase
+            .get_constant_or_global(self.names.get(constant), constant.name.value())
+            .unwrap_or_else(|| unreachable!("the checker refuses the undefined constant `{}`", constant.name))
+            .name
     }
 
     /// The inline form of the standard library method `declaration` names, if it has one.
