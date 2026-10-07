@@ -35,6 +35,7 @@ use mago_reporting::Level;
 use mago_reporting::ReportingFormat;
 use mago_reporting::ReportingTarget;
 
+use crate::config::env_reporting_format;
 use crate::enum_variants;
 use crate::service::IssueProcessor;
 
@@ -241,16 +242,12 @@ impl ReportingArgs {
     }
 }
 
-/// The variable that names the reporting format, ahead of the one the environment suggests.
-const ENV_REPORTING_FORMAT: &str = "MAGO_REPORTING_FORMAT";
-
 /// Returns the reporting format `MAGO_REPORTING_FORMAT` names, or else the default for the detected environment.
+///
+/// A value that names no format falls through here, because loading the configuration stops the command on it.
 pub(crate) fn default_reporting_format() -> ReportingFormat {
-    if let Ok(name) = std::env::var(ENV_REPORTING_FORMAT) {
-        match name.to_ascii_lowercase().parse() {
-            Ok(format) => return format,
-            Err(_) => tracing::warn!("{ENV_REPORTING_FORMAT}={name} is not a reporting format, so it is ignored."),
-        }
+    if let Ok(Some(format)) = env_reporting_format() {
+        return format;
     }
 
     if is_github_actions() {

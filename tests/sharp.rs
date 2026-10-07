@@ -524,3 +524,45 @@ fn compile_and_analyze_print_json_under_mago_reporting_format_in_github_actions(
         );
     }
 }
+
+#[test]
+fn a_reporting_format_flag_wins_over_mago_reporting_format() {
+    let directory = suppressed_workspace("Broken.sharp", &broken_sharp(""), false);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mago"))
+        .args(["--no-version-check", "--colors", "never", "analyze", "--reporting-format", "emacs"])
+        .env("MAGO_REPORTING_FORMAT", "json")
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.starts_with("src/Demo/Broken.sharp:8:") && line.contains("invalid-return-statement")),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn compile_and_analyze_stop_on_a_mago_reporting_format_that_names_no_format() {
+    let directory = suppressed_workspace("Broken.sharp", &broken_sharp(""), false);
+
+    for command in ["compile", "analyze"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_mago"))
+            .args(["--no-version-check", "--colors", "never", command])
+            .env("MAGO_REPORTING_FORMAT", "jsno")
+            .current_dir(directory.path())
+            .output()
+            .unwrap();
+        let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+
+        assert!(!output.status.success(), "{command}: {printed}");
+        assert!(
+            printed.contains("Invalid value for environment variable `MAGO_REPORTING_FORMAT`"),
+            "{command}: {printed}"
+        );
+        assert!(!directory.path().join(".sharp").exists(), "{command}");
+    }
+}
