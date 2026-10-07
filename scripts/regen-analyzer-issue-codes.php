@@ -351,6 +351,7 @@ final class AnalyzerCodeModuleGenerator
         'not-supported-yet',
         'invalid-local-assignment-value',
         'rejected-nullable-parameter',
+        'native-body-outside-library',
     ];
 
     /**

@@ -191,6 +191,91 @@ fn analyze_fix_refuses_a_fix_that_would_edit_a_sharp_file() {
     assert_eq!(report(directory.path()), source);
 }
 
+/// The standard library's `Text`, with a native body, spec section 29.
+const TEXT: &str =
+    "namespace Sharp.Text;\n\npublic static class Text\n{\n    public static extern string slug(string title);\n}\n";
+
+/// A project whose `library/` folder holds the standard library's `Text`, vendored as `vendor/` is, beside the
+/// project's `src/App/Page.sharp`.
+fn library_workspace(page: &str) -> tempfile::TempDir {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(directory.path().join("library/Sharp/Text")).unwrap();
+    std::fs::create_dir_all(directory.path().join("src/App")).unwrap();
+    std::fs::write(
+        directory.path().join("mago.toml"),
+        "php-version = \"8.4\"\n\n[source]\npaths = [\"src\"]\nincludes = [\"library\"]\n",
+    )
+    .unwrap();
+    std::fs::write(directory.path().join("library/Sharp/Text/Text.sharp"), TEXT).unwrap();
+    std::fs::write(directory.path().join("src/App/Page.sharp"), page).unwrap();
+    directory
+}
+
+/// Every line `mago analyze` reports in the project's `src/App/Page.sharp`.
+fn page_errors(page: &str) -> Vec<String> {
+    let directory = library_workspace(page);
+    let output = run(directory.path(), "analyze", &["--reporting-format", "emacs"]);
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| line.starts_with("src/App/Page.sharp:"))
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn analyze_finds_no_issues_in_a_call_of_the_standard_librarys_extern_method() {
+    let directory = library_workspace(
+        "namespace App;\n\nimport Sharp.Text.Text;\n\npublic class Page\n{\n    public string slug() => Text.slug(\"Hello\");\n}\n",
+    );
+
+    let output = run(directory.path(), "analyze", &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "{stdout}{stderr}");
+    assert!(stderr.contains("No issues found."), "{stdout}{stderr}");
+}
+
+#[test]
+fn analyze_reports_new_on_a_static_class() {
+    assert_eq!(
+        page_errors(
+            "namespace App;\n\nimport Sharp.Text.Text;\n\npublic class Page\n{\n    public Text make() => new Text();\n}\n"
+        ),
+        [
+            "src/App/Page.sharp:7:31:error - abstract-instantiation: `Text` is a static class, so it has no instances: call its members on the class."
+        ]
+    );
+}
+
+#[test]
+fn analyze_reports_a_class_that_extends_a_static_class() {
+    assert_eq!(
+        page_errors("namespace App;\n\nimport Sharp.Text.Text;\n\npublic class Page : Text\n{\n}\n"),
+        ["src/App/Page.sharp:5:21:error - extend-final-class: `Text` is a static class, so no class can extend it."]
+    );
+}
+
+/// Semantics refuses an `extern` method outside the namespace `Sharp`, and the analyzer refuses one in a project file
+/// under it, which semantics cannot tell from the standard library.
+#[test]
+fn analyze_reports_an_extern_method_in_a_project_file() {
+    for (namespace, code) in [("App", "semantics"), ("Sharp.Mine", "native-body-outside-library")] {
+        let page = format!(
+            "namespace {namespace};\n\npublic static class Page\n{{\n    public static extern string slug(string title);\n}}\n"
+        );
+
+        assert_eq!(
+            page_errors(&page),
+            [format!(
+                "src/App/Page.sharp:5:33:error - {code}: Only the standard library declares native bodies: give `slug` a body."
+            )],
+            "{namespace}"
+        );
+    }
+}
+
 #[test]
 fn linting_one_sharp_file_is_refused() {
     let service = LintService::new(ReadDatabase::empty(), Settings::default(), ParserSettings::default(), false);

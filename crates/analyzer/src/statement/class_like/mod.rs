@@ -1301,7 +1301,19 @@ fn check_class_like_extends<'ctx, 'arena, A>(
                 continue;
             }
 
-            if extended_class_metadata.flags.is_final() {
+            if extended_class_metadata.flags.is_static() {
+                let written_name = BytesDisplay(extended_type.value());
+
+                context.collector.report_with_code(
+                    IssueCode::ExtendFinalClass,
+                    Issue::error(format!("`{written_name}` is a static class, so no class can extend it."))
+                        .with_annotation(Annotation::primary(extended_type.span()).with_message("Extended here."))
+                        .with_annotation(
+                            Annotation::secondary(extended_class_span)
+                                .with_message(format!("`{extended_name}` is declared `static` here.")),
+                        ),
+                );
+            } else if extended_class_metadata.flags.is_final() {
                 context.collector.report_with_code(
                     IssueCode::ExtendFinalClass,
                     Issue::error(format!("Class `{using_name}` cannot extend final class `{extended_name}`"))

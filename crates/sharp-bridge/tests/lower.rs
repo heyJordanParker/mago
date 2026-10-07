@@ -2467,6 +2467,115 @@ fn abstract_and_final_classes_and_interfaces_are_class_declarations_with_their_f
 }
 
 /// ```php
+/// final class Text
+/// {
+///     public static function slug(string $title): string { return \Sharp\Internal\Text\Text\slug($title); }
+/// }
+/// ```
+///
+/// A static class is a final class, `[32]` `ZEND_ACC_FINAL`. An `extern` method is its `public static` method, `[17]`,
+/// whose body returns the call of its native function: `Sharp\Internal`, then the class's full name after `Sharp\`,
+/// then the method's name, with `ZEND_NAME_FQ`, which is 0.
+#[test]
+fn a_static_class_is_a_final_class_whose_extern_method_calls_its_native_function() {
+    let lowered = Lowered::named(
+        "library/Sharp/Text/Text.sharp",
+        "namespace Sharp.Text;\n\npublic static class Text\n{\n    public static extern string slug(string title);\n}\n",
+    );
+
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              NAMESPACE
+                ZVAL "Sharp\\Text"
+                null
+              CLASS [32] "Text" @3-6
+                null
+                null
+                STMT_LIST
+                  METHOD [17] "slug" @5-5
+                    PARAM_LIST
+                      PARAM
+                        ZVAL [1] "string"
+                        ZVAL "title"
+                        null
+                        null
+                        null
+                        null
+                    null
+                    STMT_LIST
+                      RETURN
+                        CALL
+                          ZVAL "Sharp\\Internal\\Text\\Text\\slug"
+                          ARG_LIST
+                            VAR
+                              ZVAL "title"
+                    ZVAL [1] "string"
+                    null
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// final class Slug
+/// {
+///     public const SEPARATOR = '-';
+///     public static function reset(): void { \Sharp\Internal\Slug\reset(); }
+///     public static function of(string $title, string ...$words): string { return \Sharp\Internal\Slug\of($title, ...$words); }
+/// }
+/// ```
+///
+/// A `void` method calls its native function without `return`, and a variadic parameter forwards as a spread.
+#[test]
+fn an_extern_void_method_calls_without_return_and_forwards_a_variadic_parameter_as_a_spread() {
+    let lowered = Lowered::named(
+        "library/Sharp/Slug.sharp",
+        "namespace Sharp;\n\npublic static class Slug\n{\n    public const string SEPARATOR = \"-\";\n\n    public static extern void reset();\n\n    public static extern string of(string title, string ...words);\n}\n",
+    );
+    let bodies: Vec<String> = lowered
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.kind == sharp_kind::SHARP_AST_METHOD)
+        .map(|(index, _)| lowered.render(lowered.child(index as u32, 2)))
+        .collect();
+
+    assert_eq!(
+        bodies,
+        [
+            indoc! {r#"
+                STMT_LIST
+                  CALL
+                    ZVAL "Sharp\\Internal\\Slug\\reset"
+                    ARG_LIST
+            "#},
+            indoc! {r#"
+                STMT_LIST
+                  RETURN
+                    CALL
+                      ZVAL "Sharp\\Internal\\Slug\\of"
+                      ARG_LIST
+                        VAR
+                          ZVAL "title"
+                        UNPACK
+                          VAR
+                            ZVAL "words"
+            "#},
+        ]
+    );
+}
+
+/// ```php
 /// interface Linkable extends \Lib\Named { }
 /// class Page implements \Lib\Entity, \App\Tenant\Linkable { }
 /// ```
@@ -5582,21 +5691,26 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
     }
 }
 
-/// The fixture holds every construct the checker accepts, so the bridge lowers all of them, and each fixed-size node
-/// has the child count of its kind.
+/// The fixtures hold every construct the checker accepts, the standard library's own under the namespace `Sharp`, so
+/// the bridge lowers all of them, and each fixed-size node has the child count of its kind.
 #[test]
 fn every_construct_of_the_slice_lowers_into_nodes_of_their_kinds_child_count() {
-    let lowered = Lowered::new(include_str!("../../semantics/tests/fixtures/slice.sharp"));
-    assert_eq!(lowered.diagnostics(), Vec::<String>::new());
+    for fixture in [
+        include_str!("../../semantics/tests/fixtures/slice.sharp"),
+        include_str!("../../semantics/tests/fixtures/library.sharp"),
+    ] {
+        let lowered = Lowered::new(fixture);
+        assert_eq!(lowered.diagnostics(), Vec::<String>::new());
 
-    let wrong: Vec<String> = lowered
-        .nodes()
-        .iter()
-        .filter(|node| fixed_child_count(node.kind).is_some_and(|count| count != node.child_count))
-        .map(|node| format!("{:?} has {} children", node.kind, node.child_count))
-        .collect();
+        let wrong: Vec<String> = lowered
+            .nodes()
+            .iter()
+            .filter(|node| fixed_child_count(node.kind).is_some_and(|count| count != node.child_count))
+            .map(|node| format!("{:?} has {} children", node.kind, node.child_count))
+            .collect();
 
-    assert_eq!(wrong, Vec::<String>::new());
+        assert_eq!(wrong, Vec::<String>::new());
+    }
 }
 
 #[test]

@@ -430,6 +430,13 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                     self.method(method, modifier_flags(&method.modifiers), &initial_values)
                 }
+                ClassLikeMember::Method(method)
+                    if method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Extern(_))) =>
+                {
+                    let call = self.native_call(method, self.names.get(&class.name));
+
+                    self.method(method, modifier_flags(&method.modifiers), &[call])
+                }
                 ClassLikeMember::Method(method) => self.method(method, modifier_flags(&method.modifiers), &[]),
                 ClassLikeMember::Property(property) => self.property(property),
                 ClassLikeMember::Constant(constant) => self.constant(constant),
@@ -551,9 +558,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
     /// A method is a `function` with its return type after its parameters, and with `flags`. Its first line is where
     /// PHP writes `function`: the return type, or the name of the constructor, which runs as `__construct` and has
-    /// no return type. The constructor's body starts with the class's initial values that are not constant, and an
-    /// abstract method has no statement list.
-    fn method(&mut self, method: &Method, flags: u32, initial_values: &[u32]) -> u32 {
+    /// no return type. Its body starts with `first_statements`: the class's initial values that are not constant in
+    /// the constructor, or the call of an `extern` method's native function, which is that method's whole body. Any
+    /// other abstract method has no statement list.
+    fn method(&mut self, method: &Method, flags: u32, first_statements: &[u32]) -> u32 {
         if flags & (ZEND_ACC_PUBLIC | ZEND_ACC_PROTECTED | ZEND_ACC_PRIVATE) == 0 {
             unreachable!("check_slice refuses a method without an access modifier");
         }
@@ -564,7 +572,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         }
 
         let parameters = self.node(SHARP_AST_PARAM_LIST, 0, self.line(&method.parameter_list), &parameters);
-        let mut statements = initial_values.to_vec();
+        let mut statements = first_statements.to_vec();
         let body = match &method.body {
             MethodBody::Concrete(block) => {
                 for statement in &block.statements {
@@ -584,7 +592,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 self.node(SHARP_AST_STMT_LIST, 0, line, &statements)
             }
-            MethodBody::Abstract(_) => NULL,
+            MethodBody::Abstract(_) if statements.is_empty() => NULL,
+            MethodBody::Abstract(body) => self.node(SHARP_AST_STMT_LIST, 0, self.line(body), &statements),
         };
         let (start, return_type) = match &method.return_type_hint {
             Some(return_type_hint) => (return_type_hint.span(), self.hint(&return_type_hint.hint)),
@@ -601,6 +610,34 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             php_method_name(method),
             &[parameters, NULL, body, return_type, attributes],
         )
+    }
+
+    /// The statement an `extern` method's body runs, as php-src's grammar builds
+    /// `return \Sharp\Internal\Text\Text\slug($title);`: a call of the native function the engine registers under
+    /// `Sharp\Internal`, then the class's full name after `Sharp\`, then the method's name. It passes each parameter on,
+    /// a variadic one as a spread, and returns the result unless the method is `void`.
+    fn native_call(&mut self, method: &Method, class: &[u8]) -> u32 {
+        let Some(class_in_library) = class.get(b"Sharp\\".len()..) else {
+            unreachable!("check_slice keeps an `extern` method under the namespace `Sharp`");
+        };
+        let line = self.line(method.name.span);
+        let function = [b"Sharp\\Internal\\".as_slice(), class_in_library, b"\\", method.name.value].concat();
+        let function = self.string(ZEND_NAME_FQ, line, &function);
+
+        let mut arguments = Vec::new();
+        for parameter in &method.parameter_list.parameters {
+            let value = self.variable(parameter.variable.span, parameter.variable.name);
+            arguments.push(if parameter.is_variadic() {
+                self.node(SHARP_AST_UNPACK, 0, line, &[value])
+            } else {
+                value
+            });
+        }
+
+        let arguments = self.node(SHARP_AST_ARG_LIST, 0, line, &arguments);
+        let call = self.node(SHARP_AST_CALL, 0, line, &[function, arguments]);
+
+        if method.returns_value() { self.node(SHARP_AST_RETURN, 0, line, &[call]) } else { call }
     }
 
     /// A variadic parameter carries `ZEND_PARAM_VARIADIC`, as php-src's grammar builds `int ...$values`.
@@ -1664,8 +1701,9 @@ fn modifier_flags(modifiers: &Sequence<Modifier>) -> u32 {
             Modifier::Static(_) => ZEND_ACC_STATIC,
             Modifier::Abstract(_) => ZEND_ACC_ABSTRACT,
             // PHP methods are open to overriding, and `method` lowers `override` to `#[\Override]`. PHP has no
-            // `required` constructor, and the checker proves every subclass keeps one `new Self(…)` can call.
-            Modifier::Virtual(_) | Modifier::Override(_) | Modifier::Required(_) => 0,
+            // `required` constructor, and the checker proves every subclass keeps one `new Self(…)` can call. `method`
+            // gives an `extern` method the body that calls its native function.
+            Modifier::Virtual(_) | Modifier::Override(_) | Modifier::Required(_) | Modifier::Extern(_) => 0,
             Modifier::Final(_)
             | Modifier::Readonly(_)
             | Modifier::PublicSet(_)
@@ -1677,24 +1715,25 @@ fn modifier_flags(modifiers: &Sequence<Modifier>) -> u32 {
     flags
 }
 
-/// The flags of a class's modifiers. `public` adds none, because every PHP class is public.
+/// The flags of a class's modifiers. `public` adds none, because every PHP class is public. A static class, whose
+/// members are all static, runs as a final PHP class.
 fn class_flags(modifiers: &Sequence<Modifier>) -> u32 {
     let mut flags = 0;
     for modifier in modifiers {
         flags |= match modifier {
             Modifier::Public(_) => 0,
             Modifier::Abstract(_) => ZEND_ACC_EXPLICIT_ABSTRACT_CLASS,
-            Modifier::Final(_) => ZEND_ACC_FINAL,
+            Modifier::Final(_) | Modifier::Static(_) => ZEND_ACC_FINAL,
             Modifier::Protected(_)
             | Modifier::Private(_)
-            | Modifier::Static(_)
             | Modifier::Readonly(_)
             | Modifier::PublicSet(_)
             | Modifier::ProtectedSet(_)
             | Modifier::PrivateSet(_)
             | Modifier::Virtual(_)
             | Modifier::Override(_)
-            | Modifier::Required(_) => unreachable!("check_slice refuses the class modifier `{modifier}`"),
+            | Modifier::Required(_)
+            | Modifier::Extern(_) => unreachable!("check_slice refuses the class modifier `{modifier}`"),
         };
     }
 

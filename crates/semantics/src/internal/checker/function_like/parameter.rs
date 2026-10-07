@@ -51,7 +51,7 @@ pub fn check_parameter_list(
         for modifier in &parameter.modifiers {
             match &modifier {
                 // Only PHP# parses these, and `check_slice` decides them.
-                Modifier::Virtual(_) | Modifier::Override(_) | Modifier::Required(_) => {}
+                Modifier::Virtual(_) | Modifier::Override(_) | Modifier::Required(_) | Modifier::Extern(_) => {}
                 Modifier::Static(keyword) | Modifier::Final(keyword) | Modifier::Abstract(keyword) => {
                     let kw = BytesDisplay(keyword.value);
                     context.report(

@@ -3185,3 +3185,56 @@ fn recording_type_arguments_leaves_the_issues_of_a_php_generic_call_unchanged() 
 
     assert_eq!(issues(("src/Demo/run.php", php), &[]), ["25:10 invalid-argument"]);
 }
+
+/// The standard library's `Text`, a static class with a native body, spec section 29.
+const TEXT: (&str, &str) = (
+    "library/Sharp/Text/Text.sharp",
+    "namespace Sharp.Text;\n\npublic static class Text\n{\n    public static extern string slug(string title);\n}\n",
+);
+
+#[test]
+fn an_extern_method_of_a_static_class_is_called_on_the_class_with_no_issues() {
+    let code = "namespace App;\n\nimport Sharp.Text.Text;\n\npublic class Page\n{\n    public string slug() => Text.slug(\"Hello\");\n}\n";
+
+    assert_eq!(issues(("src/App/Page.sharp", code), &[TEXT]), Vec::<String>::new());
+}
+
+#[test]
+fn new_on_a_static_class_is_an_error() {
+    let code =
+        "namespace App;\n\nimport Sharp.Text.Text;\n\npublic class Page\n{\n    public Text make() => new Text();\n}\n";
+
+    assert_eq!(
+        messages(("src/App/Page.sharp", code), &[TEXT]),
+        ["`Text` is a static class, so it has no instances: call its members on the class."]
+    );
+    assert_eq!(issues(("src/App/Page.sharp", code), &[TEXT]), ["7:31 abstract-instantiation"]);
+}
+
+#[test]
+fn a_class_that_extends_a_static_class_is_an_error() {
+    let code = "namespace App;\n\nimport Sharp.Text.Text;\n\npublic class Slug : Text\n{\n}\n";
+
+    assert_eq!(
+        messages(("src/App/Slug.sharp", code), &[TEXT]),
+        ["`Text` is a static class, so no class can extend it."]
+    );
+    assert_eq!(issues(("src/App/Slug.sharp", code), &[TEXT]), ["5:21 extend-final-class"]);
+}
+
+/// Semantics takes an `extern` method under the namespace `Sharp`, because the engine compiles the standard library
+/// from `vendor/` without knowing it is vendored. The analyzer knows a project file, and refuses it there. Semantics
+/// refuses one outside `Sharp`, so the analyzer leaves it.
+#[test]
+fn an_extern_method_in_a_project_file_is_an_error_even_under_sharp() {
+    let code = "namespace Sharp.Mine;\n\npublic static class Text\n{\n    public static extern string slug(string title);\n}\n";
+    let outside =
+        "namespace App;\n\npublic static class Text\n{\n    public static extern string slug(string title);\n}\n";
+
+    assert_eq!(
+        messages(("src/Sharp/Mine/Text.sharp", code), &[]),
+        ["Only the standard library declares native bodies: give `slug` a body."]
+    );
+    assert_eq!(issues(("src/Sharp/Mine/Text.sharp", code), &[]), ["5:33 native-body-outside-library"]);
+    assert_eq!(issues(("src/App/Text.sharp", outside), &[]), Vec::<String>::new());
+}

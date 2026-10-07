@@ -29,7 +29,7 @@ impl<'ast, 'arena> Walker<'ast, 'arena, HashSet<Entered>> for Entering {
     }
 }
 
-/// Every formatter case's input, and the PHP# slice fixture.
+/// Every formatter case's input, and the PHP# slice fixtures.
 fn sources() -> Vec<(String, Vec<u8>)> {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut sources = Vec::new();
@@ -40,8 +40,10 @@ fn sources() -> Vec<(String, Vec<u8>)> {
         }
     }
 
-    let fixture = crates.join("semantics/tests/fixtures/slice.sharp");
-    sources.push((fixture.display().to_string(), std::fs::read(&fixture).expect("the slice fixture")));
+    for fixture in ["slice.sharp", "library.sharp"] {
+        let fixture = crates.join("semantics/tests/fixtures").join(fixture);
+        sources.push((fixture.display().to_string(), std::fs::read(&fixture).expect("a slice fixture")));
+    }
 
     sources
 }
@@ -69,5 +71,5 @@ fn the_walker_enters_every_node_visit_children_reaches() {
         assert!(missed.is_empty(), "the walker misses these nodes of {name}: {missed:?}");
     }
 
-    assert_eq!(parsed, 468, "the number of sources without a parse error");
+    assert_eq!(parsed, 469, "the number of sources without a parse error");
 }

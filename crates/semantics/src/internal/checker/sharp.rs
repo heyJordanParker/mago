@@ -20,6 +20,7 @@ use mago_syntax::cst::BinaryOperator;
 use mago_syntax::cst::Block;
 use mago_syntax::cst::Break;
 use mago_syntax::cst::Call;
+use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeConstant;
 use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::ClassLikeMemberSelector;
@@ -48,6 +49,7 @@ use mago_syntax::cst::Literal;
 use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::LocalIdentifier;
 use mago_syntax::cst::Method;
+use mago_syntax::cst::MethodBody;
 use mago_syntax::cst::Modifier;
 use mago_syntax::cst::ModifierSequenceExt;
 use mago_syntax::cst::Namespace;
@@ -105,6 +107,9 @@ const ANY: &[u8] = b"Any";
 /// - A class: attributes, an optional `public`, `abstract` or `final`, a name, an optional `: Base, Interface` header,
 ///   constants, fields, properties and methods, with no other modifiers, `extends` or `implements`. The engine tells
 ///   the base class from the interfaces when it links the class.
+/// - A static class, `public static class Text`, as spec sections 26 and 29 write it: `static` and an optional
+///   `public`, no header and no constructor, and only constants and static members. The bridge lowers it to a final
+///   PHP class.
 /// - An interface: an optional `public`, a name, an optional `: Interface` header and methods, with no attributes,
 ///   other modifiers or `extends`. An interface method has parameters, a return type and no body, as spec section 29
 ///   writes `Money quote(Cart cart);`. A modifier on it is an error, because every interface method is public.
@@ -154,6 +159,10 @@ const ANY: &[u8] = b"Any";
 ///   writes them. Its name does not start with `__`, which PHP reserves for magic methods, and is not its class's name,
 ///   compared ignoring case, which PHP# gives to the constructor, nor, compared ignoring case, a property's of its
 ///   class.
+/// - An `extern` method, `public static extern string slug(string title);`, whose body is native, compiled into the
+///   engine, as spec section 29 writes it. Only the standard library declares one: a `public static` method of a
+///   static class whose namespace is `Sharp` or below it, with no body. The engine compiles the library's files from
+///   `vendor/` as any other, so the namespace is all this check knows of them.
 /// - The constructor: a method named exactly after its class, without a return type and not `static`. A method
 ///   without a return type named otherwise is an error. A constructor parameter with an access modifier declares a
 ///   member: a field when `private` or `protected` without accessors, and a property with accessors, which follow the
@@ -251,7 +260,11 @@ const ANY: &[u8] = b"Any";
 /// run on a file with a parse error, which is the one error to fix first. The constructs PHP# never has, such as `$`
 /// variables, `global` and top-level functions, keep their own errors.
 ///
-/// Ten more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
+/// Thirteen more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
+/// - `new` on a static class, in `analyze_class_instantiation`, and a class that extends one, in
+///   `check_class_like_extends`, because the static class may be another file's.
+/// - an `extern` method in a project file, even under the namespace `Sharp`, in `Method`'s `analyze`, because only the
+///   analyzer knows the file is the project's and not the standard library's.
 /// - `+` that may join a string with any other value, which spec section 18 makes an error, in
 ///   `analyze_arithmetic_operation`. `+` on two strings joins them.
 /// - a condition of `if`, `while`, `do … while`, `for` or `? :`, or an operand of `&&`, `||` or `!`, that is not
@@ -403,10 +416,10 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             File,
         ) => Some(File),
         (Node::Class(class), File) => {
-            report_methods_named_as_properties(
-                ClassLike { name: &class.name, span: class.span(), members: &class.members },
-                context,
-            );
+            report_methods_named_as_properties(ClassLike::of_class(class), context);
+            if class.modifiers.contains_static() {
+                check_static_class(class, context);
+            }
 
             Some(Class)
         }
@@ -418,13 +431,15 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             Some(place)
         }
         // `check_class` reports `protected` and `private` on a class, and PHP's own check `abstract` with `final`.
+        // `check_static_class` reports `abstract` and `final` on a static class.
         (
             Node::Modifier(
                 Modifier::Public(_)
                 | Modifier::Protected(_)
                 | Modifier::Private(_)
                 | Modifier::Abstract(_)
-                | Modifier::Final(_),
+                | Modifier::Final(_)
+                | Modifier::Static(_),
             ),
             Class,
         ) => Some(Class),
@@ -608,7 +623,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             None
         }
         (Node::Method(method), Class | Enum) => match is_slice_method(method, context.program) {
-            Ok(()) => Some(Method),
+            Ok(()) => check_extern(method, context).then_some(Method),
             Err((message, help)) => {
                 context.report(
                     Issue::error(message)
@@ -630,7 +645,9 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
                 | Modifier::Virtual(_)
                 | Modifier::Override(_)
                 // The parser keeps `required` on the constructor only.
-                | Modifier::Required(_),
+                | Modifier::Required(_)
+                // `check_extern` decides where an `extern` method goes.
+                | Modifier::Extern(_),
             )
             | Node::FunctionLikeReturnTypeHint(_)
             | Node::MethodBody(_)
@@ -1116,6 +1133,91 @@ fn is_slice_signature(method: &Method) -> Result<(), (&'static str, &'static str
     } else {
         Ok(())
     }
+}
+
+/// Reports what a static class cannot hold, as spec sections 26 and 29 write it: a modifier but `public` and `static`,
+/// a header, a constructor, or a member that is not static. A constant is static already, and `check_extern` decides
+/// an `extern` method.
+fn check_static_class(class: &Class, context: &mut Context<'_, '_, '_>) {
+    let mut report = |message: String, span: Span, written: &str| {
+        context.report(Issue::error(message).with_annotation(Annotation::primary(span).with_message(written)));
+    };
+
+    for modifier in &class.modifiers {
+        if let Modifier::Abstract(keyword) | Modifier::Final(keyword) = modifier {
+            report(
+                format!("A static class takes only `public` and `static`: remove `{}`.", BytesDisplay(keyword.value)),
+                keyword.span,
+                "Written here.",
+            );
+        }
+    }
+
+    if let Some(inheritance) = &class.inheritance {
+        report(
+            "A static class cannot extend a class or implement an interface.".to_owned(),
+            inheritance.span(),
+            "Named here.",
+        );
+    }
+
+    let non_static =
+        |name: &[u8]| format!("A static class holds only static members: make `{}` static.", BytesDisplay(name));
+    for member in &class.members {
+        match member {
+            ClassLikeMember::Method(method)
+                if method.return_type_hint.is_none() && method.name.value == class.name.value =>
+            {
+                report("A static class has no constructor.".to_owned(), method.name.span, "Declared here.");
+            }
+            ClassLikeMember::Method(method) if !method.is_static() && !is_extern(method) => {
+                report(non_static(method.name.value), method.name.span, "Declared without `static` here.");
+            }
+            ClassLikeMember::Property(property) if !property.modifiers().contains_static() => {
+                let variable = property.first_variable();
+                report(non_static(variable.name), variable.span, "Declared without `static` here.");
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Whether a method is `extern`: its body is native, compiled into the engine, as spec section 29 writes it.
+fn is_extern(method: &Method) -> bool {
+    method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Extern(_)))
+}
+
+/// Whether the slice has a method's `extern`, reporting it when it does not. Only the standard library, whose
+/// namespace is `Sharp` or below it, declares native bodies, and an `extern` method is `public static`, in a static
+/// class, with no body. The engine compiles the library's files from `vendor/` as any other, so the namespace is all
+/// this check knows of them, and the analyzer refuses an `extern` method in a project file under `Sharp`.
+fn check_extern(method: &Method, context: &mut Context<'_, '_, '_>) -> bool {
+    if !is_extern(method) {
+        return true;
+    }
+
+    let class = enclosing_class(context.program, method.span());
+    let in_library = class.is_some_and(|class| {
+        context.get_name(class.name.span.start).get(..6).is_some_and(|root| root.eq_ignore_ascii_case(b"Sharp\\"))
+    });
+    let message = if !in_library {
+        format!("Only the standard library declares native bodies: give `{}` a body.", BytesDisplay(method.name.value))
+    } else if class.is_some_and(|class| class.is_static)
+        && method.modifiers.contains_public()
+        && method.is_static()
+        && matches!(method.body, MethodBody::Abstract(_))
+    {
+        return true;
+    } else {
+        "An `extern` method is `public static`, in a static class, with no body.".to_owned()
+    };
+
+    context.report(
+        Issue::error(message)
+            .with_annotation(Annotation::primary(method.name.span).with_message("Declared `extern` here.")),
+    );
+
+    false
 }
 
 /// Reports what the engine refuses in a header when it declares the class: a name the header already holds, and in an
@@ -2550,6 +2652,18 @@ struct ClassLike<'ast, 'arena> {
     name: &'ast LocalIdentifier<'arena>,
     span: Span,
     members: &'ast Sequence<'arena, ClassLikeMember<'arena>>,
+    is_static: bool,
+}
+
+impl<'ast, 'arena> ClassLike<'ast, 'arena> {
+    fn of_class(class: &'ast Class<'arena>) -> Self {
+        Self {
+            name: &class.name,
+            span: class.span(),
+            members: &class.members,
+            is_static: class.modifiers.contains_static(),
+        }
+    }
 }
 
 /// The classes, enums and imports a PHP# file declares at its top level and in its first namespace, in source order.
@@ -2576,11 +2690,14 @@ fn collect_declarations<'ast, 'arena>(
     imports: &mut Vec<&'ast UseItem<'arena>>,
 ) {
     match statement {
-        Statement::Class(class) => {
-            classes.push(ClassLike { name: &class.name, span: class.span(), members: &class.members });
-        }
+        Statement::Class(class) => classes.push(ClassLike::of_class(class)),
         Statement::Enum(r#enum) => {
-            classes.push(ClassLike { name: &r#enum.name, span: r#enum.span(), members: &r#enum.members });
+            classes.push(ClassLike {
+                name: &r#enum.name,
+                span: r#enum.span(),
+                members: &r#enum.members,
+                is_static: false,
+            });
         }
         Statement::Use(Use { items: UseItems::Sequence(sequence), .. }) => imports.extend(sequence.items.iter()),
         _ => {}

@@ -2124,6 +2124,57 @@ fn required_on_a_method_with_a_return_type_is_not_supported_yet() {
     }
 }
 
+/// A static class is `static` among a class's modifiers, and a method with a native body is `extern` among a member's
+/// modifiers, with no body, spec section 29. `extern` stays a name elsewhere.
+#[test]
+fn static_starts_a_static_class_and_extern_a_method_without_a_body() {
+    const CODE: &str = "public static class Text\n{\n    public static extern string slug(string title);\n\n    extern string plain(string title);\n\n    public static string trim(string text)\n    {\n        return extern(text);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "library/Sharp/Text/Text.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(Statement::Class(class)) = program.statements.first() else {
+        panic!("expected a class, got {:#?}", program.statements);
+    };
+    let class_modifiers: Vec<String> = class.modifiers.iter().map(ToString::to_string).collect();
+    assert_eq!(class_modifiers, ["Public", "Static"]);
+    let methods: Vec<&Method> = class_members(program)
+        .iter()
+        .map(|member| {
+            let ClassLikeMember::Method(method) = member else {
+                panic!("expected a method, got {member:#?}");
+            };
+
+            method
+        })
+        .collect();
+    let modifiers: Vec<Vec<String>> =
+        methods.iter().map(|method| method.modifiers.iter().map(ToString::to_string).collect()).collect();
+    assert_eq!(modifiers, [vec!["Public", "Static", "Extern"], vec!["Extern"], vec!["Public", "Static"]]);
+    assert!(matches!(methods[0].body, MethodBody::Abstract(_)), "{:#?}", methods[0].body);
+    assert_eq!(source(CODE, methods[0]), "public static extern string slug(string title);");
+    assert_eq!(source(CODE, &methods[1].modifiers.as_slice()[0]), "extern");
+}
+
+/// PHP has no `extern`, so a `.php` file keeps reading it as a name, here a property's class type.
+#[test]
+fn extern_in_a_php_file_is_a_name() {
+    const CODE: &str = "<?php\n\nclass Text\n{\n    public extern $value;\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Text.php", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::OpeningTag(_), Statement::Class(class)] = program.statements.as_slice() else {
+        panic!("expected a class, got {:#?}", program.statements);
+    };
+    let Some(ClassLikeMember::Property(property)) = class.members.first() else {
+        panic!("expected a property, got {:#?}", class.members);
+    };
+    let modifiers: Vec<String> = property.modifiers().iter().map(ToString::to_string).collect();
+    assert_eq!(modifiers, ["Public"]);
+    assert_eq!(property.hint().map(|hint| source(CODE, hint)), Some("extern"));
+}
+
 /// The lexer reads `Self` and `self` as one keyword. The checker tells them apart by how the keyword is written.
 #[test]
 fn self_is_a_return_type_an_instantiated_class_and_the_class_of_a_static_call() {

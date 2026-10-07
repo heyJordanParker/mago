@@ -50,10 +50,12 @@ fn leak(code: String) -> &'static str {
     Box::leak(code.into_boxed_str())
 }
 
-/// One file that uses every construct `check_slice` accepts. The engine's bridge lowers the same file.
+/// Two files that use every construct `check_slice` accepts: the slice, and the constructs only the standard library
+/// declares, under the namespace `Sharp`. The engine's bridge lowers the same files.
 #[test]
-fn the_slice_fixture_has_no_semantic_issues() {
+fn the_slice_fixtures_have_no_semantic_issues() {
     assert_eq!(issues(include_str!("fixtures/slice.sharp")), Vec::<String>::new());
+    assert_eq!(issues(include_str!("fixtures/library.sharp")), Vec::<String>::new());
 }
 
 #[test]
@@ -1111,6 +1113,99 @@ fn a_method_without_a_body_reports_only_the_php_error() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int run();\n}\n";
 
     assert_eq!(issues(code), ["5:21 Non-Abstract method `Report::run` must have a concrete body."]);
+}
+
+#[test]
+fn a_static_class_holds_constants_static_members_and_extern_methods() {
+    let code = "namespace Sharp.Text;\n\npublic static class Text\n{\n    public const int LIMIT = 80;\n    private static int made = 0;\n\n    public static extern string slug(string title);\n\n    public static string plain(string title) => title;\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_member_of_a_static_class_that_is_not_static_is_an_error() {
+    let code = "namespace App.Tenant;\n\npublic static class Text\n{\n    private int made = 0;\n    public int count { get; } = 0;\n\n    public string slug(string title) => title;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:17 A static class holds only static members: make `made` static.",
+            "6:16 A static class holds only static members: make `count` static.",
+            "8:19 A static class holds only static members: make `slug` static.",
+        ]
+    );
+}
+
+#[test]
+fn a_static_class_has_no_constructor() {
+    let code = "namespace App.Tenant;\n\npublic static class Text\n{\n    public Text() {}\n}\n";
+
+    assert_eq!(issues(code), ["5:12 A static class has no constructor."]);
+}
+
+#[test]
+fn a_static_class_cannot_extend_a_class_or_implement_an_interface() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Calc;\nimport Lib.Named;\n\npublic static class Text : Calc, Named\n{\n}\n";
+
+    assert_eq!(issues(code), ["6:26 A static class cannot extend a class or implement an interface."]);
+}
+
+#[test]
+fn a_static_class_takes_only_public_and_static() {
+    let code = "namespace App.Tenant;\n\nabstract static class Text\n{\n}\n\nfinal static class Slug\n{\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "3:1 A static class takes only `public` and `static`: remove `abstract`.",
+            "7:1 A static class takes only `public` and `static`: remove `final`.",
+        ]
+    );
+}
+
+#[test]
+fn a_php_file_keeps_refusing_a_static_class() {
+    assert_eq!(
+        issues_in("src/Text.php", "<?php\n\nstatic class Text\n{\n}\n"),
+        ["3:1 Class `Text` cannot have the `static` modifier."]
+    );
+}
+
+#[test]
+fn an_extern_method_outside_the_sharp_namespace_is_an_error() {
+    for namespace in ["App", "Sharpen.Text", "App.Sharp"] {
+        let code = leak(format!(
+            "namespace {namespace};\n\npublic static class Text\n{{\n    public static extern string slug(string title);\n}}\n"
+        ));
+
+        assert_eq!(
+            issues(code),
+            ["5:33 Only the standard library declares native bodies: give `slug` a body."],
+            "{namespace}"
+        );
+    }
+}
+
+#[test]
+fn an_extern_method_is_public_static_in_a_static_class_with_no_body() {
+    let code = "namespace Sharp.Text;\n\npublic class Plain\n{\n    public static extern string slug(string title);\n}\n\npublic static class Text\n{\n    private static extern string trim(string title);\n    public static extern string pad(string title) => title;\n    public extern string cut(string title);\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:33 An `extern` method is `public static`, in a static class, with no body.",
+            "10:34 An `extern` method is `public static`, in a static class, with no body.",
+            "11:33 An `extern` method is `public static`, in a static class, with no body.",
+            "12:26 An `extern` method is `public static`, in a static class, with no body.",
+        ]
+    );
+}
+
+#[test]
+fn extern_on_a_field_is_not_supported_yet() {
+    let code = "namespace Sharp.Text;\n\npublic static class Text\n{\n    private static extern int count = 0;\n}\n";
+
+    assert_eq!(issues(code), ["5:20 This modifier is not supported yet in PHP#."]);
 }
 
 #[test]

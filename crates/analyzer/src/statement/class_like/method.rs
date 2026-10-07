@@ -10,12 +10,16 @@ use mago_codex::ttype::add_optional_union_type;
 use mago_codex::ttype::union::TUnion;
 
 use mago_names::binding::php_method_name;
+use mago_reporting::Annotation;
+use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::MethodBody;
+use mago_syntax::cst::Modifier;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
+use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
@@ -80,6 +84,24 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
         // Skip duplicate methods; semantics reports the error
         if method_metadata.span != self.span() {
             return Ok(());
+        }
+
+        // Semantics takes a PHP# `extern` method in the namespace `Sharp`, and refuses one elsewhere, because the engine
+        // compiles the standard library from `vendor/` as any other code. Only the analyzer knows a project file, which
+        // spec section 29 keeps from declaring a native body.
+        if context.source_file.file_type.is_host()
+            && class_like_metadata.name.as_bytes().starts_with(b"sharp\\")
+            && self.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Extern(_)))
+        {
+            context.collector.report_with_code(
+                IssueCode::NativeBodyOutsideLibrary,
+                Issue::error(format!(
+                    "Only the standard library declares native bodies: give `{}` a body.",
+                    mago_bytes::BytesDisplay(self.name.value)
+                ))
+                .with_annotation(Annotation::primary(self.name.span).with_message("Declared `extern` here."))
+                .with_note("A native body is compiled into the PHP# engine, which ships only the standard library's."),
+            );
         }
 
         let body = match &self.body {
