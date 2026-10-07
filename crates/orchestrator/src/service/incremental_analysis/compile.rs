@@ -72,13 +72,14 @@ impl IncrementalAnalysisService {
     /// A file is accepted when the analysis reported no error-level issue in it. The standard library's files lower
     /// first, and the others inline their forms.
     ///
-    /// An accepted file's inputs are `composer.lock` and each file outside `vendor/` whose edit makes the warm path
-    /// re-analyze it: each file whose signature edit reaches it through the cascade, each file that declares a class
-    /// alias or a patch, and each file that declares a method whose return it reads from that method's body, along
-    /// every chain of such returns, with that file's own inputs.
+    /// An accepted file's inputs are its own source, `composer.lock`, and each file outside `vendor/` whose edit makes
+    /// the warm path re-analyze it: each file whose signature edit reaches it through the cascade, each file that
+    /// declares a class alias or a patch, and each file that declares a method whose return it reads from that method's
+    /// body, along every chain of such returns, with that file's own inputs.
     ///
     /// `stamp` gives the size, modification time and hash of the file at a workspace-relative path, or none when no
-    /// file is there. It is called once per input.
+    /// file is there. It is called once per input. An input no file is at is stored absent: its size, modification
+    /// time and hash are all zero. No file has that stamp, because the hash of an empty file is not zero.
     ///
     /// # Errors
     ///
@@ -152,12 +153,12 @@ impl IncrementalAnalysisService {
                 sources.extend(dependencies.reached_by(source));
             }
             sources.extend(body_files);
-            sources.remove(&file.id);
+            sources.insert(file.id);
 
             let mut paths: Vec<Vec<u8>> = sources
                 .into_iter()
                 .filter_map(|source| self.database.get(&source).ok())
-                .filter(|source| is_source(source))
+                .filter(|source| source.id == file.id || is_source(source))
                 .map(|source| source.name.to_vec())
                 .chain(std::iter::once(COMPOSER_LOCK.to_vec()))
                 .collect();
@@ -175,7 +176,7 @@ impl IncrementalAnalysisService {
             counts.last().copied().unwrap_or_default(),
         );
 
-        let mut stamps: HashMap<Vec<u8>, Option<Input>> = HashMap::default();
+        let mut stamps: HashMap<Vec<u8>, Input> = HashMap::default();
         let mut compiled = Vec::with_capacity(files.len());
         for file in &files {
             let Some(lowered) = lowered.remove(&file.id) else {
@@ -193,12 +194,15 @@ impl IncrementalAnalysisService {
                         let input = match stamps.get(&path) {
                             Some(input) => input.clone(),
                             None => {
-                                let input = stamp(&path).map_err(mago_database::error::DatabaseError::from)?;
+                                let input =
+                                    stamp(&path).map_err(mago_database::error::DatabaseError::from)?.unwrap_or_else(
+                                        || Input { path: path.clone(), size: 0, mtime_ns: 0, hash: [0; 16] },
+                                    );
                                 stamps.insert(path, input.clone());
                                 input
                             }
                         };
-                        inputs.extend(input);
+                        inputs.push(input);
                     }
 
                     Compilation::Accepted(encode(&unit, &file.contents, key, &inputs, &[]))
@@ -613,8 +617,8 @@ mod tests {
         header(bytes).expect("the header is valid").key
     }
 
-    /// The path and hash of each input a `.sharpc` file lists, read at the offsets `sharp_unit.h` gives.
-    fn inputs(bytes: &[u8]) -> Vec<(String, [u8; 16])> {
+    /// Each input a `.sharpc` file lists, read at the offsets `sharp_unit.h` gives.
+    fn inputs(bytes: &[u8]) -> Vec<Input> {
         let word = |offset: usize| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
         let (count, nodes, children) = (word(80), word(84), word(88));
         let texts = 104 + 40 * count + 56 * nodes + 4 * children;
@@ -623,15 +627,19 @@ mod tests {
             .map(|index| {
                 let input = 104 + 40 * index;
                 let (offset, length) = (word(input), word(input + 4));
-                let path = String::from_utf8_lossy(&bytes[texts + offset..texts + offset + length]).into_owned();
 
-                (path, bytes[input + 24..input + 40].try_into().unwrap())
+                Input {
+                    path: bytes[texts + offset..texts + offset + length].to_vec(),
+                    size: u64::from_le_bytes(bytes[input + 8..input + 16].try_into().unwrap()),
+                    mtime_ns: i64::from_le_bytes(bytes[input + 16..input + 24].try_into().unwrap()),
+                    hash: bytes[input + 24..input + 40].try_into().unwrap(),
+                }
             })
             .collect()
     }
 
     fn input_paths(bytes: &[u8]) -> Vec<String> {
-        inputs(bytes).into_iter().map(|(path, _)| path).collect()
+        inputs(bytes).into_iter().map(|input| String::from_utf8_lossy(&input.path).into_owned()).collect()
     }
 
     fn messages(issues: &IssueCollection) -> Vec<String> {
@@ -707,7 +715,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_names_each_file_whose_edit_reanalyzes_it_and_composer_lock_in_path_order() {
+    fn a_file_names_its_source_each_file_whose_edit_reanalyzes_it_and_composer_lock_in_path_order() {
         let database = shop_project(&shop(MONEY, RATE));
         let mut service = analyzed(&database);
 
@@ -715,10 +723,72 @@ mod tests {
 
         assert_eq!(
             input_paths(accepted(&compiled, "app/Order.sharp")),
-            ["app/Money.sharp", "composer.lock", "lib/Rate.php"],
+            ["app/Money.sharp", "app/Order.sharp", "composer.lock", "lib/Rate.php"],
             "a vendor file is left to composer.lock"
         );
-        assert_eq!(input_paths(accepted(&compiled, "app/Unrelated.sharp")), ["composer.lock"]);
+        assert_eq!(input_paths(accepted(&compiled, "app/Unrelated.sharp")), ["app/Unrelated.sharp", "composer.lock"]);
+    }
+
+    #[test]
+    fn a_package_file_names_its_own_source_and_leaves_the_rest_of_its_package_to_composer_lock() {
+        let database = project(&[(TEXT_PATH, TEXT), ("app/Title.sharp", TITLE)]);
+
+        let compiled = compile(&mut analyzed(&database), empty_stamp);
+
+        assert_eq!(input_paths(accepted(&compiled, TEXT_PATH)), ["composer.lock", TEXT_PATH]);
+        assert_eq!(input_paths(accepted(&compiled, "app/Title.sharp")), ["app/Title.sharp", "composer.lock"]);
+    }
+
+    #[test]
+    fn an_input_no_file_is_at_is_stored_absent_as_an_all_zero_stamp() {
+        let database = project(&[("app/Order.sharp", ORDER)]);
+        let mut stamp = database_stamp(&database);
+
+        let compiled =
+            compile(&mut analyzed(&database), |path| if path == b"composer.lock" { Ok(None) } else { stamp(path) });
+
+        assert_eq!(
+            inputs(accepted(&compiled, "app/Order.sharp")),
+            [
+                Input {
+                    path: b"app/Order.sharp".to_vec(),
+                    size: ORDER.len() as u64,
+                    mtime_ns: 0,
+                    hash: source_hash(ORDER.as_bytes()),
+                },
+                Input { path: b"composer.lock".to_vec(), size: 0, mtime_ns: 0, hash: [0; 16] },
+            ]
+        );
+    }
+
+    #[test]
+    fn an_edit_to_a_source_changes_only_its_own_input_in_its_compiled_file() {
+        let edited = ORDER_OF_MONEY.replace("Tax.rate()", "Tax.rate() + 1");
+        let mut files = shop(MONEY, RATE);
+        for (name, contents) in &mut files {
+            if *name == "app/Order.sharp" {
+                contents.clone_from(&edited);
+            }
+        }
+        let before = shop_project(&shop(MONEY, RATE));
+        let after = shop_project(&files);
+
+        let before_compiled = compile(&mut analyzed(&before), database_stamp(&before));
+        let after_compiled = compile(&mut analyzed(&after), database_stamp(&after));
+
+        let changed: Vec<Input> = inputs(accepted(&after_compiled, "app/Order.sharp"))
+            .into_iter()
+            .filter(|input| !inputs(accepted(&before_compiled, "app/Order.sharp")).contains(input))
+            .collect();
+        assert_eq!(
+            changed,
+            [Input {
+                path: b"app/Order.sharp".to_vec(),
+                size: edited.len() as u64,
+                mtime_ns: 0,
+                hash: source_hash(edited.as_bytes()),
+            }]
+        );
     }
 
     #[test]
@@ -730,7 +800,10 @@ mod tests {
 
         let compiled = compile(&mut service, empty_stamp);
 
-        assert_eq!(input_paths(accepted(&compiled, "app/Unrelated.sharp")), ["composer.lock", "lib/aliases.php"]);
+        assert_eq!(
+            input_paths(accepted(&compiled, "app/Unrelated.sharp")),
+            ["app/Unrelated.sharp", "composer.lock", "lib/aliases.php"]
+        );
     }
 
     #[test]
@@ -780,8 +853,9 @@ mod tests {
         let order_before = accepted(&before_compiled, "app/Order.sharp");
         let order_after = accepted(&after_compiled, "app/Order.sharp");
         assert_eq!(compiled_key(order_before), compiled_key(order_after));
-        let money =
-            |bytes: &[u8]| inputs(bytes).into_iter().find(|(path, _)| path == "app/Money.sharp").map(|(_, hash)| hash);
+        let money = |bytes: &[u8]| {
+            inputs(bytes).into_iter().find(|input| input.path == b"app/Money.sharp").map(|input| input.hash)
+        };
         assert_ne!(money(order_before), money(order_after));
         assert_eq!(money(order_after), Some(source_hash(MONEY.replace("return 1;", "return 2;").as_bytes())));
     }
