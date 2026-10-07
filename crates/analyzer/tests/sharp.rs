@@ -991,7 +991,8 @@ fn a_header_reports_what_extends_and_implements_report_in_php() {
 }
 
 /// A generic type in a header links its class by the name before its type arguments, so the class calls the base's
-/// methods, and a missing generic base is reported where it is named.
+/// methods, a type argument the base has no template for is reported as `@extends` reports it, and a missing generic
+/// base is reported where it is named.
 #[test]
 fn a_generic_type_in_a_header_links_its_class_by_its_name() {
     let library = "<?php\n\nnamespace Lib;\n\nabstract class Listing\n{\n    public function count(): int\n    {\n        return 0;\n    }\n}\n";
@@ -999,7 +1000,7 @@ fn a_generic_type_in_a_header_links_its_class_by_its_name() {
 
     assert_eq!(
         issues(("src/Demo/OrderPage.sharp", sharp), &[("src/Lib/Listing.php", library)]),
-        ["13:21 non-existent-class-like"]
+        ["5:26 excess-template-parameter", "13:21 non-existent-class-like"]
     );
 }
 
@@ -3089,4 +3090,138 @@ fn a_spread_of_a_value_that_is_neither_a_list_nor_a_map_is_an_error() {
             "Cannot use spread operator on non-iterable type `int`.",
         ]
     );
+}
+
+/// The generic declarations of spec section 11: classes and interfaces with type parameters, their bounds and
+/// variance, a generic method, and headers that pass type arguments to a generic base.
+const PAGING: &str = "namespace Demo;\n\npublic abstract class DatabaseEntity\n{\n}\n\npublic interface Shareable\n{\n}\n\npublic class Order : DatabaseEntity\n{\n}\n\npublic class SharedOrder : DatabaseEntity, Shareable\n{\n}\n\npublic class Line\n{\n}\n\npublic interface Query<TItem>\n{\n    List<TItem> rows();\n}\n\npublic class PaginatedList<TItem : DatabaseEntity>\n{\n    private List<TItem> rows;\n\n    public PaginatedList(List<TItem> rows)\n    {\n        this.rows = rows;\n    }\n\n    public TItem first() => this.rows[0];\n\n    public TItem head()\n    {\n        TItem item = this.first();\n        return item;\n    }\n}\n\npublic interface Shelf<TItem : DatabaseEntity & Shareable>\n{\n    TItem top();\n}\n\npublic interface Feed<out TItem>\n{\n    TItem next();\n}\n\npublic interface Validator<in TItem>\n{\n    bool validate(TItem item);\n}\n\npublic interface Repository\n{\n    PaginatedList<TItem> list<TItem : DatabaseEntity>(Query<TItem> query);\n}\n\npublic class Lists\n{\n    public static T first<T>(List<T> items) => items[0];\n}\n\npublic class OrderPage : PaginatedList<Order>\n{\n}\n\npublic class OrderList<TItem : DatabaseEntity> : PaginatedList<TItem>\n{\n}\n\npublic class OrderValidator : Validator<Order>\n{\n    public bool validate(Order item) => true;\n}\n";
+
+/// The generic declarations read as Mago's templates, so a type parameter, a type argument, a bound and a typed local
+/// inside a generic class add no issue.
+#[test]
+fn generic_declarations_add_no_issue() {
+    assert_eq!(issues(("src/Demo/Paging.sharp", PAGING), &[]), Vec::<String>::new());
+}
+
+/// A generic class's method returns its type parameter as the type argument the class is used with.
+#[test]
+fn a_generic_class_types_its_methods_with_the_type_argument_of_its_use() {
+    let sharp = "namespace Demo;\n\npublic class Report\n{\n    public static Order keepOrder(Order order) => order;\n\n    public static int keepInt(int number) => number;\n\n    public static Order pageOrder(PaginatedList<Order> page) => Report.keepOrder(page.first());\n\n    public static int pageNumber(PaginatedList<Order> page) => Report.keepInt(page.first());\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]), ["11:79 invalid-argument"]);
+}
+
+/// A generic method infers its type parameter from the arguments it receives, spec section 11.
+#[test]
+fn a_generic_method_infers_its_type_parameter_from_its_arguments() {
+    let sharp = "namespace Demo;\n\npublic class Report\n{\n    public static Order keepOrder(Order order) => order;\n\n    public static int keepInt(int number) => number;\n\n    public static Order firstOrder(List<Order> orders) => Report.keepOrder(Lists.first(orders));\n\n    public static int firstNumber(List<Order> orders) => Report.keepInt(Lists.first(orders));\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]), ["11:73 invalid-argument"]);
+}
+
+/// Spec section 11's `list<TItem : DatabaseEntity>(Query<TItem> query)` called with a `Query<Order>` returns a
+/// `PaginatedList<Order>`.
+#[test]
+fn a_generic_method_returns_a_generic_class_of_its_inferred_type_argument() {
+    let sharp = "namespace Demo;\n\npublic class Report\n{\n    public static PaginatedList<Order> keepPage(PaginatedList<Order> page) => page;\n\n    public static int keepInt(int number) => number;\n\n    public static PaginatedList<Order> orders(Repository repository, Query<Order> query) => Report.keepPage(repository.list(query));\n\n    public static int count(Repository repository, Query<Order> query) => Report.keepInt(repository.list(query));\n}\n";
+    let analyzed = ("src/Demo/Report.sharp", sharp);
+    let others = [("src/Demo/Paging.sharp", PAGING)];
+
+    assert_eq!(issues(analyzed, &others), ["11:90 invalid-argument"]);
+    assert!(messages(analyzed, &others)[0].contains("Demo\\PaginatedList<Demo\\Order>"), "{:?}", messages(analyzed, &others));
+}
+
+/// A type argument outside its type parameter's bound, or one too many, is reported where it is written, and an
+/// inferred one where the call passes it. Several bounds joined with `&` each hold.
+#[test]
+fn a_type_argument_outside_its_bound_or_beyond_the_type_parameters_is_reported() {
+    let sharp = "namespace Demo;\n\npublic class Report\n{\n    public static Any numbers(PaginatedList<int> page) => page;\n\n    public static Any pairs(PaginatedList<Order, Order> page) => page;\n\n    public static Any lines(Repository repository, Query<Line> query) => repository.list(query);\n\n    public static Any shared(Shelf<SharedOrder> shelf) => shelf;\n\n    public static Any plain(Shelf<Order> shelf) => shelf;\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]),
+        [
+            "5:31 template-constraint-violation",
+            "7:29 excess-template-parameter",
+            "9:90 template-constraint-violation",
+            "13:29 template-constraint-violation",
+        ]
+    );
+}
+
+/// `out TItem` lets a `Feed<Order>` pass as a `Feed<DatabaseEntity>`, `in TItem` lets a `Validator<DatabaseEntity>`
+/// pass as a `Validator<Order>`, and an invariant `PaginatedList<Order>` passes as neither, spec section 11.1.
+#[test]
+fn variance_decides_which_type_arguments_substitute() {
+    let sharp = "namespace Demo;\n\npublic class Report\n{\n    public static Any feed(Feed<DatabaseEntity> feed) => feed;\n\n    public static Any page(PaginatedList<DatabaseEntity> page) => page;\n\n    public static Any check(Validator<Order> validator) => validator;\n\n    public static Any covariant(Feed<Order> feed) => Report.feed(feed);\n\n    public static Any invariant(PaginatedList<Order> page) => Report.page(page);\n\n    public static Any contravariant(Validator<DatabaseEntity> validator) => Report.check(validator);\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]),
+        ["13:75 less-specific-argument"]
+    );
+}
+
+/// A header's type arguments are the `@extends` and `@implements` of its PHP twin: `OrderPage : PaginatedList<Order>`
+/// returns an `Order` from `first()`, `OrderList<TItem> : PaginatedList<TItem>` forwards its own type parameter, and
+/// `OrderValidator : Validator<Order>` is a `Validator<Order>` and not a `Validator<Line>`.
+#[test]
+fn a_header_passes_its_type_arguments_to_the_generic_base() {
+    let sharp = "namespace Demo;\n\npublic class Report\n{\n    public static Order keepOrder(Order order) => order;\n\n    public static int keepInt(int number) => number;\n\n    public static Any validated(Validator<Order> validator) => validator;\n\n    public static Any lined(Validator<Line> validator) => validator;\n\n    public static Order pageOrder(OrderPage page) => Report.keepOrder(page.first());\n\n    public static int pageNumber(OrderPage page) => Report.keepInt(page.first());\n\n    public static Order listOrder(OrderList<Order> orders) => Report.keepOrder(orders.first());\n\n    public static int listNumber(OrderList<Order> orders) => Report.keepInt(orders.first());\n\n    public static Any orderValidated(OrderValidator validator) => Report.validated(validator);\n\n    public static Any lineValidated(OrderValidator validator) => Report.lined(validator);\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]),
+        ["15:68 invalid-argument", "19:77 invalid-argument", "23:79 possibly-invalid-argument"]
+    );
+}
+
+/// A typed local of a generic class type holds that class with its type argument.
+#[test]
+fn a_typed_local_of_a_generic_class_type_keeps_its_type_argument() {
+    let sharp = "namespace Demo;\n\npublic class Report\n{\n    public static Order keepOrder(Order order) => order;\n\n    public static int keepInt(int number) => number;\n\n    public static Order pageOrder(List<Order> orders)\n    {\n        PaginatedList<Order> page = new PaginatedList<Order>(orders);\n        return Report.keepOrder(page.first());\n    }\n\n    public static int pageNumber(List<Order> orders)\n    {\n        PaginatedList<Order> page = new PaginatedList<Order>(orders);\n        return Report.keepInt(page.first());\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]), ["18:31 invalid-argument"]);
+}
+
+/// `Class<T>` is PHP's `class-string<T>`, spec section 25: it takes `typeof` of `T` or a subclass, refuses `typeof` of
+/// another class, and reports a `string` as a class name it may not be, as its PHP twin does.
+#[test]
+fn a_class_type_takes_typeof_of_its_class_or_a_subclass() {
+    let model = "<?php\n\nnamespace Lib;\n\nabstract class Model\n{\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Model;\n\npublic abstract class Element\n{\n}\n\npublic class FormElement : Element\n{\n}\n\npublic class Order : Model\n{\n}\n\npublic class Line\n{\n}\n\npublic interface Loader\n{\n    Model? load(Class<Model> type, int id);\n}\n\npublic class Report\n{\n    public static Model? order(Loader loader) => loader.load(typeof(Order), 1);\n\n    public static Model? named(Loader loader, string name) => loader.load(name, 1);\n\n    public static Model? line(Loader loader) => loader.load(typeof(Line), 1);\n\n    public static Map<string, Class<Element>> elements()\n    {\n        Map<string, Class<Element>> elements = [\"form\": typeof(FormElement)];\n        return elements;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Model;\n\nabstract class Element\n{\n}\n\nclass FormElement extends Element\n{\n}\n\nclass Order extends Model\n{\n}\n\nclass Line\n{\n}\n\ninterface Loader\n{\n    /** @param class-string<Model> $type */\n    public function load(string $type, int $id): ?Model;\n}\n\nclass Report\n{\n    public static function order(Loader $loader): ?Model\n    {\n        return $loader->load(Order::class, 1);\n    }\n\n    public static function named(Loader $loader, string $name): ?Model\n    {\n        return $loader->load($name, 1);\n    }\n\n    public static function line(Loader $loader): ?Model\n    {\n        return $loader->load(Line::class, 1);\n    }\n\n    /** @return array<string, class-string<Element>> */\n    public static function elements(): array\n    {\n        /** @var array<string, class-string<Element>> $elements */\n        $elements = ['form' => FormElement::class];\n        return $elements;\n    }\n}\n";
+    let others = [("src/Lib/Model.php", model)];
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &others);
+    let php_issues = issues(("src/Demo/Report.php", php), &others);
+
+    assert_eq!(sharp_issues, ["30:75 possibly-invalid-argument", "32:61 invalid-argument"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
+/// `TItem.make()`, which `check_slice` refuses, reads no constant named `TItem`. The call on its unknown value still
+/// reports what a call on `mixed` reports.
+#[test]
+fn a_type_parameter_before_a_dot_is_not_read_as_a_constant() {
+    let sharp = "namespace Demo;\n\npublic abstract class Maker\n{\n    public static int make() => 1;\n}\n\npublic abstract class Builder<TItem : Maker>\n{\n    public int build() => TItem.make();\n\n    public abstract TItem made();\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Builder.sharp", sharp), &[]),
+        ["10:33 mixed-method-access", "10:27 mixed-return-statement"]
+    );
+}
+
+/// The generic declarations written as PHP with `@template`, `@extends`, `@implements` and docblock type arguments
+/// infer and check what their PHP# twins do: each of the first four calls passes an inferred type to an `int`
+/// parameter, the next two pass an invariant and a contravariant type where it does not substitute, and the last
+/// passes a type argument outside its bound, with the same messages.
+#[test]
+fn generic_declarations_infer_what_their_php_template_twins_infer() {
+    let sharp = "namespace Demo;\n\npublic class Report\n{\n    public static int keepInt(int number) => number;\n\n    public static int paged(PaginatedList<Order> page) => Report.keepInt(page.first());\n\n    public static int listed(Repository repository, Query<Order> query) => Report.keepInt(repository.list(query));\n\n    public static int picked(List<Order> orders) => Report.keepInt(Lists.first(orders));\n\n    public static int headed(OrderPage page) => Report.keepInt(page.first());\n\n    public static Any wide(PaginatedList<DatabaseEntity> page) => page;\n\n    public static Any narrowed(PaginatedList<Order> page) => Report.wide(page);\n\n    public static Any lined(Validator<Line> validator) => validator;\n\n    public static Any validated(OrderValidator validator) => Report.lined(validator);\n\n    public static Any lines(Repository repository, Query<Line> query) => repository.list(query);\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function keepInt(int $number): int\n    {\n        return $number;\n    }\n\n    /** @param PaginatedList<Order> $page */\n    public static function paged(PaginatedList $page): int\n    {\n        return Report::keepInt($page->first());\n    }\n\n    /** @param Query<Order> $query */\n    public static function listed(Repository $repository, Query $query): int\n    {\n        return Report::keepInt($repository->list($query));\n    }\n\n    /** @param list<Order> $orders */\n    public static function picked(array $orders): int\n    {\n        return Report::keepInt(Lists::first($orders));\n    }\n\n    public static function headed(OrderPage $page): int\n    {\n        return Report::keepInt($page->first());\n    }\n\n    /** @param PaginatedList<DatabaseEntity> $page */\n    public static function wide(PaginatedList $page): mixed\n    {\n        return $page;\n    }\n\n    /** @param PaginatedList<Order> $page */\n    public static function narrowed(PaginatedList $page): mixed\n    {\n        return Report::wide($page);\n    }\n\n    /** @param Validator<Line> $validator */\n    public static function lined(Validator $validator): mixed\n    {\n        return $validator;\n    }\n\n    public static function validated(OrderValidator $validator): mixed\n    {\n        return Report::lined($validator);\n    }\n\n    /** @param Query<Line> $query */\n    public static function lines(Repository $repository, Query $query): mixed\n    {\n        return $repository->list($query);\n    }\n}\n";
+    let paging = "<?php\n\nnamespace Demo;\n\nabstract class DatabaseEntity\n{\n}\n\nclass Order extends DatabaseEntity\n{\n}\n\nclass Line\n{\n}\n\n/**\n * @template TItem\n */\ninterface Query\n{\n    /** @return list<TItem> */\n    public function rows(): array;\n}\n\n/**\n * @template TItem of DatabaseEntity\n */\nclass PaginatedList\n{\n    /** @var list<TItem> */\n    private array $rows;\n\n    /** @param list<TItem> $rows */\n    public function __construct(array $rows)\n    {\n        $this->rows = $rows;\n    }\n\n    /** @return TItem */\n    public function first(): DatabaseEntity\n    {\n        return $this->rows[0];\n    }\n}\n\n/**\n * @template-contravariant TItem\n */\ninterface Validator\n{\n    /** @param TItem $item */\n    public function validate(mixed $item): bool;\n}\n\ninterface Repository\n{\n    /**\n     * @template TItem of DatabaseEntity\n     * @param Query<TItem> $query\n     * @return PaginatedList<TItem>\n     */\n    public function list(Query $query): PaginatedList;\n}\n\nclass Lists\n{\n    /**\n     * @template T\n     * @param list<T> $items\n     * @return T\n     */\n    public static function first(array $items): mixed\n    {\n        return $items[0];\n    }\n}\n\n/** @extends PaginatedList<Order> */\nclass OrderPage extends PaginatedList\n{\n}\n\n/** @implements Validator<Order> */\nclass OrderValidator implements Validator\n{\n    public function validate(mixed $item): bool\n    {\n        return true;\n    }\n}\n";
+
+    let sharp_messages = messages(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]);
+    let php_messages = messages(("src/Demo/Report.php", php), &[("src/Demo/Paging.php", paging)]);
+
+    assert_eq!(sharp_messages.len(), 7, "{sharp_messages:#?}");
+    assert_eq!(sharp_messages, php_messages);
 }

@@ -18,24 +18,27 @@ use crate::scanner::inference::infer_with_constants;
 use crate::scanner::ttype::get_type_metadata_from_hint;
 use crate::scanner::version_claim::TypeOverride;
 use crate::scanner::version_claim::evaluate_version_attributes;
+use crate::ttype::resolution::TypeResolutionContext;
 
 #[inline]
 pub fn scan_function_like_parameter<'arena, A>(
     parameter: &'arena FunctionLikeParameter<'arena>,
     classname: Option<Word>,
+    type_context: &TypeResolutionContext,
     context: &Context<'_, 'arena, A>,
     scope: &NamespaceScope,
 ) -> Option<FunctionLikeParameterMetadata>
 where
     A: Arena,
 {
-    scan_function_like_parameter_with_constants(parameter, classname, context, scope, None)
+    scan_function_like_parameter_with_constants(parameter, classname, type_context, context, scope, None)
 }
 
 #[inline]
 pub fn scan_function_like_parameter_with_constants<'arena, A>(
     parameter: &'arena FunctionLikeParameter<'arena>,
     classname: Option<Word>,
+    type_context: &TypeResolutionContext,
     context: &Context<'_, 'arena, A>,
     scope: &NamespaceScope,
     constants: Option<&WordMap<ConstantMetadata>>,
@@ -74,7 +77,7 @@ where
             .with_attributes(scan_attribute_lists(&parameter.attribute_lists, context, scope, classname));
 
     metadata.set_type_declaration_metadata(
-        parameter.hint.as_ref().map(|hint| get_type_metadata_from_hint(hint, classname, context)),
+        parameter.hint.as_ref().map(|hint| get_type_metadata_from_hint(hint, classname, type_context, context)),
     );
 
     if let Some(default_value) = &parameter.default_value {

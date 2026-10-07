@@ -350,7 +350,12 @@ where
         return None;
     };
 
-    let mut local_type = get_union_from_hint(hint, block_context.scope.get_class_like_name(), context.resolved_names);
+    let mut local_type = get_union_from_hint(
+        hint,
+        block_context.scope.get_class_like_name(),
+        context.resolved_names,
+        &context.type_resolution_context,
+    );
     populate_union_type(
         &mut local_type,
         &context.codebase.symbols,

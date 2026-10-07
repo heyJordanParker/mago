@@ -29,6 +29,7 @@ use mago_syntax::cst::Trait;
 use mago_syntax::cst::TraitUseAdaptation;
 use mago_syntax::cst::TraitUseMethodReference;
 use mago_syntax::cst::TraitUseSpecification;
+use mago_syntax::cst::TypeParameterList;
 use mago_word::WordMap;
 use mago_word::WordSet;
 use mago_word::ascii_lowercase_word;
@@ -60,6 +61,7 @@ use crate::scanner::docblock::parse_docblock;
 use crate::scanner::docblock::parse_docblock_trivia;
 use crate::scanner::enum_case::scan_enum_case;
 use crate::scanner::property::scan_properties;
+use crate::scanner::ttype::get_type_metadata_from_hint;
 use crate::scanner::ttype::get_type_metadata_from_type;
 use crate::scanner::typing_error_issue;
 use crate::scanner::version_claim::evaluate_version_attributes;
@@ -115,6 +117,7 @@ where
         class.implements.as_ref(),
         None,
         None,
+        None,
         context,
         scope,
     )?;
@@ -147,6 +150,7 @@ where
         class.extends.as_ref(),
         class.implements.as_ref(),
         class.inheritance.as_ref(),
+        class.type_parameters.as_ref(),
         None,
         context,
         scope,
@@ -180,6 +184,7 @@ where
         interface.extends.as_ref(),
         None,
         interface.inheritance.as_ref(),
+        interface.type_parameters.as_ref(),
         None,
         context,
         scope,
@@ -210,6 +215,7 @@ where
         &r#trait.attribute_lists,
         None,
         &r#trait.members,
+        None,
         None,
         None,
         None,
@@ -246,6 +252,7 @@ where
         None,
         r#enum.implements.as_ref(),
         r#enum.inheritance.as_ref(),
+        None,
         r#enum.backing_type_hint.as_ref(),
         context,
         scope,
@@ -293,6 +300,7 @@ fn scan_class_like<'arena, A>(
     extends: Option<&'arena Extends<'arena>>,
     implements: Option<&'arena Implements<'arena>>,
     inheritance: Option<&'arena Inheritance<'arena>>,
+    type_parameters: Option<&'arena TypeParameterList<'arena>>,
     enum_type: Option<&'arena EnumBackingTypeHint<'arena>>,
     context: &Context<'_, 'arena, A>,
     scope: &mut NamespaceScope,
@@ -1163,6 +1171,67 @@ where
             class_like_metadata.magic_properties.insert(property_name, new_property);
             class_like_metadata.magic_property_ids.insert(property_name, class_like_metadata.name);
         }
+    }
+
+    // A PHP# type parameter is the template a `@template` tag declares, its bound the tag's `of`, and `out` and `in`
+    // its `@template-covariant` and `@template-contravariant`, spec sections 11 and 11.1.
+    if let Some(type_parameters) = type_parameters {
+        let mut template_variance = std::mem::take(&mut class_like_metadata.template_variance);
+        for parameter in &type_parameters.parameters {
+            scope.add(NameKind::Default, parameter.name.value, &(None as Option<&str>));
+
+            let template_name = word(parameter.name.value);
+            let constraint = parameter.bound.as_ref().map_or_else(get_mixed, |bound| {
+                get_type_metadata_from_hint(&bound.hint, Some(original_name), &type_context, context).type_union
+            });
+            let definition = GenericTemplate::new(GenericParent::ClassLike(name), constraint);
+
+            class_like_metadata.add_template_type(template_name, definition.clone());
+            type_context = type_context.with_template_definition(template_name, vec![definition]);
+
+            let variance = if parameter.is_covariant() {
+                Variance::Covariant
+            } else if parameter.is_contravariant() {
+                Variance::Contravariant
+            } else {
+                Variance::Invariant
+            };
+            if variance.is_readonly() {
+                class_like_metadata.template_readonly.insert(template_name);
+            }
+
+            template_variance.push(variance);
+        }
+
+        class_like_metadata.set_template_variance(template_variance);
+    }
+
+    // A header's generic type is the `@extends` or `@implements` tag of a PHP class. The header lists a class's base
+    // among its interfaces until the populator links it, so a class counts its type arguments as implemented and the
+    // populator moves the count with the base.
+    for generic in inheritance.iter().flat_map(|inheritance| &inheritance.types).filter_map(|hint| match hint {
+        Hint::Generic(generic) => Some(generic),
+        _ => None,
+    }) {
+        let Some(parent_name) = context.resolved_names.resolve(&generic.name) else {
+            continue;
+        };
+
+        let parent_name = ascii_lowercase_word(parent_name);
+        let arguments: Vec<TUnion> = generic
+            .type_arguments
+            .arguments
+            .iter()
+            .map(|argument| get_type_metadata_from_hint(argument, Some(original_name), &type_context, context).type_union)
+            .collect();
+        let counts = if class_like_metadata.kind.is_interface() {
+            &mut class_like_metadata.template_type_extends_count
+        } else {
+            &mut class_like_metadata.template_type_implements_count
+        };
+
+        counts.insert(parent_name, arguments.len());
+        class_like_metadata.add_template_extended_offset(parent_name, arguments);
     }
 
     for member in members {

@@ -98,23 +98,43 @@ where
     metadata.version_constraint = verdict.constraint;
     metadata.attributes =
         scan_attribute_lists(&method.attribute_lists, context, scope, Some(class_like_metadata.original_name));
-    metadata.type_resolution_context = type_resolution_context.filter(|c| !c.is_empty());
+
+    // A PHP# method's type parameters are the templates its `@template` tags declare, spec section 11.
+    let mut type_context = type_resolution_context.unwrap_or_default();
+    for parameter in method.type_parameters.iter().flat_map(|list| list.parameters.iter()) {
+        scope.add(NameKind::Default, parameter.name.value, &(None as Option<&str>));
+
+        let template_name = word(parameter.name.value);
+        let constraint = parameter.bound.as_ref().map_or_else(get_mixed, |bound| {
+            get_type_metadata_from_hint(&bound.hint, Some(class_like_metadata.original_name), &type_context, context)
+                .type_union
+        });
+        let definition = GenericTemplate::new(GenericParent::FunctionLike(functionlike_id), constraint);
+
+        metadata.add_template_type(template_name, definition.clone());
+        type_context = type_context.with_template_definition(template_name, vec![definition]);
+    }
 
     metadata.name_span = Some(method.name.span);
     metadata.parameters = method
         .parameter_list
         .parameters
         .iter()
-        .filter_map(|p| scan_function_like_parameter(p, Some(class_like_metadata.original_name), context, scope))
+        .filter_map(|p| {
+            scan_function_like_parameter(p, Some(class_like_metadata.original_name), &type_context, context, scope)
+        })
         .collect();
 
     if let Some(return_hint) = method.return_type_hint.as_ref() {
         metadata.set_return_type_declaration_metadata(Some(get_type_metadata_from_hint(
             &return_hint.hint,
             Some(class_like_metadata.original_name),
+            &type_context,
             context,
         )));
     }
+
+    metadata.type_resolution_context = Some(type_context).filter(|c| !c.is_empty());
 
     let mut method_metadata = MethodMetadata {
         is_final: method.modifiers.contains_final(),
@@ -243,20 +263,31 @@ where
         .parameter_list
         .parameters
         .iter()
-        .filter_map(|p| scan_function_like_parameter_with_constants(p, classname, context, scope, constants))
+        .filter_map(|p| {
+            scan_function_like_parameter_with_constants(
+                p,
+                classname,
+                &type_resolution_context,
+                context,
+                scope,
+                constants,
+            )
+        })
         .collect();
 
     metadata.attributes = scan_attribute_lists(&function.attribute_lists, context, scope, classname);
-    metadata.type_resolution_context =
-        if type_resolution_context.is_empty() { None } else { Some(type_resolution_context) };
 
     if let Some(return_hint) = function.return_type_hint.as_ref() {
         metadata.set_return_type_declaration_metadata(Some(get_type_metadata_from_hint(
             &return_hint.hint,
             classname,
+            &type_resolution_context,
             context,
         )));
     }
+
+    metadata.type_resolution_context =
+        if type_resolution_context.is_empty() { None } else { Some(type_resolution_context) };
 
     scan_function_like_docblock(function.span(), functionlike_id, &mut metadata, classname, context, scope);
 
@@ -306,21 +337,23 @@ where
                     .parameter_list
                     .parameters
                     .iter()
-                    .filter_map(|p| scan_function_like_parameter(p, classname, context, scope)),
+                    .filter_map(|p| scan_function_like_parameter(p, classname, &type_resolution_context, context, scope)),
             );
     collect_globals_into(&closure.body, &mut metadata.globals_accessed);
 
     metadata.attributes = scan_attribute_lists(&closure.attribute_lists, context, scope, classname);
-    metadata.type_resolution_context =
-        if type_resolution_context.is_empty() { None } else { Some(type_resolution_context) };
 
     if let Some(return_hint) = closure.return_type_hint.as_ref() {
         metadata.set_return_type_declaration_metadata(Some(get_type_metadata_from_hint(
             &return_hint.hint,
             classname,
+            &type_resolution_context,
             context,
         )));
     }
+
+    metadata.type_resolution_context =
+        if type_resolution_context.is_empty() { None } else { Some(type_resolution_context) };
 
     scan_function_like_docblock(span, functionlike_id, &mut metadata, classname, context, scope);
 
@@ -366,20 +399,22 @@ where
                     .parameter_list
                     .parameters
                     .iter()
-                    .filter_map(|p| scan_function_like_parameter(p, classname, context, scope)),
+                    .filter_map(|p| scan_function_like_parameter(p, classname, &type_resolution_context, context, scope)),
             );
 
     metadata.attributes = scan_attribute_lists(&arrow_function.attribute_lists, context, scope, classname);
-    metadata.type_resolution_context =
-        if type_resolution_context.is_empty() { None } else { Some(type_resolution_context) };
 
     if let Some(return_hint) = arrow_function.return_type_hint.as_ref() {
         metadata.set_return_type_declaration_metadata(Some(get_type_metadata_from_hint(
             &return_hint.hint,
             classname,
+            &type_resolution_context,
             context,
         )));
     }
+
+    metadata.type_resolution_context =
+        if type_resolution_context.is_empty() { None } else { Some(type_resolution_context) };
 
     scan_function_like_docblock(span, functionlike_id, &mut metadata, classname, context, scope);
 

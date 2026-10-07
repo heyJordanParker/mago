@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use mago_allocator::Arena;
 use mago_names::ResolvedNames;
+use mago_names::binding::Binding;
 use mago_names::scope::NamespaceScope;
 use mago_phpdoc_syntax::cst::r#type::Type;
 use mago_span::HasSpan;
@@ -23,6 +24,9 @@ use crate::ttype::atomic::mixed::TMixed;
 use crate::ttype::atomic::object::TObject;
 use crate::ttype::atomic::object::named::TNamedObject;
 use crate::ttype::atomic::reference::TReference;
+use crate::ttype::atomic::scalar::TScalar;
+use crate::ttype::atomic::scalar::class_like_string::TClassLikeString;
+use crate::ttype::atomic::scalar::class_like_string::TClassLikeStringKind;
 use crate::ttype::builder;
 use crate::ttype::error::TypeError;
 use crate::ttype::get_bool;
@@ -53,12 +57,13 @@ use crate::ttype::wrap_atomic;
 pub fn get_type_metadata_from_hint<'arena, A>(
     hint: &'arena Hint<'arena>,
     classname: Option<Word>,
+    type_context: &TypeResolutionContext,
     context: &Context<'_, 'arena, A>,
 ) -> TypeMetadata
 where
     A: Arena,
 {
-    let type_union = union_from_hint(hint, classname, context.resolved_names, context.program.dialect);
+    let type_union = union_from_hint(hint, classname, context.resolved_names, type_context, context.program.dialect);
 
     let mut type_metadata = TypeMetadata::new(type_union, hint.span());
     type_metadata.from_docblock = false;
@@ -79,12 +84,19 @@ pub fn get_type_metadata_from_type(
     })
 }
 
-/// Converts a type written in code into its `TUnion`, resolving class names through `resolved_names`. `classname`
-/// is the class that `self` and `static` name, if any.
+/// Converts a type written in code into its `TUnion`, resolving class names through `resolved_names`.
+///
+/// A PHP# type parameter is the template of its name in `type_context`. `classname` is the class that `self` and
+/// `static` name, if any.
 #[inline]
 #[must_use]
-pub fn get_union_from_hint(hint: &Hint<'_>, classname: Option<Word>, resolved_names: &ResolvedNames<'_>) -> TUnion {
-    union_from_hint(hint, classname, resolved_names, Dialect::Php)
+pub fn get_union_from_hint(
+    hint: &Hint<'_>,
+    classname: Option<Word>,
+    resolved_names: &ResolvedNames<'_>,
+    type_context: &TypeResolutionContext,
+) -> TUnion {
+    union_from_hint(hint, classname, resolved_names, type_context, Dialect::Php)
 }
 
 /// `get_union_from_hint` for a type written in `dialect`. PHP#'s `Self` is PHP's `static`, spec section 25, and the
@@ -93,20 +105,21 @@ fn union_from_hint(
     hint: &Hint<'_>,
     classname: Option<Word>,
     resolved_names: &ResolvedNames<'_>,
+    type_context: &TypeResolutionContext,
     dialect: Dialect,
 ) -> TUnion {
+    let convert = |hint: &Hint<'_>| union_from_hint(hint, classname, resolved_names, type_context, dialect);
+
     match hint {
-        Hint::Parenthesized(parenthesized_hint) => {
-            union_from_hint(parenthesized_hint.hint, classname, resolved_names, dialect)
-        }
-        Hint::Identifier(identifier) => get_union_from_identifier_hint(identifier, resolved_names),
+        Hint::Parenthesized(parenthesized_hint) => convert(parenthesized_hint.hint),
+        Hint::Identifier(identifier) => get_union_from_identifier_hint(identifier, resolved_names, type_context),
         Hint::Nullable(nullable_hint) => match nullable_hint.hint {
             Hint::Null(_) => get_null(),
             Hint::String(_) => get_nullable_string(),
             Hint::Integer(_) => get_nullable_int(),
             Hint::Float(_) => get_nullable_float(),
             Hint::Object(_) => get_nullable_object(),
-            _ => union_from_hint(nullable_hint.hint, classname, resolved_names, dialect).as_nullable(),
+            _ => convert(nullable_hint.hint).as_nullable(),
         },
         Hint::Union(UnionHint { left: Hint::Null(_), right, .. }) => match right {
             Hint::Null(_) => get_null(),
@@ -114,7 +127,7 @@ fn union_from_hint(
             Hint::Integer(_) => get_nullable_int(),
             Hint::Float(_) => get_nullable_float(),
             Hint::Object(_) => get_nullable_object(),
-            _ => union_from_hint(right, classname, resolved_names, dialect).as_nullable(),
+            _ => convert(right).as_nullable(),
         },
         Hint::Union(UnionHint { left, right: Hint::Null(_), .. }) => match left {
             Hint::Null(_) => get_null(),
@@ -122,11 +135,11 @@ fn union_from_hint(
             Hint::Integer(_) => get_nullable_int(),
             Hint::Float(_) => get_nullable_float(),
             Hint::Object(_) => get_nullable_object(),
-            _ => union_from_hint(left, classname, resolved_names, dialect).as_nullable(),
+            _ => convert(left).as_nullable(),
         },
         Hint::Union(union_hint) => {
-            let left = union_from_hint(union_hint.left, classname, resolved_names, dialect);
-            let right = union_from_hint(union_hint.right, classname, resolved_names, dialect);
+            let left = convert(union_hint.left);
+            let right = convert(union_hint.right);
 
             let combined_types: Vec<TAtomic> = left.types.iter().chain(right.types.iter()).cloned().collect();
 
@@ -155,8 +168,8 @@ fn union_from_hint(
         Hint::Mixed(_) => get_mixed(),
         Hint::Parent(_) => wrap_atomic(TAtomic::Object(TObject::Named(TNamedObject::new(word("parent"))))),
         Hint::Intersection(intersection) => {
-            let left = union_from_hint(intersection.left, classname, resolved_names, dialect);
-            let right = union_from_hint(intersection.right, classname, resolved_names, dialect);
+            let left = convert(intersection.left);
+            let right = convert(intersection.right);
 
             let left_types = left.types;
             let right_types = right.types;
@@ -195,17 +208,37 @@ fn union_from_hint(
             TUnion::from_vec(intersection_types)
         }
         Hint::Iterable(_) => get_mixed_iterable(),
+        // A generic class type is the docblock's `C<A, B>`, and `Class<T>` is its `class-string<T>`, spec section 25.
         Hint::Generic(generic) => {
-            let mut arguments = generic
-                .type_arguments
-                .arguments
-                .iter()
-                .map(|argument| get_union_from_hint(argument, classname, resolved_names));
+            let mut arguments: Vec<TUnion> = generic.type_arguments.arguments.iter().map(convert).collect();
 
-            match (generic.name.value, arguments.next(), arguments.next(), arguments.next()) {
-                (b"List", Some(element), None, None) => get_list(element),
-                (b"Map", Some(key), Some(value), None) => get_keyed_array(key, value),
-                _ => get_mixed_keyed_array(),
+            if let Some(name) = resolved_names.resolve(&generic.name) {
+                wrap_atomic(TAtomic::Reference(TReference::Symbol {
+                    name: word(name),
+                    parameters: Some(arguments),
+                    variances: None,
+                    intersection_types: None,
+                }))
+            } else {
+                match (generic.name.value, arguments.len()) {
+                    (b"List", 1) => get_list(arguments.swap_remove(0)),
+                    (b"Map", 2) => {
+                        let value = arguments.swap_remove(1);
+
+                        get_keyed_array(arguments.swap_remove(0), value)
+                    }
+                    (b"Class", 1) => builder::get_class_strings_of(
+                        TClassLikeStringKind::Class,
+                        arguments.swap_remove(0),
+                        generic.span(),
+                    )
+                    .unwrap_or_else(|_| {
+                        wrap_atomic(TAtomic::Scalar(TScalar::ClassLikeString(TClassLikeString::any(
+                            TClassLikeStringKind::Class,
+                        ))))
+                    }),
+                    _ => get_mixed_keyed_array(),
+                }
             }
         }
         // Spec section 14.1: `Function<R(P)>` is PHP's `Closure(P): R`, the only function value PHP# makes.
@@ -213,16 +246,9 @@ fn union_from_hint(
             let parameters = function
                 .parameters
                 .iter()
-                .map(|parameter| {
-                    TCallableParameter::new(
-                        Some(Arc::new(get_union_from_hint(parameter, classname, resolved_names))),
-                        false,
-                        false,
-                        false,
-                    )
-                })
+                .map(|parameter| TCallableParameter::new(Some(Arc::new(convert(parameter))), false, false, false))
                 .collect();
-            let return_type = get_union_from_hint(function.return_type, classname, resolved_names);
+            let return_type = convert(function.return_type);
 
             wrap_atomic(TAtomic::Callable(TCallable::Signature(
                 TCallableSignature::new(false, true)
@@ -233,9 +259,21 @@ fn union_from_hint(
     }
 }
 
+/// The type a name in a hint writes. A PHP# type parameter is the template of the same name in `type_context`, as a
+/// docblock's `@template` name is.
 #[inline]
-fn get_union_from_identifier_hint(identifier: &Identifier<'_>, resolved_names: &ResolvedNames<'_>) -> TUnion {
+fn get_union_from_identifier_hint(
+    identifier: &Identifier<'_>,
+    resolved_names: &ResolvedNames<'_>,
+    type_context: &TypeResolutionContext,
+) -> TUnion {
     let name = resolved_names.get(identifier);
+
+    if let Some(Binding::TypeParameter { .. }) = resolved_names.binding(identifier)
+        && let Some(definitions) = type_context.get_template_definition(word(name))
+    {
+        return wrap_atomic(builder::get_template_atomic(definitions, word(name)));
+    }
 
     if name.eq_ignore_ascii_case(b"Generator") {
         let mixed_default = || {
