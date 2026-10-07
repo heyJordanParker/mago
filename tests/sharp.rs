@@ -359,7 +359,7 @@ fn page_errors(page: &str) -> Vec<String> {
 }
 
 #[test]
-fn analyze_finds_no_issues_in_a_call_of_the_standard_librarys_extern_method() {
+fn analyze_finds_no_issues_in_a_call_of_an_extern_method_of_the_standard_library() {
     let directory = library_workspace(
         "namespace App;\n\nimport Sharp.Text.Text;\n\npublic class Page\n{\n    public string slug() => Text.slug(\"Hello\");\n}\n",
     );
@@ -375,7 +375,7 @@ fn analyze_finds_no_issues_in_a_call_of_the_standard_librarys_extern_method() {
 /// `mago compile` checks the vendored library as a project file, and it stays the standard library, so its `extern`
 /// method and its `@` compile.
 #[test]
-fn compile_accepts_the_vendored_standard_librarys_extern_method_and_silence() {
+fn compile_accepts_extern_methods_and_silence_in_the_vendored_standard_library() {
     let directory = library_workspace(
         "namespace App;\n\nimport Sharp.Text.Text;\n\npublic class Page\n{\n    public string slug() => Text.slug(\"Hello\");\n}\n",
     );
@@ -410,7 +410,7 @@ fn compile_inlines_a_vendored_library_form_into_a_project_caller() {
 /// library: its `extern` method and its `@` compile, and a file of another package in the same repository inlines its
 /// one-call method. That package is still a project, so its own `extern` method under `Sharp` is refused.
 #[test]
-fn compile_treats_the_standard_librarys_own_repository_as_the_library() {
+fn compile_treats_the_repository_of_the_standard_library_as_the_library() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     write(root, "mago.toml", "php-version = \"8.4\"\n");
@@ -443,7 +443,7 @@ fn compile_treats_the_standard_librarys_own_repository_as_the_library() {
 /// Without a `composer.json` that names the package, `library/Sharp/` is project code: its `extern` method and its `@`
 /// are refused.
 #[test]
-fn compile_refuses_extern_and_silence_under_library_sharp_without_the_librarys_composer_json() {
+fn compile_refuses_extern_and_silence_under_library_sharp_without_the_composer_json_of_the_library() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     write(root, "mago.toml", "php-version = \"8.4\"\n");
@@ -515,7 +515,7 @@ fn analyze_reports_extern_and_silence_in_a_project_file_under_sharp() {
 /// A project calls the standard library's `Int`, `Float` and `Bool` by their bare names, with no import, spec
 /// section 24. The checker reads them from the vendored package and gives each call the library's return type.
 #[test]
-fn analyze_types_the_standard_librarys_parse_calls_from_the_vendored_package() {
+fn analyze_types_the_parse_calls_of_the_standard_library_from_the_vendored_package() {
     let directory = library_workspace(
         "namespace App;\n\npublic class Page\n{\n    public int count() => Int.parse(\"1\");\n\n    public float? price() => Float.tryParse(\"x\");\n\n    public bool? flag() => Bool.tryParse(\"yes\");\n}\n",
     );
@@ -558,7 +558,7 @@ fn analyze_reports_a_type_class_of_the_standard_library_in_a_project_file() {
 /// The standard library's own repository analyzes its sources as project code, and its root `composer.json` names
 /// the package, so its `extern` methods, `@`, and its `Int`, `Float` and `Bool` are the library's.
 #[test]
-fn analyze_finds_no_issues_in_the_standard_librarys_own_repository() {
+fn analyze_finds_no_issues_in_the_repository_of_the_standard_library() {
     let directory = tempfile::tempdir().unwrap();
     write(directory.path(), "mago.toml", "php-version = \"8.4\"\n\n[source]\npaths = [\"library\"]\n");
     write_library(directory.path());

@@ -1142,7 +1142,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sharp_file_is_the_standard_librarys_when_its_nearest_composer_json_names_the_package() {
+    fn a_sharp_file_belongs_to_the_standard_library_when_its_nearest_composer_json_names_the_package() {
         let temp_dir = TempDir::new().unwrap();
         let library = "vendor/heyjordanparker/php-sharp-composer";
         create_test_file(&temp_dir, "composer.json", r#"{"name": "acme/app"}"#);
