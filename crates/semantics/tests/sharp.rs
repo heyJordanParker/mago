@@ -2387,6 +2387,46 @@ fn what_needs_a_type_argument_while_the_code_runs_is_not_supported_yet() {
     );
 }
 
+/// A static member reached through a type parameter, as in `TItem.make()`, needs the type argument while the code
+/// runs, which G1 erases, so it is not supported yet.
+#[test]
+fn a_static_member_of_a_type_parameter_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Box<TItem>\n{\n    public int run<TKey>(int extra)\n    {\n        TItem.make(extra);\n        const limit = TItem.LIMIT;\n        TItem.count = limit;\n        return TKey.count(extra);\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:9 This static member of a type parameter is not supported yet in PHP#.",
+            "8:23 This static member of a type parameter is not supported yet in PHP#.",
+            "9:9 This static member of a type parameter is not supported yet in PHP#.",
+            "10:16 This static member of a type parameter is not supported yet in PHP#.",
+        ]
+    );
+}
+
+/// A generic member of a union gets the checks it gets outside a union, inside its type arguments too. Each union
+/// follows the same type written alone.
+#[test]
+fn a_generic_type_in_a_union_takes_the_type_arguments_it_takes_outside_a_union() {
+    let code = "namespace App.Tenant;\n\npublic class Store<TItem>\n{\n    private TItem<Order> a;\n    private TItem<Order>|int b;\n    private Map<Order?, int> c = [:];\n    private Map<Order?, int>|string d = [:];\n    private List<List<void>> e;\n    private List<List<void>>|int f;\n    private Class<int> g;\n    private Class<int>|string h;\n    private Function<List<void>(int)> i;\n    private Function<List<void>(int)>|int j;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:13 A type parameter takes no type arguments: write `TItem`.",
+            "6:13 A type parameter takes no type arguments: write `TItem`.",
+            "7:17 A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value.",
+            "8:17 A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value.",
+            "9:18 This type is not supported yet in PHP#.",
+            "10:18 This type is not supported yet in PHP#.",
+            "11:19 `Class`'s type argument is a class, an interface or a type parameter, as in `Class<Order>`.",
+            "12:19 `Class`'s type argument is a class, an interface or a type parameter, as in `Class<Order>`.",
+            "13:22 This type is not supported yet in PHP#.",
+            "14:22 This type is not supported yet in PHP#.",
+        ]
+    );
+}
+
 #[test]
 fn a_property_in_an_enum_reports_only_the_php_error() {
     let code = "namespace App.Tenant;\n\nenum Status\n{\n    case Active;\n\n    private int count = 0;\n}\n";

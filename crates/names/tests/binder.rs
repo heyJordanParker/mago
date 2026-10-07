@@ -136,6 +136,26 @@ fn a_type_parameter_is_in_scope_in_its_declaration_and_a_method_type_parameter_s
     }
 }
 
+/// A type parameter written before `.` binds as that type parameter, as it does written as a type, so `TItem.make()`
+/// and `TItem.LIMIT` never name the class `App\TItem`. Past its declaration the name before `.` is a class again.
+#[test]
+fn a_type_parameter_before_a_dot_binds_as_its_type_parameter_inside_its_declaration_only() {
+    const CODE: &str = "namespace App;\n\npublic class Box<TItem>\n{\n    public int run<TKey>()\n    {\n        TItem.make();\n        TKey.make();\n        return TItem.LIMIT;\n    }\n}\n\nclass Other\n{\n    public void run()\n    {\n        TItem.make();\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    let item = Some(Binding::TypeParameter { declaration: span(CODE, "TItem", 0) });
+    for nth in [1, 2] {
+        assert_eq!(binding(&names, CODE, "TItem", nth), item, "`TItem` #{nth}");
+        assert_eq!(resolved(&names, CODE, "TItem", nth), b"TItem", "`TItem` #{nth}");
+    }
+    assert_eq!(binding(&names, CODE, "TKey.", 0), Some(Binding::TypeParameter { declaration: span(CODE, "TKey", 0) }));
+    assert_eq!(resolved(&names, CODE, "TKey.", 0), b"TKey");
+
+    assert_eq!(binding(&names, CODE, "TItem", 3), Some(Binding::Class));
+    assert_eq!(resolved(&names, CODE, "TItem", 3), b"App\\TItem");
+}
+
 #[test]
 fn the_interfaces_in_an_enum_header_resolve_as_class_names() {
     const CODE: &str = "namespace App.Tenant.Store;\n\nimport App.Shared.HasLabel;\n\nenum Status : string, HasLabel, Sorted\n{\n}\n\nenum Suit : HasLabel\n{\n}\n";

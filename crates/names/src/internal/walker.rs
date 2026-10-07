@@ -222,7 +222,8 @@ impl<'arena> NameWalker<'arena> {
         }
     }
 
-    /// Marks a bare name written before `.` or `?.`, which binds as a class unless it names a local or `this`.
+    /// Marks a bare name written before `.` or `?.`, which binds as a class unless it names a local, `this` or a type
+    /// parameter in scope.
     fn mark_member_object(&mut self, object: &Expression<'arena>) {
         if self.sharp
             && let Expression::ConstantAccess(object) = object
@@ -1165,6 +1166,10 @@ where
             }
 
             let is_member_object = self.member_objects.contains(&span.start.offset);
+            if is_member_object && self.bind_type_parameter(name, span) {
+                return;
+            }
+
             let (binding, kind) = if is_member_object {
                 (Binding::Class, NameKind::Default)
             } else if self.is_member(name) {

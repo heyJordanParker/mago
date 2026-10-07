@@ -789,6 +789,42 @@ fn a_call_lookahead_counts_double_closing_angles_and_reads_a_cast_as_parentheses
     assert_eq!(type_arguments(CODE, apply.type_arguments.as_ref()), ["Function<int(string)>"]);
 }
 
+/// The lexer reads `Self` and `Class` as the keywords `self` and `class`, which a call's type arguments hold, as in
+/// `this.find<Self>(x)` and `Json.decode<Class<Order>>(body)`.
+#[test]
+fn a_call_type_argument_can_be_self_or_class_of_a_type() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        this.find<Self>(x);\n        Json.decode<Class<Order>>(body);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [find, decode] = method_body(program) else {
+        panic!("expected two statements, got {:#?}", method_body(program));
+    };
+
+    let Expression::Call(Call::Method(find)) = expression(find) else {
+        panic!("expected `this.find<Self>(x)`, got {find:#?}");
+    };
+    assert_eq!(source(CODE, &find.method), "find");
+    assert_eq!(type_arguments(CODE, find.type_arguments.as_ref()), ["Self"]);
+    assert!(
+        matches!(find.type_arguments.as_ref().and_then(|list| list.arguments.first()), Some(Hint::Self_(_))),
+        "{:#?}",
+        find.type_arguments
+    );
+    assert_eq!(source(CODE, &find.argument_list), "(x)");
+
+    let Expression::Call(Call::Method(decode)) = expression(decode) else {
+        panic!("expected `Json.decode<Class<Order>>(body)`, got {decode:#?}");
+    };
+    assert_eq!(bare_name(decode.object), b"Json");
+    let [class] = decode.type_arguments.as_ref().expect("type arguments").arguments.as_slice() else {
+        panic!("expected one type argument, got {:#?}", decode.type_arguments);
+    };
+    assert_eq!(generic_type(CODE, class), ("Class", vec!["Order"]));
+    assert_eq!(source(CODE, &decode.argument_list), "(body)");
+}
+
 /// PHP has no type parameters or type arguments, so its `<` stays a comparison and every PHP# field is `None`.
 #[test]
 fn php_has_no_type_parameters_or_type_arguments() {

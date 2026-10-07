@@ -249,8 +249,9 @@ where
     }
 
     /// Peeks past the `<` at the head of the stream to the `>` that closes it, and returns the kind of the token after
-    /// that `>`. It returns `None` when a token that cannot be part of a PHP# type comes first, or the file ends. A
-    /// `>>` closes two lists. It reads ahead with a copy of the lexer, so it consumes nothing.
+    /// that `>`. It returns `None` when a token that cannot be part of a PHP# type comes first, or the file ends. The
+    /// lexer reads `Self` and `Class` as the keywords `self` and `class`, which are part of a type. A `>>` closes two
+    /// lists. It reads ahead with a copy of the lexer, so it consumes nothing.
     ///
     /// # Errors
     ///
@@ -263,7 +264,7 @@ where
                 T!["<"] => depth + 1,
                 T![">"] if depth >= 1 => depth - 1,
                 T![">>"] if depth >= 2 => depth - 2,
-                T![Identifier | "list" | "function" | "," | "?" | "|" | "&" | "(" | ")"] => depth,
+                T![Identifier | "list" | "function" | "self" | "class" | "," | "?" | "|" | "&" | "(" | ")"] => depth,
                 kind if kind.is_cast() => depth,
                 _ => return Ok(None),
             };

@@ -192,9 +192,10 @@ const ANY: &[u8] = b"Any";
 ///   field. Each of them is nullable when written with `?` after it, as in `int?` or `Map<string, Any?>`, and PHP's
 ///   own check reports `void?`. PHP's `mixed` is an error, because spec section 24 writes it `Any?`. A union of them but
 ///   `void`, written inline as spec section 24 writes it, as in `int|string` or `List<int>|string`, goes wherever a
-///   type goes. PHP's own check reports `void` and a nullable type, as in `int?|string`, in a union, and
-///   `check_union` reports a type written twice, which the engine refuses. A union holds null only when written in
-///   parentheses with `?` after it, as in `(int|string)?`, which the engine compiles as `int|string|null`.
+///   type goes, and each member takes the type arguments it takes outside a union. PHP's own check reports `void` and
+///   a nullable type, as in `int?|string`, in a union, and `check_union` reports a type written twice, which the
+///   engine refuses. A union holds null only when written in parentheses with `?` after it, as in `(int|string)?`,
+///   which the engine compiles as `int|string|null`.
 ///   `check_union` reports `null` written in a union, as in `int|null`, as not supported yet. PHP's own check reports
 ///   a nullable union inside another union, and a single type in parentheses, as in `(Calc)?`, which PHP# writes
 ///   `Calc?`. `(int)?` is a parse error, as PHP lexes `(int)` as a cast. A field, or a property with storage and `set`,
@@ -263,9 +264,10 @@ const ANY: &[u8] = b"Any";
 ///   pattern of `is`. The parser reports list patterns, and enum case patterns with fields or a name, as not supported
 ///   yet.
 /// - What needs a type argument while the code runs, which G1 erases, is not supported yet: a type parameter in a
-///   pattern, a `match` arm, `as` or a catch clause, `typeof` and `new` of a type parameter, a generic class type or
-///   `Class<T>` in a pattern or `as`, and a `List` or `Map` in a pattern or `as` whose type arguments hold a type
-///   parameter, as in `value as List<TItem>`.
+///   pattern, a `match` arm, `as` or a catch clause, `typeof` and `new` of a type parameter, a static member reached
+///   through a type parameter, as in `TItem.make()` and `TItem.LIMIT`, a generic class type or `Class<T>` in a pattern
+///   or `as`, and a `List` or `Map` in a pattern or `as` whose type arguments hold a type parameter, as in
+///   `value as List<TItem>`.
 /// - Casts: `(int)`, `(float)` and `(string)` in a method body, as spec section 24 writes them. PHP's other casts and
 ///   its cast aliases, such as `(bool)` and `(integer)`, are errors.
 /// - A bare `Int` or `Float` before `.` is the class `Sharp\Int` or `Sharp\Float` of the engine's standard library,
@@ -973,6 +975,11 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             Body | Constant,
         ) => Some(place),
         (Node::Expression(Expression::ArrayAccess(_)) | Node::ArrayAccess(_), Body) => Some(Body),
+        (Node::ConstantAccess(access), Body) if is_type_parameter(&access.name, context) => {
+            report_not_supported(access.span(), "static member of a type parameter", ERASED_TYPE_ARGUMENTS, context);
+
+            None
+        }
         (Node::ConstantAccess(_), Body) => Some(Body),
         (Node::TypeOf(type_of), Body | Constant) if is_type_parameter(&type_of.class, context) => {
             report_not_supported(type_of.span(), "`typeof` of a type parameter", ERASED_TYPE_ARGUMENTS, context);
@@ -2029,8 +2036,9 @@ fn type_parameter_in(hint: &Hint, context: &Context<'_, '_, '_>) -> Option<Span>
     }
 }
 
-/// Checks a union type. A type written twice is compared as the engine compares it: a class by its full name,
-/// ignoring case.
+/// Checks a union type. Each member in the slice is decided with the parts inside it as it is outside a union, so a
+/// generic member takes the type arguments it takes alone. A type written twice is compared as the engine compares it:
+/// a class by its full name, ignoring case.
 fn check_union(union: &UnionHint, place: Place, context: &mut Context<'_, '_, '_>) {
     let mut members = Vec::new();
     union_members(union, &mut members);
@@ -2065,6 +2073,7 @@ fn check_union(union: &UnionHint, place: Place, context: &mut Context<'_, '_, '_
         if !is_slice_member {
             continue;
         }
+        enter_tree(Node::Hint(member), place, context);
         let Some(first) = members[..index].iter().find(|earlier| is_same_type(earlier, member, context)) else {
             continue;
         };
@@ -2076,6 +2085,14 @@ fn check_union(union: &UnionHint, place: Place, context: &mut Context<'_, '_, '_
                 .with_annotation(Annotation::secondary(first.span()).with_message("First written here."))
                 .with_help("Remove the second one, as PHP refuses a union that names a type twice."),
         );
+    }
+}
+
+/// Decides a node and every node inside it at a place, as the checking walk does, for a node whose parent's check
+/// decides it and so keeps the walk out of it.
+fn enter_tree(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) {
+    if let Some(inner) = enter(node, place, context) {
+        ensure_sufficient_stack(|| node.visit_children(|child| enter_tree(child, inner, context)));
     }
 }
 
