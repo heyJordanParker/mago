@@ -3759,6 +3759,38 @@ fn a_null_safe_member_read_through_a_class_value_is_a_conditional_over_the_stati
 }
 
 /// ```php
+/// return \array_replace($defaults, ['root' => 0], $overrides);
+/// ```
+///
+/// A `Map` literal with a spread is `\array_replace` of its parts in order, each spread `Map` and each run of entries
+/// as a literal, so every key stays and a later one wins, where PHP's `...` renumbers int keys.
+#[test]
+fn a_map_spread_is_array_replace_of_the_literal_parts_in_order() {
+    assert_eq!(
+        body_in(
+            "Map<string, int> run(Map<string, int> defaults, Map<string, int> overrides)",
+            "        return [...defaults, \"root\": 0, ...overrides];\n",
+            &[]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CALL
+                  ZVAL "array_replace"
+                  ARG_LIST
+                    VAR
+                      ZVAL "defaults"
+                    ARRAY [3]
+                      ARRAY_ELEM
+                        ZVAL 0
+                        ZVAL "root"
+                    VAR
+                      ZVAL "overrides"
+        "#}
+    );
+}
+
+/// ```php
 /// $type = \Lib\Calc::class;
 /// $tag = $type::defaultTag(...);
 /// return \strlen($tag());

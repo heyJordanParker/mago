@@ -2803,13 +2803,29 @@ fn a_list_spread_appends_into_a_list_literal() {
 /// A `Map` spread copies the entries with their keys, which needs the literal's type when it runs, so it waits for
 /// typed compilation. A plain PHP `array<string, int>` is a `Map`.
 #[test]
-fn a_map_spread_is_not_supported_yet() {
-    let sharp = "namespace Demo;\n\nimport Lib.Prices;\n\nclass Report\n{\n    public void merge(Map<string, int> defaults, Map<string, int> overrides)\n    {\n        const merged = [...defaults, ...overrides];\n        const rooted = [...defaults, \"root\": 0];\n        const named = [...Prices.named()];\n    }\n}\n";
+fn a_map_spread_keeps_every_key_of_the_map() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public Map<string, int> merge(Map<string, int> defaults, Map<string, int> overrides)\n    {\n        return [...defaults, \"root\": 0, ...overrides];\n    }\n\n    public Map<int, string> byId(Map<int, string> first, Map<int, string> second)\n    {\n        return [...first, ...second];\n    }\n}\n";
+    let (issues, artifacts) =
+        analyze_with_artifacts(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[]);
+    let type_at = |text: &str| {
+        let start = sharp.find(text).unwrap() as u32;
+        artifacts.expression_types.get(&(start, start + text.len() as u32)).map(|r#type| r#type.get_id().to_string())
+    };
 
+    assert!(issues.is_empty(), "{issues:?}");
     assert_eq!(
-        issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Prices.php", PRICES)]),
-        ["9:25 not-supported-yet", "10:25 not-supported-yet", "11:24 not-supported-yet"]
+        type_at("[...defaults, \"root\": 0, ...overrides]").as_deref(),
+        Some("array{'root': int, ...<string, int>}")
     );
+    assert_eq!(type_at("[...first, ...second]").as_deref(), Some("array<int, string>"));
+}
+
+/// PHP renumbers the int keys a spread brings in, so a PHP literal spreading an int-keyed array keeps its list type.
+#[test]
+fn a_php_spread_of_an_int_keyed_array_renumbers_its_keys() {
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    /**\n     * @param array<int, string> $first\n     * @param array<int, string> $second\n     * @return list<string>\n     */\n    public function byId(array $first, array $second): array\n    {\n        return [...$first, ...$second];\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
 }
 
 /// A literal is one collection, so a `List`'s values and a `Map`'s entries never share one.

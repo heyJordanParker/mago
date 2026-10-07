@@ -1603,21 +1603,61 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// A list or map literal is an `ARRAY` with `ZEND_ARRAY_SYNTAX_SHORT`, as php-src's grammar builds `[…]`. Each
     /// element is an `ARRAY_ELEM` of its value and its key or null, and a spread is an `UNPACK` of its value.
     fn array(&mut self, array: &Array) -> u32 {
-        let mut elements = Vec::new();
-        for element in &array.elements {
-            let (kind, value_and_key) = match element {
-                ArrayElement::Value(element) => (SHARP_AST_ARRAY_ELEM, vec![self.expression(element.value), NULL]),
-                ArrayElement::KeyValue(element) => {
-                    (SHARP_AST_ARRAY_ELEM, vec![self.expression(element.value), self.expression(element.key)])
-                }
-                ArrayElement::Variadic(element) => (SHARP_AST_UNPACK, vec![self.expression(element.value)]),
-                ArrayElement::Missing(_) => unreachable!("check_slice refuses a missing literal element"),
-            };
-
-            elements.push(self.node(kind, 0, self.line(element), &value_and_key));
+        if array.elements.iter().any(|element| self.is_map_spread(element)) {
+            return self.map_with_spreads(array);
         }
 
+        let elements: Vec<u32> = array.elements.iter().map(|element| self.array_element(element)).collect();
+
         self.node(SHARP_AST_ARRAY, ZEND_ARRAY_SYNTAX_SHORT, self.line(array), &elements)
+    }
+
+    fn array_element(&mut self, element: &ArrayElement) -> u32 {
+        let (kind, value_and_key) = match element {
+            ArrayElement::Value(element) => (SHARP_AST_ARRAY_ELEM, vec![self.expression(element.value), NULL]),
+            ArrayElement::KeyValue(element) => {
+                (SHARP_AST_ARRAY_ELEM, vec![self.expression(element.value), self.expression(element.key)])
+            }
+            ArrayElement::Variadic(element) => (SHARP_AST_UNPACK, vec![self.expression(element.value)]),
+            ArrayElement::Missing(_) => unreachable!("check_slice refuses a missing literal element"),
+        };
+
+        self.node(kind, 0, self.line(element), &value_and_key)
+    }
+
+    /// Whether `element` spreads a `Map`, which keeps its keys where PHP's `...` renumbers int keys.
+    fn is_map_spread(&self, element: &ArrayElement) -> bool {
+        matches!(element, ArrayElement::Variadic(spread)
+            if !self.types.expression_type(spread.value).types.iter().all(|atomic| atomic.is_list() || atomic.is_never()))
+    }
+
+    /// A `Map` literal with a spread is `\array_replace` of its parts in order, each spread `Map` and each run of
+    /// entries as a literal, so every key stays and a later one wins (decision 031).
+    fn map_with_spreads(&mut self, array: &Array) -> u32 {
+        let line = self.line(array);
+        let mut parts = Vec::new();
+        let mut entries = Vec::new();
+        for element in &array.elements {
+            match element {
+                ArrayElement::Variadic(spread) => {
+                    if !entries.is_empty() {
+                        parts.push(self.node(SHARP_AST_ARRAY, ZEND_ARRAY_SYNTAX_SHORT, line, &entries));
+                        entries.clear();
+                    }
+                    parts.push(self.expression(spread.value));
+                }
+                ArrayElement::KeyValue(_) => entries.push(self.array_element(element)),
+                _ => unreachable!("the checker refuses a `List` part in a `Map` literal"),
+            }
+        }
+        if !entries.is_empty() {
+            parts.push(self.node(SHARP_AST_ARRAY, ZEND_ARRAY_SYNTAX_SHORT, line, &entries));
+        }
+
+        let function = self.string(ZEND_NAME_FQ, line, b"array_replace");
+        let arguments = self.node(SHARP_AST_ARG_LIST, 0, line, &parts);
+
+        self.node(SHARP_AST_CALL, 0, line, &[function, arguments])
     }
 
     /// A template without `${…}` is its text, as php-src's grammar builds a string without interpolation. Any other
