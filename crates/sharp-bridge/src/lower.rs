@@ -1453,7 +1453,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// differ from PHP's.
     fn operand_types(&self, lhs: &Expression, rhs: &Expression) -> Operands {
         let (lhs, rhs) = (self.types.expression_type(lhs), self.types.expression_type(rhs));
-        if lhs.is_string() && rhs.is_string() {
+        if lhs.is_any_string() && rhs.is_any_string() {
             Operands::Strings
         } else if lhs.is_int() && rhs.is_int() {
             Operands::Ints
