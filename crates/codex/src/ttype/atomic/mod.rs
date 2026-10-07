@@ -811,7 +811,10 @@ pub(crate) fn append_intersection_ids(mut base: Word, intersection_types: &[TAto
     base
 }
 
+/// Records a reference to the class-like `name` names, by the lowercase name its declaration has, so a change to
+/// the declaration reaches the reference however the code wrote the name.
 fn add_symbol_reference(reference_source: &ReferenceSource, symbol_references: &mut SymbolReferences, name: Word) {
+    let name = ascii_lowercase_word(name.as_bytes());
     match reference_source {
         ReferenceSource::Symbol(in_signature, a) => {
             symbol_references.add_symbol_reference_to_symbol(*a, name, *in_signature);

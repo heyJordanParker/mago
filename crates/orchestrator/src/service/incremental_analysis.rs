@@ -1014,6 +1014,20 @@ impl IncrementalAnalysisService {
         }
         self.apply_scan_results(&mut merged_codebase, &new_file_scans);
 
+        // Population turns a class name into an object type only while the class-like exists, and
+        // never turns it back. An unchanged file would keep a type resolved against a class-like
+        // that is now gone, so a full analysis resolves every type again, as a cold run does.
+        let class_like_removed = new_file_scans
+            .iter()
+            .map(|(file_id, _)| file_id)
+            .chain(self.file_states.keys().filter(|file_id| !current_file_ids.contains(file_id)))
+            .filter_map(|file_id| self.file_states.get(file_id))
+            .flat_map(|state| &state.entry_keys.class_like_names)
+            .any(|&name| merged_codebase.symbols.get_kind(name).is_none());
+        if class_like_removed {
+            return self.analyze();
+        }
+
         merged_codebase.safe_symbols.clear();
         merged_codebase.safe_symbol_members.clear();
 
@@ -4676,6 +4690,54 @@ mod tests {
         service.update_database(db.read_only());
         service.analyze_incremental(None).expect("Incremental failed.");
         assert_matches_full(&service, &db, "function reverted");
+    }
+
+    /// A class named only in a parameter's type changes its template's bound.
+    #[test]
+    fn test_watch_type_hinted_class_signature_change_reanalyzes_the_hinting_file() {
+        let a = "<?php\nnamespace Lib;\n\nclass A\n{\n    /** @param B<int> $b */\n    public function f(B $b): void {}\n}\n";
+        let mut db = make_database(vec![
+            ("src/A.php", a),
+            ("src/B.php", "<?php\nnamespace Lib;\n\n/** @template T */\nclass B\n{\n}\n"),
+        ]);
+        let mut service = make_watch_service(&db);
+        service.analyze().expect("Initial analysis failed.");
+        assert_matches_full(&service, &db, "initial");
+
+        db.update(
+            FileId::new(b"src/B.php"),
+            Cow::Owned(b"<?php\nnamespace Lib;\n\n/** @template T of string */\nclass B\n{\n}\n".to_vec()),
+        );
+        service.update_database(db.read_only());
+        service.analyze_incremental(None).expect("Incremental failed.");
+        assert_matches_full(&service, &db, "the type-hinted class's template now takes only strings");
+    }
+
+    /// A class named only in a parameter's type is deleted, then added back.
+    #[test]
+    fn test_watch_type_hinted_class_deleted_reports_it_missing_in_the_hinting_file() {
+        let mut db = make_database(vec![
+            ("src/A.php", "<?php\nnamespace Lib;\n\nclass A\n{\n    public function f(?B $b = null): void {}\n}\n"),
+            ("src/B.php", "<?php\nnamespace Lib;\n\nclass B\n{\n}\n"),
+        ]);
+        let mut service = make_watch_service(&db);
+        service.analyze().expect("Initial analysis failed.");
+        assert_matches_full(&service, &db, "initial");
+
+        db.delete(FileId::new(b"src/B.php"));
+        service.update_database(db.read_only());
+        service.analyze_incremental(None).expect("Incremental failed.");
+        assert_matches_full(&service, &db, "the type-hinted class was deleted");
+
+        db.add(File::new(
+            Cow::Owned(b"src/B.php".to_vec()),
+            FileType::Host,
+            None,
+            Cow::Owned(b"<?php\nnamespace Lib;\n\nclass B\n{\n}\n".to_vec()),
+        ));
+        service.update_database(db.read_only());
+        service.analyze_incremental(None).expect("Incremental failed.");
+        assert_matches_full(&service, &db, "the type-hinted class was added back");
     }
 
     /// Create a class, add a child in another cycle, then modify parent, then delete child.
