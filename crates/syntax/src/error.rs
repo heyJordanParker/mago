@@ -67,6 +67,12 @@ pub enum ParseError {
     InvalidTemplateEscapeInSharp(Span),
     /// A PHP `fn` arrow function or `function` closure written in a PHP# file, at its keyword.
     PhpLambdaInSharp(Span),
+    /// A PHP# lambda written right after an operator, such as `handler ?? item => item.ready`, at its parameters and
+    /// arrow. A lambda binds as loosely as assignment, as in C#, so it needs parentheses there.
+    LambdaAfterOperatorInSharp(Span),
+    /// A `? :` written at the top of a PHP# `when` condition, such as `when strict ? forced : ready =>`, at the whole
+    /// conditional. A `when` condition binds as tightly as `??`, as in C#, so it needs parentheses there.
+    ConditionalInGuardInSharp(Span),
 }
 
 impl HasFileId for SyntaxError {
@@ -96,7 +102,9 @@ impl HasFileId for ParseError {
             | ParseError::ForInInSharp(span)
             | ParseError::NotSupportedYetInSharp(_, span)
             | ParseError::InvalidTemplateEscapeInSharp(span)
-            | ParseError::PhpLambdaInSharp(span) => span.file_id,
+            | ParseError::PhpLambdaInSharp(span)
+            | ParseError::LambdaAfterOperatorInSharp(span)
+            | ParseError::ConditionalInGuardInSharp(span) => span.file_id,
         }
     }
 }
@@ -130,7 +138,9 @@ impl HasSpan for ParseError {
             | ParseError::ForInInSharp(span)
             | ParseError::NotSupportedYetInSharp(_, span)
             | ParseError::InvalidTemplateEscapeInSharp(span)
-            | ParseError::PhpLambdaInSharp(span) => *span,
+            | ParseError::PhpLambdaInSharp(span)
+            | ParseError::LambdaAfterOperatorInSharp(span)
+            | ParseError::ConditionalInGuardInSharp(span) => *span,
         }
     }
 }
@@ -223,6 +233,12 @@ impl std::fmt::Display for ParseError {
                 "PHP# writes a lambda as a bare arrow without `fn` or `function`, as in `x => x.id` or `(a, b) => { … }`"
                     .to_string()
             }
+            ParseError::LambdaAfterOperatorInSharp(_) => {
+                "A lambda after an operator needs parentheses, as in `handler ?? (item => item.ready)`.".to_string()
+            }
+            ParseError::ConditionalInGuardInSharp(_) => {
+                "A `? :` in a `when` condition needs parentheses, as in `when (strict ? forced : ready) =>`.".to_string()
+            }
         };
 
         write!(f, "{message}")
@@ -268,7 +284,9 @@ impl From<&ParseError> for Issue {
             | ParseError::UntypedFieldInSharp(..)
             | ParseError::ForInInSharp(..)
             | ParseError::InvalidTemplateEscapeInSharp(..)
-            | ParseError::PhpLambdaInSharp(..) => Issue::error(error.to_string())
+            | ParseError::PhpLambdaInSharp(..)
+            | ParseError::LambdaAfterOperatorInSharp(..)
+            | ParseError::ConditionalInGuardInSharp(..) => Issue::error(error.to_string())
                 .with_code(PARSE_ERROR_CODE)
                 .with_annotation(Annotation::primary(error.span()).with_message("Written here.")),
             ParseError::NotSupportedYetInSharp(_, span) => Issue::error(error.to_string())

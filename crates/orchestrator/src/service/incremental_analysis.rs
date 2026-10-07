@@ -1033,6 +1033,20 @@ impl IncrementalAnalysisService {
         }
         self.apply_scan_results(&mut merged_codebase, &new_file_scans);
 
+        // Population turns a class name into an object type only while the class-like exists, and
+        // never turns it back. An unchanged file would keep a type resolved against a class-like
+        // that is now gone, so a full analysis resolves every type again, as a cold run does.
+        let class_like_removed = new_file_scans
+            .iter()
+            .map(|(file_id, _)| file_id)
+            .chain(self.file_states.keys().filter(|file_id| !current_file_ids.contains(file_id)))
+            .filter_map(|file_id| self.file_states.get(file_id))
+            .flat_map(|state| &state.entry_keys.class_like_names)
+            .any(|&name| merged_codebase.symbols.get_kind(name).is_none());
+        if class_like_removed {
+            return self.analyze();
+        }
+
         merged_codebase.safe_symbols.clear();
         merged_codebase.safe_symbol_members.clear();
 
@@ -4682,6 +4696,82 @@ mod tests {
         service.update_database(db.read_only());
         service.analyze_incremental(None).expect("Incremental failed.");
         assert_matches_full(&service, &db, "function reverted");
+    }
+
+    /// A class named only in a parameter's type changes its template's bound.
+    #[test]
+    fn test_watch_type_hinted_class_signature_change_reanalyzes_the_hinting_file() {
+        let a = "<?php\nnamespace Lib;\n\nclass A\n{\n    /** @param B<int> $b */\n    public function f(B $b): void {}\n}\n";
+        let mut db = make_database(vec![
+            ("src/A.php", a),
+            ("src/B.php", "<?php\nnamespace Lib;\n\n/** @template T */\nclass B\n{\n}\n"),
+        ]);
+        let mut service = make_watch_service(&db);
+        service.analyze().expect("Initial analysis failed.");
+        assert_matches_full(&service, &db, "initial");
+
+        db.update(
+            FileId::new(b"src/B.php"),
+            Cow::Owned(b"<?php\nnamespace Lib;\n\n/** @template T of string */\nclass B\n{\n}\n".to_vec()),
+        );
+        service.update_database(db.read_only());
+        service.analyze_incremental(None).expect("Incremental failed.");
+        assert_matches_full(&service, &db, "the type-hinted class's template now takes only strings");
+    }
+
+    /// A class named only in a parameter's type is deleted, then added back.
+    #[test]
+    fn test_watch_type_hinted_class_deleted_reports_it_missing_in_the_hinting_file() {
+        let mut db = make_database(vec![
+            ("src/A.php", "<?php\nnamespace Lib;\n\nclass A\n{\n    public function f(?B $b = null): void {}\n}\n"),
+            ("src/B.php", "<?php\nnamespace Lib;\n\nclass B\n{\n}\n"),
+        ]);
+        let mut service = make_watch_service(&db);
+        service.analyze().expect("Initial analysis failed.");
+        assert_matches_full(&service, &db, "initial");
+
+        db.delete(FileId::new(b"src/B.php"));
+        service.update_database(db.read_only());
+        service.analyze_incremental(None).expect("Incremental failed.");
+        assert_matches_full(&service, &db, "the type-hinted class was deleted");
+
+        db.add(File::new(
+            Cow::Owned(b"src/B.php".to_vec()),
+            FileType::Host,
+            None,
+            Cow::Owned(b"<?php\nnamespace Lib;\n\nclass B\n{\n}\n".to_vec()),
+        ));
+        service.update_database(db.read_only());
+        service.analyze_incremental(None).expect("Incremental failed.");
+        assert_matches_full(&service, &db, "the type-hinted class was added back");
+    }
+
+    /// Every recorded reference names a class-like or function by the lowercase name its declaration has, however
+    /// the code wrote it, because the warm path finds changes by the declaration's name. Only a global constant
+    /// keeps its case, as its declaration does.
+    #[test]
+    fn test_references_name_class_likes_and_functions_by_their_lowercase_names() {
+        let declarations = "<?php\nnamespace App;\n\n#[\\Attribute]\nclass Marker {}\n\nclass Item\n{\n    public const KIND = 1;\n}\n\nclass BaseBox {}\n\ninterface Sized {}\n\nfunction helper(): int { return 1; }\n\nconst Limit = 3;\n";
+        let user = "<?php\nnamespace App;\n\n#[MARKER]\nconst Size = 2;\n\nenum Mode\n{\n    #[MARKER]\n    case On;\n}\n\n#[MARKER]\nfinal class Box extends BASEBOX implements SIZED\n{\n    #[MARKER]\n    public const Shape = 1;\n\n    #[MARKER]\n    public ITEM $item;\n\n    public function __construct(#[MARKER] ITEM $item)\n    {\n        $this->item = $item;\n    }\n\n    /**\n     * @param list<ITEM> $items\n     * @param ITEM::KIND $kind\n     */\n    #[MARKER]\n    public function fill(array $items, int $kind, ?MISSING $missing = null): ITEM\n    {\n        return $items[0] ?? new ITEM();\n    }\n\n    public function size(): int\n    {\n        return HELPER() + Limit + ITEM::KIND + strlen(ITEM::class);\n    }\n}\n";
+        let sharp = "namespace App;\n\nclass Report\n{\n    public static string kind()\n    {\n        return typeof(Item);\n    }\n}\n";
+        let db = make_database(vec![
+            ("src/declarations.php", declarations),
+            ("src/user.php", user),
+            ("src/report.sharp", sharp),
+        ]);
+        let mut service = make_watch_service(&db);
+        service.analyze().expect("Analysis failed.");
+
+        let codebase = &service.codebase;
+        let mut written_case = Vec::new();
+        service.native_symbol_references.for_each_reference(|origin, target, kind| {
+            let names_a_constant = target.1.is_empty() && codebase.constants.contains_key(&target.0);
+            if !names_a_constant && target.0 != mago_word::ascii_lowercase_word(target.0.as_bytes()) {
+                written_case.push(format!("{origin:?} -> {target:?} ({kind:?})"));
+            }
+        });
+
+        assert!(written_case.is_empty(), "references keep the written case:\n{}", written_case.join("\n"));
     }
 
     /// Create a class, add a child in another cycle, then modify parent, then delete child.

@@ -1767,6 +1767,55 @@ fn a_list_or_map_type_is_the_array_type() {
 }
 
 /// ```php
+/// public function group(array $sizes, array $calcs, array $keys): ?array { return null; }
+/// ```
+///
+/// A nullable type argument lowers as any other, so each collection is `array`: a `TYPE` with `IS_ARRAY`, which is
+/// 7, and `[263]` adds `ZEND_TYPE_NULLABLE` to the collection itself.
+#[test]
+fn a_collection_with_a_nullable_type_argument_is_the_array_type() {
+    let lowered = Lowered::with(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\n\nclass Report\n{\n    public Map<string, Any?>? group(List<int?> sizes, Map<string, List<Calc?>> calcs, List<(int|string)?> keys) { return null; }\n}\n",
+        &[("src/Lib/Calc.php", "<?php namespace Lib; final class Calc {}")],
+    );
+    let method = lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("a method");
+
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 0)),
+        indoc! {r#"
+            PARAM_LIST
+              PARAM
+                TYPE [7]
+                ZVAL "sizes"
+                null
+                null
+                null
+                null
+              PARAM
+                TYPE [7]
+                ZVAL "calcs"
+                null
+                null
+                null
+                null
+              PARAM
+                TYPE [7]
+                ZVAL "keys"
+                null
+                null
+                null
+                null
+        "#}
+    );
+    assert_eq!(
+        lowered.render(lowered.child(method as u32, 3)),
+        indoc! {"
+            TYPE [263]
+        "}
+    );
+}
+
+/// ```php
 /// $counts = [\Lib\Calc::Active->value => 1];
 /// $counts[\Lib\Calc::Closed->value] = 2;
 /// return $counts[\Lib\Calc::Active->value] ?? 0;
@@ -2730,6 +2779,81 @@ fn an_override_of_a_property_with_no_type_has_no_type() {
                   PROP_ELEM
                     ZVAL "timestamps"
                     ZVAL false
+                    null
+                    null
+                ATTRIBUTE_LIST
+                  ATTRIBUTE_GROUP
+                    ATTRIBUTE
+                      ZVAL "Override"
+                      null
+        "#}
+    );
+}
+
+/// The members of `RushOrder : Order : Model`, where the PHP# class `Order` overrides `table` with `string?` and
+/// `model` is the plain PHP class `Model`.
+fn rush_order_members(model: &str) -> String {
+    let lowered = Lowered::with(
+        "class RushOrder : Order\n{\n    protected override string? table = \"rush_orders\";\n}\n",
+        &[
+            ("src/Model.php", model),
+            (
+                "src/Order.sharp",
+                "public class Order : Model\n{\n    protected override string? table = \"orders\";\n}\n",
+            ),
+        ],
+    );
+
+    lowered.render(lowered.child(lowered.child(lowered.root(), 1), 2))
+}
+
+/// ```php
+/// #[\Override] protected $table = 'rush_orders';
+/// ```
+///
+/// `Order::$table` runs untyped, because `Model::$table` has no type, so PHP refuses a type on an override of it too.
+/// The root declaration of a property, at the bottom of the chain, decides the type of every override above it
+/// (decision 028).
+#[test]
+fn an_override_of_an_override_of_a_property_with_no_type_has_no_type() {
+    assert_eq!(
+        rush_order_members("<?php class Model { protected $table = ''; }"),
+        indoc! {r#"
+            STMT_LIST
+              PROP_GROUP [2]
+                null
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "table"
+                    ZVAL "rush_orders"
+                    null
+                    null
+                ATTRIBUTE_LIST
+                  ATTRIBUTE_GROUP
+                    ATTRIBUTE
+                      ZVAL "Override"
+                      null
+        "#}
+    );
+}
+
+/// ```php
+/// #[\Override] protected ?string $table = 'rush_orders';
+/// ```
+///
+/// An override of an override keeps its written type when the root declaration has a type.
+#[test]
+fn an_override_of_an_override_of_a_typed_property_keeps_its_type() {
+    assert_eq!(
+        rush_order_members("<?php class Model { protected ?string $table = ''; }"),
+        indoc! {r#"
+            STMT_LIST
+              PROP_GROUP [2]
+                ZVAL [257] "string"
+                PROP_DECL
+                  PROP_ELEM
+                    ZVAL "table"
+                    ZVAL "rush_orders"
                     null
                     null
                 ATTRIBUTE_LIST
@@ -7100,6 +7224,125 @@ fn a_form_that_reads_its_slots_in_order_first_inlines_with_any_arguments() {
                         ZVAL "text"
                       ZVAL "label"
                       ARG_LIST
+        "#}
+    );
+}
+
+/// `Sharp\Padding` at the standard library's path, with a method whose body reads the global constant `STR_PAD_LEFT`.
+const PADDING: (&str, &str) = (
+    "vendor/heyjordanparker/php-sharp-composer/library/Sharp/Padding.sharp",
+    "namespace Sharp;\n\npublic class Padding\n{\n    public static string left(string text, int width) => str_pad(text, width, \" \", STR_PAD_LEFT);\n\n    public static string after(string text, int start) => substr(text, start, null);\n}\n",
+);
+
+/// The statements of `run`, declared with `signature` and holding `statements` in a class of `namespace` that imports
+/// `Sharp.Padding`, lowered with the inline forms of `PADDING`.
+fn padded_body(namespace: &str, signature: &str, statements: &str) -> String {
+    let code = format!(
+        "namespace {namespace};\n\nimport Sharp.Padding;\n\nclass Report\n{{\n    public {signature}\n    {{\n{statements}    }}\n}}\n"
+    );
+
+    Lowered::inlining(&code, &[], &[PADDING]).body()
+}
+
+/// ```php
+/// return \str_pad($name, 4, ' ', \STR_PAD_LEFT);
+/// ```
+///
+/// A form may read a global constant, as it reads a literal. The form is copied out of the standard library file's
+/// namespace, so it names the constant by its full name, `ZEND_NAME_FQ`, which is 0.
+#[test]
+fn a_form_that_reads_a_global_constant_names_it_by_its_full_name() {
+    assert_eq!(
+        padded_body("App.Tenant", "string run(string name)", "        return Padding.left(name, 4);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CALL
+                  ZVAL "str_pad"
+                  ARG_LIST
+                    VAR
+                      ZVAL "name"
+                    ZVAL 4
+                    ZVAL " "
+                    CONST
+                      ZVAL "STR_PAD_LEFT"
+        "#}
+    );
+}
+
+/// ```php
+/// return \substr($name, 2, null);
+/// ```
+///
+/// `null`, `true` and `false` are literals, never constant reads, so a form that passes one inlines it as its value.
+#[test]
+fn a_form_that_passes_null_inlines_it_as_a_literal() {
+    assert_eq!(
+        padded_body("App.Tenant", "string run(string name)", "        return Padding.after(name, 2);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CALL
+                  ZVAL "substr"
+                  ARG_LIST
+                    VAR
+                      ZVAL "name"
+                    ZVAL 2
+                    ZVAL null
+        "#}
+    );
+}
+
+/// PHP reads `\null`, `\true` and `\false` as constants, which the codebase declares no metadata for. PHP# refuses a
+/// `\` name, so a standard library form never holds one, and only the literals `null`, `true` and `false` reach it.
+#[test]
+fn a_fully_qualified_null_true_or_false_in_a_library_body_is_refused() {
+    for value in ["\\null", "\\true", "\\false"] {
+        let library = format!(
+            "namespace Sharp;\n\npublic class Padding\n{{\n    public static Any? tail(Any? value) => {value};\n}}\n"
+        );
+        let refusal = common::checked(PADDING.0, &library, &[], inline_forms)
+            .map(|_| ())
+            .expect_err("PHP# refuses a `\\` name in a library body");
+
+        assert_eq!(refusal.len(), 1, "{refusal:?}");
+        assert!(refusal[0].contains("parse error: A `\\` name is PHP syntax"), "{refusal:?}");
+    }
+}
+
+/// A form's constant names the same constant in every namespace that calls it, so its tree is the same in each.
+#[test]
+fn a_form_that_reads_a_global_constant_inlines_the_same_tree_in_any_namespace() {
+    let [library, tenant] = ["Lib.Reports", "App.Tenant"]
+        .map(|namespace| padded_body(namespace, "string run(string name)", "        return Padding.left(name, 4);\n"));
+
+    assert!(tenant.contains("CONST\n          ZVAL \"STR_PAD_LEFT\"\n"), "{tenant}");
+    assert_eq!(library, tenant);
+}
+
+/// ```php
+/// return \str_pad($name, PHP_INT_SIZE, ' ', \STR_PAD_LEFT);
+/// ```
+///
+/// A constant the caller passes keeps the caller's short name, `[1]` `ZEND_NAME_NOT_FQ`, which the engine looks up
+/// in the caller's namespace first, as the caller wrote it. Only the form's own constant takes its full name.
+#[test]
+fn a_constant_the_caller_passes_keeps_its_short_name_beside_the_forms_full_name() {
+    assert_eq!(
+        padded_body("App.Tenant", "string run(string name)", "        return Padding.left(name, PHP_INT_SIZE);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CALL
+                  ZVAL "str_pad"
+                  ARG_LIST
+                    VAR
+                      ZVAL "name"
+                    CONST
+                      ZVAL [1] "PHP_INT_SIZE"
+                    ZVAL " "
+                    CONST
+                      ZVAL "STR_PAD_LEFT"
         "#}
     );
 }

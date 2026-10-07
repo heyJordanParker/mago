@@ -7,6 +7,7 @@ use crate::ttype::TType;
 use crate::ttype::atomic::populate_atomic_type;
 use crate::ttype::union::populate_union_type;
 use mago_word::Word;
+use mago_word::ascii_lowercase_word;
 
 /// Populates metadata for a single function or method.
 ///
@@ -146,6 +147,7 @@ fn add_attribute_reference(
     name: Word,
     in_signature_override: Option<bool>,
 ) {
+    let name = ascii_lowercase_word(name.as_bytes());
     match reference_source {
         ReferenceSource::Symbol(in_signature, a) => {
             symbol_references.add_symbol_reference_to_symbol(*a, name, in_signature_override.unwrap_or(*in_signature));

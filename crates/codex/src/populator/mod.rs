@@ -3,6 +3,7 @@ use foldhash::HashSet;
 use mago_word::Word;
 use mago_word::WordMap;
 use mago_word::WordSet;
+use mago_word::ascii_lowercase_word;
 
 use crate::metadata::CodebaseMetadata;
 use crate::metadata::constant::ConstantMetadata;
@@ -339,7 +340,11 @@ fn populate_constant(
     force_repopulation: bool,
 ) {
     for attribute_metadata in &constant.attributes {
-        symbol_references.add_symbol_reference_to_symbol(name, attribute_metadata.name, true);
+        symbol_references.add_symbol_reference_to_symbol(
+            name,
+            ascii_lowercase_word(attribute_metadata.name.as_bytes()),
+            true,
+        );
     }
 
     if let Some(type_metadata) = &mut constant.type_metadata {

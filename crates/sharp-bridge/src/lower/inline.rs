@@ -24,9 +24,11 @@ use mago_syntax::cst::Statement;
 use super::Lines;
 use super::Lowering;
 use super::NULL;
+use super::ZEND_NAME_FQ;
 use super::types::DeclarationKind;
 use super::types::receiver_classes;
 use crate::lower::checked::CheckedProgram;
+use crate::sharp_kind::SHARP_AST_CONST;
 use crate::sharp_kind::SHARP_AST_VAR;
 use crate::sharp_node;
 use crate::store_text;
@@ -180,6 +182,17 @@ impl Lowering<'_, '_> {
                 slots[slot] = index as u32;
             }
         }
+        // A form leaves the library file's namespace when it is copied, so each global constant it reads is named in
+        // full, where the caller's own namespace would be looked up first.
+        let constants: Vec<usize> = self
+            .nodes
+            .iter()
+            .filter(|node| node.kind == SHARP_AST_CONST)
+            .map(|node| self.children[node.first_child as usize] as usize)
+            .collect();
+        for constant in constants {
+            self.nodes[constant].attr = ZEND_NAME_FQ;
+        }
         for node in &mut self.nodes {
             node.line = 0;
         }
@@ -202,6 +215,9 @@ impl Lowering<'_, '_> {
                 steps.push(Step::Read(slot));
 
                 true
+            }
+            Expression::ConstantAccess(name) if self.names.binding(&name.name) == Some(Binding::Constant) => {
+                !self.types.constant_target(name).as_bytes().contains(&b'\\')
             }
             Expression::Call(Call::Function(FunctionCall {
                 function: Expression::Identifier(function),

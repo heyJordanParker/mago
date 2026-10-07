@@ -1,6 +1,7 @@
 use mago_analyzer::artifacts::AnalysisArtifacts;
 use mago_codex::identifier::method::MethodIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
+use mago_codex::metadata::property::PropertyMetadata;
 use mago_codex::ttype::add_optional_union_type;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::object::TObject;
@@ -12,6 +13,7 @@ use mago_names::ResolvedNames;
 use mago_span::HasSpan;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::ClassLikeMemberSelector;
+use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Expression;
 use mago_word::Word;
 use mago_word::word;
@@ -54,7 +56,8 @@ pub(crate) enum DeclarationKind {
     Constant,
     EnumCase,
     StaticProperty,
-    /// `typed` is whether the property is declared with a type, which PHP requires of a property that overrides it.
+    /// `typed` is whether the property's root declaration, the one at the bottom of its chain of overrides, has a type.
+    /// PHP refuses a type on an override of an untyped property, so every override above an untyped root runs untyped.
     Property {
         typed: bool,
     },
@@ -169,6 +172,15 @@ impl<'analysis> Types<'analysis> {
         declarations[0]
     }
 
+    /// The full name of the constant the read `constant` reaches, as the analysis found it: the constant of that name
+    /// in the file's namespace, or else the global one.
+    pub(crate) fn constant_target(&self, constant: &ConstantAccess) -> Word {
+        self.codebase
+            .get_constant_or_global(self.names.get(constant), constant.name.value())
+            .unwrap_or_else(|| unreachable!("the checker refuses the undefined constant `{}`", constant.name))
+            .name
+    }
+
     /// The inline form of the standard library method `declaration` names, if it has one.
     pub(crate) fn inline_form(&self, declaration: &Declaration) -> Option<&'analysis InlineForm> {
         if !matches!(declaration.kind, DeclarationKind::Method { .. } | DeclarationKind::StaticMethod) {
@@ -241,7 +253,9 @@ impl<'analysis> Types<'analysis> {
         let kind = if metadata.flags.is_static() {
             DeclarationKind::StaticProperty
         } else {
-            DeclarationKind::Property { typed: metadata.type_declaration_metadata.is_some() }
+            DeclarationKind::Property {
+                typed: self.root_property(class, &variable).type_declaration_metadata.is_some(),
+            }
         };
 
         Some(Declaration {
@@ -250,6 +264,26 @@ impl<'analysis> Types<'analysis> {
             name: word(property),
             public: metadata.read_visibility.is_public(),
         })
+    }
+
+    /// The root declaration of the property `variable` that `class` declares or inherits: the one in the class whose
+    /// parent does not declare it.
+    fn root_property(&self, class: &[u8], variable: &[u8]) -> &'analysis PropertyMetadata {
+        let declaring = |class: &[u8]| self.codebase.get_declaring_property_class(class, variable);
+        let mut root =
+            declaring(class).unwrap_or_else(|| unreachable!("`{}` declares or inherits the property", word(class)));
+        while let Some(parent) = self
+            .codebase
+            .get_class_like(root.as_bytes())
+            .and_then(|metadata| metadata.direct_parent_class)
+            .and_then(|parent| declaring(parent.as_bytes()))
+        {
+            root = parent;
+        }
+
+        self.codebase
+            .get_declaring_property(root.as_bytes(), variable)
+            .unwrap_or_else(|| unreachable!("`{root}` declares the property"))
     }
 
     /// The method `class` declares or inherits by the name `method`, if any.

@@ -658,7 +658,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// value is its default, unless the property is `readonly`. A member that starts as null without an initial value
     /// takes the default `null` on the line of its name, as php-src builds `private ?int $total = null;`. An override is
     /// a field with `#[\Override]`. PHP refuses a type on a property whose parent's property has none, so an override of
-    /// a property of `parent` with no type has none either (decision 028).
+    /// a property of `parent` whose root declaration has no type has none either, down the whole chain (decision 028).
     fn property(&mut self, property: &Property, parent: Option<&[u8]>) -> u32 {
         let (accessor_flags, attribute_lists, hooks) = match property {
             Property::Plain(field) => (0, &field.attribute_lists, NULL),

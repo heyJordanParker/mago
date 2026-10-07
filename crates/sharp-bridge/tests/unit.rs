@@ -492,9 +492,9 @@ const ZEND_COMPILE_H: &str = "#define ZEND_ISEMPTY\t\t\t(1<<0)
 #define ZEND_LAST_CATCH\t\t\t(1<<0)
 ";
 
-/// The `SHARP_UNIT_ABI` line `just regen-sharp-kinds` prints for the two headers, run in a copy of the repository's
-/// script and bridge sources after `edit` changes one of those sources.
-fn generated_abi(zend_ast: &str, zend_compile: &str, edit: Option<(&str, &str, &str)>) -> String {
+/// `just regen-sharp-kinds` for `zend_ast`, run in a copy of the repository's script and bridge sources after `edit`
+/// changes one of those sources. The copy lives as long as the returned folder.
+fn generator(zend_ast: &str, edit: Option<(&str, &str, &str)>) -> (tempfile::TempDir, Command) {
     let root = tempfile::tempdir().unwrap();
     let sources = root.path().join("crates/sharp-bridge/src");
     fs::create_dir_all(root.path().join("scripts")).unwrap();
@@ -510,14 +510,17 @@ fn generated_abi(zend_ast: &str, zend_compile: &str, edit: Option<(&str, &str, &
         fs::write(sources.join(file), source.replacen(from, to, 1)).unwrap();
     }
     fs::write(root.path().join("zend_ast.h"), zend_ast).unwrap();
-    fs::write(root.path().join("zend_compile.h"), zend_compile).unwrap();
 
-    let output = Command::new("php")
-        .arg(root.path().join("scripts/regen-sharp-kinds.php"))
-        .arg(root.path().join("zend_ast.h"))
-        .arg(root.path().join("zend_compile.h"))
-        .output()
-        .unwrap();
+    let mut command = Command::new("php");
+    command.arg(root.path().join("scripts/regen-sharp-kinds.php")).arg(root.path().join("zend_ast.h"));
+
+    (root, command)
+}
+
+/// The `SHARP_UNIT_ABI` line the generator prints for `zend_ast` after `edit`.
+fn generated_abi(zend_ast: &str, edit: Option<(&str, &str, &str)>) -> String {
+    let (_root, mut command) = generator(zend_ast, edit);
+    let output = command.output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 
     String::from_utf8(output.stdout)
@@ -529,15 +532,15 @@ fn generated_abi(zend_ast: &str, zend_compile: &str, edit: Option<(&str, &str, &
 }
 
 #[test]
-fn the_unit_abi_changes_with_the_kind_table_the_layouts_and_the_mark_register() {
-    if !php_is_available("the_unit_abi_changes_with_the_kind_table_the_layouts_and_the_mark_register") {
+fn the_unit_abi_changes_with_the_kind_table_and_the_layouts() {
+    if !php_is_available("the_unit_abi_changes_with_the_kind_table_and_the_layouts") {
         return;
     }
 
-    let base = generated_abi(ZEND_AST_H, ZEND_COMPILE_H, None);
-    assert_eq!(generated_abi(ZEND_AST_H, ZEND_COMPILE_H, None), base);
+    let base = generated_abi(ZEND_AST_H, None);
+    assert_eq!(generated_abi(ZEND_AST_H, None), base);
     assert_eq!(
-        generated_abi(ZEND_AST_H, ZEND_COMPILE_H, Some(("lib.rs", "/// First line.", "/// The first line."))),
+        generated_abi(ZEND_AST_H, Some(("lib.rs", "/// First line.", "/// The first line."))),
         base,
         "a comment is not layout"
     );
@@ -545,46 +548,39 @@ fn the_unit_abi_changes_with_the_kind_table_the_layouts_and_the_mark_register() 
     for (change, abi) in [
         (
             "a kind",
-            generated_abi(
-                &ZEND_AST_H.replace("ZEND_AST_CONSTANT,", "ZEND_AST_CONSTANT,\n\tZEND_AST_ZNODE,"),
-                ZEND_COMPILE_H,
-                None,
-            ),
+            generated_abi(&ZEND_AST_H.replace("ZEND_AST_CONSTANT,", "ZEND_AST_CONSTANT,\n\tZEND_AST_ZNODE,"), None),
         ),
-        (
-            "a sharp_node field",
-            generated_abi(ZEND_AST_H, ZEND_COMPILE_H, Some(("lib.rs", "pub line: u32,", "pub line: u64,"))),
-        ),
+        ("a sharp_node field", generated_abi(ZEND_AST_H, Some(("lib.rs", "pub line: u32,", "pub line: u64,")))),
         (
             "a sharp_value case",
-            generated_abi(ZEND_AST_H, ZEND_COMPILE_H, Some(("lib.rs", "SHARP_LONG,", "SHARP_LONG,\n    SHARP_ARRAY,"))),
+            generated_abi(ZEND_AST_H, Some(("lib.rs", "SHARP_LONG,", "SHARP_LONG,\n    SHARP_ARRAY,"))),
         ),
-        (
-            "a sharp_str field",
-            generated_abi(ZEND_AST_H, ZEND_COMPILE_H, Some(("lib.rs", "pub len: u32,", "pub len: u64,"))),
-        ),
+        ("a sharp_str field", generated_abi(ZEND_AST_H, Some(("lib.rs", "pub len: u32,", "pub len: u64,")))),
         (
             "a header field",
-            generated_abi(
-                ZEND_AST_H,
-                ZEND_COMPILE_H,
-                Some(("unit.rs", "pub facts_size: u32,", "pub facts_size: u64,")),
-            ),
+            generated_abi(ZEND_AST_H, Some(("unit.rs", "pub facts_size: u32,", "pub facts_size: u64,"))),
         ),
         (
             "a sharp_input field",
-            generated_abi(ZEND_AST_H, ZEND_COMPILE_H, Some(("unit.rs", "pub mtime_ns: i64,", "pub mtime_ns: u64,"))),
-        ),
-        ("a mark's bit", generated_abi(ZEND_AST_H, &ZEND_COMPILE_H.replace("(1<<15)", "(1<<16)"), None)),
-        (
-            "a mark's field",
-            generated_abi(
-                ZEND_AST_H,
-                &ZEND_COMPILE_H.replace("extended_value of ZEND_ADD", "result_type of ZEND_ADD"),
-                None,
-            ),
+            generated_abi(ZEND_AST_H, Some(("unit.rs", "pub mtime_ns: i64,", "pub mtime_ns: u64,"))),
         ),
     ] {
         assert_ne!(abi, base, "{change}");
     }
+}
+
+/// The generator reads one header, so a second argument is an error.
+#[test]
+fn the_kind_generator_takes_only_zend_ast_h() {
+    if !php_is_available("the_kind_generator_takes_only_zend_ast_h") {
+        return;
+    }
+
+    let (root, mut command) = generator(ZEND_AST_H, None);
+    fs::write(root.path().join("zend_compile.h"), ZEND_COMPILE_H).unwrap();
+    let output = command.arg(root.path().join("zend_compile.h")).output().unwrap();
+
+    assert!(!output.status.success(), "a second argument is an error");
+    let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(printed.contains("Pass only the path to php-src's `Zend/zend_ast.h`."), "{printed}");
 }

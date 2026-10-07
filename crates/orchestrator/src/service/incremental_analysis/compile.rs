@@ -917,6 +917,12 @@ mod tests {
                 assert!(naming.contains(reached), "{}: {reached} does not name {}: {naming:?}", edit.name, edit.edited);
             }
 
+            // Deleting a file removes the class it declares, and the warm path then runs a full analysis, which
+            // rechecks every file.
+            if edit.deleted {
+                continue;
+            }
+
             let mut warm = analyzed(&base);
             warm.update_database(edited.read_only());
             warm.analyze_incremental(None).expect("the warm path runs");
@@ -1073,11 +1079,13 @@ mod tests {
             usize::try_from(self.0 % bound.max(1) as u64).expect("a number below a usize fits in one")
         }
 
-        /// One of the indexes below `below` that `wanted` accepts, or none when there is none.
+        /// One time in three, one of the indexes below `below` that `wanted` accepts, and otherwise none. Most
+        /// declarations then have no parent, interface or trait, so they form a forest of shallow trees, as in real
+        /// code, and not one tree whose root reaches every declaration.
         fn earlier(&mut self, below: usize, wanted: impl Fn(usize) -> bool) -> Option<usize> {
             let candidates: Vec<usize> = (0..below).filter(|index| wanted(*index)).collect();
 
-            (!candidates.is_empty()).then(|| candidates[self.below(candidates.len())])
+            (!candidates.is_empty() && self.below(3) == 0).then(|| candidates[self.below(candidates.len())])
         }
     }
 
@@ -1111,7 +1119,13 @@ mod tests {
             let index = (start..count).chain(0..start).find(|index| Generated::at(*index) == Generated::Class);
             format!("Class{}", index.expect("a generated project holds a class"))
         };
+        // Most declared types are scalars, so a signature edit reaches part of the project, as it does in real code,
+        // and not nearly all of it.
         let type_hint = |random: &mut Random| {
+            if random.below(4) != 0 {
+                return "int".to_string();
+            }
+
             let index = random.below(count);
             match Generated::at(index) {
                 Generated::Interface => format!("Interface{index}"),

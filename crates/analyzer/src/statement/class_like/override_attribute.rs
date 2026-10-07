@@ -1,6 +1,7 @@
 use mago_allocator::Arena;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
+use mago_codex::metadata::property::PropertyMetadata;
 use mago_names::binding::php_method_name;
 use mago_names::binding::php_variable_name;
 use mago_php_version::PHPVersion;
@@ -196,8 +197,8 @@ pub fn check_override_attribute<'ctx, 'arena, A>(
     }
 }
 
-/// Checks PHP#'s `override` on fields. Spec section 6.1 requires it on a field that replaces a plain PHP parent's
-/// property, and a PHP# parent's property is overridden as a property, which is not supported yet.
+/// Checks PHP#'s `override` on fields. Spec section 6.1 requires it on a field that replaces a parent's property, plain
+/// PHP or PHP#, and `check_class_like_properties` checks the type and access level against the parent's declaration.
 fn check_override_modifier_on_fields<'ctx, 'arena, A>(
     metadata: &'ctx ClassLikeMetadata,
     members: &[ClassLikeMember<'arena>],
@@ -215,7 +216,7 @@ fn check_override_modifier_on_fields<'ctx, 'arena, A>(
         let name = php_variable_name(variable.name);
         let override_modifier = field.modifiers.iter().find(|modifier| matches!(modifier, Modifier::Override(_)));
 
-        match (overridden_property_class(metadata, name, context.codebase), override_modifier) {
+        match (overridden_properties(metadata, name, context.codebase).next(), override_modifier) {
             (None, Some(override_modifier)) if !metadata.has_incomplete_hierarchy() => {
                 context.collector.report(
                     Issue::error(format!("Invalid `override` modifier on `{class_name}::{name}`."))
@@ -227,7 +228,9 @@ fn check_override_modifier_on_fields<'ctx, 'arena, A>(
                         .with_help(format!("Remove the `override` modifier from `{name}` or verify inheritance.")),
                 );
             }
-            (Some(parent), Some(override_modifier)) if parent.flags.is_sharp() => {
+            (Some((parent, parent_property)), Some(override_modifier))
+                if parent.flags.is_sharp() && !parent_property.hooks.is_empty() =>
+            {
                 let parent_name = parent.original_name;
 
                 context.collector.report(
@@ -236,10 +239,11 @@ fn check_override_modifier_on_fields<'ctx, 'arena, A>(
                         .with_annotation(
                             Annotation::primary(override_modifier.span()).with_message("Not supported yet."),
                         )
-                        .with_note("A PHP# parent's property is overridden as a property, as spec section 6.1 says."),
+                        .with_note("A PHP# parent's property is overridden as a property, as spec section 6.1 says.")
+                        .with_note("PHP keeps the parent's accessors on a field that overrides it."),
                 );
             }
-            (Some(parent), None) if !parent.flags.is_sharp() => {
+            (Some((parent, _)), None) => {
                 let parent_name = parent.original_name;
 
                 context.collector.report(
@@ -257,23 +261,20 @@ fn check_override_modifier_on_fields<'ctx, 'arena, A>(
     }
 }
 
-/// The nearest parent class that declares a property named `name` its children inherit, a private one excluded.
-fn overridden_property_class<'ctx>(
+/// The parent classes that declare a property named `name` its children inherit, with their declarations, nearest
+/// first and up to the root, the farthest one before a parent that declares it private.
+pub(super) fn overridden_properties<'ctx>(
     metadata: &ClassLikeMetadata,
     name: Word,
     codebase: &'ctx CodebaseMetadata,
-) -> Option<&'ctx ClassLikeMetadata> {
-    let mut parent_name = metadata.direct_parent_class;
-    while let Some(name_of_parent) = parent_name {
-        let parent = codebase.get_class_like(name_of_parent.as_bytes())?;
-        if let Some(property) = parent.properties.get(&name) {
-            return (!property.read_visibility.is_private()).then_some(parent);
-        }
+) -> impl Iterator<Item = (&'ctx ClassLikeMetadata, &'ctx PropertyMetadata)> {
+    let parent_of = move |class: &ClassLikeMetadata| {
+        class.direct_parent_class.and_then(|parent| codebase.get_class_like(parent.as_bytes()))
+    };
 
-        parent_name = parent.direct_parent_class;
-    }
-
-    None
+    std::iter::successors(parent_of(metadata), move |parent| parent_of(parent))
+        .filter_map(move |parent| Some((parent, parent.properties.get(&name)?)))
+        .take_while(|(_, property)| !property.read_visibility.is_private())
 }
 
 /// Reports `issue` about a stray override marker, with the edit that deletes a PHP `#[Override]` attribute.
