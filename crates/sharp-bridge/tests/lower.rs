@@ -2627,32 +2627,25 @@ fn an_extern_void_method_calls_without_return_and_forwards_a_variadic_parameter_
     );
 }
 
-/// The analyzer refuses an `extern` method in a project file, and the engine does not run the analyzer. A class outside
-/// `Sharp` keeps its whole name in the native function's name, which the engine never registers, so the call fails
-/// at run time.
+/// The engine does not run the analyzer, which refuses an `extern` method in a project file, so the bridge names a
+/// native function only for a class under `Sharp`. `Text\Text` would otherwise reach `Sharp\Text\Text`'s native body.
 #[test]
-fn an_extern_method_outside_sharp_calls_a_native_function_named_after_its_whole_class_name() {
-    let lowered = Lowered::named(
-        "src/App/Tools.sharp",
-        "namespace App;\n\npublic static class Tools\n{\n    public static extern string slug(string title);\n}\n",
-    );
-    assert_eq!(lowered.diagnostics(), Vec::<String>::new());
+fn an_extern_method_outside_sharp_is_a_lowering_error() {
+    for namespace in ["App", "Text"] {
+        let lowered = Lowered::named(
+            "src/Text.sharp",
+            &format!(
+                "namespace {namespace};\n\npublic static class Text\n{{\n    public static extern string slug(string title);\n}}\n"
+            ),
+        );
 
-    let method =
-        lowered.nodes().iter().position(|node| node.kind == sharp_kind::SHARP_AST_METHOD).expect("the method's node");
-
-    assert_eq!(
-        lowered.render(lowered.child(method as u32, 2)),
-        indoc! {r#"
-            STMT_LIST
-              RETURN
-                CALL
-                  ZVAL "Sharp\\Internal\\App\\Tools\\slug"
-                  ARG_LIST
-                    VAR
-                      ZVAL "title"
-        "#}
-    );
+        assert_eq!(
+            lowered.diagnostics(),
+            ["5:33 compile error: Only the standard library declares native bodies: give `slug` a body."],
+            "{namespace}"
+        );
+        assert!(lowered.nodes().is_empty(), "{namespace}");
+    }
 }
 
 /// ```php

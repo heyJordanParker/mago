@@ -335,6 +335,8 @@ struct Lowering<'lowering, 'arena> {
     in_constant_expression: bool,
     /// The name of the property whose accessor body is being lowered, which `field` reads and writes.
     property: Vec<u8>,
+    /// The errors only the lowering finds, which fail the file as the checks' errors do.
+    diagnostics: Vec<Diagnostic>,
 }
 
 impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
@@ -353,6 +355,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             loop_depth: 0,
             in_constant_expression: false,
             property: Vec::new(),
+            diagnostics: Vec::new(),
         }
     }
 
@@ -383,6 +386,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let mut statements = vec![self.strict_types()];
         for statement in &checked.program().statements {
             self.file_statement(statement, &mut statements);
+        }
+
+        if !self.diagnostics.is_empty() {
+            return Unit::failed(self.diagnostics);
         }
 
         let root = self.node(SHARP_AST_STMT_LIST, 0, 1, &statements);
@@ -451,7 +458,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 {
                     let call = self.native_call(method, self.names.get(&class.name));
 
-                    self.method(method, modifier_flags(&method.modifiers), &[call])
+                    self.method(method, modifier_flags(&method.modifiers), call.as_slice())
                 }
                 ClassLikeMember::Method(method) => self.method(method, modifier_flags(&method.modifiers), &[]),
                 ClassLikeMember::Property(property) => self.property(property),
@@ -634,12 +641,24 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// The statement an `extern` method's body runs, as php-src's grammar builds
     /// `return \Sharp\Internal\Text\Text\slug($title);`: a call of the native function the engine registers under
     /// `Sharp\Internal`, then the class's full name after `Sharp\`, then the method's name. It passes each parameter on,
-    /// a variadic one as a spread, and returns the result unless the method is `void`. A class outside `Sharp`, which
-    /// the analyzer refuses, keeps its whole name, so the engine registers no such function and the call fails.
-    fn native_call(&mut self, method: &Method, class: &[u8]) -> u32 {
-        let class_in_library = match class.split_at_checked(b"Sharp\\".len()) {
-            Some((root, rest)) if root.eq_ignore_ascii_case(b"Sharp\\") => rest,
-            _ => class,
+    /// a variadic one as a spread, and returns the result unless the method is `void`. A class outside `Sharp` has no
+    /// native function: the engine does not run the analyzer, which refuses it, so the lowering refuses it here, and
+    /// returns no statement.
+    fn native_call(&mut self, method: &Method, class: &[u8]) -> Option<u32> {
+        let Some(class_in_library) = class
+            .split_at_checked(b"Sharp\\".len())
+            .and_then(|(root, rest)| root.eq_ignore_ascii_case(b"Sharp\\").then_some(rest))
+        else {
+            self.diagnostics.push(self.lines.diagnostic(
+                Some(method.name.span),
+                sharp_severity::SHARP_COMPILE_ERROR,
+                format!(
+                    "Only the standard library declares native bodies: give `{}` a body.",
+                    String::from_utf8_lossy(method.name.value)
+                ),
+            ));
+
+            return None;
         };
         let line = self.line(method.name.span);
         let function = [b"Sharp\\Internal\\".as_slice(), class_in_library, b"\\", method.name.value].concat();
@@ -658,7 +677,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let arguments = self.node(SHARP_AST_ARG_LIST, 0, line, &arguments);
         let call = self.node(SHARP_AST_CALL, 0, line, &[function, arguments]);
 
-        if method.returns_value() { self.node(SHARP_AST_RETURN, 0, line, &[call]) } else { call }
+        Some(if method.returns_value() { self.node(SHARP_AST_RETURN, 0, line, &[call]) } else { call })
     }
 
     /// A variadic parameter carries `ZEND_PARAM_VARIADIC`, as php-src's grammar builds `int ...$values`.

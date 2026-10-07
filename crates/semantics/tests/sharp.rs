@@ -1672,6 +1672,20 @@ fn an_extern_method_is_public_static_in_a_static_class_with_no_body_in_any_names
     }
 }
 
+/// An `extern` method is refused at its name, so a body written by mistake still has its own errors reported.
+#[test]
+fn an_extern_method_with_a_body_has_its_body_checked() {
+    let code = "namespace Sharp.Text;\n\npublic static class Text\n{\n    public static extern string slug(string title)\n    {\n        echo title;\n        return title;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:33 An `extern` method is `public static`, in a static class, with no body.",
+            "7:9 PHP# has no `echo`: write `printf` or `fwrite`.",
+        ]
+    );
+}
+
 #[test]
 fn extern_on_a_field_is_not_supported_yet() {
     let code = "namespace Sharp.Text;\n\npublic static class Text\n{\n    private static extern int count = 0;\n}\n";

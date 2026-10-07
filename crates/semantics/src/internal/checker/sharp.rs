@@ -690,7 +690,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
                     check_declared_name(method.name.value, method.name.span, context);
                 }
 
-                check_extern(method, context).then_some(Method)
+                check_extern(method, context)
             }
             Err((message, help)) => report_refusal(
                 Issue::error(message)
@@ -1361,25 +1361,27 @@ fn is_extern(method: &Method) -> bool {
     method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Extern(_)))
 }
 
-/// Whether the slice has a method's `extern`, reporting it when it does not: an `extern` method is `public static`, in
-/// a static class, with no body. Only the standard library declares native bodies, but the engine compiles the
-/// library's files from `vendor/` as any other, so the analyzer, which knows a project file, refuses one there.
-fn check_extern(method: &Method, context: &mut Context<'_, '_, '_>) -> bool {
+/// The place of a method's parts, refusing an `extern` method that is not `public static`, in a static class, with no
+/// body. The refusal is at its name, so its other parts, a body written by mistake among them, stay checked. Only the
+/// standard library declares native bodies, but the engine compiles the library's files from `vendor/` as any other,
+/// so the analyzer, which knows a project file, refuses one there.
+fn check_extern(method: &Method, context: &mut Context<'_, '_, '_>) -> Option<Place> {
     if !is_extern(method)
         || (enclosing_class(context.program, method.span()).is_some_and(|class| class.is_static)
             && method.modifiers.contains_public()
             && method.is_static()
             && matches!(method.body, MethodBody::Abstract(_)))
     {
-        return true;
+        return Some(Place::Method);
     }
 
-    context.report(
+    report_refusal(
         Issue::error("An `extern` method is `public static`, in a static class, with no body.")
             .with_annotation(Annotation::primary(method.name.span).with_message("Declared `extern` here.")),
-    );
-
-    false
+        method.span(),
+        Place::Method,
+        context,
+    )
 }
 
 /// Reports what the engine refuses in a header when it declares the class: a name the header already holds, and in an
