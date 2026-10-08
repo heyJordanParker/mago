@@ -351,6 +351,11 @@ where
                 class_like_metadata.flags |= MetadataFlags::READONLY;
             }
 
+            // A PHP# static class runs as a final PHP class, and the analyzer refuses `new` on it by name.
+            if context.program.dialect.is_sharp() && modifiers.is_some_and(Sequence::contains_static) {
+                class_like_metadata.flags |= MetadataFlags::FINAL | MetadataFlags::STATIC;
+            }
+
             codebase.symbols.add_symbol_name(name, SymbolKind::Class);
 
             if let Some(extended_class) = extends.and_then(|e| e.types.first()) {

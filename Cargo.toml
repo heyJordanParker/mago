@@ -277,6 +277,7 @@ mago-codex = { workspace = true }
 mago-guard = { workspace = true, features = ["serde"] }
 mago-orchestrator = { workspace = true }
 mago-server = { workspace = true }
+mago-sharp-bridge = { workspace = true }
 mago-extension = { workspace = true }
 serde = { workspace = true }
 clap = { workspace = true }

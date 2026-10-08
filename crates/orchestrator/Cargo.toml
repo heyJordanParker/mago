@@ -28,8 +28,12 @@ mago-codex = { workspace = true }
 mago-collector = { workspace = true }
 mago-analyzer = { workspace = true }
 mago-guard = { workspace = true }
+mago-sharp-bridge = { workspace = true }
 foldhash = { workspace = true }
 tracing = { workspace = true }
 indicatif = { workspace = true }
 rayon = { workspace = true }
 xxhash-rust = { workspace = true }
+
+[dev-dependencies]
+mago-prelude = { workspace = true, features = ["build"] }

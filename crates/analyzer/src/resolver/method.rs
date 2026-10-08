@@ -582,6 +582,7 @@ where
 {
     let forwarded = context.plugin_registry.get_forwarded_call(
         context.codebase,
+        context.source_file,
         classname.as_bytes(),
         method_name.as_bytes(),
         false,

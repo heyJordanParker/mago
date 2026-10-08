@@ -5,6 +5,7 @@ use std::sync::Arc;
 use foldhash::HashMap;
 
 use mago_word::Word;
+use mago_word::ascii_lowercase_word;
 use mago_word::concat_word;
 use mago_word::word;
 
@@ -1055,14 +1056,15 @@ fn add_symbol_references(
             match atomic {
                 TAtomic::Reference(TReference::Symbol { name, .. })
                 | TAtomic::Callable(TCallable::Alias(FunctionLikeIdentifier::Function(name))) => {
+                    let name = ascii_lowercase_word(name.as_bytes());
                     match calling_function_like_id {
                         Some(FunctionLikeIdentifier::Function(calling_function)) => {
-                            artifacts.symbol_references.add_symbol_reference_to_symbol(*calling_function, *name, true);
+                            artifacts.symbol_references.add_symbol_reference_to_symbol(*calling_function, name, true);
                         }
                         Some(FunctionLikeIdentifier::Method(calling_classlike, calling_function)) => {
                             artifacts.symbol_references.add_class_member_reference_to_symbol(
                                 (*calling_classlike, *calling_function),
-                                *name,
+                                name,
                                 true,
                             );
                         }
@@ -1070,18 +1072,19 @@ fn add_symbol_references(
                     }
                 }
                 TAtomic::Callable(TCallable::Alias(FunctionLikeIdentifier::Method(name, member_name))) => {
+                    let method = (ascii_lowercase_word(name.as_bytes()), ascii_lowercase_word(member_name.as_bytes()));
                     match calling_function_like_id {
                         Some(FunctionLikeIdentifier::Function(calling_function)) => {
                             artifacts.symbol_references.add_symbol_reference_to_class_member(
                                 *calling_function,
-                                (*name, *member_name),
+                                method,
                                 true,
                             );
                         }
                         Some(FunctionLikeIdentifier::Method(calling_classlike, calling_function)) => {
                             artifacts.symbol_references.add_class_member_reference_to_class_member(
                                 (*calling_classlike, *calling_function),
-                                (*name, *member_name),
+                                method,
                                 true,
                             );
                         }

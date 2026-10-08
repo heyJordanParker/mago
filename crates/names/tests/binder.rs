@@ -404,6 +404,26 @@ fn a_bare_int_or_float_before_a_dot_is_the_class_in_the_sharp_namespace() {
 }
 
 #[test]
+fn a_bare_bool_before_a_dot_is_the_class_in_the_sharp_namespace() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nclass Report\n{\n    public bool? run(string text)\n    {\n        return Bool.tryParse(text);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "Bool.", 0), Some(Binding::Class));
+    assert_eq!(resolved(&names, CODE, "Bool.", 0), b"Sharp\\Bool");
+}
+
+#[test]
+fn an_import_of_sharp_bool_is_the_standard_library_class() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nimport Sharp.Bool;\n\nclass Report\n{\n    public bool? run(string text)\n    {\n        return Bool.tryParse(text);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "Bool.", 0), Some(Binding::Class));
+    assert_eq!(resolved(&names, CODE, "Bool.", 0), b"Sharp\\Bool");
+}
+
+#[test]
 fn an_imported_int_is_the_imported_class() {
     const CODE: &str = "namespace App.Tenant.Store;\n\nimport App.Shared.Int;\n\nclass Report\n{\n    public int run(string text)\n    {\n        return Int.parse(text);\n    }\n}\n";
     let arena = LocalArena::new();
@@ -415,7 +435,7 @@ fn an_imported_int_is_the_imported_class() {
 
 #[test]
 fn a_bare_standard_library_name_is_the_class_in_the_sharp_namespace_wherever_a_class_is_named() {
-    const CODE: &str = "namespace App.Tenant.Store;\n\nclass Report\n{\n    public void run(Position here, Environment settings, string text)\n    {\n        Position.current();\n        Environment.current();\n        List.wrap(text);\n        new Int();\n        new Float();\n        new Position();\n        new Environment();\n        new List;\n        typeof(Position);\n        typeof(Environment);\n        typeof(List);\n    }\n}\n";
+    const CODE: &str = "namespace App.Tenant.Store;\n\nclass Report\n{\n    public void run(Position here, Environment settings, string text)\n    {\n        Position.current();\n        Environment.current();\n        List.wrap(text);\n        new Int();\n        new Float();\n        new Bool();\n        new Position();\n        new Environment();\n        new List;\n        typeof(Position);\n        typeof(Environment);\n        typeof(List);\n        typeof(Int);\n        typeof(Bool);\n    }\n}\n";
     let arena = LocalArena::new();
     let names = bind(&arena, CODE);
 
@@ -427,12 +447,15 @@ fn a_bare_standard_library_name_is_the_class_in_the_sharp_namespace_wherever_a_c
         ("List.wrap", "Sharp\\List"),
         ("Int()", "Sharp\\Int"),
         ("Float()", "Sharp\\Float"),
+        ("Bool()", "Sharp\\Bool"),
         ("Position()", "Sharp\\Position"),
         ("Environment()", "Sharp\\Environment"),
         ("List;", "Sharp\\List"),
         ("Position)", "Sharp\\Position"),
         ("Environment)", "Sharp\\Environment"),
         ("List)", "Sharp\\List"),
+        ("Int)", "Sharp\\Int"),
+        ("Bool)", "Sharp\\Bool"),
     ] {
         assert_eq!(String::from_utf8_lossy(resolved(&names, CODE, needle, 0)), class, "`{needle}`");
     }
@@ -486,6 +509,15 @@ fn a_standard_library_name_in_a_catch_a_header_or_an_attribute_is_the_class_in_t
     ] {
         assert_eq!(String::from_utf8_lossy(resolved(&names, CODE, needle, 0)), class, "`{needle:?}`");
     }
+}
+
+#[test]
+fn a_bare_replaces_attribute_is_the_attribute_of_the_standard_library() {
+    const CODE: &str = "namespace Sharp.Time;\n\npublic static class Date\n{\n    [Replaces(\"date\")]\n    public static string format(int timestamp) => \"\";\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(resolved(&names, CODE, "Replaces", 0), b"Sharp\\Replaces");
 }
 
 #[test]
@@ -551,32 +583,44 @@ fn a_parameter_default_does_not_see_the_parameter_it_belongs_to() {
 
 #[test]
 fn a_member_of_the_enclosing_class_without_this_is_recorded() {
-    const CODE: &str = "class Report\n{\n    private int count()\n    {\n        return 1;\n    }\n\n    public int total()\n    {\n        return count() + total();\n    }\n}\n";
+    const CODE: &str = "class Report\n{\n    private int count()\n    {\n        return 1;\n    }\n\n    public int total()\n    {\n        return count + total;\n    }\n}\n";
     let arena = LocalArena::new();
     let names = bind(&arena, CODE);
 
-    assert_eq!(binding(&names, CODE, "count()", 1), Some(Binding::Member));
-    assert_eq!(binding(&names, CODE, "total()", 1), Some(Binding::Member));
+    assert_eq!(binding(&names, CODE, "count", 1), Some(Binding::Member));
+    assert_eq!(binding(&names, CODE, "total;", 0), Some(Binding::Member));
+}
+
+/// Spec section 4 writes every member as `this.m()` or `Class.m()`, so a bare call is the global function's, even
+/// when the class declares a method of the same name.
+#[test]
+fn a_bare_call_is_never_a_member() {
+    const CODE: &str = "public static class Math\n{\n    public static float ceil(float x) => ceil(x);\n\n    public static int total() => total();\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "ceil(x)", 0), None);
+    assert_eq!(binding(&names, CODE, "total();", 0), None);
 }
 
 #[test]
 fn a_case_or_method_of_the_enclosing_enum_without_this_is_recorded() {
-    const CODE: &str = "enum Status : string\n{\n    case Active = \"a\";\n\n    public string label()\n    {\n        return Active + label() + this.value;\n    }\n}\n";
+    const CODE: &str = "enum Status : string\n{\n    case Active = \"a\";\n\n    public string label()\n    {\n        return Active + label + this.value;\n    }\n}\n";
     let arena = LocalArena::new();
     let names = bind(&arena, CODE);
 
     assert_eq!(binding(&names, CODE, "Active", 1), Some(Binding::Member));
-    assert_eq!(binding(&names, CODE, "label()", 1), Some(Binding::Member));
+    assert_eq!(binding(&names, CODE, "label", 1), Some(Binding::Member));
     assert_eq!(binding(&names, CODE, "this", 0), Some(Binding::This));
 }
 
 #[test]
 fn a_member_name_matches_as_php_matches_it() {
-    const CODE: &str = "class Report\n{\n    const int RATE = 2;\n\n    public int total()\n    {\n        return Total() + Rate;\n    }\n}\n";
+    const CODE: &str = "class Report\n{\n    const int RATE = 2;\n\n    public int total()\n    {\n        return Total + Rate;\n    }\n}\n";
     let arena = LocalArena::new();
     let names = bind(&arena, CODE);
 
-    assert_eq!(binding(&names, CODE, "Total()", 0), Some(Binding::Member));
+    assert_eq!(binding(&names, CODE, "Total", 0), Some(Binding::Member));
     assert_eq!(binding(&names, CODE, "Rate", 0), Some(Binding::Constant));
 }
 

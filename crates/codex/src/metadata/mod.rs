@@ -31,6 +31,7 @@ use crate::metadata::property::PropertyMetadata;
 use crate::metadata::ttype::TypeMetadata;
 use crate::reference::SymbolReferences;
 use crate::signature::FileSignature;
+use crate::symbol::SymbolIdentifier;
 use crate::symbol::SymbolKind;
 use crate::symbol::Symbols;
 use crate::ttype::atomic::TAtomic;
@@ -96,6 +97,11 @@ pub struct CodebaseMetadata {
     pub symbols: Symbols,
     /// Map from global constant FQN (`Word`) to its metadata (`ConstantMetadata`).
     pub constants: WordMap<ConstantMetadata>,
+    /// Map from the lowercase name of a PHP function the standard library wraps, decision 040, to the library methods
+    /// whose `[Replaces]` names it. Each entry is the name of the library file that declares the method, the method's
+    /// span and the method, and the entries come in the order the library declares them: by the path of their file,
+    /// then by source order. Only a file `File::is_standard_library` marks adds entries.
+    pub wrapped_functions: WordMap<Vec<(Word, Span, MethodIdentifier)>>,
     /// Map from class/interface FQCN to the set of all its descendants (recursive).
     pub all_class_like_descendants: WordMap<WordSet>,
     /// Map from class/interface FQCN to the set of its direct descendants (children).
@@ -1050,12 +1056,18 @@ impl CodebaseMetadata {
     ///
     /// * `diff` - The computed diff between old and new code
     /// * `references` - Symbol reference graph from previous run
+    /// * `reads` - The symbols each file's extension hooks and providers read, by logical file name
     ///
     /// # Returns
-    /// Returns the logical names of files whose top-level code references an invalidated
-    /// symbol. Returns `None` if the cascade was too large to compute.
-    pub fn mark_safe_symbols(&mut self, diff: &CodebaseDiff, references: &SymbolReferences) -> Option<WordSet> {
-        let (invalid_symbols, partially_invalid, invalid_files) = references.get_invalid_symbols(diff)?;
+    /// Returns the logical names of files whose top-level code references, or whose hooks and
+    /// providers read, an invalidated symbol. Returns `None` if the cascade was too large to compute.
+    pub fn mark_safe_symbols<'reads>(
+        &mut self,
+        diff: &CodebaseDiff,
+        references: &SymbolReferences,
+        reads: impl IntoIterator<Item = (Word, &'reads HashSet<SymbolIdentifier>)>,
+    ) -> Option<WordSet> {
+        let (invalid_symbols, partially_invalid, invalid_files) = references.get_invalid_symbols(self, diff, reads)?;
 
         // Mark all symbols in 'keep' set as safe (unless invalidated by cascade)
         for keep_symbol in diff.get_keep() {
@@ -1136,6 +1148,7 @@ impl CodebaseMetadata {
         }
 
         self.symbols.extend(other.symbols);
+        self.merge_wrapped_functions(other.wrapped_functions);
 
         for (k, v) in other.all_class_like_descendants {
             self.all_class_like_descendants.entry(k).or_default().extend(v);
@@ -1221,6 +1234,9 @@ impl CodebaseMetadata {
         }
 
         self.symbols.extend_ref(&other.symbols);
+        self.merge_wrapped_functions(
+            other.wrapped_functions.iter().map(|(function, wrappers)| (*function, wrappers.clone())),
+        );
 
         for (k, v) in &other.all_class_like_descendants {
             self.all_class_like_descendants.entry(*k).or_default().extend(v.iter().copied());
@@ -1247,6 +1263,20 @@ impl CodebaseMetadata {
     ) {
         for (alias, (target, span, flags)) in declarations {
             self.add_class_like_alias(alias, target, span, flags);
+        }
+    }
+
+    /// Adds another codebase's wrapping methods, keeping each function's methods in the order the library declares
+    /// them, whatever order the files merge in.
+    fn merge_wrapped_functions(
+        &mut self,
+        incoming: impl IntoIterator<Item = (Word, Vec<(Word, Span, MethodIdentifier)>)>,
+    ) {
+        for (function, wrappers) in incoming {
+            let merged = self.wrapped_functions.entry(function).or_default();
+            merged.extend(wrappers);
+            merged.sort_unstable();
+            merged.dedup();
         }
     }
 
@@ -1517,6 +1547,10 @@ impl CodebaseMetadata {
         self.patch_class_likes.retain(|_, m| !removed_files.contains(&m.span.file_id));
         self.patch_function_likes.retain(|_, m| !removed_files.contains(&m.span.file_id));
         self.patch_constants.retain(|_, m| !removed_files.contains(&m.span.file_id));
+        for wrappers in self.wrapped_functions.values_mut() {
+            wrappers.retain(|(_, span, _)| !removed_files.contains(&span.file_id));
+        }
+        self.wrapped_functions.retain(|_, wrappers| !wrappers.is_empty());
     }
 
     /// Takes all issues from the codebase metadata.

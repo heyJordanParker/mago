@@ -941,6 +941,7 @@ where
             && !for_assignment
             && let Some(forwarded) = context.plugin_registry.get_forwarded_call(
                 context.codebase,
+                context.source_file,
                 class_metadata.original_name.as_bytes(),
                 trim_start_byte(prop_name.as_bytes(), b'$'),
                 true,

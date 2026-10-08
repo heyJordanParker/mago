@@ -271,6 +271,7 @@ where
     // Check if any plugin considers this property initialized
     if context.plugin_registry.is_property_initialized(
         context.codebase,
+        context.source_file,
         declaring_class_metadata,
         property,
         context.external_analysis_session,

@@ -136,6 +136,7 @@ use crate::sharp_kind::SHARP_AST_GREATER_EQUAL;
 use crate::sharp_kind::SHARP_AST_IF;
 use crate::sharp_kind::SHARP_AST_IF_ELEM;
 use crate::sharp_kind::SHARP_AST_INSTANCEOF;
+use crate::sharp_kind::SHARP_AST_MAGIC_CONST;
 use crate::sharp_kind::SHARP_AST_MATCH;
 use crate::sharp_kind::SHARP_AST_MATCH_ARM;
 use crate::sharp_kind::SHARP_AST_MATCH_ARM_LIST;
@@ -161,6 +162,7 @@ use crate::sharp_kind::SHARP_AST_PROP_GROUP;
 use crate::sharp_kind::SHARP_AST_PROPERTY_HOOK;
 use crate::sharp_kind::SHARP_AST_PROPERTY_HOOK_SHORT_BODY;
 use crate::sharp_kind::SHARP_AST_RETURN;
+use crate::sharp_kind::SHARP_AST_SILENCE;
 use crate::sharp_kind::SHARP_AST_STATIC_CALL;
 use crate::sharp_kind::SHARP_AST_STATIC_PROP;
 use crate::sharp_kind::SHARP_AST_STMT_LIST;
@@ -193,7 +195,8 @@ use types::agreed_kind;
 use types::class_value_classes;
 use types::receiver_classes;
 
-/// The values php-src gives the attrs the lowering emits, from `zend_compile.h` and `zend_vm_opcodes.h`.
+/// The values php-src gives the attrs the lowering emits, from `zend_compile.h`, `zend_vm_opcodes.h` and
+/// `zend_language_parser.h`.
 const ZEND_NAME_FQ: u32 = 0;
 const ZEND_NAME_NOT_FQ: u32 = 1;
 const ZEND_ACC_PUBLIC: u32 = 1 << 0;
@@ -232,6 +235,7 @@ const ZEND_IS_EQUAL: u32 = 18;
 const ZEND_IS_NOT_EQUAL: u32 = 19;
 const ZEND_IS_SMALLER: u32 = 20;
 const ZEND_IS_SMALLER_OR_EQUAL: u32 = 21;
+const T_FILE: u32 = 347;
 
 /// A null child.
 const NULL: u32 = u32::MAX;
@@ -249,7 +253,7 @@ enum Operands {
 pub fn lower(checked: &CheckedProgram<'_>) -> Unit {
     let lines = Lines::new(&checked.file().contents);
 
-    Lowering::new(&lines, &checked.file().name, checked.names(), checked.types()).program(checked)
+    Lowering::new(&lines, checked.names(), checked.types()).program(checked)
 }
 
 /// The offset each line starts at, counted as the Zend scanner counts: `\n`, `\r\n` and a lone `\r` each end a line.
@@ -288,8 +292,6 @@ impl Lines {
 /// Lowers one checked file. Every node is pushed after its children, and each node's children are contiguous.
 struct Lowering<'lowering, 'arena> {
     lines: &'lowering Lines,
-    /// The path of the file being lowered, as the checked file names it.
-    path: &'lowering [u8],
     names: &'lowering ResolvedNames<'arena>,
     types: &'lowering Types<'lowering>,
     /// The full name of the class-like being lowered, as PHP writes it.
@@ -321,13 +323,11 @@ struct Lowering<'lowering, 'arena> {
 impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     fn new(
         lines: &'lowering Lines,
-        path: &'lowering [u8],
         names: &'lowering ResolvedNames<'arena>,
         types: &'lowering Types<'lowering>,
     ) -> Self {
         Self {
             lines,
-            path,
             names,
             types,
             class: b"",
@@ -440,6 +440,18 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                     has_constructor = true;
 
                     self.method(method, modifier_flags(&method.modifiers), &initial_values)
+                }
+                ClassLikeMember::Method(method)
+                    if method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Extern(_))) =>
+                {
+                    let call = self.native_call(method, self.names.get(&class.name));
+                    let body = if method.returns_value() {
+                        self.node(SHARP_AST_RETURN, 0, self.line(method.name.span), &[call])
+                    } else {
+                        call
+                    };
+
+                    self.method(method, modifier_flags(&method.modifiers), &[body])
                 }
                 ClassLikeMember::Method(method) => self.method(method, modifier_flags(&method.modifiers), &[]),
                 ClassLikeMember::Property(property) => self.property(property, parent_name),
@@ -583,9 +595,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
     /// A method is a `function` with its return type after its parameters, and with `flags`. Its first line is where
     /// PHP writes `function`: the return type, or the name of the constructor, which runs as `__construct` and has
-    /// no return type. The constructor's body starts with the class's initial values that are not constant, and an
-    /// abstract method has no statement list.
-    fn method(&mut self, method: &Method, flags: u32, initial_values: &[u32]) -> u32 {
+    /// no return type. Its body starts with `first_statements`: the class's initial values that are not constant in
+    /// the constructor, or the call of an `extern` method's native function, which is that method's whole body. Any
+    /// other abstract method has no statement list.
+    fn method(&mut self, method: &Method, flags: u32, first_statements: &[u32]) -> u32 {
         if flags & (ZEND_ACC_PUBLIC | ZEND_ACC_PROTECTED | ZEND_ACC_PRIVATE) == 0 {
             unreachable!("check_slice refuses a method without an access modifier");
         }
@@ -597,7 +610,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         }
 
         let parameters = self.node(SHARP_AST_PARAM_LIST, 0, self.line(&method.parameter_list), &parameters);
-        let mut statements = initial_values.to_vec();
+        let mut statements = first_statements.to_vec();
         let body = match &method.body {
             MethodBody::Concrete(block) => {
                 for statement in &block.statements {
@@ -617,7 +630,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 self.node(SHARP_AST_STMT_LIST, 0, line, &statements)
             }
-            MethodBody::Abstract(_) => NULL,
+            MethodBody::Abstract(_) if statements.is_empty() => NULL,
+            MethodBody::Abstract(body) => self.node(SHARP_AST_STMT_LIST, 0, self.line(body), &statements),
         };
         let (start, return_type) = match &method.return_type_hint {
             Some(return_type_hint) => (return_type_hint.span(), self.hint(&return_type_hint.hint)),
@@ -634,6 +648,36 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             php_method_name(method),
             &[parameters, NULL, body, return_type, attributes],
         )
+    }
+
+    /// The call an `extern` method's body runs, as php-src's grammar builds `\Sharp\Internal\Text\Text\slug($title)`:
+    /// a call of the native function the engine registers under `Sharp\Internal`, then the class's full name after
+    /// `Sharp\`, then the method's name. It passes each parameter on, a variadic one as a spread. The method returns it
+    /// unless it is `void`, and a caller inlines it as the method's form.
+    fn native_call(&mut self, method: &Method, class: &[u8]) -> u32 {
+        let Some(class_in_library) = class
+            .split_at_checked(b"Sharp\\".len())
+            .and_then(|(root, rest)| root.eq_ignore_ascii_case(b"Sharp\\").then_some(rest))
+        else {
+            unreachable!("the checker refuses an `extern` method outside the standard library's `Sharp` classes");
+        };
+        let line = self.line(method.name.span);
+        let function = [b"Sharp\\Internal\\".as_slice(), class_in_library, b"\\", method.name.value].concat();
+        let function = self.string(ZEND_NAME_FQ, line, &function);
+
+        let mut arguments = Vec::new();
+        for parameter in &method.parameter_list.parameters {
+            let value = self.variable(parameter.variable.span, parameter.variable.name);
+            arguments.push(if parameter.is_variadic() {
+                self.node(SHARP_AST_UNPACK, 0, line, &[value])
+            } else {
+                value
+            });
+        }
+
+        let arguments = self.node(SHARP_AST_ARG_LIST, 0, line, &arguments);
+
+        self.node(SHARP_AST_CALL, 0, line, &[function, arguments])
     }
 
     /// A variadic parameter carries `ZEND_PARAM_VARIADIC`, as php-src's grammar builds `int ...$values`.
@@ -1490,7 +1534,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// differ from PHP's.
     fn operand_types(&self, lhs: &Expression, rhs: &Expression) -> Operands {
         let (lhs, rhs) = (self.types.expression_type(lhs), self.types.expression_type(rhs));
-        if lhs.is_string() && rhs.is_string() {
+        if lhs.is_any_string() && rhs.is_any_string() {
             Operands::Strings
         } else if lhs.is_int() && rhs.is_int() {
             Operands::Ints
@@ -1988,11 +2032,12 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
     /// Spec section 27: `Position.current()` in a body is the position where it is written, a new `Position` of the
     /// file, the line and byte column of `Position`, and the function, as
-    /// `new \Sharp\Position(__FILE__, 9, 22, 'App.Tenant.Report.run')`.
+    /// `new \Sharp\Position(__FILE__, 9, 22, 'App.Tenant.Report.run')`. The engine compiles the file under its source's
+    /// absolute path, which `__FILE__` reads where the file runs, so the compiled file holds no path.
     fn current_position(&mut self, class: &ConstantAccess, call: &MethodCall) -> u32 {
         let (line, column) = self.lines.line_and_column(class.span().start.offset);
         let name = self.string(ZEND_NAME_FQ, line, b"Sharp\\Position");
-        let file = self.string(0, line, self.path);
+        let file = self.node(SHARP_AST_MAGIC_CONST, T_FILE, line, &[]);
         let line_number = self.zval(line, sharp_value::SHARP_LONG, |node| node.long_value = i64::from(line));
         let column = self.zval(line, sharp_value::SHARP_LONG, |node| node.long_value = i64::from(column));
         let function = self.function.clone();
@@ -2223,8 +2268,9 @@ fn modifier_flags(modifiers: &Sequence<Modifier>) -> u32 {
             Modifier::Static(_) => ZEND_ACC_STATIC,
             Modifier::Abstract(_) => ZEND_ACC_ABSTRACT,
             // PHP methods are open to overriding, and `method` lowers `override` to `#[\Override]`. PHP has no
-            // `required` constructor, and the checker proves every subclass keeps one `new Self(…)` can call.
-            Modifier::Virtual(_) | Modifier::Override(_) | Modifier::Required(_) => 0,
+            // `required` constructor, and the checker proves every subclass keeps one `new Self(…)` can call. `method`
+            // gives an `extern` method the body that calls its native function.
+            Modifier::Virtual(_) | Modifier::Override(_) | Modifier::Required(_) | Modifier::Extern(_) => 0,
             Modifier::Final(_)
             | Modifier::Readonly(_)
             | Modifier::PublicSet(_)
@@ -2236,24 +2282,25 @@ fn modifier_flags(modifiers: &Sequence<Modifier>) -> u32 {
     flags
 }
 
-/// The flags of a class's modifiers. `public` adds none, because every PHP class is public.
+/// The flags of a class's modifiers. `public` adds none, because every PHP class is public. A static class, whose
+/// members are all static, runs as a final PHP class.
 fn class_flags(modifiers: &Sequence<Modifier>) -> u32 {
     let mut flags = 0;
     for modifier in modifiers {
         flags |= match modifier {
             Modifier::Public(_) => 0,
             Modifier::Abstract(_) => ZEND_ACC_EXPLICIT_ABSTRACT_CLASS,
-            Modifier::Final(_) => ZEND_ACC_FINAL,
+            Modifier::Final(_) | Modifier::Static(_) => ZEND_ACC_FINAL,
             Modifier::Protected(_)
             | Modifier::Private(_)
-            | Modifier::Static(_)
             | Modifier::Readonly(_)
             | Modifier::PublicSet(_)
             | Modifier::ProtectedSet(_)
             | Modifier::PrivateSet(_)
             | Modifier::Virtual(_)
             | Modifier::Override(_)
-            | Modifier::Required(_) => unreachable!("check_slice refuses the class modifier `{modifier}`"),
+            | Modifier::Required(_)
+            | Modifier::Extern(_) => unreachable!("check_slice refuses the class modifier `{modifier}`"),
         };
     }
 
@@ -2366,8 +2413,8 @@ fn prefix_kind(operator: &UnaryPrefixOperator) -> (sharp_kind, u32) {
         UnaryPrefixOperator::IntCast(..) => (SHARP_AST_CAST, IS_LONG),
         UnaryPrefixOperator::FloatCast(..) => (SHARP_AST_CAST, IS_DOUBLE),
         UnaryPrefixOperator::StringCast(..) => (SHARP_AST_CAST, IS_STRING),
-        UnaryPrefixOperator::ErrorControl(_)
-        | UnaryPrefixOperator::Reference(_)
+        UnaryPrefixOperator::ErrorControl(_) => (SHARP_AST_SILENCE, 0),
+        UnaryPrefixOperator::Reference(_)
         | UnaryPrefixOperator::ArrayCast(..)
         | UnaryPrefixOperator::BoolCast(..)
         | UnaryPrefixOperator::BooleanCast(..)

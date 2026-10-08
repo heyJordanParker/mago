@@ -42,6 +42,7 @@ use crate::plugin::hook::StaticCall;
 
 use super::ExternalAnalysisSession;
 use super::ExternalPlugin;
+use super::FileReads;
 use super::NODE_REQUIREMENT_ARGUMENT_TYPES;
 use super::NODE_REQUIREMENT_RECEIVER_TYPE;
 use super::NODE_REQUIREMENT_TARGET_EXPRESSION_TYPES;
@@ -1304,7 +1305,26 @@ pub(super) fn decode_lifecycle_response(
         }
     }
 
+    let read_file_count = reader.read_count("files with codebase reads", AFTER_FILE_ANALYSIS_BATCH_SIZE)?;
+    if read_file_count != 0 && !matches!(request_kind, AFTER_FILE_ANALYSIS_REQUEST | AFTER_FILE_ANALYSIS_BATCH_REQUEST)
+    {
+        return Err(protocol("only after-file hooks record codebase reads"));
+    }
+
+    let mut reads = Vec::with_capacity(read_file_count);
+    for _ in 0..read_file_count {
+        let name = reader.read_bytes("codebase read file")?;
+        let (file_id, _) = session
+            .source(name)
+            .ok_or_else(|| protocol(format!("codebase reads name unknown file `{}`", String::from_utf8_lossy(name))))?;
+        reads.push((file_id, FileReads::decode(&mut reader)?));
+    }
+
     reader.finish()?;
+    for (file_id, file_reads) in reads {
+        session.record_reads(file_id, file_reads);
+    }
+
     Ok(LifecycleEffects { issues, references, references_by_file })
 }
 

@@ -10,6 +10,7 @@ use crate::context::ScopeContext;
 use crate::diff::CodebaseDiff;
 use crate::identifier::function_like::FunctionLikeIdentifier;
 use crate::identifier::method::MethodIdentifier;
+use crate::metadata::CodebaseMetadata;
 use crate::symbol::SymbolIdentifier;
 
 /// Represents the source of a reference, distinguishing between top-level symbols
@@ -38,6 +39,19 @@ pub enum ReferenceOrigin {
     Symbol(SymbolIdentifier),
     /// Top-level code in a source file.
     File(Word),
+}
+
+/// An edge the invalidation cascade follows. A change at the edge's target can invalidate its source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CascadeEdge {
+    /// The signature of `from` references `to`: a change to `to`'s signature changes `from`'s signature.
+    Signature { from: SymbolIdentifier, to: SymbolIdentifier },
+    /// The body of `from` references `to`.
+    Body { from: SymbolIdentifier, to: SymbolIdentifier },
+    /// The top-level code of `file` references `to`.
+    File { file: Word, to: SymbolIdentifier },
+    /// `class` directly extends, implements or uses `parent`.
+    Inherits { class: Word, parent: Word },
 }
 
 /// Describes the semantic role of a recorded symbol reference.
@@ -686,40 +700,91 @@ impl SymbolReferences {
                 .any(|references| references.contains(&target_symbol))
     }
 
+    /// Every edge the invalidation cascade follows, from these references and `codebase`'s class hierarchy.
+    ///
+    /// [`Self::get_invalid_symbols`] walks these edges forward from a change. A walk backward from a file, to the
+    /// changes that reach it, reads the same edges, so the two never disagree on what an edge is.
+    pub fn cascade_edges<'edges>(
+        &'edges self,
+        codebase: &'edges CodebaseMetadata,
+    ) -> impl Iterator<Item = CascadeEdge> + 'edges {
+        let signature = self.symbol_references_to_symbols_in_signature.iter().flat_map(|(from, references)| {
+            references.iter().map(move |to| CascadeEdge::Signature { from: *from, to: *to })
+        });
+        let body = self
+            .symbol_references_to_symbols
+            .iter()
+            .flat_map(|(from, references)| references.iter().map(move |to| CascadeEdge::Body { from: *from, to: *to }));
+        let file =
+            self.file_references_to_symbols.iter().chain(&self.file_references_to_symbols_in_signature).flat_map(
+                |(file, references)| references.iter().map(move |to| CascadeEdge::File { file: *file, to: *to }),
+            );
+        let inherits = codebase.class_likes.iter().flat_map(|(class, metadata)| {
+            metadata
+                .direct_parent_class
+                .iter()
+                .chain(&metadata.direct_parent_interfaces)
+                .chain(&metadata.used_traits)
+                .map(move |parent| CascadeEdge::Inherits { class: *class, parent: *parent })
+        });
+
+        signature.chain(body).chain(file).chain(inherits)
+    }
+
     /// Calculates sets of invalid symbols and members based on detected code changes (`CodebaseDiff`).
-    /// Propagates invalidation through the dependency graph stored in signature references.
+    /// Propagates invalidation through the [`Self::cascade_edges`] of these references and `codebase`.
     /// Limits propagation expense to avoid excessive computation on large changes.
     ///
     /// # Arguments
     ///
+    /// * `codebase`: The codebase whose class hierarchy the cascade follows.
     /// * `codebase_diff`: Information about added, deleted, or modified symbols/signatures.
+    /// * `reads`: The symbols each file's extension hooks and providers read, by logical file name.
     ///
     /// # Returns
     ///
     /// `Some((invalid_signatures, partially_invalid, invalid_files))` on success, where `invalid_signatures` contains
     /// all symbol/member pairs whose signature is invalid (including propagated ones), and `partially_invalid`
-    /// contains symbols with at least one invalid member. `invalid_files` contains logical file names whose
-    /// top-level code references a symbol with an invalid signature.
+    /// contains symbols with at least one invalid member, and classes whose direct parent, interface or trait
+    /// changed. `invalid_files` contains logical file names whose top-level code references, or whose `reads` name,
+    /// a symbol with an invalid signature.
     /// Returns `None` if the propagation exceeds an expense limit (currently 5000 steps).
     #[inline]
     #[must_use]
-    pub fn get_invalid_symbols(
+    pub fn get_invalid_symbols<'reads>(
         &self,
+        codebase: &CodebaseMetadata,
         codebase_diff: &CodebaseDiff,
+        reads: impl IntoIterator<Item = (Word, &'reads HashSet<SymbolIdentifier>)>,
     ) -> Option<(HashSet<SymbolIdentifier>, WordSet, WordSet)> {
         let mut invalid_signatures = HashSet::default();
         let mut partially_invalid_symbols = WordSet::default();
 
         let mut sig_reverse_index: HashMap<SymbolIdentifier, Vec<SymbolIdentifier>> = HashMap::default();
-        for (referencing_item, referenced_items) in &self.symbol_references_to_symbols_in_signature {
-            let containing_symbol = (referencing_item.0, empty_word());
-            if codebase_diff.contains_changed_entry(&containing_symbol) {
-                invalid_signatures.insert(*referencing_item);
-                partially_invalid_symbols.insert(referencing_item.0);
-            }
+        let mut references: Vec<(SymbolIdentifier, SymbolIdentifier)> = Vec::new();
+        let mut file_references: Vec<(Word, SymbolIdentifier)> = Vec::new();
+        for edge in self.cascade_edges(codebase) {
+            match edge {
+                CascadeEdge::Signature { from, to } => {
+                    if codebase_diff.contains_changed_entry(&(from.0, empty_word())) {
+                        invalid_signatures.insert(from);
+                        partially_invalid_symbols.insert(from.0);
+                    }
 
-            for referenced in referenced_items {
-                sig_reverse_index.entry(*referenced).or_default().push(*referencing_item);
+                    sig_reverse_index.entry(to).or_default().push(from);
+                    references.push((from, to));
+                }
+                CascadeEdge::Body { from, to } => references.push((from, to)),
+                CascadeEdge::File { file, to } => file_references.push((file, to)),
+                // A class whose parent, interface or trait changed is never safe, since its edge to that parent can
+                // be lost while the parent is deleted and re-added.
+                CascadeEdge::Inherits { class, parent } => {
+                    if codebase_diff.get_changed().contains(&(parent, empty_word()))
+                        && codebase.class_likes.contains_key(&parent)
+                    {
+                        partially_invalid_symbols.insert(class);
+                    }
+                }
             }
         }
 
@@ -769,19 +834,9 @@ impl SymbolReferences {
         // An item's body is invalid if it references (anywhere, body or sig) an item with an invalid signature.
         // Check both body and signature reference maps in a single pass where possible.
         let mut invalid_bodies = HashSet::default();
-
-        for (referencing_item, referenced_items) in &self.symbol_references_to_symbols {
-            if referenced_items.iter().any(|r| invalid_signatures.contains(r)) {
-                invalid_bodies.insert(*referencing_item);
-                if !referencing_item.1.is_empty() {
-                    partially_invalid_symbols.insert(referencing_item.0);
-                }
-            }
-        }
-
-        for (referencing_item, referenced_items) in &self.symbol_references_to_symbols_in_signature {
-            if referenced_items.iter().any(|r| invalid_signatures.contains(r)) {
-                invalid_bodies.insert(*referencing_item);
+        for (referencing_item, referenced) in references {
+            if invalid_signatures.contains(&referenced) {
+                invalid_bodies.insert(referencing_item);
                 if !referencing_item.1.is_empty() {
                     partially_invalid_symbols.insert(referencing_item.0);
                 }
@@ -789,11 +844,14 @@ impl SymbolReferences {
         }
 
         let mut invalid_files = WordSet::default();
-        for (file, referenced_items) in
-            self.file_references_to_symbols.iter().chain(&self.file_references_to_symbols_in_signature)
-        {
-            if referenced_items.iter().any(|referenced| invalid_signatures.contains(referenced)) {
-                invalid_files.insert(*file);
+        for (file, referenced) in file_references {
+            if invalid_signatures.contains(&referenced) {
+                invalid_files.insert(file);
+            }
+        }
+        for (file, read) in reads {
+            if read.iter().any(|symbol| invalid_signatures.contains(symbol)) {
+                invalid_files.insert(file);
             }
         }
 
@@ -1202,7 +1260,7 @@ mod tests {
         changed.insert((class_a, empty_word()));
         diff = diff.with_changed(changed);
 
-        let result = refs.get_invalid_symbols(&diff);
+        let result = refs.get_invalid_symbols(&CodebaseMetadata::default(), &diff, []);
         assert!(result.is_some());
         let (invalid, partially_invalid, invalid_files) = result.unwrap();
 
@@ -1224,8 +1282,32 @@ mod tests {
         changed.insert((changed_class, empty_word()));
         diff = diff.with_changed(changed);
 
-        let (_, _, invalid_files) = references.get_invalid_symbols(&diff).expect("invalidation should complete");
+        let (_, _, invalid_files) = references
+            .get_invalid_symbols(&CodebaseMetadata::default(), &diff, [])
+            .expect("invalidation should complete");
         assert_eq!(invalid_files.len(), 1);
         assert!(invalid_files.contains(&file));
+    }
+
+    #[test]
+    fn test_get_invalid_symbols_reaches_a_file_that_read_a_class_whose_member_changed() {
+        let parent = word("parent");
+        let child = word("child");
+        let reader = word("src/reader.php");
+        let unrelated = word("src/unrelated.php");
+        let mut references = SymbolReferences::new();
+        references.add_symbol_reference_to_symbol(child, parent, true);
+
+        let mut diff = crate::diff::CodebaseDiff::new();
+        let mut changed = HashSet::default();
+        changed.insert((parent, word("run")));
+        diff = diff.with_changed(changed);
+
+        let read_child = HashSet::from_iter([(child, empty_word())]);
+        let read_other = HashSet::from_iter([(word("other"), empty_word())]);
+        let (_, _, invalid_files) = references
+            .get_invalid_symbols(&CodebaseMetadata::default(), &diff, [(reader, &read_child), (unrelated, &read_other)])
+            .expect("invalidation should complete");
+        assert_eq!(invalid_files.into_iter().collect::<Vec<_>>(), [reader]);
     }
 }

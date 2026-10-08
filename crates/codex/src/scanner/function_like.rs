@@ -173,8 +173,10 @@ where
                 metadata.flags |= MetadataFlags::HAS_THROW;
             }
         }
+        // A PHP# `extern` method's body is native, compiled into the engine, so it is concrete without one here.
         MethodBody::Abstract(_) => {
-            method_metadata.is_abstract = true;
+            method_metadata.is_abstract =
+                !method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Extern(_)));
         }
     }
 

@@ -48,6 +48,7 @@ use Mago\Sdk\Analyzer\TypeComparator;
 use Mago\Sdk\Exception\CancelledException;
 use Mago\Sdk\Exception\InvalidArgumentException;
 use Mago\Sdk\Exception\ProtocolException;
+use Mago\Sdk\Internal\Analyzer\CodebaseReads;
 use Mago\Sdk\Internal\Analyzer\DefinitionName;
 use Mago\Sdk\Internal\Analyzer\MetadataCache;
 use Mago\Sdk\Internal\Analyzer\Protocol as AnalyzerProtocol;
@@ -720,8 +721,6 @@ final class Worker
 
     /**
      * @param positive-int $requestId
-     *
-     * @mago-expect lint:halstead
      */
     private function handleAnalyzerRequest(
         string $payload,
@@ -753,14 +752,37 @@ final class Worker
             return $this->handleAnalyzerLifecycleRequest($kind, $reader, $requestId, $host, $cancellation);
         }
 
+        $reads = new CodebaseReads();
+        $response = $this->handleProviderRequest($kind, $reader, $requestId, $host, $cancellation, $reads);
+
+        return AnalyzerProtocol::withCodebaseReads($response, $reads->take());
+    }
+
+    /**
+     * Answers a provider or issue-filter request, recording in `$reads` every codebase read it makes
+     * for the file Mago is analyzing.
+     *
+     * @param positive-int $requestId
+     *
+     * @mago-expect lint:excessive-parameter-list
+     * @mago-expect lint:halstead
+     */
+    private function handleProviderRequest(
+        int $kind,
+        PayloadReader $reader,
+        int $requestId,
+        HostClient $host,
+        CancellationTokenInterface $cancellation,
+        CodebaseReads $reads,
+    ): string {
         if ($kind === AnalyzerProtocol::PROPERTY_TYPE_REQUEST) {
             $request = AnalyzerProtocol::readPropertyTypeRequest($reader);
             if ($this->metadataCache === null || $this->metadataCache->generation !== $request->generation) {
                 $this->metadataCache = new MetadataCache($request->generation);
             }
 
-            $codebase = new Codebase($host, $requestId, $cancellation, $this->metadataCache);
-            $types = new TypeComparator($host, $requestId, $cancellation, $this->metadataCache);
+            $codebase = new Codebase($host, $requestId, $cancellation, $this->metadataCache, $reads);
+            $types = new TypeComparator($host, $requestId, $cancellation, $this->metadataCache, $reads);
             foreach ($request->providerIndices as $providerIndex) {
                 $registered = $this->propertyTypeProviders[$providerIndex] ?? null;
                 if ($registered === null) {
@@ -804,12 +826,12 @@ final class Worker
 
             $context = new CallForwardingProviderContext(
                 $this->phpVersion,
-                new Codebase($host, $requestId, $cancellation, $this->metadataCache),
+                new Codebase($host, $requestId, $cancellation, $this->metadataCache, $reads),
                 $request->class,
                 $request->member,
                 $request->property,
                 $request->receiverType,
-                new TypeComparator($host, $requestId, $cancellation, $this->metadataCache),
+                new TypeComparator($host, $requestId, $cancellation, $this->metadataCache, $reads),
                 $cancellation,
             );
             foreach ($request->providerIndices as $providerIndex) {
@@ -845,8 +867,8 @@ final class Worker
                 $this->metadataCache = new MetadataCache($request->generation);
             }
 
-            $codebase = new Codebase($host, $requestId, $cancellation, $this->metadataCache);
-            $types = new TypeComparator($host, $requestId, $cancellation, $this->metadataCache);
+            $codebase = new Codebase($host, $requestId, $cancellation, $this->metadataCache, $reads);
+            $types = new TypeComparator($host, $requestId, $cancellation, $this->metadataCache, $reads);
             foreach ($request->providerIndices as $providerIndex) {
                 $registered = $this->propertyInitializationProviders[$providerIndex] ?? null;
                 if ($registered === null) {
@@ -889,7 +911,7 @@ final class Worker
                 $this->metadataCache = new MetadataCache($request->generation);
             }
 
-            $codebase = new Codebase($host, $requestId, $cancellation, $this->metadataCache);
+            $codebase = new Codebase($host, $requestId, $cancellation, $this->metadataCache, $reads);
             $initializers = [];
             foreach ($request->providerIndices as $providerIndex) {
                 $registered = $this->classInitializerProviders[$providerIndex] ?? null;
@@ -931,8 +953,8 @@ final class Worker
                 $this->metadataCache = new MetadataCache($request->generation);
             }
 
-            $codebase = new Codebase($host, $requestId, $cancellation, $this->metadataCache);
-            $types = new TypeComparator($host, $requestId, $cancellation, $this->metadataCache);
+            $codebase = new Codebase($host, $requestId, $cancellation, $this->metadataCache, $reads);
+            $types = new TypeComparator($host, $requestId, $cancellation, $this->metadataCache, $reads);
             $removed = [];
             foreach ($request->issues as $issueIndex => $issue) {
                 $context = new IssueFilterContext(
@@ -993,8 +1015,8 @@ final class Worker
         if ($this->metadataCache === null || $this->metadataCache->generation !== $request->generation) {
             $this->metadataCache = new MetadataCache($request->generation);
         }
-        $codebase = new Codebase($host, $requestId, $cancellation, $this->metadataCache);
-        $types = new TypeComparator($host, $requestId, $cancellation, $this->metadataCache);
+        $codebase = new Codebase($host, $requestId, $cancellation, $this->metadataCache, $reads);
+        $types = new TypeComparator($host, $requestId, $cancellation, $this->metadataCache, $reads);
         if ($kind === AnalyzerProtocol::ASSERTION_REQUEST) {
             $providers = $request->invocation->kind === InvocationKind::Function
                 ? $this->functionAssertionProviders
@@ -1202,8 +1224,16 @@ final class Worker
         $types = new TypeComparator($host, $requestId, $cancellation, $this->metadataCache);
         $reportedIssues = [];
         $contributedReferences = [];
+        $recordedReads = [];
         $analyses = is_array($request->analysis) ? $request->analysis : [$request->analysis];
         foreach ($analyses as $analysis) {
+            $reads = $analysis instanceof FileAnalysis ? new CodebaseReads() : null;
+            $fileCodebase = $reads === null
+                ? $codebase
+                : new Codebase($host, $requestId, $cancellation, $this->metadataCache, $reads);
+            $fileTypes = $reads === null
+                ? $types
+                : new TypeComparator($host, $requestId, $cancellation, $this->metadataCache, $reads);
             foreach ($request->pluginIndices as $pluginIndex) {
                 $registered = $this->analyzerPlugins[$pluginIndex] ?? null;
                 if ($registered === null) {
@@ -1221,8 +1251,8 @@ final class Worker
                         ),
                         AnalyzerProtocol::AFTER_FILE_ANALYSIS_REQUEST => new AfterFileAnalysisContext(
                             $this->phpVersion,
-                            $codebase,
-                            $types,
+                            $fileCodebase,
+                            $fileTypes,
                             $cancellation,
                             $analysis instanceof FileAnalysis
                                 ? $analysis
@@ -1230,8 +1260,8 @@ final class Worker
                         ),
                         AnalyzerProtocol::AFTER_FILE_ANALYSIS_BATCH_REQUEST => new AfterFileAnalysisContext(
                             $this->phpVersion,
-                            $codebase,
-                            $types,
+                            $fileCodebase,
+                            $fileTypes,
                             $cancellation,
                             $analysis instanceof FileAnalysis
                                 ? $analysis
@@ -1296,9 +1326,14 @@ final class Worker
                     }
                 }
             }
+
+            $taken = $reads?->take() ?? [];
+            if ($analysis instanceof FileAnalysis && $taken !== []) {
+                $recordedReads[] = [$analysis->file, $taken];
+            }
         }
 
-        return AnalyzerProtocol::writeLifecycleResponse($kind, $reportedIssues, $contributedReferences);
+        return AnalyzerProtocol::writeLifecycleResponse($kind, $reportedIssues, $contributedReferences, $recordedReads);
     }
 
     /**

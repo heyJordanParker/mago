@@ -52,6 +52,8 @@ pub enum ModifierKind {
     Override,
     /// PHP#'s `required`.
     Required,
+    /// PHP#'s `extern`.
+    Extern,
 }
 
 impl CopyInto for Visibility {

@@ -55,10 +55,12 @@ fn leak(code: String) -> &'static str {
     Box::leak(code.into_boxed_str())
 }
 
-/// One file that uses every construct `check_slice` accepts. The engine's bridge lowers the same file.
+/// Two files that use every construct `check_slice` accepts: the slice, and the constructs only the standard library
+/// declares, under the namespace `Sharp`. The engine's bridge lowers the same files.
 #[test]
-fn the_slice_fixture_has_no_semantic_issues() {
+fn the_slice_fixtures_have_no_semantic_issues() {
     assert_eq!(issues(include_str!("fixtures/slice.sharp")), Vec::<String>::new());
+    assert_eq!(issues(include_str!("fixtures/library.sharp")), Vec::<String>::new());
 }
 
 #[test]
@@ -896,6 +898,43 @@ fn any_is_a_reserved_class_name() {
     assert_eq!(issues(code), ["3:7 Cannot use `Any` as a class name: it is reserved."]);
 }
 
+/// The standard library declares `Sharp.Int`, `Sharp.Float` and `Sharp.Bool`, spec section 24. The engine compiles
+/// the library knowing only the file, so it lets any `.sharp` file whose namespace is exactly `Sharp` declare them.
+#[test]
+fn the_sharp_namespace_declares_int_float_and_bool() {
+    for name in ["Int", "Float", "Bool"] {
+        let code = leak(format!(
+            "namespace Sharp;\n\npublic static class {name}\n{{\n    public static int one() => 1;\n}}\n"
+        ));
+
+        assert_eq!(issues(code), Vec::<String>::new(), "{name}");
+    }
+}
+
+/// The engine allows the three names in the namespace `Sharp` only, compared exactly, so every other spelling and
+/// namespace keeps the reserved-name error.
+#[test]
+fn int_float_and_bool_outside_the_sharp_namespace_are_reserved() {
+    for (namespace, name) in [
+        ("App", "Int"),
+        ("App", "Bool"),
+        ("Sharp.Text", "Float"),
+        ("sharp", "Int"),
+        ("Sharp", "INT"),
+        ("Sharp", "Mixed"),
+    ] {
+        let code = leak(format!(
+            "namespace {namespace};\n\npublic static class {name}\n{{\n    public static int one() => 1;\n}}\n"
+        ));
+
+        assert_eq!(
+            issues(code),
+            [format!("3:21 Cannot use `{name}` as a class name: it is reserved.")],
+            "{namespace}.{name}"
+        );
+    }
+}
+
 #[test]
 fn methods_whose_names_differ_only_in_case_are_an_error() {
     let code = "class Report\n{\n    public int run() { return 1; }\n\n    public int Run() { return 2; }\n}\n";
@@ -916,6 +955,15 @@ fn an_import_whose_short_name_is_reserved_is_an_error() {
             "5:8 Cannot import `Lib.Any` as `Any`: PHP# reserves `Any` for a type.",
         ]
     );
+}
+
+/// Importing a standard library type class names the class a bare name already names, spec section 23.
+#[test]
+fn an_import_of_a_standard_library_type_class_is_allowed() {
+    let code =
+        "namespace App.Tenant;\n\nimport Sharp.Int;\nimport Sharp.Float;\nimport Sharp.Bool;\n\nclass Report\n{\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
 }
 
 #[test]
@@ -1249,7 +1297,6 @@ fn an_expression_refused_at_part_of_it_has_the_rest_checked() {
             format!("9:29 PHP# has no `__LINE__`: {line}"),
             "10:23 PHP# writes `Self` for PHP's `static`.".to_owned(),
             format!("10:30 PHP# has no `__LINE__`: {line}"),
-            "11:19 Write `this.total()`: members of the same object are always written with `this.`.".to_owned(),
             format!("11:25 PHP# has no `__LINE__`: {line}"),
             format!("12:19 {request}"),
             format!("12:27 PHP# has no `__LINE__`: {line}"),
@@ -1342,6 +1389,8 @@ fn a_public_parameter_outside_a_constructor_reports_only_the_php_error() {
     );
 }
 
+/// A bare call is the global function's, so only the analyzer, which knows the functions, reports one that names a
+/// method instead.
 #[test]
 fn a_bare_member_name_is_an_error_that_names_this() {
     let code =
@@ -1349,16 +1398,13 @@ fn a_bare_member_name_is_an_error_that_names_this() {
 
     assert_eq!(
         issues(code),
-        [
-            "5:31 Write `this.count()`: members of the same object are always written with `this.`.",
-            "5:39 Write `this.run()`: members of the same object are always written with `this.`.",
-        ]
+        ["5:31 Write `this.count()`: members of the same object are always written with `this.`."]
     );
 }
 
 #[test]
 fn a_bare_method_name_matches_ignoring_case_as_in_php() {
-    let code = "class Report\n{\n    public int total() { return 0; }\n\n    public int run() { return Total(); }\n}\n";
+    let code = "class Report\n{\n    public int total() { return 0; }\n\n    public int run() { return Total; }\n}\n";
 
     assert_eq!(
         issues(code),
@@ -1368,12 +1414,20 @@ fn a_bare_method_name_matches_ignoring_case_as_in_php() {
 
 #[test]
 fn a_bare_member_in_a_static_method_names_the_class() {
-    let code = "class Report\n{\n    public static int helper() { return 0; }\n\n    public static int run() { return helper(); }\n}\n";
+    let code = "class Report\n{\n    public static int helper() { return 0; }\n\n    public static int run() { return helper; }\n}\n";
 
     assert_eq!(
         issues(code),
         ["5:38 Write `Report.helper()`: a static method reaches the members of its class through the class name."]
     );
+}
+
+#[test]
+fn a_bare_call_named_like_a_method_of_its_class_compiles_as_the_global_function() {
+    let code =
+        "namespace Sharp.Math;\n\npublic static class Math\n{\n    public static float ceil(float x) => ceil(x);\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
 }
 
 #[test]
@@ -1583,6 +1637,143 @@ fn a_method_without_a_body_reports_only_the_php_error() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int run();\n}\n";
 
     assert_eq!(issues(code), ["5:21 Non-Abstract method `Report::run` must have a concrete body."]);
+}
+
+#[test]
+fn a_static_class_holds_constants_static_members_and_extern_methods() {
+    let code = "namespace Sharp.Text;\n\npublic static class Text\n{\n    public const int LIMIT = 80;\n    private static int made = 0;\n\n    public static extern string slug(string title);\n\n    public static string plain(string title) => title;\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+#[test]
+fn a_member_of_a_static_class_that_is_not_static_is_an_error() {
+    let code = "namespace App.Tenant;\n\npublic static class Text\n{\n    private int made = 0;\n    public int count { get; } = 0;\n\n    public string slug(string title) => title;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:17 A static class holds only static members: make `made` static.",
+            "6:16 A static class holds only static members: make `count` static.",
+            "8:19 A static class holds only static members: make `slug` static.",
+        ]
+    );
+}
+
+#[test]
+fn a_static_class_has_no_constructor() {
+    let code = "namespace App.Tenant;\n\npublic static class Text\n{\n    public Text() {}\n}\n";
+
+    assert_eq!(issues(code), ["5:12 A static class has no constructor."]);
+}
+
+#[test]
+fn a_static_class_cannot_extend_a_class_or_implement_an_interface() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Calc;\nimport Lib.Named;\n\npublic static class Text : Calc, Named\n{\n}\n";
+
+    assert_eq!(issues(code), ["6:26 A static class cannot extend a class or implement an interface."]);
+}
+
+#[test]
+fn a_static_class_takes_only_public_and_static() {
+    let code = "namespace App.Tenant;\n\nabstract static class Text\n{\n}\n\nfinal static class Slug\n{\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "3:1 A static class takes only `public` and `static`: remove `abstract`.",
+            "7:1 A static class takes only `public` and `static`: remove `final`.",
+        ]
+    );
+}
+
+#[test]
+fn a_php_file_keeps_refusing_a_static_class() {
+    assert_eq!(
+        issues_in("src/Text.php", "<?php\n\nstatic class Text\n{\n}\n"),
+        ["3:1 Class `Text` cannot have the `static` modifier."]
+    );
+}
+
+/// Only the analyzer knows which files are the standard library's, so it decides where an `extern` method goes.
+#[test]
+fn an_extern_method_outside_the_sharp_namespace_is_left_to_the_analyzer() {
+    for namespace in ["App", "Sharpen.Text", "App.Sharp"] {
+        let code = leak(format!(
+            "namespace {namespace};\n\npublic static class Text\n{{\n    public static extern string slug(string title);\n}}\n"
+        ));
+
+        assert_eq!(issues(code), Vec::<String>::new(), "{namespace}");
+    }
+}
+
+#[test]
+fn an_extern_method_is_public_static_in_a_static_class_with_no_body_in_any_namespace() {
+    for namespace in ["Sharp.Text", "App"] {
+        let code = leak(format!(
+            "namespace {namespace};\n\npublic class Plain\n{{\n    public static extern string slug(string title);\n}}\n\npublic static class Text\n{{\n    private static extern string trim(string title);\n    public static extern string pad(string title) => title;\n    public extern string cut(string title);\n}}\n"
+        ));
+
+        assert_eq!(
+            issues(code),
+            [
+                "5:33 An `extern` method is `public static`, in a static class, with no body.",
+                "10:34 An `extern` method is `public static`, in a static class, with no body.",
+                "11:33 An `extern` method is `public static`, in a static class, with no body.",
+                "12:26 An `extern` method is `public static`, in a static class, with no body.",
+            ],
+            "{namespace}"
+        );
+    }
+}
+
+/// An `extern` method is refused at its name, so a body written by mistake still has its own errors reported.
+#[test]
+fn an_extern_method_with_a_body_has_its_body_checked() {
+    let code = "namespace Sharp.Text;\n\npublic static class Text\n{\n    public static extern string slug(string title)\n    {\n        echo title;\n        return title;\n    }\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:33 An `extern` method is `public static`, in a static class, with no body.",
+            "7:9 PHP# has no `echo`: write `printf` or `fwrite`.",
+        ]
+    );
+}
+
+#[test]
+fn extern_on_a_field_is_not_supported_yet() {
+    let code = "namespace Sharp.Text;\n\npublic static class Text\n{\n    private static extern int count = 0;\n}\n";
+
+    assert_eq!(issues(code), ["5:20 This modifier is not supported yet in PHP#."]);
+}
+
+#[test]
+fn the_error_control_operator_is_in_the_slice_under_the_sharp_namespace() {
+    for namespace in ["Sharp", "Sharp.Text", "sharp.text"] {
+        let code = leak(format!(
+            "namespace {namespace};\n\npublic static class Text\n{{\n    public static string quiet(string title) => @trim(title);\n}}\n"
+        ));
+
+        assert_eq!(issues(code), Vec::<String>::new(), "{namespace}");
+    }
+}
+
+#[test]
+fn the_error_control_operator_outside_the_sharp_namespace_is_an_error() {
+    for namespace in ["App", "Sharpen.Text", "App.Sharp"] {
+        let code = leak(format!(
+            "namespace {namespace};\n\npublic static class Text\n{{\n    public static string quiet(string title) => @trim(title);\n}}\n"
+        ));
+
+        assert_eq!(
+            issues(code),
+            [
+                "5:49 `@` hides PHP's warnings, and only the standard library uses it: handle the failure where it happens."
+            ],
+            "{namespace}"
+        );
+    }
 }
 
 #[test]
@@ -2182,7 +2373,7 @@ fn operators_outside_the_slice_are_not_supported_yet() {
     assert_eq!(
         issues(code),
         [
-            "8:13 This operator is not supported yet in PHP#.",
+            "8:13 `@` hides PHP's warnings, and only the standard library uses it: handle the failure where it happens.",
             "9:19 This operator is not supported yet in PHP#.",
             "10:19 This operator is not supported yet in PHP#.",
             "11:19 This operator is not supported yet in PHP#.",
@@ -3155,7 +3346,7 @@ fn an_enum_case_named_class_is_an_error_as_in_php() {
 
 #[test]
 fn a_bare_case_name_in_an_enum_method_is_an_error_that_names_the_enum() {
-    let code = "namespace App.Tenant;\n\nenum Status\n{\n    case Active;\n\n    public bool active()\n    {\n        return this === Active && label() != \"\";\n    }\n\n    public string label() => this.name;\n\n    public static Status first() => Active;\n}\n";
+    let code = "namespace App.Tenant;\n\nenum Status\n{\n    case Active;\n\n    public bool active()\n    {\n        return this === Active && label != \"\";\n    }\n\n    public string label() => this.name;\n\n    public static Status first() => Active;\n}\n";
 
     assert_eq!(
         issues(code),

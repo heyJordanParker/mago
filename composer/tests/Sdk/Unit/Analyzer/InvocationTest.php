@@ -17,7 +17,10 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Throwable;
 
+use function array_diff;
 use function pack;
+use function range;
+use function sprintf;
 use function substr;
 
 /**
@@ -131,6 +134,49 @@ final class InvocationTest extends TestCase
         self::decode(self::request(2, '', Type::namedObject('User')));
     }
 
+    /**
+     * @return iterable<string, array{int, int}>
+     */
+    public static function requestsFromOtherVersions(): iterable
+    {
+        $currentMinor = Protocol::VERSION_U32 & 0xFFFF;
+        foreach (array_diff(range(0, $currentMinor + 1), [$currentMinor]) as $minor) {
+            yield "return type, minor {$minor}" => [Protocol::RETURN_TYPE_REQUEST, $minor];
+            yield "callable signature, minor {$minor}" => [Protocol::CALLABLE_SIGNATURE_REQUEST, $minor];
+            yield "assertion, minor {$minor}" => [Protocol::ASSERTION_REQUEST, $minor];
+        }
+    }
+
+    #[DataProvider('requestsFromOtherVersions')]
+    public function testRequestFromAnotherVersionIsRejected(int $kind, int $minor): void
+    {
+        $major = Protocol::VERSION_U32 >> 16;
+        $this->expectException(ProtocolException::class);
+        $this->expectExceptionMessage(sprintf('Unsupported analyzer protocol version %d.%d.', $major, $minor));
+
+        Protocol::readRequest(pack('N3', 0x4D41_4E41, ($major << 16) | $minor, $kind << 16));
+    }
+
+    /**
+     * @return iterable<string, array{string, int}>
+     */
+    public static function unhandledResponses(): iterable
+    {
+        yield 'return type' => [Protocol::writeReturnTypeResponse(null), 0x8002];
+        yield 'callable signature' => [Protocol::writeCallableSignatureResponse(null), 0x800C];
+        yield 'assertion' => [Protocol::writeAssertionResponse(null), 0x8012];
+    }
+
+    #[DataProvider('unhandledResponses')]
+    public function testUnhandledResponseCarriesTheCurrentVersion(string $response, int $kind): void
+    {
+        [$decodedKind, $reader] = Protocol::readRequest($response);
+
+        self::assertSame($kind, $decodedKind);
+        self::assertFalse($reader->readBoolean());
+        $reader->finish();
+    }
+
     private static function request(
         int $kind,
         ?string $declaringClass = null,
@@ -180,7 +226,7 @@ final class InvocationTest extends TestCase
 
     private static function messagePayload(string $payload): string
     {
-        return pack('N3', 0x4D41_4E41, 0x0001_0005, 2 << 16) . $payload;
+        return pack('N3', 0x4D41_4E41, Protocol::VERSION_U32, 2 << 16) . $payload;
     }
 
     private static function decode(string $payload): ReturnTypeRequest

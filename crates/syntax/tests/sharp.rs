@@ -1959,6 +1959,22 @@ fn a_qualified_name_is_a_parse_error_that_names_the_import() {
 }
 
 #[test]
+fn a_qualified_null_true_or_false_is_a_parse_error_that_names_the_keyword() {
+    for (code, keyword) in [
+        ("class Report\n{\n    Any? run()\n    {\n        return \\null;\n    }\n}\n", "null"),
+        ("class Report\n{\n    bool run()\n    {\n        return \\true;\n    }\n}\n", "true"),
+        ("class Report\n{\n    bool run()\n    {\n        return \\false;\n    }\n}\n", "false"),
+        ("class Report\n{\n    bool run()\n    {\n        return \\FALSE;\n    }\n}\n", "false"),
+    ] {
+        let arena = LocalArena::new();
+        let program = parse(&arena, "src/Report.sharp", code);
+
+        let messages: Vec<String> = program.errors.iter().map(ToString::to_string).collect();
+        assert_eq!(messages, [format!("A `\\` name is PHP syntax: write `{keyword}`")], "{code}");
+    }
+}
+
+#[test]
 fn a_method_written_with_function_is_a_parse_error() {
     let arena = LocalArena::new();
     let program =
@@ -2582,6 +2598,57 @@ fn required_on_a_method_with_a_return_type_is_not_supported_yet() {
     }
 }
 
+/// A static class is `static` among a class's modifiers, and a method with a native body is `extern` among a member's
+/// modifiers, with no body, spec section 29. `extern` stays a name elsewhere.
+#[test]
+fn static_starts_a_static_class_and_extern_a_method_without_a_body() {
+    const CODE: &str = "public static class Text\n{\n    public static extern string slug(string title);\n\n    extern string plain(string title);\n\n    public static string trim(string text)\n    {\n        return extern(text);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "library/Sharp/Text/Text.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(Statement::Class(class)) = program.statements.first() else {
+        panic!("expected a class, got {:#?}", program.statements);
+    };
+    let class_modifiers: Vec<String> = class.modifiers.iter().map(ToString::to_string).collect();
+    assert_eq!(class_modifiers, ["Public", "Static"]);
+    let methods: Vec<&Method> = class_members(program)
+        .iter()
+        .map(|member| {
+            let ClassLikeMember::Method(method) = member else {
+                panic!("expected a method, got {member:#?}");
+            };
+
+            method
+        })
+        .collect();
+    let modifiers: Vec<Vec<String>> =
+        methods.iter().map(|method| method.modifiers.iter().map(ToString::to_string).collect()).collect();
+    assert_eq!(modifiers, [vec!["Public", "Static", "Extern"], vec!["Extern"], vec!["Public", "Static"]]);
+    assert!(matches!(methods[0].body, MethodBody::Abstract(_)), "{:#?}", methods[0].body);
+    assert_eq!(source(CODE, methods[0]), "public static extern string slug(string title);");
+    assert_eq!(source(CODE, &methods[1].modifiers.as_slice()[0]), "extern");
+}
+
+/// PHP has no `extern`, so a `.php` file keeps reading it as a name, here a property's class type.
+#[test]
+fn extern_in_a_php_file_is_a_name() {
+    const CODE: &str = "<?php\n\nclass Text\n{\n    public extern $value;\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Text.php", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::OpeningTag(_), Statement::Class(class)] = program.statements.as_slice() else {
+        panic!("expected a class, got {:#?}", program.statements);
+    };
+    let Some(ClassLikeMember::Property(property)) = class.members.first() else {
+        panic!("expected a property, got {:#?}", class.members);
+    };
+    let modifiers: Vec<String> = property.modifiers().iter().map(ToString::to_string).collect();
+    assert_eq!(modifiers, ["Public"]);
+    assert_eq!(property.hint().map(|hint| source(CODE, hint)), Some("extern"));
+}
+
 /// The lexer reads `Self` and `self` as one keyword. The checker tells them apart by how the keyword is written.
 #[test]
 fn self_is_a_return_type_an_instantiated_class_and_the_class_of_a_static_call() {
@@ -2629,6 +2696,64 @@ fn typeof_in_php_is_a_function_call() {
         panic!("expected an expression statement, got {:#?}", program.statements);
     };
     assert!(matches!(statement.expression, Expression::Call(Call::Function(_))), "{statement:#?}");
+}
+
+/// PHP# casts are lowercase only, spec section 24, so `(Int)`, `(Float)` and `(Bool)` are a class name in parentheses,
+/// and the standard library's classes can be named there.
+#[test]
+fn a_capitalized_type_in_parentheses_is_a_class_name_and_not_a_cast() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        typeof(Int);\n        typeof(Float);\n        typeof(Bool);\n        (Int.parse(text));\n        (int)total;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [int, float, bool, parsed, cast] = method_body(program) else {
+        panic!("expected five statements, got {:#?}", method_body(program));
+    };
+    for (statement, class) in [(int, "Int"), (float, "Float"), (bool, "Bool")] {
+        let Expression::TypeOf(type_of) = expression(statement) else {
+            panic!("expected `typeof({class})`, got {statement:#?}");
+        };
+        assert_eq!(type_of.class.value(), class.as_bytes());
+    }
+    let Expression::Parenthesized(parenthesized) = expression(parsed) else {
+        panic!("expected `(Int.parse(text))`, got {parsed:#?}");
+    };
+    assert_eq!(source(CODE, parenthesized.expression), "Int.parse(text)");
+    assert!(
+        matches!(
+            expression(cast),
+            Expression::UnaryPrefix(UnaryPrefix { operator: UnaryPrefixOperator::IntCast(..), .. })
+        ),
+        "{cast:#?}"
+    );
+}
+
+/// PHP lexes its casts ignoring case, so a PHP file keeps reading `(Int) $x` as an int cast.
+#[test]
+fn php_keeps_reading_a_capitalized_cast_as_a_cast() {
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.php", "<?php (Int) $x; (Float) $x; (Bool) $x;");
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let operators: Vec<&UnaryPrefixOperator> = program
+        .statements
+        .iter()
+        .skip(1)
+        .map(|statement| match statement {
+            Statement::Expression(ExpressionStatement { expression: Expression::UnaryPrefix(prefix), .. }) => {
+                &prefix.operator
+            }
+            _ => panic!("expected a cast, got {statement:#?}"),
+        })
+        .collect();
+    assert!(
+        matches!(
+            operators.as_slice(),
+            [UnaryPrefixOperator::IntCast(..), UnaryPrefixOperator::FloatCast(..), UnaryPrefixOperator::BoolCast(..)]
+        ),
+        "{operators:#?}"
+    );
 }
 
 #[test]
@@ -2682,6 +2807,137 @@ fn is_tests_a_value_against_a_pattern_as_tightly_as_a_comparison() {
         panic!("expected `as` before `??`, got {coalesce:#?}");
     };
     assert_eq!(source(CODE, r#as), "result as Paid");
+}
+
+/// The condition, the value when it holds and the value when it fails of the `? :` that `run` returns, after checking
+/// that the file parses whole and that the condition is an `is` whose type pattern declares no name.
+fn conditional_after_is(code: &'static str) -> [&'static str; 3] {
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", code);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Expression::Conditional(conditional) = expression(&method_body(program)[0]) else {
+        panic!("expected `? :`, got {:#?}", method_body(program)[0]);
+    };
+    let Expression::Is(Is { pattern: Pattern::Type(TypePattern { variable: None, .. }), .. }) = conditional.condition
+    else {
+        panic!("expected `is` and a type as the condition, got {conditional:#?}");
+    };
+    let then = conditional.then.expect("a value when the condition holds");
+
+    [source(code, conditional.condition), source(code, then), source(code, conditional.r#else)]
+}
+
+#[test]
+fn a_question_mark_after_the_type_that_is_tests_starts_a_conditional_as_in_csharp() {
+    assert_eq!(
+        conditional_after_is(
+            "class Report\n{\n    string run()\n    {\n        return value is string ? value : \"\";\n    }\n}\n"
+        ),
+        ["value is string", "value", "\"\""]
+    );
+}
+
+#[test]
+fn a_question_mark_after_a_class_that_is_tests_starts_a_conditional() {
+    assert_eq!(
+        conditional_after_is(
+            "class Report\n{\n    string run()\n    {\n        return entity is Address ? entity.city : \"\";\n    }\n}\n"
+        ),
+        ["entity is Address", "entity.city", "\"\""]
+    );
+}
+
+#[test]
+fn a_conditional_after_is_takes_a_nested_conditional_in_parentheses() {
+    assert_eq!(
+        conditional_after_is(
+            "class Report\n{\n    string run()\n    {\n        return value is string ? (strict ? value : fallback) : \"\";\n    }\n}\n"
+        ),
+        ["value is string", "(strict ? value : fallback)", "\"\""]
+    );
+}
+
+#[test]
+fn a_question_mark_after_the_type_that_as_converts_to_starts_a_conditional() {
+    const CODE: &str = "class Report\n{\n    int run()\n    {\n        return value as bool ? 1 : 0;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Expression::Conditional(conditional) = expression(&method_body(program)[0]) else {
+        panic!("expected `? :`, got {:#?}", method_body(program)[0]);
+    };
+    assert!(matches!(conditional.condition, Expression::As(_)), "{conditional:#?}");
+    assert_eq!(source(CODE, conditional.condition), "value as bool");
+}
+
+#[test]
+fn a_question_mark_before_the_name_an_is_pattern_declares_makes_the_type_nullable() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        if (value is string? text) {\n        }\n        value is string? text;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::If(r#if), statement] = method_body(program) else {
+        panic!("expected an if and an expression, got {:#?}", method_body(program));
+    };
+    for is in [r#if.condition, expression(statement)] {
+        let Expression::Is(Is {
+            pattern: Pattern::Type(TypePattern { hint: hint @ Hint::Nullable(_), variable }), ..
+        }) = is
+        else {
+            panic!("expected `is` and a nullable type, got {is:#?}");
+        };
+        assert_eq!(source(CODE, hint), "string?");
+        assert_eq!(variable.map(|variable| variable.value), Some(&b"text"[..]));
+    }
+}
+
+#[test]
+fn a_question_mark_that_ends_an_is_pattern_makes_the_type_nullable() {
+    const CODE: &str = "class Report\n{\n    bool run()\n    {\n        if (value is string?) {\n        }\n        return value is string?;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::If(r#if), returned] = method_body(program) else {
+        panic!("expected an if and a return, got {:#?}", method_body(program));
+    };
+    for is in [r#if.condition, expression(returned)] {
+        let Expression::Is(Is {
+            pattern: Pattern::Type(TypePattern { hint: Hint::Nullable(_), variable: None }), ..
+        }) = is
+        else {
+            panic!("expected `is` and a nullable type, got {is:#?}");
+        };
+        assert_eq!(source(CODE, is), "value is string?");
+    }
+}
+
+#[test]
+fn a_question_mark_before_the_end_of_a_pattern_makes_the_type_nullable() {
+    const CODE: &str = "class Report\n{\n    int run()\n    {\n        return match (value) {\n            int? n => 1,\n            string? when strict => 2,\n            float? f when f > 0.0 => 3,\n            { name: string? n, age: int? } => 4,\n            bool? b or null => 5,\n            default => 0,\n        };\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Expression::PatternMatch(r#match) = expression(&method_body(program)[0]) else {
+        panic!("expected a match, got {:#?}", method_body(program)[0]);
+    };
+    let patterns: Vec<&str> = r#match
+        .arms
+        .iter()
+        .filter_map(|arm| match arm {
+            PatternMatchArm::Pattern(arm) => Some(source(CODE, arm.pattern)),
+            PatternMatchArm::Default(_) => None,
+        })
+        .collect();
+    assert_eq!(patterns, ["int? n", "string?", "float? f", "{ name: string? n, age: int? }", "bool? b or null"]);
+    let Some(PatternMatchArm::Pattern(first)) = r#match.arms.first() else {
+        panic!("expected a pattern arm, got {:#?}", r#match.arms);
+    };
+    assert!(matches!(first.pattern, Pattern::Type(TypePattern { hint: Hint::Nullable(_), .. })), "{first:#?}");
 }
 
 #[test]

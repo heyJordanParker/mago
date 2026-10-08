@@ -8,11 +8,16 @@
 
 mod common;
 
+use std::borrow::Cow;
 use std::fmt::Write;
+use std::path::Path;
 use std::thread;
 
 use indoc::indoc;
 
+use mago_database::file::File;
+use mago_database::file::FileType;
+use mago_sharp_bridge::InlineForms;
 use mago_sharp_bridge::Unit;
 use mago_sharp_bridge::inline_forms;
 use mago_sharp_bridge::lower;
@@ -20,6 +25,7 @@ use mago_sharp_bridge::sharp_kind;
 use mago_sharp_bridge::sharp_node;
 use mago_sharp_bridge::sharp_str;
 use mago_sharp_bridge::sharp_value;
+use mago_sharp_bridge::unit::encode;
 
 /// A file the checker accepted and its lowered unit, or the checker's refusal.
 struct Lowered(Result<Unit, Vec<String>>);
@@ -27,6 +33,11 @@ struct Lowered(Result<Unit, Vec<String>>);
 impl Lowered {
     fn new(code: &str) -> Self {
         Self::with(code, &[])
+    }
+
+    /// Lowers `code` as the file at `path`, which decides whether it is the standard library's.
+    fn named(path: &str, code: &str) -> Self {
+        Self(common::checked(path, code, &[], lower))
     }
 
     /// Lowers `code` beside the `library` files, each a path and its code, which declare what `code` uses.
@@ -3087,6 +3098,136 @@ fn abstract_and_final_classes_and_interfaces_are_class_declarations_with_their_f
 }
 
 /// ```php
+/// final class Text
+/// {
+///     public static function slug(string $title): string { return \Sharp\Internal\Text\Text\slug($title); }
+/// }
+/// ```
+///
+/// A static class is a final class, `[32]` `ZEND_ACC_FINAL`. An `extern` method is its `public static` method, `[17]`,
+/// whose body returns the call of its native function: `Sharp\Internal`, then the class's full name after `Sharp\`,
+/// then the method's name, with `ZEND_NAME_FQ`, which is 0.
+#[test]
+fn a_static_class_is_a_final_class_whose_extern_method_calls_its_native_function() {
+    let lowered = Lowered::named(
+        "vendor/heyjordanparker/php-sharp-composer/library/Sharp/Text/Text.sharp",
+        "namespace Sharp.Text;\n\npublic static class Text\n{\n    public static extern string slug(string title);\n}\n",
+    );
+
+    assert_eq!(
+        lowered.tree(),
+        indoc! {r#"
+            STMT_LIST
+              DECLARE
+                CONST_DECL
+                  CONST_ELEM
+                    ZVAL "strict_types"
+                    ZVAL 1
+                    null
+                null
+              NAMESPACE
+                ZVAL "Sharp\\Text"
+                null
+              CLASS [32] "Text" @3-6
+                null
+                null
+                STMT_LIST
+                  METHOD [17] "slug" @5-5
+                    PARAM_LIST
+                      PARAM
+                        ZVAL [1] "string"
+                        ZVAL "title"
+                        null
+                        null
+                        null
+                        null
+                    null
+                    STMT_LIST
+                      RETURN
+                        CALL
+                          ZVAL "Sharp\\Internal\\Text\\Text\\slug"
+                          ARG_LIST
+                            VAR
+                              ZVAL "title"
+                    ZVAL [1] "string"
+                    null
+                null
+                null
+        "#}
+    );
+}
+
+/// ```php
+/// final class Slug
+/// {
+///     public const SEPARATOR = '-';
+///     public static function reset(): void { \Sharp\Internal\Slug\reset(); }
+///     public static function of(string $title, string ...$words): string { return \Sharp\Internal\Slug\of($title, ...$words); }
+/// }
+/// ```
+///
+/// A `void` method calls its native function without `return`, and a variadic parameter forwards as a spread.
+#[test]
+fn an_extern_void_method_calls_without_return_and_forwards_a_variadic_parameter_as_a_spread() {
+    let lowered = Lowered::named(
+        "vendor/heyjordanparker/php-sharp-composer/library/Sharp/Slug.sharp",
+        "namespace Sharp;\n\npublic static class Slug\n{\n    public const string SEPARATOR = \"-\";\n\n    public static extern void reset();\n\n    public static extern string of(string title, string ...words);\n}\n",
+    );
+    let bodies: Vec<String> = lowered
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.kind == sharp_kind::SHARP_AST_METHOD)
+        .map(|(index, _)| lowered.render(lowered.child(index as u32, 2)))
+        .collect();
+
+    assert_eq!(
+        bodies,
+        [
+            indoc! {r#"
+                STMT_LIST
+                  CALL
+                    ZVAL "Sharp\\Internal\\Slug\\reset"
+                    ARG_LIST
+            "#},
+            indoc! {r#"
+                STMT_LIST
+                  RETURN
+                    CALL
+                      ZVAL "Sharp\\Internal\\Slug\\of"
+                      ARG_LIST
+                        VAR
+                          ZVAL "title"
+                        UNPACK
+                          VAR
+                            ZVAL "words"
+            "#},
+        ]
+    );
+}
+
+/// The checker refuses an `extern` method in a project file, so `check` refuses the file and nothing lowers it. `Text\Text`
+/// would otherwise reach `Sharp\Text\Text`'s native body.
+#[test]
+fn an_extern_method_outside_the_library_is_refused_before_lowering() {
+    for namespace in ["App", "Text"] {
+        let lowered = Lowered::named(
+            "src/Text.sharp",
+            &format!(
+                "namespace {namespace};\n\npublic static class Text\n{{\n    public static extern string slug(string title);\n}}\n"
+            ),
+        );
+
+        assert_eq!(
+            lowered.diagnostics(),
+            ["5:33 compile error: Only the standard library declares native bodies: give `slug` a body."],
+            "{namespace}"
+        );
+        assert!(lowered.nodes().is_empty(), "{namespace}");
+    }
+}
+
+/// ```php
 /// interface Linkable extends \Lib\Named { }
 /// class Page extends \Lib\Entity implements \App\Tenant\Linkable { }
 /// ```
@@ -4208,6 +4349,63 @@ fn string_plus_is_a_concatenation_and_int_division_is_intdiv() {
 }
 
 /// ```php
+/// return 'Class: ' . \App\Tenant\Order::class;
+/// ```
+///
+/// A class value is a string, so `+` joins it to a string, as the checker accepts it. `[8]` is `ZEND_CONCAT`.
+#[test]
+fn a_string_plus_a_class_value_is_a_concatenation() {
+    assert_eq!(
+        body_in(
+            "string run()",
+            "        return \"Class: \" + typeof(Order);\n",
+            &[("src/App/Tenant/Order.php", "<?php namespace App\\Tenant; final class Order {}")]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                BINARY_OP [8]
+                  ZVAL "Class: "
+                  CLASS_NAME
+                    ZVAL "App\\Tenant\\Order"
+        "#}
+    );
+}
+
+/// ```php
+/// $label = 'Class: ';
+/// $label .= \App\Tenant\Order::class;
+/// return $label;
+/// ```
+///
+/// `+=` of a class value on a string joins them, as `+` does. `[8]` is `ZEND_CONCAT`.
+#[test]
+fn a_string_plus_equals_a_class_value_is_a_concatenating_assignment() {
+    assert_eq!(
+        body_in(
+            "string run()",
+            "        string label = \"Class: \";\n        label += typeof(Order);\n        return label;\n",
+            &[("src/App/Tenant/Order.php", "<?php namespace App\\Tenant; final class Order {}")]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "label"
+                ZVAL "Class: "
+              ASSIGN_OP [8]
+                VAR
+                  ZVAL "label"
+                CLASS_NAME
+                  ZVAL "App\\Tenant\\Order"
+              RETURN
+                VAR
+                  ZVAL "label"
+        "#}
+    );
+}
+
+/// ```php
 /// $this->total = \intdiv($this->total, 2);
 /// ($receiver#1 = $this->next())->total = \intdiv($receiver#1->total, 2);
 /// ```
@@ -4708,7 +4906,11 @@ fn a_class_of_the_same_namespace_is_called_by_its_full_name() {
 #[test]
 fn int_and_float_are_the_classes_of_the_sharp_namespace() {
     assert_eq!(
-        body_in("float run(string extra)", "        return Int.parse(extra) + Float.tryParse(extra);\n", &[]),
+        body_in(
+            "float run(string extra)",
+            "        return Int.parse(extra) + Float.tryParse(extra);\n",
+            &[common::INT, common::FLOAT]
+        ),
         indoc! {r#"
             STMT_LIST
               RETURN
@@ -4752,7 +4954,7 @@ fn position_current_is_a_new_position_of_its_file_line_column_and_enclosing_meth
                 NEW
                   ZVAL "Sharp\\Position"
                   ARG_LIST
-                    ZVAL "src/Report.sharp"
+                    MAGIC_CONST [347]
                     ZVAL 9
                     ZVAL 22
                     ZVAL "App.Tenant.Report.run"
@@ -4765,7 +4967,7 @@ fn position_current_is_a_new_position_of_its_file_line_column_and_enclosing_meth
                   NEW
                     ZVAL "Sharp\\Position"
                     ARG_LIST
-                      ZVAL "src/Report.sharp"
+                      MAGIC_CONST [347]
                       ZVAL 10
                       ZVAL 29
                       ZVAL "App.Tenant.Report.run"
@@ -4805,7 +5007,7 @@ fn position_current_in_an_initial_value_names_the_constructor_the_class_gets() {
                 NEW
                   ZVAL "Sharp\\Position"
                   ARG_LIST
-                    ZVAL "src/Report.sharp"
+                    MAGIC_CONST [347]
                     ZVAL 3
                     ZVAL 32
                     ZVAL "Report.Report"
@@ -4845,7 +5047,7 @@ fn position_current_in_a_written_constructor_and_its_initial_values_names_the_co
                 NEW
                   ZVAL "Sharp\\Position"
                   ARG_LIST
-                    ZVAL "src/Report.sharp"
+                    MAGIC_CONST [347]
                     ZVAL 5
                     ZVAL 32
                     ZVAL "App.Tenant.Report.Report"
@@ -4855,7 +5057,7 @@ fn position_current_in_a_written_constructor_and_its_initial_values_names_the_co
                 NEW
                   ZVAL "Sharp\\Position"
                   ARG_LIST
-                    ZVAL "src/Report.sharp"
+                    MAGIC_CONST [347]
                     ZVAL 9
                     ZVAL 22
                     ZVAL "App.Tenant.Report.Report"
@@ -4870,7 +5072,7 @@ fn position_current_in_a_written_constructor_and_its_initial_values_names_the_co
                   NEW
                     ZVAL "Sharp\\Position"
                     ARG_LIST
-                      ZVAL "src/Report.sharp"
+                      MAGIC_CONST [347]
                       ZVAL 14
                       ZVAL 16
                       ZVAL "App.Tenant.Report.run"
@@ -4994,7 +5196,7 @@ fn a_member_of_position_current_is_a_property_read_on_the_new_position() {
                   NEW
                     ZVAL "Sharp\\Position"
                     ARG_LIST
-                      ZVAL "src/Report.sharp"
+                      MAGIC_CONST [347]
                       ZVAL 9
                       ZVAL 24
                       ZVAL "App.Tenant.Report.run"
@@ -5003,6 +5205,30 @@ fn a_member_of_position_current_is_a_property_read_on_the_new_position() {
                 ZVAL 1
         "#}
     );
+}
+
+/// A compiled file runs on other machines than the one that compiled it, so one workspace file lowers to the same bytes
+/// from any workspace root, and no text of it names the file: `Position.current()` reads the file where it runs.
+#[test]
+fn a_file_lowers_to_the_same_bytes_from_any_workspace_root_and_names_no_path() {
+    let code = method("        const here = Position.current();\n        return 1;\n");
+    let encoded = ["/home/ci/build", "/srv/app/releases/42"].map(|root| {
+        let file = File::new(
+            Cow::Borrowed(b"src/Report.sharp"),
+            FileType::Host,
+            Some(Path::new(root).join("src/Report.sharp")),
+            Cow::Owned(code.clone().into_bytes()),
+        );
+        let unit = common::checked_file(&file, &[], &InlineForms::default(), lower).expect("the source lowers");
+        assert!(
+            !unit.texts().windows(b"Report.sharp".len()).any(|text| text == b"Report.sharp"),
+            "no text names the file"
+        );
+
+        encode(&unit, &file.contents, [0; 16], &[], &[])
+    });
+
+    assert_eq!(encoded[0], encoded[1]);
 }
 
 /// ```php
@@ -5415,6 +5641,33 @@ fn the_ternary_is_a_conditional_marked_when_parenthesized() {
                       ZVAL 0
                     ZVAL 0
                     ZVAL 1
+        "#}
+    );
+}
+
+/// ```php
+/// return @\trim($x);
+/// ```
+///
+/// php-src's grammar builds `@expr` as a `SILENCE` of one child, the expression.
+#[test]
+fn error_control_is_a_silence_of_its_expression() {
+    let lowered = Lowered::named(
+        "vendor/heyjordanparker/php-sharp-composer/library/Sharp/Text/Text.sharp",
+        "namespace Sharp.Text;\n\npublic static class Text\n{\n    public static string run(string x)\n    {\n        return @trim(x);\n    }\n}\n",
+    );
+
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                SILENCE
+                  CALL
+                    ZVAL "trim"
+                    ARG_LIST
+                      VAR
+                        ZVAL "x"
         "#}
     );
 }
@@ -6180,6 +6433,32 @@ fn a_function_call_is_a_call_of_the_global_function() {
 }
 
 /// ```php
+/// return \run($extra);
+/// ```
+///
+/// Spec section 4 writes every member as `this.m()` or `Class.m()`, so a bare call inside `run` calls the global
+/// function `run`, not the method.
+#[test]
+fn a_bare_call_named_like_a_method_of_its_class_is_a_call_of_the_global_function() {
+    assert_eq!(
+        body_in(
+            RUN,
+            "        return run(extra);\n",
+            &[("src/run.php", "<?php function run(int $extra): int { return $extra; }")]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CALL
+                  ZVAL "run"
+                  ARG_LIST
+                    VAR
+                      ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
 /// exit(1);
 /// exit($extra);
 /// exit();
@@ -6718,6 +6997,33 @@ fn is_with_a_name_assigns_the_name_before_the_test() {
               RETURN
                 VAR
                   ZVAL "count"
+        "#}
+    );
+}
+
+/// ```php
+/// return \is_string($extra) ? 1 : 0;
+/// ```
+///
+/// A `?` after the type that `is` tests starts a `? :`, as in C#, so it lowers as the same test in parentheses does.
+#[test]
+fn is_before_a_question_mark_is_the_condition_of_a_conditional() {
+    let tree = body_in("int run(int|string extra)", "        return extra is string ? 1 : 0;\n", &[]);
+
+    assert_eq!(tree, body_in("int run(int|string extra)", "        return (extra is string) ? 1 : 0;\n", &[]));
+    assert_eq!(
+        tree,
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CONDITIONAL
+                  CALL
+                    ZVAL "is_string"
+                    ARG_LIST
+                      VAR
+                        ZVAL "extra"
+                  ZVAL 1
+                  ZVAL 0
         "#}
     );
 }
@@ -7705,11 +8011,11 @@ fn fixed_child_count(kind: sharp_kind) -> Option<u32> {
     }
 }
 
-/// The fixture holds every construct the checker accepts, so the bridge lowers all of them, and each fixed-size node
-/// has the child count of its kind.
+/// The fixtures hold every construct the checker accepts, the standard library's own under the namespace `Sharp`, so
+/// the bridge lowers all of them, and each fixed-size node has the child count of its kind.
 #[test]
 fn every_construct_of_the_slice_lowers_into_nodes_of_their_kinds_child_count() {
-    let lowered = Lowered::with(
+    let slice = Lowered::with(
         include_str!("../../semantics/tests/fixtures/slice.sharp"),
         &[
             (
@@ -7725,18 +8031,27 @@ fn every_construct_of_the_slice_lowers_into_nodes_of_their_kinds_child_count() {
             common::SEARCHABLE,
             common::HAS_LABEL,
             common::FAILURES,
+            common::INT,
+            common::FLOAT,
         ],
     );
-    assert_eq!(lowered.diagnostics(), Vec::<String>::new());
+    let library = Lowered::named(
+        "vendor/heyjordanparker/php-sharp-composer/library/Sharp/Text/Text.sharp",
+        include_str!("../../semantics/tests/fixtures/library.sharp"),
+    );
 
-    let wrong: Vec<String> = lowered
-        .nodes()
-        .iter()
-        .filter(|node| fixed_child_count(node.kind).is_some_and(|count| count != node.child_count))
-        .map(|node| format!("{:?} has {} children", node.kind, node.child_count))
-        .collect();
+    for lowered in [slice, library] {
+        assert_eq!(lowered.diagnostics(), Vec::<String>::new());
 
-    assert_eq!(wrong, Vec::<String>::new());
+        let wrong: Vec<String> = lowered
+            .nodes()
+            .iter()
+            .filter(|node| fixed_child_count(node.kind).is_some_and(|count| count != node.child_count))
+            .map(|node| format!("{:?} has {} children", node.kind, node.child_count))
+            .collect();
+
+        assert_eq!(wrong, Vec::<String>::new());
+    }
 }
 
 #[test]
@@ -7773,6 +8088,18 @@ fn form_names(code: &str) -> Vec<String> {
 #[test]
 fn a_method_whose_body_is_one_call_reading_each_slot_once_gives_an_inline_form() {
     assert_eq!(form_names(TEXT.1), ["sharp\\text::shout", "sharp\\text::padded", "sharp\\text::wrapped"]);
+}
+
+/// `Position.current()` in a standard library method is the position in the library's file, inside that method. Copied
+/// into a caller, it would give the caller's file with the library's line, so a method that runs it gives no form.
+#[test]
+fn a_method_that_runs_position_current_gives_no_inline_form() {
+    assert_eq!(
+        form_names(
+            "namespace Sharp;\n\npublic class Here\n{\n    public static Position now() => Position.current();\n\n    public static string shout(string text) => strtoupper(text);\n}\n"
+        ),
+        ["sharp\\here::shout"]
+    );
 }
 
 /// ```php
@@ -8046,6 +8373,68 @@ fn a_call_the_inlining_rule_does_not_take_keeps_its_call() {
             "{call}"
         );
     }
+}
+
+/// `Sharp\Slug` at the standard library's path, with two native bodies: one with plain parameters and one variadic.
+const SLUG: (&str, &str) = (
+    "vendor/heyjordanparker/php-sharp-composer/library/Sharp/Slug.sharp",
+    "namespace Sharp;\n\npublic static class Slug\n{\n    public static extern string title(string text);\n\n    public static extern string join(string text, string ...words);\n}\n",
+);
+
+/// The statements of `run`, which takes a `string name` and holds `statements` in a class that imports `Sharp.Slug`,
+/// lowered with the inline forms of `SLUG`.
+fn native_body(statements: &str) -> String {
+    let code = format!(
+        "namespace App.Tenant;\n\nimport Sharp.Slug;\n\nclass Report\n{{\n    public string run(string name)\n    {{\n{statements}    }}\n}}\n"
+    );
+
+    Lowered::inlining(&code, &[], &[SLUG]).body()
+}
+
+/// ```php
+/// return \Sharp\Internal\Slug\title($name);
+/// ```
+///
+/// An `extern` method's body is the call of its native function, so a call of it inlines as that call, as any one-call
+/// library method does, and the caller calls the native function directly.
+#[test]
+fn a_call_of_a_native_body_inlines_as_the_call_of_its_native_function() {
+    assert_eq!(
+        native_body("        return Slug.title(name);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CALL
+                  ZVAL "Sharp\\Internal\\Slug\\title"
+                  ARG_LIST
+                    VAR
+                      ZVAL "name"
+        "#}
+    );
+}
+
+/// ```php
+/// return \Sharp\Slug::join($name, $name);
+/// ```
+///
+/// A variadic parameter gives no form, for a native body as for any other, so the call keeps its static call.
+#[test]
+fn a_call_of_a_variadic_native_body_keeps_its_static_call() {
+    assert_eq!(
+        native_body("        return Slug.join(name, name);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                STATIC_CALL
+                  ZVAL "Sharp\\Slug"
+                  ZVAL "join"
+                  ARG_LIST
+                    VAR
+                      ZVAL "name"
+                    VAR
+                      ZVAL "name"
+        "#}
+    );
 }
 
 /// The unit names each form it inlines once, with the form's fingerprint, which `Reads::inlined` takes.

@@ -341,6 +341,19 @@ fn sharp_arguments_follow_strict_conversion_rules() {
     assert_eq!(php_issues, ["12:29 invalid-argument"]);
 }
 
+#[test]
+fn a_numeric_string_passed_to_a_php_int_parameter_is_an_invalid_argument_as_under_strict_types() {
+    let counter = "<?php\n\nnamespace Lib;\n\nfinal class Counter\n{\n    public static function take(int $value): int\n    {\n        return $value;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Counter;\n\nclass Report\n{\n    public static int total()\n    {\n        return Counter.take(\"5\");\n    }\n}\n";
+    let php = "<?php\n\ndeclare(strict_types=1);\n\nnamespace Demo;\n\nuse Lib\\Counter;\n\nclass Report\n{\n    public static function total(): int\n    {\n        return Counter::take('5');\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Counter.php", counter)]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[("src/Lib/Counter.php", counter)]);
+
+    assert_eq!(sharp_issues, ["9:29 invalid-argument"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
 /// Spec section 14.3: a method named without parentheses is a function value, typed as PHP types `$calc->add(...)`.
 #[test]
 fn a_method_named_without_a_call_is_a_closure_of_its_signature() {
@@ -590,6 +603,15 @@ fn a_typed_for_counter_takes_only_values_of_its_written_type() {
         issues(("src/Demo/Report.sharp", sharp), &[]),
         ["7:25 invalid-local-assignment-value", "13:21 invalid-local-assignment-value"]
     );
+}
+
+#[test]
+fn a_by_reference_write_that_can_never_fit_the_written_type_of_a_local_is_reported() {
+    let sharp = "namespace Demo;\n\nclass Response\n{\n    public static List<string> line()\n    {\n        string file = \"\";\n        List<string> line = [];\n        headers_sent(file, line);\n        return line;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Response\n{\n    /** @return list<string> */\n    public static function line(): array\n    {\n        $file = '';\n        $line = [];\n        headers_sent($file, $line);\n        return $line;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Response.sharp", sharp), &[]), ["9:28 invalid-local-assignment-value"]);
+    assert_eq!(issues(("src/Demo/Response.php", php), &[]), ["13:16 invalid-return-statement"]);
 }
 
 #[test]
@@ -919,9 +941,9 @@ fn a_static_member_write_is_checked_as_in_php() {
 /// so each read is checked as the PHP twin's `::` read of that member.
 #[test]
 fn a_class_member_read_is_checked_as_its_constant_enum_case_or_static_property_in_php() {
-    let registry = "<?php\n\nnamespace Lib;\n\nenum Order: string\n{\n    case Ascending = 'asc';\n}\n\nfinal class Registry\n{\n    public const int VERSION = 2;\n    public static string $label = 'registry';\n}\n";
-    let sharp = "namespace Demo;\n\nimport Lib.Order;\nimport Lib.Registry;\n\nclass Members\n{\n    public static int version()\n    {\n        return Registry.VERSION;\n    }\n\n    public static Order order()\n    {\n        return Order.Ascending;\n    }\n\n    public static int label()\n    {\n        return Registry.label;\n    }\n\n    public static int missing()\n    {\n        return Registry.missing;\n    }\n}\n";
-    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Order;\nuse Lib\\Registry;\n\nclass Members\n{\n    public static function version(): int\n    {\n        return Registry::VERSION;\n    }\n\n    public static function order(): Order\n    {\n        return Order::Ascending;\n    }\n\n    public static function label(): int\n    {\n        return Registry::$label;\n    }\n\n    public static function missing(): int\n    {\n        return Registry::$missing;\n    }\n}\n";
+    let registry = "<?php\n\nnamespace Lib;\n\nenum Order: string\n{\n    case Ascending = 'asc';\n}\n\nfinal class Registry\n{\n    public const int VERSION = 2;\n    public static string $label = 'registry';\n    protected static int $hidden = 1;\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Order;\nimport Lib.Registry;\n\nclass Members\n{\n    public static int version()\n    {\n        return Registry.VERSION;\n    }\n\n    public static Order order()\n    {\n        return Order.Ascending;\n    }\n\n    public static int label()\n    {\n        return Registry.label;\n    }\n\n    public static int missing()\n    {\n        return Registry.missing;\n    }\n\n    public static int hidden()\n    {\n        return Registry.hidden;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Order;\nuse Lib\\Registry;\n\nclass Members\n{\n    public static function version(): int\n    {\n        return Registry::VERSION;\n    }\n\n    public static function order(): Order\n    {\n        return Order::Ascending;\n    }\n\n    public static function label(): int\n    {\n        return Registry::$label;\n    }\n\n    public static function missing(): int\n    {\n        return Registry::$missing;\n    }\n\n    public static function hidden(): int\n    {\n        return Registry::$hidden;\n    }\n}\n";
 
     let sharp_issues = issues(("src/Demo/Members.sharp", sharp), &[("src/Lib/Registry.php", registry)]);
     let php_issues = issues(("src/Demo/Members.php", php), &[("src/Lib/Registry.php", registry)]);
@@ -929,7 +951,13 @@ fn a_class_member_read_is_checked_as_its_constant_enum_case_or_static_property_i
     assert_eq!(codes(&sharp_issues), codes(&php_issues), "{sharp_issues:?} {php_issues:?}");
     assert_eq!(
         sharp_issues,
-        ["20:16 invalid-return-statement", "25:25 non-existent-property", "25:16 invalid-return-statement"]
+        [
+            "20:16 invalid-return-statement",
+            "25:25 non-existent-property",
+            "25:16 invalid-return-statement",
+            "30:25 invalid-property-read",
+            "30:16 never-return",
+        ]
     );
 }
 
@@ -977,13 +1005,13 @@ fn a_header_names_the_base_class_and_the_interfaces_as_in_php() {
     assert_eq!(issues(("src/Demo/Page.sharp", sharp), &others), Vec::<String>::new());
 }
 
-/// A header with two classes, a trait, a missing name, a final class or an interface whose method the class lacks
-/// reports what its PHP twin's `extends` and `implements` report.
+/// A header with two classes, a trait, a missing name, a final class, an enum or an interface whose method the class
+/// lacks reports what its PHP twin's `extends` and `implements` report.
 #[test]
 fn a_header_reports_what_extends_and_implements_report_in_php() {
-    let library = "<?php\n\nnamespace Lib;\n\ninterface Named\n{\n    public function name(): string;\n}\n\nclass Entity\n{\n}\n\nclass Other\n{\n}\n\ntrait Mixin\n{\n}\n\nfinal class Sealed\n{\n}\n";
-    let sharp = "namespace Demo;\n\nimport Lib.Entity;\nimport Lib.Mixin;\nimport Lib.Named;\nimport Lib.Other;\nimport Lib.Sealed;\n\npublic class Twice : Entity, Other\n{\n}\n\npublic class Blend : Mixin\n{\n}\n\npublic class Lost : Missing\n{\n}\n\npublic class Closed : Sealed\n{\n}\n\npublic class Partial : Named\n{\n}\n\npublic interface Wide : Entity\n{\n}\n";
-    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Entity;\nuse Lib\\Mixin;\nuse Lib\\Named;\nuse Lib\\Other;\nuse Lib\\Sealed;\n\nclass Twice extends Entity implements Other\n{\n}\n\nclass Blend implements Mixin\n{\n}\n\nclass Lost implements Missing\n{\n}\n\nclass Closed extends Sealed\n{\n}\n\nclass Partial implements Named\n{\n}\n\ninterface Wide extends Entity\n{\n}\n";
+    let library = "<?php\n\nnamespace Lib;\n\ninterface Named\n{\n    public function name(): string;\n}\n\nclass Entity\n{\n}\n\nclass Other\n{\n}\n\ntrait Mixin\n{\n}\n\nfinal class Sealed\n{\n}\n\nenum Suit\n{\n    case Hearts;\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Entity;\nimport Lib.Mixin;\nimport Lib.Named;\nimport Lib.Other;\nimport Lib.Sealed;\nimport Lib.Suit;\n\npublic class Twice : Entity, Other\n{\n}\n\npublic class Blend : Mixin\n{\n}\n\npublic class Lost : Missing\n{\n}\n\npublic class Closed : Sealed\n{\n}\n\npublic class Suited : Suit\n{\n}\n\npublic class Partial : Named\n{\n}\n\npublic interface Wide : Entity\n{\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Entity;\nuse Lib\\Mixin;\nuse Lib\\Named;\nuse Lib\\Other;\nuse Lib\\Sealed;\nuse Lib\\Suit;\n\nclass Twice extends Entity implements Other\n{\n}\n\nclass Blend implements Mixin\n{\n}\n\nclass Lost implements Missing\n{\n}\n\nclass Closed extends Sealed\n{\n}\n\nclass Suited implements Suit\n{\n}\n\nclass Partial implements Named\n{\n}\n\ninterface Wide extends Entity\n{\n}\n";
     let others = [("src/Lib/Named.php", library)];
 
     let sharp_issues = issues(("src/Demo/Twice.sharp", sharp), &others);
@@ -996,6 +1024,7 @@ fn a_header_reports_what_extends_and_implements_report_in_php() {
             "invalid-implement",
             "non-existent-class-like",
             "extend-final-class",
+            "invalid-implement",
             "unimplemented-abstract-method",
             "invalid-extend"
         ]
@@ -1504,6 +1533,40 @@ fn calling_a_namespaced_function_is_not_supported_yet() {
     assert_eq!(issues(("src/Demo/Report.php", php), &[("src/Demo/helpers.php", helpers)]), Vec::<String>::new());
 }
 
+/// Spec section 4 writes every member as `this.m()` or `Class.m()`, so a bare call is the global function's, even
+/// when the class declares a method of the same name.
+#[test]
+fn a_bare_call_named_like_a_method_of_its_class_calls_the_php_function() {
+    let sharp = "namespace Sharp.Math;\n\npublic static class Math\n{\n    public static float ceil(float x) => ceil(x);\n\n    public static int count(List<int> values) => count(values);\n}\n";
+
+    assert_eq!(issues(("src/Sharp/Math/Math.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn a_bare_call_of_a_method_that_no_function_shares_names_the_member_to_write() {
+    let sharp = "namespace Demo;\n\nclass Calc\n{\n    public static int total() => 1;\n\n    public static int run() => total();\n\n    public int size() => 1;\n\n    public int measure() => Size();\n}\n";
+    let analyzed = ("src/Demo/Calc.sharp", sharp);
+
+    assert_eq!(
+        messages(analyzed, &[]),
+        [
+            "Write `Calc.total()`: a static method reaches the members of its class through the class name.",
+            "Could not infer a precise return type for function `Demo\\Calc::run`. Saw type `Any?`.",
+            "Write `this.size()`: members of the same object are always written with `this.`.",
+            "Could not infer a precise return type for function `Demo\\Calc::measure`. Saw type `Any?`.",
+        ]
+    );
+    assert_eq!(
+        issues(analyzed, &[]),
+        [
+            "7:32 non-existent-function",
+            "7:32 mixed-return-statement",
+            "11:29 non-existent-function",
+            "11:29 mixed-return-statement",
+        ]
+    );
+}
+
 #[test]
 fn plus_joins_two_strings_into_the_string_dot_gives_in_php() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(string name)\n    {\n        const label = \"Order \" + name + `!`;\n        let line = label;\n        line += \"\\n\";\n        return line;\n    }\n}\n";
@@ -1736,14 +1799,56 @@ fn exit_with_a_never_value_has_the_issues_of_its_php_twin() {
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
 }
 
+/// The standard library's `Int` and `Float`, with the library's signatures, which a project reads from `vendor/`.
+const LIBRARY_TYPE_CLASSES: [(&str, &str); 2] = [
+    (
+        "vendor/heyjordanparker/php-sharp-composer/library/Sharp/Int.sharp",
+        "namespace Sharp;\n\npublic static class Int\n{\n    public static int parse(Any? value) => 0;\n\n    public static int? tryParse(Any? value) => null;\n}\n",
+    ),
+    (
+        "vendor/heyjordanparker/php-sharp-composer/library/Sharp/Float.sharp",
+        "namespace Sharp;\n\npublic static class Float\n{\n    public static float parse(Any? value) => 0.0;\n\n    public static float? tryParse(Any? value) => null;\n}\n",
+    ),
+];
+
+/// The semantic checks let any file whose namespace is `Sharp` declare `Int`, `Float` and `Bool`, as the engine does,
+/// and only the analyzer knows the file is not the standard library's. It refuses them with the semantic checks'
+/// reserved-name message, under its own code.
+#[test]
+fn a_type_class_of_the_standard_library_in_a_project_file_is_a_reserved_name() {
+    let class =
+        "namespace Sharp;\n\npublic static class Bool\n{\n    public static bool? tryParse(Any? value) => null;\n}\n";
+    let r#enum = "namespace Sharp;\n\npublic enum Int\n{\n    case One;\n}\n";
+
+    let class_issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Sharp/Bool.sharp", class), &[]);
+    let enum_issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Sharp/Int.sharp", r#enum), &[]);
+
+    let messages: Vec<String> = class_issues
+        .iter()
+        .map(|issue| format!("{} {}", located(class, issue), issue.message))
+        .chain(enum_issues.iter().map(|issue| format!("{} {}", located(r#enum, issue), issue.message)))
+        .collect();
+    assert_eq!(
+        messages,
+        [
+            "3:21 reserved-name-outside-library Cannot use `Bool` as a class name: it is reserved.",
+            "3:13 reserved-name-outside-library Cannot use `Int` as a class name: it is reserved.",
+        ]
+    );
+}
+
 #[test]
 fn int_and_float_parse_have_the_types_of_the_sharp_library_classes() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int count(string text, int? fallback)\n    {\n        const price = Float.parse(text) + (Float.tryParse(fallback) ?? 0.0);\n        const count = Int.parse(text) + (Int.tryParse(null) ?? 0);\n        return price > 1.0 ? count : Int.tryParse(text);\n    }\n}\n";
     let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function count(string $text, ?int $fallback): int\n    {\n        $price = \\Sharp\\Float::parse($text) + (\\Sharp\\Float::tryParse($fallback) ?? 0.0);\n        $count = \\Sharp\\Int::parse($text) + (\\Sharp\\Int::tryParse(null) ?? 0);\n        return $price > 1.0 ? $count : \\Sharp\\Int::tryParse($text);\n    }\n}\n";
 
     // `check_throws` skips `.sharp` files, so the PHP twin is analyzed without it.
-    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
-    let php_issues = issues_with(Settings { check_throws: false, ..settings() }, ("src/Demo/Report.php", php), &[]);
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &LIBRARY_TYPE_CLASSES);
+    let php_issues = issues_with(
+        Settings { check_throws: false, ..settings() },
+        ("src/Demo/Report.php", php),
+        &LIBRARY_TYPE_CLASSES,
+    );
 
     assert_eq!(sharp_issues, ["9:16 nullable-return-statement", "9:16 invalid-return-statement"]);
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
@@ -3076,6 +3181,22 @@ fn a_bare_index_read_on_a_map_is_an_error() {
 }
 
 #[test]
+fn a_bare_index_read_on_a_map_keyed_by_a_backed_enum_is_an_error() {
+    let sharp = "namespace Demo;\n\nimport Lib.Size;\nimport Lib.Status;\n\nclass Tally\n{\n    public int standing(Map<Status, int> counts, Map<Status, Map<Size, int>> nested, Status status, Size size)\n    {\n        counts[status] += 1;\n        counts[status]++;\n        return counts[status] + nested[status][size];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
+        [
+            "10:9 possibly-undefined-array-index",
+            "11:9 possibly-undefined-array-index",
+            "12:16 possibly-undefined-array-index",
+            "12:33 possibly-undefined-array-index",
+            "12:33 possibly-undefined-array-index",
+        ]
+    );
+}
+
+#[test]
 fn coalescing_an_unchecked_any_gives_a_value_that_is_never_null() {
     let sharp = "namespace Demo;\n\nclass Inbox\n{\n    public Any pick(Any? maybe, Any sure) => maybe ?? sure;\n\n    public Any label(Any? maybe, string fallback)\n    {\n        Any shown = maybe ?? fallback;\n        return shown;\n    }\n}\n";
 
@@ -3173,6 +3294,165 @@ fn an_index_write_to_a_list_is_an_error() {
             "10:9 invalid-array-access"
         ]
     );
+}
+
+/// A `List`'s keys are the `int`s from 0 to its last index, so a read whose index may be anything else is an error,
+/// as an unchecked `Any` is (spec section 24). A plain PHP `list<int>` keeps reading a wider key, as PHP does.
+#[test]
+fn a_list_read_with_an_index_that_may_not_be_an_int_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Lookup\n{\n    public int read(List<int> items, Any sure, Any? maybe, int|string either, int? missing, string name)\n    {\n        const a = items[sure];\n        const b = items[maybe];\n        const c = items[either];\n        const d = items[missing];\n        const e = items[name];\n        return a + b + c + d + e;\n    }\n\n    public string show(List<List<int>> rows, List<string> names, int|string key)\n    {\n        return `${names[key]} ${rows[0][key]}`;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Lookup\n{\n    /**\n     * @param list<int> $items\n     */\n    public function read(array $items, mixed $sure, mixed $maybe, int|string $either, ?int $missing, string $name): int\n    {\n        $a = $items[$sure];\n        $b = $items[$maybe];\n        $c = $items[$either];\n        $d = $items[$missing];\n        $e = $items[$name];\n        return $a + $b + $c + $d + $e;\n    }\n\n    /**\n     * @param list<list<int>> $rows\n     * @param list<string> $names\n     */\n    public function show(array $rows, array $names, int|string $key): string\n    {\n        return \"{$names[$key]} {$rows[0][$key]}\";\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Lookup.php", php), &[]),
+        ["15:21 possibly-null-array-index", "16:21 mismatched-array-index"]
+    );
+
+    let sharp_issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Lookup.sharp", sharp), &[]);
+    let located_issues: Vec<String> = sharp_issues.iter().map(|issue| located(sharp, issue)).collect();
+
+    assert_eq!(
+        located_issues,
+        [
+            "7:19 mismatched-array-index",
+            "8:19 mismatched-array-index",
+            "9:19 mismatched-array-index",
+            "10:19 mismatched-array-index",
+            "11:19 mismatched-array-index",
+            "17:19 mismatched-array-index",
+            "17:33 mismatched-array-index",
+        ]
+    );
+    assert_eq!(
+        sharp_issues.iter().map(|issue| issue.message.as_str()).collect::<Vec<_>>()[..3],
+        [
+            "`List<int>` is indexed by `int`, but this index is `Any`.",
+            "`List<int>` is indexed by `int`, but this index is `Any?`.",
+            "`List<int>` is indexed by `int`, but this index is `int|string`.",
+        ]
+    );
+    assert_eq!(
+        sharp_issues[0].primary_annotation().and_then(|annotation| annotation.message.as_deref()),
+        Some("This index may not be an `int`.")
+    );
+    assert_eq!(
+        sharp_issues[0].help.as_deref(),
+        Some("Check the index with `is int` first, as in `if (index is int) { … }`.")
+    );
+}
+
+/// An index of a type `int` contains, such as an `int` literal or a loop counter, reads a `List` as `int` does. A
+/// handled read takes an `int` index too.
+#[test]
+fn a_list_read_with_an_index_of_a_type_int_contains_is_accepted_and_a_handled_read_checks_its_index_too() {
+    let sharp = "namespace Demo;\n\nclass Lookup\n{\n    public int read(List<int> items, int index, int|string either)\n    {\n        let total = items[index] + items[0] + (items[index] ?? 0);\n        for (let i = 0; i < count(items); i++) {\n            total += items[i];\n        }\n        return total + (items[either] ?? 0);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Lookup\n{\n    /**\n     * @param list<int> $items\n     */\n    public function read(array $items, int $index, int|string $either): int\n    {\n        $total = $items[$index] + $items[0] + ($items[$index] ?? 0);\n        for ($i = 0; $i < count($items); $i++) {\n            $total += $items[$i];\n        }\n        return $total + ($items[$either] ?? 0);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Lookup.php", php), &[]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Lookup.sharp", sharp), &[]), ["11:25 mismatched-array-index"]);
+}
+
+/// `strict_list_index_checks` asks a plain PHP `list<int>` for a `non-negative-int` index. A PHP# `List` is indexed by
+/// any `int`, and the engine throws `OutOfRangeException` for `items[-1]` as for any index past the end.
+#[test]
+fn a_list_read_takes_any_int_index_under_strict_list_index_checks() {
+    let sharp = "namespace Demo;\n\nclass Lookup\n{\n    public int read(List<int> items, int index) => items[index] + items[-1];\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Lookup\n{\n    /**\n     * @param list<int> $items\n     */\n    public function read(array $items, int $index): int\n    {\n        return $items[$index] + $items[-1];\n    }\n}\n";
+    let strict = || Settings { strict_list_index_checks: true, ..settings() };
+
+    assert_eq!(issues_with(strict(), ("src/Demo/Lookup.php", php), &[]), ["12:40 mismatched-array-index"]);
+    assert_eq!(issues_with(strict(), ("src/Demo/Lookup.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// A `Map` key is an `int`, a `string` or a backed enum, as the `Map` declares it (spec section 12), and never null. A
+/// handled read takes the key a bare read takes, so a key that may be null or of another type is an error. A plain PHP
+/// `array<string, int>` keeps reading a handled key of any array key type, as PHP does.
+#[test]
+fn a_map_read_with_a_key_outside_its_key_type_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Tally\n{\n    public int read(Map<string, int> counts, string? name, int id, int|string either)\n    {\n        const a = counts[name] ?? 0;\n        const b = counts[id] ?? 0;\n        const c = counts[either] ?? 0;\n        const d = isset(counts[name]) ? 1 : 0;\n        return a + b + c + d;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Tally\n{\n    /**\n     * @param array<string, int> $counts\n     */\n    public function read(array $counts, ?string $name, int $id, int|string $either): int\n    {\n        $a = $counts[$name] ?? 0;\n        $b = $counts[$id] ?? 0;\n        $c = $counts[$either] ?? 0;\n        $d = isset($counts[$name]) ? 1 : 0;\n        return $a + $b + $c + $d;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tally.php", php), &[]),
+        ["12:22 possibly-null-array-index", "15:28 possibly-null-array-index"]
+    );
+
+    let sharp_issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Tally.sharp", sharp), &[]);
+    let located_issues: Vec<String> = sharp_issues.iter().map(|issue| located(sharp, issue)).collect();
+
+    assert_eq!(
+        located_issues,
+        [
+            "7:26 mismatched-array-index",
+            "8:26 mismatched-array-index",
+            "9:26 mismatched-array-index",
+            "10:32 mismatched-array-index",
+        ]
+    );
+    assert_eq!(
+        sharp_issues.iter().map(|issue| issue.message.as_str()).collect::<Vec<_>>()[..3],
+        [
+            "`Map<string, int>` is keyed by `string`, but this key is `string?`.",
+            "`Map<string, int>` is keyed by `string`, but this key is `int`.",
+            "`Map<string, int>` is keyed by `string`, but this key is `int|string`.",
+        ]
+    );
+    assert_eq!(
+        sharp_issues[0].primary_annotation().and_then(|annotation| annotation.message.as_deref()),
+        Some("This key may not be of type `string`.")
+    );
+
+    let either = "namespace Demo;\n\nclass Keys\n{\n    public int read(Map<int|string, int> counts, Any? value) => counts[value] ?? 0;\n}\n";
+    let either_issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Keys.sharp", either), &[]);
+
+    assert_eq!(
+        either_issues.iter().map(|issue| (located(either, issue), issue.help.as_deref())).collect::<Vec<_>>(),
+        [(
+            "5:72 mismatched-array-index".to_owned(),
+            Some("Check the key with `is int or string` first, as in `if (name is int or string) { … }`.")
+        )]
+    );
+}
+
+/// A key of the `Map`'s key type reads it, handled or not: a `string` reads a `Map<string, int>` and a `Map` literal,
+/// and a `Status` reads a `Map<Status, int>`, which runs as its backing value.
+#[test]
+fn a_map_read_with_a_key_of_its_key_type_is_accepted() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Tally\n{\n    public int read(Map<string, int> counts, Map<Status, int> states, string name, Status status)\n    {\n        const named = [\"a\": 1];\n        const a = counts[name] ?? 0;\n        const b = states[status] ?? 0;\n        const c = isset(counts[name]) ? 1 : 0;\n        const d = named[name] ?? 0;\n        return a + b + c + d;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Status;\n\nclass Tally\n{\n    /**\n     * @param array<string, int> $counts\n     * @param array<string, int> $states\n     */\n    public function read(array $counts, array $states, string $name, Status $status): int\n    {\n        $named = ['a' => 1];\n        $a = $counts[$name] ?? 0;\n        $b = $states[$status->value] ?? 0;\n        $c = isset($counts[$name]) ? 1 : 0;\n        $d = $named[$name] ?? 0;\n        return $a + $b + $c + $d;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tally.php", php), &[("src/Lib/Status.php", STATUS)]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]), Vec::<String>::new());
+
+    let checked = "namespace Demo;\n\nimport Lib.Status;\n\nclass Keys\n{\n    public int named(Map<string, int> counts, Any? value)\n    {\n        if (value is string) {\n            return counts[value] ?? 0;\n        }\n        return 0;\n    }\n\n    public int numbered(Map<int, int> counts, Any? value)\n    {\n        if (value is int) {\n            return counts[value] ?? 0;\n        }\n        return 0;\n    }\n\n    public int stated(Map<Status, int> counts, Any? value)\n    {\n        if (value is Status) {\n            return counts[value] ?? 0;\n        }\n        return 0;\n    }\n\n    public int either(Map<int|string, int> counts, Any? value)\n    {\n        if (value is int or string) {\n            return counts[value] ?? 0;\n        }\n        return 0;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Keys.sharp", checked), &[("src/Lib/Status.php", STATUS)]), Vec::<String>::new());
+}
+
+/// A bare `Map` read is refused for its missing key, and its key is checked as a handled read's is.
+#[test]
+fn a_bare_map_read_with_a_key_outside_its_key_type_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Tally\n{\n    public int read(Map<string, int> counts, string? name, int id)\n    {\n        return counts[name] + counts[id];\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Tally\n{\n    /**\n     * @param array<string, int> $counts\n     */\n    public function read(array $counts, ?string $name, int $id): int\n    {\n        return $counts[$name] + $counts[$id];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tally.php", php), &[]),
+        ["12:24 possibly-null-array-index", "12:41 mismatched-array-index"]
+    );
+
+    let sharp_issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Tally.sharp", sharp), &[]);
+    let located_issues: Vec<String> = sharp_issues.iter().map(|issue| located(sharp, issue)).collect();
+
+    assert_eq!(
+        located_issues,
+        [
+            "7:23 mismatched-array-index",
+            "7:16 possibly-undefined-array-index",
+            "7:38 mismatched-array-index",
+            "7:31 possibly-undefined-array-index",
+        ]
+    );
+    assert_eq!(sharp_issues[2].message, "`Map<string, int>` is keyed by `string`, but this key is `int`.");
 }
 
 /// `for (const [k, v] of x)` reads the keys of a `Map`. A `List`'s indexes come from `entries()`, as spec section 12
@@ -5713,4 +5993,64 @@ fn self_in_a_php_trait_calling_its_own_method_names_the_trait_as_written() {
             "Invalid return type for function `Lib\\Fluent::check`: expected `bool`, but found `Lib\\Fluent`.",
         ]
     );
+}
+
+/// The standard library's `Text`, a static class with a native body, spec section 29.
+const TEXT: (&str, &str) = (
+    "library/Sharp/Text/Text.sharp",
+    "namespace Sharp.Text;\n\npublic static class Text\n{\n    public static extern string slug(string title);\n}\n",
+);
+
+#[test]
+fn an_extern_method_of_a_static_class_is_called_on_the_class_with_no_issues() {
+    let code = "namespace App;\n\nimport Sharp.Text.Text;\n\npublic class Page\n{\n    public string slug() => Text.slug(\"Hello\");\n}\n";
+
+    assert_eq!(issues(("src/App/Page.sharp", code), &[TEXT]), Vec::<String>::new());
+}
+
+#[test]
+fn new_on_a_static_class_is_an_error() {
+    let code =
+        "namespace App;\n\nimport Sharp.Text.Text;\n\npublic class Page\n{\n    public Text make() => new Text();\n}\n";
+
+    assert_eq!(
+        messages(("src/App/Page.sharp", code), &[TEXT]),
+        ["`Text` is a static class, so it has no instances: call its members on the class."]
+    );
+    assert_eq!(issues(("src/App/Page.sharp", code), &[TEXT]), ["7:31 abstract-instantiation"]);
+}
+
+#[test]
+fn a_class_that_extends_a_static_class_is_an_error() {
+    let code = "namespace App;\n\nimport Sharp.Text.Text;\n\npublic class Slug : Text\n{\n}\n";
+
+    assert_eq!(
+        messages(("src/App/Slug.sharp", code), &[TEXT]),
+        ["`Text` is a static class, so no class can extend it."]
+    );
+    assert_eq!(issues(("src/App/Slug.sharp", code), &[TEXT]), ["5:21 extend-final-class"]);
+}
+
+/// Semantics takes a well-formed `extern` method in any namespace, because the engine compiles the standard library
+/// from `vendor/` without knowing it is vendored. The analyzer knows a project file, and refuses it there.
+#[test]
+fn an_extern_method_in_a_project_file_is_an_error_in_any_namespace() {
+    for analyzed in [
+        (
+            "src/Sharp/Mine/Text.sharp",
+            "namespace Sharp.Mine;\n\npublic static class Text\n{\n    public static extern string slug(string title);\n}\n",
+        ),
+        (
+            "src/App/Text.sharp",
+            "namespace App;\n\npublic static class Text\n{\n    public static extern string slug(string title);\n}\n",
+        ),
+    ] {
+        assert_eq!(
+            messages(analyzed, &[]),
+            ["Only the standard library declares native bodies: give `slug` a body."],
+            "{}",
+            analyzed.0
+        );
+        assert_eq!(issues(analyzed, &[]), ["5:33 native-body-outside-library"], "{}", analyzed.0);
+    }
 }

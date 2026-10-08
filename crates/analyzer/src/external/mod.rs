@@ -47,11 +47,14 @@ pub use error::ExternalAnalyzerError;
 pub use lifecycle::AFTER_FILE_ANALYSIS_BATCH_SIZE;
 pub use lifecycle::FileAnalysisSnapshot;
 use protocol::Registration;
+pub use reads::FileReads;
+pub use reads::Listing;
 
 mod error;
 mod lifecycle;
 mod metadata;
 pub mod protocol;
+mod reads;
 mod refinement;
 mod scan;
 
@@ -111,16 +114,18 @@ pub(crate) struct ForwardedCall {
     pub methods: Vec<Word>,
 }
 
-/// Immutable request context shared by every external hook in one analysis run.
+/// Request context shared by every external hook in one analysis run.
 ///
 /// A new session is created for every frozen codebase generation. Keeping the
 /// generation on the request, instead of on the worker pool, makes PHP-side
 /// metadata caches safe when a pool is reused by watch mode or by concurrent
-/// analysis services.
+/// analysis services. The session also collects what each file's hooks and
+/// providers read from the codebase during the run.
 #[derive(Debug)]
 pub struct ExternalAnalysisSession {
     generation: u64,
     sources: foldhash::HashMap<FileId, Arc<File>>,
+    reads: Mutex<foldhash::HashMap<FileId, FileReads>>,
 }
 
 impl ExternalAnalysisSession {
@@ -129,7 +134,33 @@ impl ExternalAnalysisSession {
         let generation = NEXT_ANALYSIS_GENERATION.fetch_add(1, Ordering::Relaxed);
         let sources = files.into_iter().map(|file| (file.id, file)).collect();
 
-        Self { generation, sources }
+        Self { generation, sources, reads: Mutex::default() }
+    }
+
+    /// Takes what each file's hooks and providers read from the codebase in this run.
+    #[must_use]
+    pub fn take_reads(&self) -> foldhash::HashMap<FileId, FileReads> {
+        std::mem::take(&mut self.reads.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+    }
+
+    fn record_reads(&self, file_id: FileId, reads: FileReads) {
+        if !reads.is_empty() {
+            self.reads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(file_id)
+                .or_default()
+                .extend(reads);
+        }
+    }
+
+    /// Records the codebase reads a provider or issue filter made while Mago analyzed `file_id`, which lead its
+    /// `response`, and returns the response without them.
+    fn record_response_reads(&self, file_id: FileId, response: &[u8]) -> Result<Vec<u8>, ExternalAnalyzerError> {
+        let (reads, response) = protocol::take_codebase_reads(response)?;
+        self.record_reads(file_id, reads);
+
+        Ok(response)
     }
 
     #[inline]
@@ -1770,7 +1801,9 @@ where
             }
 
             let decode_start = self.trace_enabled.then(Instant::now);
-            let removed = protocol::decode_issue_filter_response(&response, issue_count)
+            let removed = session
+                .record_response_reads(file.id, &response)
+                .and_then(|response| protocol::decode_issue_filter_response(&response, issue_count))
                 .inspect_err(|_| self.record_issue_filter_error())?;
             let removed = removed.into_iter().map(|index| candidate_indices[index]).collect::<Vec<_>>();
 
@@ -2199,10 +2232,12 @@ where
         Ok(issues)
     }
 
+    /// Sends `request`, made while Mago analyzed `file_id`, or answers it from the memoized responses.
     fn exchange_provider_request(
         &self,
         backend: &Backend<T>,
         request: &mut protocol::ReturnTypeRequest<'_>,
+        file_id: FileId,
         affinity: &[u8],
         codebase: &CodebaseMetadata,
         session: &ExternalAnalysisSession,
@@ -2247,7 +2282,7 @@ where
             response
         };
 
-        Ok(response)
+        session.record_response_reads(file_id, &response)
     }
 
     fn decode_provider_response<R>(
@@ -2303,6 +2338,7 @@ where
         &self,
         backend: &Backend<T>,
         mut request: protocol::ReturnTypeRequest<'_>,
+        file_id: FileId,
         affinity: &[u8],
         codebase: &CodebaseMetadata,
         session: &ExternalAnalysisSession,
@@ -2310,7 +2346,7 @@ where
         if self.trace_enabled {
             self.telemetry.assertion_requests.fetch_add(1, Ordering::Relaxed);
         }
-        let response = self.exchange_provider_request(backend, &mut request, affinity, codebase, session)?;
+        let response = self.exchange_provider_request(backend, &mut request, file_id, affinity, codebase, session)?;
         let result = self.decode_provider_response(|| {
             protocol::decode_assertion_response(&response, |handle| {
                 protocol::resolve_type_handle(&request.types, handle)
@@ -2440,7 +2476,14 @@ where
                 self.telemetry.encode_ns.fetch_add(duration_nanos(start.elapsed()), Ordering::Relaxed);
             }
 
-            let assertions = self.dispatch_assertion_request(backend, request, target.affinity(), codebase, session)?;
+            let assertions = self.dispatch_assertion_request(
+                backend,
+                request,
+                source_file.id,
+                target.affinity(),
+                codebase,
+                session,
+            )?;
             if let Some(start) = provider_start
                 && start.elapsed() >= SLOW_PROVIDER_THRESHOLD
             {
@@ -2464,6 +2507,7 @@ where
         &self,
         backend: &Backend<T>,
         mut request: protocol::ReturnTypeRequest<'_>,
+        file_id: FileId,
         affinity: &[u8],
         codebase: &CodebaseMetadata,
         session: &ExternalAnalysisSession,
@@ -2471,7 +2515,7 @@ where
         if self.trace_enabled {
             self.telemetry.signature_requests.fetch_add(1, Ordering::Relaxed);
         }
-        let response = self.exchange_provider_request(backend, &mut request, affinity, codebase, session)?;
+        let response = self.exchange_provider_request(backend, &mut request, file_id, affinity, codebase, session)?;
         let result = self.decode_provider_response(|| {
             protocol::decode_callable_signature_response(&response, |handle| {
                 protocol::resolve_type_handle(&request.types, handle)
@@ -2606,8 +2650,14 @@ where
                 self.telemetry.encode_ns.fetch_add(duration_nanos(start.elapsed()), Ordering::Relaxed);
             }
 
-            let signature =
-                self.dispatch_callable_signature_request(backend, request, target.affinity(), codebase, session)?;
+            let signature = self.dispatch_callable_signature_request(
+                backend,
+                request,
+                source_file.id,
+                target.affinity(),
+                codebase,
+                session,
+            )?;
             if let Some(start) = provider_start
                 && start.elapsed() >= SLOW_PROVIDER_THRESHOLD
             {
@@ -2753,8 +2803,14 @@ where
             if let Some(start) = encode_start {
                 self.telemetry.encode_ns.fetch_add(duration_nanos(start.elapsed()), Ordering::Relaxed);
             }
-            let response =
-                self.exchange_provider_request(backend, &mut request, target.affinity(), codebase, session)?;
+            let response = self.exchange_provider_request(
+                backend,
+                &mut request,
+                source_file.id,
+                target.affinity(),
+                codebase,
+                session,
+            )?;
             let result = self.decode_provider_response(|| {
                 protocol::decode_return_type_response(&response, |handle| {
                     protocol::resolve_type_handle(&request.types, handle)
@@ -2861,6 +2917,7 @@ where
                 self.exchange_provider_payload(backend, request.payload, class, codebase, session, |handle| {
                     protocol::resolve_type_handle(&request.types, handle)
                 })?;
+            let response = session.record_response_reads(span.file_id, &response)?;
 
             let decode_start = self.trace_enabled.then(Instant::now);
             let result = protocol::decode_property_type_response(&response, |handle| {
@@ -2905,12 +2962,14 @@ where
         Ok(None)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn get_forwarded_call(
         &self,
         class: &[u8],
         member: &[u8],
         property: bool,
         receiver_type: &TUnion,
+        source_file: &File,
         codebase: &CodebaseMetadata,
         session: &ExternalAnalysisSession,
     ) -> Result<Option<ForwardedCall>, ExternalAnalyzerError> {
@@ -2937,6 +2996,7 @@ where
                 self.exchange_provider_payload(backend, request.payload, class, codebase, session, |handle| {
                     protocol::resolve_type_handle(&request.types, handle)
                 })?;
+            let response = session.record_response_reads(source_file.id, &response)?;
 
             let result = protocol::decode_call_forwarding_response(&response, |handle| {
                 protocol::resolve_type_handle(&request.types, handle)
@@ -2955,6 +3015,7 @@ where
         &self,
         declaring_class: &[u8],
         property: &mago_codex::metadata::property::PropertyMetadata,
+        source_file: &File,
         codebase: &CodebaseMetadata,
         session: &ExternalAnalysisSession,
     ) -> Result<bool, ExternalAnalyzerError> {
@@ -3006,8 +3067,10 @@ where
                 self.telemetry.request_bytes.fetch_add(request.len() as u64, Ordering::Relaxed);
             }
 
-            let response =
-                self.exchange_provider_payload(backend, request, declaring_class, codebase, session, |_| None)?;
+            let response = session.record_response_reads(
+                source_file.id,
+                &self.exchange_provider_payload(backend, request, declaring_class, codebase, session, |_| None)?,
+            )?;
 
             let decode_start = self.trace_enabled.then(Instant::now);
             let initialized =
@@ -3054,6 +3117,7 @@ where
     pub(crate) fn get_class_initializers(
         &self,
         class: &ClassLikeMetadata,
+        source_file: &File,
         codebase: &CodebaseMetadata,
         session: &ExternalAnalysisSession,
     ) -> Result<WordSet, ExternalAnalyzerError> {
@@ -3095,8 +3159,11 @@ where
                 self.telemetry.request_bytes.fetch_add(request.len() as u64, Ordering::Relaxed);
             }
 
-            let response =
-                self.exchange_provider_payload(backend, request, class.name.as_bytes(), codebase, session, |_| None)?;
+            let response = session.record_response_reads(
+                source_file.id,
+                &self
+                    .exchange_provider_payload(backend, request, class.name.as_bytes(), codebase, session, |_| None)?,
+            )?;
 
             let decode_start = self.trace_enabled.then(Instant::now);
             let provided =

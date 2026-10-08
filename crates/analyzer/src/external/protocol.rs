@@ -20,6 +20,7 @@ use mago_codex::metadata::property::PropertyMetadata;
 use mago_codex::misc::GenericParent;
 use mago_codex::misc::VariableIdentifier;
 use mago_codex::ttype::TType;
+use mago_codex::ttype::TypeRef;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::alias::TAlias;
 use mago_codex::ttype::atomic::array::TArray;
@@ -110,6 +111,7 @@ use crate::external::EntryPoint;
 use crate::external::ExternalAnalysisSession;
 use crate::external::ExternalExtension;
 use crate::external::ExternalPlugin;
+use crate::external::FileReads;
 use crate::external::ForwardedCall;
 use crate::external::FunctionProvider;
 use crate::external::FunctionTarget;
@@ -133,7 +135,7 @@ use crate::invocation::MethodTargetContext;
 
 pub const ANALYZER_PROTOCOL_MAGIC: [u8; 4] = *b"MANA";
 pub const ANALYZER_PROTOCOL_MAJOR: u16 = 1;
-pub const ANALYZER_PROTOCOL_MINOR: u16 = 8;
+pub const ANALYZER_PROTOCOL_MINOR: u16 = 10;
 
 const HEADER_LENGTH: usize = 12;
 const INITIAL_MESSAGE_CAPACITY: usize = 256;
@@ -2414,14 +2416,10 @@ where
     F: Fn(usize) -> Option<&'type_info TUnion>,
 {
     let mut reader = message_reader(payload, TYPE_COMPARISON_REQUEST)?;
-    let operation = reader.read_u8("type comparison operation")?;
-    let left = decode_type(&mut reader, &argument_type, 0)?;
-    let right = decode_type(&mut reader, &argument_type, 0)?;
-    let result = compare_types(operation, &left, &right, codebase)?;
+    let mut writer = message_writer(TYPE_COMPARISON_RESPONSE);
+    answer_type_comparison(&mut reader, &mut writer, codebase, &argument_type)?;
     reader.finish()?;
 
-    let mut writer = message_writer(TYPE_COMPARISON_RESPONSE);
-    writer.write_bool(result);
     Ok(writer.finish())
 }
 
@@ -2441,15 +2439,56 @@ where
     let mut writer = message_writer(TYPE_COMPARISON_BATCH_RESPONSE);
     writer.write_u32(count as u32);
     for _ in 0..count {
-        let operation = reader.read_u8("type comparison operation")?;
-        let left = decode_type(&mut reader, &argument_type, 0)?;
-        let right = decode_type(&mut reader, &argument_type, 0)?;
-        let result = compare_types(operation, &left, &right, codebase)?;
-        writer.write_bool(result);
+        answer_type_comparison(&mut reader, &mut writer, codebase, &argument_type)?;
     }
     reader.finish()?;
 
     Ok((count, writer.finish()))
+}
+
+/// Answers one comparison with whether it holds, then with every class-like either compared type names, nested ones
+/// included, so the SDK records a class-level read of each for the file whose provider or hook asked.
+fn answer_type_comparison<'type_info, F>(
+    reader: &mut PayloadReader<'_>,
+    writer: &mut PayloadWriter,
+    codebase: &CodebaseMetadata,
+    argument_type: &F,
+) -> Result<(), ExternalAnalyzerError>
+where
+    F: Fn(usize) -> Option<&'type_info TUnion>,
+{
+    let operation = reader.read_u8("type comparison operation")?;
+    let left = decode_type(reader, argument_type, 0)?;
+    let right = decode_type(reader, argument_type, 0)?;
+    writer.write_bool(compare_types(operation, &left, &right, codebase)?);
+
+    let mut class_likes: Vec<Word> =
+        [&left, &right].into_iter().flat_map(TUnion::get_all_child_nodes).filter_map(named_class_like).collect();
+    class_likes.sort_unstable_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+    class_likes.dedup();
+    writer.write_length(class_likes.len())?;
+    for class_like in class_likes {
+        writer.write_bytes(class_like.as_bytes())?;
+    }
+
+    Ok(())
+}
+
+/// The class-like `node` names, if it names one.
+fn named_class_like(node: TypeRef<'_>) -> Option<Word> {
+    let TypeRef::Atomic(atomic) = node else {
+        return None;
+    };
+
+    match atomic {
+        TAtomic::Object(object) => object.get_name(),
+        TAtomic::Scalar(TScalar::ClassLikeString(TClassLikeString::Literal { value })) => Some(*value),
+        TAtomic::Reference(TReference::Symbol { name, .. }) => Some(*name),
+        TAtomic::Reference(TReference::Member { class_like_name, .. }) => Some(*class_like_name),
+        TAtomic::Callable(TCallable::Alias(FunctionLikeIdentifier::Method(class_like, _))) => Some(*class_like),
+        TAtomic::Alias(alias) => Some(alias.get_class_name()),
+        _ => None,
+    }
 }
 
 fn compare_types(
@@ -3181,6 +3220,17 @@ pub(super) fn message_reader(payload: &[u8], expected_kind: u16) -> Result<Paylo
     Ok(reader)
 }
 
+/// Splits the codebase reads a provider or issue filter made, which the SDK places right after the header, from the
+/// response they came with.
+pub(super) fn take_codebase_reads(response: &[u8]) -> Result<(FileReads, Vec<u8>), ExternalAnalyzerError> {
+    let header =
+        response.get(..HEADER_LENGTH).ok_or_else(|| protocol("analyzer response is shorter than its header"))?;
+    let mut reader = PayloadReader::new(&response[HEADER_LENGTH..]);
+    let reads = FileReads::decode(&mut reader)?;
+
+    Ok((reads, [header, &response[response.len() - reader.remaining()..]].concat()))
+}
+
 pub(super) fn message_kind(payload: &[u8]) -> Result<u16, ExternalAnalyzerError> {
     if payload.len() < HEADER_LENGTH {
         return Err(protocol("analyzer message is shorter than its header"));
@@ -3315,6 +3365,7 @@ pub(super) mod testing {
         let response = handle_type_comparison_request(&writer.finish(), &CodebaseMetadata::new(), |_| None).unwrap();
         let mut reader = message_reader(&response, TYPE_COMPARISON_RESPONSE).unwrap();
         assert!(reader.read_bool("contained-by result").unwrap());
+        assert_eq!(compared_class_likes(&mut reader), Vec::<String>::new());
         reader.finish().unwrap();
     }
 
@@ -3338,9 +3389,10 @@ pub(super) mod testing {
 
         let mut reader = message_reader(&response, TYPE_COMPARISON_BATCH_RESPONSE).unwrap();
         assert_eq!(reader.read_count("type comparison results", MAXIMUM_TYPE_COMPARISONS).unwrap(), 3);
-        assert!(reader.read_bool("equal result").unwrap());
-        assert!(reader.read_bool("contained-by result").unwrap());
-        assert!(!reader.read_bool("identity result").unwrap());
+        for expected in [true, true, false] {
+            assert_eq!(reader.read_bool("comparison result").unwrap(), expected);
+            assert_eq!(compared_class_likes(&mut reader), Vec::<String>::new());
+        }
         reader.finish().unwrap();
     }
 
@@ -3351,6 +3403,82 @@ pub(super) mod testing {
 
         let result = handle_type_comparison_batch_request(&writer.finish(), &CodebaseMetadata::new(), |_| None);
         assert!(matches!(result, Err(ExternalAnalyzerError::Protocol(message)) if message.contains("no comparisons")));
+    }
+
+    /// The class-likes a comparison's answer names, in the order it names them.
+    fn compared_class_likes(reader: &mut PayloadReader<'_>) -> Vec<String> {
+        let count = reader.read_count("compared class-likes", MAXIMUM_TYPE_MEMBERS).unwrap();
+        std::iter::repeat_with(|| reader.read_string("compared class-like").unwrap()).take(count).collect()
+    }
+
+    fn write_named_object(writer: &mut PayloadWriter, name: &[u8], parameters: u32) {
+        writer.write_u8(TYPE_NAMED_OBJECT);
+        writer.write_bytes(name).unwrap();
+        writer.write_u32(parameters);
+    }
+
+    #[test]
+    fn a_type_comparison_names_every_class_like_a_generic_or_union_type_names() {
+        let mut writer = message_writer(TYPE_COMPARISON_REQUEST);
+        writer.write_u8(TYPE_COMPARISON_CONTAINED_BY);
+        writer.write_u8(TYPE_UNION);
+        writer.write_u32(2);
+        write_named_object(&mut writer, b"App\\Collection", 1);
+        write_named_object(&mut writer, b"App\\Models\\Order", 0);
+        writer.write_u8(TYPE_NULL);
+        write_named_object(&mut writer, b"App\\Models\\Model", 0);
+
+        let response = handle_type_comparison_request(&writer.finish(), &CodebaseMetadata::new(), |_| None).unwrap();
+        let mut reader = message_reader(&response, TYPE_COMPARISON_RESPONSE).unwrap();
+        assert!(!reader.read_bool("contained-by result").unwrap());
+        assert_eq!(compared_class_likes(&mut reader), ["App\\Collection", "App\\Models\\Model", "App\\Models\\Order"]);
+        reader.finish().unwrap();
+    }
+
+    #[test]
+    fn a_type_comparison_names_class_likes_nested_in_intersections_class_strings_enums_and_object_shapes() {
+        let mut order = TNamedObject::new(word(b"App\\Models\\Order"));
+        order.intersection_types = Some(vec![TAtomic::Object(TObject::new_named(word(b"App\\HasTotal")))]);
+        let shape = TObject::new_with_properties(
+            false,
+            BTreeMap::from([(
+                word(b"customer"),
+                (false, TUnion::from_atomic(TAtomic::Object(TObject::new_named(word(b"App\\Customer"))))),
+            )]),
+        );
+        let request_type = TUnion::from_vec(vec![
+            TAtomic::Object(TObject::Named(order)),
+            TAtomic::Scalar(TScalar::class_string_of_type(TAtomic::Object(TObject::new_named(word(b"App\\Invoice"))))),
+            TAtomic::Scalar(TScalar::literal_class_string(word(b"App\\Shipment"))),
+            TAtomic::Object(TObject::new_enum(word(b"App\\Status"))),
+            TAtomic::Object(shape),
+        ]);
+
+        let mut writer = message_writer(TYPE_COMPARISON_BATCH_REQUEST);
+        writer.write_u32(2);
+        writer.write_u8(TYPE_COMPARISON_CAN_BE_IDENTICAL);
+        writer.write_u8(TYPE_REFERENCE);
+        writer.write_u32(0);
+        writer.write_u8(TYPE_OBJECT);
+        writer.write_u8(TYPE_COMPARISON_EQUAL);
+        writer.write_u8(TYPE_INT);
+        writer.write_u8(TYPE_INT);
+
+        let (_, response) =
+            handle_type_comparison_batch_request(&writer.finish(), &CodebaseMetadata::new(), |handle| {
+                (handle == 0).then_some(&request_type)
+            })
+            .unwrap();
+        let mut reader = message_reader(&response, TYPE_COMPARISON_BATCH_RESPONSE).unwrap();
+        assert_eq!(reader.read_count("type comparison results", MAXIMUM_TYPE_COMPARISONS).unwrap(), 2);
+        reader.read_bool("identity result").unwrap();
+        assert_eq!(
+            compared_class_likes(&mut reader),
+            ["App\\Customer", "App\\HasTotal", "App\\Invoice", "App\\Models\\Order", "App\\Shipment", "App\\Status"]
+        );
+        assert!(reader.read_bool("equal result").unwrap());
+        assert_eq!(compared_class_likes(&mut reader), Vec::<String>::new());
+        reader.finish().unwrap();
     }
 
     #[test]
