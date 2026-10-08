@@ -4933,23 +4933,27 @@ fn arithmetic_operators_are_binary_ops() {
 }
 
 /// ```php
-/// $b = $a == $a; $b = $a != $a; $b = $a === $a; $b = $a !== $a; $b = $a < $a; $b = $a <= $a; $b = $a > $a; $b = $a >= $a;
+/// $b = $a === $a; $b = $a !== $a; $b = $calc === $calc; $b = $calc !== $calc; $b = $a < $a; $b = $a <= $a;
+/// $b = $a > $a; $b = $a >= $a;
 /// ```
 ///
-/// `[18]`, `[19]`, `[16]`, `[17]`, `[20]` and `[21]` are `ZEND_IS_EQUAL`, `ZEND_IS_NOT_EQUAL`, `ZEND_IS_IDENTICAL`,
-/// `ZEND_IS_NOT_IDENTICAL`, `ZEND_IS_SMALLER` and `ZEND_IS_SMALLER_OR_EQUAL`. `>` and `>=` have kinds of their own.
+/// `==` and `!=` compare values strictly, so they are `ZEND_IS_IDENTICAL` and `ZEND_IS_NOT_IDENTICAL`, `[16]` and
+/// `[17]`, as `===` and `!==` on a class instance are. `[20]` and `[21]` are `ZEND_IS_SMALLER` and
+/// `ZEND_IS_SMALLER_OR_EQUAL`. `>` and `>=` have kinds of their own.
 #[test]
 fn comparison_operators_are_the_kinds_php_gives_them() {
-    let tree = body(
-        "        let a = 1;\n        let b = a == a;\n        b = a != a;\n        b = a === a;\n        b = a !== a;\n        b = a < a;\n        b = a <= a;\n        b = a > a;\n        b = a >= a;\n        return a;\n",
+    let tree = body_in(
+        "int run(Calc calc)",
+        "        let a = 1;\n        let b = a == a;\n        b = a != a;\n        b = calc === calc;\n        b = calc !== calc;\n        b = a < a;\n        b = a <= a;\n        b = a > a;\n        b = a >= a;\n        return a;\n",
+        &[("src/Lib/Calc.php", "<?php namespace Lib; final class Calc {}")],
     );
 
     assert_eq!(
         assigned_values(&tree),
         [
             "ZVAL 1",
-            "BINARY_OP [18]",
-            "BINARY_OP [19]",
+            "BINARY_OP [16]",
+            "BINARY_OP [17]",
             "BINARY_OP [16]",
             "BINARY_OP [17]",
             "BINARY_OP [20]",
@@ -4968,11 +4972,11 @@ fn assigned_values(tree: &str) -> Vec<&str> {
 }
 
 /// ```php
-/// $a = $extra; $b = $a === null; $b = null !== $a; $b = $a == $a;
+/// $a = $extra; $b = $a === null; $b = null !== $a; $b = $a === $a;
 /// ```
 ///
-/// `== null` and `!= null` test for null alone, so `0 == null` is false. `[16]` and `[17]` are `ZEND_IS_IDENTICAL` and
-/// `ZEND_IS_NOT_IDENTICAL`, and `==` between two values stays `ZEND_IS_EQUAL`, `[18]`.
+/// `==` and `!=` on a nullable value are lifted: null equals only null, so `0 == null` is false. `[16]` and `[17]` are
+/// `ZEND_IS_IDENTICAL` and `ZEND_IS_NOT_IDENTICAL`, which compare `null` that way.
 #[test]
 fn equality_with_null_is_identity() {
     let tree = body_in(
@@ -4981,7 +4985,286 @@ fn equality_with_null_is_identity() {
         &[],
     );
 
-    assert_eq!(assigned_values(&tree), ["VAR", "BINARY_OP [16]", "BINARY_OP [17]", "BINARY_OP [18]"]);
+    assert_eq!(assigned_values(&tree), ["VAR", "BINARY_OP [16]", "BINARY_OP [17]", "BINARY_OP [16]"]);
+}
+
+/// ```php
+/// $b = $text === "01"; $b = $text !== "01"; $b = $total === 1; $b = $status === Status::Open;
+/// ```
+///
+/// Spec section 19: `==` compares values strictly, so `"1" == "01"` and `"1e3" == "1000"` are false, as PHP's `===`
+/// makes them. `[16]` and `[17]` are `ZEND_IS_IDENTICAL` and `ZEND_IS_NOT_IDENTICAL`.
+#[test]
+fn equality_of_strings_ints_and_enums_is_identity() {
+    let tree = body_in(
+        "int run(string text, int total, Status status)",
+        "        let b = text == \"01\";\n        b = text != \"01\";\n        b = total == 1;\n        b = status == Status.Open;\n        return 1;\n",
+        &[("src/App/Tenant/Status.php", "<?php namespace App\\Tenant; enum Status { case Open; case Closed; }")],
+    );
+
+    assert_eq!(assigned_values(&tree), ["BINARY_OP [16]", "BINARY_OP [17]", "BINARY_OP [16]", "BINARY_OP [16]"]);
+}
+
+/// ```php
+/// $b = (float) $count === $ratio; $b = $ratio !== (float) $count;
+/// ```
+///
+/// Spec section 19: numbers compare by value, so `1 == 1.0` is true. A side that may hold an int is cast to float, and
+/// the floats compare with `===`. `[5]` is `IS_DOUBLE`.
+#[test]
+fn equality_of_an_int_and_a_float_compares_them_as_floats() {
+    assert_eq!(
+        body_in(
+            "int run(int count, float ratio)",
+            "        let b = count == ratio;\n        b = ratio != count;\n        return 1;\n",
+            &[]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "b"
+                BINARY_OP [16]
+                  CAST [5]
+                    VAR
+                      ZVAL "count"
+                  VAR
+                    ZVAL "ratio"
+              ASSIGN
+                VAR
+                  ZVAL "b"
+                BINARY_OP [17]
+                  VAR
+                    ZVAL "ratio"
+                  CAST [5]
+                    VAR
+                      ZVAL "count"
+              RETURN
+                ZVAL 1
+        "#}
+    );
+}
+
+/// A value pattern compares as `==` does, so an int subject matches the float `1.0` as a float.
+#[test]
+fn an_int_subject_matches_a_float_pattern_as_a_float() {
+    assert_eq!(
+        body_in(
+            "int run(int count)",
+            "        return match (count) {\n            == 1.0 => 1,\n            default => 2,\n        };\n",
+            &[]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                MATCH
+                  ZVAL true
+                  MATCH_ARM_LIST
+                    MATCH_ARM
+                      EXPR_LIST
+                        BINARY_OP [16]
+                          CAST [5]
+                            VAR
+                              ZVAL "count"
+                          ZVAL 1.0
+                      ZVAL 1
+                    MATCH_ARM
+                      null
+                      ZVAL 2
+        "#}
+    );
+}
+
+/// ```php
+/// $b = (($operand#1 = $count) === null) === (($operand#2 = $ratio) === null)
+///     && ($operand#1 === null || (float) $operand#1 === $operand#2);
+/// $b = !((($operand#1 = $count) === null) === (($operand#2 = 1.5) === null)
+///     && ($operand#1 === null || (float) $operand#1 === $operand#2));
+/// ```
+///
+/// A nullable side is lifted: null equals only null, and `(float) null` never compares. Each side runs once into a
+/// hidden `$operand#N`, so `int? == float` with a null int is false and two nulls are equal.
+#[test]
+fn equality_of_a_nullable_int_and_a_float_compares_null_before_the_floats() {
+    assert_eq!(
+        body_in(
+            "int run(int? count, float? ratio)",
+            "        let b = count == ratio;\n        b = count != 1.5;\n        return 1;\n",
+            &[]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "b"
+                AND
+                  BINARY_OP [16]
+                    BINARY_OP [16]
+                      ASSIGN
+                        VAR
+                          ZVAL "operand#1"
+                        VAR
+                          ZVAL "count"
+                      ZVAL null
+                    BINARY_OP [16]
+                      ASSIGN
+                        VAR
+                          ZVAL "operand#2"
+                        VAR
+                          ZVAL "ratio"
+                      ZVAL null
+                  OR
+                    BINARY_OP [16]
+                      VAR
+                        ZVAL "operand#1"
+                      ZVAL null
+                    BINARY_OP [16]
+                      CAST [5]
+                        VAR
+                          ZVAL "operand#1"
+                      VAR
+                        ZVAL "operand#2"
+              ASSIGN
+                VAR
+                  ZVAL "b"
+                UNARY_OP [14]
+                  AND
+                    BINARY_OP [16]
+                      BINARY_OP [16]
+                        ASSIGN
+                          VAR
+                            ZVAL "operand#1"
+                          VAR
+                            ZVAL "count"
+                        ZVAL null
+                      BINARY_OP [16]
+                        ASSIGN
+                          VAR
+                            ZVAL "operand#2"
+                          ZVAL 1.5
+                        ZVAL null
+                    OR
+                      BINARY_OP [16]
+                        VAR
+                          ZVAL "operand#1"
+                        ZVAL null
+                      BINARY_OP [16]
+                        CAST [5]
+                          VAR
+                            ZVAL "operand#1"
+                        VAR
+                          ZVAL "operand#2"
+              RETURN
+                ZVAL 1
+        "#}
+    );
+}
+
+/// ```php
+/// $b = \strcmp($text, "9") < 0; $b = \strcmp($text, $other) >= 0; $b = $total < 9;
+/// ```
+///
+/// PHP's `<` compares two numeric strings as numbers, so `"10" < "9"` is false. PHP# orders two strings by their
+/// bytes, which is the sign of `\strcmp`. Numbers keep PHP's `<`.
+#[test]
+fn string_ordering_is_strcmp_compared_with_zero() {
+    assert_eq!(
+        body_in(
+            "int run(string text, string other, int total)",
+            "        let b = text < \"9\";\n        b = text >= other;\n        b = total < 9;\n        return 1;\n",
+            &[],
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "b"
+                BINARY_OP [20]
+                  CALL
+                    ZVAL "strcmp"
+                    ARG_LIST
+                      VAR
+                        ZVAL "text"
+                      ZVAL "9"
+                  ZVAL 0
+              ASSIGN
+                VAR
+                  ZVAL "b"
+                GREATER_EQUAL
+                  CALL
+                    ZVAL "strcmp"
+                    ARG_LIST
+                      VAR
+                        ZVAL "text"
+                      VAR
+                        ZVAL "other"
+                  ZVAL 0
+              ASSIGN
+                VAR
+                  ZVAL "b"
+                BINARY_OP [20]
+                  VAR
+                    ZVAL "total"
+                  ZVAL 9
+              RETURN
+                ZVAL 1
+        "#}
+    );
+}
+
+/// ```php
+/// return match (true) {
+///     (${'match#1'} = $this->label()) === "01" => 1,
+///     \strcmp(${'match#1'}, "m") < 0 => 2,
+///     default => 3,
+/// };
+/// ```
+///
+/// A comparison pattern on a string compares as `==` and `<` do outside a pattern. The second arm reads the hidden
+/// variable, a node no source writes.
+#[test]
+fn a_string_comparison_pattern_compares_strictly_and_orders_by_strcmp() {
+    assert_eq!(
+        child_body(
+            RUN,
+            "        return match (this.label()) {\n            == \"01\" => 1,\n            < \"m\" => 2,\n            default => 3,\n        };\n",
+            "<?php namespace App\\Tenant; class Base { public function label(): string { return ''; } }",
+        ),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                MATCH
+                  ZVAL true
+                  MATCH_ARM_LIST
+                    MATCH_ARM
+                      EXPR_LIST
+                        BINARY_OP [16]
+                          ASSIGN
+                            VAR
+                              ZVAL "match#1"
+                            METHOD_CALL
+                              VAR
+                                ZVAL "this"
+                              ZVAL "label"
+                              ARG_LIST
+                          ZVAL "01"
+                      ZVAL 1
+                    MATCH_ARM
+                      EXPR_LIST
+                        BINARY_OP [20]
+                          CALL
+                            ZVAL "strcmp"
+                            ARG_LIST
+                              VAR
+                                ZVAL "match#1"
+                              ZVAL "m"
+                          ZVAL 0
+                      ZVAL 2
+                    MATCH_ARM
+                      null
+                      ZVAL 3
+        "#}
+    );
 }
 
 /// ```php
@@ -6771,7 +7054,7 @@ fn a_when_condition_that_is_a_bare_name_is_the_arms_and_operand() {
         guarded("forced == true"),
         bare.replace(
             "              VAR\n                ZVAL \"forced\"\n          ZVAL 1\n",
-            "              BINARY_OP [18]\n                VAR\n                  ZVAL \"forced\"\n                ZVAL true\n          ZVAL 1\n",
+            "              BINARY_OP [16]\n                VAR\n                  ZVAL \"forced\"\n                ZVAL true\n          ZVAL 1\n",
         )
     );
 }
@@ -7161,7 +7444,7 @@ fn an_enum_constant_is_a_class_constant_group_that_reads_a_case() {
 #[test]
 fn a_case_read_is_a_class_constant_in_every_place() {
     let lowered = Lowered::with(
-        "namespace App.Tenant;\n\nimport Lib.Registry;\n\npublic enum Status : string\n{\n    case Active = \"a\";\n    case Paused = Registry.PAUSED;\n\n    public const Status Default = Status.Active;\n\n    public bool active() => this === Status.Active;\n\n    public string label() => this.name;\n}\n\nclass Report\n{\n    public string run(Status status = Status.Active)\n    {\n        if (status === Status.Active) {\n            return Status.Active.label();\n        }\n        return Status.Default.label();\n    }\n}\n",
+        "namespace App.Tenant;\n\nimport Lib.Registry;\n\npublic enum Status : string\n{\n    case Active = \"a\";\n    case Paused = Registry.PAUSED;\n\n    public const Status Default = Status.Active;\n\n    public bool active() => this == Status.Active;\n\n    public string label() => this.name;\n}\n\nclass Report\n{\n    public string run(Status status = Status.Active)\n    {\n        if (status == Status.Active) {\n            return Status.Active.label();\n        }\n        return Status.Default.label();\n    }\n}\n",
         &[("src/Lib/Registry.php", "<?php namespace Lib; final class Registry { public const string PAUSED = 'p'; }")],
     );
     let reads: Vec<String> = lowered
@@ -7236,7 +7519,7 @@ fn a_case_read_is_a_class_constant_in_every_place() {
 #[test]
 fn an_enum_method_lowers_a_list_literal_a_function_type_and_a_lambda_as_a_class_method_does() {
     let lowered = Lowered::new(
-        "enum Suit\n{\n    case Hearts;\n    case Spades;\n\n    public static List<Suit> all() => [Suit.Hearts, Suit.Spades];\n\n    public Function<bool(Suit)> matches()\n    {\n        const first = Suit.Hearts;\n        return other => other === this || other === first;\n    }\n}\n",
+        "enum Suit\n{\n    case Hearts;\n    case Spades;\n\n    public static List<Suit> all() => [Suit.Hearts, Suit.Spades];\n\n    public Function<bool(Suit)> matches()\n    {\n        const first = Suit.Hearts;\n        return other => other == this || other == first;\n    }\n}\n",
     );
 
     assert_eq!(

@@ -59,8 +59,8 @@ public class Report
             let inner = -total + +base;
             inner = inner / 2;
         }
-        let same = total == base || total != base && total === base;
-        same = total !== base && !strict;
+        let same = total == base || total != base && this.helper === this.owner;
+        same = this.helper !== this.owner && !strict;
         const order = total < base || total > base || total <= base || total >= base;
         const nothing = null;
         this.count += extra;
@@ -118,7 +118,7 @@ public class Report
         const limit = Report.MAX;
         const rate = Calc.standard.cents;
         const label = Status.Active.label();
-        const active = Status.Default === Status.Active;
+        const active = Status.Default == Status.Active;
         return;
     }
 
@@ -321,7 +321,7 @@ public enum Status : string, HasLabel
 
     public string label()
     {
-        return this === Status.Active ? "Active" : this.title();
+        return this == Status.Active ? "Active" : this.title();
     }
 
     public static Status parse(string value)

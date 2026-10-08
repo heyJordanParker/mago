@@ -262,6 +262,7 @@ where
             this_class_name,
             trust_existence_checks: self.settings.trust_existence_checks,
             temporaries: self.temporaries,
+            dialect: self.dialect,
         }
     }
 

@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use mago_allocator::LocalArena;
+use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::union::TUnion;
 use mago_names::ResolvedNames;
 use mago_names::binding::Binding;
@@ -226,19 +227,19 @@ const ZEND_POW: u32 = 12;
 const ZEND_BOOL_NOT: u32 = 14;
 const ZEND_IS_IDENTICAL: u32 = 16;
 const ZEND_IS_NOT_IDENTICAL: u32 = 17;
-const ZEND_IS_EQUAL: u32 = 18;
-const ZEND_IS_NOT_EQUAL: u32 = 19;
 const ZEND_IS_SMALLER: u32 = 20;
 const ZEND_IS_SMALLER_OR_EQUAL: u32 = 21;
 
 /// A null child.
 const NULL: u32 = u32::MAX;
 
-/// What the operands of an operator are, where spec section 24 makes the operator differ from PHP's.
+/// What the operands of an operator are, where spec sections 19 and 24 make the operator differ from PHP's.
 #[derive(Clone, Copy)]
 enum Operands {
     Strings,
     Ints,
+    /// An int and a float, which spec section 19 compares by value as two floats.
+    Numbers,
     Other,
 }
 
@@ -1199,11 +1200,23 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 self.node(SHARP_AST_MATCH, 0, line, &[subject, arms])
             }
-            // Spec section 24: `+` on two strings joins them, and `/` on two ints divides toward zero.
+            // Spec section 24: `+` on two strings joins them, and `/` on two ints divides toward zero. Section 19
+            // orders two strings by their bytes and compares an int with a float as two floats.
             Expression::Binary(binary) => {
                 let operands = match binary.operator {
                     BinaryOperator::Addition(_) | BinaryOperator::Division(_) => {
                         self.operand_types(binary.lhs, binary.rhs)
+                    }
+                    BinaryOperator::Equal(_) | BinaryOperator::NotEqual(_) if self.mixes_numbers(binary) => {
+                        Operands::Numbers
+                    }
+                    BinaryOperator::LessThan(_)
+                    | BinaryOperator::LessThanOrEqual(_)
+                    | BinaryOperator::GreaterThan(_)
+                    | BinaryOperator::GreaterThanOrEqual(_)
+                        if self.orders_strings(binary) =>
+                    {
+                        Operands::Strings
                     }
                     _ => Operands::Other,
                 };
@@ -1215,6 +1228,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                         self.node(SHARP_AST_BINARY_OP, ZEND_CONCAT, line, &[lhs, rhs])
                     }
                     (BinaryOperator::Division(_), Operands::Ints) => self.intdiv(line, lhs, rhs),
+                    (_, Operands::Strings) => self.ordinal(binary, line, lhs, rhs),
+                    (_, Operands::Numbers) => self.float_equality(binary, line, lhs, rhs),
                     _ => {
                         let (kind, attr) = binary_kind(binary);
 
@@ -1470,6 +1485,97 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             }
             _ => Operands::Other,
         }
+    }
+
+    /// Whether the ordering `binary` compares strings. The checker orders a string only against a string, `null`
+    /// aside, so a string on either side means strings on both.
+    fn orders_strings(&self, binary: &Binary) -> bool {
+        [binary.lhs, binary.rhs]
+            .into_iter()
+            .any(|operand| self.types.expression_type(operand).types.iter().any(TAtomic::is_any_string))
+    }
+
+    /// `\strcmp(lhs, rhs) <op> 0`, the ordering `binary` names of two strings by their bytes, so `"10" < "9"`, where
+    /// PHP's `<` compares two numeric strings as numbers.
+    fn ordinal(&mut self, binary: &Binary, line: u32, lhs: u32, rhs: u32) -> u32 {
+        let function = self.string(ZEND_NAME_FQ, line, b"strcmp");
+        let arguments = self.node(SHARP_AST_ARG_LIST, 0, line, &[lhs, rhs]);
+        let comparison = self.node(SHARP_AST_CALL, 0, line, &[function, arguments]);
+        let zero = self.zval(line, sharp_value::SHARP_LONG, |node| node.long_value = 0);
+        let (kind, attr) = binary_kind(binary);
+
+        self.node(kind, attr, line, &[comparison, zero])
+    }
+
+    /// Whether `==` or `!=` compares an int with a float: both sides are numbers, `null` aside, and one may hold an
+    /// int where one may hold a float. The checker refuses every other pair of two different number kinds.
+    fn mixes_numbers(&self, binary: &Binary) -> bool {
+        let [Some([lhs_int, lhs_float]), Some([rhs_int, rhs_float])] =
+            [binary.lhs, binary.rhs].map(|operand| number_kinds(self.types.expression_type(operand)))
+        else {
+            return false;
+        };
+
+        (lhs_int || rhs_int) && (lhs_float || rhs_float)
+    }
+
+    /// `lhs == rhs` of an int and a float as two floats, `(float) $count === $ratio`, as spec section 19 compares
+    /// numbers by value. A side that may hold an int is cast. When a side may be null, both sides go into hidden
+    /// `$operand#N`s, each running once, and null equals only null:
+    /// `(($operand#1 = lhs) === null) === (($operand#2 = rhs) === null) && ($operand#1 === null || (float) $operand#1
+    /// === $operand#2)`, so `(float) null`, which is `0.0`, never compares. `!=` is its `!`.
+    fn float_equality(&mut self, binary: &Binary, line: u32, lhs: u32, rhs: u32) -> u32 {
+        let types = self.types;
+        let (lhs_type, rhs_type) = (types.expression_type(binary.lhs), types.expression_type(binary.rhs));
+        let [cast_lhs, cast_rhs] = [lhs_type, rhs_type].map(|r#type| number_kinds(r#type).is_some_and(|[int, _]| int));
+        if !lhs_type.is_nullable() && !rhs_type.is_nullable() {
+            let lhs = self.float(line, lhs, cast_lhs);
+            let rhs = self.float(line, rhs, cast_rhs);
+            let (kind, attr) = binary_kind(binary);
+
+            return self.node(kind, attr, line, &[lhs, rhs]);
+        }
+
+        self.temporaries += 2;
+        let lhs_name = format!("operand#{}", self.temporaries - 1).into_bytes();
+        let rhs_name = format!("operand#{}", self.temporaries).into_bytes();
+
+        let lhs_variable = self.variable(binary.lhs.span(), &lhs_name);
+        let lhs_stored = self.node(SHARP_AST_ASSIGN, 0, line, &[lhs_variable, lhs]);
+        let lhs_is_null = self.is_null(line, lhs_stored);
+        let rhs_variable = self.variable(binary.rhs.span(), &rhs_name);
+        let rhs_stored = self.node(SHARP_AST_ASSIGN, 0, line, &[rhs_variable, rhs]);
+        let rhs_is_null = self.is_null(line, rhs_stored);
+        let same_nulls = self.node(SHARP_AST_BINARY_OP, ZEND_IS_IDENTICAL, line, &[lhs_is_null, rhs_is_null]);
+
+        let lhs_read = self.variable(binary.lhs.span(), &lhs_name);
+        let both_null = self.is_null(line, lhs_read);
+        let lhs_read = self.variable(binary.lhs.span(), &lhs_name);
+        let lhs_float = self.float(line, lhs_read, cast_lhs);
+        let rhs_read = self.variable(binary.rhs.span(), &rhs_name);
+        let rhs_float = self.float(line, rhs_read, cast_rhs);
+        let same_floats = self.node(SHARP_AST_BINARY_OP, ZEND_IS_IDENTICAL, line, &[lhs_float, rhs_float]);
+        let same_values = self.node(SHARP_AST_OR, 0, line, &[both_null, same_floats]);
+        let equality = self.node(SHARP_AST_AND, 0, line, &[same_nulls, same_values]);
+        self.temporaries -= 2;
+
+        if binary.operator.is_negated_equality() {
+            self.node(SHARP_AST_UNARY_OP, ZEND_BOOL_NOT, line, &[equality])
+        } else {
+            equality
+        }
+    }
+
+    /// `value === null`.
+    fn is_null(&mut self, line: u32, value: u32) -> u32 {
+        let null = self.zval(line, sharp_value::SHARP_NULL, |_| {});
+
+        self.node(SHARP_AST_BINARY_OP, ZEND_IS_IDENTICAL, line, &[value, null])
+    }
+
+    /// `value` cast to float when `cast` holds, as `(float) value`.
+    fn float(&mut self, line: u32, value: u32, cast: bool) -> u32 {
+        if cast { self.node(SHARP_AST_CAST, IS_DOUBLE, line, &[value]) } else { value }
     }
 
     /// `\intdiv(lhs, rhs)`, which divides two ints toward zero.
@@ -2261,22 +2367,39 @@ fn accessor_flags(modifiers: &Sequence<Modifier>, accessors: &PropertyHookList, 
     }
 }
 
+/// The kinds of number the values of `union` are, `null` aside, as `[may hold an int, may hold a float]`, or `None`
+/// when a value is no number. A type parameter counts as its constraint.
+fn number_kinds(union: &TUnion) -> Option<[bool; 2]> {
+    let mut kinds = [false, false];
+    for atomic in union.types.iter() {
+        match atomic {
+            TAtomic::Null => {}
+            TAtomic::GenericParameter(parameter) => {
+                let [int, float] = number_kinds(&parameter.constraint)?;
+                kinds = [kinds[0] || int, kinds[1] || float];
+            }
+            atomic if atomic.is_int() => kinds[0] = true,
+            atomic if atomic.is_float() => kinds[1] = true,
+            _ => return None,
+        }
+    }
+
+    (kinds != [false, false]).then_some(kinds)
+}
+
 /// The binary operators of the slice, as php-src's grammar builds them. Every operator is named, so a new one does
-/// not compile until it is decided. `== null` and `!= null` test for null alone, as `=== null` and `!== null`.
+/// not compile until it is decided. Spec section 19 compares values strictly, and the checker refuses every pair
+/// `===` would compare differently, so `==` and `!=` are `===` and `!==`.
 fn binary_kind(binary: &Binary) -> (sharp_kind, u32) {
     match binary.operator {
-        BinaryOperator::Equal(_) if binary.is_equality_with_null() => (SHARP_AST_BINARY_OP, ZEND_IS_IDENTICAL),
-        BinaryOperator::NotEqual(_) if binary.is_equality_with_null() => (SHARP_AST_BINARY_OP, ZEND_IS_NOT_IDENTICAL),
         BinaryOperator::Addition(_) => (SHARP_AST_BINARY_OP, ZEND_ADD),
         BinaryOperator::Subtraction(_) => (SHARP_AST_BINARY_OP, ZEND_SUB),
         BinaryOperator::Multiplication(_) => (SHARP_AST_BINARY_OP, ZEND_MUL),
         BinaryOperator::Division(_) => (SHARP_AST_BINARY_OP, ZEND_DIV),
         BinaryOperator::Modulo(_) => (SHARP_AST_BINARY_OP, ZEND_MOD),
         BinaryOperator::Exponentiation(_) => (SHARP_AST_BINARY_OP, ZEND_POW),
-        BinaryOperator::Equal(_) => (SHARP_AST_BINARY_OP, ZEND_IS_EQUAL),
-        BinaryOperator::NotEqual(_) => (SHARP_AST_BINARY_OP, ZEND_IS_NOT_EQUAL),
-        BinaryOperator::Identical(_) => (SHARP_AST_BINARY_OP, ZEND_IS_IDENTICAL),
-        BinaryOperator::NotIdentical(_) => (SHARP_AST_BINARY_OP, ZEND_IS_NOT_IDENTICAL),
+        BinaryOperator::Equal(_) | BinaryOperator::Identical(_) => (SHARP_AST_BINARY_OP, ZEND_IS_IDENTICAL),
+        BinaryOperator::NotEqual(_) | BinaryOperator::NotIdentical(_) => (SHARP_AST_BINARY_OP, ZEND_IS_NOT_IDENTICAL),
         BinaryOperator::LessThan(_) => (SHARP_AST_BINARY_OP, ZEND_IS_SMALLER),
         BinaryOperator::LessThanOrEqual(_) => (SHARP_AST_BINARY_OP, ZEND_IS_SMALLER_OR_EQUAL),
         BinaryOperator::GreaterThan(_) => (SHARP_AST_GREATER, 0),
