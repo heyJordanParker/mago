@@ -1377,9 +1377,7 @@ fn compile_refuses_a_file_whose_getter_calls_plain_php_without_an_extern() {
 
     assert_eq!(output.status.code(), Some(1), "{printed}");
     assert!(
-        printed.contains(
-            "Getter `text` calls `trim`, which has no `extern` declaration. Getters must be pure (section 29)."
-        ),
+        printed.contains("Getter `text` calls `trim`, which has no `extern` declaration. Getters must be pure."),
         "{printed}"
     );
     assert!(!directory.path().join(".sharp/app/Shop/Label.sharpc").exists());
@@ -1433,7 +1431,7 @@ fn compile_refuses_a_file_whose_law_calls_plain_php_with_an_effect() {
     assert!(printed.contains("impure-law"), "{printed}");
     assert!(
         printed.contains(
-            "Law `refundAllowed` calls `Gateway.charge`, which has the effect `Http`. Laws hold only over pure code (section 29)."
+            "Law `refundAllowed` calls `Gateway.charge`, which has the effect `Http`. Laws hold only over pure code."
         ),
         "{printed}"
     );

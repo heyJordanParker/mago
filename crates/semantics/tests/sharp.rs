@@ -91,6 +91,13 @@ fn a_law_parameter_with_a_default_or_a_spread_is_refused() {
             "6:22 A law's parameters range over every value, so `rest` cannot be variadic.",
         ]
     );
+    assert_eq!(
+        check("src/Report.sharp", code).into_iter().map(|issue| issue.notes).collect::<Vec<_>>(),
+        [
+            ["A law states a fact about every value of its parameters."],
+            ["A law states a fact about every value of its parameters."],
+        ]
+    );
 }
 
 /// A law has no `this`, so a bare member in it is written through the class name, as in a static method.

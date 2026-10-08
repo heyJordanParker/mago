@@ -24,7 +24,7 @@ pub(crate) fn getters_must_be_pure(effects: &Effects) -> IssueCollection {
         .map(|(_, name, impurity)| {
             impure(
                 IssueCode::ImpureGetter,
-                format!("Getter `{}` {impurity}. Getters must be pure (section 29).", member(name)),
+                format!("Getter `{}` {impurity}. Getters must be pure.", member(name)),
                 &impurity,
             )
         })
@@ -42,7 +42,7 @@ pub(crate) fn laws_must_be_pure(effects: &Effects, codebase: &CodebaseMetadata) 
         .map(|(_, name, impurity)| {
             impure(
                 IssueCode::ImpureLaw,
-                format!("Law `{}` {impurity}. Laws hold only over pure code (section 29).", member(name)),
+                format!("Law `{}` {impurity}. Laws hold only over pure code.", member(name)),
                 &impurity,
             )
         })

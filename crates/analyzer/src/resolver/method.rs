@@ -1269,14 +1269,18 @@ pub(crate) fn report_non_existent_method<A>(
     if let Some(class) = context.codebase.get_class_like(classname.as_bytes())
         && let Some(law) = class.laws.get(&ascii_lowercase_word(method_name.as_bytes()))
     {
+        // Each dialect names the law as it writes a static method: `Money.addKeepsCurrency` in PHP#, and
+        // `App\Shared\Money::addKeepsCurrency` in PHP.
+        let law_name = if context.dialect.is_sharp() {
+            display_sharp_method(class, law)
+        } else {
+            format!("{}::{}", class.original_name, law.original_name)
+        };
         context.collector.report_with_code(
             IssueCode::NonExistentMethod,
-            Issue::error(format!(
-                "`{}` is a law, and a law is never called (section 28).",
-                display_sharp_method(class, law)
-            ))
-            .with_annotation(Annotation::primary(selector_span).with_message("Called here."))
-            .with_annotation(Annotation::secondary(law.span).with_message("The law is stated here.")),
+            Issue::error(format!("`{law_name}` is a law, and a law is never called."))
+                .with_annotation(Annotation::primary(selector_span).with_message("Called here."))
+                .with_annotation(Annotation::secondary(law.span).with_message("The law is stated here.")),
         );
 
         return;

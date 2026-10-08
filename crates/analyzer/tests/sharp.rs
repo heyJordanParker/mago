@@ -4735,7 +4735,7 @@ fn a_getter_calling_a_function_with_no_extern_is_refused_and_names_the_missing_d
     assert_eq!(
         effect_issues(&[LABEL]),
         [
-            "app/Shop/Label.sharp:7:27 impure-getter: Getter `text` calls `trim`, which has no `extern` declaration. Getters must be pure (section 29). Help: Declare it in a .sharp file: `extern trim;` when it has no effect, or name its effects after `uses`."
+            "app/Shop/Label.sharp:7:27 impure-getter: Getter `text` calls `trim`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern trim;` when it has no effect, or name its effects after `uses`."
         ]
     );
 }
@@ -4752,7 +4752,7 @@ fn a_getter_reaching_a_method_that_calls_an_extern_with_an_effect_in_another_fil
     assert_eq!(
         effect_issues(&[cart, order, CLOCK_STUB, NOW]),
         [
-            "app/Shop/Cart.sharp:7:25 impure-getter: Getter `total` reaches `Order.price`, which calls `now` with the effect `Clock`. Getters must be pure (section 29)."
+            "app/Shop/Cart.sharp:7:25 impure-getter: Getter `total` reaches `Order.price`, which calls `now` with the effect `Clock`. Getters must be pure."
         ]
     );
 }
@@ -4766,9 +4766,7 @@ fn a_getter_writing_a_field_of_this_is_refused() {
 
     assert_eq!(
         effect_issues(&[counter]),
-        [
-            "app/Shop/Counter.sharp:7:29 impure-getter: Getter `next` changes `this.count`. Getters must be pure (section 29)."
-        ]
+        ["app/Shop/Counter.sharp:7:29 impure-getter: Getter `next` changes `this.count`. Getters must be pure."]
     );
 }
 
@@ -4807,7 +4805,7 @@ fn a_getter_calling_a_virtual_method_whose_override_has_an_effect_is_refused() {
     assert_eq!(
         effect_issues(&[quote, rates, CLOCK_STUB, NOW]),
         [
-            "app/Shop/Quote.sharp:7:26 impure-getter: Getter `amount` reaches `LiveRate.value`, which calls `now` with the effect `Clock`. Getters must be pure (section 29)."
+            "app/Shop/Quote.sharp:7:26 impure-getter: Getter `amount` reaches `LiveRate.value`, which calls `now` with the effect `Clock`. Getters must be pure."
         ]
     );
 }
@@ -4824,7 +4822,7 @@ fn a_getter_whose_list_map_lambda_calls_an_undeclared_function_is_refused() {
     assert_eq!(
         effect_issues(&[names]),
         [
-            "app/Shop/Names.sharp:7:54 impure-getter: Getter `loud` calls `strtoupper`, which has no `extern` declaration. Getters must be pure (section 29). Help: Declare it in a .sharp file: `extern strtoupper;` when it has no effect, or name its effects after `uses`."
+            "app/Shop/Names.sharp:7:54 impure-getter: Getter `loud` calls `strtoupper`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern strtoupper;` when it has no effect, or name its effects after `uses`."
         ]
     );
 }
@@ -4839,7 +4837,7 @@ fn a_getter_reading_the_environment_is_refused_with_the_effect_environment() {
     assert_eq!(
         effect_issues(&[deploy]),
         [
-            "app/Ops/Deploy.sharp:7:29 impure-getter: Getter `region` calls `Environment.variable`, which has the effect `Environment`. Getters must be pure (section 29)."
+            "app/Ops/Deploy.sharp:7:29 impure-getter: Getter `region` calls `Environment.variable`, which has the effect `Environment`. Getters must be pure."
         ]
     );
 }
@@ -4857,7 +4855,7 @@ fn a_recursive_pair_of_methods_solves_without_looping() {
     assert_eq!(
         effect_issues(&files),
         [
-            "app/Shop/Tree.sharp:9:25 impure-getter: Getter `depth` reaches `Tree.odd`, which calls `now` with the effect `Clock`. Getters must be pure (section 29)."
+            "app/Shop/Tree.sharp:9:25 impure-getter: Getter `depth` reaches `Tree.odd`, which calls `now` with the effect `Clock`. Getters must be pure."
         ]
     );
     let (codebase, summaries) = summarized(&files);
@@ -4885,11 +4883,11 @@ fn a_getter_applying_an_operator_whose_body_has_an_effect_is_refused() {
     assert_eq!(
         effect_issues(&[cart, money, CLOCK_STUB, NOW]),
         [
-            "app/Shop/Cart.sharp:7:27 impure-getter: Getter `total` reaches `Money.operator +`, which calls `now` with the effect `Clock`. Getters must be pure (section 29).",
-            "app/Shop/Cart.sharp:9:28 impure-getter: Getter `refund` reaches `Money.operator -`, which calls `now` with the effect `Clock`. Getters must be pure (section 29).",
-            "app/Shop/Cart.sharp:11:25 impure-getter: Getter `even` reaches `Money.operator ==`, which calls `now` with the effect `Clock`. Getters must be pure (section 29).",
-            "app/Shop/Cart.sharp:13:28 impure-getter: Getter `cheaper` reaches `Money.operator <=>`, which calls `now` with the effect `Clock`. Getters must be pure (section 29).",
-            "app/Shop/Cart.sharp:20:13 impure-getter: Getter `doubled` reaches `Money.operator +`, which calls `now` with the effect `Clock`. Getters must be pure (section 29).",
+            "app/Shop/Cart.sharp:7:27 impure-getter: Getter `total` reaches `Money.operator +`, which calls `now` with the effect `Clock`. Getters must be pure.",
+            "app/Shop/Cart.sharp:9:28 impure-getter: Getter `refund` reaches `Money.operator -`, which calls `now` with the effect `Clock`. Getters must be pure.",
+            "app/Shop/Cart.sharp:11:25 impure-getter: Getter `even` reaches `Money.operator ==`, which calls `now` with the effect `Clock`. Getters must be pure.",
+            "app/Shop/Cart.sharp:13:28 impure-getter: Getter `cheaper` reaches `Money.operator <=>`, which calls `now` with the effect `Clock`. Getters must be pure.",
+            "app/Shop/Cart.sharp:20:13 impure-getter: Getter `doubled` reaches `Money.operator +`, which calls `now` with the effect `Clock`. Getters must be pure.",
         ]
     );
 }
@@ -4943,7 +4941,7 @@ fn a_law_calling_plain_php_with_an_effect_is_refused_on_the_call() {
     assert_eq!(
         effect_issues(&[refund, stub, GATEWAY]),
         [
-            "app/Shop/Refund.sharp:7:38 impure-law: Law `refundAllowed` calls `Gateway.charge`, which has the effect `Http`. Laws hold only over pure code (section 29)."
+            "app/Shop/Refund.sharp:7:38 impure-law: Law `refundAllowed` calls `Gateway.charge`, which has the effect `Http`. Laws hold only over pure code."
         ]
     );
 }
@@ -4968,7 +4966,7 @@ fn a_law_reaching_a_method_with_an_effect_in_another_file_is_refused() {
     assert_eq!(
         effect_issues(&[checkout, order, stub, clock]),
         [
-            "app/Shop/Checkout.sharp:5:38 impure-law: Law `totalMatches` reaches `Order.total`, which calls `Clock.now` with the effect `Clock`. Laws hold only over pure code (section 29)."
+            "app/Shop/Checkout.sharp:5:38 impure-law: Law `totalMatches` reaches `Order.total`, which calls `Clock.now` with the effect `Clock`. Laws hold only over pure code."
         ]
     );
 }
@@ -4984,7 +4982,7 @@ fn a_law_calling_plain_php_with_no_extern_names_the_missing_declaration() {
     assert_eq!(
         effect_issues(&[refund, GATEWAY]),
         [
-            "app/Shop/Refund.sharp:7:38 impure-law: Law `refundAllowed` calls `Gateway.charge`, which has no `extern` declaration. Laws hold only over pure code (section 29). Help: Declare it in a .sharp file: `extern Gateway.charge;` when it has no effect, or name its effects after `uses`."
+            "app/Shop/Refund.sharp:7:38 impure-law: Law `refundAllowed` calls `Gateway.charge`, which has no `extern` declaration. Laws hold only over pure code. Help: Declare it in a .sharp file: `extern Gateway.charge;` when it has no effect, or name its effects after `uses`."
         ]
     );
 }
@@ -5003,7 +5001,7 @@ fn a_law_whose_body_is_not_a_bool_is_an_invalid_return_statement_of_the_law() {
         refused.iter().map(|issue| (issue.message.as_str(), issue.help.as_deref())).collect::<Vec<_>>(),
         [(
             "Invalid return type for law `Count.alwaysPositive`: expected `bool`, but found `int`.",
-            Some("A law states a fact, so its body is a `bool` (section 28).")
+            Some("A law states a fact, so its body is a `bool`.")
         )]
     );
 }
@@ -5044,9 +5042,21 @@ fn a_call_of_a_law_is_a_non_existent_method_that_names_the_law() {
     );
 
     assert_eq!(codes(&issues(ledger, &[LAWFUL_MONEY])), ["non-existent-method", "mixed-return-statement"]);
+    assert_eq!(messages(ledger, &[LAWFUL_MONEY])[0], "`Money.addKeepsCurrency` is a law, and a law is never called.");
+}
+
+/// A PHP caller of a law gets the same refusal, with the law named as PHP writes a static method.
+#[test]
+fn a_php_call_of_a_law_is_a_non_existent_method_that_names_the_law_as_php_writes_it() {
+    let ledger = (
+        "src/Shared/Ledger.php",
+        "<?php\n\nnamespace App\\Shared;\n\nfinal class Ledger\n{\n    public static function check(Money $a, Money $b): bool\n    {\n        return Money::addKeepsCurrency($a, $b);\n    }\n}\n",
+    );
+
+    assert_eq!(codes(&issues(ledger, &[LAWFUL_MONEY]))[0], "non-existent-method");
     assert_eq!(
         messages(ledger, &[LAWFUL_MONEY])[0],
-        "`Money.addKeepsCurrency` is a law, and a law is never called (section 28)."
+        "`App\\Shared\\Money::addKeepsCurrency` is a law, and a law is never called."
     );
 }
 

@@ -515,7 +515,7 @@ pub fn handle_return_value<'ctx, A>(
                 Some(class) if class.laws.values().any(|law| std::ptr::eq(law, function_like_metadata)) => (
                     "law",
                     display_sharp_method(class, function_like_metadata),
-                    "A law states a fact, so its body is a `bool` (section 28).".to_owned(),
+                    "A law states a fact, so its body is a `bool`.".to_owned(),
                 ),
                 _ => (
                     "function",

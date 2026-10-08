@@ -1497,7 +1497,7 @@ pub fn check_members<'ast, 'arena>(
                         context.report(
                             Issue::error(format!("A law's parameters range over every value, {reason}."))
                                 .with_annotation(Annotation::primary(span).with_message(written))
-                                .with_note("A law states a fact about every value of its parameters (section 28)."),
+                                .with_note("A law states a fact about every value of its parameters."),
                         );
                     }
                 }
