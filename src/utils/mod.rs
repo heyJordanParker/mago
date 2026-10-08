@@ -11,6 +11,7 @@ use mago_linter::settings::RulesSettings;
 use mago_linter::settings::Settings;
 use mago_orchestrator::Orchestrator;
 use mago_orchestrator::OrchestratorConfiguration;
+use mago_reporting::ColorChoice as ReportingColorChoice;
 
 use crate::config::Configuration;
 use crate::consts::SHARP_EXTENSION;
@@ -21,40 +22,16 @@ pub mod logger;
 pub mod progress;
 pub mod version;
 
-/// Determines whether colors should be used based on the color choice and environment.
-///
-/// This function considers:
-/// - The explicit color choice (Always/Never/Auto)
-/// - The FORCE_COLOR environment variable (if Auto) — any non-empty value forces
-///   colors, except `FORCE_COLOR=0` which explicitly disables them.
-/// - The NO_COLOR environment variable (if Auto) — any non-empty value (including
-///   `"0"`) disables colors. An empty value has no effect.
-/// - Whether stdout is a terminal (if Auto)
-///
-/// Priority (for Auto mode): FORCE_COLOR > NO_COLOR > TTY check
-///
-/// See: <https://force-color.org/> and <https://no-color.org/>
+/// Determines whether colors should be used on stdout, by the rule [`ReportingColorChoice::should_use_colors`] holds.
 #[inline]
 pub fn should_use_colors(color_choice: ColorChoice) -> bool {
-    match color_choice {
-        ColorChoice::Always => true,
-        ColorChoice::Never => false,
-        ColorChoice::Auto => {
-            // FORCE_COLOR takes precedence.
-            if let Some(force_color) = std::env::var_os("FORCE_COLOR")
-                && !force_color.is_empty()
-            {
-                return force_color != "0";
-            }
+    let color_choice = match color_choice {
+        ColorChoice::Auto => ReportingColorChoice::Auto,
+        ColorChoice::Always => ReportingColorChoice::Always,
+        ColorChoice::Never => ReportingColorChoice::Never,
+    };
 
-            // Then NO_COLOR: any non-empty value disables colors.
-            if std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()) {
-                return false;
-            }
-
-            std::io::stdout().is_terminal()
-        }
-    }
+    color_choice.should_use_colors(std::io::stdout().is_terminal())
 }
 
 /// Configures global color settings based on the color choice.
