@@ -28,6 +28,7 @@ impl Fingerprintable for Modifier<'_> {
             Modifier::Virtual(_) => "virtual".hash(hasher),
             Modifier::Override(_) => "override".hash(hasher),
             Modifier::Required(_) => "required".hash(hasher),
+            Modifier::Extern(_) => "extern".hash(hasher),
         }
     }
 }
@@ -57,6 +58,7 @@ pub fn fingerprint_modifiers<'modifier, H>(
             Modifier::Virtual(_) => Some("virtual"),
             Modifier::Override(_) => Some("override"),
             Modifier::Required(_) => Some("required"),
+            Modifier::Extern(_) => Some("extern"),
         })
         .collect();
 

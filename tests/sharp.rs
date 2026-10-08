@@ -206,6 +206,30 @@ fn analyze_reports_only_the_refusal_on_each_refused_line() {
     );
 }
 
+/// A bare call is the global function's, so the analyzer names the member to write when no function of that name
+/// exists. On a line that holds a refusal, the refusal shows alone.
+#[test]
+fn analyze_names_the_member_a_bare_call_meant_on_a_line_without_a_refusal() {
+    let directory = workspace(
+        "namespace Demo;\n\nclass Report\n{\n    public static int total() => 1;\n\n    public static int run() => total();\n\n    public static int line() => total(__LINE__);\n}\n",
+    );
+
+    let output = run(directory.path(), "analyze", &["--reporting-format", "emacs"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert_eq!(
+        issues_in(&stdout, "src/Demo/Report.sharp"),
+        ["9:39 semantics", "7:32 non-existent-function", "7:32 mixed-return-statement"],
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(
+            "Write `Report.total()`: a static method reaches the members of its class through the class name."
+        ),
+        "{stdout}"
+    );
+}
+
 /// A PHP sum and call chain 1,000 levels deep overflowed the stack of a debug `mago analyze`, and a PHP# sum 100,000
 /// levels deep overflowed any build. Now the PHP file analyzes, and the PHP# file gets its nesting error.
 #[test]
@@ -267,6 +291,306 @@ fn analyze_fix_refuses_a_fix_that_would_edit_a_sharp_file() {
     assert!(!output.status.success(), "{stderr}");
     assert!(stderr.contains("`mago analyze --fix` does not support PHP# files yet: src/Demo/Report.sharp"), "{stderr}");
     assert_eq!(report(directory.path()), source);
+}
+
+/// The standard library's `Text`, with a native body, spec section 29, and the `@` the library writes before it throws
+/// its own exception.
+const TEXT: &str = "namespace Sharp.Text;\n\npublic static class Text\n{\n    public static extern string slug(string title);\n\n    public static string quiet(string title) => @trim(title);\n\n    public static string shout(string title) => strtoupper(title);\n}\n";
+
+/// The standard library's `Int`, `Float` and `Bool`, spec section 24, with the library's signatures. Their names are
+/// reserved, and only the standard library declares them.
+const TYPE_CLASSES: [(&str, &str); 3] = [
+    (
+        "Int",
+        "namespace Sharp;\n\nimport ValueError;\n\npublic static class Int\n{\n    public static int parse(Any? value)\n    {\n        const number = Int.tryParse(value);\n        if (number is int) {\n            return number;\n        }\n        throw new ValueError(\"Sharp\\\\Int::parse(): Argument #1 ($value) must hold an int\");\n    }\n\n    public static int? tryParse(Any? value)\n    {\n        return (value is string text) ? filter_var(text, FILTER_VALIDATE_INT, FILTER_NULL_ON_FAILURE) : null;\n    }\n}\n",
+    ),
+    (
+        "Float",
+        "namespace Sharp;\n\nimport ValueError;\n\npublic static class Float\n{\n    public static float parse(Any? value)\n    {\n        const number = Float.tryParse(value);\n        if (number is float) {\n            return number;\n        }\n        throw new ValueError(\"Sharp\\\\Float::parse(): Argument #1 ($value) must hold a float\");\n    }\n\n    public static float? tryParse(Any? value)\n    {\n        const number = (value is string text) && is_numeric(text) ? floatval(text) : null;\n        return (number is float) && is_finite(number) ? number : null;\n    }\n}\n",
+    ),
+    (
+        "Bool",
+        "namespace Sharp;\n\npublic static class Bool\n{\n    public static bool? tryParse(Any? value) => filter_var(value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);\n}\n",
+    ),
+];
+
+/// The `composer.json` of the standard library's package.
+const LIBRARY_PACKAGE: &str = "{\n    \"name\": \"heyjordanparker/php-sharp-composer\"\n}\n";
+
+fn write(root: &Path, name: &str, contents: &str) {
+    let path = root.join(name);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, contents).unwrap();
+}
+
+/// The standard library's package under `root`: its `composer.json`, its `Text`, and its `Int`, `Float` and `Bool`.
+fn write_library(root: &Path) {
+    write(root, "composer.json", LIBRARY_PACKAGE);
+    write(root, "library/Sharp/Text/Text.sharp", TEXT);
+    for (class, source) in TYPE_CLASSES {
+        write(root, &format!("library/Sharp/{class}.sharp"), source);
+    }
+}
+
+/// A project whose `vendor/` holds the standard library's package, beside the project's `src/App/Page.sharp`.
+fn library_workspace(page: &str) -> tempfile::TempDir {
+    let directory = tempfile::tempdir().unwrap();
+    write(
+        directory.path(),
+        "mago.toml",
+        "php-version = \"8.4\"\n\n[source]\npaths = [\"src\"]\nincludes = [\"vendor\"]\n",
+    );
+    write(directory.path(), "composer.json", "{\n    \"name\": \"acme/app\"\n}\n");
+    write_library(&directory.path().join("vendor/heyjordanparker/php-sharp-composer"));
+    write(directory.path(), "src/App/Page.sharp", page);
+    directory
+}
+
+/// Every line `mago analyze` reports in the project's `src/App/Page.sharp`.
+fn page_errors(page: &str) -> Vec<String> {
+    let directory = library_workspace(page);
+    let output = run(directory.path(), "analyze", &["--reporting-format", "emacs"]);
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| line.starts_with("src/App/Page.sharp:"))
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn analyze_finds_no_issues_in_a_call_of_an_extern_method_of_the_standard_library() {
+    let directory = library_workspace(
+        "namespace App;\n\nimport Sharp.Text.Text;\n\npublic class Page\n{\n    public string slug() => Text.slug(\"Hello\");\n}\n",
+    );
+
+    let output = run(directory.path(), "analyze", &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "{stdout}{stderr}");
+    assert!(stderr.contains("No issues found."), "{stdout}{stderr}");
+}
+
+/// `mago compile` checks the vendored library as a project file, and it stays the standard library, so its `extern`
+/// method and its `@` compile.
+#[test]
+fn compile_accepts_extern_methods_and_silence_in_the_vendored_standard_library() {
+    let directory = library_workspace(
+        "namespace App;\n\nimport Sharp.Text.Text;\n\npublic class Page\n{\n    public string slug() => Text.slug(\"Hello\");\n}\n",
+    );
+
+    let output = run(directory.path(), "compile", &[]);
+    let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+
+    assert!(output.status.success(), "{printed}");
+    for compiled in ["src/App/Page.sharpc", "vendor/heyjordanparker/php-sharp-composer/library/Sharp/Text/Text.sharpc"]
+    {
+        assert!(directory.path().join(".sharp").join(compiled).is_file(), "{compiled}: {printed}");
+    }
+}
+
+/// `mago compile` lowers the vendored library first, and a project file runs the library's one-call method as its
+/// body: `Text.shout(name)` compiles to `strtoupper($name)`.
+#[test]
+fn compile_inlines_a_vendored_library_form_into_a_project_caller() {
+    let directory = library_workspace(
+        "namespace App;\n\nimport Sharp.Text.Text;\n\npublic class Page\n{\n    public string title(string name) => Text.shout(name);\n}\n",
+    );
+
+    let output = run(directory.path(), "compile", &[]);
+    let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+
+    assert!(output.status.success(), "{printed}");
+    let page = std::fs::read(directory.path().join(".sharp/src/App/Page.sharpc")).unwrap();
+    assert!(page.windows(b"strtoupper".len()).any(|window| window == b"strtoupper"), "the form is inlined");
+}
+
+/// In the standard library's own repository, whose root `composer.json` names the package, `library/Sharp/` is the
+/// library: its `extern` method and its `@` compile, and a file of another package in the same repository inlines its
+/// one-call method. That package is still a project, so its own `extern` method under `Sharp` is refused.
+#[test]
+fn compile_treats_the_repository_of_the_standard_library_as_the_library() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    write(root, "mago.toml", "php-version = \"8.4\"\n");
+    write_library(root);
+    write(root, "example/composer.json", "{\n    \"name\": \"acme/example\"\n}\n");
+    write(
+        root,
+        "example/App/Title.sharp",
+        "namespace App;\n\nimport Sharp.Text.Text;\n\npublic class Title\n{\n    public string of(string name) => Text.shout(name);\n}\n",
+    );
+    write(
+        root,
+        "example/App/Native.sharp",
+        "namespace Sharp.Example;\n\npublic static class Native\n{\n    public static extern string run(string value);\n}\n",
+    );
+
+    let output = run(root, "compile", &[]);
+    let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+
+    assert_eq!(output.status.code(), Some(1), "{printed}");
+    assert!(printed.contains("Compiled 5 PHP# files into .sharp/. 1 PHP# file was refused"), "{printed}");
+    assert!(root.join(".sharp/library/Sharp/Text/Text.sharpc").is_file(), "{printed}");
+    let title = std::fs::read(root.join(".sharp/example/App/Title.sharpc")).unwrap();
+    assert!(title.windows(b"strtoupper".len()).any(|window| window == b"strtoupper"), "the form is inlined");
+    assert!(!root.join(".sharp/example/App/Native.sharpc").exists(), "{printed}");
+    assert!(printed.contains("native-body-outside-library"), "{printed}");
+    assert!(!printed.contains("silence-outside-library"), "{printed}");
+}
+
+/// Without a `composer.json` that names the package, `library/Sharp/` is project code: its `extern` method and its `@`
+/// are refused.
+#[test]
+fn compile_refuses_extern_and_silence_under_library_sharp_without_the_composer_json_of_the_library() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    write(root, "mago.toml", "php-version = \"8.4\"\n");
+    write(root, "library/Sharp/Text/Text.sharp", TEXT);
+
+    let output = run(root, "compile", &[]);
+    let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+
+    assert_eq!(output.status.code(), Some(1), "{printed}");
+    assert!(!root.join(".sharp/library/Sharp/Text/Text.sharpc").exists(), "{printed}");
+    assert!(printed.contains("native-body-outside-library"), "{printed}");
+    assert!(printed.contains("silence-outside-library"), "{printed}");
+}
+
+#[test]
+fn analyze_reports_new_on_a_static_class() {
+    assert_eq!(
+        page_errors(
+            "namespace App;\n\nimport Sharp.Text.Text;\n\npublic class Page\n{\n    public Text make() => new Text();\n}\n"
+        ),
+        [
+            "src/App/Page.sharp:7:31:error - abstract-instantiation: `Text` is a static class, so it has no instances: call its members on the class."
+        ]
+    );
+}
+
+#[test]
+fn analyze_reports_a_class_that_extends_a_static_class() {
+    assert_eq!(
+        page_errors("namespace App;\n\nimport Sharp.Text.Text;\n\npublic class Page : Text\n{\n}\n"),
+        ["src/App/Page.sharp:5:21:error - extend-final-class: `Text` is a static class, so no class can extend it."]
+    );
+}
+
+/// Only the standard library declares native bodies, so a project file declares no `extern` method, whatever its
+/// namespace.
+#[test]
+fn analyze_reports_an_extern_method_in_a_project_file() {
+    for namespace in ["App", "Sharp.Mine"] {
+        let page = format!(
+            "namespace {namespace};\n\npublic static class Page\n{{\n    public static extern string slug(string title);\n}}\n"
+        );
+
+        assert_eq!(
+            page_errors(&page),
+            [
+                "src/App/Page.sharp:5:33:error - native-body-outside-library: Only the standard library declares native bodies: give `slug` a body."
+            ],
+            "{namespace}"
+        );
+    }
+}
+
+/// A project file under `Sharp` passes the semantic checks, which know only the namespace, and the analyzer refuses
+/// both forms only the standard library may write.
+#[test]
+fn analyze_reports_extern_and_silence_in_a_project_file_under_sharp() {
+    assert_eq!(
+        page_errors(
+            "namespace Sharp.Mine;\n\npublic static class Page\n{\n    public static extern string slug(string title);\n\n    public static string quiet(string title) => @trim(title);\n}\n"
+        ),
+        [
+            "src/App/Page.sharp:5:33:error - native-body-outside-library: Only the standard library declares native bodies: give `slug` a body.",
+            "src/App/Page.sharp:7:49:error - silence-outside-library: `@` hides PHP's warnings, and only the standard library uses it: handle the failure where it happens.",
+        ]
+    );
+}
+
+/// A project calls the standard library's `Int`, `Float` and `Bool` by their bare names, with no import, spec
+/// section 24. The checker reads them from the vendored package and gives each call the library's return type.
+#[test]
+fn analyze_types_the_parse_calls_of_the_standard_library_from_the_vendored_package() {
+    let directory = library_workspace(
+        "namespace App;\n\npublic class Page\n{\n    public int count() => Int.parse(\"1\");\n\n    public float? price() => Float.tryParse(\"x\");\n\n    public bool? flag() => Bool.tryParse(\"yes\");\n}\n",
+    );
+
+    let output = run(directory.path(), "analyze", &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "{stdout}{stderr}");
+    assert!(stderr.contains("No issues found."), "{stdout}{stderr}");
+
+    assert_eq!(
+        page_errors(
+            "namespace App;\n\npublic class Page\n{\n    public string count() => Int.parse(\"1\");\n\n    public string price() => Float.tryParse(\"x\");\n\n    public string flag() => Bool.tryParse(\"yes\");\n}\n"
+        ),
+        [
+            "src/App/Page.sharp:5:30:error - invalid-return-statement: Invalid return type for function `App\\Page::count`: expected `string`, but found `int`.",
+            "src/App/Page.sharp:7:30:error - nullable-return-statement: Function `App\\Page::price` is declared to return `string` but possibly returns a nullable value (inferred as `float|null`).",
+            "src/App/Page.sharp:7:30:error - invalid-return-statement: Invalid return type for function `App\\Page::price`: expected `string`, but found `float|null`.",
+            "src/App/Page.sharp:9:29:error - nullable-return-statement: Function `App\\Page::flag` is declared to return `string` but possibly returns a nullable value (inferred as `bool|null`).",
+            "src/App/Page.sharp:9:29:error - invalid-return-statement: Invalid return type for function `App\\Page::flag`: expected `string`, but found `bool|null`.",
+        ]
+    );
+}
+
+/// The semantic checks let a file under the namespace `Sharp` declare the standard library's reserved type names,
+/// and the analyzer refuses them in a project file.
+#[test]
+fn analyze_reports_a_type_class_of_the_standard_library_in_a_project_file() {
+    assert_eq!(
+        page_errors(
+            "namespace Sharp;\n\npublic static class Bool\n{\n    public static bool? tryParse(Any? value) => null;\n}\n"
+        ),
+        [
+            "src/App/Page.sharp:3:21:error - reserved-name-outside-library: Cannot use `Bool` as a class name: it is reserved."
+        ]
+    );
+}
+
+/// The standard library's own repository analyzes its sources as project code, and its root `composer.json` names
+/// the package, so its `extern` methods, `@`, and its `Int`, `Float` and `Bool` are the library's.
+#[test]
+fn analyze_finds_no_issues_in_the_repository_of_the_standard_library() {
+    let directory = tempfile::tempdir().unwrap();
+    write(directory.path(), "mago.toml", "php-version = \"8.4\"\n\n[source]\npaths = [\"library\"]\n");
+    write_library(directory.path());
+
+    let output = run(directory.path(), "analyze", &["--reporting-format", "emacs"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "{stdout}{stderr}");
+    assert!(stderr.contains("No issues found."), "{stdout}{stderr}");
+}
+
+/// `mago analyze` reports nothing in vendored files, so another package's `extern` method under `Sharp` gets no
+/// report. The engine registers no native function for it, so a call of it fails when it runs.
+#[test]
+fn analyze_trusts_a_vendored_file_of_another_package_under_sharp() {
+    let directory = library_workspace(
+        "namespace App;\n\nimport Sharp.Tools.Tools;\n\npublic class Page\n{\n    public string slug() => Tools.slug(\"Hello\");\n}\n",
+    );
+    write(directory.path(), "vendor/acme/tools/composer.json", "{\n    \"name\": \"acme/tools\"\n}\n");
+    write(
+        directory.path(),
+        "vendor/acme/tools/src/Sharp/Tools/Tools.sharp",
+        "namespace Sharp.Tools;\n\npublic static class Tools\n{\n    public static extern string slug(string title);\n}\n",
+    );
+
+    let output = run(directory.path(), "analyze", &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "{stdout}{stderr}");
+    assert!(stderr.contains("No issues found."), "{stdout}{stderr}");
 }
 
 #[test]

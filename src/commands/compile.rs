@@ -83,7 +83,11 @@ impl CompileCommand {
         let packaged: Vec<File> = database
             .files()
             .filter(|file| file.file_type == FileType::Vendored && Dialect::of(file).is_sharp())
-            .map(|file| File::new(file.name.clone(), FileType::Host, file.path.clone(), file.contents.clone()))
+            .map(|file| {
+                let mut host = File::new(file.name.clone(), FileType::Host, file.path.clone(), file.contents.clone());
+                host.is_standard_library = file.is_standard_library;
+                host
+            })
             .collect();
         for file in packaged {
             database.add(file);

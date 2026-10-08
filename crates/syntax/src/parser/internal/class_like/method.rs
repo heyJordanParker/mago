@@ -56,9 +56,12 @@ where
             ));
         }
 
-        // `required` written before any other modifier starts the member's modifiers.
+        // `required` or `extern` written before any other modifier starts the member's modifiers.
         let modifiers = if modifiers.is_empty()
-            && self.stream.lookahead(0)?.is_some_and(|token| token.kind == T![Identifier] && token.value == b"required")
+            && self
+                .stream
+                .lookahead(0)?
+                .is_some_and(|token| token.kind == T![Identifier] && matches!(token.value, b"required" | b"extern"))
         {
             self.parse_modifier_sequence()?
         } else {

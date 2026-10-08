@@ -16,6 +16,6 @@ enum Binding: string
     case ClassName = 'ClassName';
     /** A constant. */
     case Constant = 'Constant';
-    /** A member of the enclosing class, written without `this.`. */
+    /** A member of the enclosing class, read without `this.`. A bare call is never one: it calls the global function. */
     case Member = 'Member';
 }

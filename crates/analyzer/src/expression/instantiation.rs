@@ -233,6 +233,21 @@ where
         argument_list.analyze(context, block_context, artifacts)?;
 
         return Ok(get_never());
+    } else if metadata.flags.is_static() {
+        // PHP# code writes a class by its short name, so the error does too.
+        let full_name = String::from_utf8_lossy(metadata.original_name.as_bytes());
+        let name = full_name.rsplit('\\').next().unwrap_or_default();
+        context.collector.report_with_code(
+            IssueCode::AbstractInstantiation,
+            Issue::error(format!("`{name}` is a static class, so it has no instances: call its members on the class."))
+                .with_annotation(
+                    Annotation::primary(class_expression_span).with_message("A static class has no instances."),
+                ),
+        );
+
+        argument_list.analyze(context, block_context, artifacts)?;
+
+        return Ok(get_never());
     }
     // class kind is a regular class; no kind-specific instantiation diagnostic to emit
 

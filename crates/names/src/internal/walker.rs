@@ -287,6 +287,7 @@ impl<'arena> NameWalker<'arena> {
         let class: &'static [u8] = match name {
             b"Int" => b"Sharp\\Int",
             b"Float" => b"Sharp\\Float",
+            b"Bool" => b"Sharp\\Bool",
             b"Position" => b"Sharp\\Position",
             b"Environment" => b"Sharp\\Environment",
             b"List" => b"Sharp\\List",
@@ -1033,8 +1034,6 @@ where
 
             if let Some(local) = self.locals.lookup(identifier.value()) {
                 self.bind_local(identifier.value(), identifier.span(), local);
-            } else if self.is_member(identifier.value()) {
-                self.resolved_names.bind(identifier.span(), Binding::Member);
             }
         }
     }

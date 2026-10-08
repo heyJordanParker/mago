@@ -21,6 +21,7 @@ use mago_syntax::cst::BinaryOperator;
 use mago_syntax::cst::Block;
 use mago_syntax::cst::Break;
 use mago_syntax::cst::Call;
+use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeConstant;
 use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::ClassLikeMemberSelector;
@@ -51,6 +52,7 @@ use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::LocalIdentifier;
 use mago_syntax::cst::MagicConstant;
 use mago_syntax::cst::Method;
+use mago_syntax::cst::MethodBody;
 use mago_syntax::cst::Modifier;
 use mago_syntax::cst::ModifierSequenceExt;
 use mago_syntax::cst::Namespace;
@@ -109,6 +111,9 @@ const ANY: &[u8] = b"Any";
 /// - A class: attributes, an optional `public`, `abstract` or `final`, a name, an optional `: Base, Interface` header,
 ///   constants, fields, properties and methods, with no other modifiers, `extends` or `implements`. The engine tells
 ///   the base class from the interfaces when it links the class.
+/// - A static class, `public static class Text`, as spec sections 26 and 29 write it: `static` and an optional
+///   `public`, no header and no constructor, and only constants and static members. The bridge lowers it to a final
+///   PHP class.
 /// - An interface: an optional `public`, a name, an optional `: Interface` header and methods, with no attributes,
 ///   other modifiers or `extends`. An interface method has parameters, a return type and no body, as spec section 29
 ///   writes `Money quote(Cart cart);`. A modifier on it is an error, because every interface method is public.
@@ -158,6 +163,9 @@ const ANY: &[u8] = b"Any";
 ///   writes them. Its name does not start with `__`, which PHP reserves for magic methods, and is not its class's name,
 ///   compared ignoring case, which PHP# gives to the constructor, nor, compared ignoring case, a property's of its
 ///   class.
+/// - An `extern` method, `public static extern string slug(string title);`, whose body is native, compiled into the
+///   engine, as spec section 29 writes it: a `public static` method of a static class, with no body. Only the
+///   standard library declares one, and the analyzer refuses one anywhere else.
 /// - The constructor: a method named exactly after its class, without a return type and not `static`. A method
 ///   without a return type named otherwise is an error. A constructor parameter with an access modifier declares a
 ///   member: a field when `private` or `protected` without accessors, and a property with accessors, which follow the
@@ -236,6 +244,9 @@ const ANY: &[u8] = b"Any";
 ///   calls the lambda the local holds, with positional, named and spread arguments.
 /// - Operators: `+ - * / % **`, `== != === !== < > <= >=`, `&& || !`, `??`, unary `-` and `+`, `++` and `--`, and
 ///   `= += -= *= /= **= ??=`.
+/// - `@`, which hides PHP's warnings, in a method body of a file whose namespace is `Sharp` or below it, where the
+///   standard library writes it before a method throws its own exception. Anywhere else it is an error, and the
+///   analyzer refuses it in any file that is not the standard library's.
 /// - The ternary `c ? a : b` in a method body, as spec section 21 writes it. PHP's `a ?: b` is an error, and a
 ///   ternary as the condition of another needs parentheses, as in PHP 8.
 /// - Pattern matching in a method body, as spec section 21 writes it: `x is pattern`, `x as T` to a type that is not
@@ -248,11 +259,14 @@ const ANY: &[u8] = b"Any";
 ///   pattern of `is`. The parser reports list patterns, and enum case patterns with fields or a name, as not supported
 ///   yet.
 /// - Casts: `(int)`, `(float)` and `(string)` in a method body, as spec section 24 writes them. PHP's other casts and
-///   its cast aliases, such as `(bool)` and `(integer)`, are errors.
-/// - A bare `Int`, `Float`, `Position`, `Environment` or `List` names the class `Sharp\<Name>` of the engine's standard
+///   its cast aliases, such as `(bool)` and `(integer)`, are errors. A cast is lowercase only, so the lexer reads
+///   `(Int)` as the class `Int` in parentheses, as in `typeof(Int)`.
+/// - A bare `Int`, `Float`, `Bool`, `Position`, `Environment` or `List` names the class `Sharp\<Name>` of the standard
 ///   library wherever a class is named, unless the file imports or declares a class-like of that name, spec section 23.
-///   So `Int.parse(text)`, `Position.current()`, `new Environment()` and `List.wrap(value)` call it. PHP reserves
-///   `Int`, `Float` and `List`, so no file declares a class of those.
+///   So `Int.parse(text)`, `Bool.tryParse(value)`, `Position.current()`, `new Environment()` and `List.wrap(value)`
+///   call it. PHP reserves `Int`, `Float`, `Bool` and `List`, so no file declares or imports a class of those, except
+///   the standard library's own `Sharp.Int`, `Sharp.Float` and `Sharp.Bool`: a file whose namespace is exactly `Sharp`
+///   declares them, as the engine allows, and any file may import them.
 ///
 /// The check runs on every node the checking walk enters, and refuses any node, or any position of a node, that this
 /// list does not name. It reports each refusal once, at its outermost node, and skips the nodes inside the refusal's
@@ -267,7 +281,16 @@ const ANY: &[u8] = b"Any";
 /// constant, parameter or local. A method name that starts but does not end with `__`, as PHP's magic methods do,
 /// stays not supported yet.
 ///
-/// Eleven more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
+/// Seventeen more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
+/// - `new` on a static class, in `analyze_class_instantiation`, and a class that extends one, in
+///   `check_class_like_extends`, because the static class may be another file's.
+/// - an `extern` method anywhere but a standard library file whose class is under `Sharp`, in `Method`'s `analyze`,
+///   `@` in any file that is not the standard library's, in `UnaryPrefix`'s `analyze`, and a class or enum named
+///   `Sharp.Int`, `Sharp.Float` or `Sharp.Bool` in any file that is not the standard library's, in
+///   `report_sharp_type_class_outside_library`, because only the analyzer knows the file's package. The nearest
+///   `composer.json` above a file names it.
+/// - a bare call that finds no function while the enclosing class declares a method of that name, in
+///   `bare_member_call`, because only the codebase knows which functions exist. A bare call is the global function's.
 /// - `+` that may join a string with any other value, which spec section 18 makes an error, in
 ///   `analyze_arithmetic_operation`. `+` on two strings joins them.
 /// - a condition of `if`, `while`, `do … while`, `for` or `? :`, or an operand of `&&`, `||` or `!`, that is not
@@ -436,10 +459,10 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             File,
         ) => Some(File),
         (Node::Class(class), File) => {
-            report_methods_named_as_properties(
-                ClassLike { name: &class.name, span: class.span(), members: &class.members },
-                context,
-            );
+            report_methods_named_as_properties(ClassLike::of_class(class), context);
+            if class.modifiers.contains_static() {
+                check_static_class(class, context);
+            }
 
             Some(Class)
         }
@@ -456,13 +479,15 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             Some(place)
         }
         // `check_class` reports `protected` and `private` on a class, and PHP's own check `abstract` with `final`.
+        // `check_static_class` reports `abstract` and `final` on a static class.
         (
             Node::Modifier(
                 Modifier::Public(_)
                 | Modifier::Protected(_)
                 | Modifier::Private(_)
                 | Modifier::Abstract(_)
-                | Modifier::Final(_),
+                | Modifier::Final(_)
+                | Modifier::Static(_),
             ),
             Class,
         ) => Some(Class),
@@ -674,7 +699,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
                     check_declared_name(method.name.value, method.name.span, context);
                 }
 
-                Some(Method)
+                check_extern(method, context)
             }
             Err((message, help)) => report_refusal(
                 Issue::error(message)
@@ -696,7 +721,9 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
                 | Modifier::Virtual(_)
                 | Modifier::Override(_)
                 // The parser keeps `required` on the constructor only.
-                | Modifier::Required(_),
+                | Modifier::Required(_)
+                // `check_extern` decides where an `extern` method goes.
+                | Modifier::Extern(_),
             )
             | Node::FunctionLikeReturnTypeHint(_)
             | Node::MethodBody(_)
@@ -1099,6 +1126,18 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         (Node::BinaryOperator(operator), Body | Constant) if is_slice_binary_operator(operator) => Some(place),
         // `check_cast` decided the cast at its `UnaryPrefix`.
         (Node::UnaryPrefixOperator(operator), Body | Constant) if operator.is_cast() => Some(place),
+        (Node::UnaryPrefixOperator(operator @ UnaryPrefixOperator::ErrorControl(_)), Body | Constant)
+            if !is_standard_library_namespace(context.program) =>
+        {
+            context.report(
+                Issue::error(
+                    "`@` hides PHP's warnings, and only the standard library uses it: handle the failure where it happens.",
+                )
+                .with_annotation(Annotation::primary(operator.span()).with_message("Written here.")),
+            );
+
+            None
+        }
         (Node::UnaryPrefixOperator(operator), Body | Constant) if is_slice_prefix_operator(operator, place) => {
             Some(place)
         }
@@ -1195,26 +1234,24 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
             None
         }
-        // PHP# never has top-level functions, `global`, `compact()`, `extract()` or a member called without `this.`:
-        // `check_function`, `check_global` and `check_function_call` report them. A function is reported at its name,
-        // so its parameters and body are checked as a method's. `global` holds only the names it declares, and
-        // `compact()` and `extract()` are reported over the whole call.
+        // PHP# never has top-level functions, `global`, `compact()` or `extract()`: `check_function`, `check_global` and
+        // `check_function_call` report them. A function is reported at its name, so its parameters and body are checked
+        // as a method's. `global` holds only the names it declares, and `compact()` and `extract()` are reported over
+        // the whole call.
         (Node::Statement(Statement::Function(_)), File) => Some(File),
         (Node::Function(_), File) => Some(Method),
         (Node::Statement(Statement::Global(_)), Body) => None,
         (Node::Expression(Expression::Call(Call::Function(function_call))), Body)
             if let Expression::Identifier(name) = function_call.function
-                && is_compact_or_extract(name.last_segment())
-                && context.names.binding(name) != Some(Binding::Member) =>
+                && is_compact_or_extract(name.last_segment()) =>
         {
             None
         }
         // Spec sections 8 and 29: plain PHP functions are called by their bare names. The analyzer refuses a call
         // that resolves to a namespaced function. Spec section 14: a local holding a function is called the same way.
-        // `check_function_call` reports a member called without `this.` at its name.
         (Node::Expression(Expression::Call(Call::Function(function_call))), Body)
             if let Expression::Identifier(name @ Identifier::Local(_)) = function_call.function
-                && matches!(context.names.binding(name), None | Some(Binding::Local(_) | Binding::Member)) =>
+                && matches!(context.names.binding(name), None | Some(Binding::Local(_))) =>
         {
             Some(FunctionCall)
         }
@@ -1291,6 +1328,81 @@ fn is_slice_signature(method: &Method) -> Result<(), (&'static str, &'static str
     } else {
         Ok(())
     }
+}
+
+/// Reports what a static class cannot hold, as spec sections 26 and 29 write it: a modifier but `public` and `static`,
+/// a header, a constructor, or a member that is not static. A constant is static already, and `check_extern` decides
+/// an `extern` method.
+fn check_static_class(class: &Class, context: &mut Context<'_, '_, '_>) {
+    let mut report = |message: String, span: Span, written: &str| {
+        context.report(Issue::error(message).with_annotation(Annotation::primary(span).with_message(written)));
+    };
+
+    for modifier in &class.modifiers {
+        if let Modifier::Abstract(keyword) | Modifier::Final(keyword) = modifier {
+            report(
+                format!("A static class takes only `public` and `static`: remove `{}`.", BytesDisplay(keyword.value)),
+                keyword.span,
+                "Written here.",
+            );
+        }
+    }
+
+    if let Some(inheritance) = &class.inheritance {
+        report(
+            "A static class cannot extend a class or implement an interface.".to_owned(),
+            inheritance.span(),
+            "Named here.",
+        );
+    }
+
+    let non_static =
+        |name: &[u8]| format!("A static class holds only static members: make `{}` static.", BytesDisplay(name));
+    for member in &class.members {
+        match member {
+            ClassLikeMember::Method(method)
+                if method.return_type_hint.is_none() && method.name.value == class.name.value =>
+            {
+                report("A static class has no constructor.".to_owned(), method.name.span, "Declared here.");
+            }
+            ClassLikeMember::Method(method) if !method.is_static() && !is_extern(method) => {
+                report(non_static(method.name.value), method.name.span, "Declared without `static` here.");
+            }
+            ClassLikeMember::Property(property) if !property.modifiers().contains_static() => {
+                let variable = property.first_variable();
+                report(non_static(variable.name), variable.span, "Declared without `static` here.");
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Whether a method is `extern`: its body is native, compiled into the engine, as spec section 29 writes it.
+fn is_extern(method: &Method) -> bool {
+    method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Extern(_)))
+}
+
+/// The place of a method's parts, refusing an `extern` method that is not `public static`, in a static class, with no
+/// body. The refusal is at its name, so its other parts, a body written by mistake among them, stay checked. Only the
+/// standard library declares native bodies, but the engine compiles the library's files from `vendor/` as any other,
+/// so the analyzer, which knows a file's package, refuses one anywhere else.
+fn check_extern(method: &Method, context: &mut Context<'_, '_, '_>) -> Option<Place> {
+    if !is_extern(method)
+        || (enclosing_class(context.program, method.span()).is_some_and(|class| class.is_static)
+            && method.modifiers.contains_public()
+            && method.is_static()
+            && matches!(method.body, MethodBody::Abstract(_)))
+    {
+        return Some(Place::Method);
+    }
+
+    report_refusal(
+        Issue::error("An `extern` method is `public static`, in a static class, with no body.")
+            .with_annotation(Annotation::primary(method.name.span).with_message("Declared `extern` here.")),
+        method.span(),
+        Place::Method,
+        context,
+    )
 }
 
 /// Reports what the engine refuses in a header when it declares the class: a name the header already holds, and in an
@@ -1773,6 +1885,16 @@ fn first_namespace<'ast, 'arena>(program: &'ast Program<'arena>) -> Option<&'ast
     })
 }
 
+/// Whether a PHP# file's namespace is `Sharp` or below it, compared ignoring case as PHP compares namespaces. The
+/// engine compiles the standard library from `vendor/` knowing only the file, so its namespace is all the slice knows
+/// of the library.
+fn is_standard_library_namespace(program: &Program) -> bool {
+    first_namespace(program).and_then(|namespace| namespace.name.as_ref()).map(php_name).is_some_and(|name| {
+        name.get(..5).is_some_and(|root| root.eq_ignore_ascii_case(b"Sharp"))
+            && matches!(name.get(5), None | Some(b'\\'))
+    })
+}
+
 /// The statements at file level of a PHP# file, and those of each of its namespaces, the ones the slice refuses too.
 fn file_statements<'ast, 'arena>(program: &'ast Program<'arena>) -> impl Iterator<Item = &'ast Statement<'arena>> {
     program.statements.iter().flat_map(|statement| match statement {
@@ -2207,14 +2329,16 @@ const fn is_slice_binary_operator(operator: &BinaryOperator) -> bool {
     }
 }
 
-/// Whether the slice has a prefix operator at a place. A parameter default has no `++` or `--`. Every operator is
-/// named, so a new one does not compile until it is decided.
+/// Whether the slice has a prefix operator at a place. A parameter default has no `++`, `--` or `@`, and `enter`
+/// refuses `@` outside the namespace `Sharp` before it calls this. Every operator is named, so a new one does not
+/// compile until it is decided.
 fn is_slice_prefix_operator(operator: &UnaryPrefixOperator, place: Place) -> bool {
     match operator {
         UnaryPrefixOperator::Negation(_) | UnaryPrefixOperator::Plus(_) | UnaryPrefixOperator::Not(_) => true,
-        UnaryPrefixOperator::PreIncrement(_) | UnaryPrefixOperator::PreDecrement(_) => place == Place::Body,
-        UnaryPrefixOperator::ErrorControl(_)
-        | UnaryPrefixOperator::Reference(_)
+        UnaryPrefixOperator::PreIncrement(_)
+        | UnaryPrefixOperator::PreDecrement(_)
+        | UnaryPrefixOperator::ErrorControl(_) => place == Place::Body,
+        UnaryPrefixOperator::Reference(_)
         | UnaryPrefixOperator::ArrayCast(..)
         | UnaryPrefixOperator::BoolCast(..)
         | UnaryPrefixOperator::BooleanCast(..)
@@ -2673,7 +2797,9 @@ pub fn check_binding_errors(context: &mut Context<'_, '_, '_>) {
 }
 
 /// Checks the name of a PHP# class or enum against the names the engine reserves, beyond the keywords the PHP checks
-/// reject, and against the `__Something__` names spec section 27 removes.
+/// reject, and against the `__Something__` names spec section 27 removes. The standard library's `Sharp.Int`,
+/// `Sharp.Float` and `Sharp.Bool` are the engine's one exception, and the analyzer refuses them in any file that is not
+/// the standard library's.
 #[inline]
 pub fn check_class_name(class_name: &LocalIdentifier, context: &mut Context<'_, '_, '_>) {
     let is_keyword = RESERVED_KEYWORDS
@@ -2681,7 +2807,10 @@ pub fn check_class_name(class_name: &LocalIdentifier, context: &mut Context<'_, 
         .chain(&SOFT_RESERVED_KEYWORDS_MINUS_SYMBOL_ALLOWED)
         .any(|keyword| keyword.eq_ignore_ascii_case(class_name.value));
 
-    if is_reserved_class_name(class_name.value) && !is_keyword {
+    if is_reserved_class_name(class_name.value)
+        && !is_keyword
+        && !is_sharp_type_class(context.get_name(class_name.span.start))
+    {
         let name = BytesDisplay(class_name.value);
 
         context.report(
@@ -2704,7 +2833,7 @@ pub fn check_declarations(program: &Program, context: &mut Context<'_, '_, '_>) 
         let short_name = import.name.last_segment();
         let full_name = BytesDisplay(import.name.value());
 
-        if is_reserved_class_name(short_name) {
+        if is_reserved_class_name(short_name) && !is_sharp_type_class(&php_name(&import.name)) {
             let short_name = BytesDisplay(short_name);
 
             context.report(
@@ -2763,12 +2892,6 @@ pub fn check_function_call(function_call: &FunctionCall, context: &mut Context<'
     let Expression::Identifier(identifier) = function_call.function else {
         return;
     };
-
-    if context.names.binding(identifier) == Some(Binding::Member) {
-        report_bare_member(identifier.span(), identifier.value(), context);
-
-        return;
-    }
 
     let function = identifier.last_segment();
     if is_compact_or_extract(function) {
@@ -2855,6 +2978,18 @@ struct ClassLike<'ast, 'arena> {
     name: &'ast LocalIdentifier<'arena>,
     span: Span,
     members: &'ast Sequence<'arena, ClassLikeMember<'arena>>,
+    is_static: bool,
+}
+
+impl<'ast, 'arena> ClassLike<'ast, 'arena> {
+    fn of_class(class: &'ast Class<'arena>) -> Self {
+        Self {
+            name: &class.name,
+            span: class.span(),
+            members: &class.members,
+            is_static: class.modifiers.contains_static(),
+        }
+    }
 }
 
 /// The classes, enums and imports a PHP# file declares at its top level and in its first namespace, in source order.
@@ -2881,11 +3016,14 @@ fn collect_declarations<'ast, 'arena>(
     imports: &mut Vec<&'ast UseItem<'arena>>,
 ) {
     match statement {
-        Statement::Class(class) => {
-            classes.push(ClassLike { name: &class.name, span: class.span(), members: &class.members });
-        }
+        Statement::Class(class) => classes.push(ClassLike::of_class(class)),
         Statement::Enum(r#enum) => {
-            classes.push(ClassLike { name: &r#enum.name, span: r#enum.span(), members: &r#enum.members });
+            classes.push(ClassLike {
+                name: &r#enum.name,
+                span: r#enum.span(),
+                members: &r#enum.members,
+                is_static: false,
+            });
         }
         Statement::Use(Use { items: UseItems::Sequence(sequence), .. }) => imports.extend(sequence.items.iter()),
         _ => {}
@@ -2917,6 +3055,12 @@ fn check_local_name(name: &[u8], span: Span, kind: &str, context: &mut Context<'
 /// PHP# reserves PHP's type names and `Any`, its name for `mixed`.
 fn is_reserved_class_name(name: &[u8]) -> bool {
     RESERVED_CLASS_NAMES.iter().chain(&[ANY]).any(|reserved| reserved.eq_ignore_ascii_case(name))
+}
+
+/// Whether a PHP name is one of the standard library's classes that carry a reserved name, spec section 24, written
+/// exactly as the engine's `zend_is_sharp_type_class` compares it.
+fn is_sharp_type_class(full_name: &[u8]) -> bool {
+    matches!(full_name, b"Sharp\\Int" | b"Sharp\\Float" | b"Sharp\\Bool")
 }
 
 /// Returns true when the PHP name `full_name` is the class `class_name` declared in `namespace`.
