@@ -122,8 +122,9 @@ where
     let mut used_attributes = HashMap::default();
     for attribute in attributes {
         let attribute_name_bytes = context.resolved_names.get(&attribute.name);
+        // PHP names the attribute as the file resolves it, before any lookup corrects its case.
         let attribute_name = if context.dialect.is_sharp() {
-            short_name(attribute_name_bytes)
+            display_class_like_name(context, word(attribute_name_bytes)).to_string()
         } else {
             String::from_utf8_lossy(attribute_name_bytes).into_owned()
         };

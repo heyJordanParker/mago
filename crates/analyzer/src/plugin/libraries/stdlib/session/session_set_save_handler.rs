@@ -11,6 +11,7 @@ use crate::plugin::hook::FunctionCallHook;
 use crate::plugin::hook::HookResult;
 use crate::plugin::provider::Provider;
 use crate::plugin::provider::ProviderMeta;
+use crate::utils::names::display_variable_name;
 
 /// Hook for `session_set_save_handler()`.
 ///
@@ -90,11 +91,17 @@ impl FunctionCallHook for SessionSetSaveHandlerHook {
                             "When the first argument is a `SessionHandlerInterface`, `session_set_save_handler()` expects at most 2 arguments, but received {}.",
                             arguments.len()
                         ))
-                        .with_help("Remove the extra arguments. The object form only accepts the handler and an optional `$register_shutdown` boolean."),
+                        .with_help(format!(
+                            "Remove the extra arguments. The object form only accepts the handler and an optional `{}` boolean.",
+                            display_variable_name(context.dialect, "$register_shutdown")
+                        )),
                 );
             }
         } else {
             if arguments.len() < 6 {
+                let callbacks = ["$open", "$close", "$read", "$write", "$destroy", "$gc"]
+                    .map(|callback| format!("`{}`", display_variable_name(context.dialect, callback)))
+                    .join(", ");
                 context.report(
                     IssueCode::TooFewArguments,
                     Issue::error("Too few arguments provided for function `session_set_save_handler`.")
@@ -106,7 +113,7 @@ impl FunctionCallHook for SessionSetSaveHandlerHook {
                             Annotation::secondary(call.function.span()).with_message("For this function call"),
                         )
                         .with_note(format!(
-                            "The callable form of `session_set_save_handler()` requires at least 6 arguments (`$open`, `$close`, `$read`, `$write`, `$destroy`, `$gc`), but only {} were provided.",
+                            "The callable form of `session_set_save_handler()` requires at least 6 arguments ({callbacks}), but only {} were provided.",
                             arguments.len()
                         ))
                         .with_help("Provide all 6 required callback arguments, or pass a `SessionHandlerInterface` object instead."),

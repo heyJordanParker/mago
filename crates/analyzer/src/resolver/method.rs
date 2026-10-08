@@ -29,7 +29,6 @@ use mago_codex::ttype::union::TUnion;
 use mago_names::binding::Binding;
 use mago_names::binding::php_variable_name;
 use mago_names::display_sharp_member;
-use mago_names::short_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -56,6 +55,7 @@ use crate::resolver::selector::resolve_member_selector;
 use crate::utils::expression::analyze_member_object;
 use crate::utils::expression::get_bare_name_variable_id;
 use crate::utils::expression::is_this;
+use crate::utils::names::display_atomic;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_member;
 use crate::utils::names::display_method_name;
@@ -366,7 +366,7 @@ where
                                     result.encountered_mixed |= has_incomplete_hierarchy;
                                 } else if has_incomplete_hierarchy {
                                     result.encountered_mixed = true;
-                                } else if let Some(collection) = display_sharp_collection(obj_type, context.codebase) {
+                                } else if let Some(collection) = display_sharp_collection(context, obj_type) {
                                     report_non_existent_collection_method(
                                         context,
                                         object.span(),
@@ -1235,7 +1235,7 @@ fn report_call_on_non_object<A>(
 ) where
     A: Arena,
 {
-    let type_str = display_type(context, &TUnion::from_atomic(atomic_type.clone()));
+    let type_str = display_atomic(context, atomic_type);
 
     context.collector.report_with_code(
         if atomic_type.is_mixed() { IssueCode::MixedMethodAccess } else { IssueCode::InvalidMethodAccess },
@@ -1279,8 +1279,7 @@ pub(crate) fn report_non_existent_method<A>(
         Issue::error(format!("Method `{method}` does not exist."))
             .with_annotation(Annotation::primary(selector_span).with_message("This method selection is invalid"))
             .with_annotation(
-                Annotation::secondary(obj_span)
-                    .with_message(format!("This expression has type `{}`", short_name(classname))),
+                Annotation::secondary(obj_span).with_message(format!("This expression has type `{classname}`")),
             )
             .with_help(format!("Ensure the method `{method}` is defined."))
     } else {

@@ -21,7 +21,6 @@ use mago_codex::ttype::template::bounds::get_most_specific_type_from_bounds;
 use mago_codex::ttype::template::variance::Variance;
 use mago_codex::ttype::union::TUnion;
 use mago_codex::ttype::wrap_atomic;
-use mago_names::short_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -242,8 +241,7 @@ where
 
         return Ok(get_never());
     } else if metadata.flags.is_static() {
-        // PHP# code writes a class by its short name, so the error does too.
-        let name = short_name(metadata.original_name);
+        let name = display_class_like_name(context, metadata.original_name);
         context.collector.report_with_code(
             IssueCode::AbstractInstantiation,
             Issue::error(format!("`{name}` is a static class, so it has no instances: call its members on the class."))

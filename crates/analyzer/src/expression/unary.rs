@@ -65,6 +65,7 @@ use crate::expression::assignment::PropertyWriteKind;
 use crate::expression::assignment::assign_to_expression;
 use crate::expression::call::method_call::analyze_implicit_method_call;
 use crate::utils::expression::get_block_expression_id;
+use crate::utils::names::display_atomic;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_type;
 use crate::utils::php_emulation::str_increment_bytes;
@@ -266,7 +267,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for UnaryPrefix<'arena> {
                             invalid_operand_messages.push(("Cannot negate `array`".to_string(), operand_span));
                         }
                         TAtomic::Object(_) => {
-                            let type_id = display_type(context, &TUnion::from_atomic(operand_part.clone()));
+                            let type_id = display_atomic(context, operand_part);
                             invalid_operand_messages
                                 .push((format!("Cannot negate object of type `{type_id}`"), operand_span));
                         }
@@ -721,7 +722,7 @@ where
                     possibilities.push(TAtomic::Scalar(TScalar::string()));
                 }
                 TScalar::Generic | TScalar::ArrayKey => {
-                    let scalar_str = display_type(context, &TUnion::from_atomic(TAtomic::Scalar(scalar.clone())));
+                    let scalar_str = display_atomic(context, &TAtomic::Scalar(scalar.clone()));
 
                     context.collector.report_with_code(
                         IssueCode::InvalidOperand,
@@ -753,7 +754,7 @@ where
 
                     possibilities.push(TAtomic::Never);
                 } else {
-                    let callable_str = display_type(context, &TUnion::from_atomic(TAtomic::Callable(callable.clone())));
+                    let callable_str = display_atomic(context, &TAtomic::Callable(callable.clone()));
 
                     context.collector.report_with_code(
                             IssueCode::InvalidOperand,
@@ -955,7 +956,7 @@ where
                         possibilities.push(TAtomic::Scalar(TScalar::string()));
                     }
                     TScalar::Generic | TScalar::ArrayKey => {
-                        let scalar_str = display_type(context, &TUnion::from_atomic(TAtomic::Scalar(scalar.clone())));
+                        let scalar_str = display_atomic(context, &TAtomic::Scalar(scalar.clone()));
 
                         context.collector.report_with_code(
                             IssueCode::InvalidOperand,
@@ -990,7 +991,7 @@ where
 
                     possibilities.push(TAtomic::Never);
                 } else {
-                    let callable_str = display_type(context, &TUnion::from_atomic(TAtomic::Callable(callable.clone())));
+                    let callable_str = display_atomic(context, &TAtomic::Callable(callable.clone()));
 
                     context.collector.report_with_code(
                         IssueCode::InvalidOperand,
@@ -1023,7 +1024,7 @@ where
                 possibilities.push(TAtomic::Mixed(TMixed::new()));
             }
             _ => {
-                let type_name = display_type(context, &TUnion::from_atomic(operand_atomic_type.clone()));
+                let type_name = display_atomic(context, operand_atomic_type);
                 context.collector.report_with_code(
                         IssueCode::InvalidOperand,
                         Issue::error(format!(
@@ -1803,7 +1804,7 @@ where
                             .with_help("Remove the cast or ensure the expression being cast is not a `Closure`."),
                     );
                 } else {
-                    let callable_str = display_type(context, &TUnion::from_atomic(TAtomic::Callable(callable.clone())));
+                    let callable_str = display_atomic(context, &TAtomic::Callable(callable.clone()));
 
                     context.collector.report_with_code(
                         IssueCode::InvalidTypeCast,
@@ -1897,7 +1898,7 @@ where
                         IssueCode::InvalidTypeCast,
                         Issue::error(format!(
                             "Cannot cast enum instance of type `{}` to `string`.",
-                            display_type(context, &TUnion::from_atomic(t.clone())),
+                            display_atomic(context, t),
                         ))
                         .with_annotation(
                             Annotation::primary(expression_span.span())

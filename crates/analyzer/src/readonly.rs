@@ -1,6 +1,5 @@
 use mago_allocator::Arena;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
-use mago_names::short_name;
 use mago_php_version::feature::Feature;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -17,6 +16,7 @@ use crate::context::block::BlockContext;
 use crate::expression::assignment::PropertyWriteKind;
 use crate::statement::class_like::initialization::compute_class_initializer_initializations;
 use crate::statement::class_like::initialization::compute_transitive_initializations;
+use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_member;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -460,7 +460,10 @@ fn report_parent_constructor_reinitialization<A>(
     // PHP# calls the base class's constructor as `: super(…)`, spec section 9.
     let (parent_initializes, parent_call) = if context.dialect.is_sharp() {
         (
-            format!("The `{}` constructor initializes this inherited property again", short_name(parent_class_name)),
+            format!(
+                "The `{}` constructor initializes this inherited property again",
+                display_class_like_name(context, parent_class_name)
+            ),
             "`super(…)`",
         )
     } else {

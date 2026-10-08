@@ -27,6 +27,7 @@ use crate::expression::assignment;
 use crate::expression::unary::cast_type_to_string;
 use crate::utils::expression::get_block_expression_id;
 use crate::utils::expression::get_variable_id;
+use crate::utils::names::display_variable_name;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for Variable<'arena> {
     fn analyze<'ctx, A>(
@@ -158,7 +159,7 @@ where
     A: Arena,
 {
     let variable_atom = word(variable_name_bytes);
-    let variable_name = BytesDisplay(variable_name_bytes);
+    let variable_name = display_variable_name(context.dialect, variable_name_bytes);
     block_context.add_conditionally_referenced_variable_atom(variable_name_bytes, variable_atom);
 
     let variable_type = match block_context.locals.get(&variable_atom) {
@@ -226,7 +227,7 @@ where
                 );
 
                 let mut has_confusable_characters = false;
-                if let Some(confusable_note) = generate_confusable_character_note(variable_name_bytes) {
+                if let Some(confusable_note) = generate_confusable_character_note(variable_name_bytes, &variable_name) {
                     has_confusable_characters = true;
                     issue = issue.with_note(confusable_note);
                 }
@@ -236,7 +237,11 @@ where
                 let mut help_message =
                     format!("Ensure `{variable_name}` is assigned a value before this use, or check its scope.");
                 if !similar_suggestions.is_empty() {
-                    let suggestions_str = similar_suggestions.join("`, `");
+                    let suggestions_str = similar_suggestions
+                        .iter()
+                        .map(|name| display_variable_name(context.dialect, name))
+                        .collect::<Vec<_>>()
+                        .join("`, `");
                     issue = issue.with_note(format!(
                         "Did you perhaps mean one of these defined variables: `{suggestions_str}`?"
                     ));
@@ -375,7 +380,7 @@ fn find_similar_variable_names(context: &BlockContext<'_>, target: &[u8]) -> Vec
     suggestions.into_iter().map(|(_, name)| BytesDisplay(name).to_string()).collect()
 }
 
-fn generate_confusable_character_note(variable_name_bytes: &[u8]) -> Option<String> {
+fn generate_confusable_character_note(variable_name_bytes: &[u8], variable_name: &str) -> Option<String> {
     let mut has_non_std_ascii_alphanumeric = false;
     let mut confusable_examples = Vec::new();
 
@@ -396,7 +401,6 @@ fn generate_confusable_character_note(variable_name_bytes: &[u8]) -> Option<Stri
     }
 
     if has_non_std_ascii_alphanumeric {
-        let variable_name = BytesDisplay(variable_name_bytes);
         let mut note = format!("Variable name `{variable_name}` contains non-standard ASCII alphanumeric characters.");
         if !confusable_examples.is_empty() {
             let _ = write!(note, " For example, it might contain {}.", confusable_examples.join(" or "));

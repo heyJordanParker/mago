@@ -49,6 +49,7 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::context::scope::var_has_root;
+use crate::utils::names::display_atomic;
 use crate::utils::names::display_sharp_type;
 use crate::utils::names::display_type;
 
@@ -396,7 +397,7 @@ where
                     || block_context.flags.inside_unset()
                     || (in_assignment && is_allowed_in_assignment))
                 {
-                    let type_id = display_type(context, &TUnion::from_atomic(atomic_var_type.clone()));
+                    let type_id = display_atomic(context, atomic_var_type);
 
                     let has_array_accessible = array_like_type.types.iter().any(|t| {
                         matches!(
@@ -451,7 +452,7 @@ where
         let expected_index_types_str: Vec<String> = expected_index_types
             .iter()
             .flat_map(|union| union.types.as_ref())
-            .map(|t| display_type(context, &TUnion::from_atomic(t.clone())))
+            .map(|t| display_atomic(context, t))
             .collect();
 
         let expected_types_list = if let Some(last_index_str) = expected_index_types_str.last() {
@@ -664,8 +665,8 @@ where
     } else if is_sharp_read && let Some(span) = span {
         *has_valid_expected_index = true;
 
-        let list_type = display_sharp_type(&TUnion::from_atomic(list.clone()), context.codebase);
-        let index_type = display_sharp_type(dim_type, context.codebase);
+        let list_type = display_sharp_type(context, &TUnion::from_atomic(list.clone()));
+        let index_type = display_sharp_type(context, dim_type);
         context.collector.report_with_code(
             IssueCode::MismatchedArrayIndex,
             Issue::error(format!("`{list_type}` is indexed by `int`, but this index is `{index_type}`."))
@@ -699,7 +700,7 @@ where
                             Issue::warning(format!(
                                 "Possibly undefined array key `{}` accessed on `{}`.",
                                 val,
-                                display_type(context, &TUnion::from_atomic(list.clone()))
+                                display_atomic(context, list)
                             ))
                             .with_annotation(
                                 Annotation::primary(span)
@@ -731,7 +732,7 @@ where
                         Issue::error(format!(
                             "Undefined list index `{}` accessed on `{}`.",
                             index,
-                            display_type(context, &TUnion::from_atomic(list.clone()))
+                            display_atomic(context, list)
                         ))
                         .with_annotation(
                             Annotation::primary(span)
@@ -780,7 +781,7 @@ where
                     .unwrap_or_else(|| "the requested index".to_string());
                 context.collector.report_with_code(
                     IssueCode::PossiblyUndefinedIntArrayIndex,
-                    Issue::warning(format!("Possibly undefined array index accessed on `{}`.", display_type(context, &TUnion::from_atomic(list.clone()))))
+                    Issue::warning(format!("Possibly undefined array index accessed on `{}`.", display_atomic(context, list)))
                         .with_annotation(
                             Annotation::primary(span).with_message(format!("{key_label} might not exist.")),
                         )
@@ -809,7 +810,7 @@ where
                     IssueCode::ImpossibleArrayAccess,
                     Issue::error(format!(
                         "Cannot access elements of an empty list `{}`.",
-                        display_type(context, &TUnion::from_atomic(list.clone()))
+                        display_atomic(context, list)
                     ))
                     .with_annotation(
                         Annotation::primary(span).with_message("The list is empty, no elements to access."),
@@ -840,7 +841,7 @@ where
                         IssueCode::PossiblyUndefinedIntArrayIndex,
                         Issue::warning(format!(
                             "Possibly undefined array index accessed on `{}`.",
-                            display_type(context, &TUnion::from_atomic(list.clone()))
+                            display_atomic(context, list)
                         ))
                         .with_annotation(
                             Annotation::primary(span)
@@ -919,7 +920,7 @@ where
                     Issue::warning(format!(
                         "Possibly undefined array key {} accessed on `{}`.",
                         array_key,
-                        display_type(context, &TUnion::from_atomic(TAtomic::Array(TArray::Keyed(keyed_array.clone()))))
+                        display_atomic(context, &TAtomic::Array(TArray::Keyed(keyed_array.clone())))
                     ))
                     .with_annotation(
                         Annotation::primary(span).with_message(format!("Key {array_key} might not exist.")),
@@ -1034,18 +1035,16 @@ where
     } else if is_sharp_read {
         *has_valid_expected_index = true;
 
-        let map_type = display_sharp_type(
-            &TUnion::from_atomic(TAtomic::Array(TArray::Keyed(keyed_array.clone()))),
-            context.codebase,
-        );
-        let key_type = display_sharp_type(&key_parameter, context.codebase);
+        let map_type =
+            display_sharp_type(context, &TUnion::from_atomic(TAtomic::Array(TArray::Keyed(keyed_array.clone()))));
+        let key_type = display_sharp_type(context, &key_parameter);
         let key_pattern = key_parameter
             .types
             .iter()
-            .map(|atomic| display_sharp_type(&TUnion::from_atomic(atomic.clone()), context.codebase))
+            .map(|atomic| display_sharp_type(context, &TUnion::from_atomic(atomic.clone())))
             .collect::<Vec<_>>()
             .join(" or ");
-        let index_type = display_sharp_type(index_type, context.codebase);
+        let index_type = display_sharp_type(context, index_type);
         context.collector.report_with_code(
             IssueCode::MismatchedArrayIndex,
             Issue::error(format!("`{map_type}` is keyed by `{key_type}`, but this key is `{index_type}`."))
@@ -1131,7 +1130,7 @@ where
                             Issue::error(format!(
                                 "Undefined array key {} accessed on `{}`.",
                                 array_key,
-                                display_type(context, &TUnion::from_atomic(TAtomic::Array(TArray::Keyed(keyed_array.clone()))))
+                                display_atomic(context, &TAtomic::Array(TArray::Keyed(keyed_array.clone())))
                             ))
                             .with_annotation(
                                 Annotation::primary(span)
@@ -1192,7 +1191,7 @@ where
                         Issue::warning(format!(
                             "Impossible `isset` check on key `{}` accessed on `{}`.",
                             array_key,
-                            display_type(context, &TUnion::from_atomic(TAtomic::Array(TArray::Keyed(keyed_array.clone()))))
+                            display_atomic(context, &TAtomic::Array(TArray::Keyed(keyed_array.clone())))
                         ))
                         .with_annotation(
                             Annotation::primary(span)
@@ -1283,7 +1282,7 @@ where
                 code,
                 Issue::warning(format!(
                     "Possibly undefined array key `{index_type_str}` accessed on `{}`.",
-                    display_type(context, &TUnion::from_atomic(TAtomic::Array(TArray::Keyed(keyed_array.clone()))))
+                    display_atomic(context, &TAtomic::Array(TArray::Keyed(keyed_array.clone())))
                 ))
                 .with_annotation(
                     Annotation::primary(span)
@@ -1350,7 +1349,7 @@ where
                             code,
                             Issue::warning(format!(
                                 "Possibly undefined array key `{index_type_str}` accessed on `{}`.",
-                                display_type(context, &TUnion::from_atomic(TAtomic::Array(TArray::Keyed(keyed_array.clone()))))
+                                display_atomic(context, &TAtomic::Array(TArray::Keyed(keyed_array.clone())))
                             ))
                             .with_annotation(
                                 Annotation::primary(span)
@@ -1492,7 +1491,7 @@ where
             IssueCode::InvalidArrayAccess,
             Issue::error(format!(
                 "Cannot access array index on object `{}` that does not implement `ArrayAccess`.",
-                display_type(context, &TUnion::from_atomic(named_object.clone()))
+                display_atomic(context, named_object)
             ))
             .with_annotation(Annotation::primary(span).with_message("Object does not implement `ArrayAccess`."))
             .with_note("Only objects implementing `ArrayAccess` can be accessed like arrays.")
@@ -1641,7 +1640,7 @@ where
                     IssueCode::MixedArrayAssignment,
                     Issue::error(format!(
                         "Unsafe array assignment on type `{}`.",
-                        display_type(context, &TUnion::from_atomic(mixed.clone()))
+                        display_atomic(context, mixed)
                     ))
                     .with_annotation(
                         Annotation::primary(span)
@@ -1658,7 +1657,7 @@ where
         } else {
             context.collector.report_with_code(
                 IssueCode::MixedArrayAccess,
-                Issue::error(format!("Unsafe array access on type `{}`.", display_type(context, &TUnion::from_atomic(mixed.clone()))))
+                Issue::error(format!("Unsafe array access on type `{}`.", display_atomic(context, mixed)))
                 .with_annotation(Annotation::primary(span).with_message("Cannot safely access index because base type is `mixed`."))
                 .with_note("The variable being accessed might not be an array at runtime.")
                 .with_help("Ensure the variable holds an array before accessing an index, potentially using type checks or assertions."),

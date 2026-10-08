@@ -10,7 +10,6 @@ use regex::Regex;
 
 use mago_algebra::assertion_set::AssertionSet;
 use mago_allocator::Arena;
-use mago_bytes::BytesDisplay;
 use mago_codex::assertion::Assertion;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::ttype::add_optional_union_type;
@@ -51,7 +50,8 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::context::scope::var_has_root;
 use crate::resolver::property::resolve_declared_property;
-use crate::utils::names::display_type;
+use crate::utils::names::display_atomic;
+use crate::utils::names::display_variable_name;
 
 pub mod assertion_reconciler;
 pub mod negated_assertion_reconciler;
@@ -1462,7 +1462,7 @@ pub(crate) fn trigger_issue_for_impossible<A>(
     if context.dialect.is_sharp()
         && let Some(atomic) = assertion.get_type()
     {
-        assertion_atom = word(display_type(context, &TUnion::from_atomic(atomic.clone())));
+        assertion_atom = word(display_atomic(context, atomic));
     }
 
     let mut redundant = redundant;
@@ -1504,7 +1504,7 @@ fn report_impossible_issue<A>(
 ) where
     A: Arena,
 {
-    let key = BytesDisplay(key);
+    let key = display_variable_name(context.dialect, key);
     let subject_desc = if old_var_type_string.is_empty() || old_var_type_string.len() > 50 {
         format!("`{key}`")
     } else {
@@ -1585,7 +1585,7 @@ fn report_redundant_issue<A>(
 ) where
     A: Arena,
 {
-    let key = BytesDisplay(key);
+    let key = display_variable_name(context.dialect, key);
     let subject_desc = if old_var_type_string.is_empty() || old_var_type_string.len() > 50 {
         format!("`{key}`")
     } else {

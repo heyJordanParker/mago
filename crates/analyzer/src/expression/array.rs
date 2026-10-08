@@ -56,6 +56,7 @@ use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::utils::expression::get_block_expression_id;
 use crate::utils::misc::unwrap_expression;
+use crate::utils::names::display_atomic;
 use crate::utils::names::display_type;
 
 /// Analyzes array literals and their elements.
@@ -569,7 +570,7 @@ fn report_sharp_literal_spreads<A>(
                         !matches!(atomic, TAtomic::Array(_))
                             && get_iterable_value_parameter(atomic, context.codebase).is_some()
                     }) {
-                        let type_str = display_type(context, &TUnion::from_atomic(atomic.clone()));
+                        let type_str = display_atomic(context, atomic);
                         context.collector.report_with_code(
                             IssueCode::InvalidArrayElement,
                             Issue::error(format!(
@@ -741,7 +742,7 @@ fn handle_variadic_array_element<'arena, A>(
                     array_creation_info.item_key_atomic_types.push(TAtomic::Scalar(TScalar::ArrayKey));
                     array_creation_info.item_value_atomic_types.push(TAtomic::Mixed(TMixed::new()));
 
-                    let atomic_str = display_type(context, &TUnion::from_atomic(atomic.clone()));
+                    let atomic_str = display_atomic(context, atomic);
 
                     context.collector.report_with_code(
                         IssueCode::InvalidArrayElement,

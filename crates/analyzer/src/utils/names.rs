@@ -2,7 +2,6 @@
 
 use mago_allocator::Arena;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
-use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
@@ -14,21 +13,40 @@ use mago_codex::ttype::get_array_parameters;
 use mago_codex::ttype::union::TUnion;
 use mago_names::display_sharp_member;
 use mago_names::short_name;
+use mago_syntax::dialect::Dialect;
 use mago_word::Word;
 use mago_word::word;
 
 use crate::context::Context;
 
-/// Returns the case-preserved name of a class-like as the analyzed file writes it: its short name in a `.sharp` file,
-/// and its full name in PHP. Falls back to the input if no metadata is available.
+/// Returns the case-preserved name of a class-like as the analyzed file writes it: as [`sharp_class_like_name`] names
+/// it in a `.sharp` file, and its full name in PHP. Falls back to the input if no metadata is available.
 #[inline]
 pub(crate) fn display_class_like_name<A>(context: &Context<'_, '_, A>, name: Word) -> Word
 where
     A: Arena,
 {
+    if context.dialect.is_sharp() {
+        word(sharp_class_like_name(context, name))
+    } else {
+        context.codebase.get_class_like(name.as_bytes()).map_or(name, |m| m.original_name)
+    }
+}
+
+/// Returns the case-preserved name of the class-like `name` as a `.sharp` file names it: its short name, or, when
+/// another class-like of the codebase has the same short name, its full name with `.` between its parts, so
+/// `Billing.Order` and `App.Orders.Order` stay apart.
+fn sharp_class_like_name<A>(context: &Context<'_, '_, A>, name: Word) -> String
+where
+    A: Arena,
+{
     let name = context.codebase.get_class_like(name.as_bytes()).map_or(name, |m| m.original_name);
 
-    if context.dialect.is_sharp() { word(short_name(name)) } else { name }
+    if context.shares_short_name(name) {
+        String::from_utf8_lossy(mago_bytes::trim_start_byte(name.as_bytes(), b'\\')).replace('\\', ".")
+    } else {
+        short_name(name)
+    }
 }
 
 /// Returns the property `name`, which the codebase keys with its `$`, as the analyzed file names it in prose: `total`
@@ -39,6 +57,49 @@ where
     A: Arena,
 {
     if context.dialect.is_sharp() { word(mago_bytes::trim_start_byte(name.as_bytes(), b'$')) } else { name }
+}
+
+/// Returns the variable `id` as a file of `dialect` writes it. The analyzer keys a variable, a parameter and a read
+/// through one by its PHP text, as `$order`, `$this->total` and `Order::$count`. A `.sharp` file writes them as
+/// `order`, `this.total` and `Order.count`, as a property is named without `$`. PHP gets `id` unchanged. Text inside
+/// quotes, as the key of `$prices['$']`, is kept as written. It takes the dialect, not the analysis context, so a
+/// built-in hook names its parameters by the same rule.
+#[must_use]
+pub(crate) fn display_variable_name(dialect: Dialect, id: impl AsRef<[u8]>) -> String {
+    let id = id.as_ref();
+    if !dialect.is_sharp() {
+        return String::from_utf8_lossy(id).into_owned();
+    }
+
+    let mut written = Vec::with_capacity(id.len());
+    let mut quote = None;
+    let mut index = 0;
+    while let Some(&byte) = id.get(index) {
+        let rest = &id[index..];
+        let (text, length): (&[u8], usize) = match quote {
+            Some(open) => {
+                if byte == open {
+                    quote = None;
+                }
+
+                (&rest[..1], 1)
+            }
+            None if byte == b'\'' || byte == b'"' => {
+                quote = Some(byte);
+
+                (&rest[..1], 1)
+            }
+            None if byte == b'$' => (b"", 1),
+            None if rest.starts_with(b"?->") => (b"?.", 3),
+            None if rest.starts_with(b"->") || rest.starts_with(b"::") => (b".", 2),
+            None => (&rest[..1], 1),
+        };
+
+        written.extend_from_slice(text);
+        index += length;
+    }
+
+    String::from_utf8_lossy(&written).into_owned()
 }
 
 /// Returns the case-preserved method name on the given class-like for
@@ -65,10 +126,13 @@ where
 /// or `Sharp\MapMethods`. The analyzer checks a method call on a `List` or `Map` against those classes, and a message
 /// names the type the code wrote instead.
 #[must_use]
-pub(crate) fn display_sharp_collection(object: &TObject, codebase: &CodebaseMetadata) -> Option<String> {
+pub(crate) fn display_sharp_collection<A>(context: &Context<'_, '_, A>, object: &TObject) -> Option<String>
+where
+    A: Arena,
+{
     let collection = sharp_collection_name(object)?;
     let parameters = object.get_type_parameters().unwrap_or_default();
-    let parameters = parameters.iter().map(|parameter| display_sharp_type(parameter, codebase)).collect::<Vec<_>>();
+    let parameters = parameters.iter().map(|parameter| display_sharp_type(context, parameter)).collect::<Vec<_>>();
 
     Some(format!("{collection}<{}>", parameters.join(", ")))
 }
@@ -80,7 +144,22 @@ pub(crate) fn display_type<A>(context: &Context<'_, '_, A>, union: &TUnion) -> S
 where
     A: Arena,
 {
-    if context.dialect.is_sharp() { display_sharp_type(union, context.codebase) } else { union.get_id().to_string() }
+    if context.dialect.is_sharp() { display_sharp_type(context, union) } else { union.get_id().to_string() }
+}
+
+/// Returns the one type `atomic` as the analyzed file writes types: as PHP# writes it in a `.sharp` file, and by its
+/// Mago type id in PHP. A union of the one type would wrap a template type's id in parentheses, as it does inside a
+/// union of several types.
+#[must_use]
+pub(crate) fn display_atomic<A>(context: &Context<'_, '_, A>, atomic: &TAtomic) -> String
+where
+    A: Arena,
+{
+    if context.dialect.is_sharp() {
+        display_sharp_type(context, &TUnion::from_atomic(atomic.clone()))
+    } else {
+        atomic.get_id().to_string()
+    }
 }
 
 /// Returns `union` with null added as the analyzed file writes types: as PHP# writes the nullable type in a `.sharp`
@@ -90,7 +169,7 @@ pub(crate) fn display_nullable_type<A>(context: &Context<'_, '_, A>, union: &TUn
 where
     A: Arena,
 {
-    if context.dialect.is_sharp() { display_sharp_type(&union.clone().as_nullable(), context.codebase) } else { php }
+    if context.dialect.is_sharp() { display_sharp_type(context, &union.clone().as_nullable()) } else { php }
 }
 
 /// Returns `union`, the type of a value a message checks against `expected`, the type it must have, as the analyzed
@@ -125,16 +204,19 @@ where
         })
         .collect();
 
-    display_sharp_type(&TUnion::from_vec(general), context.codebase)
+    display_sharp_type(context, &TUnion::from_vec(general))
 }
 
 /// Returns `union` as PHP# writes the type: `List<int>`, `Map<string, int>`, `int?`, `(int|string)?`, `Any?`, a class
-/// by its short name, a type parameter by its name, an intersection as `A & B`, a function type as
+/// as [`sharp_class_like_name`] names it, a type parameter by its name, an intersection as `A & B`, a function type as
 /// `Function<void(int)>`, `Class<Order>`, `Object`, `Iterable<int>`, and a literal as `1` or `"text"`. A refinement that
 /// PHP# cannot write is the type that holds it, such as `int` for a `positive-int` and `int|string` for an
 /// `array-key`, and is named once. `numeric`, `scalar` and `never` have no PHP# name and keep Mago's.
 #[must_use]
-pub(crate) fn display_sharp_type(union: &TUnion, codebase: &CodebaseMetadata) -> String {
+pub(crate) fn display_sharp_type<A>(context: &Context<'_, '_, A>, union: &TUnion) -> String
+where
+    A: Arena,
+{
     if let Some(TAtomic::Mixed(mixed)) = union.types.iter().find(|atomic| atomic.is_mixed()) {
         return if mixed.is_non_null() { "Any" } else { "Any?" }.to_owned();
     }
@@ -143,7 +225,7 @@ pub(crate) fn display_sharp_type(union: &TUnion, codebase: &CodebaseMetadata) ->
     for atomic in union.types.iter().filter(|atomic| !atomic.is_null()) {
         let written = match atomic {
             TAtomic::Scalar(TScalar::ArrayKey) => vec!["int".to_owned(), "string".to_owned()],
-            atomic => vec![display_sharp_atomic(atomic, codebase)],
+            atomic => vec![display_sharp_atomic(context, atomic)],
         };
         for part in written {
             if !parts.contains(&part) {
@@ -160,28 +242,31 @@ pub(crate) fn display_sharp_type(union: &TUnion, codebase: &CodebaseMetadata) ->
     }
 }
 
-fn display_sharp_atomic(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String {
+fn display_sharp_atomic<A>(context: &Context<'_, '_, A>, atomic: &TAtomic) -> String
+where
+    A: Arena,
+{
     let written = match atomic {
         TAtomic::Array(array) => {
-            let (key, value) = get_array_parameters(array, codebase);
+            let (key, value) = get_array_parameters(array, context.codebase);
             match array {
-                TArray::List(_) => format!("List<{}>", display_sharp_type(&value, codebase)),
+                TArray::List(_) => format!("List<{}>", display_sharp_type(context, &value)),
                 TArray::Keyed(_) => {
-                    format!("Map<{}, {}>", display_sharp_type(&key, codebase), display_sharp_type(&value, codebase))
+                    format!("Map<{}, {}>", display_sharp_type(context, &key), display_sharp_type(context, &value))
                 }
             }
         }
-        TAtomic::Iterable(iterable) => format!("Iterable<{}>", display_sharp_type(iterable.get_value_type(), codebase)),
+        TAtomic::Iterable(iterable) => format!("Iterable<{}>", display_sharp_type(context, iterable.get_value_type())),
         TAtomic::Object(TObject::Any) => "Object".to_owned(),
         TAtomic::Object(object) => {
             let Some(name) = object.get_name() else {
                 return atomic.get_id().to_string();
             };
-            let name = short_name(codebase.get_class_like(name.as_bytes()).map_or(name, |class| class.original_name));
+            let name = sharp_class_like_name(context, name);
             match object.get_type_parameters() {
                 Some(parameters) if !parameters.is_empty() => {
                     let parameters: Vec<String> =
-                        parameters.iter().map(|parameter| display_sharp_type(parameter, codebase)).collect();
+                        parameters.iter().map(|parameter| display_sharp_type(context, parameter)).collect();
                     format!("{name}<{}>", parameters.join(", "))
                 }
                 _ => name,
@@ -190,7 +275,7 @@ fn display_sharp_atomic(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String
         TAtomic::GenericParameter(parameter) => parameter.parameter_name.to_string(),
         TAtomic::Callable(TCallable::Signature(signature)) => {
             let written = |union: Option<&TUnion>| {
-                union.map_or_else(|| "Any?".to_owned(), |union| display_sharp_type(union, codebase))
+                union.map_or_else(|| "Any?".to_owned(), |union| display_sharp_type(context, union))
             };
             let parameters: Vec<String> =
                 signature.get_parameters().iter().map(|parameter| written(parameter.get_type_signature())).collect();
@@ -198,13 +283,9 @@ fn display_sharp_atomic(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String
             format!("Function<{}({})>", written(signature.get_return_type()), parameters.join(", "))
         }
         TAtomic::Scalar(TScalar::ClassLikeString(class_string)) => match class_string {
-            TClassLikeString::Literal { value } => {
-                let class =
-                    short_name(codebase.get_class_like(value.as_bytes()).map_or(*value, |class| class.original_name));
-                format!("Class<{class}>")
-            }
+            TClassLikeString::Literal { value } => format!("Class<{}>", sharp_class_like_name(context, *value)),
             TClassLikeString::OfType { constraint, .. } => {
-                format!("Class<{}>", display_sharp_atomic(constraint, codebase))
+                format!("Class<{}>", display_sharp_atomic(context, constraint))
             }
             TClassLikeString::Generic { parameter_name, .. } => format!("Class<{parameter_name}>"),
             TClassLikeString::Any { .. } => "Class<Object>".to_owned(),
@@ -229,7 +310,7 @@ fn display_sharp_atomic(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String
 
     match atomic.get_intersection_types() {
         Some(intersection_types) if !intersection_types.is_empty() => std::iter::once(written)
-            .chain(intersection_types.iter().map(|intersection_type| display_sharp_atomic(intersection_type, codebase)))
+            .chain(intersection_types.iter().map(|intersection_type| display_sharp_atomic(context, intersection_type)))
             .collect::<Vec<_>>()
             .join(" & "),
         _ => written,
@@ -239,12 +320,21 @@ fn display_sharp_atomic(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String
 /// The accessor `hook_name` of the property `property_name` of the class `class_name` as PHP# names it, `Box.total.get`,
 /// as C# names an accessor in its messages.
 #[must_use]
-pub(crate) fn display_sharp_accessor(class_name: Word, property_name: Word, hook_name: Word) -> String {
-    display_sharp_member(class_name, format_args!("{property_name}.{hook_name}"))
+pub(crate) fn display_sharp_accessor<A>(
+    context: &Context<'_, '_, A>,
+    class_name: Word,
+    property_name: Word,
+    hook_name: Word,
+) -> String
+where
+    A: Arena,
+{
+    display_sharp_member(sharp_class_like_name(context, class_name), format_args!("{property_name}.{hook_name}"))
 }
 
-/// The member `member_name` of the class `class_name` as the analyzed file names it: `Box.put` in a `.sharp` file, and
-/// `Box::put` in PHP, where a property keeps its `$`: `Box::$total`.
+/// The member `member_name` of the class `class_name` as the analyzed file names it: `Box.put` in a `.sharp` file, with
+/// the class named as [`sharp_class_like_name`] names it, and `Box::put` in PHP, where a property keeps its `$`:
+/// `Box::$total`.
 #[must_use]
 pub(crate) fn display_member<A>(
     context: &Context<'_, '_, A>,
@@ -255,7 +345,7 @@ where
     A: Arena,
 {
     if context.dialect.is_sharp() {
-        display_sharp_member(class_name, member_name)
+        display_sharp_member(sharp_class_like_name(context, class_name), member_name)
     } else {
         format!("{class_name}::{member_name}")
     }

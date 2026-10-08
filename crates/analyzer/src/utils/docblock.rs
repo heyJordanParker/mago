@@ -29,7 +29,7 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::utils::names::display_type;
-use mago_bytes::BytesDisplay;
+use crate::utils::names::display_variable_name;
 
 /// Populates the context with variable types defined in the docblock.
 ///
@@ -154,7 +154,7 @@ where
             if allow_tracing && let TagValue::Trace(trace) = &tag.value {
                 let variable_name_bytes = trace.variable.value;
                 let variable_atom = mago_word::word(variable_name_bytes);
-                let variable_name = BytesDisplay(variable_name_bytes);
+                let variable_name = display_variable_name(context.dialect, variable_name_bytes);
                 match block_context.locals.get(&variable_atom) {
                     Some(variable_type) => {
                         let variable_type_str = display_type(context, variable_type);
@@ -236,7 +236,10 @@ where
                     context.collector.report_with_code(
                         IssueCode::InvalidDocblock,
                         Issue::error(match variable_name {
-                            Some(w) => format!("Invalid type in `@var` tag for variable `{w}`."),
+                            Some(w) => format!(
+                                "Invalid type in `@var` tag for variable `{}`.",
+                                display_variable_name(context.dialect, w.as_bytes())
+                            ),
                             None => "Invalid type in `@var` tag for variable `expression`.".to_string(),
                         })
                         .with_annotation(Annotation::primary(type_error.span()).with_message(type_error.to_string()))
@@ -363,6 +366,7 @@ pub fn insert_variable_from_docblock<'ctx, A>(
         if is_impossible {
             let variable_type_str = display_type(context, &variable_type);
             let previous_type_str = display_type(context, &previous_type);
+            let variable_name = display_variable_name(context.dialect, variable_name.as_bytes());
 
             context.collector.report_with_code(
                 IssueCode::DocblockTypeMismatch,
@@ -378,6 +382,7 @@ pub fn insert_variable_from_docblock<'ctx, A>(
             );
         } else if is_redundant {
             let variable_type_str = display_type(context, &variable_type);
+            let variable_name = display_variable_name(context.dialect, variable_name.as_bytes());
 
             context.collector.report_with_code(
                 IssueCode::RedundantDocblockType,
@@ -443,7 +448,7 @@ pub fn check_docblock_type_incompatibility<A>(
         let inferred_type_str = display_type(context, inferred_type);
 
         let mut issue = if let Some(value_expression_variable_id) = value_expression_variable_id {
-            let value_expression_variable_id = BytesDisplay(value_expression_variable_id);
+            let value_expression_variable_id = display_variable_name(context.dialect, value_expression_variable_id);
             Issue::error(format!("Docblock type mismatch for variable `{value_expression_variable_id}`."))
                 .with_annotation(
                     Annotation::primary(dockblock_type_span)
@@ -457,7 +462,7 @@ pub fn check_docblock_type_incompatibility<A>(
         };
 
         if let Some(value_expression_variable_id) = value_expression_variable_id {
-            let value_expression_variable_id = BytesDisplay(value_expression_variable_id);
+            let value_expression_variable_id = display_variable_name(context.dialect, value_expression_variable_id);
             if let Some(source_expression) = source_expression {
                 issue = issue.with_annotation(Annotation::secondary(source_expression.span()).with_message(format!(
                     "...but this expression provides an incompatible type `{inferred_type_str}`."
@@ -496,7 +501,7 @@ pub fn check_docblock_type_incompatibility<A>(
         let inferred_type_str = display_type(context, inferred_type);
 
         let mut issue = if let Some(value_expression_variable_id) = value_expression_variable_id {
-            let value_expression_variable_id = BytesDisplay(value_expression_variable_id);
+            let value_expression_variable_id = display_variable_name(context.dialect, value_expression_variable_id);
             Issue::warning(format!("Redundant docblock type for variable `{value_expression_variable_id}`."))
                 .with_annotation(Annotation::primary(dockblock_type_span).with_message(format!(
                     "This docblock asserts the type should be `{docblock_type_str}`, which is identical to the inferred type."
@@ -510,7 +515,7 @@ pub fn check_docblock_type_incompatibility<A>(
         };
 
         if let Some(value_expression_variable_id) = value_expression_variable_id {
-            let value_expression_variable_id = BytesDisplay(value_expression_variable_id);
+            let value_expression_variable_id = display_variable_name(context.dialect, value_expression_variable_id);
             issue = issue
                 .with_annotation(Annotation::secondary(value_expression_span).with_message(format!(
                     "The variable `{value_expression_variable_id}` type is known to be `{inferred_type_str}` here."

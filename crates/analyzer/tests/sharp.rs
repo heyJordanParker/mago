@@ -2433,7 +2433,7 @@ fn a_pattern_that_can_never_match_is_an_error_at_the_pattern() {
         errors,
         [
             "Square impossible-type-comparison This pattern never matches the value it tests.",
-            "string impossible-type-comparison Impossible type assertion: `$count` of type `int` can never be `string`.",
+            "string impossible-type-comparison Impossible type assertion: `count` of type `int` can never be `string`.",
             "\"none\" impossible-type-comparison This pattern never matches the value it tests.",
             "Square impossible-type-comparison This pattern never matches the value it tests.",
             "Square impossible-type-comparison This pattern never matches the value it tests.",
@@ -4737,8 +4737,8 @@ fn a_docblock_message_names_its_types_as_sharp_writes_them() {
     assert_eq!(
         docblock(("src/Demo/Order.sharp", sharp)),
         [
-            "7:26 psalm-trace Trace: Type of `$count` is `int?` | Type is: `int?` | Spotted a `@psalm-trace` tag! While this works for compatibility, Mago has a more powerful way to inspect types.",
-            "9:18 docblock-type-mismatch Docblock type mismatch for variable `$total`. | This docblock asserts the type should be `string`, but it was previously defined as `1`. | The type of the variable defined in the docblock does not match the previously defined type. | Change the docblock type to match `1`, or update the variable definition to a compatible type `string`.",
+            "7:26 psalm-trace Trace: Type of `count` is `int?` | Type is: `int?` | Spotted a `@psalm-trace` tag! While this works for compatibility, Mago has a more powerful way to inspect types.",
+            "9:18 docblock-type-mismatch Docblock type mismatch for variable `total`. | This docblock asserts the type should be `string`, but it was previously defined as `1`. | The type of the variable defined in the docblock does not match the previously defined type. | Change the docblock type to match `1`, or update the variable definition to a compatible type `string`.",
         ]
     );
 }
@@ -4780,4 +4780,140 @@ fn a_possibly_null_member_access_names_and_writes_the_null_safe_operator_of_the_
         ]
     );
     assert_eq!(fixes(("src/Demo/Report.sharp", sharp)), ["?."]);
+}
+
+/// A plugin message in a `.sharp` file writes PHP# code, `intdiv(num, 0)` and `divisor != 0` (spec section 19), and
+/// names a parameter without `$`. The PHP twin keeps upstream's text.
+#[test]
+fn a_plugin_message_writes_the_code_and_parameter_names_of_the_file() {
+    let sharp = "namespace Demo;\n\nimport SessionHandlerInterface;\n\nclass Order\n{\n    public int half(int total) => intdiv(total, 0);\n\n    public bool save(SessionHandlerInterface handler) => session_set_save_handler(handler, true, 1);\n\n    public bool open() => session_set_save_handler(() => true);\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse SessionHandlerInterface;\n\nclass Order\n{\n    public function half(int $total): int\n    {\n        return intdiv($total, 0);\n    }\n\n    public function save(SessionHandlerInterface $handler): bool\n    {\n        return session_set_save_handler($handler, true, 1);\n    }\n\n    public function open(): bool\n    {\n        return session_set_save_handler(fn() => true);\n    }\n}\n";
+    let plugin = |analyzed| -> Vec<String> {
+        worded(analyzed, &[])
+            .into_iter()
+            .filter(|line| line.contains(" invalid-operand ") || line.contains("-arguments "))
+            .collect()
+    };
+
+    assert_eq!(
+        plugin(("src/Demo/Order.php", php)),
+        [
+            "11:31 invalid-operand Call to `intdiv()` with a zero divisor. | This divisor is zero | In this `intdiv()` call | `intdiv($num, 0)` throws `DivisionByZeroError` at runtime. | Guard the call with `$divisor !== 0` or restrict the divisor's type to exclude zero.",
+            "16:57 too-many-arguments Too many arguments provided for function `session_set_save_handler`. | Unexpected argument provided here | For this function call | When the first argument is a `SessionHandlerInterface`, `session_set_save_handler()` expects at most 2 arguments, but received 3. | Remove the extra arguments. The object form only accepts the handler and an optional `$register_shutdown` boolean.",
+            "21:40 too-few-arguments Too few arguments provided for function `session_set_save_handler`. | Only 1 argument(s) provided | For this function call | The callable form of `session_set_save_handler()` requires at least 6 arguments (`$open`, `$close`, `$read`, `$write`, `$destroy`, `$gc`), but only 1 were provided. | Provide all 6 required callback arguments, or pass a `SessionHandlerInterface` object instead.",
+        ]
+    );
+    assert_eq!(
+        plugin(("src/Demo/Order.sharp", sharp)),
+        [
+            "7:49 invalid-operand Call to `intdiv()` with a zero divisor. | This divisor is zero | In this `intdiv()` call | `intdiv(num, 0)` throws `DivisionByZeroError` at runtime. | Guard the call with `divisor != 0` or restrict the divisor's type to exclude zero.",
+            "9:98 too-many-arguments Too many arguments provided for function `session_set_save_handler`. | Unexpected argument provided here | For this function call | When the first argument is a `SessionHandlerInterface`, `session_set_save_handler()` expects at most 2 arguments, but received 3. | Remove the extra arguments. The object form only accepts the handler and an optional `register_shutdown` boolean.",
+            "11:51 too-few-arguments Too few arguments provided for function `session_set_save_handler`. | Only 1 argument(s) provided | For this function call | The callable form of `session_set_save_handler()` requires at least 6 arguments (`open`, `close`, `read`, `write`, `destroy`, `gc`), but only 1 were provided. | Provide all 6 required callback arguments, or pass a `SessionHandlerInterface` object instead.",
+        ]
+    );
+}
+
+/// A message names a variable or a parameter as the file writes it: `code` in a `.sharp` file, as a property is named
+/// without `$`. The PHP twin keeps upstream's `$code`.
+#[test]
+fn a_message_names_a_variable_as_sharp_writes_it() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public bool known(string code) => code is string;\n\n    public bool counted(int count) => count is string;\n\n    public int take(int amount) => amount;\n\n    public int total() => this.take(cost: 1);\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    public function known(string $code): bool\n    {\n        return is_string($code);\n    }\n\n    public function counted(int $count): bool\n    {\n        return is_string($count);\n    }\n\n    public function take(int $amount): int\n    {\n        return $amount;\n    }\n\n    public function total(): int\n    {\n        return $this->take(cost: 1);\n    }\n}\n";
+    let named = |analyzed| -> Vec<String> {
+        worded(analyzed, &[])
+            .into_iter()
+            .filter(|line| line.contains("-type-comparison ") || line.contains("named-argument "))
+            .collect()
+    };
+
+    assert_eq!(
+        named(("src/Demo/Order.php", php)),
+        [
+            "9:16 redundant-type-comparison Redundant type assertion: `$code` is already `string`. | Argument `$code` already has type `string` | The assertion against `string` always holds because `$code` is `string`. | Consider removing this assertion or replacing it with `default` if used in a `match` arm.",
+            "14:16 impossible-type-comparison Impossible type assertion: `$count` of type `int` can never be `string`. | Argument `$count` has type `int` | The assertion expects `$count` to be `string`, but no value of type `int` can satisfy this. | Check that the correct variable is being passed, or update the assertion type.",
+            "24:28 invalid-named-argument Invalid named argument `$cost` for method `Demo\\Order::take` | Unknown argument name `$cost` | Call to method is here | Available parameters are: `amount`.",
+        ]
+    );
+    assert_eq!(
+        named(("src/Demo/Order.sharp", sharp)),
+        [
+            "5:47 redundant-type-comparison Redundant type assertion: `code` is already `string`. | Argument `code` already has type `string` | The assertion against `string` always holds because `code` is `string`. | Consider removing this assertion or replacing it with `default` if used in a `match` arm.",
+            "7:48 impossible-type-comparison Impossible type assertion: `count` of type `int` can never be `string`. | Argument `count` has type `int` | The assertion expects `count` to be `string`, but no value of type `int` can satisfy this. | Check that the correct variable is being passed, or update the assertion type.",
+            "11:37 invalid-named-argument Invalid named argument `cost` for method `Order.take` | Unknown argument name `cost` | Call to method is here | Available parameters are: `amount`.",
+        ]
+    );
+}
+
+/// A type the PHP twin prints from one atomic keeps upstream's text: a template type is `'T.demo\fail() extends
+/// mixed`, never wrapped in the parentheses a union of several types puts around it.
+#[test]
+fn a_php_message_names_a_template_type_without_union_parentheses() {
+    let php = "<?php\n\nnamespace Demo;\n\n/**\n * @template T\n * @param T $value\n */\nfunction fail($value): void\n{\n    throw $value;\n}\n";
+
+    assert_eq!(
+        worded(("src/Demo/Fail.php", php), &[])
+            .into_iter()
+            .filter(|line| line.contains(" invalid-throw "))
+            .collect::<Vec<_>>(),
+        [
+            "11:5 invalid-throw Cannot throw type `'T.demo\\fail() extends mixed` because it is not an instance of Throwable. | This has type `'T.demo\\fail() extends mixed`, not `Throwable` | Only objects that implement the `Throwable` interface (like `Exception` or `Error`) can be thrown. | Ensure the value being thrown is an instance of `Exception`, `Error`, or a subclass thereof."
+        ]
+    );
+}
+
+/// A class whose short name another class-like shares is named by its full dotted name in a `.sharp` file, so the two
+/// stay apart: `App.Orders.Order` and `Billing.Order`. The PHP twin keeps upstream's full names.
+#[test]
+fn classes_that_share_a_short_name_are_named_by_their_full_name() {
+    let app_order = ("src/App/Orders/Order.php", "<?php\n\nnamespace App\\Orders;\n\nclass Order\n{\n}\n");
+    let billing_order = ("src/Billing/Order.php", "<?php\n\nnamespace Billing;\n\nclass Order\n{\n}\n");
+    let ledger = (
+        "src/Billing/Ledger.php",
+        "<?php\n\nnamespace Billing;\n\nclass Ledger\n{\n    public function last(): Order\n    {\n        return new Order();\n    }\n}\n",
+    );
+    let sharp = "namespace App.Orders;\n\nimport Billing.Ledger;\n\nclass Shop\n{\n    public Order last(Ledger ledger) => ledger.last();\n}\n";
+    let php = "<?php\n\nnamespace App\\Orders;\n\nuse Billing\\Ledger;\n\nclass Shop\n{\n    public function last(Ledger $ledger): Order\n    {\n        return $ledger->last();\n    }\n}\n";
+    let others = [app_order, billing_order, ledger];
+    let returned = |analyzed| -> Vec<String> {
+        worded(analyzed, &others).into_iter().filter(|line| line.contains(" invalid-return-statement ")).collect()
+    };
+
+    assert_eq!(
+        returned(("src/App/Orders/Shop.php", php)),
+        [
+            "11:16 invalid-return-statement Invalid return type for function `App\\Orders\\Shop::last`: expected `App\\Orders\\Order`, but found `Billing\\Order`. | This has type `Billing\\Order` | The type `Billing\\Order` returned here is not compatible with the declared return type `App\\Orders\\Order`. | Change the return value to match `App\\Orders\\Order`, or update the function's return type declaration."
+        ]
+    );
+    assert_eq!(
+        returned(("src/App/Orders/Shop.sharp", sharp)),
+        [
+            "7:41 invalid-return-statement Invalid return type for method `Shop.last`: expected `App.Orders.Order`, but found `Billing.Order`. | This has type `Billing.Order` | The type `Billing.Order` returned here is not compatible with the declared return type `App.Orders.Order`. | Change the return value to match `App.Orders.Order`, or update the method's return type declaration."
+        ]
+    );
+}
+
+/// PHP's built-in class-likes don't count toward a shared short name: a `.sharp` file reaches `Dom\Node` only through
+/// an import, so the project's own `Node` keeps its short name. The PHP twin keeps upstream's full names.
+#[test]
+fn a_class_that_shares_its_short_name_only_with_a_built_in_class_keeps_its_short_name() {
+    let node = ("src/App/Graph/Node.php", "<?php\n\nnamespace App\\Graph;\n\nclass Node\n{\n}\n");
+    let edge = ("src/App/Graph/Edge.php", "<?php\n\nnamespace App\\Graph;\n\nclass Edge\n{\n}\n");
+    let sharp = "namespace App.Graph;\n\nclass Walk\n{\n    public Node first(Edge edge) => edge;\n}\n";
+    let php = "<?php\n\nnamespace App\\Graph;\n\nclass Walk\n{\n    public function first(Edge $edge): Node\n    {\n        return $edge;\n    }\n}\n";
+    let returned = |analyzed| -> Vec<String> {
+        worded(analyzed, &[node, edge]).into_iter().filter(|line| line.contains(" invalid-return-statement ")).collect()
+    };
+
+    assert_eq!(
+        returned(("src/App/Graph/Walk.php", php)),
+        [
+            "9:16 invalid-return-statement Invalid return type for function `App\\Graph\\Walk::first`: expected `App\\Graph\\Node`, but found `App\\Graph\\Edge`. | This has type `App\\Graph\\Edge` | The type `App\\Graph\\Edge` returned here is not compatible with the declared return type `App\\Graph\\Node`. | Change the return value to match `App\\Graph\\Node`, or update the function's return type declaration."
+        ]
+    );
+    assert_eq!(
+        returned(("src/App/Graph/Walk.sharp", sharp)),
+        [
+            "5:37 invalid-return-statement Invalid return type for method `Walk.first`: expected `Node`, but found `Edge`. | This has type `Edge` | The type `Edge` returned here is not compatible with the declared return type `Node`. | Change the return value to match `Node`, or update the method's return type declaration."
+        ]
+    );
 }

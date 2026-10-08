@@ -6,7 +6,6 @@ use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
 use mago_codex::metadata::property::PropertyMetadata;
 use mago_codex::visibility::Visibility;
-use mago_names::display_sharp_member;
 use mago_php_version::PHPVersion;
 use mago_php_version::feature::Feature;
 use mago_reporting::Annotation;
@@ -242,7 +241,7 @@ where
     if !is_visible {
         // PHP names the property and its class apart, and PHP# names the property as it reads: `Order.total`.
         let (issue_title, help_text) = if context.dialect.is_sharp() {
-            let property = display_sharp_member(declaring_class_metadata.original_name, property_name);
+            let property = display_member(context, declaring_class_metadata.original_name, property_name);
             (
                 format!("Cannot read {visibility} property `{property}`."),
                 format!("Make the property `{property}` readable (e.g., `public`), or add a public getter method."),
@@ -354,7 +353,7 @@ where
         } else {
             // PHP names the property and its class apart, and PHP# names the property as it reads: `Order.total`.
             let (issue_title, help_text) = if context.dialect.is_sharp() {
-                let property = display_sharp_member(declaring_class_metadata.original_name, property_name);
+                let property = display_member(context, declaring_class_metadata.original_name, property_name);
                 (
                     format!("Cannot write to {visibility} property `{property}`."),
                     format!(

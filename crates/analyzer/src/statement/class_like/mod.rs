@@ -38,7 +38,6 @@ use mago_codex::visibility::Visibility;
 use mago_names::binding::php_variable_name;
 use mago_names::display_sharp_member;
 use mago_names::kind::NameKind;
-use mago_names::short_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_reporting::Level;
@@ -834,7 +833,7 @@ fn check_duplicate_enum_case_values<'arena, A>(
 
         if let Some((_, prev_case_name, prev_span)) = seen.iter().find(|(id, _, _)| *id == value_id) {
             let enum_name = if context.dialect.is_sharp() {
-                short_name(enum_name)
+                display_class_like_name(context, word(enum_name)).to_string()
             } else {
                 String::from_utf8_lossy(enum_name).into_owned()
             };
@@ -1049,7 +1048,7 @@ where
                         let fqcn = parent_metadata.original_name;
                         let hook_span = hook_metadata.span;
                         let (missing_hook, abstract_hook) = if context.dialect.is_sharp() {
-                            let accessor = display_sharp_accessor(fqcn, *property_name, *hook_name);
+                            let accessor = display_sharp_accessor(context, fqcn, *property_name, *hook_name);
                             (accessor.clone(), accessor)
                         } else {
                             (
@@ -2917,7 +2916,7 @@ fn report_signature_compatibility_issue<'ctx, A>(
     A: Arena,
 {
     let child_name = display_class_like_name(context, child_class.original_name);
-    let parent_name = parent_class.original_name;
+    let parent_name = display_class_like_name(context, parent_class.original_name);
     let child_class_span = child_class.name_span.unwrap_or(child_class.span);
     let parent_class_span = parent_class.name_span.unwrap_or(parent_class.span);
     let (child_display, parent_display) = if context.dialect.is_sharp() {
@@ -3431,7 +3430,7 @@ fn check_class_like_properties<'ctx, A>(
                     && parent_hook.flags.is_final()
                 {
                     let final_hook = if context.dialect.is_sharp() {
-                        display_sharp_accessor(parent_class_name, *property_name, *hook_name)
+                        display_sharp_accessor(context, parent_class_name, *property_name, *hook_name)
                     } else {
                         format!("{parent_class_name}::{property_name}::{hook_name}()")
                     };
@@ -3821,8 +3820,8 @@ fn check_class_like_properties<'ctx, A>(
                 let interface_name = interface_metadata.original_name;
                 let (class_hook_name, interface_hook_name) = if context.dialect.is_sharp() {
                     (
-                        display_sharp_accessor(declaring_class_name, *property_name, *hook_name),
-                        display_sharp_accessor(interface_name, *property_name, *hook_name),
+                        display_sharp_accessor(context, declaring_class_name, *property_name, *hook_name),
+                        display_sharp_accessor(context, interface_name, *property_name, *hook_name),
                     )
                 } else {
                     (

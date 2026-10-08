@@ -77,11 +77,13 @@ use crate::statement::class_like::property::analyze_property_hook;
 use crate::statement::r#return::handle_return_value;
 use crate::statement::r#static::infer_static_local_types;
 use crate::utils::expression::get_variable_id;
+use crate::utils::names::display_atomic;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_nullable_type;
 use crate::utils::names::display_sharp_type;
 use crate::utils::names::display_type;
 use crate::utils::names::display_value_type;
+use crate::utils::names::display_variable_name;
 
 pub mod function;
 pub mod rejected_nullable_parameter;
@@ -444,7 +446,9 @@ where
         if !expanded_type.is_void() {
             let (kind, name) = match block_context.scope.get_class_like() {
                 Some(class_like) if context.dialect.is_sharp() && function_metadata.kind.is_method() => {
-                    ("method", word(display_sharp_member(class_like.original_name, function_metadata.original_name)))
+                    let class_name = display_class_like_name(context, class_like.original_name);
+
+                    ("method", word(display_sharp_member(class_name, function_metadata.original_name)))
                 }
                 _ => ("function", function_metadata.name),
             };
@@ -525,7 +529,7 @@ where
                 if !is_compatible {
                     let docblock_type_str = effective_type.get_id();
                     let native_type_str = native_type.type_union.get_id();
-                    let param_name = parameter_metadata.name.0;
+                    let param_name = display_variable_name(context.dialect, parameter_metadata.name.0.as_bytes());
 
                     let issue = Issue::error(format!(
                         "Docblock type `{docblock_type_str}` for parameter `{param_name}` is incompatible with native type `{native_type_str}`."
@@ -574,7 +578,7 @@ where
                     if !dropped.is_empty() {
                         let docblock_type_str = effective_type.get_id();
                         let native_type_str = expanded_native.get_id();
-                        let param_name = parameter_metadata.name.0;
+                        let param_name = display_variable_name(context.dialect, parameter_metadata.name.0.as_bytes());
                         let dropped_list =
                             dropped.iter().map(|a| a.get_id().to_string()).collect::<Vec<_>>().join("`, `");
 
@@ -1250,11 +1254,8 @@ fn check_return_type_metadata_width<'ctx, A>(
         return;
     }
 
-    let unused_list = unused_atomics
-        .iter()
-        .map(|atomic| display_type(context, &TUnion::from_atomic((*atomic).clone())))
-        .collect::<Vec<_>>()
-        .join("`, `");
+    let unused_list =
+        unused_atomics.iter().map(|atomic| display_atomic(context, atomic)).collect::<Vec<_>>().join("`, `");
 
     let declared_str = display_type(context, &expanded_declared);
     let return_span = return_type_metadata.span;
@@ -1685,8 +1686,7 @@ fn check_parameter_default_value<'ctx, 'arena, A>(
 
     let default_type_str = display_value_type(context, default_type, declared_type);
     let declared_type_str = display_type(context, declared_type);
-    let param_name = parameter_metadata.name.0.as_str_lossy();
-    let param_name = if is_sharp { param_name.trim_start_matches('$') } else { &*param_name };
+    let param_name = display_variable_name(context.dialect, parameter_metadata.name.0.as_bytes());
 
     let issue = Issue::error(format!(
         "Default value for parameter `{param_name}` is not assignable to its declared type."
@@ -1867,7 +1867,7 @@ where
             continue;
         }
 
-        let key_id = display_sharp_type(key_type, context.codebase);
+        let key_id = display_sharp_type(context, key_type);
         context.collector.report_with_code(
             IssueCode::TemplateConstraintViolation,
             Issue::error(format!(

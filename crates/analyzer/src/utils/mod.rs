@@ -44,7 +44,7 @@ where
     }
 
     let (container_id, input_id) = if context.dialect.is_sharp() {
-        (names::display_sharp_type(container, context.codebase), names::display_sharp_type(input, context.codebase))
+        (names::display_sharp_type(context, container), names::display_sharp_type(context, input))
     } else {
         (container.get_pretty_id().to_string(), input.get_pretty_id().to_string())
     };

@@ -71,6 +71,7 @@ use crate::formula::negate_or_synthesize;
 use crate::reconciler::reconcile_keyed_types;
 use crate::statement::r#loop::assignment_map_visitor::get_assignment_map;
 use crate::statement::r#loop::cleaner::clean_nodes;
+use crate::utils::names::display_atomic;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_member;
 use crate::utils::names::display_type;
@@ -1636,8 +1637,7 @@ where
                             } else {
                                 atomic_object.name
                             };
-                            let iterator_atomic_str =
-                                display_type(context, &TUnion::from_atomic(iterator_atomic.clone()));
+                            let iterator_atomic_str = display_atomic(context, iterator_atomic);
 
                             context.collector.report_with_code(
                                 IssueCode::NonIterableObjectIteration,
@@ -1714,7 +1714,7 @@ where
                 value_type = Some(add_optional_union_type(obj_value_type, value_type.as_ref(), context.codebase));
             }
             _ => {
-                invalid_atomic_ids.push(display_type(context, &TUnion::from_atomic(iterator_atomic.clone())));
+                invalid_atomic_ids.push(display_atomic(context, iterator_atomic));
             }
         }
     }

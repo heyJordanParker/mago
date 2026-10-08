@@ -37,6 +37,7 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::expression::binary::concat::fold_concat_operands;
+use crate::utils::names::display_atomic;
 use crate::utils::names::display_type;
 
 #[inline]
@@ -371,10 +372,7 @@ where
                     has_valid_right_operand = true;
                 } else if left_atomic.is_array() {
                     invalid_right_messages.push((
-                        format!(
-                            "Cannot add array to non-array type {}",
-                            display_type(context, &TUnion::from_atomic(right_atomic.clone()))
-                        ),
+                        format!("Cannot add array to non-array type {}", display_atomic(context, &right_atomic)),
                         binary.rhs.span(),
                     ));
 
@@ -382,10 +380,7 @@ where
                     invalid_pair = true;
                 } else {
                     invalid_left_messages.push((
-                        format!(
-                            "Cannot add {} to non-array type array",
-                            display_type(context, &TUnion::from_atomic(left_atomic.clone()))
-                        ),
+                        format!("Cannot add {} to non-array type array", display_atomic(context, &left_atomic)),
                         binary.lhs.span(),
                     ));
 
@@ -443,7 +438,7 @@ where
                 invalid_right_messages.push((
                     format!(
                         "Cannot perform arithmetic operation with non-numeric type {}",
-                        display_type(context, &TUnion::from_atomic(right_atomic.clone()))
+                        display_atomic(context, &right_atomic)
                     ),
                     binary.rhs.span(),
                 ));
@@ -453,7 +448,7 @@ where
                 invalid_left_messages.push((
                     format!(
                         "Cannot perform arithmetic operation with non-numeric type {}",
-                        display_type(context, &TUnion::from_atomic(left_atomic.clone()))
+                        display_atomic(context, &left_atomic)
                     ),
                     binary.lhs.span(),
                 ));
@@ -461,18 +456,12 @@ where
                 invalid_pair = true;
             } else {
                 invalid_left_messages.push((
-                    format!(
-                        "Cannot perform arithmetic operation on type {}",
-                        display_type(context, &TUnion::from_atomic(left_atomic.clone()))
-                    ),
+                    format!("Cannot perform arithmetic operation on type {}", display_atomic(context, &left_atomic)),
                     binary.lhs.span(),
                 ));
 
                 invalid_right_messages.push((
-                    format!(
-                        "Cannot perform arithmetic operation on type {}",
-                        display_type(context, &TUnion::from_atomic(right_atomic.clone()))
-                    ),
+                    format!("Cannot perform arithmetic operation on type {}", display_atomic(context, &right_atomic)),
                     binary.rhs.span(),
                 ));
 

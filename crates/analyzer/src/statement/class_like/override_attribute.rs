@@ -20,6 +20,7 @@ use mago_word::ascii_lowercase_word;
 
 use crate::code::IssueCode;
 use crate::context::Context;
+use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_member;
 
 /// Checks the `#[Override]` attribute when the `check-missing-override` setting is on, and PHP#'s `override`
@@ -211,7 +212,7 @@ fn check_override_modifier_on_fields<'ctx, 'arena, A>(
 ) where
     A: Arena,
 {
-    let class_name = metadata.original_name;
+    let class_name = display_class_like_name(context, metadata.original_name);
     for member in members {
         let ClassLikeMember::Property(property @ Property::Plain(field)) = member else {
             continue;
@@ -240,7 +241,7 @@ fn check_override_modifier_on_fields<'ctx, 'arena, A>(
             (Some((parent, parent_property)), Some(override_modifier))
                 if parent.flags.is_sharp() && !parent_property.hooks.is_empty() =>
             {
-                let parent_display = display_sharp_member(parent.original_name, name);
+                let parent_display = display_sharp_member(display_class_like_name(context, parent.original_name), name);
 
                 context.collector.report(
                     Issue::error(format!("Overriding the PHP# property `{parent_display}` is not supported yet."))
@@ -253,7 +254,7 @@ fn check_override_modifier_on_fields<'ctx, 'arena, A>(
                 );
             }
             (Some((parent, _)), None) => {
-                let parent_display = display_sharp_member(parent.original_name, name);
+                let parent_display = display_sharp_member(display_class_like_name(context, parent.original_name), name);
 
                 context.collector.report(
                     Issue::error(format!("Missing `override` modifier on overriding field `{field_display}`."))

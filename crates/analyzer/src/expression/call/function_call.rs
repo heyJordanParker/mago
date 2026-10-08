@@ -39,7 +39,7 @@ use crate::invocation::InvocationTarget;
 use crate::plugin::ExpressionHookResult;
 use crate::plugin::context::HookContext;
 use crate::utils::expression::get_bare_name_variable_id;
-use crate::utils::names::display_type;
+use crate::utils::names::display_atomic;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for FunctionCall<'arena> {
     fn analyze<'ctx, A>(
@@ -274,7 +274,7 @@ where
                 source: None,
             });
         } else {
-            let type_name = display_type(context, &TUnion::from_atomic(atomic.clone()));
+            let type_name = display_atomic(context, atomic);
 
             context.collector.report_with_code(
                 IssueCode::InvalidCallable,
@@ -334,6 +334,8 @@ where
 
             let method = codebase.get_method_by_id(method)?;
 
+            // Code to write names the class by its short name, as its import binds it: PHP# refuses a full name in
+            // code, so the dotted name that tells two classes apart in prose would not compile here.
             Some(format!("`{}(…)`", display_sharp_member(class.original_name, method.original_name)))
         })
         .collect();

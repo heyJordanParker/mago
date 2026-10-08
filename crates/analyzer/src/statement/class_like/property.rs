@@ -284,8 +284,12 @@ where
                 && let Some(property_type) =
                     class_like.properties.get(&property_name).and_then(|property| property.type_metadata.as_ref())
             {
-                let accessor =
-                    word(display_sharp_accessor(class_like.original_name, property_name, word(hook.name.value)));
+                let accessor = word(display_sharp_accessor(
+                    context,
+                    class_like.original_name,
+                    property_name,
+                    word(hook.name.value),
+                ));
                 report_missing_return(
                     context,
                     "property hook",

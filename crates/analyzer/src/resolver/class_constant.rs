@@ -17,7 +17,6 @@ use mago_codex::ttype::get_class_string;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::union::TUnion;
 use mago_codex::ttype::wrap_atomic;
-use mago_names::short_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -302,11 +301,7 @@ where
 {
     if metadata.kind.is_trait() && !is_valid_trait_constant_access(resolution_origin, inside_class_like_attribute) {
         let constant = display_member(context, metadata.original_name, const_name);
-        let trait_name = if context.dialect.is_sharp() {
-            short_name(metadata.original_name)
-        } else {
-            metadata.original_name.to_string()
-        };
+        let trait_name = display_class_like_name(context, metadata.original_name);
 
         let mut issue = Issue::error(format!("Cannot access trait constant `{constant}` directly."))
             .with_annotation(Annotation::primary(class_span).with_message(format!("`{trait_name}` is a trait")))

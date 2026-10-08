@@ -64,6 +64,7 @@ use crate::invocation::template_result::get_class_template_parameters_from_resul
 use crate::invocation::template_result::populate_template_result_from_invocation;
 use crate::invocation::template_result::refine_template_result_for_function_like;
 use crate::utils::expression::get_block_expression_id;
+use crate::utils::names::display_variable_name;
 
 fn narrow_class_related_argument<A>(
     context: &Context<'_, '_, A>,
@@ -566,14 +567,15 @@ where
             filled_parameter_offsets.insert(parameter_offset);
 
             if let Some(named_argument) = argument.get_named_argument() {
-                let named_value_display = BytesDisplay(named_argument.name.value);
+                let named_value_display =
+                    display_variable_name(context.dialect, [b"$", named_argument.name.value].concat());
                 if let Some(previous_span) = assigned_parameters_by_name.get(&named_argument.name.value) {
                     has_named_argument_anomaly = true;
                     let target_name_str = invocation.target.guess_name(context);
                     context.collector.report_with_code(
                         IssueCode::DuplicateNamedArgument,
                         Issue::error(format!(
-                            "Duplicate named argument `${}` in call to {} `{}`.",
+                            "Duplicate named argument `{}` in call to {} `{}`.",
                             named_value_display, target_kind_str, target_name_str
                         ))
                         .with_annotation(
@@ -592,7 +594,7 @@ where
                         context.collector.report_with_code(
                             IssueCode::NamedArgumentAfterPositional,
                              Issue::warning(format!(
-                                "Named argument `${}` for {} `{}` targets a variadic parameter that has already captured positional arguments.",
+                                "Named argument `{}` for {} `{}` targets a variadic parameter that has already captured positional arguments.",
                                 named_value_display, target_kind_str, target_name_str
                             ))
                             .with_annotation(Annotation::primary(named_argument.name.span()).with_message("Named argument for variadic parameter"))
@@ -604,7 +606,7 @@ where
                         context.collector.report_with_code(
                             IssueCode::NamedArgumentOverridesPositional,
                             Issue::error(format!(
-                                "Named argument `${}` for {} `{}` targets a parameter already provided positionally.",
+                                "Named argument `{}` for {} `{}` targets a parameter already provided positionally.",
                                 named_value_display, target_kind_str, target_name_str
                             ))
                             .with_annotation(
@@ -662,7 +664,7 @@ where
                 parameter_types.insert(parameter_name.0, argument_value_type);
             }
         } else if let Some(named_argument) = argument.get_named_argument() {
-            let argument_name = BytesDisplay(named_argument.name.value);
+            let argument_name = display_variable_name(context.dialect, [b"$", named_argument.name.value].concat());
 
             let has_variadic_parameter = invocation
                 .target
@@ -678,13 +680,13 @@ where
                 context.collector.report_with_code(
                     IssueCode::InvalidNamedArgument,
                     Issue::error(format!(
-                        "Invalid named argument `${argument_name}` for {target_kind_str} `{target_name_str}`"
+                        "Invalid named argument `{argument_name}` for {target_kind_str} `{target_name_str}`"
                     ))
                     .with_annotation(Annotation::primary(named_argument.name.span()).with_message(
                         if has_variadic_parameter {
                             "A variadic parameter takes no named argument in PHP#".to_string()
                         } else {
-                            format!("Unknown argument name `${argument_name}`")
+                            format!("Unknown argument name `{argument_name}`")
                         },
                     ))
                     .with_annotation(
@@ -1875,7 +1877,7 @@ fn validate_keyed_array_elements<'ctx, 'arena, A>(
                 invocation_target,
             );
         } else if let ArrayKey::String(key_str) = array_key {
-            let argument_name = BytesDisplay(key_str.as_bytes());
+            let argument_name = display_variable_name(context.dialect, [b"$", key_str.as_bytes()].concat());
 
             // For variadic functions, allow extra named arguments
             let has_variadic_parameter = invocation_target
@@ -1888,11 +1890,11 @@ fn validate_keyed_array_elements<'ctx, 'arena, A>(
                 context.collector.report_with_code(
                     IssueCode::InvalidNamedArgument,
                     Issue::error(format!(
-                        "Invalid named argument `${argument_name}` for {target_kind_str} `{target_name_str}`"
+                        "Invalid named argument `{argument_name}` for {target_kind_str} `{target_name_str}`"
                     ))
                     .with_annotation(
                         Annotation::primary(argument_expression.span())
-                            .with_message(format!("Unknown argument name `${argument_name}` in unpacked array")),
+                            .with_message(format!("Unknown argument name `{argument_name}` in unpacked array")),
                     )
                     .with_annotation(
                         Annotation::secondary(invocation_target.span())
@@ -1906,7 +1908,7 @@ fn validate_keyed_array_elements<'ctx, 'arena, A>(
                             .filter_map(|p| {
                                 p.get_name().map(|name| {
                                     let stripped = trim_start_byte(name.0.as_bytes(), b'$');
-                                    format!("${}", BytesDisplay(stripped))
+                                    display_variable_name(context.dialect, [b"$", stripped].concat())
                                 })
                             })
                             .collect();

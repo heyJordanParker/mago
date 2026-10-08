@@ -30,7 +30,6 @@ use mago_codex::ttype::template::inferred_type_replacer;
 use mago_codex::ttype::union::TUnion;
 use mago_names::ResolvedNames;
 use mago_names::display_sharp_member;
-use mago_names::short_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -54,6 +53,7 @@ use crate::resolver::method::run_forwarded_methods;
 use crate::resolver::selector::resolve_member_selector;
 use crate::utils::expression::analyze_member_object;
 use crate::utils::expression::is_this;
+use crate::utils::names::display_atomic;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_member;
 use crate::utils::names::display_type;
@@ -194,7 +194,7 @@ where
                 result.has_ambiguous_path = true;
 
                 if !block_context.flags.inside_isset() {
-                    let object_type = display_type(context, &TUnion::from_atomic(object_atomic.clone()));
+                    let object_type = display_atomic(context, object_atomic);
                     report_ambiguous_access(context, property_selector, object_expression.span(), &object_type);
                 }
 
@@ -1453,7 +1453,7 @@ fn report_access_on_non_object<A>(
 ) where
     A: Arena,
 {
-    let type_str = display_type(context, &TUnion::from_atomic(atomic_type.clone()));
+    let type_str = display_atomic(context, atomic_type);
     context.collector.report_with_code(
         if atomic_type.is_mixed() { IssueCode::MixedPropertyAccess } else { IssueCode::InvalidPropertyAccess },
         Issue::error(format!("Attempting to access a property on a non-object type (`{type_str}`)."))
@@ -1581,8 +1581,7 @@ fn report_non_existent_property<A>(
             Issue::error(format!("Property `{property}` does not exist."))
                 .with_annotation(Annotation::primary(selector_span).with_message("Property not found here"))
                 .with_annotation(
-                    Annotation::secondary(object_span)
-                        .with_message(format!("On instance of `{}`", short_name(classname))),
+                    Annotation::secondary(object_span).with_message(format!("On instance of `{classname}`")),
                 )
                 .with_note(format!("The {class_kind_str} `{classname}` does not define the property `{name}`."))
                 .with_help("Define the property in the class or check for its existence before accessing it."),

@@ -68,6 +68,7 @@ use crate::utils::expression::is_variable;
 use crate::utils::misc::unwrap_expression;
 use crate::utils::names::display_type;
 use crate::utils::names::display_value_type;
+use crate::utils::names::display_variable_name;
 
 mod array_assignment;
 pub(crate) mod property_assignment;
@@ -224,6 +225,7 @@ where
         && cloned_var.name == target_variable_id.as_bytes()
         && let Some(assignment_span) = assignment_span
     {
+        let target_variable_id = display_variable_name(context.dialect, target_variable_id.as_bytes());
         context.collector.report_with_code(
             IssueCode::CloneInsideLoop,
             Issue::warning(format!(
@@ -559,6 +561,7 @@ pub fn analyze_assignment_to_variable<'ctx, 'arena, A>(
             let assigned_type_str = assigned_type.get_id();
             let constraint_type_str = constraint_type.get_id();
             let primary_error_span = source_expression.map_or(variable_span, mago_span::HasSpan::span);
+            let variable_id = display_variable_name(context.dialect, variable_id.as_bytes());
 
             let issue = match constraint.source {
                 ReferenceConstraintSource::Parameter => {
@@ -650,8 +653,7 @@ pub fn analyze_assignment_to_variable<'ctx, 'arena, A>(
             &mut ComparisonResult::with_strict_nonnull(context.dialect.is_sharp()),
         )
     {
-        let variable_name = variable_id.to_string();
-        let name = variable_name.trim_start_matches('$');
+        let name = display_variable_name(context.dialect, variable_id.as_bytes());
         let local_type_str = display_type(context, &local_type);
         let assigned_type_str = display_value_type(context, &assigned_type, &local_type);
 

@@ -8,8 +8,6 @@ use mago_codex::ttype::expander::StaticClassType;
 use mago_codex::ttype::expander::TypeExpansionOptions;
 use mago_codex::ttype::get_mixed;
 use mago_names::ResolvedNames;
-use mago_names::display_sharp_member;
-use mago_names::short_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -33,6 +31,8 @@ use crate::resolver::property::PropertyResolutionResult;
 use crate::resolver::property::ResolvedProperty;
 use crate::utils::expression::get_block_expression_id;
 use crate::utils::expression::get_variable_id;
+use crate::utils::names::display_class_like_name;
+use crate::utils::names::display_member;
 use crate::visibility::check_static_property_read_visibility;
 
 /// The parts of a static property access.
@@ -315,7 +315,7 @@ where
     if !property_metadata.flags.is_static() {
         let classname = declaring_class_metadata.original_name;
         let issue = if context.dialect.is_sharp() {
-            let property = display_sharp_member(classname, property_name);
+            let property = display_member(context, classname, property_name);
             let name = property_name.as_str_lossy();
             let name = name.trim_start_matches('$');
 
@@ -384,8 +384,8 @@ fn report_non_existent_property<A>(
 
     // PHP# writes a constant, an enum case and a static property alike, `Class.name`, so the read names no kind.
     let issue = if context.dialect.is_sharp() {
-        let member = display_sharp_member(classname, property_name);
-        let class = short_name(classname);
+        let member = display_member(context, classname, property_name);
+        let class = display_class_like_name(context, classname);
         let name = property_name.as_str_lossy();
         let name = name.trim_start_matches('$');
 

@@ -642,7 +642,7 @@ fn handle_property_hook_return<'ctx, A>(
     }
 
     let hook_name = if context.dialect.is_sharp() {
-        display_sharp_accessor(class_like.original_name, property_name, hook_metadata.name)
+        display_sharp_accessor(context, class_like.original_name, property_name, hook_metadata.name)
     } else {
         concat_word!(class_like.original_name, "::", property_name, "::get").to_string()
     };
@@ -774,7 +774,7 @@ fn check_constructor_early_return<'ctx, A>(
 
         // Property not initialized - report error
         let prop_name = if context.dialect.is_sharp() {
-            display_sharp_member(declaring_meta.original_name, prop_name)
+            display_sharp_member(display_class_like_name(context, declaring_meta.original_name), prop_name)
         } else {
             prop_name.to_string()
         };
