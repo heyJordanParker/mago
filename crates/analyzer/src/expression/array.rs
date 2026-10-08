@@ -184,7 +184,8 @@ where
                         } else if item_key_type.is_float() {
                             get_int()
                         } else if context.dialect.is_sharp()
-                            && get_backing_key_type(item_key_type, context.codebase).is_always_array_key(true)
+                            && get_backing_key_type(item_key_type, context.codebase, context.dialect)
+                                .is_always_array_key(true)
                         {
                             // A PHP# literal keys a `Map` by a backed enum, which runs as its backing value.
                             item_key_type.clone()
@@ -781,7 +782,7 @@ fn handle_variadic_array_element<'arena, A>(
 
             // A PHP# `Map` keyed by a backed enum holds each key as its backing value.
             let stored_key_type = if context.dialect.is_sharp() {
-                get_backing_key_type(&key_type, context.codebase)
+                get_backing_key_type(&key_type, context.codebase, context.dialect)
             } else {
                 Cow::Borrowed(&*key_type)
             };

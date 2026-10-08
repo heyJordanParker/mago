@@ -130,6 +130,7 @@ where
         metadata.set_return_type_declaration_metadata(Some(get_type_metadata_from_hint(
             &return_hint.hint,
             Some(class_like_metadata.original_name),
+            Some(&class_like_metadata.template_types),
             &type_context,
             context,
         )));
@@ -282,6 +283,7 @@ where
         metadata.set_return_type_declaration_metadata(Some(get_type_metadata_from_hint(
             &return_hint.hint,
             classname,
+            None,
             &type_resolution_context,
             context,
         )));
@@ -346,6 +348,7 @@ where
         metadata.set_return_type_declaration_metadata(Some(get_type_metadata_from_hint(
             &return_hint.hint,
             classname,
+            None,
             &type_resolution_context,
             context,
         )));
@@ -405,6 +408,7 @@ where
         metadata.set_return_type_declaration_metadata(Some(get_type_metadata_from_hint(
             &return_hint.hint,
             classname,
+            None,
             &type_resolution_context,
             context,
         )));

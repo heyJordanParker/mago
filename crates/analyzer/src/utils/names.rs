@@ -80,8 +80,9 @@ where
 
 /// Returns `union` as PHP# writes the type: `List<int>`, `Map<string, int>`, `int?`, `(int|string)?`, `Any?`, a class
 /// by its short name, a type parameter by its name, an intersection as `A & B`, a function type as
-/// `Function<void(int)>`, `Class<Order>`, `Object`, and a literal as `1` or `"text"`. A refinement that PHP# cannot
-/// write is the type that holds it, such as `int` for a `positive-int`, and is named once.
+/// `Function<void(int)>`, `Class<Order>`, `Object`, `Iterable<int>`, and a literal as `1` or `"text"`. A refinement that
+/// PHP# cannot write is the type that holds it, such as `int` for a `positive-int` and `int|string` for an
+/// `array-key`, and is named once. `numeric`, `scalar` and `never` have no PHP# name and keep Mago's.
 #[must_use]
 pub(crate) fn display_sharp_type(union: &TUnion, codebase: &CodebaseMetadata) -> String {
     if let Some(TAtomic::Mixed(mixed)) = union.types.iter().find(|atomic| atomic.is_mixed()) {
@@ -89,11 +90,15 @@ pub(crate) fn display_sharp_type(union: &TUnion, codebase: &CodebaseMetadata) ->
     }
 
     let mut parts: Vec<String> = Vec::new();
-    for part in
-        union.types.iter().filter(|atomic| !atomic.is_null()).map(|atomic| display_sharp_atomic(atomic, codebase))
-    {
-        if !parts.contains(&part) {
-            parts.push(part);
+    for atomic in union.types.iter().filter(|atomic| !atomic.is_null()) {
+        let written = match atomic {
+            TAtomic::Scalar(TScalar::ArrayKey) => vec!["int".to_owned(), "string".to_owned()],
+            atomic => vec![display_sharp_atomic(atomic, codebase)],
+        };
+        for part in written {
+            if !parts.contains(&part) {
+                parts.push(part);
+            }
         }
     }
 
@@ -116,6 +121,7 @@ fn display_sharp_atomic(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String
                 }
             }
         }
+        TAtomic::Iterable(iterable) => format!("Iterable<{}>", display_sharp_type(iterable.get_value_type(), codebase)),
         TAtomic::Object(TObject::Any) => "Object".to_owned(),
         TAtomic::Object(object) => {
             let Some(name) = object.get_name() else {

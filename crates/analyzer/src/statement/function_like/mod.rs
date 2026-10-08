@@ -1736,7 +1736,8 @@ where
 
 /// Reports generic classes a declared type applies with the wrong number of arguments, or with an
 /// argument outside its type parameter's bound, and a generic PHP# class a `.sharp` type writes
-/// without type arguments. `Self` names its class's own type parameters, so it needs none.
+/// without type arguments. `Self` names its class's own type parameters, so it needs none, and a
+/// PHP# class type names the class itself, as `Class<PaginatedList>` does, so its class needs none.
 ///
 /// A declaration is checked where it is written, so the mistake is reported at the declaration
 /// rather than at whichever call first happens to reach it.
@@ -1751,7 +1752,14 @@ where
     report_map_keys_without_backing_value(context, &type_metadata.type_union, type_metadata.span);
 
     let codebase = context.codebase;
-    for type_ref in type_metadata.type_union.get_all_child_nodes() {
+    let mut type_refs = type_metadata.type_union.get_child_nodes();
+    while let Some(type_ref) = type_refs.pop() {
+        match type_ref {
+            TypeRef::Atomic(TAtomic::Scalar(TScalar::ClassLikeString(_))) if context.dialect.is_sharp() => continue,
+            TypeRef::Union(union) => type_refs.extend(union.get_child_nodes()),
+            TypeRef::Atomic(atomic) => type_refs.extend(atomic.get_child_nodes()),
+        }
+
         let TypeRef::Atomic(TAtomic::Object(TObject::Named(named))) = type_ref else {
             continue;
         };
@@ -1780,7 +1788,8 @@ where
 /// Reports `arguments`, applied at `span` to the templates `owner` declares at `owner_span`, when their number differs
 /// from the templates' or an argument falls outside its template's bound. A bound reads the other templates it names
 /// from `bounds`, such as a call's receiver type arguments, and from `arguments`. Returns whether their number fits. In
-/// a `.sharp` file the report speaks of type arguments and names classes by their short names, as PHP# writes them.
+/// a `.sharp` file the report speaks of type arguments, names classes by their short names, as PHP# writes them, and
+/// names a method with its type parameters where it names one of them, as in `Repository.count<TQuery>`'s `TQuery`.
 pub fn check_template_arguments<A>(
     context: &mut Context<'_, '_, A>,
     owner: impl std::fmt::Display,
@@ -1799,6 +1808,11 @@ where
     let (kind, sentence_kind) = if is_sharp { ("type", "Type") } else { ("template", "Template") };
 
     let expected = templates.len();
+    let parameters = match (is_sharp, expected) {
+        (true, 1) => "type parameter",
+        (true, _) => "type parameters",
+        (false, _) => "template parameters",
+    };
     let required = templates.values().take_while(|template| template.default.is_none()).count();
     if arguments.len() < required || arguments.len() > expected {
         let (code, message) = if arguments.len() < required {
@@ -1822,12 +1836,21 @@ where
                 .with_annotation(Annotation::primary(span).with_message(format!("`{owner}` is applied here.")))
                 .with_annotation(
                     Annotation::secondary(owner_span)
-                        .with_message(format!("`{owner}` declares {expected} {kind} parameters.")),
+                        .with_message(format!("`{owner}` declares {expected} {parameters}.")),
                 ),
         );
 
         return false;
     }
+
+    let generic_owner = match templates.values().next().map(|template| template.defining_entity) {
+        Some(GenericParent::FunctionLike(_)) if is_sharp => {
+            let names: Vec<String> = templates.keys().map(ToString::to_string).collect();
+
+            format!("{owner}<{}>", names.join(", "))
+        }
+        _ => owner,
+    };
 
     // A PHP# bound may name the owner's type parameters, as `TItem : Comparable<TItem>` does, so each holds its argument
     // there. Upstream Mago leaves such a bound unchecked in PHP.
@@ -1869,7 +1892,7 @@ where
         context.collector.report_with_code(
             IssueCode::TemplateConstraintViolation,
             Issue::error(format!(
-                "{sentence_kind} argument `{argument_id}` does not satisfy `{owner}`'s `{template_name}`."
+                "{sentence_kind} argument `{argument_id}` does not satisfy `{generic_owner}`'s `{template_name}`."
             ))
             .with_annotation(
                 Annotation::primary(span)
@@ -1904,7 +1927,7 @@ where
         let Some((key_type, _)) = keyed_array.get_generic_parameters() else {
             continue;
         };
-        if get_backing_key_type(key_type, context.codebase).is_always_array_key(true) {
+        if get_backing_key_type(key_type, context.codebase, context.dialect).is_always_array_key(true) {
             continue;
         }
 

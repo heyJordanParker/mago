@@ -1721,25 +1721,29 @@ fn check_template_parameters<'ctx, A>(
         InheritanceKind::Use(_) => ("uses", "@use"),
     };
 
-    // A PHP# class writes its type arguments in its header, `: PaginatedList<…>`, where PHP writes a docblock tag.
+    // A PHP# class writes its type arguments in its header, `: PaginatedList<…>`, where PHP writes a docblock tag, and
+    // names each class by its short name.
     let sharp_parent = context.dialect.is_sharp().then(|| short_name(parent_name));
+    let written_class_name =
+        if context.dialect.is_sharp() { short_name(class_name) } else { class_name.as_str_lossy().into_owned() };
     let type_parameters = and_list(&parent_metadata.template_types.keys().copied().collect::<Vec<_>>());
-    let arity = if min_required_parameters_count > actual_parameters_count {
-        Some((IssueCode::MissingTemplateParameter, "few", format!("at least {min_required_parameters_count}")))
-    } else if expected_parameters_count < actual_parameters_count {
-        Some((IssueCode::ExcessTemplateParameter, "many", expected_parameters_count.to_string()))
-    } else {
-        None
-    };
-    if let Some((code, amount, expected)) = arity {
-        let is_missing = matches!(code, IssueCode::MissingTemplateParameter);
+    let is_missing = min_required_parameters_count > actual_parameters_count;
+    if is_missing || expected_parameters_count < actual_parameters_count {
+        let (code, amount, expected) = if is_missing {
+            (IssueCode::MissingTemplateParameter, "few", format!("at least {min_required_parameters_count}"))
+        } else {
+            (IssueCode::ExcessTemplateParameter, "many", expected_parameters_count.to_string())
+        };
         let (message, label, parent_label, help) = match &sharp_parent {
             Some(parent) => (
                 format!(
                     "Too {amount} type arguments for `{parent}`: expected {expected}, but found {actual_parameters_count}."
                 ),
                 format!("Too {amount} type arguments here"),
-                format!("`{parent}` declares {expected_parameters_count} type parameters"),
+                format!(
+                    "`{parent}` declares {expected_parameters_count} type parameter{}",
+                    if expected_parameters_count == 1 { "" } else { "s" }
+                ),
                 format!(
                     "Write {}a type for {type_parameters} in the header, as in `: {parent}<…>`.",
                     if is_missing { "" } else { "only " }
@@ -1765,7 +1769,8 @@ fn check_template_parameters<'ctx, A>(
         let issue = Issue::error(message)
             .with_annotation(Annotation::primary(primary_annotation_span).with_message(label))
             .with_annotation(
-                Annotation::secondary(class_name_span).with_message(format!("Declaration of `{class_name}` is here")),
+                Annotation::secondary(class_name_span)
+                    .with_message(format!("Declaration of `{written_class_name}` is here")),
             )
             .with_annotation(Annotation::secondary(parent_definition_span).with_message(parent_label))
             .with_help(help);
@@ -1942,7 +1947,7 @@ fn check_template_parameters<'ctx, A>(
                         Issue::error(message)
                             .with_annotation(
                                 Annotation::primary(class_name_span)
-                                    .with_message(format!("In the definition of `{class_name}`")),
+                                    .with_message(format!("In the definition of `{written_class_name}`")),
                             )
                             .with_note(provided)
                             .with_note(bound)
@@ -3126,18 +3131,31 @@ fn report_signature_compatibility_issue<'ctx, A>(
                 .map(|p| p.name_span)
                 .filter(|span| span.file_id == primary_span.file_id)
                 .unwrap_or(primary_span);
+            let child_type = method_signature::display_erased(&child_type, context.dialect);
+            let parent_type = method_signature::display_erased(&parent_type, context.dialect);
+            // A PHP# file names a method as C# does, `Box.put`.
+            let (child_method, parent_method) = if context.dialect.is_sharp() {
+                let method_name = parent_method.original_name;
+
+                (
+                    format!("{}.{method_name}", short_name(child_name)),
+                    format!("{}.{method_name}", short_name(parent_name)),
+                )
+            } else {
+                (format!("{child_name}::{method_name}()"), format!("{parent_name}::{method_name}()"))
+            };
 
             context.collector.report_with_code(
                 IssueCode::IncompatibleParameterType,
                 Issue::error(format!(
-                    "Parameter `{param_name}` of `{child_name}::{method_name}()` must take at least `{parent_type}`, the type `{parent_name}::{method_name}()` erases it to."
+                    "Parameter `{param_name}` of `{child_method}` must take at least {parent_type}, the type `{parent_method}` erases it to."
                 ))
-                .with_annotation(Annotation::primary(span).with_message(format!("Erases to `{child_type}`.")))
+                .with_annotation(Annotation::primary(span).with_message(format!("Erases to {child_type}.")))
                 .with_annotation(Annotation::secondary(parent_class_span).with_message(format!(
-                    "`{parent_name}::{method_name}()` takes `{parent_type}` once its type parameters are erased."
+                    "`{parent_method}` takes {parent_type} once its type parameters are erased."
                 )))
                 .with_note("PHP# erases type parameters when it compiles, and PHP refuses a parameter narrower than the one it overrides when it links the class.")
-                .with_help(method_signature::erased_type_help(param_name, parent_type, bound)),
+                .with_help(method_signature::erased_type_help(param_name, &parent_type, bound)),
             );
         }
         SignatureCompatibilityIssue::ChangedTemplateBound { template, child_method, parent_method, bound } => {
@@ -3786,28 +3804,39 @@ fn check_class_like_properties<'ctx, A>(
                         ) {
                             has_type_incompatibility = true;
 
-                            let erased_type_id = method_signature::display_erased(&erased_type);
-                            let erased_parent_type_id = method_signature::display_erased(&erased_parent_type);
+                            let erased_type_id = method_signature::display_erased(&erased_type, context.dialect);
+                            let erased_parent_type_id =
+                                method_signature::display_erased(&erased_parent_type, context.dialect);
                             let property_name = mago_bytes::trim_start_byte(property_metadata.name.0.as_bytes(), b'$');
                             let property_name = String::from_utf8_lossy(property_name);
                             let class_name = class_like_metadata.original_name;
                             let help = method_signature::erased_type_help(
                                 &property_name,
-                                erased_parent_type_id,
+                                &erased_parent_type_id,
                                 method_signature::bound_example(context.codebase, Some(parent_type), &erased_type),
                             );
+                            // A PHP# file names a property as C# does, `Slot.item`.
+                            let message = if context.dialect.is_sharp() {
+                                format!(
+                                    "Property `{}.{property_name}` must have {erased_parent_type_id}, the type `{}.{property_name}` erases to.",
+                                    short_name(class_name),
+                                    short_name(parent_class_name)
+                                )
+                            } else {
+                                format!(
+                                    "Property `{class_name}::${property_name}` must have the type {erased_parent_type_id}, the type `{parent_class_name}::${property_name}` erases to."
+                                )
+                            };
 
                             context.collector.report_with_code(
                                 IssueCode::IncompatiblePropertyType,
-                                Issue::error(format!(
-                                    "Property `{class_name}::${property_name}` must have the type `{erased_parent_type_id}`, the type `{parent_class_name}::${property_name}` erases to."
-                                ))
+                                Issue::error(message)
                                 .with_annotation(
                                     Annotation::primary(declaring_type.span)
-                                        .with_message(format!("Erases to `{erased_type_id}`.")),
+                                        .with_message(format!("Erases to {erased_type_id}.")),
                                 )
                                 .with_annotation(Annotation::secondary(parent_type.span).with_message(format!(
-                                    "Erases to `{erased_parent_type_id}`."
+                                    "Erases to {erased_parent_type_id}."
                                 )))
                                 .with_note("PHP# erases type parameters when it compiles, and PHP requires a property to keep the type of the property it overrides.")
                                 .with_help(help),

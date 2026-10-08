@@ -1,6 +1,8 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
+use mago_syntax::dialect::Dialect;
+
 use crate::metadata::CodebaseMetadata;
 use crate::ttype::atomic::TAtomic;
 use crate::ttype::atomic::array::TArray;
@@ -175,7 +177,8 @@ pub(crate) fn is_array_contained_by_array(
 
     if let (Some(input_key_type), Some(container_key_type)) = (input_key_type, container_key_type) {
         // A PHP# `Map` keyed by a backed enum is also an array of the backing values, which plain PHP receives.
-        let backing_key_type = match get_backing_key_type(&input_key_type, codebase) {
+        let dialect = if atomic_comparison_result.sharp_rules { Dialect::Sharp } else { Dialect::Php };
+        let backing_key_type = match get_backing_key_type(&input_key_type, codebase, dialect) {
             Cow::Owned(backing_key_type)
                 if !union_comparator::is_contained_by(
                     codebase,

@@ -10,6 +10,7 @@ use mago_span::Span;
 use mago_syntax::cst::TypeArgumentList;
 use mago_word::Word;
 
+use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
 use mago_codex::metadata::class_like::TemplateTypes;
 use mago_codex::metadata::function_like::FunctionLikeMetadata;
@@ -33,6 +34,7 @@ use crate::invocation::MethodTargetContext;
 use crate::invocation::template_inference::infer_templates_for_method_call;
 use crate::statement::function_like::check_template_arguments;
 use crate::statement::get_type_from_hint;
+use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_function_like_identifier;
 use crate::utils::template::get_template_types_for_class_member;
 
@@ -239,7 +241,13 @@ pub fn seed_method_type_arguments<'ctx, A>(
             continue;
         };
 
-        let owner = display_function_like_identifier(context, identifier);
+        // PHP# names a method as C# does, `Store.count`.
+        let owner = match identifier {
+            FunctionLikeIdentifier::Method(class_name, _) => {
+                format!("{}.{}", display_class_like_name(context, *class_name), metadata.original_name)
+            }
+            _ => display_function_like_identifier(context, identifier),
+        };
         seed_type_arguments(
             context,
             block_context,

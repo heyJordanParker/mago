@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use mago_syntax::dialect::Dialect;
 use mago_word::Word;
 use mago_word::word;
 
@@ -1396,13 +1397,17 @@ pub fn get_iterable_parameters(atomic: &TAtomic, codebase: &CodebaseMetadata) ->
     None
 }
 
-/// Returns the key type plain PHP sees for `key_type`.
+/// Returns the key type plain PHP sees for `key_type`, a key type `dialect` code writes.
 ///
 /// A PHP# `Map` keyed by a backed enum holds each case's backing value at runtime, as spec section 12 writes it, so
 /// plain PHP sees a key that holds a backed enum, as [`get_backed_enum`] finds it, as the enum's backing type.
 #[must_use]
-pub fn get_backing_key_type<'key>(key_type: &'key TUnion, codebase: &CodebaseMetadata) -> Cow<'key, TUnion> {
-    let backing_type = |atomic: &TAtomic| get_backed_enum(atomic, codebase)?.enum_type.clone();
+pub fn get_backing_key_type<'key>(
+    key_type: &'key TUnion,
+    codebase: &CodebaseMetadata,
+    dialect: Dialect,
+) -> Cow<'key, TUnion> {
+    let backing_type = |atomic: &TAtomic| get_backed_enum(atomic, codebase, dialect)?.enum_type.clone();
 
     if !key_type.types.iter().any(|atomic| backing_type(atomic).is_some()) {
         return Cow::Borrowed(key_type);
@@ -1413,16 +1418,19 @@ pub fn get_backing_key_type<'key>(key_type: &'key TUnion, codebase: &CodebaseMet
     ))
 }
 
-/// The backed enum whose cases every value of `atomic` is: the enum itself, or the backed enum among the members
-/// of a type parameter's bound, whichever member the bound writes first.
+/// The backed enum whose cases every value of `atomic` is.
+///
+/// That is the enum itself, or, in a type `dialect` code writes, a PHP# type parameter's backed enum among the members
+/// of its bound, whichever member the bound writes first. A plain PHP template stays itself, as upstream Mago reads it.
 #[must_use]
 pub fn get_backed_enum<'codebase>(
     atomic: &TAtomic,
     codebase: &'codebase CodebaseMetadata,
+    dialect: Dialect,
 ) -> Option<&'codebase ClassLikeMetadata> {
     let bound = match atomic {
         TAtomic::GenericParameter(parameter) => match parameter.constraint.types.as_ref() {
-            [bound] => bound,
+            [bound] if dialect.is_sharp() => bound,
             _ => return None,
         },
         _ => atomic,
@@ -1446,9 +1454,10 @@ pub fn get_backed_enum<'codebase>(
 pub fn get_sole_backed_enum<'codebase>(
     union: &TUnion,
     codebase: &'codebase CodebaseMetadata,
+    dialect: Dialect,
 ) -> Option<&'codebase ClassLikeMetadata> {
     let mut backed_enums =
-        union.types.iter().filter(|atomic| !atomic.is_null()).map(|atomic| get_backed_enum(atomic, codebase));
+        union.types.iter().filter(|atomic| !atomic.is_null()).map(|atomic| get_backed_enum(atomic, codebase, dialect));
     let first = backed_enums.next()??;
 
     backed_enums

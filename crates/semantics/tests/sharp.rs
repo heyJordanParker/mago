@@ -2856,15 +2856,11 @@ fn the_generics_examples_of_the_spec_are_in_the_slice_but_a_test_of_a_type_param
 #[test]
 fn a_type_parameter_whose_name_does_not_start_with_t_and_an_uppercase_letter_is_an_error() {
     let code = "namespace App.Tenant;\n\npublic class Box<Item, T, TKey, Tkey, T1, TK>\n{\n    public void run<Value>() { }\n}\n";
+    let refusal = "A type parameter's name is `T`, or `T` and a capital letter, as in `TItem`.";
 
     assert_eq!(
         issues(code),
-        [
-            "3:18 A type parameter's name starts with `T`, as in `TItem`.",
-            "3:33 A type parameter's name starts with `T`, as in `TItem`.",
-            "3:39 A type parameter's name starts with `T`, as in `TItem`.",
-            "5:21 A type parameter's name starts with `T`, as in `TItem`.",
-        ]
+        [format!("3:18 {refusal}"), format!("3:33 {refusal}"), format!("3:39 {refusal}"), format!("5:21 {refusal}")]
     );
 }
 
@@ -2943,13 +2939,12 @@ fn the_type_arguments_of_new_and_of_a_method_call_are_checked_as_types() {
     );
 }
 
-/// G1 erases type arguments, so whatever needs one while the code runs is not supported yet: a type parameter in a
-/// pattern, `as` or a catch clause, `typeof` of one, `new` of one, and any type with type arguments in a pattern or
-/// `as`, `Class<T>`, a `List` and a `Map` alike. Each refusal names the test or the expression as the code writes it,
-/// and why it cannot run. The plain PHP twin, whose `@template` names no class, has no PHP# rule.
+/// G1 erases type arguments, so a type parameter is not supported yet where the code runs it: in a pattern, `as` or a
+/// catch clause, `typeof` of one and `new` of one. Each refusal names the test or the expression as the code writes
+/// it, and why it cannot run, with no note. The plain PHP twin, whose `@template` names no class, has no PHP# rule.
 #[test]
 fn what_needs_a_type_argument_while_the_code_runs_is_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public bool run<TItem>(Any value, List<TItem> items)\n    {\n        const a = value is TItem;\n        const b = value is TItem item;\n        const c = value as TItem;\n        const f = value as List<TItem>;\n        const g = value as Map<string, List<TItem>>;\n        const h = value is List<TItem>;\n        const i = match (value) { TItem => 1, default => 0 };\n        const j = typeof(TItem);\n        const k = new TItem(value);\n        try {\n        } catch (TItem failure) {\n        }\n        const m = value is Class<Order>;\n        return a;\n    }\n}\n";
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public bool run<TItem>(Any value, List<TItem> items)\n    {\n        const a = value is TItem;\n        const b = value is TItem item;\n        const c = value as TItem;\n        const i = match (value) { TItem => 1, default => 0 };\n        const j = typeof(TItem);\n        const k = new TItem(value);\n        try {\n        } catch (TItem failure) {\n        }\n        return a;\n    }\n}\n";
     let php = "<?php\n\nclass Report\n{\n    /**\n     * @template TItem\n     * @param list<TItem> $items\n     */\n    public function run(mixed $value, array $items): bool\n    {\n        $a = $value instanceof TItem;\n        $j = TItem::class;\n        $k = new TItem($value);\n        try {\n        } catch (TItem $failure) {\n        }\n        return $a;\n    }\n}\n";
     let because = "because type arguments don't reach the running program.";
 
@@ -2960,14 +2955,10 @@ fn what_needs_a_type_argument_while_the_code_runs_is_not_supported_yet() {
             format!("7:28 `is TItem` can't be tested yet, {because}"),
             format!("8:28 `is TItem` can't be tested yet, {because}"),
             format!("9:28 `as TItem` can't be tested yet, {because}"),
-            format!("10:28 `as List<TItem>` can't be tested yet, {because}"),
-            format!("11:28 `as Map<string, List<TItem>>` can't be tested yet, {because}"),
-            format!("12:28 `is List<TItem>` can't be tested yet, {because}"),
-            format!("13:35 `TItem` can't be tested yet, {because}"),
-            format!("14:19 `typeof(TItem)` can't run yet, {because}"),
-            format!("15:19 `new TItem` can't run yet, {because}"),
-            format!("17:18 `catch (TItem)` can't be tested yet, {because}"),
-            format!("19:28 `is Class<Order>` can't be tested yet, {because}"),
+            format!("10:35 `TItem` can't be tested yet, {because}"),
+            format!("11:19 `typeof(TItem)` can't run yet, {because}"),
+            format!("12:19 `new TItem` can't run yet, {because}"),
+            format!("14:18 `catch (TItem)` can't be tested yet, {because}"),
         ]
     );
     assert!(check("src/Report.sharp", code).iter().all(|issue| issue.notes.is_empty()));
@@ -2992,7 +2983,6 @@ fn a_static_member_of_a_type_parameter_is_not_supported_yet() {
             format!("10:16 A static member of `TKey` can't be used yet, {because}"),
         ]
     );
-    assert!(check("src/Report.sharp", code).iter().all(|issue| issue.notes.is_empty()));
 }
 
 /// G1 erases type arguments, so every `Box<…>` shares one static member, and a static member uses none of its class's
@@ -3037,6 +3027,32 @@ fn a_static_method_uses_its_own_type_parameters() {
     assert_eq!(issues(code), Vec::<String>::new());
 }
 
+/// `Self` is the class with its own type parameters, so a static member of a generic class can't return it, as it
+/// can't name `TItem`. A static member of a class without type parameters returns `Self`. The plain PHP twin's
+/// `static` has no PHP# rule.
+#[test]
+fn a_static_member_of_a_generic_class_cannot_return_self() {
+    let code = "namespace App.Tenant;\n\npublic class Box<TItem>\n{\n    public required Box()\n    {\n    }\n\n    public static Self make() => new Self();\n}\n\npublic class Plain\n{\n    public required Plain()\n    {\n    }\n\n    public static Self make() => new Self();\n}\n";
+    let php = "<?php\n\n/** @template TItem */\nclass Box\n{\n    final public function __construct()\n    {\n    }\n\n    public static function make(): static\n    {\n        return new static();\n    }\n}\n";
+
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
+    assert_eq!(issues(code), ["9:19 A static member can't use `TItem`, because every `Box<…>` shares it."]);
+}
+
+/// `Class<Box>` names the class itself, as C#'s `typeof(Box<>)` does, so its type argument is a class written without
+/// type arguments, and `Class<Box<Order>>` is refused. The plain PHP twin's `class-string` has no PHP# rule.
+#[test]
+fn a_class_type_names_a_class_without_type_arguments() {
+    let code = "namespace App.Tenant;\n\npublic class Store\n{\n    private Class<Box> kind = typeof(Box);\n    private Class<Box<Order>>? boxed = null;\n}\n";
+    let php = "<?php\n\nclass Store\n{\n    /** @var class-string<Box> */\n    private string $kind = Box::class;\n}\n";
+
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
+    assert_eq!(
+        issues(code),
+        ["6:19 `Class`'s type argument is a class, an interface or a type parameter, as in `Class<Order>`."]
+    );
+}
+
 /// G1 erases type arguments, so `is`, `as` and a `match` arm cannot test them while the code runs: a `List` runs as a
 /// PHP array of any elements, and a generic class as its class. Each is refused once, at its type. The plain PHP twin
 /// has no PHP# rule.
@@ -3058,7 +3074,6 @@ fn a_type_test_with_type_arguments_is_not_supported_yet() {
             format!("12:34 `PaginatedList<Order>` can't be tested yet, {because}"),
         ]
     );
-    assert!(check("src/Report.sharp", code).iter().all(|issue| issue.notes.is_empty()));
 }
 
 /// A function type runs as a `Closure` of any signature, so `is`, `as` and a `match` arm cannot test its signature,
@@ -3079,7 +3094,6 @@ fn a_type_test_of_a_function_type_is_not_supported_yet() {
             format!("10:32 `as int|Function<int(int)>` can't be tested yet, {because}"),
         ]
     );
-    assert!(check("src/Report.sharp", code).iter().all(|issue| issue.notes.is_empty()));
 }
 
 /// A generic member of a union gets the checks it gets outside a union, inside its type arguments too. Each union

@@ -370,7 +370,7 @@ fn infer_templates_from_input_and_container_types<A>(
                                         infer_templates_from_input_and_container_types(
                                             context,
                                             &container_parameter.0,
-                                            &get_backing_key_type(&input_key_type, context.codebase),
+                                            &get_backing_key_type(&input_key_type, context.codebase, context.dialect),
                                             template_result,
                                             options,
                                             violations,
@@ -577,7 +577,7 @@ fn infer_templates_from_input_and_container_types<A>(
                     infer_templates_from_input_and_container_types(
                         context,
                         container_iterable.get_key_type(),
-                        &get_backing_key_type(&input_params.0, context.codebase),
+                        &get_backing_key_type(&input_params.0, context.codebase, context.dialect),
                         template_result,
                         options,
                         violations,

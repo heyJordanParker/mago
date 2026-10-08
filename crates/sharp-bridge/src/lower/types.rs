@@ -16,6 +16,7 @@ use mago_syntax::cst::Call;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Expression;
+use mago_syntax::dialect::Dialect;
 use mago_word::Word;
 use mago_word::word;
 
@@ -110,7 +111,8 @@ impl<'analysis> Types<'analysis> {
     /// The fully qualified name of the one backed enum every value of `r#type` but `null` is a case of, as
     /// [`get_sole_backed_enum`] finds it.
     pub(crate) fn backed_enum(&self, r#type: &TUnion) -> Option<&'analysis [u8]> {
-        get_sole_backed_enum(r#type, self.codebase).map(|backed_enum| backed_enum.original_name.as_bytes())
+        get_sole_backed_enum(r#type, self.codebase, Dialect::Sharp)
+            .map(|backed_enum| backed_enum.original_name.as_bytes())
     }
 
     /// The declaration `member` of the fully qualified class name `class` resolves to when code reads it: an enum case,

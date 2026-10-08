@@ -12,6 +12,7 @@ use mago_names::binding::Local;
 use mago_names::binding::LocalKind;
 use mago_names::binding::php_variable_name;
 use mago_names::resolver::NameResolver;
+use mago_span::HasSpan;
 use mago_span::Position;
 use mago_span::Span;
 use mago_syntax::cst::Node;
@@ -735,9 +736,11 @@ fn the_erased_part_of_a_type_is_what_needs_a_type_argument_while_the_code_runs()
     assert!(program.errors.is_empty(), "{:#?}", program.errors);
     let names = NameResolver::new(&arena).resolve(program);
     let erased = Node::Program(program).filter_map(|node| match node {
-        Node::As(r#as) => {
-            Some(names.erased_type(r#as.hint).map(|span| &CODE[span.start.offset as usize..span.end.offset as usize]))
-        }
+        Node::As(r#as) => Some(names.erased_type(r#as.hint).map(|erased| {
+            let span = erased.span();
+
+            &CODE[span.start.offset as usize..span.end.offset as usize]
+        })),
         _ => None,
     });
 

@@ -15,7 +15,6 @@ use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_named_object;
 use mago_codex::ttype::get_never;
 use mago_codex::ttype::union::TUnion;
-use mago_names::ResolvedNames;
 use mago_names::binding::php_variable_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -26,6 +25,8 @@ use mago_span::Span;
 use mago_syntax::cst::Access;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::Expression;
+use mago_syntax::cst::Hint;
+use mago_syntax::cst::Identifier;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::Parenthesized;
 use mago_syntax::cst::Pattern;
@@ -209,8 +210,9 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
                 | Expression::Is(_)
                 | Expression::As(_)
                 | Expression::PatternMatch(_)
-                    if is_refused(self, context.resolved_names) =>
+                    if is_refused(self, context) =>
                 {
+                    report_untested_generic_classes(self, context);
                     if let Expression::Is(is) = self {
                         for (hint, variable) in Node::Pattern(is.pattern).filter_map(|node| match node {
                             Node::TypePattern(TypePattern { hint, variable: Some(variable) }) => Some((hint, variable)),
@@ -622,21 +624,28 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Parenthesized<'arena> {
     }
 }
 
-/// Whether an error already refuses `expression`, which `check_slice` refuses: it failed to parse, it is `typeof` or
-/// `new` of a type parameter, it tests or converts a value to a type with an [erased part](ResolvedNames::erased_type)
-/// in `is`, `as` or a `match` arm, or it reads or calls a member of a type parameter or of `typeof` of one through any
-/// chain of property reads. Its type is `never`, a variable its `is` pattern names holds the type written beside it, and
-/// it adds no issue.
-pub(crate) fn is_refused(expression: &Expression<'_>, resolved_names: &ResolvedNames<'_>) -> bool {
+/// Whether an error already refuses `expression`. `check_slice` refuses it when it failed to parse, it is `typeof` or
+/// `new` of a type parameter, it tests or converts a value to a type with an
+/// [erased part](mago_names::ResolvedNames::erased_type) in `is`, `as` or a `match` arm, or it reads or calls a member of
+/// a type parameter or of `typeof` of one through any chain of property reads. [`report_untested_generic_classes`]
+/// refuses a test of a generic class written without its type arguments. Its type is `never`, a variable its `is`
+/// pattern names holds the type written beside it, and it adds no other issue.
+pub(crate) fn is_refused<A>(expression: &Expression<'_>, context: &Context<'_, '_, A>) -> bool
+where
+    A: Arena,
+{
+    let resolved_names = context.resolved_names;
     let mut object = match expression {
         Expression::Error(_) => return true,
         Expression::TypeOf(type_of) => return resolved_names.is_type_parameter(&type_of.class),
         Expression::Instantiation(instantiation) => {
             return matches!(instantiation.class, Expression::Identifier(class) if resolved_names.is_type_parameter(class));
         }
-        Expression::Is(is) => return tests_erased_type(is.pattern, resolved_names),
-        Expression::As(r#as) => return resolved_names.erased_type(r#as.hint).is_some(),
-        Expression::PatternMatch(pattern_match) => return is_refused_match(pattern_match, resolved_names),
+        Expression::Is(is) => {
+            return type_pattern_hints(is.pattern).into_iter().any(|hint| is_untestable(hint, context));
+        }
+        Expression::As(r#as) => return is_untestable(r#as.hint, context),
+        Expression::PatternMatch(pattern_match) => return is_refused_match(pattern_match, context),
         Expression::Access(Access::Property(access)) => access.object,
         Expression::Call(Call::Method(call)) => call.object,
         _ => return false,
@@ -653,30 +662,131 @@ pub(crate) fn is_refused(expression: &Expression<'_>, resolved_names: &ResolvedN
     }
 }
 
-/// Whether an arm of `pattern_match`, an expression or a statement, tests its value against a type with an erased part,
-/// which `check_slice` refuses.
-pub(crate) fn is_refused_match(pattern_match: &PatternMatch<'_>, resolved_names: &ResolvedNames<'_>) -> bool {
-    pattern_match.arms.iter().any(|arm| match arm {
-        PatternMatchArm::Pattern(arm) => tests_erased_type(arm.pattern, resolved_names),
-        PatternMatchArm::Default(_) => false,
-    })
+/// Whether an arm of `pattern_match`, an expression or a statement, tests its value against a type no test can run
+/// on yet.
+pub(crate) fn is_refused_match<A>(pattern_match: &PatternMatch<'_>, context: &Context<'_, '_, A>) -> bool
+where
+    A: Arena,
+{
+    match_arm_hints(pattern_match).into_iter().any(|hint| is_untestable(hint, context))
 }
 
-/// Whether `pattern` or a pattern inside it tests a value against a type with an
-/// [erased part](ResolvedNames::erased_type).
-fn tests_erased_type(pattern: &Pattern<'_>, resolved_names: &ResolvedNames<'_>) -> bool {
-    match pattern {
-        Pattern::Type(type_pattern) => resolved_names.erased_type(&type_pattern.hint).is_some(),
-        Pattern::Not(not) => tests_erased_type(not.pattern, resolved_names),
-        Pattern::Binary(binary) => {
-            tests_erased_type(binary.left, resolved_names) || tests_erased_type(binary.right, resolved_names)
+/// Refuses each type test of `expression`, an `is`, an `as` or a `match`, that names a generic class without its type
+/// arguments, in the words the checker refuses a test of a type parameter with.
+pub(crate) fn report_untested_generic_classes<A>(expression: &Expression<'_>, context: &mut Context<'_, '_, A>)
+where
+    A: Arena,
+{
+    match expression {
+        Expression::Is(is) => {
+            let keyword = if matches!(is.pattern, Pattern::Type(_)) { "is " } else { "" };
+            for hint in type_pattern_hints(is.pattern) {
+                report_untested_generic_class(hint, |code| format!("{keyword}{code}"), context);
+            }
         }
-        Pattern::Parenthesized(parenthesized) => tests_erased_type(parenthesized.pattern, resolved_names),
-        Pattern::Properties(properties) => {
-            properties.properties.iter().any(|property| tests_erased_type(property.pattern, resolved_names))
-        }
-        Pattern::Value(_) | Pattern::Comparison(_) => false,
+        Expression::As(r#as) => report_untested_generic_class(r#as.hint, |code| format!("as {code}"), context),
+        Expression::PatternMatch(pattern_match) => report_untested_match_arms(pattern_match, context),
+        _ => {}
     }
+}
+
+/// Refuses each arm of `pattern_match`, an expression or a statement, whose type names a generic class without its type
+/// arguments.
+pub(crate) fn report_untested_match_arms<A>(pattern_match: &PatternMatch<'_>, context: &mut Context<'_, '_, A>)
+where
+    A: Arena,
+{
+    for hint in match_arm_hints(pattern_match) {
+        report_untested_generic_class(hint, str::to_owned, context);
+    }
+}
+
+/// Refuses a type test of `hint` that names a generic class without its type arguments, as `is Box` for `Box<TItem>`,
+/// worded as `test` writes the code of `hint`: G1 erases type arguments, so the running program can't test them. The
+/// checker can't see a class another file declares, so the analyzer refuses it.
+pub(crate) fn report_untested_generic_class<A>(
+    hint: &Hint<'_>,
+    test: impl FnOnce(&str) -> String,
+    context: &mut Context<'_, '_, A>,
+) where
+    A: Arena,
+{
+    let Some(class) = untested_generic_class(hint, context) else {
+        return;
+    };
+    let span = hint.span();
+    let code =
+        String::from_utf8_lossy(&context.source_file.contents[span.start.offset as usize..span.end.offset as usize]);
+
+    context.collector.report_with_code(
+        IssueCode::NotSupportedYet,
+        Issue::error(format!(
+            "`{}` can't be tested yet, because type arguments don't reach the running program.",
+            test(&code)
+        ))
+        .with_annotation(Annotation::primary(class.span()).with_message("Not supported yet.")),
+    );
+}
+
+/// Whether no type test of `hint` can run yet: it has an [erased part](mago_names::ResolvedNames::erased_type), or it
+/// names a generic class without its type arguments.
+fn is_untestable<A>(hint: &Hint<'_>, context: &Context<'_, '_, A>) -> bool
+where
+    A: Arena,
+{
+    context.resolved_names.erased_type(hint).is_some() || untested_generic_class(hint, context).is_some()
+}
+
+/// The name in a PHP# type test's `hint` of a generic class written without its type arguments, alone or inside a
+/// nullable type or a union, as [`mago_names::ResolvedNames::erased_type`] walks a type. `None` in a PHP file.
+fn untested_generic_class<'ast, A>(
+    hint: &'ast Hint<'ast>,
+    context: &Context<'_, '_, A>,
+) -> Option<&'ast Identifier<'ast>>
+where
+    A: Arena,
+{
+    match hint {
+        Hint::Identifier(name) if context.dialect.is_sharp() && !context.resolved_names.is_type_parameter(name) => {
+            context
+                .codebase
+                .get_class_like(context.resolved_names.get(name))
+                .is_some_and(|class| !class.template_types.is_empty())
+                .then_some(name)
+        }
+        Hint::Nullable(nullable) => untested_generic_class(nullable.hint, context),
+        Hint::Parenthesized(parenthesized) => untested_generic_class(parenthesized.hint, context),
+        Hint::Union(union) => {
+            untested_generic_class(union.left, context).or_else(|| untested_generic_class(union.right, context))
+        }
+        _ => None,
+    }
+}
+
+/// The type of each type pattern in `pattern`, itself or a pattern inside it.
+fn type_pattern_hints<'ast>(pattern: &'ast Pattern<'ast>) -> Vec<&'ast Hint<'ast>> {
+    match pattern {
+        Pattern::Type(type_pattern) => vec![&type_pattern.hint],
+        Pattern::Not(not) => type_pattern_hints(not.pattern),
+        Pattern::Binary(binary) => [type_pattern_hints(binary.left), type_pattern_hints(binary.right)].concat(),
+        Pattern::Parenthesized(parenthesized) => type_pattern_hints(parenthesized.pattern),
+        Pattern::Properties(properties) => {
+            properties.properties.iter().flat_map(|property| type_pattern_hints(property.pattern)).collect()
+        }
+        Pattern::Value(_) | Pattern::Comparison(_) => Vec::new(),
+    }
+}
+
+/// The type of each type pattern in the arms of `pattern_match`.
+fn match_arm_hints<'ast>(pattern_match: &'ast PatternMatch<'ast>) -> Vec<&'ast Hint<'ast>> {
+    pattern_match
+        .arms
+        .iter()
+        .flat_map(|arm| match arm {
+            PatternMatchArm::Pattern(arm) => type_pattern_hints(arm.pattern),
+            PatternMatchArm::Default(_) => Vec::new(),
+        })
+        .collect()
 }
 
 pub fn find_expression_logic_issues<'ctx, 'arena, A>(

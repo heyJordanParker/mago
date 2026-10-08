@@ -61,6 +61,7 @@ use crate::error::AnalysisError;
 use crate::expression::analyze_php_shape;
 use crate::expression::assignment::analyze_assignment;
 use crate::expression::is_refused_match;
+use crate::expression::report_untested_match_arms;
 use crate::plugin::HookAction;
 use crate::plugin::context::HookContext;
 use crate::statement::function_like::report_invalid_template_arguments;
@@ -230,7 +231,9 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Statement<'arena> {
                 Statement::Foreach(foreach) => foreach.analyze(context, block_context, artifacts),
                 Statement::For(r#for) => r#for.analyze(context, block_context, artifacts),
                 Statement::ForOf(for_of) => analyze_for_of(for_of, context, block_context, artifacts),
-                Statement::PatternMatch(pattern_match) if is_refused_match(pattern_match, context.resolved_names) => {
+                Statement::PatternMatch(pattern_match) if is_refused_match(pattern_match, context) => {
+                    report_untested_match_arms(pattern_match, context);
+
                     Ok(())
                 }
                 Statement::PatternMatch(_) => {
@@ -471,8 +474,8 @@ fn report_key_mixing_a_backed_enum<A>(
     let mixes_a_backed_enum = collection_type.types.iter().any(|atomic| match atomic {
         TAtomic::Array(TArray::Keyed(keyed_array)) => {
             keyed_array.get_generic_parameters().is_some_and(|(key_type, _)| {
-                matches!(get_backing_key_type(key_type, context.codebase), Cow::Owned(_))
-                    && get_sole_backed_enum(key_type, context.codebase).is_none()
+                matches!(get_backing_key_type(key_type, context.codebase, context.dialect), Cow::Owned(_))
+                    && get_sole_backed_enum(key_type, context.codebase, context.dialect).is_none()
             })
         }
         _ => false,

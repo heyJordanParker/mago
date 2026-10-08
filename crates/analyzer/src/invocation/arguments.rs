@@ -30,6 +30,7 @@ use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::Expression;
+use mago_syntax::dialect::Dialect;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
@@ -329,8 +330,11 @@ pub fn verify_argument_type<'arena, A>(
 
     // Spec section 11 checks a value from plain PHP where it enters PHP#, so a plain PHP caller passes the backing
     // values where PHP# takes a `Map` keyed by a backed enum.
-    let backing_parameter_type =
-        if context.dialect.is_sharp() { None } else { get_backing_array_type(parameter_type, context.codebase) };
+    let backing_parameter_type = if context.dialect.is_sharp() {
+        None
+    } else {
+        get_backing_array_type(parameter_type, context.codebase, context.dialect)
+    };
     let parameter_type = backing_parameter_type.as_ref().unwrap_or(parameter_type);
 
     let mut union_comparison_result = ComparisonResult::for_dialect(context.dialect);
@@ -493,14 +497,14 @@ pub fn verify_argument_type<'arena, A>(
 }
 
 /// Returns `parameter_type` with each `Map` keyed by a backed enum keyed by the backing type instead, or `None` when
-/// it has no such `Map`.
-fn get_backing_array_type(parameter_type: &TUnion, codebase: &CodebaseMetadata) -> Option<TUnion> {
+/// it has no such `Map`, for a call `dialect` code writes.
+fn get_backing_array_type(parameter_type: &TUnion, codebase: &CodebaseMetadata, dialect: Dialect) -> Option<TUnion> {
     let backing_atomic = |atomic: &TAtomic| {
         let TAtomic::Array(TArray::Keyed(keyed_array)) = atomic else {
             return None;
         };
         let (key_type, value_type) = keyed_array.parameters.as_ref()?;
-        let Cow::Owned(backing_key_type) = get_backing_key_type(key_type, codebase) else {
+        let Cow::Owned(backing_key_type) = get_backing_key_type(key_type, codebase, dialect) else {
             return None;
         };
 

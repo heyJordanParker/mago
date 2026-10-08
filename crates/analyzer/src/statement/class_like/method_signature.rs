@@ -47,7 +47,7 @@ pub enum SignatureCompatibilityIssue {
     IncompatibleReturnType { child_type: TUnion, parent_type: TUnion },
     MissingReturnTypeDeclaration { parent_type: TUnion },
     ParameterNameMismatch { parameter_index: usize, child_name: Word, parent_name: Word },
-    ErasedParameterNarrowed { parameter_index: usize, child_type: Word, parent_type: Word, bound: Option<Word> },
+    ErasedParameterNarrowed { parameter_index: usize, child_type: TUnion, parent_type: TUnion, bound: Option<Word> },
     ChangedTemplateBound { template: Word, child_method: String, parent_method: String, bound: Option<TUnion> },
 }
 
@@ -504,9 +504,9 @@ pub fn validate_erased_signature_compatibility(
 
             Some(SignatureCompatibilityIssue::ErasedParameterNarrowed {
                 parameter_index,
-                child_type: display_erased(&child_type),
-                parent_type: display_erased(&parent_type),
                 bound: bound_example(codebase, parent_parameter.type_declaration_metadata.as_ref(), &child_type),
+                child_type,
+                parent_type,
             })
         },
     ));
@@ -548,13 +548,13 @@ pub(super) fn bound_example(
 }
 
 /// The help of an issue whose `name` erases to another type than `erased_parent_type`, the type its parent's
-/// declaration erases to, naming the `bound` that `bound_example` finds when there is one.
-pub(super) fn erased_type_help(name: impl std::fmt::Display, erased_parent_type: Word, bound: Option<Word>) -> String {
+/// declaration erases to as `display_erased` writes it, naming the `bound` that `bound_example` finds when there is one.
+pub(super) fn erased_type_help(name: impl std::fmt::Display, erased_parent_type: &str, bound: Option<Word>) -> String {
     match bound {
         Some(bound) => format!(
-            "Write `{name}` with a type that erases to `{erased_parent_type}`, or bound the type parameter, as in `{bound}`, so both sides erase to the bound."
+            "Write `{name}` with a type that erases to {erased_parent_type}, or bound the type parameter, as in `{bound}`, so both sides erase to the bound."
         ),
-        None => format!("Write `{name}` with a type that erases to `{erased_parent_type}`."),
+        None => format!("Write `{name}` with a type that erases to {erased_parent_type}."),
     }
 }
 
@@ -591,9 +591,10 @@ pub(super) fn erase(r#type: &TUnion, codebase: &CodebaseMetadata) -> TUnion {
     TUnion::from_vec(combiner::combine(erased, codebase, CombinerOptions::default()))
 }
 
-/// The type `erased`, which `erase` returns, as PHP writes it in a declaration: `array`, `iterable`, `Closure`,
-/// `mixed`, or a class by its full name.
-pub(super) fn display_erased(erased: &TUnion) -> Word {
+/// The type `erased`, which `erase` returns, as PHP writes it in a declaration, `array`, `iterable`, `Closure`, `mixed`,
+/// or a class by its full name, in backticks. A message in a `dialect` PHP# file says it is PHP's, as in PHP's `mixed`,
+/// since PHP# writes no such type.
+pub(super) fn display_erased(erased: &TUnion, dialect: Dialect) -> String {
     let members: Vec<String> = erased
         .types
         .iter()
@@ -604,8 +605,9 @@ pub(super) fn display_erased(erased: &TUnion) -> Word {
             atomic => atomic.get_id().to_string(),
         })
         .collect();
+    let erased = members.join("|");
 
-    word(members.join("|"))
+    if dialect.is_sharp() { format!("PHP's `{erased}`") } else { format!("`{erased}`") }
 }
 
 const fn is_visibility_narrowed(child_visibility: Visibility, parent_visibility: Visibility) -> bool {

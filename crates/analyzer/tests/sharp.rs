@@ -3624,7 +3624,7 @@ fn a_generic_method_returns_a_generic_class_of_its_inferred_type_argument() {
 /// A type argument outside its type parameter's bound is reported where it is written, and an inferred one where the
 /// call passes it. Several bounds joined with `&` each hold.
 #[test]
-fn a_type_argument_outside_its_bound_or_beyond_the_type_parameters_is_reported() {
+fn a_written_or_inferred_type_argument_outside_its_bound_is_reported() {
     let sharp = "namespace Demo;\n\npublic class Report\n{\n    public static Any lines(Repository repository, Query<Line> query) => repository.list(query);\n\n    public static Any shared(Shelf<SharedOrder> shelf) => shelf;\n\n    public static Any plain(Shelf<Order> shelf) => shelf;\n}\n";
 
     assert_eq!(
@@ -3655,8 +3655,9 @@ fn a_bound_names_a_type_parameter_of_its_own_list() {
     );
 }
 
-/// A type argument outside its bound or beyond the type parameters is reported in PHP#'s words, with type arguments and
-/// short class names, and its PHP twin keeps Mago's text about template arguments.
+/// A type argument outside its bound or beyond the type parameters is reported in PHP#'s words, with type arguments,
+/// short class names, a method written `Store.count` and a count that agrees with its noun, and its PHP twin keeps
+/// Mago's text about template arguments.
 #[test]
 fn a_type_argument_report_names_type_arguments_and_short_class_names() {
     let sharp = "namespace Demo;\n\npublic class Report\n{\n    public static Any numbers(PaginatedList<int> page) => page;\n\n    public static Any pairs(PaginatedList<Order, Order> page) => page;\n\n    public static int counted(Store store) => store.count<int>();\n}\n";
@@ -3664,18 +3665,18 @@ fn a_type_argument_report_names_type_arguments_and_short_class_names() {
     let others = [("src/Demo/Paging.sharp", PAGING), ("src/Demo/Store.sharp", STORE)];
 
     assert_eq!(
-        explained(("src/Demo/Report.php", php), &others),
+        worded(("src/Demo/Report.php", php), &others),
         [
-            "7:16 template-constraint-violation Template argument `int` does not satisfy `Demo\\PaginatedList`'s `TItem`. Supply a type contained by `Demo\\DatabaseEntity`.",
-            "13:16 excess-template-parameter Too many template arguments for `Demo\\PaginatedList`: expected 1, but found 2.",
+            "7:16 template-constraint-violation Template argument `int` does not satisfy `Demo\\PaginatedList`'s `TItem`. | `int` is supplied for `TItem` here... | ...but `TItem` is bounded by `Demo\\DatabaseEntity`. | Supply a type contained by `Demo\\DatabaseEntity`.",
+            "13:16 excess-template-parameter Too many template arguments for `Demo\\PaginatedList`: expected 1, but found 2. | `Demo\\PaginatedList` is applied here. | `Demo\\PaginatedList` declares 1 template parameters.",
         ]
     );
     assert_eq!(
-        explained(("src/Demo/Report.sharp", sharp), &others),
+        worded(("src/Demo/Report.sharp", sharp), &others),
         [
-            "5:31 template-constraint-violation Type argument `int` does not satisfy `PaginatedList`'s `TItem`. Supply a type contained by `DatabaseEntity`.",
-            "7:29 excess-template-parameter Too many type arguments for `PaginatedList`: expected 1, but found 2.",
-            "9:58 excess-template-parameter Too many type arguments for `Store::count`: expected 0, but found 1.",
+            "5:31 template-constraint-violation Type argument `int` does not satisfy `PaginatedList`'s `TItem`. | `int` is supplied for `TItem` here... | ...but `TItem` is bounded by `DatabaseEntity`. | Supply a type contained by `DatabaseEntity`.",
+            "7:29 excess-template-parameter Too many type arguments for `PaginatedList`: expected 1, but found 2. | `PaginatedList` is applied here. | `PaginatedList` declares 1 type parameter.",
+            "9:58 excess-template-parameter Too many type arguments for `Store.count`: expected 0, but found 1. | `Store.count` is applied here. | `Store.count` declares 0 type parameters.",
         ]
     );
 }
@@ -3705,8 +3706,8 @@ fn a_header_passes_its_type_arguments_to_the_generic_base() {
     );
 }
 
-/// A header with too few or too many type arguments is reported in PHP#'s words, naming the header form, and its PHP
-/// twin keeps Mago's text about the `@extends` tag.
+/// A header with too few or too many type arguments is reported in PHP#'s words, naming the header form, its class by
+/// its short name and a count that agrees with its noun, and its PHP twin keeps Mago's text about the `@extends` tag.
 #[test]
 fn a_header_with_the_wrong_number_of_type_arguments_names_the_header_form() {
     let sharp = "namespace Demo;\n\npublic class EntryPage : PaginatedList\n{\n}\n\npublic class EntryPair : PaginatedList<Order, Order>\n{\n}\n";
@@ -3714,17 +3715,17 @@ fn a_header_with_the_wrong_number_of_type_arguments_names_the_header_form() {
     let paging = "<?php\n\nnamespace Demo;\n\n/**\n * @template TItem\n */\nclass PaginatedList\n{\n}\n";
 
     assert_eq!(
-        explained(("src/Demo/Pages.php", php), &[("src/Demo/Paging.php", paging)]),
+        worded(("src/Demo/Pages.php", php), &[("src/Demo/Paging.php", paging)]),
         [
-            "5:25 missing-template-parameter Too few template arguments for `Demo\\PaginatedList`: expected at least 1, but found 0. Provide all 1 required template arguments in the `@extends` docblock tag for `Demo\\EntryPage`.",
-            "10:25 excess-template-parameter Too many template arguments for `Demo\\PaginatedList`: expected 1, but found 2. Remove the extra arguments from the `@extends` tag for `Demo\\EntryPair`.",
+            "5:25 missing-template-parameter Too few template arguments for `Demo\\PaginatedList`: expected at least 1, but found 0. | Too few template arguments provided here when `Demo\\EntryPage` extends `Demo\\PaginatedList` | Declaration of `Demo\\EntryPage` is here | `Demo\\PaginatedList` is defined with 1 template parameters | Provide all 1 required template arguments in the `@extends` docblock tag for `Demo\\EntryPage`.",
+            "10:25 excess-template-parameter Too many template arguments for `Demo\\PaginatedList`: expected 1, but found 2. | Too many template arguments provided here when `Demo\\EntryPair` extends `Demo\\PaginatedList` | Declaration of `Demo\\EntryPair` is here | `Demo\\PaginatedList` is defined with 1 template parameters | Remove the extra arguments from the `@extends` tag for `Demo\\EntryPair`.",
         ]
     );
     assert_eq!(
-        explained(("src/Demo/Pages.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]),
+        worded(("src/Demo/Pages.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]),
         [
-            "3:26 missing-template-parameter Too few type arguments for `PaginatedList`: expected at least 1, but found 0. Write a type for `TItem` in the header, as in `: PaginatedList<…>`.",
-            "7:26 excess-template-parameter Too many type arguments for `PaginatedList`: expected 1, but found 2. Write only a type for `TItem` in the header, as in `: PaginatedList<…>`.",
+            "3:26 missing-template-parameter Too few type arguments for `PaginatedList`: expected at least 1, but found 0. | Too few type arguments here | Declaration of `EntryPage` is here | `PaginatedList` declares 1 type parameter | Write a type for `TItem` in the header, as in `: PaginatedList<…>`.",
+            "7:26 excess-template-parameter Too many type arguments for `PaginatedList`: expected 1, but found 2. | Too many type arguments here | Declaration of `EntryPair` is here | `PaginatedList` declares 1 type parameter | Write only a type for `TItem` in the header, as in `: PaginatedList<…>`.",
         ]
     );
 }
@@ -3791,7 +3792,7 @@ fn a_parameter_narrower_than_the_erased_parent_parameter_is_an_error() {
     assert_eq!(
         explained(("src/Demo/StrictValidator.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]),
         [
-            "5:32 incompatible-parameter-type Parameter `item` of `Demo\\StrictValidator::validate()` must take at least `mixed`, the type `Demo\\Validator::validate()` erases it to. Write `item` with a type that erases to `mixed`, or bound the type parameter, as in `Validator<in TItem : Order>`, so both sides erase to the bound."
+            "5:32 incompatible-parameter-type Parameter `item` of `StrictValidator.validate` must take at least PHP's `mixed`, the type `Validator.validate` erases it to. Write `item` with a type that erases to PHP's `mixed`, or bound the type parameter, as in `Validator<in TItem : Order>`, so both sides erase to the bound."
         ]
     );
 }
@@ -3828,7 +3829,7 @@ fn a_field_whose_type_erases_to_another_type_than_the_parent_field_is_an_error()
     assert_eq!(
         explained(("src/Demo/Slot.sharp", unbound), &[]),
         [
-            "14:21 incompatible-property-type Property `Demo\\OrderSlot::$item` must have the type `mixed`, the type `Demo\\Slot::$item` erases to. Write `item` with a type that erases to `mixed`, or bound the type parameter, as in `Slot<TItem : Order>`, so both sides erase to the bound."
+            "14:21 incompatible-property-type Property `OrderSlot.item` must have PHP's `mixed`, the type `Slot.item` erases to. Write `item` with a type that erases to PHP's `mixed`, or bound the type parameter, as in `Slot<TItem : Order>`, so both sides erase to the bound."
         ]
     );
     assert_eq!(issues(("src/Demo/Slot.sharp", bound), &[]), Vec::<String>::new());
@@ -3887,7 +3888,7 @@ fn a_php_class_overriding_an_erased_sharp_method_is_refused() {
     assert_eq!(
         explained(("src/Demo/OrderBox.sharp", sharp_order_box), &[("src/Demo/Box.php", php_box)]),
         [
-            "5:36 incompatible-parameter-type Parameter `item` of `Demo\\OrderBox::put()` must take at least `mixed`, the type `Demo\\Box::put()` erases it to. Write `item` with a type that erases to `mixed`."
+            "5:36 incompatible-parameter-type Parameter `item` of `OrderBox.put` must take at least PHP's `mixed`, the type `Box.put` erases it to. Write `item` with a type that erases to PHP's `mixed`."
         ]
     );
 }
@@ -4562,7 +4563,7 @@ fn a_type_argument_outside_its_bound_is_named_as_sharp_writes_it() {
         worded(("src/Demo/Report.sharp", sharp), &[]),
         [
             "11:14 unused-template-parameter Type parameter `TItem` is never used in class `Page`. | Type parameter `TItem` is defined on this class but never referenced | Remove `TItem` from `Page<…>`.",
-            "15:14 invalid-template-parameter Type argument for `Page` is not compatible with its bound. | In the definition of `Demo\\LinePage` | The type `Line` provided for type parameter `TItem`... | ...does not satisfy the bound `DatabaseEntity` from `Page`. | Supply a type contained by `DatabaseEntity`.",
+            "15:14 invalid-template-parameter Type argument for `Page` is not compatible with its bound. | In the definition of `LinePage` | The type `Line` provided for type parameter `TItem`... | ...does not satisfy the bound `DatabaseEntity` from `Page`. | Supply a type contained by `DatabaseEntity`.",
             "23:55 template-constraint-violation Argument type mismatch for type parameter `T`. | This argument has type `Line`, which is not compatible with the required bound `DatabaseEntity`. | Type parameter `T` is bounded by `DatabaseEntity`. | Ensure the argument's type satisfies the bound.",
             "23:55 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `T`, but found `Line`. | This has type `Line` | Arguments to this method are incorrect | The provided type `Line` is not compatible with the expected type `T`. | Change the argument value to match `T`, or update the parameter's type declaration.",
         ]
@@ -4570,7 +4571,8 @@ fn a_type_argument_outside_its_bound_is_named_as_sharp_writes_it() {
 }
 
 /// An override that does not fit the member it overrides names both types as PHP# writes them, and a type that erases
-/// to another type than the parent's names the erased types as PHP writes them. The PHP twin keeps Mago's text.
+/// to another type than the parent's names each class and member as PHP# writes it, `ListBase.put`, and each erased
+/// type as PHP's, as in PHP's `mixed`. The PHP twin keeps Mago's text.
 #[test]
 fn an_override_names_its_types_as_sharp_writes_them_and_the_erased_types_as_php_does() {
     let sharp = "namespace Demo;\n\npublic class Order\n{\n}\n\npublic class Line\n{\n}\n\npublic class Base<TItem>\n{\n    public TItem? item = null;\n\n    public virtual void put(TItem item)\n    {\n    }\n\n    public virtual TItem get(TItem item) => item;\n}\n\npublic class OrderBase : Base<Order>\n{\n    public override Line? item = null;\n\n    public override void put(Line item)\n    {\n    }\n\n    public override Line get(Order item) => new Line();\n}\n\npublic class ListBase : Base<List<int>>\n{\n    public override List<int>? item = null;\n\n    public override void put(List<int> item)\n    {\n    }\n}\n";
@@ -4590,8 +4592,8 @@ fn an_override_names_its_types_as_sharp_writes_them_and_the_erased_types_as_php_
             "26:26 incompatible-parameter-type Parameter `item` of `Demo\\OrderBase::put()` expects type `Line` but parent `Demo\\Base::put()` expects type `Order` | Parameter `item` expects type `Line` but parent expects `Order` | Parent method `Demo\\Base::put()` parameter defined here | In class `Demo\\OrderBase` | Parameter types must be contravariant: child must accept equal or wider types than parent. | Change the parameter type to be compatible with the parent method.",
             "30:26 incompatible-return-type Return type `Line` of `Demo\\OrderBase::get()` is incompatible with parent return type `Order` of `Demo\\Base::get()` | Returns type `Line` but parent expects `Order` | Parent method `Demo\\Base::get()` return type defined here | In class `Demo\\OrderBase` | Return types must be covariant: child must return equal or narrower types than parent. | Change the return type to be compatible with the parent method.",
             "24:21 incompatible-property-type Property `Demo\\OrderBase::$item` has an incompatible type declaration. | This type `Line?` is incompatible with the parent's type. | The parent property is defined with type `Order?` here. | PHP requires property types to be invariant, meaning the type declaration in a child class must be exactly the same as in the parent class. | Change the type of `$item` to `Order?` to match the parent property.",
-            "37:40 incompatible-parameter-type Parameter `item` of `Demo\\ListBase::put()` must take at least `mixed`, the type `Demo\\Base::put()` erases it to. | Erases to `array`. | `Demo\\Base::put()` takes `mixed` once its type parameters are erased. | PHP# erases type parameters when it compiles, and PHP refuses a parameter narrower than the one it overrides when it links the class. | Write `item` with a type that erases to `mixed`.",
-            "35:21 incompatible-property-type Property `Demo\\ListBase::$item` must have the type `mixed`, the type `Demo\\Base::$item` erases to. | Erases to `array|null`. | Erases to `mixed`. | PHP# erases type parameters when it compiles, and PHP requires a property to keep the type of the property it overrides. | Write `item` with a type that erases to `mixed`.",
+            "37:40 incompatible-parameter-type Parameter `item` of `ListBase.put` must take at least PHP's `mixed`, the type `Base.put` erases it to. | Erases to PHP's `array`. | `Base.put` takes PHP's `mixed` once its type parameters are erased. | PHP# erases type parameters when it compiles, and PHP refuses a parameter narrower than the one it overrides when it links the class. | Write `item` with a type that erases to PHP's `mixed`.",
+            "35:21 incompatible-property-type Property `ListBase.item` must have PHP's `mixed`, the type `Base.item` erases to. | Erases to PHP's `array|null`. | Erases to PHP's `mixed`. | PHP# erases type parameters when it compiles, and PHP requires a property to keep the type of the property it overrides. | Write `item` with a type that erases to PHP's `mixed`.",
         ]
     );
 }
@@ -5012,7 +5014,7 @@ fn a_substitution_the_missing_marker_would_still_block_keeps_its_help() {
 /// declares them in. The PHP twin keeps Mago's issues.
 #[test]
 fn a_bound_sees_the_bound_of_a_type_parameter_it_names() {
-    let sharp = "namespace Demo;\n\npublic abstract class DatabaseEntity\n{\n}\n\npublic class Holder<TValue>\n{\n    public TValue? value { get; set; } = null;\n}\n\npublic class Pair<TKey : DatabaseEntity, TItem : Holder<TKey>>\n{\n    public DatabaseEntity? keyOf(TItem item) => item.value;\n}\n\npublic class Triple<TA : DatabaseEntity, TB : Holder<TA>, TC : Holder<TB>>\n{\n    public DatabaseEntity? deep(TC c) => c.value?.value;\n}\n\npublic class Reversed<TC : Holder<TB>, TB : Holder<TA>, TA : DatabaseEntity>\n{\n    public DatabaseEntity? deep(TC c) => c.value?.value;\n}\n";
+    let sharp = "namespace Demo;\n\npublic abstract class DatabaseEntity\n{\n}\n\npublic class Holder<TValue>\n{\n    public TValue? value { get; set; } = null;\n}\n\npublic class Pair<TKey : DatabaseEntity, TItem : Holder<TKey>>\n{\n    public DatabaseEntity? keyOf(TItem item) => item.value;\n}\n\npublic class Reversed<TC : Holder<TB>, TB : Holder<TA>, TA : DatabaseEntity>\n{\n    public DatabaseEntity? deep(TC c) => c.value?.value;\n}\n";
     let php = "<?php\n\nnamespace Demo;\n\nabstract class DatabaseEntity\n{\n}\n\n/** @template TValue */\nclass Holder\n{\n    /** @var TValue|null */\n    public mixed $value = null;\n}\n\n/**\n * @template TKey of DatabaseEntity\n * @template TItem of Holder<TKey>\n */\nclass Pair\n{\n    /** @param TItem $item */\n    public function keyOf(Holder $item): ?DatabaseEntity\n    {\n        return $item->value;\n    }\n}\n";
 
     assert_eq!(issues(("src/Demo/Pair.php", php), &[]), Vec::<String>::new());
@@ -5032,7 +5034,118 @@ fn type_arguments_written_on_a_method_call_see_the_receivers_type_arguments() {
     assert_eq!(
         explained(("src/Demo/Report.sharp", sharp), &[]),
         [
-            "31:97 template-constraint-violation Type argument `Query<Line>` does not satisfy `Repository::count`'s `TQuery`. Supply a type contained by `Query<Order>`."
+            "31:97 template-constraint-violation Type argument `Query<Line>` does not satisfy `Repository.count<TQuery>`'s `TQuery`. Supply a type contained by `Query<Order>`."
+        ]
+    );
+}
+
+/// `Self` is the class with its own type parameters, spec section 11, so a method that returns `Self` returns its
+/// receiver's type arguments: `Box<TItem>.swap` cannot return a `Box<Order>`, and `swap` on a `Box<int>` returns a
+/// `Box<int>`, whose `put` takes an `int`. The PHP twin's `static` keeps Mago's issues.
+#[test]
+fn a_method_returning_self_returns_its_receivers_type_arguments() {
+    let sharp = "namespace Demo;\n\npublic class Order\n{\n}\n\npublic class Box<TItem>\n{\n    public Self swap(Box<Order> other) => other;\n\n    public void put(TItem item)\n    {\n    }\n}\n\npublic class Report\n{\n    public static void run(Box<int> numbers, Box<Order> orders)\n    {\n        numbers.swap(orders).put(1);\n        numbers.swap(orders).put(\"one\");\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n}\n\n/** @template TItem */\nclass Box\n{\n    /** @param Box<Order> $other */\n    public function swap(Box $other): static\n    {\n        return $other;\n    }\n\n    /** @param TItem $item */\n    public function put(mixed $item): void\n    {\n    }\n}\n\nclass Report\n{\n    /**\n     * @param Box<int> $numbers\n     * @param Box<Order> $orders\n     */\n    public static function run(Box $numbers, Box $orders): void\n    {\n        $numbers->swap($orders)->put(1);\n        $numbers->swap($orders)->put('one');\n    }\n}\n";
+
+    assert_eq!(
+        explained(("src/Demo/Box.php", php), &[]),
+        [
+            "15:16 less-specific-return-statement Returned type `Demo\\Box<Demo\\Order>` is less specific than the declared return type `demo\\box<mixed>&static` for function `Demo\\Box::swap`. Consider returning a value that more precisely matches the declared `demo\\box<mixed>&static` type, or adjust the function's return type declaration if the broader type is intended.",
+            "33:38 invalid-argument Invalid argument type for argument #1 of `Demo\\Box::put`: expected `int`, but found `string('one')`. Change the argument value to match `int`, or update the parameter's type declaration.",
+        ]
+    );
+    assert_eq!(
+        explained(("src/Demo/Box.sharp", sharp), &[]),
+        [
+            "9:43 invalid-return-statement Invalid return type for function `Demo\\Box::swap`: expected `Box<TItem>`, but found `Box<Order>`. Change the return value to match `Box<TItem>`, or update the function's return type declaration.",
+            "21:34 invalid-argument Invalid argument type for argument #1 of `Demo\\Box::put`: expected `int`, but found `\"one\"`. Change the argument value to match `int`, or update the parameter's type declaration.",
+        ]
+    );
+}
+
+/// Plain PHP keeps upstream Mago's key types: a template bounded by a backed enum stays the template where an array
+/// key is compared, so an `array<T, int>` is no `array<string, int>`. Only a PHP# `Map` keyed by a type parameter is
+/// keyed by its bound's backing values, spec section 12.
+#[test]
+fn a_php_template_key_bounded_by_a_backed_enum_keeps_upstreams_key_type() {
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Status;\n\nfinal class Tally\n{\n    /**\n     * @template T of Status\n     * @param array<T, int> $counts\n     * @return array<string, int>\n     */\n    public static function named(array $counts): array\n    {\n        return $counts;\n    }\n}\n";
+
+    assert_eq!(
+        explained(("src/Demo/Tally.php", php), &[("src/Lib/Status.php", STATUS)]),
+        [
+            "14:34 docblock-type-mismatch Docblock type `array<('T.demo\\tally::named() extends enum(Lib\\Status)), int>` for parameter `$counts` is incompatible with native type `array<array-key, mixed>`. Either change the docblock type to match `array<array-key, mixed>`, or update the native type to be compatible with `array<('T.demo\\tally::named() extends enum(Lib\\Status)), int>`.",
+            "16:16 invalid-return-statement Invalid return type for function `Demo\\Tally::named`: expected `array<string, int>`, but found `array<('T.demo\\tally::named() extends enum(Lib\\Status)), int>`. Change the return value to match `array<string, int>`, or update the function's return type declaration.",
+        ]
+    );
+}
+
+/// `Box` names a generic class, so `is Box`, `as Box`, a `match` arm `Box` and `catch (Failure)` would test none of
+/// its type arguments, which G1 erases: each is refused as the test the code writes, wherever the class is declared.
+/// A class without type parameters is tested as before. The plain PHP twin keeps Mago's issues.
+#[test]
+fn a_type_test_of_a_generic_class_without_type_arguments_is_not_supported_yet() {
+    let classes = "namespace Demo;\n\nimport RuntimeException;\n\npublic class Box<TItem>\n{\n    public TItem? first() => null;\n}\n\npublic class Plain\n{\n}\n\npublic class Failure<TItem> : RuntimeException\n{\n    public TItem? first() => null;\n}\n";
+    let sharp = "namespace Demo;\n\npublic class Report\n{\n    public static bool held(Any? value) => value is Box;\n\n    public static Any? kept(Any? value) => value as Box;\n\n    public static int matched(Any? value) => match (value) { Box => 1, default => 0 };\n\n    public static bool plain(Any? value) => value is Plain;\n\n    public static int run()\n    {\n        try {\n            return 1;\n        } catch (Failure failure) {\n            return 0;\n        }\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function held(mixed $value): bool\n    {\n        return $value instanceof Box;\n    }\n\n    public static function run(): int\n    {\n        try {\n            return 1;\n        } catch (Failure $failure) {\n            return 0;\n        }\n    }\n}\n";
+    let because = "because type arguments don't reach the running program. | Not supported yet.";
+
+    assert_eq!(explained(("src/Demo/Report.php", php), &[("src/Demo/Classes.sharp", classes)]), Vec::<String>::new());
+    assert_eq!(
+        worded(("src/Demo/Report.sharp", sharp), &[("src/Demo/Classes.sharp", classes)]),
+        [
+            format!("5:53 not-supported-yet `is Box` can't be tested yet, {because}"),
+            format!("7:53 not-supported-yet `as Box` can't be tested yet, {because}"),
+            format!("9:62 not-supported-yet `Box` can't be tested yet, {because}"),
+            format!("17:18 not-supported-yet `catch (Failure)` can't be tested yet, {because}"),
+        ]
+    );
+}
+
+/// `Class<Box>` names the class itself, as C#'s `typeof(Box<>)` does, so its type argument may be a generic class
+/// without type arguments, and `typeof(Box)` is a `Class<Box>`. The plain PHP twin keeps Mago's issues.
+#[test]
+fn a_class_type_names_a_generic_class_without_its_type_arguments() {
+    let classes = "namespace Demo;\n\npublic class Box<TItem>\n{\n    public TItem? first() => null;\n}\n";
+    let sharp = "namespace Demo;\n\npublic class Report\n{\n    private Class<Box> kind = typeof(Box);\n\n    public Class<Box> kept() => this.kind;\n\n    public static int keep(int number) => number;\n\n    public static int counted() => Report.keep(typeof(Box));\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    /** @var class-string<Box> */\n    private string $kind = Box::class;\n\n    /** @return class-string<Box> */\n    public function kept(): string\n    {\n        return $this->kind;\n    }\n}\n";
+
+    assert_eq!(explained(("src/Demo/Report.php", php), &[("src/Demo/Classes.sharp", classes)]), Vec::<String>::new());
+    assert_eq!(
+        explained(("src/Demo/Report.sharp", sharp), &[("src/Demo/Classes.sharp", classes)]),
+        [
+            "11:48 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `int`, but found `Class<Box>`. Change the argument value to match `int`, or update the parameter's type declaration."
+        ]
+    );
+}
+
+/// A plain PHP type that reaches PHP# is named by the PHP# type the spec gives it: an `array` is a
+/// `Map<int|string, Any?>`, an `array-key` an `int|string`, and an `iterable` an `Iterable<…>` of its values, spec
+/// sections 12 and 24. `numeric` and `scalar` have no PHP# name and keep Mago's. The PHP twin keeps Mago's text.
+#[test]
+fn a_plain_php_type_is_named_by_the_type_the_spec_gives_it() {
+    let values = "<?php\n\nnamespace Lib;\n\nfinal class Values\n{\n    public static function rows(): array\n    {\n        return [];\n    }\n\n    /** @return array-key */\n    public static function key(): int|string\n    {\n        return 1;\n    }\n\n    /** @return iterable<int> */\n    public static function each(): iterable\n    {\n        return [];\n    }\n\n    /** @return numeric */\n    public static function amount(): int|float|string\n    {\n        return 1;\n    }\n\n    /** @return scalar */\n    public static function plain(): int|float|string|bool\n    {\n        return 1;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Values;\n\npublic class Report\n{\n    public static bool keep(bool flag) => flag;\n\n    public static void run()\n    {\n        Report.keep(Values.rows());\n        Report.keep(Values.key());\n        Report.keep(Values.each());\n        Report.keep(Values.amount());\n        Report.keep(Values.plain());\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Values;\n\nclass Report\n{\n    public static function keep(bool $flag): bool\n    {\n        return $flag;\n    }\n\n    public static function run(): void\n    {\n        Report::keep(Values::rows());\n        Report::keep(Values::key());\n        Report::keep(Values::each());\n        Report::keep(Values::amount());\n        Report::keep(Values::plain());\n    }\n}\n";
+    let others = [("src/Lib/Values.php", values)];
+
+    assert_eq!(
+        messages(("src/Demo/Report.php", php), &others),
+        [
+            "Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `bool`, but found `array<array-key, mixed>`.",
+            "Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `bool`, but found `array-key`.",
+            "Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `bool`, but found `iterable<mixed, int>`.",
+            "Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `bool`, but found `numeric`.",
+            "Possible argument type mismatch for argument #1 of `Demo\\Report::keep`: expected `bool`, but possibly received `scalar`.",
+        ]
+    );
+    assert_eq!(
+        messages(("src/Demo/Report.sharp", sharp), &others),
+        [
+            "Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `bool`, but found `Map<int|string, Any?>`.",
+            "Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `bool`, but found `int|string`.",
+            "Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `bool`, but found `Iterable<int>`.",
+            "Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `bool`, but found `numeric`.",
+            "Possible argument type mismatch for argument #1 of `Demo\\Report::keep`: expected `bool`, but possibly received `scalar`.",
         ]
     );
 }

@@ -1,5 +1,7 @@
 use std::borrow::Cow;
 
+use mago_syntax::dialect::Dialect;
+
 use crate::metadata::CodebaseMetadata;
 use crate::ttype::atomic::TAtomic;
 use crate::ttype::comparator::ComparisonResult;
@@ -34,7 +36,8 @@ pub fn is_contained_by(
     }
 
     // A PHP# `Map` keyed by a backed enum is also an iterable of the backing values, which plain PHP receives.
-    if let Cow::Owned(backing_k) = get_backing_key_type(&input_k, codebase)
+    let dialect = if atomic_comparison_result.sharp_rules { Dialect::Sharp } else { Dialect::Php };
+    if let Cow::Owned(backing_k) = get_backing_key_type(&input_k, codebase, dialect)
         && !union_comparator::is_contained_by(
             codebase,
             &input_k,

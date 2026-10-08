@@ -444,14 +444,16 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
             Some(File)
         }
-        (Node::Hint(Hint::Identifier(name)), _) if let Some(class) = static_member_class(name, context) => {
+        (Node::Hint(hint @ (Hint::Identifier(_) | Hint::Self_(_))), _)
+            if let Some((class, parameter)) = static_member_use(hint, context) =>
+        {
             context.report(
                 Issue::error(format!(
                     "A static member can't use `{}`, because every `{}<…>` shares it.",
-                    BytesDisplay(name.value()),
+                    BytesDisplay(parameter.name.value),
                     BytesDisplay(class.name.value)
                 ))
-                .with_annotation(Annotation::primary(name.span()).with_message("Used in a static member.")),
+                .with_annotation(Annotation::primary(hint.span()).with_message("Used in a static member.")),
             );
 
             None
@@ -483,7 +485,12 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         ) => Some(File),
         (Node::Class(class), File) => {
             report_methods_named_as_properties(
-                ClassLike { name: &class.name, span: class.span(), members: &class.members },
+                ClassLike {
+                    name: &class.name,
+                    span: class.span(),
+                    type_parameters: class.type_parameters.as_ref(),
+                    members: &class.members,
+                },
                 context,
             );
 
@@ -899,7 +906,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         (Node::TryCatchClause(_), Body) => Some(TryCatchClause),
         (Node::Hint(hint), TryCatchClause) if let Some(erased) = context.names.erased_type(hint) => {
             let test = format!("catch ({})", BytesDisplay(context.get_code_snippet(hint)));
-            report_erased_test(&test, hint, erased, context);
+            report_erased_test(&test, erased, context);
 
             None
         }
@@ -1036,7 +1043,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             hint => match context.names.erased_type(hint) {
                 Some(erased) => {
                     let test = format!("as {}", BytesDisplay(context.get_code_snippet(hint)));
-                    report_erased_test(&test, hint, erased, context);
+                    report_erased_test(&test, erased, context);
 
                     None
                 }
@@ -1068,7 +1075,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
                 _ => "",
             };
             let test = format!("{keyword}{}", BytesDisplay(context.get_code_snippet(hint)));
-            report_erased_test(&test, hint, erased, context);
+            report_erased_test(&test, erased, context);
 
             None
         }
@@ -2107,34 +2114,37 @@ fn report_erased(span: Span, refused: &str, function_type: bool, context: &mut C
     );
 }
 
-/// Refuses the type test `test` of `hint`, whose part at `erased` needs what G1 erases, as
-/// [`ResolvedNames::erased_type`] finds it.
-fn report_erased_test(test: &str, hint: &Hint, erased: Span, context: &mut Context<'_, '_, '_>) {
-    report_erased(erased, &format!("`{test}` can't be tested yet"), is_function_type_at(hint, erased), context);
+/// Refuses the type test `test`, whose part `erased` needs what G1 erases, as [`ResolvedNames::erased_type`] finds it.
+fn report_erased_test(test: &str, erased: &Hint, context: &mut Context<'_, '_, '_>) {
+    report_erased(
+        erased.span(),
+        &format!("`{test}` can't be tested yet"),
+        matches!(erased, Hint::Function(_)),
+        context,
+    );
 }
 
-/// Whether the part of `hint` at `erased` is a function type.
-fn is_function_type_at(hint: &Hint, erased: Span) -> bool {
-    match hint {
-        Hint::Function(function) => function.span() == erased,
-        Hint::Nullable(nullable) => is_function_type_at(nullable.hint, erased),
-        Hint::Parenthesized(parenthesized) => is_function_type_at(parenthesized.hint, erased),
-        Hint::Union(union) => is_function_type_at(union.left, erased) || is_function_type_at(union.right, erased),
-        _ => false,
-    }
-}
-
-/// The class whose constant or static field, property or method names `name`, a type parameter the class declares.
-/// `None` for any other name, a static method's own type parameter included, because the method declares it.
-fn static_member_class<'ast, 'arena>(
-    name: &Identifier<'_>,
+/// The class whose constant or static field, property or method uses one of the class's type parameters through
+/// `hint`, with that type parameter: the one a name binds, or the first for `Self`, which carries them all. `None` for
+/// any other type, a static method's own type parameter included, because the method declares it.
+fn static_member_use<'ast, 'arena>(
+    hint: &Hint<'_>,
     context: &Context<'_, 'ast, 'arena>,
-) -> Option<ClassLike<'ast, 'arena>> {
-    let Some(Binding::TypeParameter { declaration }) = context.names.binding(name) else {
-        return None;
+) -> Option<(ClassLike<'ast, 'arena>, &'ast mago_syntax::cst::TypeParameter<'arena>)> {
+    let class = enclosing_class(context.program, hint.span())?;
+    let parameters = &class.type_parameters?.parameters;
+    let parameter = match hint {
+        Hint::Identifier(name) => {
+            let Some(Binding::TypeParameter { declaration }) = context.names.binding(name) else {
+                return None;
+            };
+
+            parameters.iter().find(|parameter| parameter.span().contains(&declaration.start))?
+        }
+        Hint::Self_(keyword) if is_sharp_self(keyword) => parameters.first()?,
+        _ => return None,
     };
-    let class = enclosing_class(context.program, name.span())?;
-    let names_it = class.members.iter().any(|member| {
+    let uses_it = class.members.iter().any(|member| {
         let (span, is_static) = match member {
             ClassLikeMember::Method(method) => (method.span(), method.modifiers.contains_static()),
             ClassLikeMember::Property(property) => (property.span(), property.modifiers().contains_static()),
@@ -2142,10 +2152,10 @@ fn static_member_class<'ast, 'arena>(
             _ => return false,
         };
 
-        is_static && span.contains(&name.span().start) && !span.contains(&declaration.start)
+        is_static && span.contains(&hint.span().start)
     });
 
-    names_it.then_some(class)
+    uses_it.then_some((class, parameter))
 }
 
 /// Reports each type parameter of a list whose name is not `T`, or `T` and an uppercase letter, as C# names them, a
@@ -2156,7 +2166,7 @@ fn check_type_parameters(list: &TypeParameterList, place: Place, context: &mut C
         let name = parameter.name.value;
         if !matches!(name, [b'T'] | [b'T', b'A'..=b'Z', ..]) {
             context.report(
-                Issue::error("A type parameter's name starts with `T`, as in `TItem`.")
+                Issue::error("A type parameter's name is `T`, or `T` and a capital letter, as in `TItem`.")
                     .with_annotation(Annotation::primary(parameter.name.span).with_message("Named here.")),
             );
         }
@@ -3146,11 +3156,13 @@ fn check_member_access(object: &Expression, member: &ClassLikeMemberSelector, co
     }
 }
 
-/// A class or an enum a PHP# file declares. The slice's class rules treat both alike.
+/// A class or an enum a PHP# file declares. The slice's class rules treat both alike, and an enum declares no type
+/// parameters.
 #[derive(Clone, Copy)]
 struct ClassLike<'ast, 'arena> {
     name: &'ast LocalIdentifier<'arena>,
     span: Span,
+    type_parameters: Option<&'ast TypeParameterList<'arena>>,
     members: &'ast Sequence<'arena, ClassLikeMember<'arena>>,
 }
 
@@ -3178,12 +3190,18 @@ fn collect_declarations<'ast, 'arena>(
     imports: &mut Vec<&'ast UseItem<'arena>>,
 ) {
     match statement {
-        Statement::Class(class) => {
-            classes.push(ClassLike { name: &class.name, span: class.span(), members: &class.members });
-        }
-        Statement::Enum(r#enum) => {
-            classes.push(ClassLike { name: &r#enum.name, span: r#enum.span(), members: &r#enum.members });
-        }
+        Statement::Class(class) => classes.push(ClassLike {
+            name: &class.name,
+            span: class.span(),
+            type_parameters: class.type_parameters.as_ref(),
+            members: &class.members,
+        }),
+        Statement::Enum(r#enum) => classes.push(ClassLike {
+            name: &r#enum.name,
+            span: r#enum.span(),
+            type_parameters: None,
+            members: &r#enum.members,
+        }),
         Statement::Use(Use { items: UseItems::Sequence(sequence), .. }) => imports.extend(sequence.items.iter()),
         _ => {}
     }
