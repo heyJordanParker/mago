@@ -806,6 +806,165 @@ fn analyze_reports_a_wrapped_function_in_a_sharp_file_and_not_in_a_php_file() {
     assert_eq!(issues_in(&stdout, "src/App/Clock.php"), Vec::<String>::new(), "{stdout}");
 }
 
+/// The PHP# forms that replace PHP functions, each as a method of `Page` beside the functions it replaces: `is`
+/// tests a type (spec section 21), `(string)` converts a number and `/` divides two ints (section 24), a spread joins
+/// two collections (section 12), and `for … of` reads one (section 17).
+const SYNTAX_FORMS: [(&str, &str); 9] = [
+    ("is_string", "public bool run(Any? value) => value is string;"),
+    ("is_int", "public bool run(Any? value) => value is int;"),
+    ("is_float", "public bool run(Any? value) => value is float;"),
+    ("is_bool", "public bool run(Any? value) => value is bool;"),
+    ("strval", "public string run(int number) => (string)number;"),
+    ("intdiv", "public int run(int total, int count) => total / count;"),
+    ("array_merge", "public List<int> run(List<int> first, List<int> second) => [...first, ...second];"),
+    (
+        "array_replace",
+        "public Map<string, int> run(Map<string, int> first, Map<string, int> second) => [...first, ...second];",
+    ),
+    (
+        "array_walk_recursive",
+        "public int run(List<int> numbers)\n    {\n        let total = 0;\n        for (const number of numbers) {\n            total += number;\n        }\n        return total;\n    }",
+    ),
+];
+
+/// Each form that replaces a PHP function is accepted today: the checker finds no error, and the file compiles.
+#[test]
+fn compile_accepts_each_form_that_replaces_a_php_function() {
+    let refused: Vec<String> = SYNTAX_FORMS
+        .into_iter()
+        .filter_map(|(function, form)| {
+            let directory = library_workspace(&format!("namespace App;\n\npublic class Page\n{{\n    {form}\n}}\n"));
+            let output = run(directory.path(), "compile", &[]);
+            let printed =
+                format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+
+            (!output.status.success()).then(|| format!("{function}: {form}\n{printed}"))
+        })
+        .collect();
+
+    assert!(refused.is_empty(), "{}", refused.join("\n"));
+}
+
+/// A project page that calls every PHP function PHP# replaces with its own syntax.
+const REPLACED_CALLS: &str = "namespace App;\n\npublic class Page\n{\n    public bool text(Any? value) => is_string(value);\n    public bool whole(Any? value) => is_int(value);\n    public bool real(Any? value) => is_float(value);\n    public bool flag(Any? value) => is_bool(value);\n    public string label(int number) => strval(number);\n    public int half(int total, int count) => intdiv(total, count);\n    public List<int> join(List<int> first, List<int> second) => array_merge(first, second);\n    public Map<string, int> merge(Map<string, int> defaults, Map<string, int> overrides) => array_replace(defaults, overrides);\n    public bool walk(List<int> numbers) => array_walk_recursive(numbers, n => n);\n}\n";
+
+/// A PHP# file that calls a PHP function PHP# replaces with syntax names the form to write, and a PHP file calls each
+/// of them as before.
+#[test]
+fn analyze_reports_each_function_php_sharp_replaces_with_syntax_in_a_sharp_file_and_not_in_a_php_file() {
+    let directory = library_workspace(REPLACED_CALLS);
+    write(
+        directory.path(),
+        "src/App/Clock.php",
+        "<?php\n\ndeclare(strict_types=1);\n\nnamespace App;\n\nfinal class Clock\n{\n    /**\n     * @param list<int> $first\n     * @param list<int> $second\n     * @param array<string, int> $defaults\n     * @param array<string, int> $overrides\n     *\n     * @return list<mixed>\n     */\n    public static function all(mixed $value, int $total, int $count, array $first, array $second, array $defaults, array $overrides): array\n    {\n        $numbers = $first;\n        array_walk_recursive($numbers, static fn(int $number): int => $number);\n\n        return [\n            is_string($value),\n            is_int($value),\n            is_float($value),\n            is_bool($value),\n            strval($total),\n            intdiv($total, $count),\n            array_merge($first, $second),\n            array_replace($defaults, $overrides),\n            $numbers,\n        ];\n    }\n}\n",
+    );
+
+    let output = run(directory.path(), "analyze", &["--reporting-format", "emacs"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let page: Vec<&str> = stdout.lines().filter(|line| line.starts_with("src/App/Page.sharp:")).collect();
+
+    assert_eq!(
+        page,
+        [
+            "src/App/Page.sharp:5:37:error - replaced-by-syntax: `is_string` is replaced by PHP# syntax: write `value is string`.",
+            "src/App/Page.sharp:6:38:error - replaced-by-syntax: `is_int` is replaced by PHP# syntax: write `value is int`.",
+            "src/App/Page.sharp:7:37:error - replaced-by-syntax: `is_float` is replaced by PHP# syntax: write `value is float`.",
+            "src/App/Page.sharp:8:37:error - replaced-by-syntax: `is_bool` is replaced by PHP# syntax: write `value is bool`.",
+            "src/App/Page.sharp:9:40:error - replaced-by-syntax: `strval` is replaced by PHP# syntax: write `(string)number`.",
+            "src/App/Page.sharp:10:46:error - replaced-by-syntax: `intdiv` is replaced by PHP# syntax: write `total / count`.",
+            "src/App/Page.sharp:11:65:error - replaced-by-syntax: `array_merge` is replaced by PHP# syntax: write `[...first, ...second]`.",
+            "src/App/Page.sharp:12:93:error - replaced-by-syntax: `array_replace` is replaced by PHP# syntax: write `[...defaults, ...overrides]`.",
+            "src/App/Page.sharp:13:44:error - replaced-by-syntax: `array_walk_recursive` is replaced by PHP# syntax: write a `for … of` loop.",
+        ],
+        "{stdout}"
+    );
+    assert_eq!(issues_in(&stdout, "src/App/Clock.php"), Vec::<String>::new(), "{stdout}");
+}
+
+/// The form names an argument that is one name or a member read as the call writes it, and any other argument by
+/// the form's own placeholder.
+#[test]
+fn analyze_names_a_name_or_member_read_argument_in_the_form_and_a_placeholder_for_any_other() {
+    assert_eq!(
+        page_errors(
+            "namespace App;\n\npublic class Page\n{\n    private Any? data = null;\n    public Any? read() => this.data;\n    public bool owned(Page other) => is_string(other.data);\n    public bool named() => is_string(this.read());\n    public int third(int total) => intdiv(total, 3);\n    public List<int> both(List<int> first) => array_merge(this.items(), first);\n    public List<int> items() => [];\n}\n"
+        ),
+        [
+            "src/App/Page.sharp:7:38:error - replaced-by-syntax: `is_string` is replaced by PHP# syntax: write `other.data is string`.",
+            "src/App/Page.sharp:8:28:error - replaced-by-syntax: `is_string` is replaced by PHP# syntax: write `x is string`.",
+            "src/App/Page.sharp:9:36:error - replaced-by-syntax: `intdiv` is replaced by PHP# syntax: write `total / b`.",
+            "src/App/Page.sharp:10:47:error - replaced-by-syntax: `array_merge` is replaced by PHP# syntax: write `[...a, ...first]`.",
+        ]
+    );
+}
+
+/// In the library's own repository, a library body calls a PHP function PHP# replaces with syntax, and a file of
+/// another package beside it may not.
+#[test]
+fn analyze_accepts_a_function_php_sharp_replaces_with_syntax_in_a_library_body_and_reports_it_in_another_package() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    write(root, "mago.toml", "php-version = \"8.4\"\n");
+    write_library(root);
+    write(
+        root,
+        "library/Sharp/Text/Kind.sharp",
+        "namespace Sharp.Text;\n\npublic static class Kind\n{\n    public static bool isText(Any? value) => is_string(value);\n}\n",
+    );
+    write(root, "example/composer.json", "{\n    \"name\": \"acme/example\"\n}\n");
+    write(
+        root,
+        "example/App/Clock.sharp",
+        "namespace App;\n\npublic class Clock\n{\n    public bool text(Any? value) => is_string(value);\n}\n",
+    );
+
+    let output = run(root, "analyze", &["--reporting-format", "emacs"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert_eq!(issues_in(&stdout, "example/App/Clock.sharp"), ["5:37 replaced-by-syntax"], "{stdout}");
+    assert!(!stdout.lines().any(|line| line.starts_with("library/")), "{stdout}");
+}
+
+/// `is`, `as` and `match` test a scalar type with the PHP function the table names, which no source the user wrote
+/// calls, and a call the user writes as the value an `is` tests is still reported.
+#[test]
+fn analyze_reports_a_written_call_and_not_the_type_tests_of_is_as_and_match() {
+    assert_eq!(
+        page_errors(
+            "namespace App;\n\npublic class Page\n{\n    public int? whole(Any? value) => value as int;\n    public string kind(Any? value) => match (value) {\n        string text => text,\n        default => \"\",\n    };\n    public bool both(Any? value) => is_string(value) is true;\n}\n"
+        ),
+        [
+            "src/App/Page.sharp:10:37:error - replaced-by-syntax: `is_string` is replaced by PHP# syntax: write `value is string`."
+        ]
+    );
+}
+
+/// Once the standard library wraps a function PHP# also replaces with syntax, the call names the library's method
+/// alone.
+#[test]
+fn analyze_reports_only_the_wrapping_method_for_a_function_the_library_wraps_and_syntax_replaces() {
+    let directory = library_workspace(
+        "namespace App;\n\npublic class Page\n{\n    public string label(int number) => strval(number);\n}\n",
+    );
+    write(
+        directory.path(),
+        "vendor/heyjordanparker/php-sharp-composer/library/Sharp/Text/Number.sharp",
+        "namespace Sharp.Text;\n\npublic static class Number\n{\n    [Replaces(\"strval\")]\n    public static string text(int number) => (string)number;\n}\n",
+    );
+
+    let output = run(directory.path(), "analyze", &["--reporting-format", "emacs"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let page: Vec<&str> = stdout.lines().filter(|line| line.starts_with("src/App/Page.sharp:")).collect();
+
+    assert_eq!(
+        page,
+        [
+            "src/App/Page.sharp:5:40:error - wrapped-function: `strval` is wrapped by the standard library: write `Number.text(…)`."
+        ],
+        "{stdout}"
+    );
+}
+
 #[test]
 fn linting_one_sharp_file_is_refused() {
     let service = LintService::new(ReadDatabase::empty(), Settings::default(), ParserSettings::default(), false);

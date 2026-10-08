@@ -356,6 +356,7 @@ final class AnalyzerCodeModuleGenerator
         'reserved-name-outside-library',
         'replaces-outside-library',
         'wrapped-function',
+        'replaced-by-syntax',
     ];
 
     /**
