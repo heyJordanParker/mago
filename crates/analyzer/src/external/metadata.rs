@@ -44,31 +44,31 @@ use crate::external::protocol::encode_union_snapshot;
 pub(super) const CODEBASE_QUERY_REQUEST: u16 = 4;
 pub(super) const CODEBASE_QUERY_RESPONSE: u16 = 0x8004;
 
-const GET_CLASS_LIKES: u8 = 1;
-const GET_FUNCTIONS: u8 = 2;
+pub(super) const GET_CLASS_LIKES: u8 = 1;
+pub(super) const GET_FUNCTIONS: u8 = 2;
 const GET_METHODS: u8 = 3;
-const GET_CONSTANTS: u8 = 4;
+pub(super) const GET_CONSTANTS: u8 = 4;
 const GET_PROPERTIES: u8 = 5;
 const GET_CLASS_CONSTANTS: u8 = 6;
 const GET_ENUM_CASES: u8 = 7;
-const LIST_CLASS_LIKES: u8 = 8;
-const LIST_FUNCTIONS: u8 = 9;
-const LIST_CONSTANTS: u8 = 10;
+pub(super) const LIST_CLASS_LIKES: u8 = 8;
+pub(super) const LIST_FUNCTIONS: u8 = 9;
+pub(super) const LIST_CONSTANTS: u8 = 10;
 const GET_DECLARING_METHODS: u8 = 11;
 const GET_DECLARING_PROPERTIES: u8 = 12;
-const CHECK_EXISTENCE: u8 = 13;
+pub(super) const CHECK_EXISTENCE: u8 = 13;
 const CHECK_MEMBER_EXISTENCE: u8 = 14;
-const GET_CLASS_LIKE_RELATIONS: u8 = 15;
+pub(super) const GET_CLASS_LIKE_RELATIONS: u8 = 15;
 const GET_MAGIC_PROPERTIES: u8 = 16;
 const GET_DECLARING_MAGIC_PROPERTIES: u8 = 17;
 const GET_FUNCTION_LIKES: u8 = 18;
-const FIND_METHODS: u8 = 19;
+pub(super) const FIND_METHODS: u8 = 19;
 
 const ANY_CLASS_LIKE: u8 = 0;
 const CLASS: u8 = 1;
 const INTERFACE: u8 = 2;
 const TRAIT: u8 = 3;
-const ENUM: u8 = 4;
+pub(super) const ENUM: u8 = 4;
 
 const MAXIMUM_QUERIES: usize = 0x0001_0000;
 const MAXIMUM_METHOD_PROJECTIONS: usize = 0x000F_4240;
@@ -98,7 +98,7 @@ const EXISTS_INTERFACE: u8 = 2;
 const EXISTS_TRAIT: u8 = 3;
 const EXISTS_ENUM: u8 = 4;
 const EXISTS_CLASS_LIKE: u8 = 5;
-const EXISTS_NAMESPACE: u8 = 6;
+pub(super) const EXISTS_NAMESPACE: u8 = 6;
 const EXISTS_FUNCTION: u8 = 7;
 const EXISTS_CONSTANT: u8 = 8;
 const EXISTS_CLASS_OR_TRAIT: u8 = 9;
@@ -110,8 +110,8 @@ const EXISTS_CLASS_CONSTANT: u8 = 3;
 const EXISTS_ENUM_CASE: u8 = 4;
 const EXISTS_MAGIC_PROPERTY: u8 = 5;
 
-const DIRECT_DESCENDANTS: u8 = 1;
-const ALL_DESCENDANTS: u8 = 2;
+pub(super) const DIRECT_DESCENDANTS: u8 = 1;
+pub(super) const ALL_DESCENDANTS: u8 = 2;
 const ALL_ANCESTORS: u8 = 3;
 
 pub(super) fn handle_query(
@@ -461,12 +461,7 @@ fn get_class_like_relations(
     writer.write_u8(relation);
     query_names(reader, writer, |name, writer| {
         match relation {
-            DIRECT_DESCENDANTS => {
-                let descendants = codebase
-                    .get_class_like(name)
-                    .and_then(|metadata| codebase.direct_classlike_descendants.get(&metadata.name));
-                write_words(writer, descendants.into_iter().flatten().copied())?;
-            }
+            DIRECT_DESCENDANTS => write_words(writer, direct_descendants(codebase, name))?,
             ALL_DESCENDANTS => write_words(writer, codebase.get_class_descendants(name))?,
             ALL_ANCESTORS => write_words(writer, codebase.get_class_ancestors(name))?,
             _ => unreachable!(),
@@ -542,14 +537,7 @@ fn list_class_likes(
     }
 
     writer.write_u8(filter);
-    write_words(
-        writer,
-        codebase
-            .class_likes
-            .values()
-            .filter(|metadata| class_like_matches(metadata.kind, filter))
-            .map(|metadata| metadata.original_name),
-    )
+    write_words(writer, class_like_names(codebase, filter))
 }
 
 fn list_functions(
@@ -557,14 +545,7 @@ fn list_functions(
     writer: &mut PayloadWriter,
     codebase: &CodebaseMetadata,
 ) -> Result<(), ExternalAnalyzerError> {
-    write_words(
-        writer,
-        codebase
-            .function_likes
-            .iter()
-            .filter(|((scope, _), metadata)| scope.is_empty() && metadata.kind == FunctionLikeKind::Function)
-            .map(|(_, metadata)| metadata.original_name),
-    )
+    write_words(writer, function_names(codebase))
 }
 
 fn list_constants(
@@ -572,7 +553,43 @@ fn list_constants(
     writer: &mut PayloadWriter,
     codebase: &CodebaseMetadata,
 ) -> Result<(), ExternalAnalyzerError> {
-    write_words(writer, codebase.constants.values().map(|metadata| metadata.name))
+    write_words(writer, constant_names(codebase))
+}
+
+/// The names of every class-like `filter` selects, as a class-like listing answers.
+pub(super) fn class_like_names(codebase: &CodebaseMetadata, filter: u8) -> impl Iterator<Item = Word> + '_ {
+    codebase
+        .class_likes
+        .values()
+        .filter(move |metadata| class_like_matches(metadata.kind, filter))
+        .map(|metadata| metadata.original_name)
+}
+
+/// The names of every function, as a function listing answers.
+pub(super) fn function_names(codebase: &CodebaseMetadata) -> impl Iterator<Item = Word> + '_ {
+    codebase
+        .function_likes
+        .iter()
+        .filter(|((scope, _), metadata)| scope.is_empty() && metadata.kind == FunctionLikeKind::Function)
+        .map(|(_, metadata)| metadata.original_name)
+}
+
+/// The names of every constant, as a constant listing answers.
+pub(super) fn constant_names(codebase: &CodebaseMetadata) -> impl Iterator<Item = Word> + '_ {
+    codebase.constants.values().map(|metadata| metadata.name)
+}
+
+/// The class-likes that extend, implement, or use `name` directly.
+pub(super) fn direct_descendants<'codebase>(
+    codebase: &'codebase CodebaseMetadata,
+    name: &[u8],
+) -> impl Iterator<Item = Word> + 'codebase {
+    codebase
+        .get_class_like(name)
+        .and_then(|metadata| codebase.direct_classlike_descendants.get(&metadata.name))
+        .into_iter()
+        .flatten()
+        .copied()
 }
 
 fn query_class_likes(
@@ -1366,7 +1383,11 @@ mod tests {
     use crate::external::protocol::NestedRequestKind;
 
     fn session(generation: u64) -> ExternalAnalysisSession {
-        ExternalAnalysisSession { generation, sources: foldhash::HashMap::default() }
+        ExternalAnalysisSession {
+            generation,
+            sources: foldhash::HashMap::default(),
+            reads: std::sync::Mutex::default(),
+        }
     }
 
     #[test]

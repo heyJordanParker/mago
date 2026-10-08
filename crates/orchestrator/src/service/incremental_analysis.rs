@@ -22,6 +22,8 @@ use mago_analyzer::external::CodebaseScanFile;
 use mago_analyzer::external::CodebaseScanPlan;
 use mago_analyzer::external::ExternalAnalysisSession;
 use mago_analyzer::external::FileAnalysisSnapshot;
+use mago_analyzer::external::FileReads;
+use mago_analyzer::external::Listing;
 use mago_analyzer::external::apply_refinements;
 use mago_analyzer::plugin::PluginRegistry;
 use mago_analyzer::settings::Settings;
@@ -35,6 +37,7 @@ use mago_codex::populator::populate_codebase_targeted;
 use mago_codex::reference::SymbolReferences;
 use mago_codex::scanner::scan_program;
 use mago_codex::signature_builder;
+use mago_codex::symbol::SymbolIdentifier;
 use mago_collector::DeferredPragmas;
 use mago_database::DatabaseReader;
 use mago_database::ReadDatabase;
@@ -75,6 +78,9 @@ struct FileState {
     codebase_issues: IssueCollection,
     deferred_pragmas: Option<DeferredPragmas>,
     late_symbol_references: SymbolReferences,
+    /// What the file's extension hooks and providers read from the codebase, kept apart from the references they
+    /// contribute: a read only decides when the file is analyzed again.
+    reads: FileReads,
 }
 
 struct SelectiveAnalysisOutput {
@@ -83,6 +89,7 @@ struct SelectiveAnalysisOutput {
     external_symbol_references: SymbolReferences,
     late_symbol_references: SymbolReferences,
     late_symbol_references_by_file: HashMap<FileId, SymbolReferences>,
+    reads_by_file: HashMap<FileId, FileReads>,
     per_file_issues: HashMap<FileId, IssueCollection>,
     per_file_pragmas: HashMap<FileId, DeferredPragmas>,
     snapshots: Vec<Arc<FileAnalysisSnapshot>>,
@@ -515,6 +522,7 @@ impl IncrementalAnalysisService {
                     codebase_issues: IssueCollection::default(),
                     deferred_pragmas: None,
                     late_symbol_references: SymbolReferences::new(),
+                    reads: FileReads::default(),
                 },
             );
         }
@@ -525,6 +533,7 @@ impl IncrementalAnalysisService {
             external_symbol_references,
             late_symbol_references,
             late_symbol_references_by_file,
+            mut reads_by_file,
             per_file_issues,
             per_file_pragmas,
             snapshots,
@@ -553,6 +562,7 @@ impl IncrementalAnalysisService {
                 state.deferred_pragmas = per_file_pragmas.get(&file_id).cloned();
                 state.late_symbol_references =
                     late_symbol_references_by_file.get(&file_id).cloned().unwrap_or_default();
+                state.reads = reads_by_file.remove(&file_id).unwrap_or_default();
             }
         }
 
@@ -933,6 +943,7 @@ impl IncrementalAnalysisService {
                 external_symbol_references,
                 late_symbol_references,
                 mut late_symbol_references_by_file,
+                mut reads_by_file,
                 mut per_file_issues,
                 per_file_pragmas,
                 snapshots,
@@ -979,6 +990,7 @@ impl IncrementalAnalysisService {
                     state.analysis_issues = issues;
                     state.deferred_pragmas = per_file_pragmas.get(&file_id).cloned();
                     state.late_symbol_references = late_symbol_references_by_file.remove(&file_id).unwrap_or_default();
+                    state.reads = reads_by_file.remove(&file_id).unwrap_or_default();
                 }
             }
 
@@ -1002,6 +1014,7 @@ impl IncrementalAnalysisService {
                         codebase_issues,
                         deferred_pragmas,
                         late_symbol_references,
+                        reads: reads_by_file.remove(&file_id).unwrap_or_default(),
                     },
                 );
             }
@@ -1013,6 +1026,13 @@ impl IncrementalAnalysisService {
 
             return Ok(analysis_result);
         }
+
+        let listings_before: HashMap<Listing, u64> = unchanged_file_ids
+            .iter()
+            .filter_map(|file_id| self.file_states.get(file_id))
+            .flat_map(|state| state.reads.listings.iter().copied())
+            .map(|listing| (listing, listing.answer(&self.codebase)))
+            .collect();
 
         let mut merged_codebase = std::mem::take(&mut self.codebase);
 
@@ -1050,7 +1070,9 @@ impl IncrementalAnalysisService {
         merged_codebase.safe_symbols.clear();
         merged_codebase.safe_symbol_members.clear();
 
-        let Some(invalid_files) = merged_codebase.mark_safe_symbols(&diff, &self.native_symbol_references) else {
+        let reads = symbols_read_by(&self.file_states, &self.database, &unchanged_file_ids);
+        let Some(mut invalid_files) = merged_codebase.mark_safe_symbols(&diff, &self.native_symbol_references, reads)
+        else {
             tracing::warn!("Invalidation cascade too expensive (>5000 steps), falling back to full analysis");
 
             return self.analyze();
@@ -1085,6 +1107,21 @@ impl IncrementalAnalysisService {
             safe_symbol_members,
             dirty_symbols,
         );
+        let changed_listings: HashSet<Listing> = listings_before
+            .into_iter()
+            .filter(|(listing, answer)| listing.answer(&merged_codebase) != *answer)
+            .map(|(listing, _)| listing)
+            .collect();
+        for file_id in &unchanged_file_ids {
+            if self
+                .file_states
+                .get(file_id)
+                .is_some_and(|state| state.reads.listings.iter().any(|listing| changed_listings.contains(listing)))
+                && let Ok(file) = self.database.get(file_id)
+            {
+                invalid_files.insert(mago_word::word(file.name.as_ref()));
+            }
+        }
         let files_to_skip = self.files_to_skip(&merged_codebase, &unchanged_file_ids, &invalid_files);
 
         let reanalyzed_file_names: WordSet = new_file_scans
@@ -1152,6 +1189,7 @@ impl IncrementalAnalysisService {
             external_symbol_references,
             late_symbol_references,
             mut late_symbol_references_by_file,
+            mut reads_by_file,
             mut per_file_issues,
             per_file_pragmas,
             snapshots,
@@ -1199,6 +1237,7 @@ impl IncrementalAnalysisService {
                 state.analysis_issues = issues;
                 state.deferred_pragmas = per_file_pragmas.get(&file_id).cloned();
                 state.late_symbol_references = late_symbol_references_by_file.remove(&file_id).unwrap_or_default();
+                state.reads = reads_by_file.remove(&file_id).unwrap_or_default();
             }
         }
 
@@ -1221,6 +1260,7 @@ impl IncrementalAnalysisService {
                     codebase_issues,
                     deferred_pragmas,
                     late_symbol_references,
+                    reads: reads_by_file.remove(&file_id).unwrap_or_default(),
                 },
             );
         }
@@ -1747,12 +1787,29 @@ impl IncrementalAnalysisService {
             external_symbol_references,
             late_symbol_references,
             late_symbol_references_by_file,
+            reads_by_file: external_session.map(|session| session.take_reads()).unwrap_or_default(),
             per_file_issues,
             per_file_pragmas,
             snapshots,
             codebase_issues,
         })
     }
+}
+
+/// The symbols the extension hooks and providers of each of `files` read, by file name, for the invalidation cascade.
+fn symbols_read_by<'state>(
+    file_states: &'state HashMap<FileId, FileState>,
+    database: &ReadDatabase,
+    files: &[FileId],
+) -> Vec<(Word, &'state HashSet<SymbolIdentifier>)> {
+    files
+        .iter()
+        .filter_map(|file_id| {
+            let state = file_states.get(file_id).filter(|state| !state.reads.symbols.is_empty())?;
+            let file = database.get(file_id).ok()?;
+            Some((mago_word::word(file.name.as_ref()), &state.reads.symbols))
+        })
+        .collect()
 }
 
 /// Keeps the keys whose entry in the merged codebase `file_id` declared.

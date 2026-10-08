@@ -125,8 +125,12 @@ where
             let Some(metadata) = self.codebase.get_class_like(class.as_bytes()) else {
                 continue;
             };
-            let initializers =
-                self.plugin_registry.get_class_initializers(self.codebase, metadata, self.external_analysis_session);
+            let initializers = self.plugin_registry.get_class_initializers(
+                self.codebase,
+                self.source_file,
+                metadata,
+                self.external_analysis_session,
+            );
             self.class_initializers.insert(class, initializers);
         }
 
