@@ -48,6 +48,7 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::external::PropertyAccessKind;
+use crate::invocation::rename_trait_objects;
 use crate::resolver::class_name::report_non_existent_class_like;
 use crate::resolver::method::run_forwarded_methods;
 use crate::resolver::selector::resolve_member_selector;
@@ -1305,49 +1306,86 @@ where
     template_types
 }
 
-/// PHP#'s type of a member `declaring_class` declares, called or read as a method value through `receiver`, spec
-/// section 11. `expand_member` expands the member's declared type with the options it is given, which bind `Self` to
-/// the receiver's class with its own type parameters, as `get_this_type` builds it, and keep a derived type over a type
-/// parameter. One replacement then gives those type parameters, and the declaring class's, the receiver's type
-/// arguments, beside a call's `type_arguments`. The last expansion binds no `Self`, so a `Self` that a receiver's type
-/// argument holds stays the class that wrote it, and evaluates the kept derived types against the replaced types.
+/// PHP#'s type of a member `declaring_class` declares, called or read as a method value through `receiver`, which finds
+/// the member on `calling_class`, spec section 11. `expand_member` expands the member's declared type with the options
+/// it is given, which bind `Self` to the receiver's class with its own type parameters, as `get_this_type` builds it,
+/// and the intersection parts the receiver carries, and keep a derived type over a type parameter. One replacement then
+/// gives the receiver's class's type parameters the receiver's type arguments, and the declaring class's the type
+/// arguments of the receiver, or of its intersection part that inherits `declaring_class`, beside a call's
+/// `type_arguments`. The last expansion binds no `Self`, so a `Self` that a receiver's type argument holds stays the
+/// class that wrote it, and evaluates the kept derived types against the replaced types. Where `declaring_class` is a
+/// PHP trait, its `self` in what the member gives, or in what its method value returns, is `calling_class`.
 pub(crate) fn specialize_member_type<A>(
     context: &Context<'_, '_, A>,
     receiver: &TObject,
     declaring_class: &ClassLikeMetadata,
+    calling_class: Word,
     type_arguments: &TemplateResult,
     expand_member: impl FnOnce(&TypeExpansionOptions) -> TUnion,
 ) -> TUnion
 where
     A: Arena,
 {
+    let intersection_parts = receiver.get_intersection_types().unwrap_or_default();
     let receiver_class = receiver
         .get_name()
         .and_then(|name| context.codebase.get_class_like(name.as_bytes()))
         .unwrap_or(declaring_class);
+    let mut this_type = get_this_type(context, receiver_class, None);
+    for part in intersection_parts {
+        this_type.add_intersection_type(part.clone());
+    }
+
     let member_type = expand_member(&TypeExpansionOptions {
         self_class: Some(declaring_class.name),
-        static_class_type: StaticClassType::Object(get_this_type(context, receiver_class, None)),
+        static_class_type: StaticClassType::Object(this_type),
         keep_generic_derived_types: true,
         ..Default::default()
     });
 
+    let receiver_type_arguments = receiver.get_type_parameters().unwrap_or_default();
+    let objects = intersection_parts.iter().filter_map(|part| match part {
+        TAtomic::Object(object) => Some(object),
+        _ => None,
+    });
+    let (inheriting_class, inheriting_type_arguments) = std::iter::once(receiver)
+        .chain(objects)
+        .find_map(|object| {
+            let class = context.codebase.get_class_like(object.get_name()?.as_bytes())?;
+            context
+                .codebase
+                .is_instance_of(class.name.as_bytes(), declaring_class.name.as_bytes())
+                .then(|| (class, object.get_type_parameters().unwrap_or_default()))
+        })
+        .unwrap_or((receiver_class, receiver_type_arguments));
+
     let mut type_arguments = type_arguments.clone();
-    let receiver_type_parameters = receiver.get_type_parameters().unwrap_or_default();
-    for (name, bounds) in
-        get_receiver_type_arguments(context, receiver_type_parameters, receiver_class, declaring_class)
-    {
-        for (parent, bound) in bounds {
-            type_arguments
-                .lower_bounds
-                .entry(name)
-                .or_default()
-                .insert(parent, vec![TemplateBound::new(bound, 0, None)]);
+    for (class, class_type_arguments, member_class) in [
+        (receiver_class, receiver_type_arguments, receiver_class),
+        (inheriting_class, inheriting_type_arguments, declaring_class),
+    ] {
+        for (name, bounds) in get_receiver_type_arguments(context, class_type_arguments, class, member_class) {
+            for (parent, bound) in bounds {
+                type_arguments
+                    .lower_bounds
+                    .entry(name)
+                    .or_default()
+                    .insert(parent, vec![TemplateBound::new(bound, 0, None)]);
+            }
         }
     }
 
     let mut member_type = inferred_type_replacer::replace(&member_type, &type_arguments, context.codebase);
     expander::expand_union(context.codebase, &mut member_type, &TypeExpansionOptions::default());
+
+    rename_trait_objects(declaring_class, calling_class, &mut member_type);
+    for atomic in member_type.types.to_mut() {
+        if let TAtomic::Callable(TCallable::Signature(signature)) = atomic
+            && let Some(return_type) = signature.get_return_type_mut()
+        {
+            rename_trait_objects(declaring_class, calling_class, return_type);
+        }
+    }
 
     member_type
 }
@@ -1642,7 +1680,8 @@ fn report_possibly_non_existent_property<A>(
 /// Spec section 14.3: a PHP# read `x.name` of a class with no property `name` gives its method `name` as a closure,
 /// as PHP's `$x->name(...)` does, and `Class.name` gives its static method, as `Class::name(...)` does. The engine
 /// runs both on the read's missing-member path. Reports a method the read cannot reach, as the call would. Returns
-/// the closure's type, the method of `receiver` as `specialize_member_type` gives a call of it.
+/// the closure's type, as `specialize_member_type` gives a call of the method on `receiver`, or on the intersection
+/// part of it that has the method.
 pub(crate) fn resolve_method_value<A>(
     context: &mut Context<'_, '_, A>,
     block_context: &BlockContext<'_>,
@@ -1654,10 +1693,18 @@ pub(crate) fn resolve_method_value<A>(
 where
     A: Arena,
 {
-    let class_id = receiver.get_name()?;
-    if !context.dialect.is_sharp() || !context.codebase.method_exists(class_id.as_bytes(), method_name.as_bytes()) {
+    if !context.dialect.is_sharp() {
         return None;
     }
+
+    let parts = receiver.get_intersection_types().unwrap_or_default().iter().filter_map(|part| match part {
+        TAtomic::Object(object) => Some(object),
+        _ => None,
+    });
+    let class_id = std::iter::once(receiver)
+        .chain(parts)
+        .filter_map(TObject::get_name)
+        .find(|class_id| context.codebase.method_exists(class_id.as_bytes(), method_name.as_bytes()))?;
 
     let method = context.codebase.get_declaring_method_identifier(&MethodIdentifier::new(class_id, method_name));
     let class_name = method.get_class_name();
@@ -1682,7 +1729,7 @@ where
     let declaring_class = codebase.get_class_like(class_name.as_bytes())?;
     let method_metadata = codebase.get_method_by_id(&method)?;
 
-    Some(specialize_member_type(context, receiver, declaring_class, &TemplateResult::default(), |options| {
+    Some(specialize_member_type(context, receiver, declaring_class, class_id, &TemplateResult::default(), |options| {
         let mut signature = get_signature_of_function_like_metadata(
             &FunctionLikeIdentifier::Method(class_name, method.get_method_name()),
             method_metadata,

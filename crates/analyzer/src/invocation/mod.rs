@@ -34,6 +34,7 @@ use crate::context::Context;
 mod resolver;
 mod template_inference;
 
+pub(crate) use resolver::rename_trait_objects;
 pub(crate) use resolver::resolve_invocation_type;
 
 pub(crate) mod arguments;
