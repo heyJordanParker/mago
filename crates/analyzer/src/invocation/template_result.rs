@@ -93,25 +93,13 @@ pub fn populate_template_result_from_invocation<'ctx, 'arena, A>(
             }
         }
 
-        if declaring_class_metadata.name != method_context.class_like_metadata.name {
-            for (template_name, _) in &declaring_class_metadata.template_types {
-                let template_type = get_specialized_template_type(
-                    context.codebase,
-                    *template_name,
-                    declaring_class_metadata.name,
-                    method_context.class_like_metadata,
-                    None,
-                );
-
-                if let Some(template_type) = template_type {
-                    template_result.add_lower_bound(
-                        *template_name,
-                        GenericParent::ClassLike(declaring_class_metadata.name),
-                        template_type,
-                    );
-                }
-            }
-        }
+        seed_inherited_type_arguments(
+            context,
+            declaring_class_metadata,
+            method_context.class_like_metadata,
+            None,
+            template_result,
+        );
 
         if let Some(instance_type) = get_named_static_class_type(&method_context.class_type)
             && !instance_type.name.as_bytes().eq_ignore_ascii_case(declaring_class_metadata.original_name.as_bytes())
@@ -151,65 +139,67 @@ pub fn populate_template_result_from_invocation<'ctx, 'arena, A>(
 
     // For `@mixin`-resolved methods, `class_type` is the receiver while the type
     // parameters of `class_like_metadata` live on the mixin object.
-    let instance_type = if let Some(declaring_object) = &method_context.declaring_object_type {
-        declaring_object
-    } else if let StaticClassType::Object(TObject::Named(instance_type)) = &method_context.class_type {
-        instance_type
-    } else {
-        return;
+    let instance_type = match (&method_context.declaring_object_type, &method_context.class_type) {
+        (Some(declaring_object), _) => Some(declaring_object),
+        (None, StaticClassType::Object(TObject::Named(instance_type))) => Some(instance_type),
+        _ => None,
     };
 
-    let is_declaring_instance =
-        instance_type.name.as_bytes().eq_ignore_ascii_case(method_context.class_like_metadata.original_name.as_bytes());
+    if let Some(instance_type) = instance_type {
+        let is_declaring_instance = instance_type
+            .name
+            .as_bytes()
+            .eq_ignore_ascii_case(method_context.class_like_metadata.original_name.as_bytes());
 
-    if is_declaring_instance && let Some(type_parameters) = &instance_type.type_parameters {
-        for (template_index, template_type) in type_parameters.iter().enumerate() {
-            let Some(template_name) = method_context
-                .class_like_metadata
-                .template_types
-                .iter()
-                .enumerate()
-                .find_map(|(index, (name, _))| if index == template_index { Some(*name) } else { None })
-            else {
-                break;
-            };
+        if is_declaring_instance && let Some(type_parameters) = &instance_type.type_parameters {
+            for (template_index, template_type) in type_parameters.iter().enumerate() {
+                let Some(template_name) = method_context
+                    .class_like_metadata
+                    .template_types
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, (name, _))| if index == template_index { Some(*name) } else { None })
+                else {
+                    break;
+                };
 
-            template_result.add_lower_bound(
-                template_name,
-                GenericParent::ClassLike(method_context.class_like_metadata.name),
-                template_type.clone(),
-            );
+                template_result.add_lower_bound(
+                    template_name,
+                    GenericParent::ClassLike(method_context.class_like_metadata.name),
+                    template_type.clone(),
+                );
 
-            if let Some(variance) = instance_type.get_variance(template_index)
-                && !variance.is_invariant()
-            {
-                template_result.projections.insert(template_name, variance);
+                if let Some(variance) = instance_type.get_variance(template_index)
+                    && !variance.is_invariant()
+                {
+                    template_result.projections.insert(template_name, variance);
+                }
             }
         }
-    }
 
-    if !is_declaring_instance
-        && let Some(calling_class_metadata) = context.codebase.get_class_like(instance_type.name.as_bytes())
-    {
-        for (template_name, _) in &method_context.class_like_metadata.template_types {
-            if template_result.lower_bounds.get(template_name).is_some_and(|m| !m.is_empty()) {
-                continue;
-            }
+        if !is_declaring_instance
+            && let Some(calling_class_metadata) = context.codebase.get_class_like(instance_type.name.as_bytes())
+        {
+            for (template_name, _) in &method_context.class_like_metadata.template_types {
+                if template_result.lower_bounds.get(template_name).is_some_and(|m| !m.is_empty()) {
+                    continue;
+                }
 
-            let template_type = get_specialized_template_type(
-                context.codebase,
-                *template_name,
-                method_context.class_like_metadata.name,
-                calling_class_metadata,
-                instance_type.type_parameters.as_deref(),
-            );
-
-            if let Some(template_type) = template_type {
-                template_result.add_lower_bound(
+                let template_type = get_specialized_template_type(
+                    context.codebase,
                     *template_name,
-                    GenericParent::ClassLike(method_context.class_like_metadata.name),
-                    template_type,
+                    method_context.class_like_metadata.name,
+                    calling_class_metadata,
+                    instance_type.type_parameters.as_deref(),
                 );
+
+                if let Some(template_type) = template_type {
+                    template_result.add_lower_bound(
+                        *template_name,
+                        GenericParent::ClassLike(method_context.class_like_metadata.name),
+                        template_type,
+                    );
+                }
             }
         }
     }
@@ -218,11 +208,62 @@ pub fn populate_template_result_from_invocation<'ctx, 'arena, A>(
         return;
     };
 
-    let Some(metadata) = context.codebase.get_class_like(identifier.get_class_name().as_bytes()) else {
+    let Some(declaring_class_metadata) = context.codebase.get_class_like(identifier.get_class_name().as_bytes()) else {
         return;
     };
 
-    infer_templates_for_method_call(context, instance_type, method_context, method_metadata, metadata, template_result);
+    seed_inherited_type_arguments(
+        context,
+        declaring_class_metadata,
+        method_context.class_like_metadata,
+        instance_type.and_then(|instance_type| instance_type.get_type_parameters()),
+        template_result,
+    );
+
+    if let Some(instance_type) = instance_type {
+        infer_templates_for_method_call(
+            context,
+            instance_type,
+            method_context,
+            method_metadata,
+            declaring_class_metadata,
+            template_result,
+        );
+    }
+}
+
+/// Bounds each template `declaring_class` declares by the type argument `called_class` passes it through the classes
+/// it extends and implements, read with the called class's own `type_arguments` when the call has them. A constructor
+/// that `new` runs has no receiver object, so the called class alone fixes them, as `OrderPage : PaginatedList<Order>`
+/// fixes `PaginatedList`'s `TItem` to `Order`.
+fn seed_inherited_type_arguments<A>(
+    context: &Context<'_, '_, A>,
+    declaring_class: &ClassLikeMetadata,
+    called_class: &ClassLikeMetadata,
+    type_arguments: Option<&[TUnion]>,
+    template_result: &mut TemplateResult,
+) where
+    A: Arena,
+{
+    if declaring_class.name == called_class.name {
+        return;
+    }
+
+    for (template_name, _) in &declaring_class.template_types {
+        if let Some(template_type) = get_specialized_template_type(
+            context.codebase,
+            *template_name,
+            declaring_class.name,
+            called_class,
+            type_arguments,
+        ) {
+            template_result.add_lower_bound(
+                *template_name,
+                GenericParent::ClassLike(declaring_class.name),
+                template_type,
+            );
+        }
+    }
 }
 
 /// Seeds the type arguments PHP# writes on a method call, `x.m<A>(…)`, as the bounds of each target method's own

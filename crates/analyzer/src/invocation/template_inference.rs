@@ -1158,26 +1158,6 @@ pub fn infer_templates_for_method_call<'ctx, A>(
 ) where
     A: Arena,
 {
-    if declaring_class_like_metadata.name != method_target_context.class_like_metadata.name {
-        for (template_name, _) in &declaring_class_like_metadata.template_types {
-            let template_type = get_specialized_template_type(
-                context.codebase,
-                *template_name,
-                declaring_class_like_metadata.name,
-                method_target_context.class_like_metadata,
-                object_type.get_type_parameters(),
-            );
-
-            if let Some(template_type) = template_type {
-                template_result.add_lower_bound(
-                    *template_name,
-                    GenericParent::ClassLike(declaring_class_like_metadata.name),
-                    template_type,
-                );
-            }
-        }
-    }
-
     for (template_name, where_constraint) in &method_metadata.where_constraints {
         let Some(actual_type) = get_specialized_template_type(
             context.codebase,

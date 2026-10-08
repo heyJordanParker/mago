@@ -4258,6 +4258,62 @@ fn new_of_a_generic_class_without_type_arguments_names_them() {
     );
 }
 
+/// `OrderPage : PaginatedList<Order>` inherits the constructor that takes `List<TItem>`, and its header fixes `TItem` to
+/// `Order`, so `new OrderPage(…)` takes a `List<Order>`. `OrderList<TItem> : PaginatedList<TItem>` passes its own type
+/// parameter on, so `new OrderList<Order>(…)` takes one too.
+#[test]
+fn an_inherited_constructor_takes_the_type_arguments_of_the_header() {
+    let sharp = "namespace Demo;\n\npublic class Report\n{\n    public static OrderPage paged(List<Order> orders) => new OrderPage(orders);\n\n    public static OrderList<Order> listed(List<Order> orders) => new OrderList<Order>(orders);\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]), Vec::<String>::new());
+}
+
+/// An inherited constructor refuses a list of another type than the header fixes and names the list it takes. An
+/// `Invoice` is a `DatabaseEntity`, so only the header's `Order` refuses it, not the bound of `TItem`.
+#[test]
+fn an_inherited_constructor_refuses_a_list_of_another_type_and_names_the_list_it_takes() {
+    let sharp = "namespace Demo;\n\npublic class Invoice : DatabaseEntity\n{\n}\n\npublic class Report\n{\n    public static OrderPage paged(List<Invoice> invoices) => new OrderPage(invoices);\n\n    public static OrderList<Order> listed(List<Invoice> invoices) => new OrderList<Order>(invoices);\n}\n";
+
+    assert_eq!(
+        messages(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]),
+        [
+            "Invalid argument type for argument #1 of `Demo\\PaginatedList::__construct`: expected `List<Order>`, but found `List<Invoice>`.",
+            "Invalid argument type for argument #1 of `Demo\\PaginatedList::__construct`: expected `List<Order>`, but found `List<Invoice>`.",
+        ]
+    );
+}
+
+/// A method `OrderTray` inherits from `Tray<Order>` takes a `List<Order>` where it declares `List<TItem>`, as an
+/// inherited constructor does.
+#[test]
+fn an_inherited_method_takes_the_type_arguments_of_the_header() {
+    let tray = "namespace Demo;\n\npublic class Tray<TItem : DatabaseEntity>\n{\n    private List<TItem> items = [];\n\n    public void replace(List<TItem> items)\n    {\n        this.items = items;\n    }\n\n    public List<TItem> all() => this.items;\n}\n\npublic class OrderTray : Tray<Order>\n{\n}\n";
+    let sharp = "namespace Demo;\n\npublic class Invoice : DatabaseEntity\n{\n}\n\npublic class Report\n{\n    public static void ordered(OrderTray tray, List<Order> orders)\n    {\n        tray.replace(orders);\n    }\n\n    public static void invoiced(OrderTray tray, List<Invoice> invoices)\n    {\n        tray.replace(invoices);\n    }\n}\n";
+
+    assert_eq!(
+        messages(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING), ("src/Demo/Tray.sharp", tray)]),
+        [
+            "Invalid argument type for argument #1 of `Demo\\Tray::replace`: expected `List<Order>`, but found `List<Invoice>`."
+        ]
+    );
+}
+
+/// The PHP twin of the inherited constructor and method: `OrderPage` with `@extends PaginatedList<Order>` takes a
+/// `list<Order>` where `PaginatedList` declares `list<TItem>`, and refuses a `list<Invoice>`.
+#[test]
+fn an_inherited_constructor_and_method_of_a_php_child_take_its_extends_type_arguments() {
+    let php = "<?php\n\nnamespace Demo;\n\nclass Invoice extends DatabaseEntity\n{\n}\n\nclass Report\n{\n    /** @param list<Order> $orders */\n    public static function paged(array $orders): OrderPage\n    {\n        return new OrderPage($orders);\n    }\n\n    /** @param list<Invoice> $invoices */\n    public static function invoicePaged(array $invoices): OrderPage\n    {\n        return new OrderPage($invoices);\n    }\n\n    /** @param list<Order> $orders */\n    public static function ordered(OrderPage $page, array $orders): void\n    {\n        $page->replace($orders);\n    }\n\n    /** @param list<Invoice> $invoices */\n    public static function invoiced(OrderPage $page, array $invoices): void\n    {\n        $page->replace($invoices);\n    }\n}\n";
+    let paging = "<?php\n\nnamespace Demo;\n\nabstract class DatabaseEntity\n{\n}\n\nclass Order extends DatabaseEntity\n{\n}\n\n/**\n * @template TItem of DatabaseEntity\n */\nclass PaginatedList\n{\n    /** @param list<TItem> $rows */\n    public function __construct(private array $rows)\n    {\n    }\n\n    /** @return list<TItem> */\n    public function rows(): array\n    {\n        return $this->rows;\n    }\n\n    /** @param list<TItem> $rows */\n    public function replace(array $rows): void\n    {\n        $this->rows = $rows;\n    }\n}\n\n/** @extends PaginatedList<Order> */\nclass OrderPage extends PaginatedList\n{\n}\n";
+
+    assert_eq!(
+        messages(("src/Demo/Report.php", php), &[("src/Demo/Paging.php", paging)]),
+        [
+            "Invalid argument type for argument #1 of `Demo\\PaginatedList::__construct`: expected `list<Demo\\Order>`, but found `list<Demo\\Invoice>`.",
+            "Invalid argument type for argument #1 of `Demo\\PaginatedList::replace`: expected `list<Demo\\Order>`, but found `list<Demo\\Invoice>`.",
+        ]
+    );
+}
+
 /// `new Self(…)` in a generic class names no type arguments: `Self` is the class with its own type parameters, so its
 /// value passes where `Repo<TItem>` is expected inside the class, as a return value and as an argument, and not where
 /// `Box<int>` is. `1` is no `TItem`, and no `out` or `in` marker would let `Box<TItem>` pass as `Box<int>`, so the
