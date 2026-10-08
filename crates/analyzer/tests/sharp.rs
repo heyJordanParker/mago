@@ -593,6 +593,15 @@ fn a_typed_for_counter_takes_only_values_of_its_written_type() {
 }
 
 #[test]
+fn a_by_reference_write_that_can_never_fit_the_written_type_of_a_local_is_reported() {
+    let sharp = "namespace Demo;\n\nclass Response\n{\n    public static List<string> line()\n    {\n        string file = \"\";\n        List<string> line = [];\n        headers_sent(file, line);\n        return line;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Response\n{\n    /** @return list<string> */\n    public static function line(): array\n    {\n        $file = '';\n        $line = [];\n        headers_sent($file, $line);\n        return $line;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Response.sharp", sharp), &[]), ["9:28 invalid-local-assignment-value"]);
+    assert_eq!(issues(("src/Demo/Response.php", php), &[]), ["13:16 invalid-return-statement"]);
+}
+
+#[test]
 fn the_nullable_return_help_writes_the_nullable_type_as_the_file_does() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(int? extra)\n    {\n        return extra;\n    }\n}\n";
     let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function total(?int $extra): int\n    {\n        return $extra;\n    }\n}\n";
@@ -1484,6 +1493,40 @@ fn calling_a_namespaced_function_is_not_supported_yet() {
     assert_eq!(issues(("src/Demo/Report.php", php), &[("src/Demo/helpers.php", helpers)]), Vec::<String>::new());
 }
 
+/// Spec section 4 writes every member as `this.m()` or `Class.m()`, so a bare call is the global function's, even
+/// when the class declares a method of the same name.
+#[test]
+fn a_bare_call_named_like_a_method_of_its_class_calls_the_php_function() {
+    let sharp = "namespace Sharp.Math;\n\npublic static class Math\n{\n    public static float ceil(float x) => ceil(x);\n\n    public static int count(List<int> values) => count(values);\n}\n";
+
+    assert_eq!(issues(("src/Sharp/Math/Math.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+#[test]
+fn a_bare_call_of_a_method_that_no_function_shares_names_the_member_to_write() {
+    let sharp = "namespace Demo;\n\nclass Calc\n{\n    public static int total() => 1;\n\n    public static int run() => total();\n\n    public int size() => 1;\n\n    public int measure() => Size();\n}\n";
+    let analyzed = ("src/Demo/Calc.sharp", sharp);
+
+    assert_eq!(
+        messages(analyzed, &[]),
+        [
+            "Write `Calc.total()`: a static method reaches the members of its class through the class name.",
+            "Could not infer a precise return type for function `Demo\\Calc::run`. Saw type `mixed`.",
+            "Write `this.size()`: members of the same object are always written with `this.`.",
+            "Could not infer a precise return type for function `Demo\\Calc::measure`. Saw type `mixed`.",
+        ]
+    );
+    assert_eq!(
+        issues(analyzed, &[]),
+        [
+            "7:32 non-existent-function",
+            "7:32 mixed-return-statement",
+            "11:29 non-existent-function",
+            "11:29 mixed-return-statement",
+        ]
+    );
+}
+
 #[test]
 fn plus_joins_two_strings_into_the_string_dot_gives_in_php() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int total(string name)\n    {\n        const label = \"Order \" + name + `!`;\n        let line = label;\n        line += \"\\n\";\n        return line;\n    }\n}\n";
@@ -1716,14 +1759,56 @@ fn exit_with_a_never_value_has_the_issues_of_its_php_twin() {
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
 }
 
+/// The standard library's `Int` and `Float`, with the library's signatures, which a project reads from `vendor/`.
+const LIBRARY_TYPE_CLASSES: [(&str, &str); 2] = [
+    (
+        "vendor/heyjordanparker/php-sharp-composer/library/Sharp/Int.sharp",
+        "namespace Sharp;\n\npublic static class Int\n{\n    public static int parse(Any? value) => 0;\n\n    public static int? tryParse(Any? value) => null;\n}\n",
+    ),
+    (
+        "vendor/heyjordanparker/php-sharp-composer/library/Sharp/Float.sharp",
+        "namespace Sharp;\n\npublic static class Float\n{\n    public static float parse(Any? value) => 0.0;\n\n    public static float? tryParse(Any? value) => null;\n}\n",
+    ),
+];
+
+/// The semantic checks let any file whose namespace is `Sharp` declare `Int`, `Float` and `Bool`, as the engine does,
+/// and only the analyzer knows the file is not the standard library's. It refuses them with the semantic checks'
+/// reserved-name message, under its own code.
+#[test]
+fn a_type_class_of_the_standard_library_in_a_project_file_is_a_reserved_name() {
+    let class =
+        "namespace Sharp;\n\npublic static class Bool\n{\n    public static bool? tryParse(Any? value) => null;\n}\n";
+    let r#enum = "namespace Sharp;\n\npublic enum Int\n{\n    case One;\n}\n";
+
+    let class_issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Sharp/Bool.sharp", class), &[]);
+    let enum_issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Sharp/Int.sharp", r#enum), &[]);
+
+    let messages: Vec<String> = class_issues
+        .iter()
+        .map(|issue| format!("{} {}", located(class, issue), issue.message))
+        .chain(enum_issues.iter().map(|issue| format!("{} {}", located(r#enum, issue), issue.message)))
+        .collect();
+    assert_eq!(
+        messages,
+        [
+            "3:21 reserved-name-outside-library Cannot use `Bool` as a class name: it is reserved.",
+            "3:13 reserved-name-outside-library Cannot use `Int` as a class name: it is reserved.",
+        ]
+    );
+}
+
 #[test]
 fn int_and_float_parse_have_the_types_of_the_sharp_library_classes() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int count(string text, int? fallback)\n    {\n        const price = Float.parse(text) + (Float.tryParse(fallback) ?? 0.0);\n        const count = Int.parse(text) + (Int.tryParse(null) ?? 0);\n        return price > 1.0 ? count : Int.tryParse(text);\n    }\n}\n";
     let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function count(string $text, ?int $fallback): int\n    {\n        $price = \\Sharp\\Float::parse($text) + (\\Sharp\\Float::tryParse($fallback) ?? 0.0);\n        $count = \\Sharp\\Int::parse($text) + (\\Sharp\\Int::tryParse(null) ?? 0);\n        return $price > 1.0 ? $count : \\Sharp\\Int::tryParse($text);\n    }\n}\n";
 
     // `check_throws` skips `.sharp` files, so the PHP twin is analyzed without it.
-    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
-    let php_issues = issues_with(Settings { check_throws: false, ..settings() }, ("src/Demo/Report.php", php), &[]);
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &LIBRARY_TYPE_CLASSES);
+    let php_issues = issues_with(
+        Settings { check_throws: false, ..settings() },
+        ("src/Demo/Report.php", php),
+        &LIBRARY_TYPE_CLASSES,
+    );
 
     assert_eq!(sharp_issues, ["9:16 nullable-return-statement", "9:16 invalid-return-statement"]);
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
@@ -3658,4 +3743,64 @@ fn recording_type_arguments_leaves_the_issues_of_a_php_generic_call_unchanged() 
     let php = "<?php\n\nnamespace Demo;\n\n/**\n * @template T\n *\n * @param T $value\n *\n * @return T\n */\nfunction same(mixed $value): mixed\n{\n    return $value;\n}\n\n/**\n * @param 5 $five\n */\nfunction takeFive(int $five): void\n{\n}\n\ntakeFive(same(5));\ntakeFive(same(6));\n";
 
     assert_eq!(issues(("src/Demo/run.php", php), &[]), ["25:10 invalid-argument"]);
+}
+
+/// The standard library's `Text`, a static class with a native body, spec section 29.
+const TEXT: (&str, &str) = (
+    "library/Sharp/Text/Text.sharp",
+    "namespace Sharp.Text;\n\npublic static class Text\n{\n    public static extern string slug(string title);\n}\n",
+);
+
+#[test]
+fn an_extern_method_of_a_static_class_is_called_on_the_class_with_no_issues() {
+    let code = "namespace App;\n\nimport Sharp.Text.Text;\n\npublic class Page\n{\n    public string slug() => Text.slug(\"Hello\");\n}\n";
+
+    assert_eq!(issues(("src/App/Page.sharp", code), &[TEXT]), Vec::<String>::new());
+}
+
+#[test]
+fn new_on_a_static_class_is_an_error() {
+    let code =
+        "namespace App;\n\nimport Sharp.Text.Text;\n\npublic class Page\n{\n    public Text make() => new Text();\n}\n";
+
+    assert_eq!(
+        messages(("src/App/Page.sharp", code), &[TEXT]),
+        ["`Text` is a static class, so it has no instances: call its members on the class."]
+    );
+    assert_eq!(issues(("src/App/Page.sharp", code), &[TEXT]), ["7:31 abstract-instantiation"]);
+}
+
+#[test]
+fn a_class_that_extends_a_static_class_is_an_error() {
+    let code = "namespace App;\n\nimport Sharp.Text.Text;\n\npublic class Slug : Text\n{\n}\n";
+
+    assert_eq!(
+        messages(("src/App/Slug.sharp", code), &[TEXT]),
+        ["`Text` is a static class, so no class can extend it."]
+    );
+    assert_eq!(issues(("src/App/Slug.sharp", code), &[TEXT]), ["5:21 extend-final-class"]);
+}
+
+/// Semantics takes a well-formed `extern` method in any namespace, because the engine compiles the standard library
+/// from `vendor/` without knowing it is vendored. The analyzer knows a project file, and refuses it there.
+#[test]
+fn an_extern_method_in_a_project_file_is_an_error_in_any_namespace() {
+    for analyzed in [
+        (
+            "src/Sharp/Mine/Text.sharp",
+            "namespace Sharp.Mine;\n\npublic static class Text\n{\n    public static extern string slug(string title);\n}\n",
+        ),
+        (
+            "src/App/Text.sharp",
+            "namespace App;\n\npublic static class Text\n{\n    public static extern string slug(string title);\n}\n",
+        ),
+    ] {
+        assert_eq!(
+            messages(analyzed, &[]),
+            ["Only the standard library declares native bodies: give `slug` a body."],
+            "{}",
+            analyzed.0
+        );
+        assert_eq!(issues(analyzed, &[]), ["5:33 native-body-outside-library"], "{}", analyzed.0);
+    }
 }

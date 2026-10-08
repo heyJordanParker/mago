@@ -38,6 +38,7 @@ pub fn check_method<'ast, 'arena>(
     let mut last_abstract: Option<Span> = None;
     let mut last_visibility: Option<Span> = None;
     let mut is_public = true;
+    let mut is_extern = false;
     for modifier in &method.modifiers {
         match modifier {
             Modifier::Static(_) => {
@@ -210,6 +211,7 @@ pub fn check_method<'ast, 'arena>(
             }
             // Only PHP# parses these, and `check_slice` decides them.
             Modifier::Virtual(_) | Modifier::Override(_) | Modifier::Required(_) => {}
+            Modifier::Extern(_) => is_extern = true,
         }
     }
 
@@ -326,8 +328,9 @@ pub fn check_method<'ast, 'arena>(
 
     let mut is_abstract = false;
     match &method.body {
+        // An `extern` method's body is native, so it has none here.
         MethodBody::Abstract(method_abstract_body) => {
-            if !class_like_is_interface && last_abstract.is_none() {
+            if !class_like_is_interface && last_abstract.is_none() && !is_extern {
                 context.report(
                     Issue::error(format!(
                         "Non-Abstract method `{class_like_name}::{method_name}` must have a concrete body.",

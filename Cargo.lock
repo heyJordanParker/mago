@@ -1599,6 +1599,7 @@ dependencies = [
  "notify",
  "rayon",
  "serde",
+ "serde_json",
  "tempfile",
  "tracing",
  "walkdir",
