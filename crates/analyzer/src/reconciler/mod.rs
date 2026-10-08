@@ -1504,7 +1504,7 @@ fn report_impossible_issue<A>(
 ) where
     A: Arena,
 {
-    let key = display_variable_name(context.dialect, key);
+    let key = display_variable_name(context, key);
     let subject_desc = if old_var_type_string.is_empty() || old_var_type_string.len() > 50 {
         format!("`{key}`")
     } else {
@@ -1585,7 +1585,7 @@ fn report_redundant_issue<A>(
 ) where
     A: Arena,
 {
-    let key = display_variable_name(context.dialect, key);
+    let key = display_variable_name(context, key);
     let subject_desc = if old_var_type_string.is_empty() || old_var_type_string.len() > 50 {
         format!("`{key}`")
     } else {

@@ -1686,7 +1686,7 @@ fn check_parameter_default_value<'ctx, 'arena, A>(
 
     let default_type_str = display_value_type(context, default_type, declared_type);
     let declared_type_str = display_type(context, declared_type);
-    let param_name = display_variable_name(context.dialect, parameter_metadata.name.0.as_bytes());
+    let param_name = display_variable_name(context, parameter_metadata.name.0.as_bytes());
 
     let issue = Issue::error(format!(
         "Default value for parameter `{param_name}` is not assignable to its declared type."

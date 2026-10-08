@@ -567,8 +567,7 @@ where
             filled_parameter_offsets.insert(parameter_offset);
 
             if let Some(named_argument) = argument.get_named_argument() {
-                let named_value_display =
-                    display_variable_name(context.dialect, [b"$", named_argument.name.value].concat());
+                let named_value_display = display_variable_name(context, [b"$", named_argument.name.value].concat());
                 if let Some(previous_span) = assigned_parameters_by_name.get(&named_argument.name.value) {
                     has_named_argument_anomaly = true;
                     let target_name_str = invocation.target.guess_name(context);
@@ -664,7 +663,7 @@ where
                 parameter_types.insert(parameter_name.0, argument_value_type);
             }
         } else if let Some(named_argument) = argument.get_named_argument() {
-            let argument_name = display_variable_name(context.dialect, [b"$", named_argument.name.value].concat());
+            let argument_name = display_variable_name(context, [b"$", named_argument.name.value].concat());
 
             let has_variadic_parameter = invocation
                 .target
@@ -1877,7 +1876,7 @@ fn validate_keyed_array_elements<'ctx, 'arena, A>(
                 invocation_target,
             );
         } else if let ArrayKey::String(key_str) = array_key {
-            let argument_name = display_variable_name(context.dialect, [b"$", key_str.as_bytes()].concat());
+            let argument_name = display_variable_name(context, [b"$", key_str.as_bytes()].concat());
 
             // For variadic functions, allow extra named arguments
             let has_variadic_parameter = invocation_target
@@ -1908,7 +1907,7 @@ fn validate_keyed_array_elements<'ctx, 'arena, A>(
                             .filter_map(|p| {
                                 p.get_name().map(|name| {
                                     let stripped = trim_start_byte(name.0.as_bytes(), b'$');
-                                    display_variable_name(context.dialect, [b"$", stripped].concat())
+                                    display_variable_name(context, [b"$", stripped].concat())
                                 })
                             })
                             .collect();

@@ -117,12 +117,14 @@ where
     /// Whether another class-like of the project or its vendors has the short name of the class-like `name`, compared
     /// without case as PHP compares class names. PHP's built-in class-likes don't count: a `.sharp` file reaches one,
     /// like `Dom\Text`, only through an import, and one file can't import two classes of one short name without an
-    /// alias.
+    /// alias. The prelude's `Sharp\` class-likes do count, as a `.sharp` file reaches them with no import.
     pub(crate) fn shares_short_name(&self, name: Word) -> bool {
         let counts = self.short_name_counts.get_or_init(|| {
             let mut counts = HashMap::default();
             for (class_like, metadata) in &self.codebase.class_likes {
-                if !metadata.flags.is_built_in() {
+                // php-sharp#60: the prelude's `Sharp\` class-likes are built-in, yet a `.sharp` file reaches them with no
+                // import.
+                if !metadata.flags.is_built_in() || class_like.as_bytes().starts_with(b"sharp\\") {
                     *counts.entry(short_name(class_like).to_ascii_lowercase()).or_insert(0) += 1;
                 }
             }

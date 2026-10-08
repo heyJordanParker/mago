@@ -940,7 +940,7 @@ where
             Some(assertion_variable) => {
                 let non_nullsafe_assertion_variable = get_non_nullsafe_expression_id(assertion_variable);
                 let assertion_variable = non_nullsafe_assertion_variable.unwrap_or(assertion_variable);
-                let assertion_name = display_variable_name(context.dialect, assertion_variable.as_bytes());
+                let assertion_name = display_variable_name(context, assertion_variable.as_bytes());
                 let mut new_variable_possibilities: AssertionSet = vec![];
                 let mut resolved_or_clause: Disjunction<Assertion> = Vec::new();
 

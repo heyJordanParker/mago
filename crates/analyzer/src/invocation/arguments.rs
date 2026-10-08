@@ -145,7 +145,7 @@ where
         let target_name_str = invocation_target.guess_name(context);
         let parameter_label = invocation_target.get_effective_parameter_name(argument_offset).map_or_else(
             || format!("#{}", argument_offset + 1),
-            |name| format!("`{}`", display_variable_name(context.dialect, name.as_bytes())),
+            |name| format!("`{}`", display_variable_name(context, name.as_bytes())),
         );
 
         context.collector.report_with_code(
@@ -186,11 +186,11 @@ pub fn verify_argument_type<'arena, A>(
     let effective_parameter_name = invocation_target.get_effective_parameter_name(argument_offset);
     let argument_label = effective_parameter_name.map_or_else(
         || format!("argument #{}", argument_offset + 1),
-        |name| format!("`{}`", display_variable_name(context.dialect, name.as_bytes())),
+        |name| format!("`{}`", display_variable_name(context, name.as_bytes())),
     );
     let argument_subject = effective_parameter_name.map_or_else(
         || format!("Argument #{}", argument_offset + 1),
-        |name| format!("Argument `{}`", display_variable_name(context.dialect, name.as_bytes())),
+        |name| format!("Argument `{}`", display_variable_name(context, name.as_bytes())),
     );
 
     if input_type.is_never() {

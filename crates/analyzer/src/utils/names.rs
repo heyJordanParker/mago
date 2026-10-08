@@ -14,7 +14,7 @@ use mago_codex::ttype::union::TUnion;
 use mago_names::display_sharp_member;
 use mago_names::kind::NameKind;
 use mago_names::short_name;
-use mago_syntax::dialect::Dialect;
+use mago_syntax_core::utils::is_part_of_identifier;
 use mago_word::Word;
 use mago_word::word;
 
@@ -110,15 +110,18 @@ where
     if context.dialect.is_sharp() { word(mago_bytes::trim_start_byte(name.as_bytes(), b'$')) } else { name }
 }
 
-/// Returns the variable `id` as a file of `dialect` writes it. The analyzer keys a variable, a parameter and a read
-/// through one by its PHP text, as `$order`, `$this->total` and `Order::$count`. A `.sharp` file writes them as
-/// `order`, `this.total` and `Order.count`, as a property is named without `$`. PHP gets `id` unchanged. Text inside
-/// quotes, as the key of `$prices['$']`, is kept as written. It takes the dialect, not the analysis context, so a
-/// built-in hook names its parameters by the same rule.
+/// Returns the variable `id` as the analyzed file writes it. The analyzer keys a variable, a parameter and a read
+/// through one by its PHP text, as `$order`, `$this->total` and `App\Shop\Order::$count`. A `.sharp` file writes them
+/// as `order`, `this.total` and `Order.count`: a property is named without `$`, and the class before `::` as
+/// [`sharp_class_like_name`] names it. PHP gets `id` unchanged. Text inside quotes, as the key of `$prices['$']`, is
+/// kept as written.
 #[must_use]
-pub(crate) fn display_variable_name(dialect: Dialect, id: impl AsRef<[u8]>) -> String {
+pub(crate) fn display_variable_name<A>(context: &Context<'_, '_, A>, id: impl AsRef<[u8]>) -> String
+where
+    A: Arena,
+{
     let id = id.as_ref();
-    if !dialect.is_sharp() {
+    if !context.dialect.is_sharp() {
         return String::from_utf8_lossy(id).into_owned();
     }
 
@@ -142,7 +145,21 @@ pub(crate) fn display_variable_name(dialect: Dialect, id: impl AsRef<[u8]>) -> S
             }
             None if byte == b'$' => (b"", 1),
             None if rest.starts_with(b"?->") => (b"?.", 3),
-            None if rest.starts_with(b"->") || rest.starts_with(b"::") => (b".", 2),
+            None if rest.starts_with(b"::") => {
+                let class_start = id[..index]
+                    .iter()
+                    .rposition(|byte| !is_part_of_identifier(byte) && *byte != b'\\')
+                    .map_or(0, |end| end + 1);
+                if class_start < index
+                    && !matches!(class_start.checked_sub(1).map(|before| id[before]), Some(b'$' | b'>'))
+                {
+                    written.truncate(written.len() - (index - class_start));
+                    written.extend_from_slice(sharp_class_like_name(context, word(&id[class_start..index])).as_bytes());
+                }
+
+                (b".", 2)
+            }
+            None if rest.starts_with(b"->") => (b".", 2),
             None => (&rest[..1], 1),
         };
 

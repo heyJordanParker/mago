@@ -4933,6 +4933,64 @@ fn a_class_that_shares_its_short_name_only_with_a_built_in_class_keeps_its_short
     );
 }
 
+/// A `.sharp` file reaches the standard library's `Sharp.Environment` with no import, so the project's own
+/// `App.Ops.Environment` shares its short name, and a message names both by their full dotted names. The PHP twin
+/// keeps upstream's full names.
+#[test]
+fn a_class_that_shares_its_short_name_with_a_sharp_prelude_class_is_named_by_its_full_name() {
+    let environment = ("src/App/Ops/Environment.php", "<?php\n\nnamespace App\\Ops;\n\nclass Environment\n{\n}\n");
+    let shell = (
+        "src/Lib/Shell.php",
+        "<?php\n\nnamespace Lib;\n\nclass Shell\n{\n    public function environment(): \\Sharp\\Environment\n    {\n        return new \\Sharp\\Environment();\n    }\n}\n",
+    );
+    let sharp = "namespace App.Jobs;\n\nimport App.Ops.Environment;\nimport Lib.Shell;\n\nclass Job\n{\n    public Environment current(Shell shell) => shell.environment();\n}\n";
+    let php = "<?php\n\nnamespace App\\Jobs;\n\nuse App\\Ops\\Environment;\nuse Lib\\Shell;\n\nclass Job\n{\n    public function current(Shell $shell): Environment\n    {\n        return $shell->environment();\n    }\n}\n";
+    let returned = |analyzed| -> Vec<String> {
+        worded(analyzed, &[environment, shell])
+            .into_iter()
+            .filter(|line| line.contains(" invalid-return-statement "))
+            .collect()
+    };
+
+    assert_eq!(
+        returned(("src/App/Jobs/Job.php", php)),
+        [
+            "12:16 invalid-return-statement Invalid return type for function `App\\Jobs\\Job::current`: expected `App\\Ops\\Environment`, but found `Sharp\\Environment`. | This has type `Sharp\\Environment` | The type `Sharp\\Environment` returned here is not compatible with the declared return type `App\\Ops\\Environment`. | Change the return value to match `App\\Ops\\Environment`, or update the function's return type declaration."
+        ]
+    );
+    assert_eq!(
+        returned(("src/App/Jobs/Job.sharp", sharp)),
+        [
+            "8:48 invalid-return-statement Invalid return type for method `Job.current`: expected `App.Ops.Environment`, but found `Sharp.Environment`. | This has type `Sharp.Environment` | The type `Sharp.Environment` returned here is not compatible with the declared return type `App.Ops.Environment`. | Change the return value to match `App.Ops.Environment`, or update the method's return type declaration."
+        ]
+    );
+}
+
+/// A message names a static property read as the file writes it: `Order.count` in a `.sharp` file, with the class
+/// named by the same short-name rule as every other class in a message. The PHP twin keeps upstream's
+/// `App\Shop\Order::$count`.
+#[test]
+fn a_message_names_a_static_property_as_sharp_writes_it() {
+    let sharp = "namespace App.Shop;\n\nclass Order\n{\n    public static int count = 0;\n\n    public bool counted() => is_string(Order.count);\n}\n";
+    let php = "<?php\n\nnamespace App\\Shop;\n\nclass Order\n{\n    public static int $count = 0;\n\n    public function counted(): bool\n    {\n        return is_string(Order::$count);\n    }\n}\n";
+    let compared = |analyzed| -> Vec<String> {
+        worded(analyzed, &[]).into_iter().filter(|line| line.contains("-type-comparison ")).collect()
+    };
+
+    assert_eq!(
+        compared(("src/App/Shop/Order.php", php)),
+        [
+            "11:16 impossible-type-comparison Impossible type assertion: `App\\Shop\\Order::$count` of type `int` can never be `string`. | Argument `App\\Shop\\Order::$count` has type `int` | The assertion expects `App\\Shop\\Order::$count` to be `string`, but no value of type `int` can satisfy this. | Check that the correct variable is being passed, or update the assertion type."
+        ]
+    );
+    assert_eq!(
+        compared(("src/App/Shop/Order.sharp", sharp)),
+        [
+            "7:30 impossible-type-comparison Impossible type assertion: `Order.count` of type `int` can never be `string`. | Argument `Order.count` has type `int` | The assertion expects `Order.count` to be `string`, but no value of type `int` can satisfy this. | Check that the correct variable is being passed, or update the assertion type."
+        ]
+    );
+}
+
 /// Code a help tells the developer to write names an enum by the short name its file binds, as PHP# refuses a full
 /// name in code (spec section 23). Prose keeps the dotted name that tells two enums of one short name apart. The PHP
 /// twin keeps upstream's text.

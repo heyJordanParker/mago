@@ -159,7 +159,7 @@ where
     A: Arena,
 {
     let variable_atom = word(variable_name_bytes);
-    let variable_name = display_variable_name(context.dialect, variable_name_bytes);
+    let variable_name = display_variable_name(context, variable_name_bytes);
     block_context.add_conditionally_referenced_variable_atom(variable_name_bytes, variable_atom);
 
     let variable_type = match block_context.locals.get(&variable_atom) {
@@ -239,7 +239,7 @@ where
                 if !similar_suggestions.is_empty() {
                     let suggestions_str = similar_suggestions
                         .iter()
-                        .map(|name| display_variable_name(context.dialect, name))
+                        .map(|name| display_variable_name(context, name))
                         .collect::<Vec<_>>()
                         .join("`, `");
                     issue = issue.with_note(format!(
