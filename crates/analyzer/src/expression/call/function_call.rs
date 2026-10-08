@@ -13,6 +13,7 @@ use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::Access;
+use mago_syntax::cst::Argument;
 use mago_syntax::cst::ArgumentList;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
@@ -349,8 +350,8 @@ where
 }
 
 /// The PHP functions PHP# replaces with its own syntax, each with the form to write: `is` (spec section 21),
-/// `(string)` and `/` on two ints (section 24), a spread literal (section 12) and `for … of` (section 17). `{x}` and
-/// `{a}` stand for the call's first argument, and `{b}` for its second.
+/// `(string)` and `/` on two ints (section 24), a spread literal (section 12) and `for … of` (section 17). `{x}` stands
+/// for the call's first argument, `{a}` and `{b}` for its first two, and `{...}` for every argument, each spread.
 const REPLACED_BY_SYNTAX: [(&str, &str); 9] = [
     ("is_string", "`{x} is string`"),
     ("is_int", "`{x} is int`"),
@@ -358,8 +359,8 @@ const REPLACED_BY_SYNTAX: [(&str, &str); 9] = [
     ("is_bool", "`{x} is bool`"),
     ("strval", "`(string){x}`"),
     ("intdiv", "`{a} / {b}`"),
-    ("array_merge", "`[...{a}, ...{b}]`"),
-    ("array_replace", "`[...{a}, ...{b}]`"),
+    ("array_merge", "`[{...}]`"),
+    ("array_replace", "`[{...}]`"),
     ("array_walk_recursive", "a `for … of` loop"),
 ];
 
@@ -380,12 +381,15 @@ fn report_replaced_function_call<A>(
         return;
     };
 
-    let first = argument_text(context, arguments, 0);
-    let second = argument_text(context, arguments, 1);
+    let written: Vec<Option<String>> =
+        arguments.arguments.iter().map(|argument| argument_text(context, argument)).collect();
+    let argument = |index: usize| written.get(index).cloned().flatten().unwrap_or_else(|| placeholder(index));
+    let spread: Vec<String> = (0..written.len()).map(|index| format!("...{}", argument(index))).collect();
     let form = form
-        .replace("{x}", first.as_deref().unwrap_or("x"))
-        .replace("{a}", first.as_deref().unwrap_or("a"))
-        .replace("{b}", second.as_deref().unwrap_or("b"));
+        .replace("{x}", &written.first().cloned().flatten().unwrap_or_else(|| "x".to_owned()))
+        .replace("{a}", &argument(0))
+        .replace("{b}", &argument(1))
+        .replace("{...}", &spread.join(", "));
 
     context.collector.report_with_code(
         IssueCode::ReplacedBySyntax,
@@ -394,14 +398,23 @@ fn report_replaced_function_call<A>(
     );
 }
 
-/// The source text of the positional argument at `index` when it is one name or a member read, such as `total` or
-/// `order.total`.
-fn argument_text<A>(context: &Context<'_, '_, A>, arguments: &ArgumentList<'_>, index: usize) -> Option<String>
+/// The name a form gives the argument at `index` when it cannot write the argument itself: `a`, `b`, `c` and on
+/// through the alphabet, then `argument27` and on.
+fn placeholder(index: usize) -> String {
+    u8::try_from(index)
+        .ok()
+        .filter(|index| *index < 26)
+        .map_or_else(|| format!("argument{}", index + 1), |index| char::from(b'a' + index).to_string())
+}
+
+/// The source text of a positional argument that is one name or a member read, such as `total` or `order.total`.
+fn argument_text<A>(context: &Context<'_, '_, A>, argument: &Argument<'_>) -> Option<String>
 where
     A: Arena,
 {
-    let argument =
-        arguments.arguments.get(index).filter(|argument| argument.is_positional() && !argument.is_unpacked())?;
+    if !argument.is_positional() || argument.is_unpacked() {
+        return None;
+    }
 
     let mut receiver = argument.value();
     loop {

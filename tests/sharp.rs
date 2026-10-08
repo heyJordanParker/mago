@@ -887,13 +887,15 @@ fn analyze_reports_each_function_php_sharp_replaces_with_syntax_in_a_sharp_file_
 fn analyze_names_a_name_or_member_read_argument_in_the_form_and_a_placeholder_for_any_other() {
     assert_eq!(
         page_errors(
-            "namespace App;\n\npublic class Page\n{\n    private Any? data = null;\n    public Any? read() => this.data;\n    public bool owned(Page other) => is_string(other.data);\n    public bool named() => is_string(this.read());\n    public int third(int total) => intdiv(total, 3);\n    public List<int> both(List<int> first) => array_merge(this.items(), first);\n    public List<int> items() => [];\n}\n"
+            "namespace App;\n\npublic class Page\n{\n    private Any? data = null;\n    public Any? read() => this.data;\n    public bool owned(Page other) => is_string(other.data);\n    public bool named() => is_string(this.read());\n    public int third(int total) => intdiv(total, 3);\n    public List<int> both(List<int> first) => array_merge(this.items(), first);\n    public List<int> all(List<int> first, List<int> second) => array_merge(first, this.items(), second);\n    public List<int> one(List<int> first) => array_merge(first);\n    public List<int> items() => [];\n}\n"
         ),
         [
             "src/App/Page.sharp:7:38:error - replaced-by-syntax: `is_string` is replaced by PHP# syntax: write `other.data is string`.",
             "src/App/Page.sharp:8:28:error - replaced-by-syntax: `is_string` is replaced by PHP# syntax: write `x is string`.",
             "src/App/Page.sharp:9:36:error - replaced-by-syntax: `intdiv` is replaced by PHP# syntax: write `total / b`.",
             "src/App/Page.sharp:10:47:error - replaced-by-syntax: `array_merge` is replaced by PHP# syntax: write `[...a, ...first]`.",
+            "src/App/Page.sharp:11:64:error - replaced-by-syntax: `array_merge` is replaced by PHP# syntax: write `[...first, ...b, ...second]`.",
+            "src/App/Page.sharp:12:46:error - replaced-by-syntax: `array_merge` is replaced by PHP# syntax: write `[...first]`.",
         ]
     );
 }
