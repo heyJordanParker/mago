@@ -40,6 +40,7 @@ use mago_syntax::cst::Inheritance;
 use mago_syntax::cst::Instantiation;
 use mago_syntax::cst::Interface;
 use mago_syntax::cst::Is;
+use mago_syntax::cst::Law;
 use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::LocalIdentifier;
 use mago_syntax::cst::Method;
@@ -576,6 +577,15 @@ where
         if self.sharp {
             self.locals.exit_method();
         }
+    }
+
+    /// A law binds as a static method does, spec section 28: its parameters are locals of the law alone.
+    fn walk_in_law(&mut self, _law: &'ast Law<'arena>, _context: &mut NameResolutionContext<'arena, A>) {
+        self.locals.enter_method();
+    }
+
+    fn walk_out_law(&mut self, _law: &'ast Law<'arena>, _context: &mut NameResolutionContext<'arena, A>) {
+        self.locals.exit_method();
     }
 
     fn walk_out_function(

@@ -1,17 +1,20 @@
 //! The rules effects decide: an `extern` declaration's own checks, and the rules over solved effects.
 
 use mago_allocator::Arena;
+use mago_codex::metadata::CodebaseMetadata;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_reporting::IssueCollection;
 use mago_span::HasSpan;
 use mago_syntax::cst::Extern;
+use mago_word::Word;
 
 use crate::code::IssueCode;
 use crate::context::Context;
 use crate::effects::Body;
 use crate::effects::Effect;
 use crate::effects::Effects;
+use crate::effects::Impurity;
 
 /// Spec section 29: a getter reads, so it has no effect and changes nothing.
 pub(crate) fn getters_must_be_pure(effects: &Effects) -> IssueCollection {
@@ -19,23 +22,51 @@ pub(crate) fn getters_must_be_pure(effects: &Effects) -> IssueCollection {
         .impure_bodies()
         .filter(|(body, _, _)| matches!(body, Body::Accessor(_, _, accessor) if accessor.as_bytes() == b"get"))
         .map(|(_, name, impurity)| {
-            let getter = name.as_bytes().rsplit(|byte| *byte == b'.').next().unwrap_or(name.as_bytes());
-            let issue = Issue::error(format!(
-                "Getter `{}` {impurity}. Getters must be pure (section 29).",
-                String::from_utf8_lossy(getter)
-            ))
-            .with_code(IssueCode::ImpureGetter.as_str())
-            .with_annotation(Annotation::primary(impurity.span));
-
-            match impurity.effect {
-                Some(Effect::Unknown(_)) => issue.with_help(format!(
-                    "Declare it in a .sharp file: `extern {};` when it has no effect, or name its effects after `uses`.",
-                    impurity.cause
-                )),
-                _ => issue,
-            }
+            impure(
+                IssueCode::ImpureGetter,
+                format!("Getter `{}` {impurity}. Getters must be pure (section 29).", member(name)),
+                &impurity,
+            )
         })
         .collect()
+}
+
+/// Spec section 28: a law holds only over pure code, which is the code Lean reads.
+pub(crate) fn laws_must_be_pure(effects: &Effects, codebase: &CodebaseMetadata) -> IssueCollection {
+    effects
+        .impure_bodies()
+        .filter(|(body, _, _)| {
+            matches!(body, Body::Method(class, method)
+                if codebase.get_class_like(class.as_bytes()).is_some_and(|class| class.laws.contains_key(method)))
+        })
+        .map(|(_, name, impurity)| {
+            impure(
+                IssueCode::ImpureLaw,
+                format!("Law `{}` {impurity}. Laws hold only over pure code (section 29).", member(name)),
+                &impurity,
+            )
+        })
+        .collect()
+}
+
+/// The member a body's message name ends with: `total` of `Cart.total`.
+fn member(name: Word) -> String {
+    let bytes = name.as_bytes();
+
+    String::from_utf8_lossy(bytes.rsplit(|byte| *byte == b'.').next().unwrap_or(bytes)).into_owned()
+}
+
+/// The error on the call or write `impurity` names, with the `extern` to write when the callee has none.
+fn impure(code: IssueCode, message: String, impurity: &Impurity) -> Issue {
+    let issue = Issue::error(message).with_code(code.as_str()).with_annotation(Annotation::primary(impurity.span));
+
+    match impurity.effect {
+        Some(Effect::Unknown(_)) => issue.with_help(format!(
+            "Declare it in a .sharp file: `extern {};` when it has no effect, or name its effects after `uses`.",
+            impurity.cause
+        )),
+        _ => issue,
+    }
 }
 
 /// Spec section 29: an `extern` declaration declares plain PHP that exists, once in the whole project.

@@ -360,6 +360,7 @@ final class AnalyzerCodeModuleGenerator
         'duplicate-extern',
         'extern-on-sharp',
         'impure-getter',
+        'impure-law',
     ];
 
     /**

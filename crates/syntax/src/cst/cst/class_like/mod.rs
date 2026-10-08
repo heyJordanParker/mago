@@ -16,6 +16,7 @@ use crate::cst::sequence::Sequence;
 pub mod constant;
 pub mod enum_case;
 pub mod inheritance;
+pub mod law;
 pub mod member;
 pub mod method;
 pub mod property;

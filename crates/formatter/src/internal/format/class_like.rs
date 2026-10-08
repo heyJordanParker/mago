@@ -182,6 +182,7 @@ where
                     ClassLikeMember::Property(_) => ClassLikeMemberKind::Property,
                     ClassLikeMember::EnumCase(_) => ClassLikeMemberKind::EnumCase,
                     ClassLikeMember::Method(_) => ClassLikeMemberKind::Method,
+                    ClassLikeMember::Law(_) => unreachable!("`mago format` skips PHP# files, the only ones with it"),
                 };
 
                 if formatted_count != 0

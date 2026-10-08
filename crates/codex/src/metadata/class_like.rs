@@ -17,6 +17,7 @@ use crate::metadata::attribute::AttributeMetadata;
 use crate::metadata::class_like_constant::ClassLikeConstantMetadata;
 use crate::metadata::enum_case::EnumCaseMetadata;
 use crate::metadata::flags::MetadataFlags;
+use crate::metadata::function_like::FunctionLikeMetadata;
 use crate::metadata::property::PropertyMetadata;
 use crate::metadata::ttype::TypeMetadata;
 use crate::metadata::version_constraint::VersionConstraint;
@@ -73,6 +74,10 @@ pub struct ClassLikeMetadata {
     pub appearing_method_ids: WordMap<MethodIdentifier>,
     pub inheritable_method_ids: WordMap<MethodIdentifier>,
     pub overridden_method_ids: WordMap<IndexMap<Word, MethodIdentifier, RandomState>>,
+    /// The PHP# laws the class-like states, spec section 28, by lowercase name: each a static function-like that
+    /// returns `bool`. A law is never one of `methods`, so no method rule reaches it.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub laws: WordMap<FunctionLikeMetadata>,
     pub properties: WordMap<PropertyMetadata>,
     /// Magic properties documented via `@property`/`@property-read`/`@property-write` in this
     /// class-like's own docblock.
@@ -181,6 +186,7 @@ impl ClassLikeMetadata {
             static_pseudo_methods: WordSet::default(),
             overridden_method_ids: WordMap::default(),
             overridden_property_ids: WordMap::default(),
+            laws: WordMap::default(),
             properties: WordMap::default(),
             magic_properties: WordMap::default(),
             magic_property_ids: WordMap::default(),
@@ -923,6 +929,7 @@ impl ClassLikeMetadata {
         self.declaring_method_ids.shrink_to_fit();
         self.inheritable_method_ids.shrink_to_fit();
         self.overridden_method_ids.shrink_to_fit();
+        self.laws.shrink_to_fit();
         self.attributes.shrink_to_fit();
         self.constants.shrink_to_fit();
         self.enum_cases.shrink_to_fit();

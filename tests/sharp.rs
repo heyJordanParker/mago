@@ -1386,6 +1386,61 @@ fn compile_refuses_a_file_whose_getter_calls_plain_php_without_an_extern() {
     assert!(directory.path().join(".sharp/app/Stubs/Stripe.sharpc").exists(), "{printed}");
 }
 
+/// Spec section 28's `app/Shared/Money.sharp`, whose law holds over its pure `add`.
+#[test]
+fn analyze_finds_no_issues_in_a_class_with_a_law() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    write(root, "mago.toml", "php-version = \"8.4\"\n\n[source]\npaths = [\"app\"]\n");
+    write(
+        root,
+        "app/Shared/Money.sharp",
+        "namespace App.Shared;\n\npublic class Money\n{\n    public Money(public int amount { get; }, public string currency { get; }) { }\n    public Money add(Money other) => new Money(this.amount + other.amount, this.currency);\n\n    law addKeepsCurrency(Money a, Money b) => a.add(b).currency == a.currency;\n}\n",
+    );
+
+    let output = run(root, "analyze", &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "{stdout}{stderr}");
+    assert!(stderr.contains("No issues found."), "{stdout}{stderr}");
+}
+
+#[test]
+fn compile_refuses_a_file_whose_law_calls_plain_php_with_an_effect() {
+    let directory = extern_workspace(&stripe_stub(""));
+    let root = directory.path();
+    write(
+        root,
+        "app/Lib/Gateway.php",
+        "<?php\n\nnamespace Billing;\n\nfinal class Gateway\n{\n    public static function charge(int $amount): bool\n    {\n        return $amount > 0;\n    }\n}\n",
+    );
+    write(
+        root,
+        "app/Stubs/Billing.sharp",
+        "namespace App.Stubs;\n\nimport Billing.Gateway;\n\nextern Gateway.charge uses Http;\n",
+    );
+    write(
+        root,
+        "app/Shop/Refund.sharp",
+        "namespace App.Shop;\n\nimport Billing.Gateway;\n\npublic class Refund\n{\n    law refundAllowed(int amount) => Gateway.charge(amount);\n}\n",
+    );
+
+    let output = run(root, "compile", &[]);
+    let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+
+    assert_eq!(output.status.code(), Some(1), "{printed}");
+    assert!(printed.contains("impure-law"), "{printed}");
+    assert!(
+        printed.contains(
+            "Law `refundAllowed` calls `Gateway.charge`, which has the effect `Http`. Laws hold only over pure code (section 29)."
+        ),
+        "{printed}"
+    );
+    assert!(!root.join(".sharp/app/Shop/Refund.sharpc").exists());
+    assert!(root.join(".sharp/app/Stubs/Billing.sharpc").exists(), "{printed}");
+}
+
 #[test]
 fn compile_and_analyze_print_json_under_mago_reporting_format_in_github_actions() {
     let directory = suppressed_workspace("Broken.sharp", &broken_sharp(""), "");

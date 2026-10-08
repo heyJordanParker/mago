@@ -116,6 +116,9 @@ where
                         },
                     });
                 }
+                // A PHP# law is checked and never runs, spec section 28, so the class it states a fact about has no
+                // member for it.
+                cst::ClassLikeMember::Law(_) => {}
             }
         }
 

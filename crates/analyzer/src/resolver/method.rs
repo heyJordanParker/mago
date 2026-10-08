@@ -57,6 +57,7 @@ use crate::utils::expression::is_this;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_method_name;
 use crate::utils::names::display_sharp_collection;
+use crate::utils::names::display_sharp_method;
 use crate::visibility::check_method_visibility;
 use crate::visibility::is_method_visible;
 use crate::visibility::is_visible_from_scope;
@@ -1264,6 +1265,23 @@ pub(crate) fn report_non_existent_method<A>(
 ) where
     A: Arena,
 {
+    // Spec section 28: a law is checked and never runs, so the class keeps it apart from its methods.
+    if let Some(class) = context.codebase.get_class_like(classname.as_bytes())
+        && let Some(law) = class.laws.get(&ascii_lowercase_word(method_name.as_bytes()))
+    {
+        context.collector.report_with_code(
+            IssueCode::NonExistentMethod,
+            Issue::error(format!(
+                "`{}` is a law, and a law is never called (section 28).",
+                display_sharp_method(class, law)
+            ))
+            .with_annotation(Annotation::primary(selector_span).with_message("Called here."))
+            .with_annotation(Annotation::secondary(law.span).with_message("The law is stated here.")),
+        );
+
+        return;
+    }
+
     let classname = display_class_like_name(context, classname);
     let method_name = display_method_name(context, classname, method_name);
     context.collector.report_with_code(

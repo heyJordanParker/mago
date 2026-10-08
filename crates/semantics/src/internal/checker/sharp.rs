@@ -109,16 +109,19 @@ const ANY: &[u8] = b"Any";
 /// - At file level: `namespace`, `import`, `class`, `interface` and `enum`. A file has at most one namespace, named
 ///   and written without braces.
 /// - A class: attributes, an optional `public`, `abstract` or `final`, a name, an optional `: Base, Interface` header,
-///   constants, fields, properties and methods, with no other modifiers, `extends` or `implements`. The engine tells
-///   the base class from the interfaces when it links the class.
+///   constants, fields, properties, methods and laws, with no other modifiers, `extends` or `implements`. The engine
+///   tells the base class from the interfaces when it links the class.
+/// - A law, spec section 28, in a class or an enum: `law`, a name, parameters checked as a method's and an expression
+///   body. `check_members` refuses a default and a variadic parameter, because a law's parameters range over every
+///   value.
 /// - A static class, `public static class Text`, as spec sections 26 and 29 write it: `static` and an optional
 ///   `public`, no header and no constructor, and only constants and static members. The bridge lowers it to a final
 ///   PHP class.
 /// - An interface: an optional `public`, a name, an optional `: Interface` header and methods, with no attributes,
 ///   other modifiers or `extends`. An interface method has parameters, a return type and no body, as spec section 29
 ///   writes `Money quote(Cart cart);`. A modifier on it is an error, because every interface method is public.
-/// - An enum: attributes, an optional `public`, a name, an optional `: string, Interface` header, constants, cases and
-///   methods, with no other modifiers or `implements`. A leading `int` or `string` in the header is the backing type,
+/// - An enum: attributes, an optional `public`, a name, an optional `: string, Interface` header, constants, cases,
+///   methods and laws, with no other modifiers or `implements`. A leading `int` or `string` in the header is the backing type,
 ///   and every class name is an interface. A constant follows a class constant's rules. A case has attributes as a
 ///   class has them, and is `case Active;` or, in a backed enum, `case Active = "a";`, whose value is a constant
 ///   expression. A case named `class`, compared ignoring case, is an error, as in PHP. A method follows a class's
@@ -541,7 +544,9 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         (Node::PositionalArgument(argument), Attribute) => argument.ellipsis.is_none().then_some(Constant),
         (Node::NamedArgument(_), Attribute) => Some(Constant),
 
-        (Node::ClassLikeMember(ClassLikeMember::Method(_)), Class | Enum) => Some(place),
+        (Node::ClassLikeMember(ClassLikeMember::Method(_) | ClassLikeMember::Law(_)), Class | Enum) => Some(place),
+        // A law's parameters and body are checked as a method's. `check_members` refuses a default and a variadic one.
+        (Node::Law(_), Class | Enum) => Some(Method),
         // `check_enum` reports a property in an enum, and a backing type other than `int` or `string`.
         (Node::ClassLikeMember(ClassLikeMember::Property(_)) | Node::EnumBackingTypeHint(_), Enum) => None,
         (Node::EnumCase(case), Enum) if case.item.name().value.eq_ignore_ascii_case(b"class") => {
@@ -2586,7 +2591,7 @@ const fn supported(place: Place) -> &'static str {
     match place {
         Place::File => "At file level, PHP# supports `namespace`, `import`, `class`, `interface` and `enum`.",
         Place::Class => {
-            "A PHP# class has attributes, an optional `public`, `abstract` or `final`, a name, an optional `: Base, Interface` header, constants, fields, properties and methods, with no other modifiers, `extends` or `implements`."
+            "A PHP# class has attributes, an optional `public`, `abstract` or `final`, a name, an optional `: Base, Interface` header, constants, fields, properties, methods and laws, with no other modifiers, `extends` or `implements`."
         }
         Place::Interface => {
             "A PHP# interface has an optional `public`, a name, an optional `: Interface` header and methods, with no attributes, other modifiers, `extends`, constants or properties."
@@ -2595,7 +2600,7 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# interface method has no modifier, parameters, a return type of `int`, `float`, `bool`, `string`, `Any`, `void`, a class, `List<T>`, `Map<TKey, TValue>` or `Self`, each but `void` nullable as in `int?`, or a union of them but `void`, as in `int|string`, and no body."
         }
         Place::Enum => {
-            "A PHP# enum has attributes, an optional `public`, a name, an optional `: string, Interface` header whose `int` or `string` comes first, constants, cases and methods, with no other modifiers or `implements`."
+            "A PHP# enum has attributes, an optional `public`, a name, an optional `: string, Interface` header whose `int` or `string` comes first, constants, cases, methods and laws, with no other modifiers or `implements`."
         }
         Place::FieldOrProperty => {
             "A PHP# field is `private` or `protected`, and a property has the accessors `get` and an optional `set`, each `;`, `=> expr;` or a block. Both may be `static`, and have a type of `int`, `float`, `bool`, `string`, `Any`, a class, `List<T>`, `Map<TKey, TValue>` or `Function<R(P)>`, nullable as in `int?` or not, or a union of them as in `int|string`, a name, and an optional initial value."
@@ -3151,7 +3156,7 @@ fn report_bare_member(span: Span, name: &[u8], context: &mut Context<'_, '_, '_>
     context.report(Issue::error(message).with_annotation(Annotation::primary(span).with_message("Used here.")));
 }
 
-/// The class of the static method whose body holds `span`, which has no `this`.
+/// The class of the static method or the law whose body holds `span`, which has no `this`.
 fn enclosing_static_method_class<'ast, 'arena>(
     program: &'ast Program<'arena>,
     span: Span,
@@ -3161,10 +3166,13 @@ fn enclosing_static_method_class<'ast, 'arena>(
     class
         .members
         .iter()
-        .any(|member| {
-            matches!(member, ClassLikeMember::Method(method)
-                if method.span().contains(&span.start)
-                    && method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Static(_))))
+        .any(|member| match member {
+            ClassLikeMember::Method(method) => {
+                method.span().contains(&span.start)
+                    && method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Static(_)))
+            }
+            ClassLikeMember::Law(law) => law.span().contains(&span.start),
+            _ => false,
         })
         .then_some(class)
 }

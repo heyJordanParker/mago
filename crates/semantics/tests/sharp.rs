@@ -71,6 +71,47 @@ fn extern_is_a_declaration_of_the_file_and_of_no_method_body() {
     assert_eq!(issues(code), ["13:9 This statement is not supported yet in PHP#."]);
 }
 
+/// Spec section 28: a law states a fact about the values of a class or an enum, and an interface has no values.
+#[test]
+fn a_law_is_a_member_of_a_class_or_an_enum_and_of_no_interface() {
+    let code = "namespace App.Shared;\n\npublic class Money\n{\n    law sameAmount(int a) => a == a;\n}\n\npublic enum Status\n{\n    case Open;\n\n    law openIsOpen(Status s) => Status.Open == Status.Open;\n}\n\npublic interface Priced\n{\n    law positive(int a) => a >= 0;\n}\n";
+
+    assert_eq!(issues(code), ["17:5 This class member is not supported yet in PHP#."]);
+}
+
+/// A law's parameters range over every value, so none has a default and none collects the rest of the arguments.
+#[test]
+fn a_law_parameter_with_a_default_or_a_spread_is_refused() {
+    let code = "namespace App.Shared;\n\npublic class Money\n{\n    law withDefault(int a = 1) => a == a;\n    law withRest(int ...rest) => true;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:27 A law's parameters range over every value, so `a` cannot have a default.",
+            "6:22 A law's parameters range over every value, so `rest` cannot be variadic.",
+        ]
+    );
+}
+
+/// A law has no `this`, so a bare member in it is written through the class name, as in a static method.
+#[test]
+fn a_bare_member_in_a_law_is_written_through_the_class_name() {
+    let code = "namespace App.Shared;\n\npublic class Money\n{\n    private int cents = 0;\n\n    law positive(Money a) => cents > 0;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["7:30 Write `Money.cents`: a static method reaches the members of its class through the class name."]
+    );
+}
+
+/// A law and a method share their class's member names, so a name is declared once.
+#[test]
+fn a_law_and_a_method_named_alike_are_a_duplicate_member() {
+    let code = "namespace App.Shared;\n\npublic class Money\n{\n    public bool positive(int a) => a > 0;\n\n    law positive(int a) => a > 0 || a <= 0;\n}\n";
+
+    assert_eq!(issues(code), ["7:9 class method `Money::positive` has already been defined"]);
+}
+
 #[test]
 fn every_construct_outside_the_slice_is_not_supported_yet() {
     let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\ntrait Named\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        switch (extra) {\n            default: return 1;\n        }\n        const made = new Report;\n        const partial = this.run(...);\n        const text = <<<TEXT\ntotal\nTEXT;\n        return extra;\n    }\n}\n";

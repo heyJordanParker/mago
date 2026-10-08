@@ -124,6 +124,7 @@ use crate::cst::cst::IssetConstruct;
 use crate::cst::cst::KeyValueArrayElement;
 use crate::cst::cst::Keyword;
 use crate::cst::cst::Label;
+use crate::cst::cst::Law;
 use crate::cst::cst::LegacyArray;
 use crate::cst::cst::List;
 use crate::cst::cst::Literal;
@@ -863,6 +864,9 @@ generate_ast_walker! {
             ClassLikeMember::Method(method) => {
                 walker.walk_method(method, context);
             }
+            ClassLikeMember::Law(law) => {
+                walker.walk_law(law, context);
+            }
         }
     }
 
@@ -1251,6 +1255,13 @@ generate_ast_walker! {
 
     'arena MethodExpressionBody as method_expression_body => {
         walker.walk_expression(method_expression_body.expression, context);
+    }
+
+    'arena Law as law => {
+        walker.walk_keyword(&law.law, context);
+        walker.walk_local_identifier(&law.name, context);
+        walker.walk_function_like_parameter_list(&law.parameter_list, context);
+        walker.walk_method_expression_body(&law.body, context);
     }
 
     'arena MethodAbstractBody as method_abstract_body => {

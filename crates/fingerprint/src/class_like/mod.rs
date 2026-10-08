@@ -17,6 +17,7 @@ use mago_syntax::cst::Extends;
 use mago_syntax::cst::HookedProperty;
 use mago_syntax::cst::Implements;
 use mago_syntax::cst::Interface;
+use mago_syntax::cst::Law;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::MethodBody;
 use mago_syntax::cst::PlainProperty;
@@ -119,6 +120,9 @@ impl Fingerprintable for ClassLikeMember<'_> {
             }
             ClassLikeMember::Method(method) => {
                 method.fingerprint_with_hasher(hasher, resolved_names, options);
+            }
+            ClassLikeMember::Law(law) => {
+                law.fingerprint_with_hasher(hasher, resolved_names, options);
             }
         }
     }
@@ -552,6 +556,26 @@ impl Fingerprintable for Method<'_> {
 
         if !options.signature_only {
             self.body.fingerprint_with_hasher(hasher, resolved_names, options);
+        }
+    }
+}
+
+impl Fingerprintable for Law<'_> {
+    #[inline]
+    fn fingerprint_with_hasher<H>(
+        &self,
+        hasher: &mut H,
+        resolved_names: &ResolvedNames,
+        options: &FingerprintOptions<'_>,
+    ) where
+        H: std::hash::Hasher,
+    {
+        "law".hash(hasher);
+        self.name.fingerprint_with_hasher(hasher, resolved_names, options);
+        self.parameter_list.fingerprint_with_hasher(hasher, resolved_names, options);
+
+        if !options.signature_only {
+            self.body.expression.fingerprint_with_hasher(hasher, resolved_names, options);
         }
     }
 }
