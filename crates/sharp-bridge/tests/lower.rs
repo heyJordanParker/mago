@@ -1914,6 +1914,132 @@ fn a_backed_enum_key_beside_a_map_spread_goes_in_as_its_backing_value() {
 }
 
 /// ```php
+/// return $counts->get($status->value);
+/// ```
+///
+/// `Map.get` declares its parameter as the `Map`'s key type, so a case going in as its key is its `->value`.
+#[test]
+fn a_backed_enum_key_goes_into_map_get_as_its_backing_value() {
+    assert_eq!(
+        body_in(
+            "int? run(Map<Calc, int> counts, Calc status)",
+            "        return counts.get(status);\n",
+            &[("src/Lib/Calc.php", "<?php namespace Lib; enum Calc: string { case Active = 'a'; case Closed = 'c'; }")]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                METHOD_CALL
+                  VAR
+                    ZVAL "counts"
+                  ZVAL "get"
+                  ARG_LIST
+                    PROP
+                      VAR
+                        ZVAL "status"
+                      ZVAL "value"
+        "#}
+    );
+}
+
+/// ```php
+/// $counts->delete($status->value);
+/// $counts->delete(key: \Lib\Calc::Closed->value);
+/// ```
+///
+/// `Map.delete` declares its parameter as the `Map`'s key type, so a case going in as its key is its `->value`,
+/// passed by position or by name.
+#[test]
+fn a_backed_enum_key_goes_into_map_delete_as_its_backing_value() {
+    assert_eq!(
+        body_in(
+            "void run(Map<Calc, int> counts, Calc status)",
+            "        counts.delete(status);\n        counts.delete(key: Calc.Closed);\n",
+            &[("src/Lib/Calc.php", "<?php namespace Lib; enum Calc: string { case Active = 'a'; case Closed = 'c'; }")]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              METHOD_CALL
+                VAR
+                  ZVAL "counts"
+                ZVAL "delete"
+                ARG_LIST
+                  PROP
+                    VAR
+                      ZVAL "status"
+                    ZVAL "value"
+              METHOD_CALL
+                VAR
+                  ZVAL "counts"
+                ZVAL "delete"
+                ARG_LIST
+                  NAMED_ARG
+                    ZVAL "key"
+                    PROP
+                      CLASS_CONST
+                        ZVAL "Lib\\Calc"
+                        ZVAL "Closed"
+                      ZVAL "value"
+        "#}
+    );
+}
+
+/// ```php
+/// return $counts?->get($status->value);
+/// ```
+///
+/// A null-safe call of `Map.get` puts a case in as its `->value` too.
+#[test]
+fn a_backed_enum_key_goes_into_a_null_safe_map_get_as_its_backing_value() {
+    assert_eq!(
+        body_in(
+            "int? run(Map<Calc, int>? counts, Calc status)",
+            "        return counts?.get(status);\n",
+            &[("src/Lib/Calc.php", "<?php namespace Lib; enum Calc: string { case Active = 'a'; case Closed = 'c'; }")]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                NULLSAFE_METHOD_CALL
+                  VAR
+                    ZVAL "counts"
+                  ZVAL "get"
+                  ARG_LIST
+                    PROP
+                      VAR
+                        ZVAL "status"
+                      ZVAL "value"
+        "#}
+    );
+}
+
+/// ```php
+/// $standings->add($status);
+/// ```
+///
+/// `List.add` declares its parameter as the `List`'s element type, not a key type, so a case goes in as the case.
+#[test]
+fn a_backed_enum_value_goes_into_list_add_as_its_case() {
+    assert_eq!(
+        body_in(
+            "void run(List<Calc> standings, Calc status)",
+            "        standings.add(status);\n",
+            &[("src/Lib/Calc.php", "<?php namespace Lib; enum Calc: string { case Active = 'a'; case Closed = 'c'; }")]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              METHOD_CALL
+                VAR
+                  ZVAL "standings"
+                ZVAL "add"
+                ARG_LIST
+                  VAR
+                    ZVAL "status"
+        "#}
+    );
+}
+
+/// ```php
 /// public function apply(\Closure $step, ?\Closure $other = null): \Closure { return $step; }
 /// ```
 ///
