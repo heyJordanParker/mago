@@ -7,6 +7,7 @@ use crate::cst::Sequence;
 use crate::cst::cst::class_like::constant::ClassLikeConstant;
 use crate::cst::cst::class_like::enum_case::EnumCase;
 use crate::cst::cst::class_like::method::Method;
+use crate::cst::cst::class_like::operator::Operator;
 use crate::cst::cst::class_like::property::Property;
 use crate::cst::cst::class_like::trait_use::TraitUse;
 use crate::cst::cst::expression::Expression;
@@ -22,6 +23,7 @@ pub enum ClassLikeMember<'arena> {
     Property(Property<'arena>),
     EnumCase(EnumCase<'arena>),
     Method(Method<'arena>),
+    Operator(Operator<'arena>),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord, Display)]
@@ -175,6 +177,7 @@ impl HasSpan for ClassLikeMember<'_> {
             ClassLikeMember::Property(property) => property.span(),
             ClassLikeMember::EnumCase(enum_case) => enum_case.span(),
             ClassLikeMember::Method(method) => method.span(),
+            ClassLikeMember::Operator(operator) => operator.span(),
         }
     }
 }

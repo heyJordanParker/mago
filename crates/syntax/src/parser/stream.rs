@@ -234,36 +234,34 @@ where
     ///
     /// Returns a [`ParseError`] if the lexer fails to produce a token.
     pub fn peek_kind_after_parentheses(&mut self) -> Result<Option<TokenKind>, ParseError> {
-        let mut lexer = self.lexer.clone();
-        let mut index = 0;
-        let mut next_kind = || -> Result<Option<TokenKind>, SyntaxError> {
-            if index < self.buffer.len() {
-                index += 1;
-
-                return Ok(self.buffer.get(index - 1).map(|token| token.kind));
-            }
-
-            while let Some(token) = lexer.advance() {
-                let token = token?;
-                if !token.kind.is_trivia() {
-                    return Ok(Some(token.kind));
-                }
-            }
-
-            Ok(None)
-        };
-
+        let mut tokens = self.peek_tokens();
         let mut depth = 0usize;
-        while let Some(kind) = next_kind()? {
-            match kind {
+        while let Some(token) = tokens.next() {
+            match token?.kind {
                 T!["("] => depth += 1,
-                T![")"] if depth == 1 => return Ok(next_kind()?),
+                T![")"] if depth == 1 => return Ok(tokens.next().transpose()?.map(|token| token.kind)),
                 T![")"] => depth -= 1,
                 _ => {}
             }
         }
 
         Ok(None)
+    }
+
+    /// The significant tokens from the head of the stream to the end of the file, read with a copy of the lexer, so
+    /// it consumes nothing.
+    pub(crate) fn peek_tokens(&self) -> impl Iterator<Item = Result<Token<'input>, SyntaxError>> + '_ {
+        let mut lexer = self.lexer.clone();
+        let buffered = (0..self.buffer.len()).filter_map(|index| self.buffer.get(index)).map(Ok);
+
+        buffered.chain(std::iter::from_fn(move || {
+            loop {
+                match lexer.advance()? {
+                    Ok(token) if token.kind.is_trivia() => {}
+                    result => return Some(result),
+                }
+            }
+        }))
     }
 
     /// Creates a `ParseError` for an unexpected token or EOF, given one or more expected kinds.

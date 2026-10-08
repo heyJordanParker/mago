@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 
 use strum::Display;
+use strum::EnumCount;
 use strum::EnumIter;
 use strum::EnumString;
 
@@ -75,6 +76,7 @@ use crate::cst::cst::ExitConstruct;
 use crate::cst::cst::Expression;
 use crate::cst::cst::ExpressionStatement;
 use crate::cst::cst::Extends;
+use crate::cst::cst::Extern;
 use crate::cst::cst::For;
 use crate::cst::cst::ForBody;
 use crate::cst::cst::ForColonDelimitedBody;
@@ -164,6 +166,7 @@ use crate::cst::cst::NullSafeMethodCall;
 use crate::cst::cst::NullSafePropertyAccess;
 use crate::cst::cst::NullableHint;
 use crate::cst::cst::OpeningTag;
+use crate::cst::cst::Operator;
 use crate::cst::cst::Parenthesized;
 use crate::cst::cst::ParenthesizedHint;
 use crate::cst::cst::ParenthesizedPattern;
@@ -248,6 +251,7 @@ use crate::cst::cst::UseItemAlias;
 use crate::cst::cst::UseItemSequence;
 use crate::cst::cst::UseItems;
 use crate::cst::cst::UseType;
+use crate::cst::cst::Uses;
 use crate::cst::cst::ValueArrayElement;
 use crate::cst::cst::Variable;
 use crate::cst::cst::VariadicArrayElement;
@@ -260,10 +264,10 @@ use crate::cst::cst::YieldFrom;
 use crate::cst::cst::YieldPair;
 use crate::cst::cst::YieldValue;
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord, Display, EnumIter, EnumString)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord, Display, EnumCount, EnumIter, EnumString)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type", content = "value"))]
-#[repr(u8)]
+#[repr(u16)]
 #[non_exhaustive]
 pub enum NodeKind {
     Program,
@@ -321,6 +325,7 @@ pub enum NodeKind {
     MethodAbstractBody,
     MethodBody,
     MethodExpressionBody,
+    Operator,
     ComputedProperty,
     HookedProperty,
     PlainProperty,
@@ -469,6 +474,8 @@ pub enum NodeKind {
     UseItemSequence,
     UseItems,
     UseType,
+    Extern,
+    Uses,
     Yield,
     YieldFrom,
     YieldPair,
@@ -523,10 +530,14 @@ pub enum NodeKind {
     ClassLikeConstantMissingSelector,
 }
 
+impl NodeKind {
+    pub const COUNT: usize = <Self as EnumCount>::COUNT;
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord, Display)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(tag = "type", content = "value"))]
-#[repr(u8)]
+#[repr(u16)]
 #[non_exhaustive]
 pub enum Node<'ast, 'arena> {
     Program(&'ast Program<'arena>),
@@ -584,6 +595,7 @@ pub enum Node<'ast, 'arena> {
     MethodAbstractBody(&'ast MethodAbstractBody<'arena>),
     MethodBody(&'ast MethodBody<'arena>),
     MethodExpressionBody(&'ast MethodExpressionBody<'arena>),
+    Operator(&'ast Operator<'arena>),
     ComputedProperty(&'ast ComputedProperty<'arena>),
     HookedProperty(&'ast HookedProperty<'arena>),
     PlainProperty(&'ast PlainProperty<'arena>),
@@ -730,6 +742,8 @@ pub enum Node<'ast, 'arena> {
     UseItemSequence(&'ast UseItemSequence<'arena>),
     UseItems(&'ast UseItems<'arena>),
     UseType(&'ast UseType<'arena>),
+    Extern(&'ast Extern<'arena>),
+    Uses(&'ast Uses<'arena>),
     Yield(&'ast Yield<'arena>),
     YieldFrom(&'ast YieldFrom<'arena>),
     YieldPair(&'ast YieldPair<'arena>),
@@ -816,7 +830,13 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
     pub const fn is_declaration(&self) -> bool {
         matches!(
             self,
-            Self::Class(_) | Self::Interface(_) | Self::Trait(_) | Self::Enum(_) | Self::Function(_) | Self::Method(_)
+            Self::Class(_)
+                | Self::Interface(_)
+                | Self::Trait(_)
+                | Self::Enum(_)
+                | Self::Function(_)
+                | Self::Method(_)
+                | Self::Operator(_)
         )
     }
 
@@ -833,6 +853,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 | Self::Inline(_)
                 | Self::Namespace(_)
                 | Self::Use(_)
+                | Self::Extern(_)
                 | Self::Class(_)
                 | Self::Interface(_)
                 | Self::Trait(_)
@@ -925,6 +946,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Self::MethodAbstractBody(_) => NodeKind::MethodAbstractBody,
             Self::MethodBody(_) => NodeKind::MethodBody,
             Self::MethodExpressionBody(_) => NodeKind::MethodExpressionBody,
+            Self::Operator(_) => NodeKind::Operator,
             Self::ComputedProperty(_) => NodeKind::ComputedProperty,
             Self::HookedProperty(_) => NodeKind::HookedProperty,
             Self::PlainProperty(_) => NodeKind::PlainProperty,
@@ -1070,6 +1092,8 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Self::UseItemSequence(_) => NodeKind::UseItemSequence,
             Self::UseItems(_) => NodeKind::UseItems,
             Self::UseType(_) => NodeKind::UseType,
+            Self::Extern(_) => NodeKind::Extern,
+            Self::Uses(_) => NodeKind::Uses,
             Self::Yield(_) => NodeKind::Yield,
             Self::YieldFrom(_) => NodeKind::YieldFrom,
             Self::YieldPair(_) => NodeKind::YieldPair,
@@ -1359,6 +1383,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 ClassLikeMember::Property(node) => f(Node::Property(node)),
                 ClassLikeMember::EnumCase(node) => f(Node::EnumCase(node)),
                 ClassLikeMember::Method(node) => f(Node::Method(node)),
+                ClassLikeMember::Operator(node) => f(Node::Operator(node)),
             },
             Node::ClassLikeMemberExpressionSelector(node) => f(Node::Expression(node.expression)),
             Node::ClassLikeMemberSelector(node) => match node {
@@ -1401,6 +1426,19 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 MethodBody::Expression(node) => f(Node::MethodExpressionBody(node)),
             },
             Node::MethodExpressionBody(node) => f(Node::Expression(node.expression)),
+            Node::Operator(node) => {
+                for item in node.attribute_lists.iter() {
+                    f(Node::AttributeList(item));
+                }
+                for item in node.modifiers.iter() {
+                    f(Node::Modifier(item));
+                }
+                f(Node::FunctionLikeReturnTypeHint(&node.return_type_hint));
+                f(Node::Keyword(&node.operator));
+                f(Node::BinaryOperator(&node.symbol));
+                f(Node::FunctionLikeParameterList(&node.parameter_list));
+                f(Node::MethodBody(&node.body));
+            }
             Node::ComputedProperty(node) => {
                 for item in node.attribute_lists.iter() {
                     f(Node::AttributeList(item));
@@ -2505,6 +2543,23 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 UseType::Const(node) => Node::Keyword(node),
                 UseType::Function(node) => Node::Keyword(node),
             }),
+            Node::Extern(node) => {
+                f(Node::Keyword(&node.r#extern));
+                f(Node::Identifier(&node.target));
+
+                if let Some(uses) = &node.uses {
+                    f(Node::Uses(uses));
+                }
+
+                f(Node::Terminator(&node.terminator));
+            }
+            Node::Uses(node) => {
+                f(Node::Keyword(&node.uses));
+
+                for name in &node.names {
+                    f(Node::LocalIdentifier(name));
+                }
+            }
             Node::Yield(node) => f(match node {
                 Yield::Value(node) => Node::YieldValue(node),
                 Yield::Pair(node) => Node::YieldPair(node),
@@ -2532,6 +2587,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 Statement::Inline(node) => f(Node::Inline(node)),
                 Statement::Namespace(node) => f(Node::Namespace(node)),
                 Statement::Use(node) => f(Node::Use(node)),
+                Statement::Extern(node) => f(Node::Extern(node)),
                 Statement::Class(node) => f(Node::Class(node)),
                 Statement::Interface(node) => f(Node::Interface(node)),
                 Statement::Trait(node) => f(Node::Trait(node)),
@@ -2780,6 +2836,7 @@ impl HasSpan for Node<'_, '_> {
             Self::MethodAbstractBody(node) => node.span(),
             Self::MethodBody(node) => node.span(),
             Self::MethodExpressionBody(node) => node.span(),
+            Self::Operator(node) => node.span(),
             Self::ComputedProperty(node) => node.span(),
             Self::HookedProperty(node) => node.span(),
             Self::PlainProperty(node) => node.span(),
@@ -2925,6 +2982,8 @@ impl HasSpan for Node<'_, '_> {
             Self::UseItemSequence(node) => node.span(),
             Self::UseItems(node) => node.span(),
             Self::UseType(node) => node.span(),
+            Self::Extern(node) => node.span(),
+            Self::Uses(node) => node.span(),
             Self::Yield(node) => node.span(),
             Self::YieldFrom(node) => node.span(),
             Self::YieldPair(node) => node.span(),

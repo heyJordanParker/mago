@@ -46,8 +46,7 @@ impl RuleRegistry {
             })
             .collect();
 
-        let max_kind = u8::MAX as usize + 1;
-        let mut temp: Vec<Vec<usize>> = vec![Vec::new(); max_kind];
+        let mut temp: Vec<Vec<usize>> = vec![Vec::new(); NodeKind::COUNT];
         for (i, r) in rules.iter().enumerate() {
             for &k in r.targets() {
                 temp[k as usize].push(i);

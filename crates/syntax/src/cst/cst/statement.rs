@@ -16,6 +16,7 @@ use crate::cst::cst::declare::Declare;
 use crate::cst::cst::echo::Echo;
 use crate::cst::cst::echo::EchoTag;
 use crate::cst::cst::expression::Expression;
+use crate::cst::cst::r#extern::Extern;
 use crate::cst::cst::function_like::function::Function;
 use crate::cst::cst::global::Global;
 use crate::cst::cst::goto::Goto;
@@ -65,6 +66,7 @@ pub enum Statement<'arena> {
     Inline(Inline<'arena>),
     Namespace(Namespace<'arena>),
     Use(Use<'arena>),
+    Extern(Extern<'arena>),
     Class(Class<'arena>),
     Interface(Interface<'arena>),
     Trait(Trait<'arena>),
@@ -114,6 +116,7 @@ impl Statement<'_> {
                 implicit.statements.last().map_or(implicit.terminator.is_closing_tag(), Statement::terminates_scripting)
             }
             Statement::Use(r#use) => r#use.terminator.is_closing_tag(),
+            Statement::Extern(r#extern) => r#extern.terminator.is_closing_tag(),
             Statement::Goto(goto) => goto.terminator.is_closing_tag(),
             Statement::Declare(Declare { body: DeclareBody::Statement(b), .. }) => b.terminates_scripting(),
             Statement::Declare(Declare { body: DeclareBody::ColonDelimited(b), .. }) => b.terminator.is_closing_tag(),
@@ -214,6 +217,7 @@ impl HasSpan for Statement<'_> {
             Statement::Inline(statement) => statement.span(),
             Statement::Namespace(statement) => statement.span(),
             Statement::Use(statement) => statement.span(),
+            Statement::Extern(statement) => statement.span(),
             Statement::Class(statement) => statement.span(),
             Statement::Interface(statement) => statement.span(),
             Statement::Trait(statement) => statement.span(),

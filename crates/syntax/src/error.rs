@@ -8,6 +8,7 @@ use mago_span::Span;
 
 use crate::T;
 use crate::cst::LiteralStringKind;
+use crate::cst::Operator;
 use crate::parser::MAX_RECURSION_DEPTH;
 use crate::token::TokenKind;
 
@@ -73,6 +74,9 @@ pub enum ParseError {
     /// A `? :` written at the top of a PHP# `when` condition, such as `when strict ? forced : ready =>`, at the whole
     /// conditional. A `when` condition binds as tightly as `??`, as in C#, so it needs parentheses there.
     ConditionalInGuardInSharp(Span),
+    /// A PHP# operator declared with a symbol that is no binary operator, such as `operator !`, with the symbol, at the
+    /// symbol. Semantics refuses a binary operator a class cannot declare.
+    UndeclarableOperatorInSharp(Box<str>, Span),
 }
 
 impl HasFileId for SyntaxError {
@@ -104,7 +108,8 @@ impl HasFileId for ParseError {
             | ParseError::InvalidTemplateEscapeInSharp(span)
             | ParseError::PhpLambdaInSharp(span)
             | ParseError::LambdaAfterOperatorInSharp(span)
-            | ParseError::ConditionalInGuardInSharp(span) => span.file_id,
+            | ParseError::ConditionalInGuardInSharp(span)
+            | ParseError::UndeclarableOperatorInSharp(_, span) => span.file_id,
         }
     }
 }
@@ -140,7 +145,8 @@ impl HasSpan for ParseError {
             | ParseError::InvalidTemplateEscapeInSharp(span)
             | ParseError::PhpLambdaInSharp(span)
             | ParseError::LambdaAfterOperatorInSharp(span)
-            | ParseError::ConditionalInGuardInSharp(span) => *span,
+            | ParseError::ConditionalInGuardInSharp(span)
+            | ParseError::UndeclarableOperatorInSharp(_, span) => *span,
         }
     }
 }
@@ -244,6 +250,9 @@ impl std::fmt::Display for ParseError {
             ParseError::ConditionalInGuardInSharp(_) => {
                 "A `? :` in a `when` condition needs parentheses, as in `when (strict ? forced : ready) =>`.".to_string()
             }
+            ParseError::UndeclarableOperatorInSharp(symbol, _) => {
+                format!("`operator {symbol}` cannot be declared: only {} can.", Operator::DECLARABLE)
+            }
         };
 
         write!(f, "{message}")
@@ -291,7 +300,8 @@ impl From<&ParseError> for Issue {
             | ParseError::InvalidTemplateEscapeInSharp(..)
             | ParseError::PhpLambdaInSharp(..)
             | ParseError::LambdaAfterOperatorInSharp(..)
-            | ParseError::ConditionalInGuardInSharp(..) => Issue::error(error.to_string())
+            | ParseError::ConditionalInGuardInSharp(..)
+            | ParseError::UndeclarableOperatorInSharp(..) => Issue::error(error.to_string())
                 .with_code(PARSE_ERROR_CODE)
                 .with_annotation(Annotation::primary(error.span()).with_message("Written here.")),
             ParseError::NotSupportedYetInSharp(_, span) => Issue::error(error.to_string())

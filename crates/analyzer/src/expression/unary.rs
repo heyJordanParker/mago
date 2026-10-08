@@ -63,6 +63,8 @@ use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::expression::assignment::PropertyWriteKind;
 use crate::expression::assignment::assign_to_expression;
+use crate::expression::binary::utils::analyze_instance_operator;
+use crate::expression::binary::utils::refuse_non_int_operands;
 use crate::expression::call::method_call::analyze_implicit_method_call;
 use crate::utils::expression::get_block_expression_id;
 use crate::utils::names::display_atomic;
@@ -125,6 +127,34 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for UnaryPrefix<'arena> {
             );
 
             artifacts.set_expression_type(self, cast_type);
+            return Ok(());
+        }
+
+        // A PHP# `-` on an instance runs the unary `operator -` its class declares, checked as the static call it runs
+        // as.
+        if context.dialect.is_sharp()
+            && let UnaryPrefixOperator::Negation(operator) = self.operator
+            && let Some(operand_type) = &operand_type
+            && let Some(resulting_type) = analyze_instance_operator(
+                context,
+                artifacts,
+                &BinaryOperator::Subtraction(operator),
+                &[(self.operand, operand_type.as_ref())],
+                self.span(),
+            )
+        {
+            artifacts.set_expression_type(self, resulting_type);
+            return Ok(());
+        }
+
+        if context.dialect.is_sharp()
+            && let UnaryPrefixOperator::BitwiseNot(operator) = self.operator
+            && let Some(operand_type) = &operand_type
+        {
+            let resulting_type = refuse_non_int_operands(context, operator, &[(self.operand, operand_type.as_ref())])
+                .unwrap_or_else(get_int);
+
+            artifacts.set_expression_type(self, resulting_type);
             return Ok(());
         }
 

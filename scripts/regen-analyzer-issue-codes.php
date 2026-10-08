@@ -357,6 +357,9 @@ final class AnalyzerCodeModuleGenerator
         'replaces-outside-library',
         'wrapped-function',
         'replaced-by-syntax',
+        'duplicate-extern',
+        'extern-on-sharp',
+        'impure-getter',
     ];
 
     /**

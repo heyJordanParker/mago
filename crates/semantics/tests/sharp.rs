@@ -63,6 +63,14 @@ fn the_slice_fixtures_have_no_semantic_issues() {
     assert_eq!(issues(include_str!("fixtures/library.sharp")), Vec::<String>::new());
 }
 
+/// `extern` declares the effects of plain PHP at file level, spec section 29, and nowhere else.
+#[test]
+fn extern_is_a_declaration_of_the_file_and_of_no_method_body() {
+    let code = "namespace App.Stubs;\n\nimport Stripe.StripeClient;\n\nextern StripeClient uses Http;\nextern Carbon.now uses Clock, Random;\nextern trim;\n\nclass Report\n{\n    public int run(int extra)\n    {\n        extern trim;\n        return extra;\n    }\n}\n";
+
+    assert_eq!(issues(code), ["13:9 This statement is not supported yet in PHP#."]);
+}
+
 #[test]
 fn every_construct_outside_the_slice_is_not_supported_yet() {
     let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\ntrait Named\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        switch (extra) {\n            default: return 1;\n        }\n        const made = new Report;\n        const partial = this.run(...);\n        const text = <<<TEXT\ntotal\nTEXT;\n        return extra;\n    }\n}\n";
@@ -464,7 +472,7 @@ fn a_function_called_by_its_bare_name_is_in_the_slice() {
 #[test]
 fn a_construct_outside_the_slice_is_not_supported_yet_in_a_catch_block_or_a_call_argument() {
     let code = leak(method(
-        "        try {\n        } catch (Missing failure) {\n            extra = extra & 1;\n        }\n        return count(this.run(...));\n",
+        "        try {\n        } catch (Missing failure) {\n            extra = extra <> 1;\n        }\n        return count(this.run(...));\n",
     ));
 
     assert_eq!(
@@ -1949,7 +1957,7 @@ fn a_class_constant_has_an_access_modifier_an_optional_type_and_a_constant_value
 
 #[test]
 fn a_class_constant_outside_the_slice_is_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nclass Report\n{\n    const A = 1;\n    public const B = 1, C = 2;\n    final public const D = 1;\n    public const E = 2 << 3;\n    public const iterable F = [];\n}\n";
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    const A = 1;\n    public const B = 1, C = 2;\n    final public const D = 1;\n    public const E = 2 <> 3;\n    public const iterable F = [];\n}\n";
 
     assert_eq!(
         issues(code),
@@ -2355,10 +2363,23 @@ fn exponentiation_and_its_compound_assignment_are_in_the_slice() {
     assert_eq!(issues(code), Vec::<String>::new());
 }
 
+/// Spec section 19 gives flags `|`, `&`, `^`, `~`, `<<`, `>>` and their compound forms, and lists `%=`. The analyzer
+/// checks their operands. A parameter default, which is a constant expression, takes them too.
+#[test]
+fn bitwise_operators_their_compound_assignments_and_modulo_assignment_are_in_the_slice() {
+    let body = leak(method(
+        "        let a = extra & 1 | extra ^ 2;\n        a = extra << 1 >> 2;\n        a = ~extra;\n        a &= 1;\n        a |= 2;\n        a ^= 4;\n        a <<= 1;\n        a >>= 1;\n        a %= 3;\n        return a;\n",
+    ));
+    let default = "class Report\n{\n    public int run(int mask = ~0 & 1 | 2 ^ 4 << 1 >> 1)\n    {\n        return mask;\n    }\n}\n";
+
+    assert_eq!(issues(body), Vec::<String>::new());
+    assert_eq!(issues(default), Vec::<String>::new());
+}
+
 #[test]
 fn operators_outside_the_slice_are_not_supported_yet() {
     let code = leak(method(
-        "        let a = extra;\n        a = @extra;\n        a = extra & 1;\n        a = extra | 1;\n        a = extra ^ 1;\n        a = extra << 1;\n        a = extra >> 1;\n        a = ~extra;\n        a = extra xor true;\n        a = extra and true;\n        a = extra or true;\n        a = extra <=> 1;\n        a = extra <> 1;\n        a %= 2;\n        a &= 2;\n        return a;\n",
+        "        let a = extra;\n        a = @extra;\n        a = extra xor true;\n        a = extra and true;\n        a = extra or true;\n        a = extra <> 1;\n        return a;\n",
     ));
 
     assert_eq!(
@@ -2369,17 +2390,17 @@ fn operators_outside_the_slice_are_not_supported_yet() {
             "10:19 This operator is not supported yet in PHP#.",
             "11:19 This operator is not supported yet in PHP#.",
             "12:19 This operator is not supported yet in PHP#.",
-            "13:19 This operator is not supported yet in PHP#.",
-            "14:13 This operator is not supported yet in PHP#.",
-            "15:19 This operator is not supported yet in PHP#.",
-            "16:19 This operator is not supported yet in PHP#.",
-            "17:19 This operator is not supported yet in PHP#.",
-            "18:19 This operator is not supported yet in PHP#.",
-            "19:19 This operator is not supported yet in PHP#.",
-            "20:11 This operator is not supported yet in PHP#.",
-            "21:11 This operator is not supported yet in PHP#.",
         ]
     );
+}
+
+/// `<=>` orders two values, as spec section 19 writes it for numbers, strings and instances whose class declares
+/// `operator <=>`. The analyzer checks its operands.
+#[test]
+fn spaceship_is_in_the_slice() {
+    let code = leak(method("        return extra <=> 1;\n"));
+
+    assert_eq!(issues(code), Vec::<String>::new());
 }
 
 #[test]
@@ -3201,6 +3222,70 @@ fn a_pattern_variable_named_this_is_an_error() {
     assert_eq!(issues(code), ["7:26 Cannot name a pattern variable `this`: `this` is the object the method runs on."]);
 }
 
+/// Spec section 19 groups `< <= > >= is as` in one row and `== != === <=>` in the next, and neither row chains.
+#[test]
+fn comparisons_and_equalities_do_not_chain_and_name_both_groupings() {
+    let code = leak(method(
+        "        const a = extra < 1 < 2;\n        const b = extra == 1 != 2;\n        const c = extra is int is bool;\n        const d = extra < 1 is bool;\n        const e = extra is > 1 < 2;\n        const f = extra < 1 == true;\n        const g = extra == 1 is bool;\n        const h = (extra < 1) < 2;\n        match (extra) {\n            > 1 < 2 => this.run(1),\n            default => this.run(2),\n        }\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:19 Comparisons do not chain: write `(extra < 1) < 2` or `extra < (1 < 2)`.",
+            "8:19 Comparisons do not chain: write `(extra == 1) != 2` or `extra == (1 != 2)`.",
+            "9:19 Comparisons do not chain: write `(extra is int) is bool`.",
+            "10:19 Comparisons do not chain: write `(extra < 1) is bool` or `extra < (1 is bool)`.",
+            "11:19 Comparisons do not chain: write `extra is > (1 < 2)`.",
+            "16:13 Comparisons do not chain: write `> (1 < 2)`.",
+        ]
+    );
+}
+
+/// Decision 044: `is` binds with the comparisons, so `!entity is HasDesign` reads as `(!entity) is HasDesign`.
+#[test]
+fn not_before_is_is_an_error_that_writes_is_not() {
+    let code = leak(method(
+        "        if (!extra is int) {\n        }\n        if ((!extra) is bool) {\n        }\n        if (!(extra is int)) {\n        }\n        if (extra is not int) {\n        }\n        return extra;\n",
+    ));
+
+    assert_eq!(issues(code), ["7:13 Write `extra is not int`: `!` applies to `extra` before `is` tests it."]);
+}
+
+/// Decision 045: `not` beside `or` reads two ways, and `not` beside `and` reads the way it binds.
+#[test]
+fn not_beside_or_in_a_pattern_needs_parentheses_and_not_beside_and_does_not() {
+    let code = leak(method(
+        "        const a = extra is not Paid or Refunded;\n        const b = extra is Paid or not Refunded;\n        const c = match (extra) {\n            not Paid or Refunded => 1,\n            default => 0,\n        };\n        const d = extra is not (Paid or Refunded);\n        const e = extra is (not Paid) or Refunded;\n        const f = extra is not null and not \"\";\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:28 Write `not (Paid or Refunded)`, or `(not Paid) or Refunded`.",
+            "8:28 Write `not (Paid or Refunded)`, or `Paid or (not Refunded)`.",
+            "10:13 Write `not (Paid or Refunded)`, or `(not Paid) or Refunded`.",
+        ]
+    );
+}
+
+#[test]
+fn a_binary_operation_as_a_statement_has_no_effect() {
+    let code = leak(method(
+        "        let flags = extra;\n        flags | 4;\n        extra + 1;\n        extra == 1;\n        1 - extra;\n        extra ?? 1;\n        this.run(1);\n        return flags;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "8:9 This statement has no effect: write `flags |= 4` to keep its result.",
+            "9:9 This statement has no effect: write `extra += 1` to keep its result.",
+            "10:9 This statement has no effect: use the result of `extra == 1`, or remove the statement.",
+            "11:9 This statement has no effect: use the result of `1 - extra`, or remove the statement.",
+        ]
+    );
+}
+
 #[test]
 fn lambdas_with_an_expression_or_a_block_body_and_calls_of_function_locals_are_in_the_slice() {
     let code = leak(method(
@@ -3421,4 +3506,124 @@ fn an_error_for_a_php_form_without_a_sharp_form_names_no_php_code() {
             ("Immediately invoked closure must be wrapped in parentheses.".to_owned(), None),
         ]
     );
+}
+
+/// A PHP# class `Money`, for `src/Money.sharp`, whose members start on line 5.
+fn money(members: &str) -> &'static str {
+    leak(format!("namespace App;\n\npublic class Money\n{{\n{members}}}\n"))
+}
+
+#[test]
+fn a_class_declares_each_operator_public_static_with_its_own_class_as_a_parameter() {
+    let code = money(
+        "    [Pure] public static bool operator ==(Money a, Money? b) => true;\n    static public int operator <=>(Money a, Money b) => 0;\n    public static Money operator +(Money a, Money b) => a;\n    public static Money operator -(Money a, Money b) => a;\n    public static Money operator *(Money a, int factor) => a;\n    public static Money operator /(int a, Money b) => b;\n    public static Money operator %(Money a, int b) => a;\n    public static Money operator **(Money a, int b) => a;\n    public static Money operator -(Money a)\n    {\n        return a;\n    }\n",
+    );
+
+    assert_eq!(issues_in("src/Money.sharp", code), Vec::<String>::new());
+}
+
+#[test]
+fn an_operator_a_class_cannot_declare_is_an_error_that_names_the_operators_it_derives_from() {
+    let code = money(
+        "    public static bool operator !=(Money a, Money b) => false;\n    public static bool operator <(Money a, Money b) => false;\n    public static bool operator >=(Money a, Money b) => false;\n    public static bool operator &&(Money a, Money b) => false;\n",
+    );
+
+    assert_eq!(
+        issues_in("src/Money.sharp", code),
+        [
+            "5:33 `operator !=` cannot be declared: it is derived from `==`.",
+            "6:33 `operator <` cannot be declared: it is derived from `<=>`.",
+            "7:33 `operator >=` cannot be declared: it is derived from `<=>`.",
+            "8:33 `operator &&` cannot be declared: only `+ - * / % **`, unary `-`, `==` and `<=>` can.",
+        ]
+    );
+}
+
+#[test]
+fn an_operator_that_is_not_public_static_is_an_error() {
+    let code = money(
+        "    public Money operator +(Money a, Money b) => a;\n    private static Money operator -(Money a, Money b) => a;\n    static Money operator *(Money a, Money b) => a;\n",
+    );
+
+    let message = "An operator is `public static`, as in `public static Money operator +(Money a, Money b)`.";
+    assert_eq!(
+        issues_in("src/Money.sharp", code),
+        [format!("5:18 {message}"), format!("6:26 {message}"), format!("7:18 {message}")]
+    );
+}
+
+#[test]
+fn an_operator_with_the_wrong_number_of_parameters_is_an_error() {
+    let code = money(
+        "    public static bool operator ==(Money a) => false;\n    public static Money operator +(Money a, Money b, Money c) => a;\n    public static Money operator -() => null;\n",
+    );
+
+    assert_eq!(
+        issues_in("src/Money.sharp", code),
+        [
+            "5:35 `operator ==` takes two parameters.",
+            "6:35 `operator +` takes two parameters.",
+            "7:35 `operator -` takes one parameter, to negate, or two, to subtract.",
+        ]
+    );
+}
+
+#[test]
+fn an_operator_without_its_class_as_a_parameter_is_an_error() {
+    let code = money("    public static int operator +(int a, int b) => a + b;\n");
+
+    assert_eq!(
+        issues_in("src/Money.sharp", code),
+        ["5:33 One parameter of `operator +` is `Money`, the class that declares it."]
+    );
+}
+
+#[test]
+fn equality_returns_bool_and_comparison_returns_int() {
+    let code = money(
+        "    public static int operator ==(Money a, Money b) => 1;\n    public static bool? operator <=>(Money a, Money b) => true;\n",
+    );
+
+    assert_eq!(
+        issues_in("src/Money.sharp", code),
+        ["5:19 `operator ==` returns `bool`.", "6:19 `operator <=>` returns `int`."]
+    );
+}
+
+#[test]
+fn an_operator_declared_twice_in_a_class_is_an_error() {
+    let code = money(
+        "    public static Money operator +(Money a, Money b) => a;\n    public static Money operator -(Money a) => a;\n    public static Money operator -(Money a, Money b) => a;\n    public static Money operator +(Money a, int b) => a;\n    public static Money operator -(Money a) => a;\n",
+    );
+
+    assert_eq!(
+        issues_in("src/Money.sharp", code),
+        ["8:25 `operator +` is declared twice in `Money`.", "9:25 Unary `operator -` is declared twice in `Money`."]
+    );
+}
+
+#[test]
+fn an_operator_body_is_a_method_body() {
+    let code = money(
+        "    public static Money operator +(Money a, Money b)\n    {\n        echo \"adding\";\n        return a;\n    }\n",
+    );
+
+    assert_eq!(issues_in("src/Money.sharp", code), ["7:9 PHP# has no `echo`: write `printf` or `fwrite`."]);
+}
+
+#[test]
+fn an_interface_or_an_enum_declares_no_operator() {
+    let interface =
+        "namespace App;\n\npublic interface Priced\n{\n    public static int operator +(Priced a, Priced b) => 0;\n}\n";
+    let r#enum = "namespace App;\n\npublic enum Suit\n{\n    case Hearts;\n\n    public static int operator +(Suit a, Suit b) => 0;\n}\n";
+
+    assert_eq!(issues_in("src/Priced.sharp", interface), ["5:5 This class member is not supported yet in PHP#."]);
+    assert_eq!(issues_in("src/Suit.sharp", r#enum), ["7:5 This class member is not supported yet in PHP#."]);
+}
+
+#[test]
+fn a_php_class_keeps_its_static_methods_named_like_operators() {
+    let code = "<?php\n\nclass Money\n{\n    public static function op_Equality(?Money $a, ?Money $b): bool { return true; }\n\n    public static function op_Addition(Money $a, int $b): Money { return $a; }\n}\n";
+
+    assert_eq!(issues_in("src/Money.php", code), Vec::<String>::new());
 }

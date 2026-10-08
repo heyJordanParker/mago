@@ -52,6 +52,9 @@ use mago_word::word;
 
 use crate::artifacts::AnalysisArtifacts;
 use crate::context::assertion::AssertionContext;
+use crate::expression::binary::comparison::get_comparison_method;
+use crate::expression::binary::comparison::mixes_numbers;
+use crate::expression::binary::comparison::sharp_refusal;
 use crate::resolver::class_name::get_class_name_from_atomic;
 use crate::utils::expression::get_expression_id;
 use crate::utils::expression::get_index_id;
@@ -80,6 +83,20 @@ where
             assertion_context.php_shape(Node::Expression(expression))
     {
         return scrape_assertions(php, artifacts, assertion_context);
+    }
+
+    // A comparison a PHP# file refuses narrows nothing, so its refusal is the one report on it. An int with a float
+    // compares as two floats, which `===` narrowing would call impossible, and instances compare by the operator their
+    // class declares, which is no identity, so neither narrows anything.
+    if let Expression::Binary(binary) = expression
+        && assertion_context.dialect.is_sharp()
+        && let (Some(lhs_type), Some(rhs_type)) =
+            (artifacts.get_expression_type(binary.lhs), artifacts.get_expression_type(binary.rhs))
+        && (sharp_refusal(&binary.operator, lhs_type, rhs_type, assertion_context.codebase).is_some()
+            || (binary.operator.is_equality() && mixes_numbers(lhs_type, rhs_type, assertion_context.codebase))
+            || get_comparison_method(&binary.operator, lhs_type, rhs_type, assertion_context.codebase).is_some())
+    {
+        return vec![];
     }
 
     let mut if_types = WordMap::default();
@@ -198,10 +215,11 @@ where
             _ => {}
         },
         Expression::Binary(binary) => match binary.operator {
+            // PHP# `==` and `!=` run as `===` and `!==`, so they narrow as `===` and `!==` do.
             BinaryOperator::Equal(_) | BinaryOperator::Identical(_) => {
                 return scrape_equality_assertions(
                     binary.lhs,
-                    binary.operator.is_identity(),
+                    binary.operator.is_identity() || assertion_context.dialect.is_sharp(),
                     binary.rhs,
                     artifacts,
                     assertion_context,
@@ -210,7 +228,7 @@ where
             BinaryOperator::NotEqual(_) | BinaryOperator::NotIdentical(_) | BinaryOperator::AngledNotEqual(_) => {
                 return scrape_inequality_assertions(
                     binary.lhs,
-                    &binary.operator,
+                    binary.operator.is_identity() || assertion_context.dialect.is_sharp(),
                     binary.rhs,
                     artifacts,
                     assertion_context,
@@ -809,7 +827,7 @@ where
 
 fn scrape_inequality_assertions<A>(
     left: &Expression,
-    operator: &BinaryOperator,
+    is_identity: bool,
     right: &Expression,
     artifacts: &AnalysisArtifacts,
     assertion_context: AssertionContext<'_, '_, A>,
@@ -878,7 +896,13 @@ where
     }
 
     if let Some(empty_array_position) = has_empty_array_variable(left, right) {
-        return get_empty_array_inequality_assertions(left, operator, right, assertion_context, empty_array_position);
+        return get_empty_array_inequality_assertions(
+            left,
+            is_identity,
+            right,
+            assertion_context,
+            empty_array_position,
+        );
     }
 
     if let Some(enum_case_position) = has_enum_case_comparison(left, right, artifacts, assertion_context.resolved_names)
@@ -889,7 +913,7 @@ where
     if let Some(typed_value_position) = has_typed_value_comparison(left, right, artifacts, assertion_context) {
         return get_typed_value_inequality_assertions(
             left,
-            operator,
+            is_identity,
             right,
             artifacts,
             assertion_context,
@@ -1100,7 +1124,7 @@ where
 
 fn get_empty_array_inequality_assertions<A>(
     left: &Expression,
-    operator: &BinaryOperator,
+    is_identity: bool,
     right: &Expression,
     assertion_context: AssertionContext<'_, '_, A>,
     null_position: OtherValuePosition,
@@ -1117,7 +1141,7 @@ where
     let var_name = assertion_context.get_expression_id(base_conditional);
 
     if let Some(var_name) = var_name {
-        if operator.is_identity() {
+        if is_identity {
             if_types.insert(var_name, vec![vec![Assertion::NonEmptyCountable(true)]]);
         } else {
             if_types.insert(var_name, vec![vec![Assertion::Truthy]]);
@@ -2132,7 +2156,7 @@ where
 
 fn get_typed_value_inequality_assertions<A>(
     left: &Expression,
-    operator: &BinaryOperator,
+    is_identity: bool,
     right: &Expression,
     artifacts: &AnalysisArtifacts,
     assertion_context: AssertionContext<'_, '_, A>,
@@ -2162,7 +2186,7 @@ where
         && let Some(other_value_type) = other_value_type
     {
         if other_value_type.is_single() {
-            let orred_types = if operator.is_identity() {
+            let orred_types = if is_identity {
                 vec![Assertion::IsNotIdentical(other_value_type.get_single().clone())]
             } else {
                 vec![Assertion::IsNotEqual(other_value_type.get_single().clone())]
@@ -2176,7 +2200,7 @@ where
             && !var_type.is_mixed()
             && var_type.is_single()
         {
-            let orred_types = if operator.is_identity() {
+            let orred_types = if is_identity {
                 vec![Assertion::IsNotIdentical(var_type.get_single().clone())]
             } else {
                 vec![Assertion::IsNotEqual(var_type.get_single().clone())]

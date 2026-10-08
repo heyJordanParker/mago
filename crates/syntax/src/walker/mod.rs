@@ -70,6 +70,7 @@ use crate::cst::cst::ExitConstruct;
 use crate::cst::cst::Expression;
 use crate::cst::cst::ExpressionStatement;
 use crate::cst::cst::Extends;
+use crate::cst::cst::Extern;
 use crate::cst::cst::For;
 use crate::cst::cst::ForBody;
 use crate::cst::cst::ForColonDelimitedBody;
@@ -159,6 +160,7 @@ use crate::cst::cst::NullSafeMethodCall;
 use crate::cst::cst::NullSafePropertyAccess;
 use crate::cst::cst::NullableHint;
 use crate::cst::cst::OpeningTag;
+use crate::cst::cst::Operator;
 use crate::cst::cst::Parenthesized;
 use crate::cst::cst::ParenthesizedHint;
 use crate::cst::cst::ParenthesizedPattern;
@@ -243,6 +245,7 @@ use crate::cst::cst::UseItemAlias;
 use crate::cst::cst::UseItemSequence;
 use crate::cst::cst::UseItems;
 use crate::cst::cst::UseType;
+use crate::cst::cst::Uses;
 use crate::cst::cst::ValueArrayElement;
 use crate::cst::cst::Variable;
 use crate::cst::cst::VariadicArrayElement;
@@ -432,6 +435,7 @@ generate_ast_walker! {
             Statement::Inline(inline) => walker.walk_inline(inline, context),
             Statement::Namespace(namespace) => walker.walk_namespace(namespace, context),
             Statement::Use(r#use) => walker.walk_use(r#use, context),
+            Statement::Extern(r#extern) => walker.walk_extern(r#extern, context),
             Statement::Class(class) => walker.walk_class(class, context),
             Statement::Interface(interface) => walker.walk_interface(interface, context),
             Statement::Trait(r#trait) => walker.walk_trait(r#trait, context),
@@ -615,6 +619,25 @@ generate_ast_walker! {
         }
 
         walker.walk_use_item(&maybe_typed_use_item.item, context);
+    }
+
+    'arena Extern as r#extern => {
+        walker.walk_keyword(&r#extern.r#extern, context);
+        walker.walk_identifier(&r#extern.target, context);
+
+        if let Some(uses) = &r#extern.uses {
+            walker.walk_uses(uses, context);
+        }
+
+        walker.walk_terminator(&r#extern.terminator, context);
+    }
+
+    'arena Uses as uses => {
+        walker.walk_keyword(&uses.uses, context);
+
+        for name in &uses.names {
+            walker.walk_local_identifier(name, context);
+        }
     }
 
     'arena AttributeList as attribute_list => {
@@ -840,6 +863,9 @@ generate_ast_walker! {
             }
             ClassLikeMember::Method(method) => {
                 walker.walk_method(method, context);
+            }
+            ClassLikeMember::Operator(operator) => {
+                walker.walk_operator(operator, context);
             }
         }
     }
@@ -1233,6 +1259,22 @@ generate_ast_walker! {
 
     'arena MethodAbstractBody as method_abstract_body => {
         walker.walk_terminator(&method_abstract_body.terminator, context);
+    }
+
+    'arena Operator as operator => {
+        for attribute_list in &operator.attribute_lists {
+            walker.walk_attribute_list(attribute_list, context);
+        }
+
+        for modifier in &operator.modifiers {
+            walker.walk_modifier(modifier, context);
+        }
+
+        walker.walk_function_like_return_type_hint(&operator.return_type_hint, context);
+        walker.walk_keyword(&operator.operator, context);
+        walker.walk_binary_operator(&operator.symbol, context);
+        walker.walk_function_like_parameter_list(&operator.parameter_list, context);
+        walker.walk_method_body(&operator.body, context);
     }
 
     'arena FunctionLikeReturnTypeHint as function_like_return_type_hint => {

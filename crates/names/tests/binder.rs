@@ -431,6 +431,48 @@ fn a_bare_replaces_attribute_is_the_attribute_of_the_standard_library() {
     assert_eq!(resolved(&names, CODE, "Replaces", 0), b"Sharp\\Replaces");
 }
 
+/// An `extern` target binds through the file's imports as a class first, and `Class.member` binds its class and keeps
+/// the member name as written, spec section 29.
+#[test]
+fn an_extern_target_binds_an_imported_class_and_keeps_its_member_name() {
+    const CODE: &str = "namespace App.Stubs;\n\nimport Carbon.Carbon;\nimport Stripe.StripeClient;\n\nextern Carbon.now uses Clock;\nextern StripeClient uses Http;\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "Carbon.now", 0), Some(Binding::Class));
+    assert_eq!(resolved(&names, CODE, "Carbon.now", 0), b"Carbon\\Carbon");
+    assert!(!names.contains(&Position::new(offset(CODE, "now", 0))), "`now` has a resolved name");
+    assert_eq!(binding(&names, CODE, "StripeClient uses", 0), Some(Binding::Class));
+    assert_eq!(resolved(&names, CODE, "StripeClient uses", 0), b"Stripe\\StripeClient");
+}
+
+/// A bare `extern` target that the file does not import is a global function, since PHP# has no functions of its own.
+#[test]
+fn a_bare_extern_target_that_is_not_imported_is_a_global_function() {
+    const CODE: &str = "namespace App.Stubs;\n\nextern trim;\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "trim", 0), None);
+    assert_eq!(resolved(&names, CODE, "trim", 0), b"trim");
+}
+
+/// An effect name binds as a class name, so a standard effect is the class in the `Sharp` namespace and a project
+/// effect resolves through the imports.
+#[test]
+fn an_effect_name_binds_as_a_class_name() {
+    const CODE: &str = "namespace App.Stubs;\n\nimport App.Effects.Payments;\n\nextern now uses Http, Database, Files, Console, Process, Clock, Random, Cache, Mail, Environment, Payments;\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    for effect in ["Http", "Database", "Files", "Console", "Process", "Clock", "Random", "Cache", "Mail", "Environment"]
+    {
+        assert_eq!(binding(&names, CODE, effect, 0), Some(Binding::Class), "`{effect}`");
+        assert_eq!(String::from_utf8_lossy(resolved(&names, CODE, effect, 0)), format!("Sharp\\{effect}"));
+    }
+    assert_eq!(resolved(&names, CODE, "Payments;", 1), b"App\\Effects\\Payments");
+}
+
 #[test]
 fn a_collection_type_keeps_its_written_name_unresolved() {
     const CODE: &str = "namespace App.Tenant.Store;\n\nclass Report\n{\n    public void run(List<int> lines, Map<string, int> sizes)\n    {\n    }\n}\n";

@@ -24,7 +24,7 @@ use crate::resolver::class_name::report_non_existent_class_like;
 pub mod utils;
 
 mod arithmetic;
-mod comparison;
+pub(crate) mod comparison;
 mod concat;
 pub(crate) mod logical;
 mod null_coalesce;

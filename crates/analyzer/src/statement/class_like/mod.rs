@@ -35,6 +35,7 @@ use mago_codex::ttype::template::definition_type_replacer::DefinitionReplacement
 use mago_codex::ttype::template::inferred_type_replacer;
 use mago_codex::ttype::union::TUnion;
 use mago_codex::visibility::Visibility;
+use mago_names::binding::MethodParts;
 use mago_names::binding::php_variable_name;
 use mago_names::display_sharp_member;
 use mago_names::kind::NameKind;
@@ -1083,6 +1084,7 @@ where
     }
 
     if !class_like_metadata.kind.is_trait() {
+        check_inherited_operators(context, class_like_metadata, members, &mut checked_signatures);
         check_abstract_method_signatures(context, class_like_metadata, &mut checked_signatures);
         check_trait_method_conflicts(context, class_like_metadata, members);
     }
@@ -1214,6 +1216,9 @@ where
             }
             ClassLikeMember::Method(method) => {
                 method.analyze(context, &mut block_context, artifacts)?;
+            }
+            ClassLikeMember::Operator(operator) => {
+                operator.analyze(context, &mut block_context, artifacts)?;
             }
             _ => {}
         }
@@ -2190,6 +2195,54 @@ fn check_uninhabitable_diamonds<'ctx, A>(
             .with_help(
                 "Constrain the template parameter with an object bound, since object intersections stay inhabitable, or remove one of the conflicting parameterizations.",
             ),
+        );
+    }
+}
+
+/// Spec section 19: a subclass inherits its parent's operators, which are static, and PHP# has no overloading by
+/// parameter types, so a class cannot declare an operator a parent declares. Each refusal marks the parent's method
+/// checked, so `check_abstract_method_signatures` does not report the same declaration as a final-method override.
+fn check_inherited_operators<'ctx, 'arena, A>(
+    context: &mut Context<'ctx, 'arena, A>,
+    class_like_metadata: &'ctx ClassLikeMetadata,
+    members: &[ClassLikeMember<'arena>],
+    checked_signatures: &mut HashSet<(Word, Word)>,
+) where
+    A: Arena,
+{
+    let Some(parent) =
+        class_like_metadata.direct_parent_class.and_then(|parent| context.codebase.get_class_like(parent.as_bytes()))
+    else {
+        return;
+    };
+
+    for member in members {
+        let ClassLikeMember::Operator(operator) = member else {
+            continue;
+        };
+        let Some(method) = MethodParts::of_operator(operator) else {
+            continue;
+        };
+        let name = ascii_lowercase_word(method.name);
+        let Some(declaring_method_id) = parent.declaring_method_ids.get(&name) else {
+            continue;
+        };
+        let Some(declaring_class) = context.codebase.get_class_like(declaring_method_id.get_class_name().as_bytes())
+        else {
+            continue;
+        };
+        checked_signatures.insert((declaring_method_id.get_class_name(), name));
+
+        let unary = if method.name == b"op_UnaryNegation" { "unary " } else { "" };
+        let class = display_class_like_name(context, class_like_metadata.name);
+        let parent = display_class_like_name(context, declaring_class.name);
+        context.collector.report_with_code(
+            IssueCode::OverrideFinalMethod,
+            Issue::error(format!(
+                "`{class}` cannot declare {unary}`operator {}`: it inherits it from `{parent}`.",
+                String::from_utf8_lossy(operator.symbol.as_bytes()),
+            ))
+            .with_annotation(Annotation::primary(operator.operator.span).with_message("Declared here.")),
         );
     }
 }

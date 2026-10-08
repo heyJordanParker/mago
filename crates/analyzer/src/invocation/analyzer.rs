@@ -1427,7 +1427,17 @@ where
         return get_mixed();
     };
 
-    let parameter_type = invocation_target_parameter.get_type().cloned().unwrap_or_else(get_mixed);
+    // A PHP caller calls the PHP method a PHP# method runs as, whose declaration may differ from what PHP# code sees:
+    // `op_Equality` takes `null`, which it lifts itself.
+    let parameter_type = match invocation_target_parameter {
+        InvocationTargetParameter::FunctionLike(parameter)
+            if !context.dialect.is_sharp() && base_class_metadata.is_some_and(|class| class.flags.is_sharp()) =>
+        {
+            parameter.get_type_declaration_metadata().map(|declaration| &declaration.type_union)
+        }
+        _ => invocation_target_parameter.get_type(),
+    };
+    let parameter_type = parameter_type.cloned().unwrap_or_else(get_mixed);
 
     resolve_type_in_class_context(
         context,

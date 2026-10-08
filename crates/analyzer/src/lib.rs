@@ -18,6 +18,7 @@ use mago_database::file::File;
 use mago_names::ResolvedNames;
 use mago_span::HasSpan;
 use mago_syntax::cst::Node;
+use mago_syntax::cst::NodeKind;
 use mago_syntax::cst::Program;
 use mago_word::word;
 
@@ -37,6 +38,7 @@ use crate::statement::analyze_statements;
 pub mod analysis_result;
 pub mod artifacts;
 pub mod code;
+pub mod effects;
 pub mod error;
 pub mod external;
 pub mod plugin;
@@ -73,7 +75,7 @@ where
     pub plugin_registry: &'ctx PluginRegistry,
     pub external_analysis_session: Option<&'ctx ExternalAnalysisSession>,
     pub additional_symbol_references: Option<&'ctx SymbolReferences>,
-    variable_definedness_targets: Option<Arc<[bool; u8::MAX as usize + 1]>>,
+    variable_definedness_targets: Option<Arc<[bool; NodeKind::COUNT]>>,
     defer_pragmas: bool,
 }
 

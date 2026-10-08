@@ -1348,6 +1348,84 @@ fn compile_refuses_a_sharp_file_whose_error_a_pragma_an_ignore_entry_or_a_baseli
     }
 }
 
+/// Section 29's `app/Stubs/Stripe.sharp`, with `extra` after its declaration.
+fn stripe_stub(extra: &str) -> String {
+    format!("namespace App.Stubs;\n\nimport Stripe.StripeClient;\n\nextern StripeClient uses Http;\n{extra}")
+}
+
+/// A project with section 29's `extern` declaration file, a file with each other `extern` form, and the plain PHP
+/// they declare.
+fn extern_workspace(stripe: &str) -> tempfile::TempDir {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    write(root, "mago.toml", "php-version = \"8.4\"\n\n[source]\npaths = [\"app\"]\n");
+    write(root, "app/Stubs/Stripe.sharp", stripe);
+    write(
+        root,
+        "app/Stubs/Clock.sharp",
+        "namespace App.Stubs;\n\nimport Carbon.Carbon;\nimport Brick.Math.BigDecimal;\n\nextern Carbon.now uses Clock;\nextern now uses Clock;\nextern BigDecimal;\n",
+    );
+    write(root, "app/Lib/StripeClient.php", "<?php\n\nnamespace Stripe;\n\nclass StripeClient\n{\n}\n");
+    write(
+        root,
+        "app/Lib/Carbon.php",
+        "<?php\n\nnamespace Carbon;\n\nclass Carbon\n{\n    public static function now(): self\n    {\n        return new self();\n    }\n}\n",
+    );
+    write(root, "app/Lib/BigDecimal.php", "<?php\n\nnamespace Brick\\Math;\n\nclass BigDecimal\n{\n}\n");
+    write(root, "app/Lib/now.php", "<?php\n\nfunction now(): int\n{\n    return time();\n}\n");
+    directory
+}
+
+#[test]
+fn analyze_finds_no_issues_in_extern_declarations_of_plain_php() {
+    let directory = extern_workspace(&stripe_stub(""));
+
+    let output = run(directory.path(), "analyze", &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "{stdout}{stderr}");
+    assert!(stderr.contains("No issues found."), "{stdout}{stderr}");
+}
+
+#[test]
+fn analyze_reports_only_the_second_extern_of_a_class() {
+    let directory = extern_workspace(&stripe_stub("extern StripeClient;\n"));
+
+    let output = run(directory.path(), "analyze", &["--reporting-format", "emacs"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(!output.status.success(), "{stdout}");
+    assert_eq!(
+        stdout.lines().filter(|line| line.contains(" - ")).collect::<Vec<_>>(),
+        ["app/Stubs/Stripe.sharp:6:1:error - duplicate-extern: `StripeClient` already has an `extern` declaration."],
+        "{stdout}"
+    );
+}
+
+#[test]
+fn compile_refuses_a_file_whose_getter_calls_plain_php_without_an_extern() {
+    let directory = extern_workspace(&stripe_stub(""));
+    write(
+        directory.path(),
+        "app/Shop/Label.sharp",
+        "namespace App.Shop;\n\npublic class Label\n{\n    public Label(private string name) { }\n\n    public string text => trim(this.name);\n}\n",
+    );
+
+    let output = run(directory.path(), "compile", &[]);
+    let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+
+    assert_eq!(output.status.code(), Some(1), "{printed}");
+    assert!(
+        printed.contains(
+            "Getter `text` calls `trim`, which has no `extern` declaration. Getters must be pure (section 29)."
+        ),
+        "{printed}"
+    );
+    assert!(!directory.path().join(".sharp/app/Shop/Label.sharpc").exists());
+    assert!(directory.path().join(".sharp/app/Stubs/Stripe.sharpc").exists(), "{printed}");
+}
+
 #[test]
 fn compile_and_analyze_print_json_under_mago_reporting_format_in_github_actions() {
     let directory = suppressed_workspace("Broken.sharp", &broken_sharp(""), "");

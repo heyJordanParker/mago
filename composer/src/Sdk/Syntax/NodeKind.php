@@ -69,6 +69,7 @@ enum NodeKind: string
     case MethodAbstractBody = 'MethodAbstractBody';
     case MethodBody = 'MethodBody';
     case MethodExpressionBody = 'MethodExpressionBody';
+    case Operator = 'Operator';
     case ComputedProperty = 'ComputedProperty';
     case HookedProperty = 'HookedProperty';
     case PlainProperty = 'PlainProperty';
@@ -217,6 +218,8 @@ enum NodeKind: string
     case UseItemSequence = 'UseItemSequence';
     case UseItems = 'UseItems';
     case UseType = 'UseType';
+    case Extern = 'Extern';
+    case Uses = 'Uses';
     case Yield = 'Yield';
     case YieldFrom = 'YieldFrom';
     case YieldPair = 'YieldPair';

@@ -30,6 +30,7 @@ use mago_syntax::cst::PatternMatchArm;
 use mago_syntax::cst::PropertiesPattern;
 use mago_syntax::cst::Statement;
 use mago_syntax::cst::TypePattern;
+use mago_syntax::cst::UnaryPrefixOperator;
 use mago_syntax::utils::pattern::PhpShape;
 use mago_syntax::utils::pattern::called_function;
 use mago_syntax::walker::Walker;
@@ -198,7 +199,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
                 Expression::Construct(expr) => expr.analyze(context, block_context, artifacts),
                 Expression::Throw(expr) => expr.analyze(context, block_context, artifacts),
                 Expression::Clone(expr) => expr.analyze(context, block_context, artifacts),
-                Expression::Error(_) => {
+                Expression::Error(_) | Expression::Is(_) if is_refused(self) => {
                     artifacts.set_expression_type(&self, get_never());
 
                     Ok(())
@@ -627,9 +628,16 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Parenthesized<'arena> {
     }
 }
 
-/// Whether an error already refuses `expression`, because it failed to parse. Its type is `never`, and it adds no issue.
+/// Whether an error already refuses `expression`: it failed to parse, or it is `!x is T`, which `check_slice` refuses.
+/// Its type is `never`, and it adds no issue.
 pub(crate) const fn is_refused(expression: &Expression<'_>) -> bool {
-    matches!(expression, Expression::Error(_))
+    match expression {
+        Expression::Error(_) => true,
+        Expression::Is(is) => {
+            matches!(is.value, Expression::UnaryPrefix(prefix) if matches!(prefix.operator, UnaryPrefixOperator::Not(_)))
+        }
+        _ => false,
+    }
 }
 
 pub fn find_expression_logic_issues<'ctx, 'arena, A>(

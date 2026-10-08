@@ -35,10 +35,10 @@ use crate::artifacts::AnalysisArtifacts;
 use crate::code::IssueCode;
 use crate::context::assertion::AssertionContext;
 use crate::context::block::BlockContext;
+use crate::expression::binary::utils::display_operand;
 use crate::external::ExternalAnalysisSession;
 use crate::plugin::PluginRegistry;
 use crate::settings::Settings;
-use crate::utils::names::display_type;
 
 pub mod assertion;
 pub mod block;
@@ -203,7 +203,7 @@ where
             return;
         }
 
-        let condition_type = display_type(self, condition_type);
+        let condition_type = display_operand(self, condition_type);
 
         self.collector.report_with_code(
             IssueCode::InvalidOperand,
@@ -292,6 +292,7 @@ where
             this_class_name,
             trust_existence_checks: self.settings.trust_existence_checks,
             temporaries: self.temporaries,
+            dialect: self.dialect,
         }
     }
 

@@ -18,11 +18,14 @@ use mago_codex::ttype::union::TUnion;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::Node;
+use mago_syntax::cst::NodeKind;
 
 use crate::context::block::BlockContext;
 use crate::context::block::ReferenceConstraintSource;
 use crate::context::scope::case_scope::CaseScope;
 use crate::context::scope::loop_scope::LoopScope;
+use crate::effects::EffectSummary;
+use crate::effects::summary::CallTarget;
 use crate::readonly::PendingReadonlyPropertyWrite;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,8 +77,12 @@ pub struct AnalysisArtifacts {
     pub resolved_method_calls: Vec<ResolvedMethodCall>,
     /// What each method whose return is taken from its body returned, keyed by class and method.
     pub body_returns: HashMap<(Word, Word), TUnion>,
+    /// What each PHP# body of the file does by itself, for [`Effects::solve`](crate::effects::Effects::solve).
+    pub effect_summaries: Vec<EffectSummary>,
+    /// The function-likes each PHP# call resolved to, keyed by the call's span.
+    pub(crate) call_targets: HashMap<(u32, u32), Vec<CallTarget>>,
     pub(crate) variable_definedness: HashMap<(u32, u32), WordMap<VariableDefinedness>>,
-    variable_definedness_targets: Option<Arc<[bool; u8::MAX as usize + 1]>>,
+    variable_definedness_targets: Option<Arc<[bool; NodeKind::COUNT]>>,
     pub(crate) pending_readonly_property_writes: Vec<PendingReadonlyPropertyWrite>,
     pub(crate) static_local_types: Option<WordMap<TUnion>>,
 }
@@ -110,6 +117,8 @@ impl AnalysisArtifacts {
             closure_bind_scope: None,
             resolved_method_calls: Vec::new(),
             body_returns: HashMap::default(),
+            effect_summaries: Vec::new(),
+            call_targets: HashMap::default(),
             variable_definedness: HashMap::default(),
             variable_definedness_targets: None,
             pending_readonly_property_writes: Vec::new(),
@@ -150,15 +159,12 @@ impl AnalysisArtifacts {
         }
     }
 
-    pub(crate) fn with_variable_definedness_targets(
-        mut self,
-        targets: Option<Arc<[bool; u8::MAX as usize + 1]>>,
-    ) -> Self {
+    pub(crate) fn with_variable_definedness_targets(mut self, targets: Option<Arc<[bool; NodeKind::COUNT]>>) -> Self {
         self.variable_definedness_targets = targets;
         self
     }
 
-    pub(crate) fn variable_definedness_targets(&self) -> Option<Arc<[bool; u8::MAX as usize + 1]>> {
+    pub(crate) fn variable_definedness_targets(&self) -> Option<Arc<[bool; NodeKind::COUNT]>> {
         self.variable_definedness_targets.clone()
     }
 
@@ -299,11 +305,7 @@ impl AnalysisArtifacts {
     }
 }
 
-fn node_or_same_span_descendant_is_targeted(
-    node: Node<'_, '_>,
-    span: Span,
-    targets: &[bool; u8::MAX as usize + 1],
-) -> bool {
+fn node_or_same_span_descendant_is_targeted(node: Node<'_, '_>, span: Span, targets: &[bool; NodeKind::COUNT]) -> bool {
     if targets[node.kind() as usize] {
         return true;
     }
