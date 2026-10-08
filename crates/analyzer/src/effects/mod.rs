@@ -226,6 +226,9 @@ impl Effects {
 
     /// Why `method` is impure, or `None` when it has no effect and changes neither `this`, a parameter nor shared
     /// state. A constructor's changes to `this` do not count, because its object is new.
+    ///
+    /// It answers only for a PHP# method with a body. It returns `None` for a function, a closure, a plain PHP method
+    /// and a native `extern` method, whose effects no summary records.
     #[must_use]
     pub fn impurity(&self, method: &FunctionLikeIdentifier) -> Option<Impurity> {
         let FunctionLikeIdentifier::Method(class, method) = method else {

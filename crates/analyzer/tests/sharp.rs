@@ -4163,7 +4163,7 @@ fn a_getter_calling_a_function_with_no_extern_is_refused_and_names_the_missing_d
     assert_eq!(
         effect_issues(&[LABEL]),
         [
-            "app/Shop/Label.sharp:7:27 impure-getter: Getter `text` calls `trim`, which has no `extern` declaration. Getters must be pure (section 29). Help: Declare its effect in a .sharp file, such as `extern trim uses Environment;`."
+            "app/Shop/Label.sharp:7:27 impure-getter: Getter `text` calls `trim`, which has no `extern` declaration. Getters must be pure (section 29). Help: Declare it in a .sharp file: `extern trim;` when it has no effect, or name its effects after `uses`."
         ]
     );
 }
@@ -4252,7 +4252,7 @@ fn a_getter_whose_list_map_lambda_calls_an_undeclared_function_is_refused() {
     assert_eq!(
         effect_issues(&[names]),
         [
-            "app/Shop/Names.sharp:7:54 impure-getter: Getter `loud` calls `strtoupper`, which has no `extern` declaration. Getters must be pure (section 29). Help: Declare its effect in a .sharp file, such as `extern strtoupper uses Environment;`."
+            "app/Shop/Names.sharp:7:54 impure-getter: Getter `loud` calls `strtoupper`, which has no `extern` declaration. Getters must be pure (section 29). Help: Declare it in a .sharp file: `extern strtoupper;` when it has no effect, or name its effects after `uses`."
         ]
     );
 }

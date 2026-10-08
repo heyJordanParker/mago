@@ -29,7 +29,7 @@ pub(crate) fn getters_must_be_pure(effects: &Effects) -> IssueCollection {
 
             match impurity.effect {
                 Some(Effect::Unknown(_)) => issue.with_help(format!(
-                    "Declare its effect in a .sharp file, such as `extern {} uses Environment;`.",
+                    "Declare it in a .sharp file: `extern {};` when it has no effect, or name its effects after `uses`.",
                     impurity.cause
                 )),
                 _ => issue,

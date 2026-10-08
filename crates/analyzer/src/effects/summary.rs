@@ -797,6 +797,7 @@ fn lambda_literal<'ast, 'arena>(expression: &'ast Expression<'arena>) -> Option<
 }
 
 /// A class under `Sharp\` that the prelude declares as a plain PHP stub.
+// Deleted once the standard library's `.sharp` sources replace the prelude stubs (php-sharp issue #60).
 fn is_prelude_stub(class: Word) -> bool {
     class.as_bytes().len() > 6 && class.as_bytes()[..6].eq_ignore_ascii_case(b"sharp\\")
 }
