@@ -40,6 +40,12 @@ fn baseline_annotation(issue: &Issue) -> Option<&Annotation> {
     issue.annotations.iter().find(|a| a.is_primary()).or_else(|| issue.annotations.first())
 }
 
+fn unsuppressible_error_at(annotation: &Annotation) -> Issue {
+    Issue::unsuppressible_error([
+        Annotation::primary(annotation.span).with_message("A baseline entry matches this error.")
+    ])
+}
+
 /// The variant of baseline format to use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, JsonSchema)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -243,6 +249,9 @@ impl StrictBaseline {
 
             if !baseline_entry.issues.contains(&baseline_issue) {
                 filtered_issues.push(issue);
+            } else if !issue.can_be_suppressed_in(&file.name) {
+                filtered_issues.push(unsuppressible_error_at(annotation));
+                filtered_issues.push(issue);
             }
         }
 
@@ -445,7 +454,11 @@ impl LooseBaseline {
                 && *count > 0
             {
                 *count -= 1;
-                continue;
+                if issue.can_be_suppressed_in(&file.name) {
+                    continue;
+                }
+
+                filtered_issues.push(unsuppressible_error_at(annotation));
             }
 
             filtered_issues.push(issue);

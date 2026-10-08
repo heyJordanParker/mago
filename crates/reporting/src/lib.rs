@@ -323,6 +323,20 @@ impl CompiledIgnoreSet {
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+
+    fn matches(&self, issue: &Issue, mut file_name: impl FnMut() -> Option<String>) -> bool {
+        self.entries.iter().any(|entry| match entry {
+            CompiledIgnoreEntry::Code(ignored_code) => issue.code.as_ref() == Some(ignored_code),
+            CompiledIgnoreEntry::Scoped { code: ignored_code, matcher } => {
+                issue.code.as_ref() == Some(ignored_code) && file_name().is_some_and(|name| matcher.is_match(&name))
+            }
+            CompiledIgnoreEntry::Pattern { regex, code: ignored_code, matcher } => {
+                ignored_code.as_ref().is_none_or(|ignored_code| issue.code.as_ref() == Some(ignored_code))
+                    && matcher.as_ref().is_none_or(|matcher| file_name().is_some_and(|name| matcher.is_match(&name)))
+                    && issue_text_matches(issue, regex)
+            }
+        })
+    }
 }
 
 impl Annotation {
@@ -594,8 +608,9 @@ impl Issue {
 
     /// Returns `true` when a suppression may hide this issue in the file named `file_name`.
     ///
-    /// This is the one place Mago decides it. An error in a PHP# file keeps the file from running, so an
-    /// `@mago-ignore` or `@mago-expect` pragma can't hide it. Every other issue may be suppressed.
+    /// This is the one place Mago decides it. An error in a PHP# file keeps the file from running, so nothing hides
+    /// it: not an `@mago-ignore` or `@mago-expect` pragma, not an analyzer `ignore` entry, not a baseline entry.
+    /// Every other issue may be suppressed.
     #[must_use]
     pub fn can_be_suppressed_in(&self, file_name: &[u8]) -> bool {
         self.level < Level::Error || !file_name.ends_with(b".sharp")
@@ -769,68 +784,27 @@ impl IssueCollection {
             return;
         }
 
-        self.issues.retain(|issue| {
+        for issue in std::mem::take(&mut self.issues) {
             let mut cached_path: Option<Option<String>> = None;
-            let mut resolve_path = |issue: &Issue| -> Option<String> {
+            let mut resolve_path = || -> Option<String> {
                 cached_path
                     .get_or_insert_with(|| issue.primary_span().and_then(|span| resolve_file_name(span.file_id)))
                     .clone()
             };
 
-            for entry in &set.entries {
-                match entry {
-                    CompiledIgnoreEntry::Code(ignored_code) => {
-                        if let Some(code) = &issue.code
-                            && ignored_code == code
-                        {
-                            return false;
-                        }
-                    }
-                    CompiledIgnoreEntry::Scoped { code: ignored_code, matcher } => {
-                        let Some(code) = &issue.code else {
-                            continue;
-                        };
+            if set.matches(&issue, &mut resolve_path) {
+                if resolve_path().is_none_or(|name| issue.can_be_suppressed_in(name.as_bytes())) {
+                    continue;
+                }
 
-                        if ignored_code != code {
-                            continue;
-                        }
-
-                        if let Some(name) = resolve_path(issue)
-                            && matcher.is_match(&name)
-                        {
-                            return false;
-                        }
-                    }
-                    CompiledIgnoreEntry::Pattern { regex, code: ignored_code, matcher } => {
-                        if let Some(ignored_code) = ignored_code {
-                            let Some(code) = &issue.code else {
-                                continue;
-                            };
-
-                            if ignored_code != code {
-                                continue;
-                            }
-                        }
-
-                        if let Some(matcher) = matcher {
-                            let Some(name) = resolve_path(issue) else {
-                                continue;
-                            };
-
-                            if !matcher.is_match(&name) {
-                                continue;
-                            }
-                        }
-
-                        if issue_text_matches(issue, regex) {
-                            return false;
-                        }
-                    }
+                if let Some(span) = issue.primary_span() {
+                    self.issues.push(Issue::unsuppressible_error([Annotation::primary(span)
+                        .with_message("An analyzer `ignore` entry in the configuration matches this error.")]));
                 }
             }
 
-            true
-        });
+            self.issues.push(issue);
+        }
     }
 
     pub fn filter_retain_codes(&mut self, retain_codes: &[String]) {
