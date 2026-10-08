@@ -15,6 +15,7 @@ use mago_names::binding::php_variable_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
+use mago_span::Span;
 use mago_syntax::cst::ComputedProperty;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::HookedProperty;
@@ -35,10 +36,14 @@ use crate::artifacts::AnalysisArtifacts;
 use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
+use crate::effects;
+use crate::effects::Body;
+use crate::effects::short_name;
 use crate::error::AnalysisError;
 use crate::statement::analyze_statements;
 use crate::statement::attributes::AttributeTarget;
 use crate::statement::attributes::analyze_attributes;
+use crate::statement::function_like::FunctionLikeBody;
 use crate::statement::function_like::add_properties_to_context;
 use crate::statement::function_like::get_this_type;
 use crate::statement::function_like::report_missing_return;
@@ -298,7 +303,51 @@ where
         }
     }
 
+    // A `set` accessor's value is its one parameter, written or implicit.
+    let parameters = match &hook.parameter_list {
+        Some(parameter_list) => parameter_list.parameters.iter().map(|parameter| parameter.variable.span).collect(),
+        None if hook.name.value == b"set" => vec![hook.name.span],
+        None => Vec::new(),
+    };
+    let code = match body {
+        PropertyHookConcreteBody::Block(block) => {
+            FunctionLikeBody::Statements(block.statements.as_slice(), block.span())
+        }
+        PropertyHookConcreteBody::Expression(expr_body) => FunctionLikeBody::Expression(expr_body.expression),
+    };
+    record_accessor_summary(hook.name.value, property_name, parameters, code, context, parent_block_context, artifacts);
+
     Ok(())
+}
+
+/// Records what a PHP# accessor's body does, for the effect rules.
+fn record_accessor_summary<'arena, A>(
+    accessor: &[u8],
+    property_name: Word,
+    parameters: Vec<Span>,
+    code: FunctionLikeBody<'_, 'arena>,
+    context: &Context<'_, 'arena, A>,
+    parent_block_context: &BlockContext<'_>,
+    artifacts: &mut AnalysisArtifacts,
+) where
+    A: Arena,
+{
+    let Some(class_like) = parent_block_context.scope.get_class_like() else {
+        return;
+    };
+    if !context.dialect.is_sharp() {
+        return;
+    }
+
+    let property = property_name.as_bytes().strip_prefix(b"$").unwrap_or(property_name.as_bytes());
+    effects::summary::record(
+        context,
+        artifacts,
+        Body::Accessor(class_like.name, property_name, word(accessor)),
+        concat_word!(short_name(class_like.original_name), ".", property),
+        parameters,
+        code,
+    );
 }
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for ComputedProperty<'arena> {
@@ -323,7 +372,11 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ComputedProperty<'arena> {
         let property_name = php_variable_name(self.variable.name);
         let mut hook_block_context = hook_block_context(b"get", None, property_name, context, block_context)?;
 
-        analyze_hook_expression(b"get", &self.body, context, &mut hook_block_context, artifacts)
+        analyze_hook_expression(b"get", &self.body, context, &mut hook_block_context, artifacts)?;
+        let code = FunctionLikeBody::Expression(self.body.expression);
+        record_accessor_summary(b"get", property_name, Vec::new(), code, context, block_context, artifacts);
+
+        Ok(())
     }
 }
 

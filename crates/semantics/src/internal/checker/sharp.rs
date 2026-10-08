@@ -442,6 +442,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             | Node::Statement(
                 Statement::Namespace(_)
                 | Statement::Use(_)
+                | Statement::Extern(_)
                 | Statement::Class(_)
                 | Statement::Interface(_)
                 | Statement::Enum(_),
@@ -454,6 +455,8 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             | Node::Identifier(Identifier::Dotted(_))
             | Node::DottedIdentifier(_)
             | Node::Use(_)
+            | Node::Extern(_)
+            | Node::Uses(_)
             | Node::UseItems(UseItems::Sequence(_))
             | Node::UseItemSequence(_)
             | Node::UseItem(_),

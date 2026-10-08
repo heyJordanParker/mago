@@ -63,6 +63,14 @@ fn the_slice_fixtures_have_no_semantic_issues() {
     assert_eq!(issues(include_str!("fixtures/library.sharp")), Vec::<String>::new());
 }
 
+/// `extern` declares the effects of plain PHP at file level, spec section 29, and nowhere else.
+#[test]
+fn extern_is_a_declaration_of_the_file_and_of_no_method_body() {
+    let code = "namespace App.Stubs;\n\nimport Stripe.StripeClient;\n\nextern StripeClient uses Http;\nextern Carbon.now uses Clock, Random;\nextern trim;\n\nclass Report\n{\n    public int run(int extra)\n    {\n        extern trim;\n        return extra;\n    }\n}\n";
+
+    assert_eq!(issues(code), ["13:9 This statement is not supported yet in PHP#."]);
+}
+
 #[test]
 fn every_construct_outside_the_slice_is_not_supported_yet() {
     let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\ntrait Named\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        switch (extra) {\n            default: return 1;\n        }\n        const made = new Report;\n        const partial = this.run(...);\n        const text = <<<TEXT\ntotal\nTEXT;\n        return extra;\n    }\n}\n";

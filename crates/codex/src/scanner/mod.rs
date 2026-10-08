@@ -2,6 +2,7 @@ use mago_allocator::Arena;
 
 use mago_database::file::File;
 use mago_names::ResolvedNames;
+use mago_names::binding::Binding;
 use mago_names::binding::php_method_name;
 use mago_names::scope::NamespaceScope;
 use mago_names::scope::php_name;
@@ -18,6 +19,7 @@ use mago_syntax::cst::Closure;
 use mago_syntax::cst::Constant;
 use mago_syntax::cst::Enum;
 use mago_syntax::cst::Expression;
+use mago_syntax::cst::Extern;
 use mago_syntax::cst::Function;
 use mago_syntax::cst::FunctionCall;
 use mago_syntax::cst::If;
@@ -48,6 +50,7 @@ use mago_word::word;
 
 use crate::identifier::method::MethodIdentifier;
 use crate::metadata::CodebaseMetadata;
+use crate::metadata::r#extern::ExternMetadata;
 use crate::metadata::flags::MetadataFlags;
 use crate::metadata::function_like::FunctionLikeKind;
 use crate::metadata::function_like::FunctionLikeMetadata;
@@ -280,6 +283,32 @@ where
     #[inline]
     fn walk_in_use(&mut self, r#use: &'arena Use<'arena>, _context: &mut Context<'ctx, 'arena, A>) {
         self.scope.populate_from_use(r#use);
+    }
+
+    /// Records a PHP# `extern` declaration. The binder decides whether its target is a class, with the member after
+    /// `.` when it names one, or a global function.
+    #[inline]
+    fn walk_in_extern(&mut self, r#extern: &'arena Extern<'arena>, context: &mut Context<'ctx, 'arena, A>) {
+        let target = &r#extern.target;
+        let name = ascii_lowercase_word(context.resolved_names.get(target));
+        let target = if context.resolved_names.binding(target) == Some(Binding::Class) {
+            (name, if target.is_dotted() { ascii_lowercase_word(target.last_segment()) } else { empty_word() })
+        } else {
+            (empty_word(), name)
+        };
+        let effects = r#extern
+            .uses
+            .iter()
+            .flat_map(|uses| uses.names.iter())
+            .map(|effect| word(context.resolved_names.get(effect)))
+            .collect();
+
+        self.codebase.externs.entry(target).or_default().push(ExternMetadata {
+            file: word(&context.file.name),
+            span: r#extern.span(),
+            target,
+            effects,
+        });
     }
 
     fn walk_if(&mut self, r#if: &'arena If<'arena>, context: &mut Context<'ctx, 'arena, A>) {

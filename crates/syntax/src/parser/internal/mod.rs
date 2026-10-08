@@ -15,6 +15,7 @@ pub(crate) mod control_flow;
 pub(crate) mod declare;
 pub(crate) mod echo;
 pub(crate) mod expression;
+pub(crate) mod r#extern;
 pub(crate) mod function_like;
 pub(crate) mod global;
 pub(crate) mod goto;

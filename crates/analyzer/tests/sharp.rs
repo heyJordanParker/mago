@@ -11,6 +11,8 @@ use mago_allocator::LocalArena;
 use mago_analyzer::Analyzer;
 use mago_analyzer::analysis_result::AnalysisResult;
 use mago_analyzer::artifacts::AnalysisArtifacts;
+use mago_analyzer::effects::EffectSummary;
+use mago_analyzer::effects::Effects;
 use mago_analyzer::plugin::PluginRegistry;
 use mago_analyzer::plugin::context::HookContext;
 use mago_analyzer::plugin::hook::ExpressionHook;
@@ -21,11 +23,14 @@ use mago_analyzer::plugin::hook::StaticMethodCallHook;
 use mago_analyzer::plugin::provider::Provider;
 use mago_analyzer::plugin::provider::ProviderMeta;
 use mago_analyzer::settings::Settings;
+use mago_codex::identifier::function_like::FunctionLikeIdentifier;
+use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::populator::populate_codebase;
 use mago_codex::scanner::scan_program;
 use mago_codex::ttype::TType;
 use mago_database::DatabaseReader;
 use mago_database::file::File;
+use mago_database::file::FileId;
 use mago_names::CHANGING_COLLECTION_METHODS;
 use mago_names::resolver::NameResolver;
 use mago_prelude::Prelude;
@@ -38,6 +43,7 @@ use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
 use mago_syntax::parser::parse_file;
 use mago_word::WordSet;
+use mago_word::ascii_lowercase_word;
 
 static PRELUDE: LazyLock<Prelude> = LazyLock::new(Prelude::build);
 static PLUGIN_REGISTRY: LazyLock<PluginRegistry> = LazyLock::new(PluginRegistry::with_library_providers);
@@ -4002,4 +4008,291 @@ fn an_extern_method_in_a_project_file_is_an_error_in_any_namespace() {
         );
         assert_eq!(issues(analyzed, &[]), ["5:33 native-body-outside-library"], "{}", analyzed.0);
     }
+}
+
+const STRIPE: (&str, &str) = (
+    "vendor/stripe/StripeClient.php",
+    "<?php\n\nnamespace Stripe;\n\nclass StripeClient\n{\n    public function charges(): object\n    {\n        return $this;\n    }\n}\n",
+);
+
+const NOW: (&str, &str) = ("src/helpers.php", "<?php\n\nfunction now(): int\n{\n    return time();\n}\n");
+
+const CLOCK_STUB: (&str, &str) = ("app/Stubs/Clock.sharp", "namespace App.Stubs;\n\nextern now uses Clock;\n");
+
+/// Analyzes every file of `files` against the codebase they declare together, and returns the codebase and the effect
+/// summaries of every body they declare.
+fn summarized(files: &[(&'static str, &'static str)]) -> (CodebaseMetadata, Vec<EffectSummary>) {
+    let Prelude { mut database, mut metadata, mut symbol_references } = PRELUDE.clone();
+    let file_ids: Vec<_> = files
+        .iter()
+        .map(|(name, code)| {
+            database.add(File::ephemeral(Cow::Borrowed(name.as_bytes()), Cow::Borrowed(code.as_bytes())))
+        })
+        .collect();
+
+    let arena = LocalArena::new();
+    let mut programs = Vec::new();
+    for file_id in &file_ids {
+        let file = database.get_ref(file_id).expect("file was just added");
+        let program = parse_file(&arena, file);
+        assert!(!program.has_errors(), "{} did not parse: {:?}", String::from_utf8_lossy(&file.name), program.errors);
+
+        let names = NameResolver::new(&arena).resolve(program);
+        metadata.extend(scan_program(&arena, file, program, &names, settings().version));
+        programs.push((file, program, names));
+    }
+
+    populate_codebase(&mut metadata, &mut symbol_references, WordSet::default(), HashSet::default());
+
+    let mut summaries = Vec::new();
+    for (file, program, names) in &programs {
+        let mut result = AnalysisResult::new(symbol_references.clone());
+        let mut artifacts = Analyzer::new(&arena, file, names, &metadata, &PLUGIN_REGISTRY, settings())
+            .analyze_with_artifacts(program, &mut result)
+            .expect("analysis succeeds");
+        summaries.append(&mut artifacts.effect_summaries);
+    }
+
+    (metadata, summaries)
+}
+
+/// Every issue of the effect rules over `files`, as `file:line:column code: message`, then ` Help: ` and its help when
+/// it has one.
+fn effect_issues(files: &[(&'static str, &'static str)]) -> Vec<String> {
+    let (codebase, summaries) = summarized(files);
+
+    Effects::solve(&codebase, &summaries)
+        .issues(&codebase)
+        .into_iter()
+        .map(|issue| {
+            let file_id = issue.primary_span().expect("a primary span").file_id;
+            let (name, code) = files
+                .iter()
+                .find(|(name, _)| FileId::new(name.as_bytes()) == file_id)
+                .expect("the issue is in one of the files");
+            let help = issue.help.as_deref().map(|help| format!(" Help: {help}")).unwrap_or_default();
+
+            format!("{name}:{}: {}{help}", located(code, &issue), issue.message)
+        })
+        .collect()
+}
+
+/// Each class, method or function has at most one `extern` declaration in the whole project, spec section 29. The
+/// second one, in file order, is the error, and it points at the first.
+#[test]
+fn a_second_extern_of_a_target_in_another_file_is_refused_on_the_second() {
+    let first = (
+        "app/Stubs/Payments.sharp",
+        "namespace App.Stubs;\n\nimport Stripe.StripeClient;\n\nextern StripeClient uses Http;\n",
+    );
+    let second =
+        ("app/Stubs/Stripe.sharp", "namespace App.Stubs;\n\nimport Stripe.StripeClient;\n\nextern StripeClient;\n");
+
+    assert_eq!(issues(first, &[second, STRIPE]), Vec::<String>::new());
+    let refused = analyze(&PLUGIN_REGISTRY, settings(), second, &[first, STRIPE]);
+    let reported: Vec<String> = refused
+        .iter()
+        .map(|issue| {
+            let secondary: Vec<String> = issue
+                .annotations
+                .iter()
+                .filter(|annotation| !annotation.kind.is_primary())
+                .map(|annotation| {
+                    format!("{} {}", annotation.span.start.offset, annotation.message.as_deref().unwrap_or(""))
+                })
+                .collect();
+
+            format!("{} {} {secondary:?}", located(second.1, issue), issue.message)
+        })
+        .collect();
+    let first_offset = first.1.find("extern").unwrap();
+    assert_eq!(
+        reported,
+        [format!(
+            "5:1 duplicate-extern `StripeClient` already has an `extern` declaration. [\"{first_offset} First declared here.\"]"
+        )]
+    );
+}
+
+/// An `extern` target that names no class, method or function is reported with the code a call of it would get.
+#[test]
+fn an_extern_target_that_names_nothing_is_a_non_existent_class_method_or_function() {
+    let stub = (
+        "app/Stubs/Stripe.sharp",
+        "namespace App.Stubs;\n\nimport Stripe.StripeClient;\nimport Stripe.Missing;\n\nextern Missing;\nextern StripeClient.refund;\nextern nowhere;\n",
+    );
+
+    assert_eq!(
+        issues(stub, &[STRIPE]),
+        ["6:8 non-existent-class-like", "7:8 non-existent-method", "8:8 non-existent-function"]
+    );
+}
+
+/// PHP# infers the effects of PHP# code, so an `extern` names only plain PHP.
+#[test]
+fn an_extern_of_a_php_sharp_class_is_refused() {
+    let order = ("app/Shop/Order.sharp", "namespace App.Shop;\n\npublic class Order\n{\n}\n");
+    let stub = ("app/Stubs/Shop.sharp", "namespace App.Stubs;\n\nimport App.Shop.Order;\n\nextern Order;\n");
+
+    assert_eq!(messages(stub, &[order]), ["`Order` is PHP# code, so it needs no `extern`: PHP# infers its effects."]);
+    assert_eq!(issues(stub, &[order]), ["5:8 extern-on-sharp"]);
+}
+
+#[test]
+fn an_extern_of_a_plain_php_class_is_accepted() {
+    let stub =
+        ("app/Stubs/Stripe.sharp", "namespace App.Stubs;\n\nimport Stripe.StripeClient;\n\nextern StripeClient;\n");
+
+    assert_eq!(issues(stub, &[STRIPE]), Vec::<String>::new());
+}
+
+const LABEL: (&str, &str) = (
+    "app/Shop/Label.sharp",
+    "namespace App.Shop;\n\npublic class Label\n{\n    public Label(private string name) { }\n\n    public string text => trim(this.name);\n}\n",
+);
+
+#[test]
+fn a_getter_calling_a_function_an_extern_declares_pure_passes() {
+    let stub = ("app/Stubs/Text.sharp", "namespace App.Stubs;\n\nextern trim;\n");
+
+    assert_eq!(effect_issues(&[LABEL, stub]), Vec::<String>::new());
+}
+
+#[test]
+fn a_getter_calling_a_function_with_no_extern_is_refused_and_names_the_missing_declaration() {
+    assert_eq!(
+        effect_issues(&[LABEL]),
+        [
+            "app/Shop/Label.sharp:7:27 impure-getter: Getter `text` calls `trim`, which has no `extern` declaration. Getters must be pure (section 29). Help: Declare it in a .sharp file: `extern trim;` when it has no effect, or name its effects after `uses`."
+        ]
+    );
+}
+
+#[test]
+fn a_getter_reaching_a_method_that_calls_an_extern_with_an_effect_in_another_file_is_refused() {
+    let order =
+        ("app/Shop/Order.sharp", "namespace App.Shop;\n\npublic class Order\n{\n    public int price() => now();\n}\n");
+    let cart = (
+        "app/Shop/Cart.sharp",
+        "namespace App.Shop;\n\npublic class Cart\n{\n    public Cart(private Order order) { }\n\n    public int total => this.order.price();\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[cart, order, CLOCK_STUB, NOW]),
+        [
+            "app/Shop/Cart.sharp:7:25 impure-getter: Getter `total` reaches `Order.price`, which calls `now` with the effect `Clock`. Getters must be pure (section 29)."
+        ]
+    );
+}
+
+#[test]
+fn a_getter_writing_a_field_of_this_is_refused() {
+    let counter = (
+        "app/Shop/Counter.sharp",
+        "namespace App.Shop;\n\npublic class Counter\n{\n    private int count = 0;\n\n    public int next { get { this.count = this.count + 1; return this.count; } }\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[counter]),
+        [
+            "app/Shop/Counter.sharp:7:29 impure-getter: Getter `next` changes `this.count`. Getters must be pure (section 29)."
+        ]
+    );
+}
+
+#[test]
+fn a_getter_building_and_changing_a_new_object_passes() {
+    let builder = (
+        "app/Shop/Builder.sharp",
+        "namespace App.Shop;\n\npublic class Builder\n{\n    private string text = \"\";\n\n    public void add(string part)\n    {\n        this.text = this.text + part;\n    }\n\n    public string build() => this.text;\n}\n",
+    );
+    let page = (
+        "app/Shop/Page.sharp",
+        "namespace App.Shop;\n\npublic class Page\n{\n    public string title\n    {\n        get\n        {\n            let builder = new Builder();\n            builder.add(\"Shop\");\n            return builder.build();\n        }\n    }\n}\n",
+    );
+
+    assert_eq!(effect_issues(&[page, builder]), Vec::<String>::new());
+    let (codebase, summaries) = summarized(&[page, builder]);
+    let add = FunctionLikeIdentifier::Method(ascii_lowercase_word(b"App\\Shop\\Builder"), ascii_lowercase_word(b"add"));
+    assert_eq!(
+        Effects::solve(&codebase, &summaries).impurity(&add).map(|impurity| impurity.to_string()).as_deref(),
+        Some("changes `this.text`"),
+        "the getter calls a method that changes its object, and the object is the getter's own"
+    );
+}
+
+#[test]
+fn a_getter_calling_a_virtual_method_whose_override_has_an_effect_is_refused() {
+    let rates = (
+        "app/Shop/Rate.sharp",
+        "namespace App.Shop;\n\npublic class Rate\n{\n    public virtual int value() => 1;\n}\n\npublic class LiveRate : Rate\n{\n    public override int value() => now();\n}\n",
+    );
+    let quote = (
+        "app/Shop/Quote.sharp",
+        "namespace App.Shop;\n\npublic class Quote\n{\n    public Quote(private Rate rate) { }\n\n    public int amount => this.rate.value();\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[quote, rates, CLOCK_STUB, NOW]),
+        [
+            "app/Shop/Quote.sharp:7:26 impure-getter: Getter `amount` reaches `LiveRate.value`, which calls `now` with the effect `Clock`. Getters must be pure (section 29)."
+        ]
+    );
+}
+
+/// A collection method has the effects of the lambda passed to it, as `uses f` will declare, and the lambda is part of
+/// the getter, so the error points into it.
+#[test]
+fn a_getter_whose_list_map_lambda_calls_an_undeclared_function_is_refused() {
+    let names = (
+        "app/Shop/Names.sharp",
+        "namespace App.Shop;\n\npublic class Names\n{\n    public Names(private List<string> all) { }\n\n    public List<string> loud => this.all.map(name => strtoupper(name));\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[names]),
+        [
+            "app/Shop/Names.sharp:7:54 impure-getter: Getter `loud` calls `strtoupper`, which has no `extern` declaration. Getters must be pure (section 29). Help: Declare it in a .sharp file: `extern strtoupper;` when it has no effect, or name its effects after `uses`."
+        ]
+    );
+}
+
+#[test]
+fn a_getter_reading_the_environment_is_refused_with_the_effect_environment() {
+    let deploy = (
+        "app/Ops/Deploy.sharp",
+        "namespace App.Ops;\n\npublic class Deploy\n{\n    public Deploy(private Environment environment) { }\n\n    public string region => this.environment.variable(\"AWS_REGION\") ?? \"us-east-1\";\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[deploy]),
+        [
+            "app/Ops/Deploy.sharp:7:29 impure-getter: Getter `region` calls `Environment.variable`, which has the effect `Environment`. Getters must be pure (section 29)."
+        ]
+    );
+}
+
+/// Two methods that call each other form one strongly connected part, which the solve iterates to a fixpoint instead
+/// of following forever. `impurity` answers for a method as it does for a getter.
+#[test]
+fn a_recursive_pair_of_methods_solves_without_looping() {
+    let tree = (
+        "app/Shop/Tree.sharp",
+        "namespace App.Shop;\n\npublic class Tree\n{\n    public int even(int n) => n == 0 ? 0 : this.odd(n - 1);\n\n    public int odd(int n) => n == 0 ? now() : this.even(n - 1);\n\n    public int depth => this.even(4);\n}\n",
+    );
+    let files = [tree, CLOCK_STUB, NOW];
+
+    assert_eq!(
+        effect_issues(&files),
+        [
+            "app/Shop/Tree.sharp:9:25 impure-getter: Getter `depth` reaches `Tree.odd`, which calls `now` with the effect `Clock`. Getters must be pure (section 29)."
+        ]
+    );
+    let (codebase, summaries) = summarized(&files);
+    let effects = Effects::solve(&codebase, &summaries);
+    let even = FunctionLikeIdentifier::Method(ascii_lowercase_word(b"App\\Shop\\Tree"), ascii_lowercase_word(b"even"));
+    assert_eq!(
+        effects.impurity(&even).map(|impurity| impurity.to_string()).as_deref(),
+        Some("reaches `Tree.odd`, which calls `now` with the effect `Clock`")
+    );
 }

@@ -425,6 +425,19 @@ fn a_file_declares_strict_types_then_its_namespace_and_classes() {
     );
 }
 
+/// An `extern` declaration only tells the checker what plain PHP does, so the engine gets the same tree without it.
+#[test]
+fn a_file_with_extern_declarations_lowers_to_the_nodes_it_lowers_to_without_them() {
+    let library = [("vendor/acme/Mailer.php", "<?php\n\nnamespace Acme;\n\nclass Mailer\n{\n}\n")];
+    let with = Lowered::with(
+        "namespace App.Tenant;\n\nimport Acme.Mailer;\n\nextern Mailer uses Mail, Http;\nextern trim;\n\nclass Report\n{\n}\n",
+        &library,
+    );
+    let without = Lowered::with("namespace App.Tenant;\n\nimport Acme.Mailer;\n\n\n\n\nclass Report\n{\n}\n", &library);
+
+    assert_eq!(with.tree(), without.tree());
+}
+
 /// ```php
 /// <?php
 /// declare(strict_types=1);
