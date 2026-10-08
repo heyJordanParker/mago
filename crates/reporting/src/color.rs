@@ -1,12 +1,12 @@
 /// Choice for colorizing output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ColorChoice {
-    /// Automatically detect whether colors should be used based on TTY detection.
+    /// Use colors as `FORCE_COLOR` and `NO_COLOR` say, or else when the output is a TTY.
     #[default]
     Auto,
-    /// Always use colors, regardless of TTY status.
+    /// Always use colors, whatever the TTY status or the environment say.
     Always,
-    /// Never use colors.
+    /// Never use colors, whatever the environment says.
     Never,
 }
 
@@ -22,24 +22,26 @@ impl ColorChoice {
     /// `true` if colors should be used, `false` otherwise
     #[must_use]
     pub fn should_use_colors(self, is_tty: bool) -> bool {
-        // FORCE_COLOR takes precedence (https://force-color.org/).
-        // Any non-empty value forces colors, except "0" which explicitly disables them.
-        if let Some(value) = std::env::var_os("FORCE_COLOR")
-            && !value.is_empty()
-        {
-            return value != "0";
-        }
-
-        // NO_COLOR (https://no-color.org/): when set to any non-empty value,
-        // colors must be suppressed. An empty value has no effect.
-        if std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()) {
-            return false;
-        }
-
         match self {
-            ColorChoice::Auto => is_tty,
             ColorChoice::Always => true,
             ColorChoice::Never => false,
+            ColorChoice::Auto => {
+                // FORCE_COLOR takes precedence (https://force-color.org/).
+                // Any non-empty value forces colors, except "0" which explicitly disables them.
+                if let Some(value) = std::env::var_os("FORCE_COLOR")
+                    && !value.is_empty()
+                {
+                    return value != "0";
+                }
+
+                // NO_COLOR (https://no-color.org/): when set to any non-empty value,
+                // colors must be suppressed. An empty value has no effect.
+                if std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()) {
+                    return false;
+                }
+
+                is_tty
+            }
         }
     }
 }

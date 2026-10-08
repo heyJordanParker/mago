@@ -570,7 +570,7 @@ impl AnalyzeCommand {
 }
 
 /// Projects the orchestrator's resolved configuration down to what an analysis server needs.
-fn server_settings(orchestrator: &Orchestrator<'_>) -> ServerSettings {
+pub(crate) fn server_settings(orchestrator: &Orchestrator<'_>) -> ServerSettings {
     ServerSettings {
         parser: orchestrator.config.parser_settings,
         analyzer: orchestrator.config.analyzer_settings.clone(),
@@ -580,7 +580,7 @@ fn server_settings(orchestrator: &Orchestrator<'_>) -> ServerSettings {
 }
 
 /// Makes an empty `[source] paths` mean the whole workspace, as the configuration documents.
-fn analyze_the_whole_workspace_without_paths(orchestrator: &mut Orchestrator<'_>) {
+pub(crate) fn analyze_the_whole_workspace_without_paths(orchestrator: &mut Orchestrator<'_>) {
     if orchestrator.config.paths.is_empty() {
         orchestrator.config.paths.push(".".to_owned());
     }
@@ -629,7 +629,7 @@ fn scope_to(
 }
 
 /// Decodes the embedded prelude's codebase and symbol references.
-fn decode_prelude() -> (CodebaseMetadata, SymbolReferences) {
+pub(crate) fn decode_prelude() -> (CodebaseMetadata, SymbolReferences) {
     let Prelude { metadata, symbol_references, .. } =
         Prelude::decode(PRELUDE_BYTES).expect("Failed to decode embedded prelude");
 

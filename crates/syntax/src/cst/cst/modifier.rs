@@ -33,6 +33,8 @@ pub enum Modifier<'arena> {
     Override(Keyword<'arena>),
     /// PHP#'s `required`, which marks a constructor that `new Self(…)` can call on every subclass.
     Required(Keyword<'arena>),
+    /// PHP#'s `extern`, which marks a method whose body is native, compiled into the engine.
+    Extern(Keyword<'arena>),
 }
 
 impl<'arena> Modifier<'arena> {
@@ -52,6 +54,7 @@ impl<'arena> Modifier<'arena> {
             Modifier::Virtual(k) => k,
             Modifier::Override(k) => k,
             Modifier::Required(k) => k,
+            Modifier::Extern(k) => k,
         }
     }
 
@@ -157,7 +160,8 @@ impl HasSpan for Modifier<'_> {
             | Modifier::PublicSet(value)
             | Modifier::Virtual(value)
             | Modifier::Override(value)
-            | Modifier::Required(value) => value.span(),
+            | Modifier::Required(value)
+            | Modifier::Extern(value) => value.span(),
         }
     }
 }

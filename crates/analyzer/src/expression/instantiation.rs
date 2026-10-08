@@ -233,6 +233,21 @@ where
         argument_list.analyze(context, block_context, artifacts)?;
 
         return Ok(get_never());
+    } else if metadata.flags.is_static() {
+        // PHP# code writes a class by its short name, so the error does too.
+        let full_name = String::from_utf8_lossy(metadata.original_name.as_bytes());
+        let name = full_name.rsplit('\\').next().unwrap_or_default();
+        context.collector.report_with_code(
+            IssueCode::AbstractInstantiation,
+            Issue::error(format!("`{name}` is a static class, so it has no instances: call its members on the class."))
+                .with_annotation(
+                    Annotation::primary(class_expression_span).with_message("A static class has no instances."),
+                ),
+        );
+
+        argument_list.analyze(context, block_context, artifacts)?;
+
+        return Ok(get_never());
     }
     // class kind is a regular class; no kind-specific instantiation diagnostic to emit
 
@@ -374,7 +389,9 @@ where
         }
 
         let mut resolved_template_types = vec![];
+        let mut recorded_type_arguments = vec![];
         for (offset, (template_name, _)) in metadata.template_types.iter().enumerate() {
+            let mut is_bound = true;
             let mut template_type = if let Some(lower_bounds) =
                 template_result.get_lower_bounds_for_class_like(*template_name, metadata.name)
             {
@@ -405,10 +422,10 @@ where
                     &metadata.template_extended_parameters,
                     &found_generic_parameters,
                 )
-            } else if is_spl_object_storage {
-                get_never()
             } else {
-                wrap_atomic(TAtomic::Placeholder)
+                is_bound = false;
+
+                if is_spl_object_storage { get_never() } else { wrap_atomic(TAtomic::Placeholder) }
             };
 
             let variance = metadata.template_variance.get(offset).copied().unwrap_or(Variance::Invariant);
@@ -416,10 +433,12 @@ where
                 template_type.widen_scalars();
             }
 
+            recorded_type_arguments.push(is_bound.then(|| template_type.clone()));
             resolved_template_types.push(template_type);
         }
 
         if !resolved_template_types.is_empty() {
+            artifacts.record_type_arguments(instantiation_span, recorded_type_arguments.into_iter(), context.codebase);
             type_parameters = Some(resolved_template_types);
         }
     } else if let Some(argument_list) = &argument_list
@@ -442,6 +461,11 @@ where
 
         argument_list.analyze(context, block_context, artifacts)?;
     } else if !metadata.template_types.is_empty() {
+        artifacts.record_type_arguments(
+            instantiation_span,
+            metadata.template_types.iter().map(|_| None),
+            context.codebase,
+        );
         type_parameters = Some(
             metadata
                 .template_types

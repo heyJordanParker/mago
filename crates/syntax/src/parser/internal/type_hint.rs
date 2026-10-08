@@ -15,6 +15,7 @@ use crate::cst::cst::UnionHint;
 use crate::cst::sequence::TokenSeparatedSequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
+use crate::token::Token;
 use mago_allocator::prelude::*;
 use mago_syntax_core::stack::ensure_sufficient_stack;
 
@@ -53,10 +54,15 @@ where
 
     /// A union or intersection nests its right side, so a long one recurses once for each of its types.
     pub(crate) fn parse_type_hint(&mut self) -> Result<Hint<'arena>, ParseError> {
-        ensure_sufficient_stack(|| self.parse_type_hint_inner())
+        ensure_sufficient_stack(|| self.parse_type_hint_inner(false))
     }
 
-    fn parse_type_hint_inner(&mut self) -> Result<Hint<'arena>, ParseError> {
+    /// Parses the type of a pattern or of `as`, which can end an expression, so a `?` after it can start a `? :`.
+    pub(crate) fn parse_type_hint_in_expression(&mut self) -> Result<Hint<'arena>, ParseError> {
+        ensure_sufficient_stack(|| self.parse_type_hint_inner(true))
+    }
+
+    fn parse_type_hint_inner(&mut self, in_expression: bool) -> Result<Hint<'arena>, ParseError> {
         let token = self.stream.lookahead(0)?.ok_or_else(|| self.stream.unexpected(None, &[]))?;
 
         let hint = match &token.kind {
@@ -126,7 +132,10 @@ where
         }
 
         // PHP# writes a nullable type with `?` after it, as in `int?`.
-        let hint = if self.dialect.is_sharp() && self.stream.is_at(T!["?"])? {
+        let hint = if self.dialect.is_sharp()
+            && self.stream.is_at(T!["?"])?
+            && !(in_expression && self.is_at_conditional()?)
+        {
             let question_mark = self.stream.eat_span(T!["?"])?;
 
             Hint::Nullable(NullableHint { question_mark, hint: self.arena.alloc(hint) })
@@ -139,14 +148,14 @@ where
             Some(T!["|"]) => {
                 let left = hint;
                 let pipe = self.stream.eat_span(T!["|"])?;
-                let right = self.parse_type_hint()?;
+                let right = ensure_sufficient_stack(|| self.parse_type_hint_inner(in_expression))?;
 
                 Hint::Union(UnionHint { left: self.arena.alloc(left), pipe, right: self.arena.alloc(right) })
             }
             Some(T!["&"]) if !matches!(self.stream.peek_kind(1)?, Some(T!["$variable"] | T!["..."] | T!["&"])) => {
                 let left = hint;
                 let ampersand = self.stream.eat_span(T!["&"])?;
-                let right = self.parse_type_hint()?;
+                let right = ensure_sufficient_stack(|| self.parse_type_hint_inner(in_expression))?;
 
                 Hint::Intersection(IntersectionHint {
                     left: self.arena.alloc(left),
@@ -155,6 +164,26 @@ where
                 })
             }
             _ => hint,
+        })
+    }
+
+    /// Whether the `?` after a type that can end an expression starts a `? :` instead of making the type nullable, as
+    /// Roslyn's `TryEatNullableQualifierIfApplicable` decides it for C#. The type stays nullable when the `?` is followed
+    /// by the end of a pattern, or by a name and then the end of a pattern, as in `value is string? text)`. Otherwise a
+    /// `?` followed by anything that starts an expression starts a `? :`, as in `value is string ? text : ""`. A PHP#
+    /// pattern also ends at `=>`, `when`, `and` and `or`.
+    fn is_at_conditional(&mut self) -> Result<bool, ParseError> {
+        let ends_pattern = |token: Option<Token<'_>>| {
+            token.is_none_or(|token| {
+                matches!(token.kind, T![")" | "]" | "}" | "{" | "," | ";" | "=>" | "and" | "or"])
+                    || (token.kind == T![Identifier] && token.value == b"when")
+            })
+        };
+
+        Ok(match self.stream.lookahead(1)? {
+            next if ends_pattern(next) => false,
+            Some(name) if name.kind == T![Identifier] => !ends_pattern(self.stream.lookahead(2)?),
+            next => next.is_some_and(|token| Self::is_at_start_of_expression(token.kind)),
         })
     }
 

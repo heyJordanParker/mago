@@ -37,7 +37,7 @@ pub enum Binding {
     Class,
     /// A constant. Its fully qualified name is resolved like any constant name.
     Constant,
-    /// A member of the enclosing class, written without `this.`.
+    /// A member of the enclosing class, read without `this.`. A bare call is never one: it calls the global function.
     Member,
     /// `field` in an accessor body: the storage of the property the accessor belongs to.
     Field,

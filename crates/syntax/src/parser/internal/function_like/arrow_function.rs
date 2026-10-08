@@ -11,6 +11,7 @@ use crate::error::ParseError;
 use crate::parser::Parser;
 use crate::token::Precedence;
 use mago_allocator::prelude::*;
+use mago_span::HasSpan;
 use mago_span::Span;
 
 impl<'arena, A> Parser<'_, 'arena, A>
@@ -46,6 +47,30 @@ where
             Some(T!["("]) => self.stream.peek_kind_after_parentheses()? == Some(T!["=>"]),
             _ => false,
         })
+    }
+
+    /// Reads a PHP# lambda written right after an operator, as in `handler ?? item => item.ready`: a `=>` after a
+    /// whole expression whose last operand is a name or a parenthesized group. A lambda needs parentheses there, so
+    /// this reports it, reads the lambda's body so the rest of the file parses on, and returns the expression and the
+    /// lambda as one error. It returns `None` anywhere else.
+    pub(crate) fn parse_lambda_after_an_operator(
+        &mut self,
+        expression: &'arena Expression<'arena>,
+        precedence: Precedence,
+    ) -> Result<Option<&'arena Expression<'arena>>, ParseError> {
+        if precedence != Precedence::Lowest || !self.dialect.is_sharp() || !self.stream.is_at(T!["=>"])? {
+            return Ok(None);
+        }
+        let Some(parameters) = last_operand_after_an_operator(expression) else {
+            return Ok(None);
+        };
+
+        let arrow = self.stream.consume_span()?;
+        self.errors.push(ParseError::LambdaAfterOperatorInSharp(parameters.join(arrow)));
+        let body =
+            if self.stream.is_at(T!["{"])? { self.parse_block()?.span() } else { self.parse_expression()?.span() };
+
+        Ok(Some(self.arena.alloc(Expression::Error(expression.span().join(body)))))
     }
 
     /// Parses a PHP# lambda: an [`ArrowFunction`] without `fn` when its body is an expression, and a [`Closure`]
@@ -100,5 +125,22 @@ where
                 expression: self.parse_expression()?,
             })
         }))
+    }
+}
+
+/// The name or parenthesized group that ends `expression` right after an operator, which a `=>` after it would make a
+/// lambda's parameters.
+fn last_operand_after_an_operator<'arena>(mut expression: &'arena Expression<'arena>) -> Option<Span> {
+    loop {
+        expression = match expression {
+            Expression::Binary(binary) => binary.rhs,
+            Expression::UnaryPrefix(prefix) => prefix.operand,
+            Expression::Assignment(assignment) => assignment.rhs,
+            Expression::Conditional(conditional) => conditional.r#else,
+            _ => return None,
+        };
+        if matches!(expression, Expression::ConstantAccess(_) | Expression::Parenthesized(_)) {
+            return Some(expression.span());
+        }
     }
 }

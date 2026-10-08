@@ -35,6 +35,7 @@ use mago_reporting::Level;
 use mago_reporting::ReportingFormat;
 use mago_reporting::ReportingTarget;
 
+use crate::config::env_reporting_format;
 use crate::enum_variants;
 use crate::service::IssueProcessor;
 
@@ -139,6 +140,8 @@ pub struct ReportingArgs {
     /// Available formats: rich (colorful, detailed), medium (balanced),
     /// short (compact), json (machine-readable), and others.
     ///
+    /// Defaults to the format `MAGO_REPORTING_FORMAT` names, which `mago compile` follows too.
+    ///
     /// Not available when using --fix mode.
     #[arg(
         long,
@@ -239,8 +242,14 @@ impl ReportingArgs {
     }
 }
 
-/// Returns the default reporting format based on the detected environment.
-fn default_reporting_format() -> ReportingFormat {
+/// Returns the reporting format `MAGO_REPORTING_FORMAT` names, or else the default for the detected environment.
+///
+/// A value that names no format falls through here, because loading the configuration stops the command on it.
+pub(crate) fn default_reporting_format() -> ReportingFormat {
+    if let Ok(Some(format)) = env_reporting_format() {
+        return format;
+    }
+
     if is_github_actions() {
         ReportingFormat::Github
     } else if is_gitlab_ci() {

@@ -164,6 +164,11 @@ where
                 break;
             }
 
+            if let Some(error) = self.parse_lambda_after_an_operator(left, precedence)? {
+                left = error;
+                continue;
+            }
+
             if self.is_at_is_or_as()? {
                 if Precedence::SharpComparison <= precedence {
                     break;

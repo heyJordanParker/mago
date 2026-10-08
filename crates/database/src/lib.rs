@@ -323,7 +323,9 @@ impl<'config> Database<'config> {
             // other Arc clones exist (e.g., from a ReadDatabase snapshot).
             // Create a new File with updated contents and replace the Arc.
             let old = &**arc;
-            *arc = Arc::new(File::new(old.name.clone(), old.file_type, old.path.clone(), new_contents));
+            let mut file = File::new(old.name.clone(), old.file_type, old.path.clone(), new_contents);
+            file.is_standard_library = old.is_standard_library;
+            *arc = Arc::new(file);
         }
 
         true
@@ -654,5 +656,18 @@ mod tests {
         let builtin = project.get_by_name(b"builtin.php").unwrap();
         assert_eq!(builtin.file_type, FileType::Builtin);
         assert_eq!(project.get(&builtin.id).unwrap().name.as_ref(), b"builtin.php");
+    }
+
+    #[test]
+    fn an_update_keeps_a_standard_library_file_marked_while_a_snapshot_holds_it() {
+        let mut database = Database::new(configuration());
+        let mut file = File::new(Cow::Borrowed(b"library/Sharp/Text.sharp"), FileType::Host, None, Cow::Borrowed(b"a"));
+        file.is_standard_library = true;
+        let id = database.add(file);
+        let snapshot = database.read_only();
+
+        assert!(database.update(id, Cow::Borrowed(b"b")));
+        assert!(database.get(&id).unwrap().is_standard_library);
+        assert_eq!(snapshot.get(&id).unwrap().contents.as_ref(), b"a");
     }
 }

@@ -49,6 +49,7 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::context::scope::var_has_root;
+use crate::utils::names::display_sharp_type;
 
 #[derive(Debug, Clone, Copy)]
 pub enum ArrayTarget<'ast, 'arena> {
@@ -147,8 +148,9 @@ where
         return get_never();
     }
 
+    let mut null_index_issues = vec![];
     if index_type.is_null() && !index_type.is_keyed_array() {
-        context.collector.report_with_code(
+        null_index_issues.push((
             IssueCode::NullArrayIndex,
             Issue::error(format!(
                 "Cannot use `null` as an array index to access element{}.",
@@ -162,11 +164,11 @@ where
             )
             .with_note("Using `null` as an array key is equivalent to using an empty string `''`.")
             .with_help("Ensure the index is an integer or a string. If accessing the key `''` is intended, use an empty string explicitly."),
-        );
+        ));
     }
 
     if index_type.is_nullable() && !index_type.ignore_nullable_issues() {
-        context.collector.report_with_code(
+        null_index_issues.push((
             IssueCode::PossiblyNullArrayIndex,
             Issue::warning(format!(
                 "Possibly using `null` as an array index to access element{}.",
@@ -179,7 +181,7 @@ where
             .with_note("Using `null` as an array key is equivalent to using an empty string `''`.")
             .with_note("The analysis indicates this index could be `null` at runtime.")
             .with_help("Ensure the index is always an integer or a string, potentially using checks or assertions before access."),
-        );
+        ));
     }
 
     let mut array_atomic_types = array_like_type.types.iter().collect::<Vec<_>>();
@@ -197,6 +199,7 @@ where
     let mut expected_index_types = vec![];
     let mut has_union_key_mismatch = false; // Track if we're in a union where key exists in some but not all variants
     let mut reported_undefined_key = false;
+    let mut reads_a_sharp_collection = false;
     while let Some(atomic_var_type) = array_atomic_types.pop() {
         if let TAtomic::Derived(TDerived::Intersection(intersection)) = atomic_var_type {
             array_atomic_types.extend(intersection.get_base_type().types.iter());
@@ -210,6 +213,7 @@ where
             continue;
         }
 
+        reads_a_sharp_collection |= context.dialect.is_sharp() && !in_assignment && atomic_var_type.is_array();
         match atomic_var_type {
             TAtomic::Array(TArray::List(_)) => {
                 let new_type = handle_array_access_on_list(
@@ -430,6 +434,12 @@ where
         }
     }
 
+    if !reads_a_sharp_collection {
+        for (code, issue) in null_index_issues {
+            context.collector.report_with_code(code, issue);
+        }
+    }
+
     if !has_valid_expected_index {
         let index_type_str = index_type.get_id();
         let array_like_type_str = array_like_type.get_id();
@@ -604,9 +614,10 @@ pub(crate) fn handle_array_access_on_list<'ctx, A>(
 where
     A: Arena,
 {
+    let is_sharp_read = context.dialect.is_sharp() && !in_assignment;
     let expected_key_type = if in_assignment {
         get_arraykey()
-    } else if context.settings.strict_list_index_checks {
+    } else if context.settings.strict_list_index_checks && !is_sharp_read {
         get_non_negative_int()
     } else {
         get_int()
@@ -617,7 +628,7 @@ where
         context.codebase,
         dim_type,
         &expected_key_type,
-        true,
+        !is_sharp_read,
         false,
         false,
         &mut union_comparison_result,
@@ -627,6 +638,7 @@ where
     // is contained by the index type; the access is type-valid, even if the specific key may
     // not be present at runtime.
     let expected_contained_by_index = !index_type_contained_by_expected
+        && !is_sharp_read
         && !expected_key_type.is_never()
         && is_contained_by(
             context.codebase,
@@ -640,6 +652,17 @@ where
 
     if index_type_contained_by_expected || expected_contained_by_index {
         *has_valid_expected_index = true;
+    } else if is_sharp_read && let Some(span) = span {
+        *has_valid_expected_index = true;
+
+        let list_type = display_sharp_type(&TUnion::from_atomic(list.clone()), context.codebase);
+        let index_type = display_sharp_type(dim_type, context.codebase);
+        context.collector.report_with_code(
+            IssueCode::MismatchedArrayIndex,
+            Issue::error(format!("`{list_type}` is indexed by `int`, but this index is `{index_type}`."))
+                .with_annotation(Annotation::primary(span).with_message("This index may not be an `int`."))
+                .with_help("Check the index with `is int` first, as in `if (index is int) { … }`."),
+        );
     } else {
         expected_index_types.push(expected_key_type);
     }
@@ -929,7 +952,8 @@ where
         return expression_type;
     }
 
-    let key_parameter = if in_assignment || block_context.flags.inside_isset() {
+    let is_sharp_read = context.dialect.is_sharp() && !in_assignment;
+    let key_parameter = if in_assignment || (block_context.flags.inside_isset() && !is_sharp_read) {
         // A PHP# `Map` keyed by a backed enum takes the enum alone, which runs as its backing value, and an empty
         // literal takes the enum its first key gives it.
         let is_backed_enum_key = |key_type: &TUnion| matches!(get_backing_key_type(key_type, context.codebase), Cow::Owned(backing) if backing.is_always_array_key(true));
@@ -946,7 +970,8 @@ where
             && !known_items.is_empty()
         {
             for array_key in known_items.keys() {
-                key_union = Some(add_optional_union_type(array_key.to_union(), key_union.as_ref(), context.codebase));
+                let key_type = if is_sharp_read { array_key.to_general_union() } else { array_key.to_union() };
+                key_union = Some(add_optional_union_type(key_type, key_union.as_ref(), context.codebase));
             }
         }
 
@@ -964,8 +989,15 @@ where
     };
 
     let mut union_comparison_result = ComparisonResult::new();
-    let index_type_contained_by_expected =
-        is_contained_by(context.codebase, index_type, &key_parameter, true, false, false, &mut union_comparison_result);
+    let index_type_contained_by_expected = is_contained_by(
+        context.codebase,
+        index_type,
+        &key_parameter,
+        !is_sharp_read,
+        false,
+        false,
+        &mut union_comparison_result,
+    );
 
     // Also accept when the expected key type is contained by the provided index type, i.e., the
     // index is a wider superset of the possible keys (e.g., `array<1, T>` indexed by `int`).
@@ -975,6 +1007,7 @@ where
     // trivially contained by anything, so allowing it would silently accept indexing an empty
     // array like `[]` with any key.
     let expected_contained_by_index = !index_type_contained_by_expected
+        && !is_sharp_read
         && !key_parameter.is_never()
         && is_contained_by(
             context.codebase,
@@ -988,6 +1021,31 @@ where
 
     if index_type_contained_by_expected || expected_contained_by_index {
         *has_valid_expected_index = true;
+    } else if is_sharp_read {
+        *has_valid_expected_index = true;
+
+        let map_type = display_sharp_type(
+            &TUnion::from_atomic(TAtomic::Array(TArray::Keyed(keyed_array.clone()))),
+            context.codebase,
+        );
+        let key_type = display_sharp_type(&key_parameter, context.codebase);
+        let key_pattern = key_parameter
+            .types
+            .iter()
+            .map(|atomic| display_sharp_type(&TUnion::from_atomic(atomic.clone()), context.codebase))
+            .collect::<Vec<_>>()
+            .join(" or ");
+        let index_type = display_sharp_type(index_type, context.codebase);
+        context.collector.report_with_code(
+            IssueCode::MismatchedArrayIndex,
+            Issue::error(format!("`{map_type}` is keyed by `{key_type}`, but this key is `{index_type}`."))
+                .with_annotation(
+                    Annotation::primary(span).with_message(format!("This key may not be of type `{key_type}`.")),
+                )
+                .with_help(format!(
+                    "Check the key with `is {key_pattern}` first, as in `if (name is {key_pattern}) {{ … }}`."
+                )),
+        );
     } else {
         expected_index_types.push(key_parameter.clone().into_owned());
     }

@@ -1,13 +1,49 @@
 use std::sync::Arc;
 
 use foldhash::HashMap;
+use foldhash::HashSet;
 use mago_collector::DeferredPragmas;
 use mago_database::file::File;
 use mago_database::file::FileId;
 use mago_reporting::AnnotationKind;
 use mago_reporting::IssueCollection;
+use mago_reporting::Level;
+use mago_syntax::dialect::Dialect;
 
 use crate::error::OrchestratorError;
+
+/// Returns the analyzer issues of one file to report beside its semantic issues. In a PHP# file, an analyzer issue
+/// on a line that holds a semantic error, or whose span holds one, as `exit(` does with a refused argument on the
+/// next line, is dropped as a follow-on of that refusal. The file cannot run until the refusal is fixed, so an issue
+/// dropped there shows up one fix later at worst. A PHP file keeps every analyzer issue.
+pub(super) fn drop_follow_on_issues(
+    file: &File,
+    semantic_issues: &IssueCollection,
+    analyzer_issues: IssueCollection,
+) -> IssueCollection {
+    if !Dialect::of(file).is_sharp() {
+        return analyzer_issues;
+    }
+
+    let refusals: Vec<_> = semantic_issues
+        .iter()
+        .filter(|issue| issue.level == Level::Error)
+        .filter_map(|issue| issue.primary_span())
+        .filter(|span| span.file_id == file.id)
+        .collect();
+    let refused_lines: HashSet<u32> = refusals.iter().map(|span| file.line_number(span.start.offset)).collect();
+
+    analyzer_issues
+        .into_iter()
+        .filter(|issue| {
+            issue.primary_span().is_none_or(|span| {
+                span.file_id != file.id
+                    || !(refused_lines.contains(&file.line_number(span.start.offset))
+                        || refusals.iter().any(|refusal| !refusal.is_before(&span) && !span.is_before(refusal)))
+            })
+        })
+        .collect()
+}
 
 pub(super) struct DeferredIssueReconciler {
     states: HashMap<FileId, DeferredPragmas>,

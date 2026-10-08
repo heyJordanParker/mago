@@ -20,13 +20,17 @@ use mago_analyzer::artifacts::AnalysisArtifacts;
 use mago_analyzer::external::AFTER_FILE_ANALYSIS_BATCH_SIZE;
 use mago_analyzer::external::CodebaseScanFile;
 use mago_analyzer::external::CodebaseScanPlan;
+use mago_analyzer::external::ExternalAnalysisSession;
 use mago_analyzer::external::FileAnalysisSnapshot;
+use mago_analyzer::external::FileReads;
+use mago_analyzer::external::Listing;
 use mago_analyzer::external::apply_refinements;
 use mago_analyzer::plugin::PluginRegistry;
 use mago_analyzer::settings::Settings;
 #[cfg(not(target_arch = "wasm32"))]
 use mago_analyzer::telemetry as analyzer_telemetry;
 use mago_codex::diff::CodebaseDiff;
+use mago_codex::identifier::method::MethodIdentifier;
 use mago_codex::metadata::CodebaseEntryKeys;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::populator::populate_codebase;
@@ -34,11 +38,14 @@ use mago_codex::populator::populate_codebase_targeted;
 use mago_codex::reference::SymbolReferences;
 use mago_codex::scanner::scan_program;
 use mago_codex::signature_builder;
+use mago_codex::symbol::SymbolIdentifier;
 use mago_collector::DeferredPragmas;
 use mago_database::DatabaseReader;
 use mago_database::ReadDatabase;
+use mago_database::file::File;
 use mago_database::file::FileId;
 use mago_database::file::FileType;
+use mago_names::ResolvedNames;
 use mago_names::resolver::NameResolver;
 use mago_reporting::Issue;
 use mago_reporting::IssueCollection;
@@ -54,10 +61,13 @@ use crate::progress::create_progress_bar;
 use crate::progress::remove_progress_bar;
 use crate::service::body_return::resolve_body_returns;
 use crate::service::issue_reconciliation::DeferredIssueReconciler;
+use crate::service::issue_reconciliation::drop_follow_on_issues;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::service::telemetry::HangWatcher;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::service::telemetry::SlowestFiles;
+
+pub mod compile;
 
 /// Per-file cached state for incremental analysis.
 #[derive(Debug, Clone)]
@@ -69,6 +79,9 @@ struct FileState {
     codebase_issues: IssueCollection,
     deferred_pragmas: Option<DeferredPragmas>,
     late_symbol_references: SymbolReferences,
+    /// What the file's extension hooks and providers read from the codebase, kept apart from the references they
+    /// contribute: a read only decides when the file is analyzed again.
+    reads: FileReads,
 }
 
 struct SelectiveAnalysisOutput {
@@ -77,6 +90,7 @@ struct SelectiveAnalysisOutput {
     external_symbol_references: SymbolReferences,
     late_symbol_references: SymbolReferences,
     late_symbol_references_by_file: HashMap<FileId, SymbolReferences>,
+    reads_by_file: HashMap<FileId, FileReads>,
     per_file_issues: HashMap<FileId, IssueCollection>,
     per_file_pragmas: HashMap<FileId, DeferredPragmas>,
     snapshots: Vec<Arc<FileAnalysisSnapshot>>,
@@ -118,8 +132,12 @@ pub struct IncrementalAnalysisService {
     use_progress_bars: bool,
     scan_only: bool,
     node_analysis_files: Option<HashSet<FileId>>,
+    /// The files the last analysis analyzed, which the fanout tests compare with the inputs.
+    #[cfg(test)]
+    analyzed_files: HashSet<FileId>,
 }
 
+#[cfg_attr(test, allow(clippy::missing_fields_in_debug))]
 impl std::fmt::Debug for IncrementalAnalysisService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IncrementalAnalysisService")
@@ -190,6 +208,8 @@ impl IncrementalAnalysisService {
             use_progress_bars: false,
             scan_only: false,
             node_analysis_files: None,
+            #[cfg(test)]
+            analyzed_files: HashSet::default(),
         }
     }
 
@@ -503,6 +523,7 @@ impl IncrementalAnalysisService {
                     codebase_issues: IssueCollection::default(),
                     deferred_pragmas: None,
                     late_symbol_references: SymbolReferences::new(),
+                    reads: FileReads::default(),
                 },
             );
         }
@@ -513,12 +534,17 @@ impl IncrementalAnalysisService {
             external_symbol_references,
             late_symbol_references,
             late_symbol_references_by_file,
+            mut reads_by_file,
             per_file_issues,
             per_file_pragmas,
             snapshots,
             codebase_issues: all_codebase_issues,
         } =
             self.run_analyzer_selective(&mut merged_codebase, symbol_references, &self.settings, &HashSet::default())?;
+        #[cfg(test)]
+        {
+            self.analyzed_files = per_file_issues.keys().copied().collect();
+        }
         self.external_symbol_references = external_symbol_references;
         self.late_symbol_references = late_symbol_references;
         self.native_symbol_references = native_symbol_references;
@@ -537,6 +563,7 @@ impl IncrementalAnalysisService {
                 state.deferred_pragmas = per_file_pragmas.get(&file_id).cloned();
                 state.late_symbol_references =
                     late_symbol_references_by_file.get(&file_id).cloned().unwrap_or_default();
+                state.reads = reads_by_file.remove(&file_id).unwrap_or_default();
             }
         }
 
@@ -829,6 +856,17 @@ impl IncrementalAnalysisService {
             return self.analyze();
         }
 
+        let wrapped_functions_changed = new_file_scans
+            .iter()
+            .any(|(file_id, metadata)| wrappers_in(metadata, *file_id) != wrappers_in(&self.codebase, *file_id))
+            || self.file_states.keys().any(|file_id| {
+                !current_file_ids.contains(file_id) && !wrappers_in(&self.codebase, *file_id).is_empty()
+            });
+
+        if wrapped_functions_changed {
+            return self.analyze();
+        }
+
         let body_only = diff.get_changed().is_empty() && deleted_count == 0;
 
         if !body_only {
@@ -917,11 +955,16 @@ impl IncrementalAnalysisService {
                 external_symbol_references,
                 late_symbol_references,
                 mut late_symbol_references_by_file,
+                mut reads_by_file,
                 mut per_file_issues,
                 per_file_pragmas,
                 snapshots,
                 codebase_issues: new_codebase_issues,
             } = self.run_analyzer_selective(&mut merged_codebase, symbol_references, &self.settings, &files_to_skip)?;
+            #[cfg(test)]
+            {
+                self.analyzed_files = per_file_issues.keys().copied().collect();
+            }
             self.external_symbol_references = external_symbol_references;
             self.late_symbol_references = late_symbol_references;
             self.native_symbol_references = native_symbol_references;
@@ -959,6 +1002,7 @@ impl IncrementalAnalysisService {
                     state.analysis_issues = issues;
                     state.deferred_pragmas = per_file_pragmas.get(&file_id).cloned();
                     state.late_symbol_references = late_symbol_references_by_file.remove(&file_id).unwrap_or_default();
+                    state.reads = reads_by_file.remove(&file_id).unwrap_or_default();
                 }
             }
 
@@ -982,6 +1026,7 @@ impl IncrementalAnalysisService {
                         codebase_issues,
                         deferred_pragmas,
                         late_symbol_references,
+                        reads: reads_by_file.remove(&file_id).unwrap_or_default(),
                     },
                 );
             }
@@ -993,6 +1038,13 @@ impl IncrementalAnalysisService {
 
             return Ok(analysis_result);
         }
+
+        let listings_before: HashMap<Listing, u64> = unchanged_file_ids
+            .iter()
+            .filter_map(|file_id| self.file_states.get(file_id))
+            .flat_map(|state| state.reads.listings.iter().copied())
+            .map(|listing| (listing, listing.answer(&self.codebase)))
+            .collect();
 
         let mut merged_codebase = std::mem::take(&mut self.codebase);
 
@@ -1013,45 +1065,30 @@ impl IncrementalAnalysisService {
         }
         self.apply_scan_results(&mut merged_codebase, &new_file_scans);
 
+        // Population turns a class name into an object type only while the class-like exists, and
+        // never turns it back. An unchanged file would keep a type resolved against a class-like
+        // that is now gone, so a full analysis resolves every type again, as a cold run does.
+        let class_like_removed = new_file_scans
+            .iter()
+            .map(|(file_id, _)| file_id)
+            .chain(self.file_states.keys().filter(|file_id| !current_file_ids.contains(file_id)))
+            .filter_map(|file_id| self.file_states.get(file_id))
+            .flat_map(|state| &state.entry_keys.class_like_names)
+            .any(|&name| merged_codebase.symbols.get_kind(name).is_none());
+        if class_like_removed {
+            return self.analyze();
+        }
+
         merged_codebase.safe_symbols.clear();
         merged_codebase.safe_symbol_members.clear();
 
-        let Some(invalid_files) = merged_codebase.mark_safe_symbols(&diff, &self.native_symbol_references) else {
+        let reads = symbols_read_by(&self.file_states, &self.database, &unchanged_file_ids);
+        let Some(mut invalid_files) = merged_codebase.mark_safe_symbols(&diff, &self.native_symbol_references, reads)
+        else {
             tracing::warn!("Invalidation cascade too expensive (>5000 steps), falling back to full analysis");
 
             return self.analyze();
         };
-
-        // Ensure classes that depend on changed class_likes are not marked safe.
-        // This handles cases where reference graph edges were lost (e.g., a parent
-        // class was deleted and later re-added — the child→parent reference edge
-        // was removed when the parent was deleted, so the cascade can't reach the child).
-        {
-            let changed_class_like_names: WordSet = diff
-                .get_changed()
-                .iter()
-                .filter(|key| key.1.is_empty() && merged_codebase.class_likes.contains_key(&key.0))
-                .map(|key| key.0)
-                .collect();
-
-            if !changed_class_like_names.is_empty() {
-                let to_unsafify: Vec<mago_word::Word> = merged_codebase
-                    .class_likes
-                    .iter()
-                    .filter(|(name, _)| merged_codebase.safe_symbols.contains(name))
-                    .filter(|(_, metadata)| {
-                        metadata.direct_parent_class.is_some_and(|p| changed_class_like_names.contains(&p))
-                            || metadata.direct_parent_interfaces.iter().any(|i| changed_class_like_names.contains(i))
-                            || metadata.used_traits.iter().any(|t| changed_class_like_names.contains(t))
-                    })
-                    .map(|(name, _)| *name)
-                    .collect();
-
-                for name in to_unsafify {
-                    merged_codebase.safe_symbols.remove(&name);
-                }
-            }
-        }
 
         let safe_symbols = std::mem::take(&mut merged_codebase.safe_symbols);
         let safe_symbol_members = std::mem::take(&mut merged_codebase.safe_symbol_members);
@@ -1082,33 +1119,22 @@ impl IncrementalAnalysisService {
             safe_symbol_members,
             dirty_symbols,
         );
-        let mut files_to_skip: HashSet<FileId> = HashSet::default();
-        for &file_id in &unchanged_file_ids {
-            let file_invalid = self
-                .database
-                .get(&file_id)
-                .is_ok_and(|file| invalid_files.contains(&mago_word::word(file.name.as_ref())));
-            if let Some(sig) = merged_codebase.get_file_signature(&file_id) {
-                let all_safe = if file_invalid {
-                    false
-                } else if sig.ast_nodes.is_empty() {
-                    true
-                } else {
-                    sig.ast_nodes.iter().all(|node| {
-                        let symbol_safe = node.name.is_empty() || merged_codebase.safe_symbols.contains(&node.name);
-                        let children_safe = node.children.iter().all(|child| {
-                            child.name.is_empty()
-                                || merged_codebase.safe_symbol_members.contains(&(node.name, child.name))
-                        });
-                        symbol_safe && children_safe
-                    })
-                };
-
-                if all_safe {
-                    files_to_skip.insert(file_id);
-                }
+        let changed_listings: HashSet<Listing> = listings_before
+            .into_iter()
+            .filter(|(listing, answer)| listing.answer(&merged_codebase) != *answer)
+            .map(|(listing, _)| listing)
+            .collect();
+        for file_id in &unchanged_file_ids {
+            if self
+                .file_states
+                .get(file_id)
+                .is_some_and(|state| state.reads.listings.iter().any(|listing| changed_listings.contains(listing)))
+                && let Ok(file) = self.database.get(file_id)
+            {
+                invalid_files.insert(mago_word::word(file.name.as_ref()));
             }
         }
+        let files_to_skip = self.files_to_skip(&merged_codebase, &unchanged_file_ids, &invalid_files);
 
         let reanalyzed_file_names: WordSet = new_file_scans
             .iter()
@@ -1175,11 +1201,16 @@ impl IncrementalAnalysisService {
             external_symbol_references,
             late_symbol_references,
             mut late_symbol_references_by_file,
+            mut reads_by_file,
             mut per_file_issues,
             per_file_pragmas,
             snapshots,
             codebase_issues: new_codebase_issues,
         } = self.run_analyzer_selective(&mut merged_codebase, symbol_references, &self.settings, &files_to_skip)?;
+        #[cfg(test)]
+        {
+            self.analyzed_files = per_file_issues.keys().copied().collect();
+        }
         self.external_symbol_references = external_symbol_references;
         self.late_symbol_references = late_symbol_references;
         self.native_symbol_references = native_symbol_references;
@@ -1218,6 +1249,7 @@ impl IncrementalAnalysisService {
                 state.analysis_issues = issues;
                 state.deferred_pragmas = per_file_pragmas.get(&file_id).cloned();
                 state.late_symbol_references = late_symbol_references_by_file.remove(&file_id).unwrap_or_default();
+                state.reads = reads_by_file.remove(&file_id).unwrap_or_default();
             }
         }
 
@@ -1240,6 +1272,7 @@ impl IncrementalAnalysisService {
                     codebase_issues,
                     deferred_pragmas,
                     late_symbol_references,
+                    reads: reads_by_file.remove(&file_id).unwrap_or_default(),
                 },
             );
         }
@@ -1276,17 +1309,11 @@ impl IncrementalAnalysisService {
         }
 
         let semantics_checker = SemanticsChecker::new(self.settings.version);
-        issues.extend(semantics_checker.check(&file, program, &resolved_names));
+        let semantic_issues = semantics_checker.check(&file, program, &resolved_names);
+        issues.extend(semantic_issues.iter().cloned());
 
         let mut analysis_result = AnalysisResult::new(SymbolReferences::new());
-        let mut analyzer =
-            Analyzer::new(&arena, &file, &resolved_names, &self.codebase, &self.plugin_registry, self.settings.clone());
-        if let Some(session) = external_session.as_ref() {
-            analyzer = analyzer.with_external_analysis_session(session);
-        }
-        if !self.external_symbol_references.is_empty() {
-            analyzer = analyzer.with_additional_symbol_references(&self.external_symbol_references);
-        }
+        let analyzer = self.file_analyzer(&arena, &file, &resolved_names, external_session.as_ref());
 
         let artifacts = match analyzer.analyze_with_artifacts(program, &mut analysis_result) {
             Ok(artifacts) => artifacts,
@@ -1296,12 +1323,13 @@ impl IncrementalAnalysisService {
             }
         };
 
+        let analyzer_issues = drop_follow_on_issues(&file, &semantic_issues, analysis_result.issues);
         if self.late_symbol_references.is_empty() {
-            issues.extend(analysis_result.issues);
+            issues.extend(analyzer_issues);
         } else {
             issues.extend(
                 LateSymbolReferenceIssueReconciler::new(&self.codebase, &self.symbol_references)
-                    .reconcile(analysis_result.issues),
+                    .reconcile(analyzer_issues),
             );
         }
         Some((issues, artifacts))
@@ -1330,31 +1358,80 @@ impl IncrementalAnalysisService {
         }
 
         let semantics_checker = SemanticsChecker::new(self.settings.version);
-        issues.extend(semantics_checker.check(&file, program, &resolved_names));
+        let semantic_issues = semantics_checker.check(&file, program, &resolved_names);
+        issues.extend(semantic_issues.iter().cloned());
 
         let mut analysis_result = AnalysisResult::new(SymbolReferences::new());
+        let analyzer = self.file_analyzer(&arena, &file, &resolved_names, external_session.as_ref());
+
+        if let Err(err) = analyzer.analyze(program, &mut analysis_result) {
+            issues.push(Issue::error(format!("Analysis error: {err}")));
+        }
+
+        let analyzer_issues = drop_follow_on_issues(&file, &semantic_issues, analysis_result.issues);
+        if self.late_symbol_references.is_empty() {
+            issues.extend(analyzer_issues);
+        } else {
+            issues.extend(
+                LateSymbolReferenceIssueReconciler::new(&self.codebase, &self.symbol_references)
+                    .reconcile(analyzer_issues),
+            );
+        }
+        issues
+    }
+
+    /// The analyzer of one file against the current codebase, with the references the before-analysis hooks
+    /// contributed, outside the full analysis's passes.
+    fn file_analyzer<'ctx, 'ast, 'arena>(
+        &'ctx self,
+        arena: &'arena LocalArena,
+        file: &'ctx File,
+        resolved_names: &'ast ResolvedNames<'arena>,
+        session: Option<&'ctx ExternalAnalysisSession>,
+    ) -> Analyzer<'ctx, 'ast, 'arena, LocalArena> {
         let mut analyzer =
-            Analyzer::new(&arena, &file, &resolved_names, &self.codebase, &self.plugin_registry, self.settings.clone());
-        if let Some(session) = external_session.as_ref() {
+            Analyzer::new(arena, file, resolved_names, &self.codebase, &self.plugin_registry, self.settings.clone());
+        if let Some(session) = session {
             analyzer = analyzer.with_external_analysis_session(session);
         }
         if !self.external_symbol_references.is_empty() {
             analyzer = analyzer.with_additional_symbol_references(&self.external_symbol_references);
         }
 
-        if let Err(err) = analyzer.analyze(program, &mut analysis_result) {
-            issues.push(Issue::error(format!("Analysis error: {err}")));
-        }
+        analyzer
+    }
 
-        if self.late_symbol_references.is_empty() {
-            issues.extend(analysis_result.issues);
-        } else {
-            issues.extend(
-                LateSymbolReferenceIssueReconciler::new(&self.codebase, &self.symbol_references)
-                    .reconcile(analysis_result.issues),
-            );
-        }
-        issues
+    /// The `unchanged` files that need no new analysis once [`CodebaseMetadata::mark_safe_symbols`] marked `codebase`'s
+    /// safe symbols: each one's
+    /// top-level code is not in `invalid_files`, and every symbol and member it declares stayed safe.
+    fn files_to_skip(
+        &self,
+        codebase: &CodebaseMetadata,
+        unchanged: &[FileId],
+        invalid_files: &WordSet,
+    ) -> HashSet<FileId> {
+        unchanged
+            .iter()
+            .copied()
+            .filter(|file_id| {
+                let file_invalid = self
+                    .database
+                    .get(file_id)
+                    .is_ok_and(|file| invalid_files.contains(&mago_word::word(file.name.as_ref())));
+                let Some(sig) = codebase.get_file_signature(file_id) else {
+                    return false;
+                };
+
+                !file_invalid
+                    && sig.ast_nodes.iter().all(|node| {
+                        let symbol_safe = node.name.is_empty() || codebase.safe_symbols.contains(&node.name);
+                        let children_safe = node.children.iter().all(|child| {
+                            child.name.is_empty() || codebase.safe_symbol_members.contains(&(node.name, child.name))
+                        });
+                        symbol_safe && children_safe
+                    })
+            })
+            .collect()
     }
 
     /// Runs the analyzer on host files.
@@ -1453,10 +1530,6 @@ impl IncrementalAnalysisService {
                 let program = parse_file_with_settings(arena, &source_file, parser_settings);
                 let resolved_names = NameResolver::new(arena).resolve(program);
 
-                if program.has_errors() {
-                    analysis_result.issues.extend(program.errors.iter().map(Issue::from));
-                }
-
                 let semantics_checker = SemanticsChecker::new(settings.version);
                 let mut analyzer =
                     Analyzer::new(arena, &source_file, &resolved_names, codebase, plugin_registry, settings.clone());
@@ -1471,8 +1544,20 @@ impl IncrementalAnalysisService {
                     analyzer = analyzer.with_additional_symbol_references(&external_symbol_references);
                 }
 
-                analysis_result.issues.extend(semantics_checker.check(&source_file, program, &resolved_names));
-                let artifacts = analyzer.analyze_with_artifacts(program, &mut analysis_result)?;
+                let semantic_issues = semantics_checker.check(&source_file, program, &resolved_names);
+                let artifacts = if program.dialect.is_sharp() {
+                    let artifacts = analyzer.analyze_with_artifacts(program, &mut analysis_result)?;
+                    let analyzer_issues = std::mem::take(&mut analysis_result.issues);
+                    let analyzer_issues = drop_follow_on_issues(&source_file, &semantic_issues, analyzer_issues);
+                    analysis_result.issues.extend(program.errors.iter().map(Issue::from));
+                    analysis_result.issues.extend(semantic_issues);
+                    analysis_result.issues.extend(analyzer_issues);
+                    artifacts
+                } else {
+                    analysis_result.issues.extend(program.errors.iter().map(Issue::from));
+                    analysis_result.issues.extend(semantic_issues);
+                    analyzer.analyze_with_artifacts(program, &mut analysis_result)?
+                };
                 #[cfg(not(target_arch = "wasm32"))]
                 let snapshot_start = (trace_enabled && (after_file || after_analysis)).then(Instant::now);
                 let snapshot = if after_file || after_analysis {
@@ -1714,12 +1799,43 @@ impl IncrementalAnalysisService {
             external_symbol_references,
             late_symbol_references,
             late_symbol_references_by_file,
+            reads_by_file: external_session.map(|session| session.take_reads()).unwrap_or_default(),
             per_file_issues,
             per_file_pragmas,
             snapshots,
             codebase_issues,
         })
     }
+}
+
+/// The functions `file_id`'s `[Replaces]` attributes wrap, each with its wrapping methods in the codebase's order. A
+/// change to them changes the issues of every file that calls a wrapped function, which the signature diff cannot see.
+fn wrappers_in(codebase: &CodebaseMetadata, file_id: FileId) -> Vec<(Word, MethodIdentifier)> {
+    let mut wrappers: Vec<(Word, MethodIdentifier)> = codebase
+        .wrapped_functions
+        .iter()
+        .flat_map(|(function, wrappers)| {
+            wrappers.iter().filter(|(_, span, _)| span.file_id == file_id).map(|(_, _, method)| (*function, *method))
+        })
+        .collect();
+    wrappers.sort_by_key(|(function, _)| *function);
+    wrappers
+}
+
+/// The symbols the extension hooks and providers of each of `files` read, by file name, for the invalidation cascade.
+fn symbols_read_by<'state>(
+    file_states: &'state HashMap<FileId, FileState>,
+    database: &ReadDatabase,
+    files: &[FileId],
+) -> Vec<(Word, &'state HashSet<SymbolIdentifier>)> {
+    files
+        .iter()
+        .filter_map(|file_id| {
+            let state = file_states.get(file_id).filter(|state| !state.reads.symbols.is_empty())?;
+            let file = database.get(file_id).ok()?;
+            Some((mago_word::word(file.name.as_ref()), &state.reads.symbols))
+        })
+        .collect()
 }
 
 /// Keeps the keys whose entry in the merged codebase `file_id` declared.
@@ -2988,6 +3104,59 @@ mod tests {
         service.update_database(db.read_only());
         service.analyze_incremental(None).expect("Incremental failed.");
         assert_matches_full(&service, &db, "removed class alias");
+    }
+
+    /// A library edit that adds or drops a `[Replaces]` changes the diagnostics of a project file that calls the
+    /// function, though nothing in the project file changed.
+    #[test]
+    fn test_watch_library_replaces_change_reaches_a_project_caller() {
+        let replaces = "namespace Sharp;\n\nimport Attribute;\n\n[Attribute(Attribute.TARGET_METHOD)]\npublic class Replaces\n{\n    public Replaces(string ...functions)\n    {\n    }\n}\n";
+        let date = |attribute: &str| {
+            format!(
+                "namespace Sharp.Time;\n\npublic static class Date\n{{\n    {attribute}\n    public static string format(string pattern) => stamp(pattern);\n}}\n"
+            )
+        };
+        let stamp = "<?php\nfunction stamp(string $pattern): string { return $pattern; }\n";
+        let clock = "namespace App;\n\npublic class Clock\n{\n    public string year() => stamp(\"Y\");\n}\n";
+
+        let mut db = make_database(vec![("src/stamp.php", stamp), ("src/Clock.sharp", clock)]);
+        for (name, contents) in
+            [("library/Sharp/Replaces.sharp", replaces.to_owned()), ("library/Sharp/Time/Date.sharp", date(""))]
+        {
+            let mut file = File::new(
+                Cow::Owned(name.as_bytes().to_vec()),
+                FileType::Host,
+                None,
+                Cow::Owned(contents.into_bytes()),
+            );
+            file.is_standard_library = true;
+            db.add(file);
+        }
+        let wrapped = |service: &IncrementalAnalysisService| {
+            service
+                .collect_all_issues()
+                .iter()
+                .filter(|issue| issue.code.as_deref() == Some("wrapped-function"))
+                .count()
+        };
+        let mut service = make_watch_service(&db);
+        service.analyze().expect("Initial analysis failed.");
+        assert_eq!(wrapped(&service), 0);
+
+        db.update(
+            FileId::new(b"library/Sharp/Time/Date.sharp"),
+            Cow::Owned(date("[Replaces(\"stamp\")]").into_bytes()),
+        );
+        service.update_database(db.read_only());
+        service.analyze_incremental(None).expect("Incremental failed.");
+        assert_eq!(wrapped(&service), 1);
+        assert_matches_full(&service, &db, "added replaces");
+
+        db.update(FileId::new(b"library/Sharp/Time/Date.sharp"), Cow::Owned(date("").into_bytes()));
+        service.update_database(db.read_only());
+        service.analyze_incremental(None).expect("Incremental failed.");
+        assert_eq!(wrapped(&service), 0);
+        assert_matches_full(&service, &db, "removed replaces");
     }
 
     /// Parent changes return type making child's override incompatible.
@@ -4663,6 +4832,82 @@ mod tests {
         service.update_database(db.read_only());
         service.analyze_incremental(None).expect("Incremental failed.");
         assert_matches_full(&service, &db, "function reverted");
+    }
+
+    /// A class named only in a parameter's type changes its template's bound.
+    #[test]
+    fn test_watch_type_hinted_class_signature_change_reanalyzes_the_hinting_file() {
+        let a = "<?php\nnamespace Lib;\n\nclass A\n{\n    /** @param B<int> $b */\n    public function f(B $b): void {}\n}\n";
+        let mut db = make_database(vec![
+            ("src/A.php", a),
+            ("src/B.php", "<?php\nnamespace Lib;\n\n/** @template T */\nclass B\n{\n}\n"),
+        ]);
+        let mut service = make_watch_service(&db);
+        service.analyze().expect("Initial analysis failed.");
+        assert_matches_full(&service, &db, "initial");
+
+        db.update(
+            FileId::new(b"src/B.php"),
+            Cow::Owned(b"<?php\nnamespace Lib;\n\n/** @template T of string */\nclass B\n{\n}\n".to_vec()),
+        );
+        service.update_database(db.read_only());
+        service.analyze_incremental(None).expect("Incremental failed.");
+        assert_matches_full(&service, &db, "the type-hinted class's template now takes only strings");
+    }
+
+    /// A class named only in a parameter's type is deleted, then added back.
+    #[test]
+    fn test_watch_type_hinted_class_deleted_reports_it_missing_in_the_hinting_file() {
+        let mut db = make_database(vec![
+            ("src/A.php", "<?php\nnamespace Lib;\n\nclass A\n{\n    public function f(?B $b = null): void {}\n}\n"),
+            ("src/B.php", "<?php\nnamespace Lib;\n\nclass B\n{\n}\n"),
+        ]);
+        let mut service = make_watch_service(&db);
+        service.analyze().expect("Initial analysis failed.");
+        assert_matches_full(&service, &db, "initial");
+
+        db.delete(FileId::new(b"src/B.php"));
+        service.update_database(db.read_only());
+        service.analyze_incremental(None).expect("Incremental failed.");
+        assert_matches_full(&service, &db, "the type-hinted class was deleted");
+
+        db.add(File::new(
+            Cow::Owned(b"src/B.php".to_vec()),
+            FileType::Host,
+            None,
+            Cow::Owned(b"<?php\nnamespace Lib;\n\nclass B\n{\n}\n".to_vec()),
+        ));
+        service.update_database(db.read_only());
+        service.analyze_incremental(None).expect("Incremental failed.");
+        assert_matches_full(&service, &db, "the type-hinted class was added back");
+    }
+
+    /// Every recorded reference names a class-like or function by the lowercase name its declaration has, however
+    /// the code wrote it, because the warm path finds changes by the declaration's name. Only a global constant
+    /// keeps its case, as its declaration does.
+    #[test]
+    fn test_references_name_class_likes_and_functions_by_their_lowercase_names() {
+        let declarations = "<?php\nnamespace App;\n\n#[\\Attribute]\nclass Marker {}\n\nclass Item\n{\n    public const KIND = 1;\n}\n\nclass BaseBox {}\n\ninterface Sized {}\n\nfunction helper(): int { return 1; }\n\nconst Limit = 3;\n";
+        let user = "<?php\nnamespace App;\n\n#[MARKER]\nconst Size = 2;\n\nenum Mode\n{\n    #[MARKER]\n    case On;\n}\n\n#[MARKER]\nfinal class Box extends BASEBOX implements SIZED\n{\n    #[MARKER]\n    public const Shape = 1;\n\n    #[MARKER]\n    public ITEM $item;\n\n    public function __construct(#[MARKER] ITEM $item)\n    {\n        $this->item = $item;\n    }\n\n    /**\n     * @param list<ITEM> $items\n     * @param ITEM::KIND $kind\n     */\n    #[MARKER]\n    public function fill(array $items, int $kind, ?MISSING $missing = null): ITEM\n    {\n        return $items[0] ?? new ITEM();\n    }\n\n    public function size(): int\n    {\n        return HELPER() + Limit + ITEM::KIND + strlen(ITEM::class);\n    }\n}\n";
+        let sharp = "namespace App;\n\nclass Report\n{\n    public static string kind()\n    {\n        return typeof(Item);\n    }\n}\n";
+        let db = make_database(vec![
+            ("src/declarations.php", declarations),
+            ("src/user.php", user),
+            ("src/report.sharp", sharp),
+        ]);
+        let mut service = make_watch_service(&db);
+        service.analyze().expect("Analysis failed.");
+
+        let codebase = &service.codebase;
+        let mut written_case = Vec::new();
+        service.native_symbol_references.for_each_reference(|origin, target, kind| {
+            let names_a_constant = target.1.is_empty() && codebase.constants.contains_key(&target.0);
+            if !names_a_constant && target.0 != mago_word::ascii_lowercase_word(target.0.as_bytes()) {
+                written_case.push(format!("{origin:?} -> {target:?} ({kind:?})"));
+            }
+        });
+
+        assert!(written_case.is_empty(), "references keep the written case:\n{}", written_case.join("\n"));
     }
 
     /// Create a class, add a child in another cycle, then modify parent, then delete child.

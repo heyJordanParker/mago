@@ -82,6 +82,8 @@ The pattern is a [bare Rust regex](https://docs.rs/regex/). Write `(?i)` at the 
 
 `excludes` and `ignore` are not the same. `excludes` removes files from analysis entirely, so they are not parsed for type information. `ignore` still analyses the file but suppresses the listed codes in the output.
 
+An `ignore` entry can't hide an error in a PHP# file: the error stays reported, with an `unsuppressible-error` warning on it.
+
 To see what the `ignore` list is currently hiding, run `mago analyze --skip-ignores` once; it disables the whole list for that run only.
 
 ## Feature flags

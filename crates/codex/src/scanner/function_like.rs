@@ -29,6 +29,7 @@ use mago_syntax::cst::SwitchCase;
 use mago_syntax::cst::Variable;
 use mago_syntax::cst::WhileBody;
 use mago_syntax::utils;
+use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_word::Word;
 use mago_word::WordMap;
 use mago_word::WordSet;
@@ -151,8 +152,10 @@ where
                 metadata.flags |= MetadataFlags::HAS_THROW;
             }
         }
+        // A PHP# `extern` method's body is native, compiled into the engine, so it is concrete without one here.
         MethodBody::Abstract(_) => {
-            method_metadata.is_abstract = true;
+            method_metadata.is_abstract =
+                !method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Extern(_)));
         }
     }
 
@@ -924,7 +927,7 @@ pub fn collect_globals_into(block: &Block, globals: &mut WordSet) {
 }
 
 fn collect_globals_from_statement(statement: &Statement, globals: &mut WordSet) {
-    match statement {
+    ensure_sufficient_stack(|| match statement {
         Statement::Global(global) => {
             for variable in &global.variables {
                 if let Variable::Direct(direct) = variable {
@@ -1025,5 +1028,5 @@ fn collect_globals_from_statement(statement: &Statement, globals: &mut WordSet) 
             }
         }
         _ => {}
-    }
+    })
 }

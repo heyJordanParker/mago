@@ -719,6 +719,18 @@ where
             class_like_metadata.flags |= MetadataFlags::CONSISTENT_CONSTRUCTOR;
         }
 
+        if context.file.is_standard_library {
+            let file = word(context.file.name.as_ref());
+            for (function, _) in function_like_metadata.replaced_functions() {
+                let wrapper = (file, function_like_metadata.span, method_identifier);
+                let wrappers =
+                    self.codebase.wrapped_functions.entry(ascii_lowercase_word(function.as_bytes())).or_default();
+                if !wrappers.contains(&wrapper) {
+                    wrappers.push(wrapper);
+                }
+            }
+        }
+
         self.template_constraints.push(
             function_like_metadata
                 .template_types
@@ -830,7 +842,9 @@ mod tests {
     use mago_word::word;
 
     use crate::metadata::CodebaseMetadata;
+    use crate::metadata::attribute::ConstantExpression;
     use crate::metadata::flags::MetadataFlags;
+    use crate::metadata::function_like::FunctionLikeMetadata;
     use crate::scanner::scan_program;
 
     fn scan(code: &'static str) -> CodebaseMetadata {
@@ -1268,5 +1282,67 @@ mod tests {
         assert!(codebase.class_likes[&original].aliases.contains(&alias));
         assert!(codebase.class_likes[&original].aliases.contains(&chain));
         assert_eq!(codebase.symbols.get_kind(alias), Some(crate::symbol::SymbolKind::Class));
+    }
+
+    fn scan_on_a_small_stack(code: String) -> CodebaseMetadata {
+        std::thread::Builder::new()
+            .stack_size(128 * 1024)
+            .spawn(move || scan(Box::leak(code.into_boxed_str())))
+            .expect("the thread starts")
+            .join()
+            .expect("the scan returns")
+    }
+
+    fn function<'codebase>(codebase: &'codebase CodebaseMetadata, name: &str) -> &'codebase FunctionLikeMetadata {
+        codebase
+            .function_likes
+            .get(&(empty_word(), ascii_lowercase_word(name.as_bytes())))
+            .unwrap_or_else(|| panic!("function `{name}` not found"))
+    }
+
+    #[test]
+    fn a_property_default_of_100_000_terms_is_inferred_on_a_small_stack() {
+        let codebase = scan_on_a_small_stack(format!(
+            "<?php class Report {{ public int $total = {}; }}",
+            vec!["1"; 100_000].join(" + ")
+        ));
+
+        let default_type = codebase
+            .get_property(b"Report", b"$total")
+            .and_then(|property| property.default_type_metadata.as_ref())
+            .expect("the default is inferred");
+        assert_eq!(default_type.type_union.get_single_literal_int_value(), Some(100_000));
+    }
+
+    #[test]
+    fn an_attribute_argument_in_509_parentheses_is_evaluated_on_a_small_stack() {
+        let codebase = scan_on_a_small_stack(format!(
+            "<?php #[Label({}1{})] function deep(): void {{}}",
+            "(".repeat(509),
+            ")".repeat(509)
+        ));
+
+        assert_eq!(function(&codebase, "deep").attributes[0].arguments[0].value, Some(ConstantExpression::Int(1)));
+    }
+
+    #[test]
+    fn a_return_negated_508_times_infers_its_assertions_on_a_small_stack() {
+        let codebase = scan_on_a_small_stack(format!(
+            "<?php function deep(mixed $value): bool {{ return {}is_int($value); }}",
+            "!".repeat(508)
+        ));
+
+        assert!(function(&codebase, "deep").if_true_assertions.contains_key(&word("$value")));
+    }
+
+    #[test]
+    fn a_global_in_509_nested_blocks_is_collected_on_a_small_stack() {
+        let codebase = scan_on_a_small_stack(format!(
+            "<?php function deep(): void {{ {}global $total;{} }}",
+            "{".repeat(509),
+            "}".repeat(509)
+        ));
+
+        assert!(function(&codebase, "deep").globals_accessed.contains(&word("$total")));
     }
 }

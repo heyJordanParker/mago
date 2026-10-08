@@ -72,7 +72,7 @@ if (true) {
 
 fn run_lint(workspace: &Path, extra_args: &[&str]) -> std::process::Output {
     Command::new(mago_bin())
-        .args(["--workspace", workspace.to_str().unwrap(), "lint"])
+        .args(["--colors", "never", "--workspace", workspace.to_str().unwrap(), "lint"])
         .args(extra_args)
         .current_dir(workspace)
         .output()

@@ -1,5 +1,6 @@
 use mago_allocator::Arena;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
+use mago_codex::metadata::function_like::FunctionLikeMetadata;
 use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::callable::TCallable;
 use mago_codex::ttype::atomic::callable::TCallableSignature;
@@ -11,8 +12,14 @@ use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
+use mago_syntax::cst::Access;
+use mago_syntax::cst::Argument;
+use mago_syntax::cst::ArgumentList;
+use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::FunctionCall;
+use mago_syntax::cst::NullSafePropertyAccess;
+use mago_syntax::cst::PropertyAccess;
 use mago_word::Word;
 use mago_word::ascii_lowercase_word;
 use mago_word::word;
@@ -32,6 +39,7 @@ use crate::invocation::InvocationTarget;
 use crate::plugin::ExpressionHookResult;
 use crate::plugin::context::HookContext;
 use crate::utils::expression::get_bare_name_variable_id;
+use crate::utils::names::display_sharp_method;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for FunctionCall<'arena> {
     fn analyze<'ctx, A>(
@@ -63,8 +71,14 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for FunctionCall<'arena> {
         }
 
         let mut template_result = TemplateResult::default();
-        let (invocation_targets, encountered_invalid_targets) =
-            resolve_targets(context, block_context, artifacts, self.function, &mut template_result)?;
+        let (invocation_targets, encountered_invalid_targets) = resolve_targets(
+            context,
+            block_context,
+            artifacts,
+            self.function,
+            Some(&self.argument_list),
+            &mut template_result,
+        )?;
 
         analyze_invocation_targets(
             context,
@@ -98,6 +112,7 @@ pub(super) fn resolve_targets<'ctx, 'arena, A>(
     block_context: &mut BlockContext<'ctx>,
     artifacts: &mut AnalysisArtifacts,
     expression: &Expression<'arena>,
+    arguments: Option<&ArgumentList<'arena>>,
     template_result: &mut TemplateResult,
 ) -> Result<(Vec<InvocationTarget<'ctx>>, bool), AnalysisError>
 where
@@ -122,9 +137,31 @@ where
 
         let lowercased_name = ascii_lowercase_word(name.as_bytes());
         let skip_error = block_context.known_functions.contains(&lowercased_name);
+        let member = if context.dialect.is_sharp() {
+            bare_member_call(context, block_context, function_name.value())
+        } else {
+            None
+        };
 
-        let target =
-            get_function_like_target_with_skip(context, identifier, alternative, expression.span(), None, skip_error);
+        let target = get_function_like_target_with_skip(
+            context,
+            identifier,
+            alternative,
+            expression.span(),
+            None,
+            skip_error || member.is_some(),
+        );
+
+        if target.is_none()
+            && !skip_error
+            && let Some(member) = member
+        {
+            context.collector.report_with_code(
+                IssueCode::NonExistentFunction,
+                Issue::error(member)
+                    .with_annotation(Annotation::primary(function_name.span()).with_message("Used here.")),
+            );
+        }
 
         if let Some(t) = target.as_ref()
             && let Some(metadata) = t.get_function_like_metadata()
@@ -132,9 +169,17 @@ where
             let span = function_name.span();
             if context.dialect.is_sharp()
                 && let Some(FunctionLikeIdentifier::Function(resolved)) = t.get_function_like_identifier()
-                && resolved.as_bytes().contains(&b'\\')
             {
-                report_namespaced_function_call(context, *resolved, span);
+                if resolved.as_bytes().contains(&b'\\') {
+                    report_namespaced_function_call(context, *resolved, span);
+                }
+
+                if !context.source_file.is_standard_library
+                    && !report_wrapped_function_call(context, metadata, span)
+                    && let Some(arguments) = arguments
+                {
+                    report_replaced_function_call(context, metadata, arguments, span);
+                }
             }
 
             crate::utils::casing::check_function_casing_with_metadata(context, metadata, name, span);
@@ -264,6 +309,150 @@ where
             .with_annotation(Annotation::primary(span).with_message("Resolves to a function inside a namespace."))
             .with_note("PHP# calls global functions, such as `count` and Laravel's `now`, by their bare names."),
     );
+}
+
+/// Decision 040: once the standard library wraps a PHP function, a PHP# call of it outside the library names the
+/// library's methods to write instead, in the order the library declares them. Returns whether it reported the call.
+fn report_wrapped_function_call<A>(
+    context: &mut Context<'_, '_, A>,
+    function: &FunctionLikeMetadata,
+    span: Span,
+) -> bool
+where
+    A: Arena,
+{
+    let codebase = context.codebase;
+    let Some(wrappers) = codebase.wrapped_functions.get(&ascii_lowercase_word(function.original_name.as_bytes()))
+    else {
+        return false;
+    };
+
+    let methods: Vec<String> = wrappers
+        .iter()
+        .filter_map(|(_, _, method)| {
+            let class = codebase.get_class_like(method.get_class_name().as_bytes())?;
+
+            Some(format!("`{}(…)`", display_sharp_method(class, codebase.get_method_by_id(method)?)))
+        })
+        .collect();
+    let Some((last, others)) = methods.split_last() else {
+        return false;
+    };
+    let methods = if others.is_empty() { last.clone() } else { format!("{} or {last}", others.join(", ")) };
+
+    context.collector.report_with_code(
+        IssueCode::WrappedFunction,
+        Issue::error(format!("`{}` is wrapped by the standard library: write {methods}.", function.original_name))
+            .with_annotation(Annotation::primary(span).with_message("Called here.")),
+    );
+
+    true
+}
+
+/// The PHP functions PHP# replaces with its own syntax, each with the form to write: `is` (spec section 21),
+/// `(string)` and `/` on two ints (section 24), a spread literal (section 12) and `for … of` (section 17). `{x}` stands
+/// for the call's first argument, `{a}` and `{b}` for its first two, and `{...}` for every argument, each spread.
+const REPLACED_BY_SYNTAX: [(&str, &str); 9] = [
+    ("is_string", "`{x} is string`"),
+    ("is_int", "`{x} is int`"),
+    ("is_float", "`{x} is float`"),
+    ("is_bool", "`{x} is bool`"),
+    ("strval", "`(string){x}`"),
+    ("intdiv", "`{a} / {b}`"),
+    ("array_merge", "`[{...}]`"),
+    ("array_replace", "`[{...}]`"),
+    ("array_walk_recursive", "a `for … of` loop"),
+];
+
+/// A PHP# call of a PHP function that PHP# replaces with its own syntax names the form to write, with each argument
+/// that is a name or a member read written into it.
+fn report_replaced_function_call<A>(
+    context: &mut Context<'_, '_, A>,
+    function: &FunctionLikeMetadata,
+    arguments: &ArgumentList<'_>,
+    span: Span,
+) where
+    A: Arena,
+{
+    let Some((name, form)) = REPLACED_BY_SYNTAX
+        .iter()
+        .find(|(name, _)| name.as_bytes().eq_ignore_ascii_case(function.original_name.as_bytes()))
+    else {
+        return;
+    };
+
+    let written: Vec<Option<String>> =
+        arguments.arguments.iter().map(|argument| argument_text(context, argument)).collect();
+    let argument = |index: usize| written.get(index).cloned().flatten().unwrap_or_else(|| placeholder(index));
+    let spread: Vec<String> = (0..written.len()).map(|index| format!("...{}", argument(index))).collect();
+    let form = form
+        .replace("{x}", &written.first().cloned().flatten().unwrap_or_else(|| "x".to_owned()))
+        .replace("{a}", &argument(0))
+        .replace("{b}", &argument(1))
+        .replace("{...}", &spread.join(", "));
+
+    context.collector.report_with_code(
+        IssueCode::ReplacedBySyntax,
+        Issue::error(format!("`{name}` is replaced by PHP# syntax: write {form}."))
+            .with_annotation(Annotation::primary(span).with_message("Called here.")),
+    );
+}
+
+/// The name a form gives the argument at `index` when it cannot write the argument itself: `a`, `b`, `c` and on
+/// through the alphabet, then `argument27` and on.
+fn placeholder(index: usize) -> String {
+    u8::try_from(index)
+        .ok()
+        .filter(|index| *index < 26)
+        .map_or_else(|| format!("argument{}", index + 1), |index| char::from(b'a' + index).to_string())
+}
+
+/// The source text of a positional argument that is one name or a member read, such as `total` or `order.total`.
+fn argument_text<A>(context: &Context<'_, '_, A>, argument: &Argument<'_>) -> Option<String>
+where
+    A: Arena,
+{
+    if !argument.is_positional() || argument.is_unpacked() {
+        return None;
+    }
+
+    let mut receiver = argument.value();
+    loop {
+        receiver = match receiver {
+            Expression::ConstantAccess(_) => break,
+            Expression::Access(
+                Access::Property(PropertyAccess { object, property: ClassLikeMemberSelector::Identifier(_), .. })
+                | Access::NullSafeProperty(NullSafePropertyAccess {
+                    object,
+                    property: ClassLikeMemberSelector::Identifier(_),
+                    ..
+                }),
+            ) => object,
+            _ => return None,
+        };
+    }
+
+    Some(String::from_utf8_lossy(&context.source_file.contents[argument.value().span().to_range_usize()]).into_owned())
+}
+
+/// Spec section 4 writes every member as `this.m()` or `Class.m()`, so a bare call is the global function's. When the
+/// enclosing class declares a method of that name, returns the message that names the member call to write, for the
+/// call that finds no function.
+fn bare_member_call<A>(context: &Context<'_, '_, A>, block_context: &BlockContext<'_>, name: &[u8]) -> Option<String>
+where
+    A: Arena,
+{
+    let class = block_context.scope.get_class_like()?;
+    let method = context.codebase.get_method(class.name.as_bytes(), name)?;
+
+    Some(if block_context.scope.is_static() {
+        format!(
+            "Write `{}()`: a static method reaches the members of its class through the class name.",
+            display_sharp_method(class, method)
+        )
+    } else {
+        format!("Write `this.{}()`: members of the same object are always written with `this.`.", method.original_name)
+    })
 }
 
 #[cfg(test)]

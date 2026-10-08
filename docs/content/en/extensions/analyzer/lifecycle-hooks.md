@@ -153,7 +153,7 @@ final class FileMetrics implements AfterFileAnalysisHook
 }
 ```
 
-The context contains the file's `FileAnalysis` and a file-scoped `ReferenceRegistry`. When a file is reanalyzed, Mago replaces that file's previous extension-contributed references rather than accumulating duplicates.
+The context contains the file's `FileAnalysis` and a file-scoped `ReferenceRegistry`. When a file is reanalyzed, Mago replaces that file's previous extension-contributed references rather than accumulating duplicates. Mago reanalyzes a file when what its hooks [read through `codebase` or compared through `types`](/extensions/analyzer/codebase-metadata/#reads-and-incremental-analysis) changes.
 
 For a plain after-file hook, `getRequirements()` currently recognizes one value:
 

@@ -315,6 +315,26 @@ fn a_bare_int_or_float_before_a_dot_is_the_class_in_the_sharp_namespace() {
 }
 
 #[test]
+fn a_bare_bool_before_a_dot_is_the_class_in_the_sharp_namespace() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nclass Report\n{\n    public bool? run(string text)\n    {\n        return Bool.tryParse(text);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "Bool.", 0), Some(Binding::Class));
+    assert_eq!(resolved(&names, CODE, "Bool.", 0), b"Sharp\\Bool");
+}
+
+#[test]
+fn an_import_of_sharp_bool_is_the_standard_library_class() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nimport Sharp.Bool;\n\nclass Report\n{\n    public bool? run(string text)\n    {\n        return Bool.tryParse(text);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "Bool.", 0), Some(Binding::Class));
+    assert_eq!(resolved(&names, CODE, "Bool.", 0), b"Sharp\\Bool");
+}
+
+#[test]
 fn an_imported_int_is_the_imported_class() {
     const CODE: &str = "namespace App.Tenant.Store;\n\nimport App.Shared.Int;\n\nclass Report\n{\n    public int run(string text)\n    {\n        return Int.parse(text);\n    }\n}\n";
     let arena = LocalArena::new();
@@ -322,6 +342,123 @@ fn an_imported_int_is_the_imported_class() {
 
     assert_eq!(binding(&names, CODE, "Int.parse", 0), Some(Binding::Class));
     assert_eq!(resolved(&names, CODE, "Int.parse", 0), b"App\\Shared\\Int");
+}
+
+#[test]
+fn a_bare_standard_library_name_is_the_class_in_the_sharp_namespace_wherever_a_class_is_named() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nclass Report\n{\n    public void run(Position here, Environment settings, string text)\n    {\n        Position.current();\n        Environment.current();\n        List.wrap(text);\n        new Int();\n        new Float();\n        new Bool();\n        new Position();\n        new Environment();\n        new List;\n        typeof(Position);\n        typeof(Environment);\n        typeof(List);\n        typeof(Int);\n        typeof(Bool);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    for (needle, class) in [
+        ("Position here", "Sharp\\Position"),
+        ("Environment settings", "Sharp\\Environment"),
+        ("Position.current", "Sharp\\Position"),
+        ("Environment.current", "Sharp\\Environment"),
+        ("List.wrap", "Sharp\\List"),
+        ("Int()", "Sharp\\Int"),
+        ("Float()", "Sharp\\Float"),
+        ("Bool()", "Sharp\\Bool"),
+        ("Position()", "Sharp\\Position"),
+        ("Environment()", "Sharp\\Environment"),
+        ("List;", "Sharp\\List"),
+        ("Position)", "Sharp\\Position"),
+        ("Environment)", "Sharp\\Environment"),
+        ("List)", "Sharp\\List"),
+        ("Int)", "Sharp\\Int"),
+        ("Bool)", "Sharp\\Bool"),
+    ] {
+        assert_eq!(String::from_utf8_lossy(resolved(&names, CODE, needle, 0)), class, "`{needle}`");
+    }
+    assert_eq!(binding(&names, CODE, "List.wrap", 0), Some(Binding::Class));
+}
+
+#[test]
+fn an_imported_name_is_the_imported_class_and_not_the_standard_library_one() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nimport App.Shared.Position;\n\nclass Report\n{\n    public void run(Position here)\n    {\n        Position.current();\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    for needle in ["Position here", "Position.current"] {
+        assert_eq!(resolved(&names, CODE, needle, 0), b"App\\Shared\\Position", "`{needle}`");
+    }
+}
+
+#[test]
+fn a_class_the_file_declares_after_its_use_is_the_class_and_not_the_standard_library_one() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nclass Report\n{\n    public void run(Position here)\n    {\n        Position.current();\n    }\n}\n\nclass Position\n{\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    for needle in ["Position here", "Position.current"] {
+        assert_eq!(resolved(&names, CODE, needle, 0), b"App\\Tenant\\Store\\Position", "`{needle}`");
+    }
+}
+
+#[test]
+fn a_class_like_the_file_declares_matches_a_standard_library_name_as_php_matches_class_names() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\ninterface environment\n{\n}\n\nclass Report\n{\n    public void run()\n    {\n        Environment.current();\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(resolved(&names, CODE, "Environment.current", 0), b"App\\Tenant\\Store\\Environment");
+}
+
+#[test]
+fn a_standard_library_name_in_a_catch_a_header_or_an_attribute_is_the_class_in_the_sharp_namespace() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\n[Position]\nclass Report : Position, Environment\n{\n    public void run()\n    {\n        try {\n        } catch (Position failure) {\n        }\n    }\n}\n\nenum Suit : string, Position\n{\n}\n\ninterface Named : Environment\n{\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    for (needle, class) in [
+        ("Position]", "Sharp\\Position"),
+        ("Position, Environment", "Sharp\\Position"),
+        ("Environment\n{\n    public", "Sharp\\Environment"),
+        ("Position failure", "Sharp\\Position"),
+        ("Position\n{\n}\n\ninterface", "Sharp\\Position"),
+        ("Environment\n{\n}\n", "Sharp\\Environment"),
+    ] {
+        assert_eq!(String::from_utf8_lossy(resolved(&names, CODE, needle, 0)), class, "`{needle:?}`");
+    }
+}
+
+#[test]
+fn a_bare_replaces_attribute_is_the_attribute_of_the_standard_library() {
+    const CODE: &str = "namespace Sharp.Time;\n\npublic static class Date\n{\n    [Replaces(\"date\")]\n    public static string format(int timestamp) => \"\";\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(resolved(&names, CODE, "Replaces", 0), b"Sharp\\Replaces");
+}
+
+#[test]
+fn a_collection_type_keeps_its_written_name_unresolved() {
+    const CODE: &str = "namespace App.Tenant.Store;\n\nclass Report\n{\n    public void run(List<int> lines, Map<string, int> sizes)\n    {\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    for needle in ["List<", "Map<"] {
+        assert!(!names.contains(&Position::new(offset(CODE, needle, 0))), "`{needle}` has a resolved name");
+    }
+}
+
+#[test]
+fn a_php_file_resolves_a_standard_library_name_in_its_namespace() {
+    const CODE: &str =
+        "<?php namespace App; Position::current(); Int::parse(''); new Environment(); function run(Environment $e) {}";
+    let arena = LocalArena::new();
+    let file = File::ephemeral(Cow::Borrowed(b"src/Store.php"), Cow::Borrowed(CODE.as_bytes()));
+    let program = parse_file(&arena, &file);
+    let names = NameResolver::new(&arena).resolve(program);
+
+    for (needle, class) in [
+        ("Position::", "App\\Position"),
+        ("Int::", "App\\Int"),
+        ("Environment()", "App\\Environment"),
+        ("Environment $e", "App\\Environment"),
+    ] {
+        assert_eq!(String::from_utf8_lossy(resolved(&names, CODE, needle, 0)), class, "`{needle}`");
+    }
 }
 
 #[test]
@@ -357,32 +494,44 @@ fn a_parameter_default_does_not_see_the_parameter_it_belongs_to() {
 
 #[test]
 fn a_member_of_the_enclosing_class_without_this_is_recorded() {
-    const CODE: &str = "class Report\n{\n    private int count()\n    {\n        return 1;\n    }\n\n    public int total()\n    {\n        return count() + total();\n    }\n}\n";
+    const CODE: &str = "class Report\n{\n    private int count()\n    {\n        return 1;\n    }\n\n    public int total()\n    {\n        return count + total;\n    }\n}\n";
     let arena = LocalArena::new();
     let names = bind(&arena, CODE);
 
-    assert_eq!(binding(&names, CODE, "count()", 1), Some(Binding::Member));
-    assert_eq!(binding(&names, CODE, "total()", 1), Some(Binding::Member));
+    assert_eq!(binding(&names, CODE, "count", 1), Some(Binding::Member));
+    assert_eq!(binding(&names, CODE, "total;", 0), Some(Binding::Member));
+}
+
+/// Spec section 4 writes every member as `this.m()` or `Class.m()`, so a bare call is the global function's, even
+/// when the class declares a method of the same name.
+#[test]
+fn a_bare_call_is_never_a_member() {
+    const CODE: &str = "public static class Math\n{\n    public static float ceil(float x) => ceil(x);\n\n    public static int total() => total();\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "ceil(x)", 0), None);
+    assert_eq!(binding(&names, CODE, "total();", 0), None);
 }
 
 #[test]
 fn a_case_or_method_of_the_enclosing_enum_without_this_is_recorded() {
-    const CODE: &str = "enum Status : string\n{\n    case Active = \"a\";\n\n    public string label()\n    {\n        return Active + label() + this.value;\n    }\n}\n";
+    const CODE: &str = "enum Status : string\n{\n    case Active = \"a\";\n\n    public string label()\n    {\n        return Active + label + this.value;\n    }\n}\n";
     let arena = LocalArena::new();
     let names = bind(&arena, CODE);
 
     assert_eq!(binding(&names, CODE, "Active", 1), Some(Binding::Member));
-    assert_eq!(binding(&names, CODE, "label()", 1), Some(Binding::Member));
+    assert_eq!(binding(&names, CODE, "label", 1), Some(Binding::Member));
     assert_eq!(binding(&names, CODE, "this", 0), Some(Binding::This));
 }
 
 #[test]
 fn a_member_name_matches_as_php_matches_it() {
-    const CODE: &str = "class Report\n{\n    const int RATE = 2;\n\n    public int total()\n    {\n        return Total() + Rate;\n    }\n}\n";
+    const CODE: &str = "class Report\n{\n    const int RATE = 2;\n\n    public int total()\n    {\n        return Total + Rate;\n    }\n}\n";
     let arena = LocalArena::new();
     let names = bind(&arena, CODE);
 
-    assert_eq!(binding(&names, CODE, "Total()", 0), Some(Binding::Member));
+    assert_eq!(binding(&names, CODE, "Total", 0), Some(Binding::Member));
     assert_eq!(binding(&names, CODE, "Rate", 0), Some(Binding::Constant));
 }
 

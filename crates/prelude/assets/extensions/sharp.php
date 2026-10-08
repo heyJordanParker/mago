@@ -2,40 +2,62 @@
 
 namespace Sharp;
 
-final class Int
+/**
+ * Where code sits in its source, as spec section 27 writes it. `$function` is the fully qualified dotted name.
+ */
+final class Position
 {
-    /**
-     * Parses a string that holds only an int, as C#'s `int.Parse` does: `[ws][sign]digits[ws]`.
-     *
-     * @throws \ValueError when `$value` is not a string or does not hold an int.
-     * @throws \ArithmeticError when the int is outside PHP_INT_MIN to PHP_INT_MAX.
-     */
-    public static function parse(mixed $value): int {}
+    public readonly string $file;
+    public readonly string $directory;
+    public readonly int $line;
+    public readonly int $column;
+    public readonly string $function;
+
+    public function __construct(string $file, int $line, int $column, string $function) {}
 
     /**
-     * Gives null where `parse` throws.
-     *
-     * @pure
+     * The position where it is written, or the caller's position as a parameter's default. The engine declares no
+     * `current()`: the bridge lowers each call to a `new Position(…)`.
      */
-    public static function tryParse(mixed $value): ?int {}
+    public static function current(): Position {}
 }
 
-final class Float
+/**
+ * The process environment, as spec section 29 writes it.
+ */
+final class Environment
 {
     /**
-     * Parses a string that holds only a float: `[ws][sign](digits[.digits] | .digits)([eE][sign]digits)?[ws]`.
-     *
-     * @throws \ValueError when `$value` is not a string or does not hold a float.
-     * @throws \ArithmeticError when the float is outside -PHP_FLOAT_MAX to PHP_FLOAT_MAX.
+     * @var list<string> the command-line arguments, starting with the script's name.
      */
-    public static function parse(mixed $value): float {}
+    public readonly array $arguments;
 
     /**
-     * Gives null where `parse` throws.
-     *
-     * @pure
+     * @var string the directory the process runs in.
      */
-    public static function tryParse(mixed $value): ?float {}
+    public readonly string $currentDirectory;
+
+    public function __construct() {}
+
+    /**
+     * @return string|null the environment variable `$name`, or null when it is not set.
+     */
+    public function variable(string $name): ?string {}
+}
+
+final class List
+{
+    /**
+     * The list itself, or a list holding the one value, as spec section 24 writes it. The analyzer refuses a `.sharp`
+     * call when `T` could itself be a list, because a `List` and a `Map` both run as PHP arrays.
+     *
+     * @template T
+     *
+     * @param T|list<T> $value
+     *
+     * @return list<T>
+     */
+    public static function wrap(mixed $value): array {}
 }
 
 /**

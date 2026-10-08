@@ -531,8 +531,8 @@ where
 }
 
 /// Reports a PHP# literal whose spreads do not make one collection. A `List` spread appends, so `List` values and
-/// spreads make a `List`. A `Map` spread keeps its keys, which needs the literal's type when it runs, so it waits for
-/// typed compilation. A literal never holds a `List`'s values and a `Map`'s entries together.
+/// spreads make a `List`. A `Map` spread keeps its keys, so `Map` entries and spreads make a `Map`. A literal never
+/// holds a `List`'s values and a `Map`'s entries together.
 fn report_sharp_literal_spreads<A>(
     context: &mut Context<'_, '_, A>,
     artifacts: &AnalysisArtifacts,
@@ -546,7 +546,6 @@ fn report_sharp_literal_spreads<A>(
 
     let mut list_part: Option<Span> = None;
     let mut map_part: Option<Span> = None;
-    let mut map_spread: Option<Span> = None;
     for element in elements {
         let is_map = match element {
             ArrayElement::Value(_) => false,
@@ -563,7 +562,6 @@ fn report_sharp_literal_spreads<A>(
                     .iter()
                     .all(|atomic| matches!(atomic, TAtomic::Array(_)) || atomic.is_never())
                 {
-                    map_spread.get_or_insert(element.span());
                     true
                 } else {
                     // A value that may not be iterable already has PHP's own error.
@@ -607,18 +605,6 @@ fn report_sharp_literal_spreads<A>(
 
         own_part.get_or_insert(element.span());
     }
-
-    if let Some(map_spread) = map_spread {
-        context.collector.report_with_code(
-            IssueCode::NotSupportedYet,
-            Issue::error("Spreading a `Map` into a literal is not supported yet in PHP#.")
-                .with_annotation(Annotation::primary(map_spread).with_message("Spreads a `Map`."))
-                .with_note(
-                    "A `Map` spread keeps its keys, and the engine can keep them only once it knows the literal is a `Map`.",
-                )
-                .with_help("Copy the `Map` and set its keys, as in `let merged = defaults; merged[key] = value;`."),
-        );
-    }
 }
 
 fn handle_variadic_array_element<'arena, A>(
@@ -635,6 +621,12 @@ fn handle_variadic_array_element<'arena, A>(
         let (key_type, value_type) = match atomic_type {
             TAtomic::Array(array_type) => match array_type {
                 TArray::Keyed(keyed_data) => {
+                    // A PHP# `Map` spread keeps every key, as `array_replace` does, where PHP renumbers int keys.
+                    let keeps_keys = context.dialect.is_sharp();
+                    if keeps_keys {
+                        array_creation_info.is_list = false;
+                    }
+
                     if let Some(known_items) = &keyed_data.known_items {
                         for (key, (possibly_undefined, value_type)) in known_items {
                             if *possibly_undefined {
@@ -642,6 +634,13 @@ fn handle_variadic_array_element<'arena, A>(
                             }
 
                             let new_offset_key = match key {
+                                ArrayKey::Integer(key) if keeps_keys => {
+                                    array_creation_info
+                                        .item_key_atomic_types
+                                        .push(TAtomic::Scalar(TScalar::literal_int(*key)));
+
+                                    ArrayKey::Integer(*key)
+                                }
                                 ArrayKey::Integer(_) => {
                                     if array_creation_info.int_offset == i64::MAX {
                                         report_unpacked_int_key_overflow(context, variadic_array_element.span());
@@ -686,7 +685,14 @@ fn handle_variadic_array_element<'arena, A>(
                     }
 
                     match keyed_data.get_generic_parameters() {
-                        Some(parameters) => (Some(Cow::Borrowed(parameters.0)), Cow::Borrowed(parameters.1)),
+                        Some(parameters) => {
+                            // Keys beyond the known ones make the literal a `Map` of the spread's key type.
+                            if keeps_keys {
+                                array_creation_info.can_create_objectlike = false;
+                            }
+
+                            (Some(Cow::Borrowed(parameters.0)), Cow::Borrowed(parameters.1))
+                        }
                         None => {
                             continue;
                         }
@@ -773,9 +779,15 @@ fn handle_variadic_array_element<'arena, A>(
                 continue;
             }
 
+            // A PHP# `Map` keyed by a backed enum holds each key as its backing value.
+            let stored_key_type = if context.dialect.is_sharp() {
+                get_backing_key_type(&key_type, context.codebase)
+            } else {
+                Cow::Borrowed(&*key_type)
+            };
             let is_string_key = union_comparator::is_contained_by(
                 context.codebase,
-                &key_type,
+                &stored_key_type,
                 &get_string(),
                 false,
                 false,
@@ -786,7 +798,7 @@ fn handle_variadic_array_element<'arena, A>(
             let is_array_key_key = is_string_key
                 || union_comparator::is_contained_by(
                     context.codebase,
-                    &key_type,
+                    &stored_key_type,
                     &get_arraykey(),
                     false,
                     false,

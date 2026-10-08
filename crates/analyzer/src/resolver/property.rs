@@ -816,6 +816,27 @@ where
     );
 
     let Some(resolution) = resolution else {
+        // A PHP# read of a declared method is its closure, ahead of anything the class serves through `__get`.
+        if !for_assignment
+            && let Some(method_type) = resolve_method_value(
+                context,
+                block_context,
+                artifacts,
+                class_id,
+                word(trim_start_byte(prop_name.as_bytes(), b'$')),
+                access_span,
+            )
+        {
+            return Some(ResolvedProperty {
+                property_span: None,
+                property_name: prop_name,
+                declaring_class_id: None,
+                property_type: method_type,
+                is_magic: false,
+                read_type: None,
+            });
+        }
+
         for required_class in class_metadata.require_extends.iter().chain(class_metadata.require_implements.iter()) {
             let Some(required_metadata) = context.codebase.get_class_like(required_class.as_bytes()) else {
                 continue;
@@ -905,6 +926,7 @@ where
             && !for_assignment
             && let Some(forwarded) = context.plugin_registry.get_forwarded_call(
                 context.codebase,
+                context.source_file,
                 class_metadata.original_name.as_bytes(),
                 trim_start_byte(prop_name.as_bytes(), b'$'),
                 true,
@@ -971,20 +993,6 @@ where
         if class_metadata.has_incomplete_hierarchy() {
             result.has_ambiguous_path = true;
             return None;
-        }
-
-        if !for_assignment
-            && let Some(method_type) =
-                resolve_method_value(context, block_context, artifacts, class_id, prop_name_without_dollar, access_span)
-        {
-            return Some(ResolvedProperty {
-                property_span: None,
-                property_name: prop_name,
-                declaring_class_id: None,
-                property_type: method_type,
-                is_magic: false,
-                read_type: None,
-            });
         }
 
         result.has_invalid_path = true;

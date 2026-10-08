@@ -252,7 +252,7 @@ where
                 .with_code("missing-code")
                 .with_note("This diagnostic was reported without a unique code, which is required by the collector.")
                 .with_help("Please report this issue to the Mago team.")
-                .with_link("https://github.com/carthage-software/mago");
+                .with_link("https://github.com/heyJordanParker/mago-sharp");
 
             if let Some(span) = primary_span {
                 missing_code_issue = missing_code_issue.with_annotation(
@@ -270,14 +270,16 @@ where
         if let Some(span) = primary_span
             && let Some(code) = &issue.code
             && !self.is_recording()
+            && let Some(pragma) = self.suppressing_pragma(span, code)
         {
-            if self.is_ignored(span, code) {
+            if issue.can_be_suppressed_in(&self.file.name) {
                 return false;
             }
 
-            if self.is_expected(span, code) {
-                return false;
-            }
+            self.force_report(Issue::unsuppressible_error([
+                Annotation::primary(pragma).with_message("This pragma can't hide the error."),
+                Annotation::secondary(span).with_message("This error stays reported."),
+            ]));
         }
 
         self.force_report(issue);
@@ -658,29 +660,19 @@ where
         TextEdit::delete(TextRange::new(line_start, delete_end))
     }
 
-    /// Checks if an issue is suppressed by an `@mago-ignore` pragma.
-    ///
-    /// Finds the nearest applicable pragma and increments its match counter.
+    /// Returns the span of the pragma that targets an issue: the nearest applicable `@mago-ignore` pragma, else the
+    /// nearest applicable `@mago-expect` pragma. Increments that pragma's match counter.
     #[inline]
-    fn is_ignored(&mut self, issue_span: Span, issue_code: &str) -> bool {
-        if let Some(pragma) = self.find_best_applicable_pragma_mut(issue_span, PragmaKind::Ignore, issue_code) {
-            pragma.matches = pragma.matches.saturating_add(1);
-            return true;
-        }
-        false
-    }
+    fn suppressing_pragma(&mut self, issue_span: Span, issue_code: &str) -> Option<Span> {
+        let kind = if self.find_best_applicable_pragma_mut(issue_span, PragmaKind::Ignore, issue_code).is_some() {
+            PragmaKind::Ignore
+        } else {
+            PragmaKind::Expect
+        };
+        let pragma = self.find_best_applicable_pragma_mut(issue_span, kind, issue_code)?;
+        pragma.matches = pragma.matches.saturating_add(1);
 
-    /// Checks if an issue is suppressed by an `@mago-expect` pragma.
-    ///
-    /// Finds the nearest applicable pragma and increments its match counter.
-    #[inline]
-    fn is_expected(&mut self, issue_span: Span, issue_code: &str) -> bool {
-        if let Some(pragma) = self.find_best_applicable_pragma_mut(issue_span, PragmaKind::Expect, issue_code) {
-            pragma.matches = pragma.matches.saturating_add(1);
-            return true;
-        }
-
-        false
+        Some(pragma.span)
     }
 
     /// Finds the *nearest* pragma that applies to a given issue and returns a mutable reference to it.
