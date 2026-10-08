@@ -26,6 +26,7 @@ use super::merge::merge_metadata_from_parent_class_like;
 use super::merge::merge_metadata_from_required_class_like;
 use super::merge::merge_metadata_from_required_interface;
 use super::merge::merge_metadata_from_trait;
+use super::signatures::populate_function_like_metadata;
 
 #[inline]
 fn sorted_atoms(iter: impl Iterator<Item = Word>) -> Vec<Word> {
@@ -257,7 +258,7 @@ pub fn populate_class_like_metadata_iterative(
     codebase.class_likes.insert(classlike_name, metadata);
 }
 
-/// Populates types for properties, constants, enum cases, and type aliases within a class-like.
+/// Populates types for properties, constants, enum cases, type aliases and laws within a class-like.
 pub fn populate_class_like_types(
     name: Word,
     metadata: &mut ClassLikeMetadata,
@@ -527,6 +528,16 @@ pub fn populate_class_like_types(
             enum_type,
             codebase_symbols,
             Some(&ReferenceSource::Symbol(true, name)),
+            symbol_references,
+            force_repopulation,
+        );
+    }
+
+    for (law_name, law) in &mut metadata.laws {
+        populate_function_like_metadata(
+            law,
+            codebase_symbols,
+            &ReferenceSource::ClassLikeMember(true, name, *law_name),
             symbol_references,
             force_repopulation,
         );

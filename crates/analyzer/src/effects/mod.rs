@@ -241,11 +241,14 @@ impl Effects {
         ))
     }
 
-    /// The issues of every effect rule. The getter rule reads only the solve. PR 2's rules read the declared `uses`
-    /// from `codebase`.
+    /// The issues of every effect rule. The getter rule reads only the solve, and the law rule reads which bodies are
+    /// laws from `codebase`.
     #[must_use]
-    pub fn issues(&self, _codebase: &CodebaseMetadata) -> IssueCollection {
-        check::getters_must_be_pure(self)
+    pub fn issues(&self, codebase: &CodebaseMetadata) -> IssueCollection {
+        let mut issues = check::getters_must_be_pure(self);
+        issues.extend(check::laws_must_be_pure(self, codebase));
+
+        issues
     }
 
     fn body_impurity(&self, body: Body) -> Option<Impurity> {

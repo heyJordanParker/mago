@@ -46,6 +46,7 @@ use crate::utils::get_type_diff;
 use crate::utils::misc::unwrap_expression;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_function_like_identifier;
+use crate::utils::names::display_member;
 use crate::utils::names::display_nullable_type;
 use crate::utils::names::display_sharp_accessor;
 use crate::utils::names::display_type;
@@ -519,6 +520,22 @@ pub fn handle_return_value<'ctx, A>(
                 context.collector.report_with_code(IssueCode::LessSpecificReturnStatement, issue);
             }
         } else {
+            // Spec section 28: a law is a static function-like the class keeps apart from its methods, and it has no
+            // return type to update.
+            let (kind, function_name, help) = match block_context.scope.get_class_like() {
+                Some(class) if class.laws.values().any(|law| std::ptr::eq(law, function_like_metadata)) => (
+                    "law",
+                    display_member(context, class.original_name, function_like_metadata.original_name),
+                    "A law states a fact, so its body is a `bool`.".to_owned(),
+                ),
+                _ => (
+                    kind,
+                    function_name,
+                    format!(
+                        "Change the return value to match `{expected_return_type_str}`, or update the {kind}'s return type declaration."
+                    ),
+                ),
+            };
             let mut issue = Issue::error(format!(
                 "Invalid return type for {kind} `{function_name}`: expected `{expected_return_type_str}`, but found `{inferred_return_type_str}`."
             ))
@@ -531,11 +548,7 @@ pub fn handle_return_value<'ctx, A>(
                     "The type `{inferred_return_type_str}` returned here is not compatible with the declared return type `{expected_return_type_str}`."
                 )
             )
-            .with_help(
-                format!(
-                    "Change the return value to match `{expected_return_type_str}`, or update the {kind}'s return type declaration."
-                )
-            );
+            .with_help(help);
 
             if let Some(type_diff) = get_type_diff(context, &expected_return_type, &inferred_return_type) {
                 issue = issue.with_note(type_diff);

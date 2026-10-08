@@ -2348,6 +2348,97 @@ fn extern_starting_a_php_statement_stays_a_call_or_a_constant() {
     assert_eq!(bare_name(expression(constant)), b"extern");
 }
 
+/// Spec section 28: a law states a fact about a class's values, written as its name, its typed parameters and an
+/// expression after `=>`.
+#[test]
+fn a_law_in_a_class_is_its_name_its_parameters_and_an_expression_body() {
+    const CODE: &str = "public class Money\n{\n    public Money(public int amount { get; }, public string currency { get; }) { }\n    public Money add(Money other) => new Money(this.amount + other.amount, this.currency);\n\n    law addKeepsCurrency(Money a, Money b) => a.add(b).currency == a.currency;\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "app/Shared/Money.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [ClassLikeMember::Method(_), ClassLikeMember::Method(_), ClassLikeMember::Law(law)] =
+        class_members(program).as_slice()
+    else {
+        panic!("expected two methods and a law, got {:#?}", class_members(program));
+    };
+    let parameters: Vec<&str> = law.parameter_list.parameters.iter().map(|parameter| source(CODE, parameter)).collect();
+    assert_eq!(law.law.value, b"law");
+    assert_eq!(source(CODE, &law.name), "addKeepsCurrency");
+    assert_eq!(parameters, ["Money a", "Money b"]);
+    assert_eq!(source(CODE, law.body.expression), "a.add(b).currency == a.currency");
+    assert_eq!(source(CODE, law), "law addKeepsCurrency(Money a, Money b) => a.add(b).currency == a.currency;");
+}
+
+/// Spec section 28 gives a state machine its laws on its status enum, beside the cases and the transition method.
+#[test]
+fn a_law_in_an_enum_follows_its_cases_and_methods() {
+    const CODE: &str = "public enum Status : string\n{\n    case Open = \"open\";\n    case Refunded = \"refunded\";\n\n    public Status after(Payment e) => this;\n    law refundedIsFinal(Payment e) => Status.Refunded.after(e) == Status.Refunded;\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "app/Billing/Status.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(Statement::Enum(status)) = program.statements.first() else {
+        panic!("expected an enum, got {:#?}", program.statements);
+    };
+    let [
+        ClassLikeMember::EnumCase(_),
+        ClassLikeMember::EnumCase(_),
+        ClassLikeMember::Method(_),
+        ClassLikeMember::Law(law),
+    ] = status.members.as_slice()
+    else {
+        panic!("expected two cases, a method and a law, got {:#?}", status.members);
+    };
+    assert_eq!(source(CODE, law), "law refundedIsFinal(Payment e) => Status.Refunded.after(e) == Status.Refunded;");
+}
+
+/// PHP has no laws, so a `.php` member that starts with `law` stays a typed property, and `law(…)` a call.
+#[test]
+fn law_in_a_php_file_is_a_name() {
+    const CODE: &str = "<?php\n\nclass Rules\n{\n    law $law;\n\n    public function check(): bool\n    {\n        return law(1);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Rules.php", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::OpeningTag(_), Statement::Class(class)] = program.statements.as_slice() else {
+        panic!("expected a class, got {:#?}", program.statements);
+    };
+    let [ClassLikeMember::Property(property), ClassLikeMember::Method(check)] = class.members.as_slice() else {
+        panic!("expected a property and a method, got {:#?}", class.members);
+    };
+    assert_eq!(property.hint().map(|hint| source(CODE, hint)), Some("law"));
+    let MethodBody::Concrete(body) = &check.body else {
+        panic!("expected a method body, got {:#?}", check.body);
+    };
+    let [statement] = body.statements.as_slice() else {
+        panic!("expected one statement, got {:#?}", body.statements);
+    };
+    assert!(matches!(expression(statement), Expression::Call(Call::Function(_))), "{statement:#?}");
+}
+
+/// `law` starts a law only at the start of a member, before a name and `(`. After a modifier it is a return type, and
+/// before `(` a call.
+#[test]
+fn law_after_a_modifier_or_before_a_parenthesis_stays_a_name_in_php_sharp() {
+    const CODE: &str = "class Rules\n{\n    public law make(int x) => law(x);\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Rules.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [ClassLikeMember::Method(make)] = class_members(program).as_slice() else {
+        panic!("expected a method, got {:#?}", class_members(program));
+    };
+    assert_eq!(make.return_type_hint.as_ref().map(|hint| source(CODE, hint)), Some("law"));
+    let MethodBody::Expression(body) = &make.body else {
+        panic!("expected an expression body, got {:#?}", make.body);
+    };
+    let Expression::Call(Call::Function(call)) = body.expression else {
+        panic!("expected a call, got {:#?}", body.expression);
+    };
+    assert_eq!(source(CODE, call.function), "law");
+}
+
 /// The lexer reads `Self` and `self` as one keyword. The checker tells them apart by how the keyword is written.
 #[test]
 fn self_is_a_return_type_an_instantiated_class_and_the_class_of_a_static_call() {

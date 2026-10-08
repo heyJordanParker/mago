@@ -431,7 +431,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         };
         let mut members = Vec::new();
         let mut has_constructor = false;
-        for member in &class.members {
+        // A law, spec section 28, is checked and never runs, so the engine gets no node for it.
+        for member in class.members.iter().filter(|member| !matches!(member, ClassLikeMember::Law(_))) {
             members.push(match member {
                 ClassLikeMember::Method(method) if php_method_name(method) == b"__construct" => {
                     has_constructor = true;
@@ -555,7 +556,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     fn r#enum(&mut self, r#enum: &Enum) -> u32 {
         self.class = self.names.get(&r#enum.name);
         let mut members = Vec::new();
-        for member in &r#enum.members {
+        // A law, spec section 28, is checked and never runs, so the engine gets no node for it.
+        for member in r#enum.members.iter().filter(|member| !matches!(member, ClassLikeMember::Law(_))) {
             members.push(match member {
                 ClassLikeMember::Method(method) => self.method(method, modifier_flags(&method.modifiers), &[]),
                 ClassLikeMember::EnumCase(case) => self.enum_case(case),
