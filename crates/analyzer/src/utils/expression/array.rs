@@ -148,8 +148,9 @@ where
         return get_never();
     }
 
+    let mut null_index_issues = vec![];
     if index_type.is_null() && !index_type.is_keyed_array() {
-        context.collector.report_with_code(
+        null_index_issues.push((
             IssueCode::NullArrayIndex,
             Issue::error(format!(
                 "Cannot use `null` as an array index to access element{}.",
@@ -163,11 +164,11 @@ where
             )
             .with_note("Using `null` as an array key is equivalent to using an empty string `''`.")
             .with_help("Ensure the index is an integer or a string. If accessing the key `''` is intended, use an empty string explicitly."),
-        );
+        ));
     }
 
     if index_type.is_nullable() && !index_type.ignore_nullable_issues() {
-        context.collector.report_with_code(
+        null_index_issues.push((
             IssueCode::PossiblyNullArrayIndex,
             Issue::warning(format!(
                 "Possibly using `null` as an array index to access element{}.",
@@ -180,7 +181,7 @@ where
             .with_note("Using `null` as an array key is equivalent to using an empty string `''`.")
             .with_note("The analysis indicates this index could be `null` at runtime.")
             .with_help("Ensure the index is always an integer or a string, potentially using checks or assertions before access."),
-        );
+        ));
     }
 
     let mut array_atomic_types = array_like_type.types.iter().collect::<Vec<_>>();
@@ -198,6 +199,7 @@ where
     let mut expected_index_types = vec![];
     let mut has_union_key_mismatch = false; // Track if we're in a union where key exists in some but not all variants
     let mut reported_undefined_key = false;
+    let mut reads_a_sharp_list = false;
     while let Some(atomic_var_type) = array_atomic_types.pop() {
         if let TAtomic::Derived(TDerived::Intersection(intersection)) = atomic_var_type {
             array_atomic_types.extend(intersection.get_base_type().types.iter());
@@ -213,6 +215,7 @@ where
 
         match atomic_var_type {
             TAtomic::Array(TArray::List(_)) => {
+                reads_a_sharp_list |= context.dialect.is_sharp() && !in_assignment;
                 let new_type = handle_array_access_on_list(
                     context,
                     block_context,
@@ -428,6 +431,12 @@ where
 
                 has_valid_expected_index = true;
             }
+        }
+    }
+
+    if !reads_a_sharp_list {
+        for (code, issue) in null_index_issues {
+            context.collector.report_with_code(code, issue);
         }
     }
 

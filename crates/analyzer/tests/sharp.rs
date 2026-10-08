@@ -3264,7 +3264,6 @@ fn a_list_read_with_an_index_that_may_not_be_an_int_is_an_error() {
             "7:19 mismatched-array-index",
             "8:19 mismatched-array-index",
             "9:19 mismatched-array-index",
-            "10:25 possibly-null-array-index",
             "10:19 mismatched-array-index",
             "11:19 mismatched-array-index",
             "17:19 mismatched-array-index",
@@ -3290,6 +3289,27 @@ fn a_list_read_with_an_index_of_a_type_int_contains_is_accepted_and_a_handled_re
 
     assert_eq!(issues(("src/Demo/Lookup.php", php), &[]), Vec::<String>::new());
     assert_eq!(issues(("src/Demo/Lookup.sharp", sharp), &[]), ["11:25 mismatched-array-index"]);
+}
+
+/// `strict_list_index_checks` asks a plain PHP `list<int>` for a `non-negative-int` index. A PHP# `List` is indexed by
+/// any `int`, and the engine throws `OutOfRangeException` for `items[-1]` as for any index past the end.
+#[test]
+fn a_list_read_takes_any_int_index_under_strict_list_index_checks() {
+    let sharp = "namespace Demo;\n\nclass Lookup\n{\n    public int read(List<int> items, int index) => items[index] + items[-1];\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Lookup\n{\n    /**\n     * @param list<int> $items\n     */\n    public function read(array $items, int $index): int\n    {\n        return $items[$index] + $items[-1];\n    }\n}\n";
+    let strict = || Settings { strict_list_index_checks: true, ..settings() };
+
+    assert_eq!(issues_with(strict(), ("src/Demo/Lookup.php", php), &[]), ["12:40 mismatched-array-index"]);
+    assert_eq!(issues_with(strict(), ("src/Demo/Lookup.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// A `Map` read with a nullable key keeps its warning: PHP reads a null key as `""`. This pins what a PHP# file
+/// reports today, before a ruling on nullable `Map` keys.
+#[test]
+fn a_handled_map_read_with_a_nullable_key_reports_a_possibly_null_index() {
+    let sharp = "namespace Demo;\n\nclass Lookup\n{\n    public int read(Map<string, int> counts, string? name) => counts[name] ?? 0;\n}\n";
+
+    assert_eq!(issues(("src/Demo/Lookup.sharp", sharp), &[]), ["5:70 possibly-null-array-index"]);
 }
 
 /// `for (const [k, v] of x)` reads the keys of a `Map`. A `List`'s indexes come from `entries()`, as spec section 12
