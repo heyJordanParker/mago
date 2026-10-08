@@ -666,6 +666,82 @@ fn a_sharp_import_passes_the_use_statement_and_casing_checks_as_in_php() {
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
 }
 
+/// `Sharp\Text\Regex`, a plain PHP class with a static method.
+const REGEX: (&str, &str) = (
+    "src/Sharp/Text/Regex.php",
+    "<?php\n\nnamespace Sharp\\Text;\n\nfinal class Regex\n{\n    public static function matches(string $pattern, string $text): bool\n    {\n        return preg_match($pattern, $text) === 1;\n    }\n}\n",
+);
+
+/// The issues of the PHP twin of a `.sharp` file that calls `Sharp\Text\Regex` through `import … as Rx`.
+fn renamed_regex_call_issues() -> Vec<String> {
+    let php = "<?php\n\ndeclare(strict_types=1);\n\nnamespace Demo;\n\nuse Sharp\\Text\\Regex as Rx;\n\nclass Report\n{\n    public static function run(string $text): bool\n    {\n        return Rx::matches('/a/', $text) && Rx::matches(1, $text);\n    }\n}\n";
+
+    issues(("src/Demo/Report.php", php), &[REGEX])
+}
+
+#[test]
+fn a_php_call_through_a_use_renamed_with_as_is_checked_as_the_imported_class() {
+    assert_eq!(codes(&renamed_regex_call_issues()), ["invalid-argument"]);
+}
+
+/// Spec section 23: `Rx.matches(…)` calls `Sharp\Text\Regex::matches` when the file imports the class as `Rx`, so its
+/// arguments are checked against that method, as in PHP.
+#[test]
+fn a_call_through_a_renamed_import_is_checked_as_the_imported_class_as_in_php() {
+    let sharp = "namespace Demo;\n\nimport Sharp.Text.Regex as Rx;\n\nclass Report\n{\n    public static bool run(string text) => Rx.matches(\"/a/\", text) && Rx.matches(1, text);\n}\n";
+
+    let sharp_issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[REGEX]);
+    let located_issues: Vec<String> = sharp_issues.iter().map(|issue| located(sharp, issue)).collect();
+
+    assert_eq!(located_issues, ["7:82 invalid-argument"]);
+    assert_eq!(codes(&located_issues), codes(&renamed_regex_call_issues()));
+    assert!(sharp_issues[0].message.contains("`Sharp\\Text\\Regex::matches`"), "{}", sharp_issues[0].message);
+}
+
+/// A message names a class the file renames by the name the file imports it as.
+#[test]
+fn a_type_in_a_message_names_a_renamed_class_by_its_new_name() {
+    let sharp = "namespace Demo;\n\nimport Lib.Calc as Tool;\n\nclass Report\n{\n    public static Tool pick(List<Tool> tools, int|string key) => tools[key];\n}\n";
+
+    let issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Calc.php", CALC)]);
+
+    assert_eq!(issues.iter().map(|issue| issue.code.as_deref()).collect::<Vec<_>>(), [Some("mismatched-array-index")]);
+    assert!(issues[0].message.contains("`List<Tool>`"), "{}", issues[0].message);
+}
+
+/// Spec section 23: a renamed import of a class that does not exist reports what the plain import of it reports.
+#[test]
+fn an_unknown_class_imported_under_another_name_is_reported_as_its_plain_import_is() {
+    let settings = || Settings { check_use_statements: true, ..settings() };
+    let reported = |code: &'static str| -> Vec<String> {
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", code), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(code, issue), issue.message))
+            .collect()
+    };
+
+    let plain = reported("namespace Demo;\n\nimport Nope.Thing;\n\nclass Report\n{\n}\n");
+    let renamed = reported("namespace Demo;\n\nimport Nope.Thing as T;\n\nclass Report\n{\n}\n");
+
+    assert_eq!(
+        plain,
+        ["3:8 non-existent-use-import Imported class, interface, trait, or enum `Nope\\Thing` does not exist."]
+    );
+    assert_eq!(renamed, plain);
+}
+
+#[test]
+fn a_php_use_of_an_unknown_class_renamed_with_as_is_reported_as_its_plain_use_is() {
+    let settings = || Settings { check_use_statements: true, ..settings() };
+
+    let plain = issues_with(settings(), ("src/Demo/Report.php", "<?php\n\nnamespace Demo;\n\nuse Nope\\Thing;\n"), &[]);
+    let renamed =
+        issues_with(settings(), ("src/Demo/Report.php", "<?php\n\nnamespace Demo;\n\nuse Nope\\Thing as T;\n"), &[]);
+
+    assert_eq!(plain, ["5:5 non-existent-use-import"]);
+    assert_eq!(renamed, plain);
+}
+
 #[test]
 fn a_field_is_the_php_property_of_the_same_name() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    private int count = 0;\n    protected string label = \"one\";\n\n    public int total(int extra)\n    {\n        this.count += extra;\n        this.label = 2;\n        return this.count;\n    }\n}\n";
@@ -4112,6 +4188,25 @@ fn a_second_extern_of_a_target_in_another_file_is_refused_on_the_second() {
             "5:1 duplicate-extern `StripeClient` already has an `extern` declaration. [\"{first_offset} First declared here.\"]"
         )]
     );
+}
+
+/// Spec section 23: a rename changes the name, not what is imported, so an `extern` written with the new name declares
+/// the same class and section 29's one-declaration rule counts it once.
+#[test]
+fn an_extern_written_with_a_renamed_import_declares_the_same_target() {
+    let first = (
+        "app/Stubs/Payments.sharp",
+        "namespace App.Stubs;\n\nimport Stripe.StripeClient;\n\nextern StripeClient uses Http;\n",
+    );
+    let second =
+        ("app/Stubs/Stripe.sharp", "namespace App.Stubs;\n\nimport Stripe.StripeClient as Client;\n\nextern Client;\n");
+
+    let refused: Vec<String> = analyze(&PLUGIN_REGISTRY, settings(), second, &[first, STRIPE])
+        .iter()
+        .map(|issue| format!("{} {}", located(second.1, issue), issue.message))
+        .collect();
+
+    assert_eq!(refused, ["5:1 duplicate-extern `Client` already has an `extern` declaration."]);
 }
 
 /// An `extern` target that names no class, method or function is reported with the code a call of it would get.

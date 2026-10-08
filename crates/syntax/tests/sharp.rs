@@ -79,6 +79,43 @@ fn namespace_and_import_take_dotted_names() {
     assert_eq!(source(CODE, &imported), "App.Shared.Money");
 }
 
+/// Asserts that `code`, the file at `path`, parses to one import of `written` renamed to `Rx`.
+fn assert_renamed_import(path: &'static str, code: &'static str, written: &str) {
+    let arena = LocalArena::new();
+    let program = parse(&arena, path, code);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(Statement::Namespace(namespace)) =
+        program.statements.iter().find(|statement| matches!(statement, Statement::Namespace(_)))
+    else {
+        panic!("expected a namespace, got {:#?}", program.statements);
+    };
+    let Some(Statement::Use(Use { items: UseItems::Sequence(items), .. })) = namespace.statements().first() else {
+        panic!("expected one plain import, got {:#?}", namespace.statements());
+    };
+    let item = items.items.first().expect("one imported class");
+    let alias = item.alias.as_ref().expect("an alias");
+
+    assert_eq!(source(code, &item.name), written, "the imported name");
+    assert_eq!(alias.r#as.value, b"as", "the keyword");
+    assert_eq!(source(code, &alias.identifier), "Rx", "the alias");
+}
+
+/// Spec section 23 renames an import with `as`, into the alias node PHP's `use … as` has.
+#[test]
+fn an_import_renamed_with_as_holds_its_dotted_name_and_its_alias() {
+    assert_renamed_import("src/App.sharp", "namespace App;\n\nimport Sharp.Text.Regex as Rx;\n", "Sharp.Text.Regex");
+}
+
+#[test]
+fn a_php_use_renamed_with_as_holds_its_name_and_its_alias() {
+    assert_renamed_import(
+        "src/App.php",
+        "<?php\n\nnamespace App;\n\nuse Sharp\\Text\\Regex as Rx;\n",
+        "Sharp\\Text\\Regex",
+    );
+}
+
 #[test]
 fn dotted_name_with_a_space_is_a_parse_error() {
     let arena = LocalArena::new();

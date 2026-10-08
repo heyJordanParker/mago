@@ -332,7 +332,7 @@ where
         .filter_map(|(_, _, method)| {
             let class = codebase.get_class_like(method.get_class_name().as_bytes())?;
 
-            Some(format!("`{}(…)`", display_sharp_method(class, codebase.get_method_by_id(method)?)))
+            Some(format!("`{}(…)`", display_sharp_method(context, class, codebase.get_method_by_id(method)?)))
         })
         .collect();
     let Some((last, others)) = methods.split_last() else {
@@ -448,7 +448,7 @@ where
     Some(if block_context.scope.is_static() {
         format!(
             "Write `{}()`: a static method reaches the members of its class through the class name.",
-            display_sharp_method(class, method)
+            display_sharp_method(context, class, method)
         )
     } else {
         format!("Write `this.{}()`: members of the same object are always written with `this.`.", method.original_name)

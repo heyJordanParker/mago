@@ -287,14 +287,12 @@ fn check_replaced_functions<A>(
             continue;
         };
 
+        let method_name = display_sharp_method(context, class, method);
         context.collector.report_with_code(
             IssueCode::DuplicateDefinition,
-            Issue::error(format!(
-                "`{}` names `{function}` twice: name each function once.",
-                display_sharp_method(class, method)
-            ))
-            .with_annotation(Annotation::primary(span).with_message("Named again here."))
-            .with_annotation(Annotation::secondary(first).with_message("First named here.")),
+            Issue::error(format!("`{method_name}` names `{function}` twice: name each function once."))
+                .with_annotation(Annotation::primary(span).with_message("Named again here."))
+                .with_annotation(Annotation::secondary(first).with_message("First named here.")),
         );
     }
 }

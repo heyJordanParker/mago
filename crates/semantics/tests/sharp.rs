@@ -1002,6 +1002,61 @@ fn an_import_named_like_a_class_of_the_same_file_is_an_error() {
     );
 }
 
+/// Spec section 23: a renamed import is used by its new name, so two imports of one name clash whether either is
+/// renamed or not.
+#[test]
+fn an_import_renamed_to_the_name_of_another_import_is_an_error() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Calc as Tool;\nimport Other.Tool;\nimport Third.Thing as TOOL;\n\nclass Report\n{\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "4:8 Cannot import `Other.Tool` as `Tool`: `Lib.Calc` is already imported as `Tool`.",
+            "5:8 Cannot import `Third.Thing` as `TOOL`: `Lib.Calc` is already imported as `Tool`.",
+        ]
+    );
+}
+
+#[test]
+fn an_import_renamed_like_a_class_of_the_same_file_or_a_reserved_name_is_an_error() {
+    let code = "namespace App.Tenant;\n\nimport App.Shared.Page as Report;\nimport Lib.Thing as Int;\nimport Sharp.Int as Float;\n\nclass Report\n{\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "3:8 Cannot import `App.Shared.Page` as `Report`: this file declares a class named `Report`.",
+            "4:8 Cannot import `Lib.Thing` as `Int`: PHP# reserves `Int` for a type.",
+            "5:8 Cannot import `Sharp.Int` as `Float`: PHP# reserves `Float` for a type.",
+        ]
+    );
+}
+
+/// Spec section 23: renaming one of two imports of one name, or an import named like a class the file declares, fixes
+/// the clash. An import renamed to the class the file declares names that class, as a plain import of it does.
+#[test]
+fn renaming_an_import_away_from_a_taken_or_reserved_name_is_valid() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Calc;\nimport Other.Calc as OtherCalc;\nimport App.Shared.Report as SharedReport;\nimport Lib.Int as Number;\nimport App.Tenant.Report as Report;\n\nclass Report\n{\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+/// A clash names the code that fixes it: the import renamed with `as`, as rustc's E0252 suggests.
+#[test]
+fn a_clashing_import_is_helped_with_the_import_renamed() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Calc;\nimport Other.Calc;\nimport App.Shared.Report;\nimport Lib.Any;\n\nclass Report\n{\n}\n";
+
+    let helps: Vec<Option<String>> = check("src/Report.sharp", code).into_iter().map(|issue| issue.help).collect();
+
+    assert_eq!(
+        helps,
+        [
+            Some("Rename the import with `as`, as in `import Other.Calc as OtherCalc;`.".to_owned()),
+            Some("Rename the import with `as`, as in `import App.Shared.Report as OtherReport;`.".to_owned()),
+            Some("Rename the import with `as`, as in `import Lib.Any as OtherAny;`.".to_owned()),
+        ]
+    );
+}
+
 #[test]
 fn a_local_or_parameter_named_after_a_superglobal_is_an_error() {
     let code = leak(method("        let _GET = 1;\n        return _GET;\n").replace("int extra", "int GLOBALS"));

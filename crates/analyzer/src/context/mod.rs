@@ -59,6 +59,9 @@ where
     pub(super) comments: &'arena [Trivia<'arena>],
     pub(super) settings: &'ctx Settings,
     pub(super) scope: NamespaceScope,
+    /// The name a `.sharp` file imports a class under with `as`, as the file writes it, keyed by the lowercase full name
+    /// of the class. A message names the class by it (spec section 23).
+    pub(super) renamed_imports: WordMap<Word>,
     pub(super) collector: Collector<'ctx, 'arena, A>,
     pub(super) statement_span: Span,
     pub(super) plugin_registry: &'ctx PluginRegistry,
@@ -97,6 +100,7 @@ where
             comments,
             settings,
             scope: NamespaceScope::default(),
+            renamed_imports: WordMap::default(),
             statement_span,
             collector,
             plugin_registry,

@@ -2,7 +2,6 @@
 
 use mago_allocator::Arena;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
-use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
 use mago_codex::metadata::function_like::FunctionLikeMetadata;
 use mago_codex::ttype::TType;
@@ -12,6 +11,7 @@ use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::get_array_parameters;
 use mago_codex::ttype::union::TUnion;
 use mago_word::Word;
+use mago_word::ascii_lowercase_word;
 
 use crate::context::Context;
 
@@ -45,30 +45,56 @@ where
     context.codebase.get_function(name.as_bytes()).map_or(name, |m| m.original_name)
 }
 
-/// Returns a method as PHP# calls it on its class, as in `Date.format`: the class's short name and the method's name.
-#[must_use]
-pub(crate) fn display_sharp_method(class: &ClassLikeMetadata, method: &FunctionLikeMetadata) -> String {
-    let class_name = class.original_name.as_bytes().rsplit(|byte| *byte == b'\\').next().unwrap_or_default();
+/// Returns the name a `.sharp` file gives the class-like `name`: the name it imports the class under with `as`, as spec
+/// section 23 renames an import, and otherwise the class's short name.
+fn sharp_class_like_name<A>(context: &Context<'_, '_, A>, name: Word) -> String
+where
+    A: Arena,
+{
+    if let Some(renamed) = context.renamed_imports.get(&ascii_lowercase_word(name.as_bytes())) {
+        return renamed.to_string();
+    }
 
-    format!("{}.{}", String::from_utf8_lossy(class_name), method.original_name)
+    let name = name.as_bytes();
+    String::from_utf8_lossy(name.rsplit(|byte| *byte == b'\\').next().unwrap_or(name)).into_owned()
+}
+
+/// Returns a method as PHP# calls it on its class, as in `Date.format`: the class as [`sharp_class_like_name`] names it,
+/// and the method's name.
+#[must_use]
+pub(crate) fn display_sharp_method<A>(
+    context: &Context<'_, '_, A>,
+    class: &ClassLikeMetadata,
+    method: &FunctionLikeMetadata,
+) -> String
+where
+    A: Arena,
+{
+    format!("{}.{}", sharp_class_like_name(context, class.original_name), method.original_name)
 }
 
 /// Returns the PHP# collection type, as in `Map<string, int>`, that `object` stands for when it is `Sharp\ListMethods`
 /// or `Sharp\MapMethods`. The analyzer checks a method call on a `List` or `Map` against those classes, and a message
 /// names the type the code wrote instead.
 #[must_use]
-pub(crate) fn display_sharp_collection(object: &TObject, codebase: &CodebaseMetadata) -> Option<String> {
+pub(crate) fn display_sharp_collection<A>(context: &Context<'_, '_, A>, object: &TObject) -> Option<String>
+where
+    A: Arena,
+{
     let collection = sharp_collection_name(object)?;
     let parameters = object.get_type_parameters().unwrap_or_default();
-    let parameters = parameters.iter().map(|parameter| display_sharp_type(parameter, codebase)).collect::<Vec<_>>();
+    let parameters = parameters.iter().map(|parameter| display_sharp_type(context, parameter)).collect::<Vec<_>>();
 
     Some(format!("{collection}<{}>", parameters.join(", ")))
 }
 
 /// Returns `union` as PHP# writes the type: `List<int>`, `Map<string, int>`, `int?`, `(int|string)?`, `Any?`, and a
-/// class by its short name.
+/// class as [`sharp_class_like_name`] names it.
 #[must_use]
-pub(crate) fn display_sharp_type(union: &TUnion, codebase: &CodebaseMetadata) -> String {
+pub(crate) fn display_sharp_type<A>(context: &Context<'_, '_, A>, union: &TUnion) -> String
+where
+    A: Arena,
+{
     if let Some(TAtomic::Mixed(mixed)) = union.types.iter().find(|atomic| atomic.is_mixed()) {
         return if mixed.is_non_null() { "Any" } else { "Any?" }.to_owned();
     }
@@ -77,7 +103,7 @@ pub(crate) fn display_sharp_type(union: &TUnion, codebase: &CodebaseMetadata) ->
         .types
         .iter()
         .filter(|atomic| !atomic.is_null())
-        .map(|atomic| display_sharp_atomic(atomic, codebase))
+        .map(|atomic| display_sharp_atomic(context, atomic))
         .collect();
 
     match (union.has_null(), parts.as_slice()) {
@@ -88,14 +114,17 @@ pub(crate) fn display_sharp_type(union: &TUnion, codebase: &CodebaseMetadata) ->
     }
 }
 
-fn display_sharp_atomic(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String {
+fn display_sharp_atomic<A>(context: &Context<'_, '_, A>, atomic: &TAtomic) -> String
+where
+    A: Arena,
+{
     match atomic {
         TAtomic::Array(array) => {
-            let (key, value) = get_array_parameters(array, codebase);
+            let (key, value) = get_array_parameters(array, context.codebase);
             match array {
-                TArray::List(_) => format!("List<{}>", display_sharp_type(&value, codebase)),
+                TArray::List(_) => format!("List<{}>", display_sharp_type(context, &value)),
                 TArray::Keyed(_) => {
-                    format!("Map<{}, {}>", display_sharp_type(&key, codebase), display_sharp_type(&value, codebase))
+                    format!("Map<{}, {}>", display_sharp_type(context, &key), display_sharp_type(context, &value))
                 }
             }
         }
@@ -103,15 +132,14 @@ fn display_sharp_atomic(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String
             let Some(name) = object.get_name() else {
                 return atomic.get_id().to_string();
             };
-            let name = String::from_utf8_lossy(name.as_bytes());
-            let short_name = name.rsplit('\\').next().unwrap_or_default();
+            let name = sharp_class_like_name(context, name);
             match object.get_type_parameters() {
                 Some(parameters) if !parameters.is_empty() => {
                     let parameters: Vec<String> =
-                        parameters.iter().map(|parameter| display_sharp_type(parameter, codebase)).collect();
-                    format!("{short_name}<{}>", parameters.join(", "))
+                        parameters.iter().map(|parameter| display_sharp_type(context, parameter)).collect();
+                    format!("{name}<{}>", parameters.join(", "))
                 }
-                _ => short_name.to_owned(),
+                _ => name,
             }
         }
         _ => atomic.get_id().to_string(),

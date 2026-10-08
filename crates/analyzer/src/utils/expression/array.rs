@@ -655,8 +655,8 @@ where
     } else if is_sharp_read && let Some(span) = span {
         *has_valid_expected_index = true;
 
-        let list_type = display_sharp_type(&TUnion::from_atomic(list.clone()), context.codebase);
-        let index_type = display_sharp_type(dim_type, context.codebase);
+        let list_type = display_sharp_type(context, &TUnion::from_atomic(list.clone()));
+        let index_type = display_sharp_type(context, dim_type);
         context.collector.report_with_code(
             IssueCode::MismatchedArrayIndex,
             Issue::error(format!("`{list_type}` is indexed by `int`, but this index is `{index_type}`."))
@@ -1024,18 +1024,16 @@ where
     } else if is_sharp_read {
         *has_valid_expected_index = true;
 
-        let map_type = display_sharp_type(
-            &TUnion::from_atomic(TAtomic::Array(TArray::Keyed(keyed_array.clone()))),
-            context.codebase,
-        );
-        let key_type = display_sharp_type(&key_parameter, context.codebase);
+        let map_type =
+            display_sharp_type(context, &TUnion::from_atomic(TAtomic::Array(TArray::Keyed(keyed_array.clone()))));
+        let key_type = display_sharp_type(context, &key_parameter);
         let key_pattern = key_parameter
             .types
             .iter()
-            .map(|atomic| display_sharp_type(&TUnion::from_atomic(atomic.clone()), context.codebase))
+            .map(|atomic| display_sharp_type(context, &TUnion::from_atomic(atomic.clone())))
             .collect::<Vec<_>>()
             .join(" or ");
-        let index_type = display_sharp_type(index_type, context.codebase);
+        let index_type = display_sharp_type(context, index_type);
         context.collector.report_with_code(
             IssueCode::MismatchedArrayIndex,
             Issue::error(format!("`{map_type}` is keyed by `{key_type}`, but this key is `{index_type}`."))
