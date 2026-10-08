@@ -65,6 +65,8 @@ glob 匹配会遵循 `[source.glob]` 下的项目级设置,因此像 `literal-se
 
 `excludes` 与 `ignore` 含义不同。`excludes` 把文件完全从分析中移除,因此这些文件不会被解析以提供类型信息。`ignore` 仍会分析文件,但会在输出中抑制所列代码。
 
+`ignore` 条目无法隐藏 PHP# 文件中的错误:该错误仍会被报告,并附带一条 `unsuppressible-error` 警告。
+
 若想查看 `ignore` 列表当前隐藏了哪些问题,可运行一次 `mago analyze --skip-ignores`,该列表仅在这一次运行中被禁用。
 
 ## 特性开关

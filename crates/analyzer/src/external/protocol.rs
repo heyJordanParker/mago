@@ -110,6 +110,7 @@ use crate::external::EntryPoint;
 use crate::external::ExternalAnalysisSession;
 use crate::external::ExternalExtension;
 use crate::external::ExternalPlugin;
+use crate::external::FileReads;
 use crate::external::ForwardedCall;
 use crate::external::FunctionProvider;
 use crate::external::FunctionTarget;
@@ -133,7 +134,7 @@ use crate::invocation::MethodTargetContext;
 
 pub const ANALYZER_PROTOCOL_MAGIC: [u8; 4] = *b"MANA";
 pub const ANALYZER_PROTOCOL_MAJOR: u16 = 1;
-pub const ANALYZER_PROTOCOL_MINOR: u16 = 7;
+pub const ANALYZER_PROTOCOL_MINOR: u16 = 8;
 
 const HEADER_LENGTH: usize = 12;
 const INITIAL_MESSAGE_CAPACITY: usize = 256;
@@ -3179,6 +3180,17 @@ pub(super) fn message_reader(payload: &[u8], expected_kind: u16) -> Result<Paylo
     }
 
     Ok(reader)
+}
+
+/// Splits the codebase reads a provider or issue filter made, which the SDK places right after the header, from the
+/// response they came with.
+pub(super) fn take_codebase_reads(response: &[u8]) -> Result<(FileReads, Vec<u8>), ExternalAnalyzerError> {
+    let header =
+        response.get(..HEADER_LENGTH).ok_or_else(|| protocol("analyzer response is shorter than its header"))?;
+    let mut reader = PayloadReader::new(&response[HEADER_LENGTH..]);
+    let reads = FileReads::decode(&mut reader)?;
+
+    Ok((reads, [header, &response[response.len() - reader.remaining()..]].concat()))
 }
 
 pub(super) fn message_kind(payload: &[u8]) -> Result<u16, ExternalAnalyzerError> {

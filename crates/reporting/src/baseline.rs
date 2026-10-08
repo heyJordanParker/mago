@@ -40,6 +40,12 @@ fn baseline_annotation(issue: &Issue) -> Option<&Annotation> {
     issue.annotations.iter().find(|a| a.is_primary()).or_else(|| issue.annotations.first())
 }
 
+fn unsuppressible_error_at(annotation: &Annotation) -> Issue {
+    Issue::unsuppressible_error([
+        Annotation::primary(annotation.span).with_message("A baseline entry matches this error.")
+    ])
+}
+
 /// The variant of baseline format to use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, JsonSchema)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -167,8 +173,9 @@ impl StrictBaseline {
 
     /// Generates a strict baseline from a collection of issues.
     ///
-    /// The baseline will contain all issues organized by their file paths with exact line numbers.
-    /// File paths are normalized to ensure cross-platform compatibility.
+    /// The baseline will contain all issues organized by their file paths with exact line numbers, except the ones
+    /// [`Issue::can_be_suppressed_in`] keeps reported. File paths are normalized to ensure cross-platform
+    /// compatibility.
     #[must_use]
     pub fn generate_from_issues(issues: &IssueCollection, read_database: &ReadDatabase) -> Self {
         let mut entries: BTreeMap<Cow<'static, str>, StrictBaselineEntry> = BTreeMap::new();
@@ -181,6 +188,10 @@ impl StrictBaseline {
             let Ok(file) = read_database.get(&annotation.span.file_id) else {
                 continue;
             };
+
+            if !issue.can_be_suppressed_in(&file.name) {
+                continue;
+            }
 
             let normalized_path = normalize_path(&file.name);
             let entry = entries.entry(Cow::Owned(normalized_path)).or_default();
@@ -242,6 +253,9 @@ impl StrictBaseline {
             };
 
             if !baseline_entry.issues.contains(&baseline_issue) {
+                filtered_issues.push(issue);
+            } else if !issue.can_be_suppressed_in(&file.name) {
+                filtered_issues.push(unsuppressible_error_at(annotation));
                 filtered_issues.push(issue);
             }
         }
@@ -382,8 +396,9 @@ impl LooseBaseline {
 
     /// Generates a loose baseline from a collection of issues.
     ///
-    /// Issues are grouped by (file, code, message) tuple and stored with a count.
-    /// File paths are normalized to ensure cross-platform compatibility.
+    /// Issues are grouped by (file, code, message) tuple and stored with a count, except the ones
+    /// [`Issue::can_be_suppressed_in`] keeps reported. File paths are normalized to ensure cross-platform
+    /// compatibility.
     #[must_use]
     pub fn generate_from_issues(issues: &IssueCollection, read_database: &ReadDatabase) -> Self {
         let mut issue_counts: HashMap<(String, String, String), u32> = HashMap::default();
@@ -396,6 +411,10 @@ impl LooseBaseline {
             let Ok(file) = read_database.get(&annotation.span.file_id) else {
                 continue;
             };
+
+            if !issue.can_be_suppressed_in(&file.name) {
+                continue;
+            }
 
             let normalized_path = normalize_path(&file.name);
             let code = issue.code.as_ref().unwrap_or(&String::from("unknown")).clone();
@@ -445,7 +464,11 @@ impl LooseBaseline {
                 && *count > 0
             {
                 *count -= 1;
-                continue;
+                if issue.can_be_suppressed_in(&file.name) {
+                    continue;
+                }
+
+                filtered_issues.push(unsuppressible_error_at(annotation));
             }
 
             filtered_issues.push(issue);
@@ -783,6 +806,35 @@ mod tests {
         let filtered = baseline.filter_issues(issues, &read_db);
 
         assert_eq!(filtered.len(), 1);
+    }
+
+    #[test]
+    fn test_loose_filter_keeps_a_sharp_error_after_a_warning() {
+        let file = File::ephemeral(Cow::Borrowed(b"Broken.sharp"), Cow::Borrowed(b"namespace Demo;\n"));
+        let file_id = file.id;
+        let config =
+            mago_database::DatabaseConfiguration::new(std::path::Path::new("/"), vec![], vec![], vec![], vec![])
+                .into_static();
+        let db = Database::single(file, config);
+        let read_db = db.read_only();
+
+        let baseline = LooseBaseline {
+            variant: BaselineVariant::Loose,
+            issues: vec![LooseBaselineIssue {
+                file: "Broken.sharp".to_string(),
+                code: "E001".to_string(),
+                message: "test error".to_string(),
+                count: 1,
+            }],
+        };
+
+        let mut issues = IssueCollection::new();
+        issues.push(create_test_issue(file_id, "E001", 0, 5));
+
+        let codes: Vec<String> =
+            baseline.filter_issues(issues, &read_db).into_iter().map(|issue| issue.code.unwrap()).collect();
+
+        assert_eq!(codes, [crate::UNSUPPRESSIBLE_ERROR, "E001"]);
     }
 
     #[test]
