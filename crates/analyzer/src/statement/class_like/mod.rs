@@ -1100,6 +1100,7 @@ where
     check_readonly_class_trait_properties(context, class_like_metadata, members);
     if class_like_metadata.flags.is_sharp() {
         check_sharp_template_variance(context, class_like_metadata, inheritance_ast);
+        check_sharp_serializable(context, class_like_metadata);
     } else {
         check_template_variance_positions(context, class_like_metadata);
     }
@@ -2198,6 +2199,33 @@ fn check_sharp_template_variance<A>(
             ),
         );
     }
+}
+
+/// Refuses a generic PHP# class that is a `Serializable`, through its header or a parent's. Its objects carry their
+/// type arguments through serialization, and `Serializable::serialize` writes a string the engine cannot add them to.
+fn check_sharp_serializable<A>(context: &mut Context<'_, '_, A>, class_like_metadata: &ClassLikeMetadata)
+where
+    A: Arena,
+{
+    if !class_like_metadata.kind.is_class()
+        || class_like_metadata.template_types.is_empty()
+        || !context.codebase.class_implements(class_like_metadata.name.as_bytes(), b"Serializable")
+    {
+        return;
+    }
+
+    let class_name = short_name(class_like_metadata.original_name);
+    context.collector.report_with_code(
+        IssueCode::InvalidImplement,
+        Issue::error(format!(
+            "`{class_name}` has type parameters, so it cannot be a `Serializable`: `serialize` drops the type arguments its objects carry."
+        ))
+        .with_annotation(
+            Annotation::primary(class_like_metadata.name_span.unwrap_or(class_like_metadata.span))
+                .with_message(format!("`{class_name}` has type parameters")),
+        )
+        .with_help("Write `__serialize` and `__unserialize` alone, which keep them."),
+    );
 }
 
 /// Rejects an uninhabitable diamond at the declaration site: a class-like

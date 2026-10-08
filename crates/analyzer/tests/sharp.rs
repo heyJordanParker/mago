@@ -4332,6 +4332,25 @@ fn a_receiver_of_its_own_class_with_swapped_type_arguments_gives_them_swapped() 
     assert_eq!(issues(("src/Demo/Pair.sharp", sharp), &[]), ["25:33 invalid-return-statement"]);
 }
 
+/// An object of a PHP# generic class carries its type arguments through serialization, which `Serializable` cannot
+/// do: its `serialize` writes a string the engine cannot add them to. So a generic PHP# class that is a
+/// `Serializable`, through its header or a parent's, is refused, and the refusal names the methods that carry them.
+/// A PHP# class without type parameters and the PHP twin, whose `@template` arguments are erased, may be one.
+#[test]
+fn a_generic_class_is_never_serializable() {
+    let sharp = "namespace Demo;\n\nimport Serializable;\n\npublic class Page<TItem> : Serializable\n{\n    public TItem? first() => null;\n\n    public string? serialize() => null;\n\n    public void unserialize(string data)\n    {\n    }\n\n    public Map<string, Any?> __serialize() => [:];\n\n    public void __unserialize(Map<string, Any?> data)\n    {\n    }\n}\n\npublic class OrderPage<TItem> : Page<TItem>\n{\n}\n\npublic class Plain : Serializable\n{\n    public string? serialize() => null;\n\n    public void unserialize(string data)\n    {\n    }\n\n    public Map<string, Any?> __serialize() => [:];\n\n    public void __unserialize(Map<string, Any?> data)\n    {\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\n/** @template TItem */\nclass Page implements \\Serializable\n{\n    /** @return TItem|null */\n    public function first(): mixed\n    {\n        return null;\n    }\n\n    public function serialize(): ?string\n    {\n        return null;\n    }\n\n    public function unserialize(string $data): void\n    {\n    }\n\n    /** @return array<string, mixed> */\n    public function __serialize(): array\n    {\n        return [];\n    }\n\n    /** @param array<string, mixed> $data */\n    public function __unserialize(array $data): void\n    {\n    }\n}\n";
+
+    assert_eq!(
+        explained(("src/Demo/Page.sharp", sharp), &[]),
+        [
+            "5:14 invalid-implement `Page` has type parameters, so it cannot be a `Serializable`: `serialize` drops the type arguments its objects carry. Write `__serialize` and `__unserialize` alone, which keep them.",
+            "22:14 invalid-implement `OrderPage` has type parameters, so it cannot be a `Serializable`: `serialize` drops the type arguments its objects carry. Write `__serialize` and `__unserialize` alone, which keep them.",
+        ]
+    );
+    assert_eq!(issues(("src/Demo/Page.php", php), &[]), Vec::<String>::new());
+}
+
 /// `new Self(…)` in a generic class names no type arguments: `Self` is the class with its own type parameters, so its
 /// value passes where `Repo<TItem>` is expected inside the class, as a return value and as an argument, and not where
 /// `Box<int>` is. `1` is no `TItem`, and no `out` or `in` marker would let `Box<TItem>` pass as `Box<int>`, so the
