@@ -67,6 +67,7 @@ use function intdiv;
 use function is_string;
 use function pack;
 use function strncmp;
+use function substr;
 use function unpack;
 
 /**
@@ -147,13 +148,10 @@ final class Protocol
     public const CLASS_LIKE_INTERFACE = 2;
     public const CLASS_LIKE_TRAIT = 3;
     public const CLASS_LIKE_ENUM = 4;
-    public const TYPE_COMPARISON_EQUAL = 1;
-    public const TYPE_COMPARISON_CONTAINED_BY = 2;
-    public const TYPE_COMPARISON_CAN_BE_IDENTICAL = 3;
     private const TYPE_COMPARISON_BATCH_REQUEST = 16;
     private const MAGIC_U32 = 0x4D41_4E41;
     private const MAJOR = 1;
-    private const MINOR = 7;
+    private const MINOR = 9;
     private const VERSION_U32 = (self::MAJOR << 16) | self::MINOR;
     private const DESCRIBE_RESPONSE = 0x8001;
     private const RETURN_TYPE_RESPONSE = 0x8002;
@@ -935,6 +933,7 @@ final class Protocol
     /**
      * @param list<int|ReportedIssue|string|null> $reportedIssues
      * @param list<int|string|MemberIdentifier|ReferenceOrigin|ReferenceKind|null> $contributedReferences
+     * @param list<array{string, list<array{int, int, string}>}> $recordedReads each file's codebase reads
      *
      * @mago-expect lint:halstead
      */
@@ -942,6 +941,7 @@ final class Protocol
         int $requestKind,
         array $reportedIssues,
         array $contributedReferences = [],
+        array $recordedReads = [],
     ): string {
         $responseKind = match ($requestKind) {
             self::BEFORE_ANALYSIS_REQUEST => self::BEFORE_ANALYSIS_RESPONSE,
@@ -1020,7 +1020,38 @@ final class Protocol
             $writer->writeU8($kind->value);
         }
 
+        $writer->writeCount($recordedReads);
+        foreach ($recordedReads as [$file, $reads]) {
+            $writer->writeBytes($file);
+            self::writeCodebaseReads($writer, $reads);
+        }
+
         return $writer->finish();
+    }
+
+    /**
+     * Places the codebase reads a provider or issue filter made right after `$response`'s header,
+     * so Mago reads them in one place whatever kind the response is.
+     *
+     * @param list<array{int, int, string}> $reads
+     */
+    public static function withCodebaseReads(string $response, array $reads): string
+    {
+        $writer = new PayloadWriter(substr($response, 0, 12));
+        self::writeCodebaseReads($writer, $reads);
+
+        return $writer->finish() . substr($response, 12);
+    }
+
+    /** @param list<array{int, int, string}> $reads */
+    private static function writeCodebaseReads(PayloadWriter $writer, array $reads): void
+    {
+        $writer->writeCount($reads);
+        foreach ($reads as [$operation, $argument, $name]) {
+            $writer->writeU8($operation);
+            $writer->writeU8($argument);
+            $writer->writeBytes($name);
+        }
     }
 
     /**
@@ -1588,17 +1619,20 @@ final class Protocol
         return $writer->finish();
     }
 
-    public static function readTypeComparisonResponse(string $payload): bool
+    /**
+     * @return array{bool, list<string>} whether the comparison holds, and every class-like either compared type names
+     */
+    public static function readTypeComparisonResponse(string $payload): array
     {
         [$kind, $reader] = self::readRequest($payload);
         if ($kind !== self::TYPE_COMPARISON_RESPONSE) {
             throw new ProtocolException("Expected a type comparison response, received analyzer message {$kind}.");
         }
 
-        $result = $reader->readBoolean();
+        $answer = self::readTypeComparisonAnswer($reader);
         $reader->finish();
 
-        return $result;
+        return $answer;
     }
 
     /**
@@ -1617,14 +1651,8 @@ final class Protocol
         return $writer->finish();
     }
 
-    /** @return list<bool> */
+    /** @return list<array{bool, list<string>}> */
     public static function readTypeComparisonBatchResponse(string $payload, int $expectedCount): array
-    {
-        return self::readTypeComparisonResults($payload, $expectedCount);
-    }
-
-    /** @return list<bool> */
-    private static function readTypeComparisonResults(string $payload, int $expectedCount): array
     {
         [$kind, $reader] = self::readRequest($payload);
         if ($kind !== self::TYPE_COMPARISON_BATCH_RESPONSE) {
@@ -1638,13 +1666,25 @@ final class Protocol
             throw new ProtocolException("Expected {$expectedCount} type comparison results, received {$count}.");
         }
 
-        $results = [];
+        $answers = [];
         for ($index = 0; $index < $count; ++$index) {
-            $results[] = $reader->readBoolean();
+            $answers[] = self::readTypeComparisonAnswer($reader);
         }
 
         $reader->finish();
-        return $results;
+        return $answers;
+    }
+
+    /** @return array{bool, list<string>} */
+    private static function readTypeComparisonAnswer(PayloadReader $reader): array
+    {
+        $result = $reader->readBoolean();
+        $classLikes = [];
+        for ($index = 0, $count = $reader->readCount(65_536); $index < $count; ++$index) {
+            $classLikes[] = $reader->readBytes();
+        }
+
+        return [$result, $classLikes];
     }
 
     /**

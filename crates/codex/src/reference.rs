@@ -739,21 +739,23 @@ impl SymbolReferences {
     ///
     /// * `codebase`: The codebase whose class hierarchy the cascade follows.
     /// * `codebase_diff`: Information about added, deleted, or modified symbols/signatures.
+    /// * `reads`: The symbols each file's extension hooks and providers read, by logical file name.
     ///
     /// # Returns
     ///
     /// `Some((invalid_signatures, partially_invalid, invalid_files))` on success, where `invalid_signatures` contains
     /// all symbol/member pairs whose signature is invalid (including propagated ones), and `partially_invalid`
     /// contains symbols with at least one invalid member, and classes whose direct parent, interface or trait
-    /// changed. `invalid_files` contains logical file names whose top-level code references a symbol with an
-    /// invalid signature.
+    /// changed. `invalid_files` contains logical file names whose top-level code references, or whose `reads` name,
+    /// a symbol with an invalid signature.
     /// Returns `None` if the propagation exceeds an expense limit (currently 5000 steps).
     #[inline]
     #[must_use]
-    pub fn get_invalid_symbols(
+    pub fn get_invalid_symbols<'reads>(
         &self,
         codebase: &CodebaseMetadata,
         codebase_diff: &CodebaseDiff,
+        reads: impl IntoIterator<Item = (Word, &'reads HashSet<SymbolIdentifier>)>,
     ) -> Option<(HashSet<SymbolIdentifier>, WordSet, WordSet)> {
         let mut invalid_signatures = HashSet::default();
         let mut partially_invalid_symbols = WordSet::default();
@@ -844,6 +846,11 @@ impl SymbolReferences {
         let mut invalid_files = WordSet::default();
         for (file, referenced) in file_references {
             if invalid_signatures.contains(&referenced) {
+                invalid_files.insert(file);
+            }
+        }
+        for (file, read) in reads {
+            if read.iter().any(|symbol| invalid_signatures.contains(symbol)) {
                 invalid_files.insert(file);
             }
         }
@@ -1253,7 +1260,7 @@ mod tests {
         changed.insert((class_a, empty_word()));
         diff = diff.with_changed(changed);
 
-        let result = refs.get_invalid_symbols(&CodebaseMetadata::default(), &diff);
+        let result = refs.get_invalid_symbols(&CodebaseMetadata::default(), &diff, []);
         assert!(result.is_some());
         let (invalid, partially_invalid, invalid_files) = result.unwrap();
 
@@ -1275,9 +1282,32 @@ mod tests {
         changed.insert((changed_class, empty_word()));
         diff = diff.with_changed(changed);
 
-        let (_, _, invalid_files) =
-            references.get_invalid_symbols(&CodebaseMetadata::default(), &diff).expect("invalidation should complete");
+        let (_, _, invalid_files) = references
+            .get_invalid_symbols(&CodebaseMetadata::default(), &diff, [])
+            .expect("invalidation should complete");
         assert_eq!(invalid_files.len(), 1);
         assert!(invalid_files.contains(&file));
+    }
+
+    #[test]
+    fn test_get_invalid_symbols_reaches_a_file_that_read_a_class_whose_member_changed() {
+        let parent = word("parent");
+        let child = word("child");
+        let reader = word("src/reader.php");
+        let unrelated = word("src/unrelated.php");
+        let mut references = SymbolReferences::new();
+        references.add_symbol_reference_to_symbol(child, parent, true);
+
+        let mut diff = crate::diff::CodebaseDiff::new();
+        let mut changed = HashSet::default();
+        changed.insert((parent, word("run")));
+        diff = diff.with_changed(changed);
+
+        let read_child = HashSet::from_iter([(child, empty_word())]);
+        let read_other = HashSet::from_iter([(word("other"), empty_word())]);
+        let (_, _, invalid_files) = references
+            .get_invalid_symbols(&CodebaseMetadata::default(), &diff, [(reader, &read_child), (unrelated, &read_other)])
+            .expect("invalidation should complete");
+        assert_eq!(invalid_files.into_iter().collect::<Vec<_>>(), [reader]);
     }
 }

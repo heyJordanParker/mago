@@ -31,6 +31,7 @@ use crate::metadata::property::PropertyMetadata;
 use crate::metadata::ttype::TypeMetadata;
 use crate::reference::SymbolReferences;
 use crate::signature::FileSignature;
+use crate::symbol::SymbolIdentifier;
 use crate::symbol::SymbolKind;
 use crate::symbol::Symbols;
 use crate::ttype::atomic::TAtomic;
@@ -1055,12 +1056,18 @@ impl CodebaseMetadata {
     ///
     /// * `diff` - The computed diff between old and new code
     /// * `references` - Symbol reference graph from previous run
+    /// * `reads` - The symbols each file's extension hooks and providers read, by logical file name
     ///
     /// # Returns
-    /// Returns the logical names of files whose top-level code references an invalidated
-    /// symbol. Returns `None` if the cascade was too large to compute.
-    pub fn mark_safe_symbols(&mut self, diff: &CodebaseDiff, references: &SymbolReferences) -> Option<WordSet> {
-        let (invalid_symbols, partially_invalid, invalid_files) = references.get_invalid_symbols(self, diff)?;
+    /// Returns the logical names of files whose top-level code references, or whose hooks and
+    /// providers read, an invalidated symbol. Returns `None` if the cascade was too large to compute.
+    pub fn mark_safe_symbols<'reads>(
+        &mut self,
+        diff: &CodebaseDiff,
+        references: &SymbolReferences,
+        reads: impl IntoIterator<Item = (Word, &'reads HashSet<SymbolIdentifier>)>,
+    ) -> Option<WordSet> {
+        let (invalid_symbols, partially_invalid, invalid_files) = references.get_invalid_symbols(self, diff, reads)?;
 
         // Mark all symbols in 'keep' set as safe (unless invalidated by cascade)
         for keep_symbol in diff.get_keep() {

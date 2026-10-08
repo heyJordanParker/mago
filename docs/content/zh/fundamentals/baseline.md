@@ -40,6 +40,8 @@ mago analyze --baseline analysis-baseline.toml
 3. 抑制匹配的问题。
 4. 只报告剩下的问题。
 
+baseline 条目无法隐藏 PHP# 文件中的错误:该错误仍会被报告,并附带一条 `unsuppressible-error` 警告。
+
 也可以在 `mago.toml` 中设置 baseline 路径,这样就不必每次都传 `--baseline`:
 
 ```toml

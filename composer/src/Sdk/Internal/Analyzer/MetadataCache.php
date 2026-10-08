@@ -24,7 +24,7 @@ final class MetadataCache
     /** @var array<string, list<MethodMetadataProjection>> */
     public array $methodProjections = [];
 
-    /** @var array<string, bool> */
+    /** @var array<string, array{bool, list<string>}> each comparison's result and the class-likes it named */
     public array $typeComparisons = [];
 
     public function __construct(

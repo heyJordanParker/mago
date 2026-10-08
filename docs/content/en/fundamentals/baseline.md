@@ -40,6 +40,8 @@ When a baseline is in use, Mago:
 3. Suppresses matches.
 4. Reports only what is left.
 
+A baseline entry can't hide an error in a PHP# file: the error stays reported, with an `unsuppressible-error` warning on it.
+
 You can also set the baseline path in `mago.toml` so you don't have to pass `--baseline` every time:
 
 ```toml
