@@ -67,9 +67,7 @@ final class SourceFileTest extends TestCase
         $noNode = 4_294_967_295;
         $kinds = array_fill(0, 300, NodeKind::Program);
         $kinds[299] = NodeKind::FunctionCall;
-        $nodeRecords =
-            pack('nNNNNN', 0, 0, 10, $noNode, 1, $noNode)
-            . pack('nNNNNN', 299, 1, 4, 0, $noNode, $noNode);
+        $nodeRecords = pack('nNNNNN', 0, 0, 10, $noNode, 1, $noNode) . pack('nNNNNN', 299, 1, 4, 0, $noNode, $noNode);
 
         $scanned = new NodeStore($kinds, $nodeRecords, 2);
         $call = $scanned->getAll(NodeKind::FunctionCall)[0];
