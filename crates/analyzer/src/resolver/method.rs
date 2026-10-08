@@ -49,7 +49,7 @@ use crate::expression::constant_access::field_storage;
 use crate::resolver::class_name::report_non_existent_class_like;
 use crate::resolver::property::DeclaredPropertyKind;
 use crate::resolver::property::get_localized_property_type;
-use crate::resolver::property::localize_property_type;
+use crate::resolver::property::localize_member_type;
 use crate::resolver::property::resolve_declared_property;
 use crate::resolver::selector::resolve_member_selector;
 use crate::utils::expression::analyze_member_object;
@@ -651,17 +651,7 @@ where
         },
     );
 
-    if !declaring_metadata.template_types.is_empty()
-        && let TObject::Named(named_object) = object
-    {
-        returned = localize_property_type(
-            context,
-            &returned,
-            named_object.get_type_parameters().unwrap_or_default(),
-            class_metadata,
-            declaring_metadata,
-        );
-    }
+    localize_member_type(context, &mut returned, object, declaring_metadata);
 
     Some(returned)
 }

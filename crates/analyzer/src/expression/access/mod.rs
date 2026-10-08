@@ -3,7 +3,6 @@ use mago_bytes::BytesDisplay;
 use mago_codex::ttype::add_optional_union_type;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::object::TObject;
-use mago_codex::ttype::atomic::object::named::TNamedObject;
 use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_never;
@@ -117,7 +116,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Access<'arena> {
                     name: StaticPropertyName::Identifier(name),
                     span,
                 }) if is_static_method_value(context, context.resolved_names.get(&class_name.name), name.value) => {
-                    let class = TObject::Named(TNamedObject::new(word(context.resolved_names.get(&class_name.name))));
+                    let class = TObject::new_named(word(context.resolved_names.get(&class_name.name)));
                     let method_type =
                         resolve_method_value(context, block_context, artifacts, &class, word(name.value), span)
                             .unwrap_or_else(get_mixed);
@@ -419,7 +418,7 @@ where
             object.analyze(context, block_context, artifacts)?;
             let mut method_type = None;
             for class in classes {
-                let class = TObject::Named(TNamedObject::new(class));
+                let class = TObject::new_named(class);
                 let value = resolve_method_value(context, block_context, artifacts, &class, word(name.value), span)
                     .unwrap_or_else(get_mixed);
                 method_type = Some(add_optional_union_type(value, method_type.as_ref(), context.codebase));

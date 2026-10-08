@@ -5212,13 +5212,13 @@ fn an_override_of_a_method_returning_self_returns_self() {
 
 /// G1 erases type arguments, so `new` on a class value of a generic PHP# class can't give the object its type
 /// arguments: it is refused as `new` and the class value the code writes, with or without type arguments, and its
-/// arguments, on one line or many, are `(…)`. `new` on a class value of a class
-/// without type parameters, spec section 25, and `new Self(…)` in an instance method stay legal. The PHP twin's
+/// arguments are `(…)`. `new` on a class value of a class without type parameters, spec section 25, and `new Self(…)`
+/// in an instance method stay legal. The PHP twin's
 /// `new $type()` on a `class-string` of the PHP# class keeps Mago's issues.
 #[test]
 fn new_on_a_class_value_of_a_generic_class_is_not_supported_yet() {
     let classes = "namespace Demo;\n\npublic class Box<TItem>\n{\n    public required Box()\n    {\n    }\n\n    public Self copy() => new Self();\n\n    public TItem? first() => null;\n}\n\npublic class Plain\n{\n    public required Plain()\n    {\n    }\n}\n";
-    let sharp = "namespace Demo;\n\npublic class Report\n{\n    private Class<Box> kind = typeof(Box);\n\n    private Class<Plain> plain = typeof(Plain);\n\n    public Any? make() => new (this.kind)();\n\n    public Any? typed() => new (this.kind)<string>();\n\n    public Plain made() => new (this.plain)();\n\n    public Any? held()\n    {\n        return new (this.kind)();\n    }\n\n    public Any? built()\n    {\n        return new (this.kind)(\n            (int number) => {\n                return number;\n            }\n        );\n    }\n}\n";
+    let sharp = "namespace Demo;\n\npublic class Report\n{\n    private Class<Box> kind = typeof(Box);\n\n    private Class<Plain> plain = typeof(Plain);\n\n    public Any? make() => new (this.kind)();\n\n    public Any? typed() => new (this.kind)<string>();\n\n    public Plain made() => new (this.plain)();\n\n    public Any? held()\n    {\n        return new (this.kind)();\n    }\n}\n";
     let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    /** @param class-string<Box> $type */\n    public static function make(string $type): mixed\n    {\n        return new $type();\n    }\n\n    /** @param class-string<Plain> $type */\n    public static function plain(string $type): Plain\n    {\n        return new $type();\n    }\n}\n";
     let because = "because type arguments don't reach the running program. | Not supported yet.";
 
@@ -5230,8 +5230,6 @@ fn new_on_a_class_value_of_a_generic_class_is_not_supported_yet() {
             format!("9:31 not-supported-yet `new (this.kind)(…)` can't run yet, {because}"),
             format!("11:32 not-supported-yet `new (this.kind)(…)` can't run yet, {because}"),
             format!("17:20 not-supported-yet `new (this.kind)(…)` can't run yet, {because}"),
-            format!("22:20 not-supported-yet `new (this.kind)(…)` can't run yet, {because}"),
-            "23:13 too-many-arguments Too many arguments provided for method `Demo\\Box::__construct`. | Unexpected argument provided here | For this method call | Expected 0 argument(s), but received 1. | Remove the extra argument(s).".to_owned(),
         ]
     );
 }
@@ -5274,26 +5272,35 @@ fn a_php_intersection_key_with_a_backed_enum_keeps_upstreams_key_type() {
     );
 }
 
-/// An erased type is named as PHP# writes it, `Entity` or `Order?`, and as PHP's only where PHP# has no word for a part
-/// of it, `mixed` and `array`, so `array|null` is PHP's whole. The PHP twin keeps Mago's issues.
+/// An erased type is named as PHP# writes it, `Entity`, `Order?` or `Iterable<Any?>`, and as PHP's only where PHP# has
+/// no word for a part of it, `mixed`, `array` and `Closure`, so `array|null` is PHP's whole. The PHP twin keeps Mago's
+/// issues.
 #[test]
 fn an_erased_parameter_type_is_named_as_sharp_writes_it() {
-    let sharp = "namespace Demo;\n\npublic abstract class Entity\n{\n}\n\npublic class Order : Entity\n{\n}\n\npublic class Box<TItem : Entity>\n{\n    public virtual void put(TItem item)\n    {\n    }\n\n    public virtual void fill(TItem? item)\n    {\n    }\n}\n\npublic class OrderBox : Box<Order>\n{\n    public override void put(Order item)\n    {\n    }\n\n    public override void fill(Order? item)\n    {\n    }\n}\n\npublic class Slot<TValue>\n{\n    public virtual void keep(TValue value)\n    {\n    }\n}\n\npublic class ListSlot : Slot<List<int>?>\n{\n    public override void keep(List<int>? value)\n    {\n    }\n}\n";
-    let php = "<?php\n\nnamespace Demo;\n\nabstract class Entity\n{\n}\n\nclass Order extends Entity\n{\n}\n\n/** @template TItem of Entity */\nclass Box\n{\n    /** @param TItem $item */\n    public function put(Entity $item): void\n    {\n    }\n}\n\n/** @extends Box<Order> */\nclass OrderBox extends Box\n{\n    public function put(Entity $item): void\n    {\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Feed;\n\npublic abstract class Entity\n{\n}\n\npublic class Order : Entity\n{\n}\n\npublic class Box<TItem : Entity>\n{\n    public virtual void put(TItem item)\n    {\n    }\n\n    public virtual void fill(TItem? item)\n    {\n    }\n}\n\npublic class OrderBox : Box<Order>\n{\n    public override void put(Order item)\n    {\n    }\n\n    public override void fill(Order? item)\n    {\n    }\n}\n\npublic class Slot<TValue>\n{\n    public virtual void keep(TValue value)\n    {\n    }\n}\n\npublic class ListSlot : Slot<List<int>?>\n{\n    public override void keep(List<int>? value)\n    {\n    }\n}\n\npublic class FunctionSlot : Slot<Function<int(int)>>\n{\n    public override void keep(Function<int(int)> value)\n    {\n    }\n}\n\npublic class Numbers : Feed<List<int>>\n{\n    public override void keep(List<int> values)\n    {\n    }\n}\n";
+    let feed = "<?php\n\nnamespace Lib;\n\n/** @template T of iterable */\nabstract class Feed\n{\n    /** @param T $values */\n    abstract public function keep(iterable $values): void;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Feed;\n\nabstract class Entity\n{\n}\n\nclass Order extends Entity\n{\n}\n\n/** @template TItem of Entity */\nclass Box\n{\n    /** @param TItem $item */\n    public function put(Entity $item): void\n    {\n    }\n}\n\n/** @extends Box<Order> */\nclass OrderBox extends Box\n{\n    public function put(Entity $item): void\n    {\n    }\n}\n\n/** @extends Feed<list<int>> */\nclass Numbers extends Feed\n{\n    /** @param list<int> $values */\n    public function keep(iterable $values): void\n    {\n    }\n}\n";
+    let others = [("src/Lib/Feed.php", feed)];
     let note = "PHP# erases type parameters when it compiles, and PHP refuses a parameter narrower than the one it overrides when it links the class.";
 
-    assert_eq!(worded(("src/Demo/Box.php", php), &[]), Vec::<String>::new());
+    assert_eq!(worded(("src/Demo/Box.php", php), &others), Vec::<String>::new());
     assert_eq!(
-        worded(("src/Demo/Box.sharp", sharp), &[]),
+        worded(("src/Demo/Box.sharp", sharp), &others),
         [
             format!(
-                "28:38 incompatible-parameter-type Parameter `item` of `OrderBox.fill` must take at least `Entity?`, the type `Box.fill` erases it to. | Erases to `Order?`. | `Box.fill` takes `Entity?` once its type parameters are erased. | {note} | Write `item` with a type that erases to `Entity?`, or bound the type parameter, as in `Box<TItem : Order>`, so both sides erase to the bound."
+                "30:38 incompatible-parameter-type Parameter `item` of `OrderBox.fill` must take at least `Entity?`, the type `Box.fill` erases it to. | Erases to `Order?`. | `Box.fill` takes `Entity?` once its type parameters are erased. | {note} | Write `item` with a type that erases to `Entity?`, or bound the type parameter, as in `Box<TItem : Order>`, so both sides erase to the bound."
             ),
             format!(
-                "24:36 incompatible-parameter-type Parameter `item` of `OrderBox.put` must take at least `Entity`, the type `Box.put` erases it to. | Erases to `Order`. | `Box.put` takes `Entity` once its type parameters are erased. | {note} | Write `item` with a type that erases to `Entity`, or bound the type parameter, as in `Box<TItem : Order>`, so both sides erase to the bound."
+                "26:36 incompatible-parameter-type Parameter `item` of `OrderBox.put` must take at least `Entity`, the type `Box.put` erases it to. | Erases to `Order`. | `Box.put` takes `Entity` once its type parameters are erased. | {note} | Write `item` with a type that erases to `Entity`, or bound the type parameter, as in `Box<TItem : Order>`, so both sides erase to the bound."
             ),
             format!(
-                "42:42 incompatible-parameter-type Parameter `value` of `ListSlot.keep` must take at least PHP's `mixed`, the type `Slot.keep` erases it to. | Erases to PHP's `array|null`. | `Slot.keep` takes PHP's `mixed` once its type parameters are erased. | {note} | Write `value` with a type that erases to PHP's `mixed`."
+                "44:42 incompatible-parameter-type Parameter `value` of `ListSlot.keep` must take at least PHP's `mixed`, the type `Slot.keep` erases it to. | Erases to PHP's `array|null`. | `Slot.keep` takes PHP's `mixed` once its type parameters are erased. | {note} | Write `value` with a type that erases to PHP's `mixed`."
+            ),
+            format!(
+                "51:50 incompatible-parameter-type Parameter `value` of `FunctionSlot.keep` must take at least PHP's `mixed`, the type `Slot.keep` erases it to. | Erases to PHP's `Closure`. | `Slot.keep` takes PHP's `mixed` once its type parameters are erased. | {note} | Write `value` with a type that erases to PHP's `mixed`."
+            ),
+            format!(
+                "58:41 incompatible-parameter-type Parameter `values` of `Numbers.keep` must take at least `Iterable<Any?>`, the type `Feed.keep` erases it to. | Erases to PHP's `array`. | `Feed.keep` takes `Iterable<Any?>` once its type parameters are erased. | {note} | Write `values` with a type that erases to `Iterable<Any?>`."
             ),
         ]
     );
@@ -5326,6 +5333,51 @@ fn a_method_value_is_specialized_for_its_receiver() {
     );
 }
 
+/// A method value's `Self` is its receiver, whose type arguments may name the class's own type parameters, so the
+/// method's `TItem` becomes the receiver's type argument before `Self` becomes the receiver: `boxes.same` on a
+/// `Box<List<TItem>>` inside `Box<TItem>` is a `Function<Box<List<TItem>>()>`, not a
+/// `Function<Box<List<List<TItem>>>()>`. The PHP twin's `$boxes->same(...)` keeps Mago's issues.
+#[test]
+fn a_method_value_of_a_receiver_naming_its_own_type_parameter_replaces_it_once() {
+    let sharp = "namespace Demo;\n\npublic class Box<TItem>\n{\n    public Self same() => this;\n\n    public Function<Box<List<TItem>>()> read(Box<List<TItem>> boxes) => boxes.same;\n\n    public Function<Box<List<List<TItem>>>()> wrong(Box<List<TItem>> boxes) => boxes.same;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\n/** @template TItem */\nclass Box\n{\n    public function same(): static\n    {\n        return $this;\n    }\n\n    /**\n     * @param Box<list<TItem>> $boxes\n     * @return \\Closure(): Box<list<TItem>>\n     */\n    public function read(Box $boxes): \\Closure\n    {\n        return $boxes->same(...);\n    }\n\n    /**\n     * @param Box<list<TItem>> $boxes\n     * @return \\Closure(): Box<list<list<TItem>>>\n     */\n    public function wrong(Box $boxes): \\Closure\n    {\n        return $boxes->same(...);\n    }\n}\n";
+
+    assert_eq!(
+        explained(("src/Demo/Box.php", php), &[]),
+        [
+            "19:16 less-specific-nested-return-statement Returned type `(closure(): demo\\box<mixed>&static)` is less specific than the declared return type `(closure(): Demo\\Box<list<('TItem.demo\\box extends mixed)>>)` for function `Demo\\Box::read` due to nested 'mixed'. Ensure the structure returned by `Demo\\Box::read` strictly adheres to the types specified in the `(closure(): Demo\\Box<list<('TItem.demo\\box extends mixed)>>)` return type declaration.",
+            "28:16 less-specific-nested-return-statement Returned type `(closure(): demo\\box<mixed>&static)` is less specific than the declared return type `(closure(): Demo\\Box<list<list<('TItem.demo\\box extends mixed)>>>)` for function `Demo\\Box::wrong` due to nested 'mixed'. Ensure the structure returned by `Demo\\Box::wrong` strictly adheres to the types specified in the `(closure(): Demo\\Box<list<list<('TItem.demo\\box extends mixed)>>>)` return type declaration.",
+        ]
+    );
+    assert_eq!(
+        explained(("src/Demo/Box.sharp", sharp), &[]),
+        [
+            "9:80 invalid-return-statement Invalid return type for function `Demo\\Box::wrong`: expected `Function<Box<List<List<TItem>>>()>`, but found `Function<Box<List<TItem>>()>`. Change the return value to match `Function<Box<List<List<TItem>>>()>`, or update the function's return type declaration."
+        ]
+    );
+}
+
+/// Only a PHP# function type erases to PHP's `Closure`: PHP's `callable` stays `callable`, so an override taking a
+/// `Function<int(int)>` where a PHP parent takes a `callable` is refused, as PHP refuses it when it links the class.
+/// The PHP twin's `\Closure` parameter keeps Mago's issues.
+#[test]
+fn an_override_of_a_php_callable_parameter_must_take_a_callable() {
+    let runner = "<?php\n\nnamespace Lib;\n\nabstract class Runner\n{\n    /** @param \\Closure(int): int $step */\n    abstract public function run(callable $step): void;\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Runner;\n\npublic class Steps : Runner\n{\n    public override void run(Function<int(int)> step)\n    {\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Runner;\n\nclass Steps extends Runner\n{\n    /** @param \\Closure(int): int $step */\n    public function run(\\Closure $step): void\n    {\n    }\n}\n";
+    let others = [("src/Lib/Runner.php", runner)];
+
+    let note = "PHP# erases type parameters when it compiles, and PHP refuses a parameter narrower than the one it overrides when it links the class.";
+
+    assert_eq!(worded(("src/Demo/Steps.php", php), &others), Vec::<String>::new());
+    assert_eq!(
+        worded(("src/Demo/Steps.sharp", sharp), &others),
+        [format!(
+            "7:49 incompatible-parameter-type Parameter `step` of `Steps.run` must take at least PHP's `callable`, the type `Runner.run` erases it to. | Erases to PHP's `Closure`. | `Runner.run` takes PHP's `callable` once its type parameters are erased. | {note} | Write `step` with a type that erases to PHP's `callable`."
+        )]
+    );
+}
+
 /// A plain PHP caller of a PHP# method reads its signature as PHP# writes it, spec section 11, so `Self` is the
 /// receiver's own type: `same()` on a `Pair<int, string>` returns a `Pair<int, string>`. A plain PHP method returning
 /// `static` keeps Mago's issues.
@@ -5355,30 +5407,6 @@ fn a_php_template_key_beside_a_backed_enum_binds_as_upstream_binds_it() {
         explained(("src/Demo/Tally.php", php), &[("src/Lib/Status.php", STATUS)]),
         [
             "30:16 invalid-return-statement Invalid return type for function `Demo\\Tally::run`: expected `int`, but found `string`. Change the return value to match `int`, or update the function's return type declaration."
-        ]
-    );
-}
-
-/// A function type erases to PHP's `Closure` and a plain PHP `iterable` stays PHP's `iterable`, types PHP# has no word
-/// for, so they are named as PHP's, as `mixed` and `array` are. The PHP twin keeps Mago's issues.
-#[test]
-fn an_erased_closure_or_iterable_is_named_as_php_writes_it() {
-    let sharp = "namespace Demo;\n\nimport Lib.Feed;\n\npublic class Slot<TValue>\n{\n    public virtual void keep(TValue value)\n    {\n    }\n}\n\npublic class FunctionSlot : Slot<Function<int(int)>>\n{\n    public override void keep(Function<int(int)> value)\n    {\n    }\n}\n\npublic class Numbers : Feed<List<int>>\n{\n    public override void keep(List<int> values)\n    {\n    }\n}\n";
-    let feed = "<?php\n\nnamespace Lib;\n\n/** @template T of iterable */\nabstract class Feed\n{\n    /** @param T $values */\n    abstract public function keep(iterable $values): void;\n}\n";
-    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Feed;\n\n/** @extends Feed<list<int>> */\nclass Numbers extends Feed\n{\n    /** @param list<int> $values */\n    public function keep(iterable $values): void\n    {\n    }\n}\n";
-    let others = [("src/Lib/Feed.php", feed)];
-
-    assert_eq!(worded(("src/Demo/Numbers.php", php), &others), Vec::<String>::new());
-    let note = "PHP# erases type parameters when it compiles, and PHP refuses a parameter narrower than the one it overrides when it links the class.";
-    assert_eq!(
-        worded(("src/Demo/Slot.sharp", sharp), &others),
-        [
-            format!(
-                "14:50 incompatible-parameter-type Parameter `value` of `FunctionSlot.keep` must take at least PHP's `mixed`, the type `Slot.keep` erases it to. | Erases to PHP's `Closure`. | `Slot.keep` takes PHP's `mixed` once its type parameters are erased. | {note} | Write `value` with a type that erases to PHP's `mixed`."
-            ),
-            format!(
-                "21:41 incompatible-parameter-type Parameter `values` of `Numbers.keep` must take at least PHP's `iterable`, the type `Feed.keep` erases it to. | Erases to PHP's `array`. | `Feed.keep` takes PHP's `iterable` once its type parameters are erased. | {note} | Write `values` with a type that erases to PHP's `iterable`."
-            ),
         ]
     );
 }

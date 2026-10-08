@@ -202,7 +202,10 @@ pub(crate) fn display_sharp_member(class_name: Word, member_name: impl std::fmt:
 /// as C# names an accessor in its messages.
 #[must_use]
 pub(crate) fn display_sharp_accessor(class_name: Word, property_name: Word, hook_name: Word) -> String {
-    format!("{}.{}.{hook_name}", short_name(class_name), property_name.as_str_lossy().trim_start_matches('$'))
+    display_sharp_member(
+        class_name,
+        format_args!("{}.{hook_name}", property_name.as_str_lossy().trim_start_matches('$')),
+    )
 }
 
 /// The names `names` as an English list, each in backticks: "`A`", "`A` and `B`", "`A`, `B` and `C`".

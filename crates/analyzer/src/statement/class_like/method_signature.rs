@@ -20,6 +20,7 @@ use mago_codex::ttype::expander::StaticClassType;
 use mago_codex::ttype::expander::TypeExpansionOptions;
 use mago_codex::ttype::expander::expand_union;
 use mago_codex::ttype::get_mixed;
+use mago_codex::ttype::get_mixed_callable;
 use mago_codex::ttype::get_mixed_closure;
 use mago_codex::ttype::get_mixed_iterable;
 use mago_codex::ttype::get_mixed_keyed_array;
@@ -561,8 +562,9 @@ pub(super) fn erased_type_help(name: impl std::fmt::Display, erased_parent_type:
 
 /// The type PHP sees for `r#type`, a PHP# type, once generics are erased, as the bridge's `erase` writes it: a type
 /// parameter is its bound, or `mixed` without one, and its bound's classes joined with `&` one intersection; a generic
-/// class is its class; `Class<T>` is `string`; a `List` or a `Map` is `array`; a function type is `Closure`; and `Any`
-/// is `mixed`. Members that erase to one type are one type.
+/// class is its class; `Class<T>` is `string`; a `List` or a `Map` is `array`; a function type, which is a closure
+/// signature, is `Closure`, and PHP's `callable` stays `callable`; and `Any` is `mixed`. Members that erase to one type
+/// are one type.
 pub(super) fn erase(r#type: &TUnion, codebase: &CodebaseMetadata) -> TUnion {
     let erased = r#type
         .types
@@ -572,7 +574,8 @@ pub(super) fn erase(r#type: &TUnion, codebase: &CodebaseMetadata) -> TUnion {
             TAtomic::Mixed(_) => get_mixed().types.into_owned(),
             TAtomic::Array(_) => get_mixed_keyed_array().types.into_owned(),
             TAtomic::Iterable(_) => get_mixed_iterable().types.into_owned(),
-            TAtomic::Callable(_) => get_mixed_closure().types.into_owned(),
+            TAtomic::Callable(callable) if callable.is_closure() => get_mixed_closure().types.into_owned(),
+            TAtomic::Callable(_) => get_mixed_callable().types.into_owned(),
             TAtomic::Scalar(TScalar::ClassLikeString(_)) => get_string().types.into_owned(),
             TAtomic::Object(TObject::Named(object)) => {
                 let mut object = object.clone();
@@ -593,13 +596,15 @@ pub(super) fn erase(r#type: &TUnion, codebase: &CodebaseMetadata) -> TUnion {
 }
 
 /// The type `erased`, which `erase` returns, in backticks, as a `dialect` file writes it. PHP writes it as in a
-/// declaration, `array`, `iterable`, `Closure`, `mixed`, or a class by its full name. PHP# writes it as
-/// `display_sharp_type` does, `Order` or `Entity?`, but has no `mixed`, `array`, `iterable` or `Closure`, so a PHP#
-/// file writes a type with any of them in it as PHP's, as in PHP's `mixed`, PHP's `Closure` or PHP's `array|null`.
+/// declaration, `array`, `iterable`, `Closure`, `callable`, `mixed`, or a class by its full name. PHP# writes it as
+/// `display_sharp_type` does, `Order`, `Entity?` or `Iterable<Any?>`, but has no `mixed`, `array`, `Closure` or
+/// `callable`, so a PHP# file writes a type with any of them in it as PHP's, as in PHP's `mixed`, PHP's `Closure` or
+/// PHP's `array|null`.
 pub(super) fn display_erased(erased: &TUnion, dialect: Dialect, codebase: &CodebaseMetadata) -> String {
-    let is_php_only = erased.types.iter().any(|atomic| {
-        matches!(atomic, TAtomic::Mixed(_) | TAtomic::Array(_) | TAtomic::Iterable(_) | TAtomic::Callable(_))
-    });
+    let is_php_only = erased
+        .types
+        .iter()
+        .any(|atomic| matches!(atomic, TAtomic::Mixed(_) | TAtomic::Array(_) | TAtomic::Callable(_)));
     if dialect.is_sharp() && !is_php_only {
         return format!("`{}`", display_sharp_type(erased, codebase));
     }
@@ -610,7 +615,8 @@ pub(super) fn display_erased(erased: &TUnion, dialect: Dialect, codebase: &Codeb
         .map(|atomic| match atomic {
             TAtomic::Array(_) => "array".to_owned(),
             TAtomic::Iterable(_) => "iterable".to_owned(),
-            TAtomic::Callable(_) => "Closure".to_owned(),
+            TAtomic::Callable(callable) if callable.is_closure() => "Closure".to_owned(),
+            TAtomic::Callable(_) => "callable".to_owned(),
             atomic => atomic.get_id().to_string(),
         })
         .collect();

@@ -1230,7 +1230,7 @@ where
 
 /// Localizes `member_type`, which `declaring_class` declares, for a read through `receiver`: the declaring class's type
 /// parameters become the receiver's type arguments, or the ones the receiver's class names in its header.
-fn localize_member_type<A>(
+pub(crate) fn localize_member_type<A>(
     context: &Context<'_, '_, A>,
     member_type: &mut TUnion,
     receiver: &TObject,
@@ -1289,8 +1289,7 @@ where
 }
 
 /// The declared type of the property `property_name` read through `receiver`, from its first object that declares it,
-/// as `find_property_in_class` localizes a read: the declaring class's type parameters become that object's type
-/// arguments, or the ones the object's class names in its header.
+/// localized by `localize_member_type`.
 pub(crate) fn get_localized_property_type<A>(
     context: &Context<'_, '_, A>,
     receiver: &TUnion,
@@ -1304,21 +1303,14 @@ where
             return None;
         };
         let class_name = object.get_name()?;
-        let property_type = context.codebase.get_property_type(class_name.as_bytes(), property_name.as_bytes())?;
+        let mut property_type =
+            context.codebase.get_property_type(class_name.as_bytes(), property_name.as_bytes())?.clone();
         let declaring_class_name =
             context.codebase.get_declaring_property_class(class_name.as_bytes(), property_name.as_bytes())?;
         let declaring_class = context.codebase.get_class_like(declaring_class_name.as_bytes())?;
-        if declaring_class.template_types.is_empty() {
-            return Some(property_type.clone());
-        }
+        localize_member_type(context, &mut property_type, object, declaring_class);
 
-        Some(localize_property_type(
-            context,
-            property_type,
-            object.get_type_parameters().unwrap_or_default(),
-            context.codebase.get_class_like(class_name.as_bytes())?,
-            declaring_class,
-        ))
+        Some(property_type)
     })
 }
 
@@ -1586,8 +1578,8 @@ fn report_possibly_non_existent_property<A>(
 /// Spec section 14.3: a PHP# read `x.name` of a class with no property `name` gives its method `name` as a closure,
 /// as PHP's `$x->name(...)` does, and `Class.name` gives its static method, as `Class::name(...)` does. The engine
 /// runs both on the read's missing-member path. Reports a method the read cannot reach, as the call would. Returns
-/// the closure's type, the method of `receiver`: `Self` is the receiver, and the declaring class's type parameters are
-/// the receiver's type arguments, as a property read localizes them.
+/// the closure's type, the method of `receiver`, localized by `localize_member_type` before `Self` becomes the receiver,
+/// so a receiver's type argument that names the class's own type parameter is replaced once.
 pub(crate) fn resolve_method_value<A>(
     context: &mut Context<'_, '_, A>,
     block_context: &BlockContext<'_>,
@@ -1628,16 +1620,17 @@ where
         &FunctionLikeIdentifier::Method(class_name, method.get_method_name()),
         context.codebase.get_method_by_id(&method)?,
         context.codebase,
-        &TypeExpansionOptions {
-            self_class: Some(class_name),
-            static_class_type: StaticClassType::Object(receiver.clone()),
-            ..Default::default()
-        },
+        &TypeExpansionOptions { self_class: Some(class_name), ..Default::default() },
     );
     signature.is_closure = true;
 
     let mut method_type = TUnion::from_atomic(TAtomic::Callable(TCallable::Signature(signature)));
     localize_member_type(context, &mut method_type, receiver, declaring_class);
+    expander::expand_union(
+        context.codebase,
+        &mut method_type,
+        &TypeExpansionOptions { static_class_type: StaticClassType::Object(receiver.clone()), ..Default::default() },
+    );
 
     Some(method_type)
 }
