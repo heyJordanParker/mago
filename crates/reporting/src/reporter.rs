@@ -12,8 +12,10 @@ use std::io::Write;
 
 use mago_database::ReadDatabase;
 
+use crate::Issue;
 use crate::IssueCollection;
 use crate::Level;
+use crate::UNSUPPRESSIBLE_ERROR;
 use crate::baseline::Baseline;
 use crate::color::ColorChoice;
 use crate::error::ReportingError;
@@ -110,63 +112,13 @@ impl Reporter {
     /// # Errors
     ///
     /// Returns a [`ReportingError`] if formatting or writing the issues fails.
-    pub fn report(
-        &self,
-        mut issues: IssueCollection,
-        baseline: Option<Baseline>,
-    ) -> Result<ReportStatus, ReportingError> {
+    pub fn report(&self, issues: IssueCollection, baseline: Option<Baseline>) -> Result<ReportStatus, ReportingError> {
         let mut writer = self.config.target.resolve();
-
-        // Apply baseline filtering
-        let mut baseline_dead_issues = 0;
-        let mut baseline_filtered_issues = 0;
-        if let Some(baseline) = baseline {
-            let original_count = issues.len();
-            let comparison = baseline.compare_with_issues(&issues, &self.database);
-            let filtered_issues = baseline.filter_issues(issues, &self.database);
-
-            baseline_filtered_issues = original_count - filtered_issues.len();
-            baseline_dead_issues = comparison.removed_issues.len();
-            issues = filtered_issues;
-        }
-
-        // Track reported issue stats before formatting
-        let total_reported_issues = issues.len();
-        let highest_reported_level = issues.get_highest_level();
-        let lowest_reported_level = issues.get_lowest_level();
-
-        // Early return if no issues to report
-        if total_reported_issues == 0 && !self.config.format.requires_output_when_empty() {
-            return Ok(ReportStatus {
-                baseline_dead_issues,
-                baseline_filtered_issues,
-                highest_reported_level: None,
-                lowest_reported_level: None,
-                total_reported_issues: 0,
-            });
-        }
-
-        // Build formatter config
-        let formatter_config = FormatterConfig {
-            color_choice: self.config.color_choice,
-            sort: self.config.sort,
-            minimum_level: self.config.minimum_report_level,
-            filter_fixable: self.config.filter_fixable,
-            editor_url: self.config.editor_url.clone(),
-        };
-
-        // Dispatch to the appropriate formatter
-        dispatch_format(self.config.format, &mut *writer, &issues, &self.database, &formatter_config)?;
+        let status = self.report_to(issues, baseline, &mut writer)?;
         // When writing to pipes, some formatters do not flush the last line of json
         writer.flush()?;
 
-        Ok(ReportStatus {
-            baseline_dead_issues,
-            baseline_filtered_issues,
-            highest_reported_level,
-            lowest_reported_level,
-            total_reported_issues,
-        })
+        Ok(status)
     }
 
     /// Report issues to a custom writer.
@@ -204,11 +156,18 @@ impl Reporter {
         let mut baseline_dead_issues = 0;
         let mut baseline_filtered_issues = 0;
         if let Some(baseline) = baseline {
+            let is_unsuppressible_error = |issue: &&Issue| issue.code.as_deref() == Some(UNSUPPRESSIBLE_ERROR);
             let original_count = issues.len();
+            let original_warnings: Vec<Issue> = issues.iter().filter(is_unsuppressible_error).cloned().collect();
             let comparison = baseline.compare_with_issues(&issues, &self.database);
             let filtered_issues = baseline.filter_issues(issues, &self.database);
+            let added_warnings = filtered_issues
+                .iter()
+                .filter(is_unsuppressible_error)
+                .filter(|issue| !original_warnings.contains(issue))
+                .count();
 
-            baseline_filtered_issues = original_count - filtered_issues.len();
+            baseline_filtered_issues = original_count + added_warnings - filtered_issues.len();
             baseline_dead_issues = comparison.removed_issues.len();
             issues = filtered_issues;
         }
