@@ -38,6 +38,7 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::expression::binary::concat::fold_concat_operands;
+use crate::expression::binary::utils::analyze_instance_operator;
 
 #[inline]
 pub fn analyze_arithmetic_operation<'ctx, 'arena, A>(
@@ -62,6 +63,15 @@ where
     if left_type.is_never() || right_type.is_never() {
         assign_arithmetic_type(artifacts, get_never(), binary);
         return Ok(());
+    }
+
+    // A PHP# operator on an instance runs the operator its class declares, checked as the static call it runs as.
+    if context.dialect.is_sharp() {
+        let operands = [(binary.lhs, left_type.as_ref()), (binary.rhs, right_type.as_ref())];
+        if let Some(result_type) = analyze_instance_operator(context, &binary.operator, &operands, binary.span()) {
+            assign_arithmetic_type(artifacts, result_type, binary);
+            return Ok(());
+        }
     }
 
     // In PHP# `+` joins two strings, as PHP's `.` does, and adds two numbers, as spec section 18 decides. A string

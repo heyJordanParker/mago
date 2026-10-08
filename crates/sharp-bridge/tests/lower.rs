@@ -6806,20 +6806,21 @@ fn as_is_a_conditional_that_gives_the_value_or_null() {
 /// ```php
 /// $limit = 10;
 /// $a = $extra === 200;
-/// $b = $extra >= 1 && $extra < $limit || !($extra === -1);
+/// $b = \is_int($extra) && $extra >= 1 && $extra < $limit || !($extra === -1);
 /// $c = $extra === $limit;
 /// $d = \is_object($extra) && (${'match#1'} = $extra->count) > 0 && \is_string($label = $extra->name);
 /// ```
 ///
 /// A value is compared with `===`, a comparison keeps its operator, and `and`, `or` and `not` are `&&`, `||` and
 /// `!`. A bare name is the local's value when a local of that name is in scope. A properties pattern tests that the
-/// value is an object, then reads each property once.
+/// value is an object, then reads each property once. A comparison orders a `Calc`, which declares no `operator <=>`,
+/// only once `int` has ruled it out.
 #[test]
 fn values_comparisons_and_properties_are_the_php_comparisons_they_name() {
     assert_eq!(
         body_in(
             "Calc|int run(Calc|int extra)",
-            "        let limit = 10;\n        const a = extra is 200;\n        const b = extra is >= 1 and < limit or (not -1);\n        const c = extra is limit;\n        const d = extra is { count: > 0, name: string label };\n        return extra;\n",
+            "        let limit = 10;\n        const a = extra is 200;\n        const b = extra is int and >= 1 and < limit or (not -1);\n        const c = extra is limit;\n        const d = extra is { count: > 0, name: string label };\n        return extra;\n",
             &[(
                 "src/Lib/Calc.php",
                 "<?php namespace Lib; final class Calc { public int $count = 0; public ?string $name = null; }",
@@ -6843,10 +6844,16 @@ fn values_comparisons_and_properties_are_the_php_comparisons_they_name() {
                   ZVAL "b"
                 OR
                   AND
-                    GREATER_EQUAL
-                      VAR
-                        ZVAL "extra"
-                      ZVAL 1
+                    AND
+                      CALL
+                        ZVAL "is_int"
+                        ARG_LIST
+                          VAR
+                            ZVAL "extra"
+                      GREATER_EQUAL
+                        VAR
+                          ZVAL "extra"
+                        ZVAL 1
                     BINARY_OP [20]
                       VAR
                         ZVAL "extra"
@@ -8223,8 +8230,8 @@ fn a_form_fingerprint_follows_its_body_and_not_its_lines() {
     assert_ne!(fingerprint(&TEXT.1.replace("strtoupper", "strtolower")), fingerprint(TEXT.1));
 }
 
-/// `Money`, which declares `==`, `+` and unary `-` on lines 7, 9 and 11.
-const MONEY: &str = "namespace App;\n\npublic class Money\n{\n    public int hash() => 1;\n\n    public static bool operator ==(Money a, Money b) => true;\n\n    public static Money operator +(Money a, Money b) => a;\n\n    public static Money operator -(Money a) => a;\n}\n";
+/// `Money`, which declares `==`, `+`, unary `-` and `<=>` on lines 7, 9, 11 and 13.
+const MONEY: &str = "namespace App;\n\npublic class Money\n{\n    public int hash() => 1;\n\n    public static bool operator ==(Money a, Money b) => true;\n\n    public static Money operator +(Money a, Money b) => a;\n\n    public static Money operator -(Money a) => a;\n\n    public static int operator <=>(Money a, Money b) => 0;\n}\n";
 
 /// ```php
 /// public static function op_Equality(?\App\Money $a, ?\App\Money $b): bool
@@ -8344,6 +8351,243 @@ fn addition_and_negation_are_their_static_methods_without_a_prologue() {
                     ZVAL "a"
               ZVAL "App\\Money"
               null
+        "#}
+    );
+}
+
+/// `App\Order`, which extends `Money` and declares no operator.
+const ORDER_OF_MONEY: (&str, &str) = ("src/App/Order.sharp", "namespace App;\n\npublic class Order : Money\n{\n}\n");
+
+/// The statements of `run`, declared with `signature` and holding `statements`, in `App\Ledger`, whose `total` holds a
+/// `Money` and whose `current()` returns it, lowered beside `Money` and `Order`.
+fn ledger_body(signature: &str, statements: &str) -> String {
+    let code = format!(
+        "namespace App;\n\nclass Ledger\n{{\n    public Money total {{ get; set; }}\n\n    public Ledger(Money total)\n    {{\n        this.total = total;\n    }}\n\n    public Ledger current() => this;\n\n    public {signature}\n    {{\n{statements}    }}\n}}\n"
+    );
+
+    Lowered::with(&code, &[("src/App/Money.sharp", MONEY), ORDER_OF_MONEY]).body()
+}
+
+/// ```php
+/// if ($c === null) { return \App\Money::op_Equality($a, $b); }
+/// return !\App\Money::op_Equality($a, $c);
+/// ```
+///
+/// `==` on instances calls the `operator ==` their class declares, and `!=` is its `!`, which is `ZEND_BOOL_NOT`, 14.
+/// The method lifts a nullable side itself. `== null` tests for null with `===`, which is 16, and calls nothing.
+#[test]
+fn equality_of_instances_calls_op_equality_and_inequality_negates_it() {
+    assert_eq!(
+        ledger_body(
+            "bool run(Money a, Money b, Money? c)",
+            "        if (c == null) {\n            return a == b;\n        }\n        return a != c;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              IF
+                IF_ELEM
+                  BINARY_OP [16]
+                    VAR
+                      ZVAL "c"
+                    ZVAL null
+                  STMT_LIST
+                    RETURN
+                      STATIC_CALL
+                        ZVAL "App\\Money"
+                        ZVAL "op_Equality"
+                        ARG_LIST
+                          VAR
+                            ZVAL "a"
+                          VAR
+                            ZVAL "b"
+              RETURN
+                UNARY_OP [14]
+                  STATIC_CALL
+                    ZVAL "App\\Money"
+                    ZVAL "op_Equality"
+                    ARG_LIST
+                      VAR
+                        ZVAL "a"
+                      VAR
+                        ZVAL "c"
+        "#}
+    );
+}
+
+/// ```php
+/// if (\App\Money::op_Comparison($a, $b) < 0) { return \App\Money::op_Comparison($a, $b); }
+/// return 0;
+/// ```
+///
+/// An ordering compares what `operator <=>` returns with 0, and `<=>` is the call itself. `<` is `ZEND_IS_SMALLER`, 20.
+#[test]
+fn ordering_instances_compares_op_comparison_with_zero() {
+    assert_eq!(
+        ledger_body(
+            "int run(Money a, Money b)",
+            "        if (a < b) {\n            return a <=> b;\n        }\n        return 0;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              IF
+                IF_ELEM
+                  BINARY_OP [20]
+                    STATIC_CALL
+                      ZVAL "App\\Money"
+                      ZVAL "op_Comparison"
+                      ARG_LIST
+                        VAR
+                          ZVAL "a"
+                        VAR
+                          ZVAL "b"
+                    ZVAL 0
+                  STMT_LIST
+                    RETURN
+                      STATIC_CALL
+                        ZVAL "App\\Money"
+                        ZVAL "op_Comparison"
+                        ARG_LIST
+                          VAR
+                            ZVAL "a"
+                          VAR
+                            ZVAL "b"
+              RETURN
+                ZVAL 0
+        "#}
+    );
+}
+
+/// ```php
+/// return \App\Money::op_UnaryNegation(\App\Money::op_Addition($a, $b));
+/// ```
+#[test]
+fn arithmetic_on_instances_calls_the_declared_operators() {
+    assert_eq!(
+        ledger_body("Money run(Money a, Money b)", "        return -(a + b);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                STATIC_CALL
+                  ZVAL "App\\Money"
+                  ZVAL "op_UnaryNegation"
+                  ARG_LIST
+                    STATIC_CALL
+                      ZVAL "App\\Money"
+                      ZVAL "op_Addition"
+                      ARG_LIST
+                        VAR
+                          ZVAL "a"
+                        VAR
+                          ZVAL "b"
+        "#}
+    );
+}
+
+/// ```php
+/// $this->total = \App\Money::op_Addition($this->total, $price);
+/// ($receiver#1 = $this->current())->total = \App\Money::op_Addition($receiver#1->total, $price);
+/// ```
+///
+/// `+=` on an instance assigns what `operator +` returns. A receiver that is not a local or `this` goes into a hidden
+/// variable, which the write sets before the read, so the receiver runs once.
+#[test]
+fn a_compound_assignment_to_an_instance_assigns_the_operator_result_and_runs_its_receiver_once() {
+    assert_eq!(
+        ledger_body("void run(Money price)", "        this.total += price;\n        this.current().total += price;\n"),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                PROP
+                  VAR
+                    ZVAL "this"
+                  ZVAL "total"
+                STATIC_CALL
+                  ZVAL "App\\Money"
+                  ZVAL "op_Addition"
+                  ARG_LIST
+                    PROP
+                      VAR
+                        ZVAL "this"
+                      ZVAL "total"
+                    VAR
+                      ZVAL "price"
+              ASSIGN
+                PROP
+                  ASSIGN
+                    VAR
+                      ZVAL "receiver#1"
+                    METHOD_CALL
+                      VAR
+                        ZVAL "this"
+                      ZVAL "current"
+                      ARG_LIST
+                  ZVAL "total"
+                STATIC_CALL
+                  ZVAL "App\\Money"
+                  ZVAL "op_Addition"
+                  ARG_LIST
+                    PROP
+                      VAR
+                        ZVAL "receiver#1"
+                      ZVAL "total"
+                    VAR
+                      ZVAL "price"
+        "#}
+    );
+}
+
+/// ```php
+/// return (\strcmp($x, $y) <=> 0) + ($m <=> $n);
+/// ```
+///
+/// `<=>` orders two strings by their bytes, as the other orderings do, and two numbers as PHP's `<=>`, which is
+/// `ZEND_SPACESHIP`, 170.
+#[test]
+fn spaceship_orders_strings_by_their_bytes_and_numbers_as_php() {
+    assert_eq!(
+        body_in("int run(string x, string y, int m, int n)", "        return (x <=> y) + (m <=> n);\n", &[]),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                BINARY_OP [1]
+                  BINARY_OP [170]
+                    CALL
+                      ZVAL "strcmp"
+                      ARG_LIST
+                        VAR
+                          ZVAL "x"
+                        VAR
+                          ZVAL "y"
+                    ZVAL 0
+                  BINARY_OP [170]
+                    VAR
+                      ZVAL "m"
+                    VAR
+                      ZVAL "n"
+        "#}
+    );
+}
+
+/// ```php
+/// return \App\Money::op_Equality($order, $other);
+/// ```
+///
+/// `Order` inherits `operator ==` from `Money`, so the call names the class that declares it.
+#[test]
+fn equality_of_a_subclass_calls_the_operator_its_parent_declares() {
+    assert_eq!(
+        ledger_body("bool run(Order order, Order other)", "        return order == other;\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                STATIC_CALL
+                  ZVAL "App\\Money"
+                  ZVAL "op_Equality"
+                  ARG_LIST
+                    VAR
+                      ZVAL "order"
+                    VAR
+                      ZVAL "other"
         "#}
     );
 }

@@ -21,6 +21,9 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::expression::binary::comparison::analyze_declared_comparison;
+use crate::expression::binary::comparison::report_sharp_refusal;
+use crate::expression::binary::comparison::sharp_refusal;
 use crate::expression::binary::utils::is_always_greater_than;
 use crate::expression::binary::utils::is_always_identical_to;
 use crate::expression::binary::utils::is_always_less_than;
@@ -47,6 +50,24 @@ where
     let fallback_type = Rc::new(get_mixed());
     let lhs_type = artifacts.get_rc_expression_type(&binary.lhs).unwrap_or(&fallback_type);
     let rhs_type = artifacts.get_rc_expression_type(&binary.rhs).unwrap_or(&fallback_type);
+
+    // PHP# `<=>` refuses what `<` refuses, and on instances runs the `operator <=>` their class declares.
+    if context.dialect.is_sharp() {
+        let result_type = match sharp_refusal(&binary.operator, lhs_type, rhs_type, context.codebase) {
+            Some(refusal) => {
+                report_sharp_refusal(context, binary, refusal, lhs_type, rhs_type);
+
+                Some(get_signum_result())
+            }
+            None => analyze_declared_comparison(context, binary, lhs_type, rhs_type),
+        };
+
+        if let Some(result_type) = result_type {
+            artifacts.expression_types.insert(get_expression_range(binary), Rc::new(result_type));
+
+            return Ok(());
+        }
+    }
 
     check_spaceship_operand(context, binary.lhs, lhs_type, "Left");
     check_spaceship_operand(context, binary.rhs, rhs_type, "Right");

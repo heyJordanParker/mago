@@ -2076,8 +2076,8 @@ fn equality_of_two_different_value_types_is_refused() {
     );
 }
 
-/// Spec section 19: `==` on a class instance exists only where the class declares `operator ==`, which no class can
-/// declare yet. `===` tests for the same object, and `!= null` tests a nullable instance for null.
+/// Spec section 19: `==` on a class instance exists only where the class declares `operator ==`, which `Cart` does not.
+/// `===` tests for the same object, and `!= null` tests a nullable instance for null.
 #[test]
 fn equality_of_a_class_instance_is_refused_until_the_class_declares_operator_equality() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    public static bool a(Cart cart, Cart other) => cart == other;\n\n    public static bool b(Cart? maybe, Cart cart) => maybe != cart;\n\n    public static bool c(Cart? maybe) => maybe != null;\n\n    public static bool d(Cart cart, Cart other) => cart === other;\n}\n";
@@ -4181,7 +4181,7 @@ fn an_extern_method_in_a_project_file_is_an_error_in_any_namespace() {
 
 const MONEY_OPERATORS: (&str, &str) = (
     "src/App/Money.sharp",
-    "namespace App;\n\npublic class Money\n{\n    public int cents { get; }\n\n    public Money(int cents)\n    {\n        this.cents = cents;\n    }\n\n    public int hash() => this.cents;\n\n    public static bool operator ==(Money a, Money b) => a.cents == b.cents;\n\n    public static Money operator +(Money a, Money b) => new Money(a.cents + b.cents);\n\n    public static Money operator -(Money a)\n    {\n        return new Money(-a.cents);\n    }\n}\n",
+    "namespace App;\n\npublic class Money\n{\n    public int cents { get; }\n\n    public Money(int cents)\n    {\n        this.cents = cents;\n    }\n\n    public int hash() => this.cents;\n\n    public static bool operator ==(Money a, Money b) => a.cents == b.cents;\n\n    public static Money operator +(Money a, Money b) => new Money(a.cents + b.cents);\n\n    public static Money operator -(Money a)\n    {\n        return new Money(-a.cents);\n    }\n\n    public static int operator <=>(Money a, Money b) => a.cents <=> b.cents;\n}\n",
 );
 
 const ORDER_OF_MONEY: (&str, &str) = ("src/App/Order.sharp", "namespace App;\n\npublic class Order : Money\n{\n}\n");
@@ -4263,4 +4263,177 @@ fn a_php_class_keeps_its_static_op_equality_without_a_hash() {
     let php = "<?php\n\nnamespace App;\n\nfinal class Money\n{\n    public static function op_Equality(?Money $a, ?Money $b): bool\n    {\n        return $a === $b;\n    }\n}\n";
 
     assert_eq!(issues(("src/App/Money.php", php), &[]), Vec::<String>::new());
+}
+
+/// Spec section 19: an operator a class declares or inherits runs where it is used, checked as the static call it runs
+/// as. `==` lifts a nullable side, `== null` runs no operator, and a compound assignment assigns the operator's result.
+/// PHP keeps its own operators on objects.
+#[test]
+fn a_declared_operator_runs_where_it_is_used() {
+    let sharp = "namespace App;\n\npublic class Ledger\n{\n    public Money total { get; set; }\n\n    public Ledger(Money total)\n    {\n        this.total = total;\n    }\n\n    public bool same(Money a, Money b) => a == b;\n\n    public bool differ(Money a, Money? b) => a != b;\n\n    public bool less(Money a, Money b) => a < b;\n\n    public bool most(Money a, Order b) => a >= b;\n\n    public int compare(Money a, Money b) => a <=> b;\n\n    public Money sum(Money a, Money b) => a + b;\n\n    public Money negated(Order a) => -a;\n\n    public bool missing(Money? a) => a == null;\n\n    public void add(Money price)\n    {\n        this.total += price;\n    }\n}\n";
+    let php = "<?php\n\nnamespace App;\n\nfinal class Ledger\n{\n    public function __construct(public Money $total)\n    {\n    }\n\n    public function same(Money $a, Money $b): bool { return $a == $b; }\n\n    public function differ(Money $a, ?Money $b): bool { return $a != $b; }\n\n    public function less(Money $a, Money $b): bool { return $a < $b; }\n\n    public function most(Money $a, Order $b): bool { return $a >= $b; }\n\n    public function compare(Money $a, Money $b): int { return $a <=> $b; }\n\n    public function sum(Money $a, Money $b): Money { return $a + $b; }\n\n    public function negated(Order $a): Money { return -$a; }\n\n    public function missing(?Money $a): bool { return $a == null; }\n\n    public function add(Money $price): void { $this->total += $price; }\n}\n";
+
+    assert_eq!(
+        issues(("src/App/Ledger.php", php), &[MONEY_OPERATORS, ORDER_OF_MONEY]),
+        [
+            "13:70 possibly-null-operand",
+            "21:61 invalid-operand",
+            "21:66 invalid-operand",
+            "21:61 mixed-return-statement",
+            "23:56 invalid-operand",
+            "23:55 never-return",
+            "25:55 possibly-null-operand",
+            "25:61 null-operand",
+            "27:47 invalid-operand",
+            "27:63 invalid-operand",
+            "27:63 mixed-property-type-coercion",
+        ]
+    );
+    assert_eq!(issues(("src/App/Ledger.sharp", sharp), &[MONEY_OPERATORS, ORDER_OF_MONEY]), Vec::<String>::new());
+}
+
+const DATABASE_ENTITY: (&str, &str) = (
+    "src/App/DatabaseEntity.sharp",
+    "namespace App;\n\npublic class DatabaseEntity\n{\n    public int id { get; }\n\n    public DatabaseEntity(int id)\n    {\n        this.id = id;\n    }\n\n    public int hash() => this.id;\n\n    public static bool operator ==(DatabaseEntity a, DatabaseEntity b) => a.id == b.id;\n}\n",
+);
+
+const ORDER_OF_DATABASE_ENTITY: (&str, &str) =
+    ("src/App/Order.sharp", "namespace App;\n\npublic class Order : DatabaseEntity\n{\n}\n");
+
+/// `Order` compares with the `operator ==` it inherits from `DatabaseEntity`, as `Order::op_Equality`.
+#[test]
+fn equality_of_a_subclass_runs_the_operator_its_parent_declares() {
+    let sharp = "namespace App;\n\npublic class Sync\n{\n    public bool unchanged(Order order, Order other) => order == other;\n\n    public bool moved(Order order, Order? other) => order != other;\n}\n";
+    let php = "<?php\n\nnamespace App;\n\nfinal class Sync\n{\n    public function unchanged(Order $order, Order $other): bool { return $order == $other; }\n\n    public function moved(Order $order, ?Order $other): bool { return $order != $other; }\n}\n";
+
+    assert_eq!(
+        issues(("src/App/Sync.php", php), &[DATABASE_ENTITY, ORDER_OF_DATABASE_ENTITY]),
+        ["9:81 possibly-null-operand"]
+    );
+    assert_eq!(
+        issues(("src/App/Sync.sharp", sharp), &[DATABASE_ENTITY, ORDER_OF_DATABASE_ENTITY]),
+        Vec::<String>::new()
+    );
+}
+
+/// An operator a class neither declares nor inherits is refused, naming the class and the operator. PHP orders and
+/// adds objects by its own rules.
+#[test]
+fn an_operator_on_an_instance_whose_class_declares_none_is_refused_by_name() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static bool a(Cart cart, Cart other) => cart < other;\n\n    public static int b(Cart cart, Cart other) => cart <=> other;\n\n    public static Cart c(Cart cart, Cart other) => cart + other;\n\n    public static Cart d(Cart cart) => -cart;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function a(Cart $cart, Cart $other): bool { return $cart < $other; }\n\n    public static function b(Cart $cart, Cart $other): int { return $cart <=> $other; }\n\n    public static function c(Cart $cart, Cart $other): Cart { return $cart + $other; }\n\n    public static function d(Cart $cart): Cart { return -$cart; }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.php", php), &[("src/Demo/Cart.php", CART)]),
+        [
+            "11:70 invalid-operand",
+            "11:78 invalid-operand",
+            "11:70 mixed-return-statement",
+            "13:58 invalid-operand",
+            "13:57 never-return",
+        ]
+    );
+    assert_eq!(
+        refusals(("src/Demo/Report.sharp", sharp), &[("src/Demo/Cart.php", CART)]),
+        [
+            "5:52 invalid-operand `<` cannot compare `Cart` with `Cart`: `Cart` declares no `operator <=>`. | Compare values the instances hold, such as their properties.",
+            "7:51 invalid-operand `<=>` cannot compare `Cart` with `Cart`: `Cart` declares no `operator <=>`. | Compare values the instances hold, such as their properties.",
+            "9:52 invalid-operand `+` cannot apply to `Cart` and `Cart`: `Cart` declares no `operator +`. | Apply it to values the instances hold, such as their properties.",
+            "11:41 invalid-operand Unary `-` cannot apply to `Cart`: `Cart` declares no unary `operator -`. | Apply it to a value the instance holds, such as a property.",
+        ]
+    );
+}
+
+/// A value that may be an instance compares by its class's operator, so a `Cart|int`, whose `Cart` declares none, is
+/// refused naming `Cart`. PHP compares it by its own rules.
+#[test]
+fn comparing_a_value_that_may_be_an_instance_names_its_class() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static bool a(Cart|int extra) => extra >= 1;\n\n    public static bool b(Cart|int extra) => extra == 1;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function a(Cart|int $extra): bool { return $extra >= 1; }\n\n    public static function b(Cart|int $extra): bool { return $extra == 1; }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[("src/Demo/Cart.php", CART)]), Vec::<String>::new());
+    assert_eq!(
+        refusals(("src/Demo/Report.sharp", sharp), &[("src/Demo/Cart.php", CART)]),
+        [
+            "5:45 invalid-operand `>=` cannot compare `int|Cart` with `int`: `Cart` declares no `operator <=>`. | Compare values the instances hold, such as their properties.",
+            "7:45 invalid-operand `==` cannot compare `int|Cart` with `int`: `Cart` declares no `operator ==`. | Use `===` to test whether both sides are the same object.",
+        ]
+    );
+}
+
+/// `money * 2` runs `operator *`, which `Money` does not declare. `money == 5` runs `Money::op_Equality(money, 5)`,
+/// whose argument check refuses the `int`.
+#[test]
+fn an_undeclared_operator_and_a_wrong_operand_are_refused() {
+    let sharp = "namespace App;\n\npublic class Pricing\n{\n    public Money doubled(Money money) => money * 2;\n\n    public bool five(Money money) => money == 5;\n}\n";
+
+    assert_eq!(
+        issues(("src/App/Pricing.sharp", sharp), &[MONEY_OPERATORS]),
+        ["5:42 invalid-operand", "7:47 invalid-argument"]
+    );
+    assert_eq!(
+        messages(("src/App/Pricing.sharp", sharp), &[MONEY_OPERATORS])[0],
+        "`*` cannot apply to `Money` and `int`: `Money` declares no `operator *`."
+    );
+}
+
+/// Decision 046 lifts only `==` and `!=` over null, so ordering a nullable instance is refused until it is tested.
+#[test]
+fn ordering_a_nullable_instance_is_refused_until_it_is_tested_for_null() {
+    let sharp = "namespace App;\n\npublic class Range\n{\n    public bool below(Money? low, Money high) => low < high;\n\n    public int compare(Money low, Money? high) => low <=> high;\n\n    public bool tested(Money? low, Money high) => low != null && low < high;\n}\n";
+
+    assert_eq!(
+        refusals(("src/App/Range.sharp", sharp), &[MONEY_OPERATORS]),
+        [
+            "5:50 invalid-operand `<` cannot compare `Money?` with `Money`: only `==` and `!=` take `null`, so test the value for `null` first. | Test it with `!= null` before the comparison.",
+            "7:51 invalid-operand `<=>` cannot compare `Money` with `Money?`: only `==` and `!=` take `null`, so test the value for `null` first. | Test it with `!= null` before the comparison.",
+        ]
+    );
+}
+
+const AUDITED_ORDER: (&str, &str) =
+    ("src/App/Order.sharp", "namespace App;\n\npublic class Order : Money\n{\n    public int items() => 1;\n}\n");
+
+/// `==` on instances runs the class's `operator ==`, which is no identity test, so it narrows nothing: `money` stays a
+/// `Money` where it equals an `Order`.
+#[test]
+fn equality_of_instances_narrows_nothing() {
+    let sharp = "namespace App;\n\npublic class Audit\n{\n    public int items(Money money, Order order)\n    {\n        if (money == order) {\n            return money.items();\n        }\n        return 0;\n    }\n}\n";
+    let php = "<?php\n\nnamespace App;\n\nfinal class Audit\n{\n    public function items(Money $money, Order $order): int\n    {\n        if ($money == $order) {\n            return $money->items();\n        }\n        return 0;\n    }\n}\n";
+
+    assert_eq!(issues(("src/App/Audit.php", php), &[MONEY_OPERATORS, AUDITED_ORDER]), Vec::<String>::new());
+    assert_eq!(
+        issues(("src/App/Audit.sharp", sharp), &[MONEY_OPERATORS, AUDITED_ORDER]),
+        ["8:26 non-existent-method", "8:20 mixed-return-statement"]
+    );
+}
+
+/// The lowered `op_Equality` takes nullable parameters, so a plain PHP caller passes `null` and gets the lifted answer.
+/// A PHP# caller keeps the parameter types `operator ==` declares.
+#[test]
+fn a_php_caller_passes_null_to_op_equality_and_a_sharp_caller_does_not() {
+    let php = "<?php\n\nnamespace App;\n\nfinal class Check\n{\n    public static function same(Money $money, ?Money $other): bool\n    {\n        return Money::op_Equality($money, null) || Money::op_Equality($money, $other);\n    }\n}\n";
+    let sharp = "namespace App;\n\npublic class Check\n{\n    public static bool same(Money money, Money? other) => Money.op_Equality(money, null) || Money.op_Equality(money, other);\n}\n";
+
+    assert_eq!(issues(("src/App/Check.php", php), &[MONEY_OPERATORS]), Vec::<String>::new());
+    assert_eq!(
+        issues(("src/App/Check.sharp", sharp), &[MONEY_OPERATORS]),
+        ["5:84 null-argument", "5:118 possibly-null-argument"]
+    );
+}
+
+/// `<=>` orders two numbers as PHP does and two strings by their bytes. A string against a number is refused as `<`
+/// refuses it. PHP keeps its loose `<=>`.
+#[test]
+fn spaceship_orders_numbers_and_strings_and_refuses_a_string_against_a_number() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int a(int x, int y) => x <=> y;\n\n    public static int b(float x, int y) => x <=> y;\n\n    public static int c(string x, string y) => x <=> y;\n\n    public static int d(string x, int y) => x <=> y;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function a(int $x, int $y): int { return $x <=> $y; }\n\n    public static function b(float $x, int $y): int { return $x <=> $y; }\n\n    public static function c(string $x, string $y): int { return $x <=> $y; }\n\n    public static function d(string $x, int $y): int { return $x <=> $y; }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
+    assert_eq!(
+        refusals(("src/Demo/Report.sharp", sharp), &[]),
+        [
+            "11:45 invalid-operand `<=>` cannot compare `string` with `int`. | Convert one side so both sides have the same type."
+        ]
+    );
 }

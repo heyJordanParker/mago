@@ -1,13 +1,191 @@
+use mago_allocator::Arena;
+use mago_bytes::BytesDisplay;
+use mago_codex::identifier::function_like::FunctionLikeIdentifier;
+use mago_codex::identifier::method::MethodIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
+use mago_codex::metadata::function_like::FunctionLikeMetadata;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
+use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::atomic::scalar::float::TFloat;
 use mago_codex::ttype::comparator::union_comparator::can_expression_types_be_identical;
+use mago_codex::ttype::expander;
+use mago_codex::ttype::expander::StaticClassType;
+use mago_codex::ttype::expander::TypeExpansionOptions;
+use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::union::TUnion;
+use mago_names::binding::php_operator_name;
 use mago_php_version::PHPVersion;
+use mago_reporting::Annotation;
+use mago_reporting::Issue;
+use mago_span::HasSpan;
+use mago_span::Span;
+use mago_syntax::cst::BinaryOperator;
+use mago_syntax::cst::Expression;
+use mago_word::Word;
+use mago_word::word;
 
+use crate::code::IssueCode;
+use crate::context::Context;
+use crate::invocation::InvocationTarget;
+use crate::invocation::arguments::verify_argument_type;
+use crate::utils::names::display_sharp_type;
 use crate::utils::php_emulation::numeric_string_equals_int;
+
+/// The static method a PHP# operator runs as, named `name`, on operands of `operand_types`: the one the left
+/// operand's class declares or inherits, else the right one's, as `Money::op_Addition` for `money + other`. A class
+/// that declares none, or an operand that is no instance of one class, has none.
+pub(crate) fn get_operator_method<'ctx>(
+    codebase: &'ctx CodebaseMetadata,
+    name: &[u8],
+    operand_types: &[&TUnion],
+) -> Option<(MethodIdentifier, &'ctx FunctionLikeMetadata)> {
+    operand_types.iter().find_map(|operand_type| {
+        let class = get_instance_class(operand_type, codebase)?;
+        let method = codebase.get_declaring_method_identifier(&MethodIdentifier::new(class, word(name)));
+        let metadata = codebase.get_method_by_id(&method)?;
+
+        metadata.method_metadata.as_ref().is_some_and(|method| method.is_static).then_some((method, metadata))
+    })
+}
+
+/// Runs the PHP# arithmetic operator `symbol` on `operands` when one of them is an instance: the static method its
+/// class declares or inherits, checked as the call it runs as, gives the result. An instance whose class declares
+/// none is refused, and the rest of the code is checked as if the operator gave that instance. Operands with no
+/// instance run none.
+pub(crate) fn analyze_instance_operator<'arena, A>(
+    context: &mut Context<'_, 'arena, A>,
+    symbol: &BinaryOperator<'_>,
+    operands: &[(&Expression<'arena>, &TUnion)],
+    span: Span,
+) -> Option<TUnion>
+where
+    A: Arena,
+{
+    let codebase = context.codebase;
+    let instance =
+        operands.iter().position(|(_, operand_type)| get_instance_class(operand_type, codebase).is_some())?;
+    let name = php_operator_name(symbol, operands.len())?;
+    let operand_types: Vec<&TUnion> = operands.iter().map(|(_, operand_type)| *operand_type).collect();
+
+    Some(match get_operator_method(codebase, name, &operand_types) {
+        Some(method) => analyze_operator_call(context, method, operands, span),
+        None => {
+            report_undeclared_operator(context, symbol, operands, instance);
+
+            operands[instance].1.to_non_nullable()
+        }
+    })
+}
+
+/// The one class of an instance of `operand_type`, `null` aside. An enum, which no operator takes, is none.
+fn get_instance_class(operand_type: &TUnion, codebase: &CodebaseMetadata) -> Option<Word> {
+    let mut types = operand_type.types.iter().filter(|atomic| !atomic.is_null());
+    let (Some(TAtomic::Object(TObject::Named(object))), None) = (types.next(), types.next()) else {
+        return None;
+    };
+
+    codebase.get_enum(object.name.as_bytes()).is_none().then_some(object.name)
+}
+
+/// Checks the operands of a PHP# operator as the arguments of the static call `method` it runs as, at `span`, and
+/// returns what the call returns.
+pub(crate) fn analyze_operator_call<'arena, A>(
+    context: &mut Context<'_, 'arena, A>,
+    (method, metadata): (MethodIdentifier, &FunctionLikeMetadata),
+    operands: &[(&Expression<'arena>, &TUnion)],
+    span: Span,
+) -> TUnion
+where
+    A: Arena,
+{
+    let codebase = context.codebase;
+    let class = codebase.get_class_like(method.get_class_name().as_bytes()).map(|class| class.name);
+    let options = TypeExpansionOptions {
+        self_class: class,
+        static_class_type: class.map_or(StaticClassType::None, StaticClassType::Name),
+        ..Default::default()
+    };
+    let expand = |union: &TUnion| {
+        let mut union = union.clone();
+        expander::expand_union(codebase, &mut union, &options);
+
+        union
+    };
+
+    let target = InvocationTarget::FunctionLike {
+        identifier: FunctionLikeIdentifier::Method(method.get_class_name(), method.get_method_name()),
+        metadata,
+        inferred_return_type: None,
+        effective_signature: None,
+        method_context: None,
+        span,
+    };
+    for (offset, ((operand, operand_type), parameter)) in operands.iter().zip(&metadata.parameters).enumerate() {
+        if let Some(parameter_type) = parameter.get_type_metadata() {
+            let parameter_type = expand(&parameter_type.type_union);
+
+            verify_argument_type(context, operand_type, &parameter_type, offset, operand, &target);
+        }
+    }
+
+    metadata.return_type_metadata.as_ref().map_or_else(get_mixed, |return_type| expand(&return_type.type_union))
+}
+
+/// Reports a PHP# arithmetic operator `symbol` on `operands`, the one at `instance` an instance whose class neither
+/// declares nor inherits the operator. One operand makes the operator unary.
+fn report_undeclared_operator<A>(
+    context: &mut Context<'_, '_, A>,
+    symbol: &BinaryOperator<'_>,
+    operands: &[(&Expression<'_>, &TUnion)],
+    instance: usize,
+) where
+    A: Arena,
+{
+    let codebase = context.codebase;
+    let op = BytesDisplay(symbol.as_bytes());
+    let names: Vec<String> = operands.iter().map(|(_, operand_type)| display_operand(operand_type, codebase)).collect();
+    let class = display_operand(&operands[instance].1.to_non_nullable(), codebase);
+
+    let issue = match names.as_slice() {
+        [operand] => Issue::error(format!(
+            "Unary `{op}` cannot apply to `{operand}`: `{class}` declares no unary `operator {op}`."
+        ))
+        .with_note(format!(
+            "Spec section 19: unary `{op}` on a class instance exists only where its class declares unary `operator {op}`."
+        ))
+        .with_help("Apply it to a value the instance holds, such as a property."),
+        [lhs, rhs, ..] => {
+            Issue::error(format!("`{op}` cannot apply to `{lhs}` and `{rhs}`: `{class}` declares no `operator {op}`."))
+                .with_note(format!(
+                    "Spec section 19: `{op}` on a class instance exists only where its class declares `operator {op}`."
+                ))
+                .with_help("Apply it to values the instances hold, such as their properties.")
+        }
+        [] => return,
+    };
+
+    let issue = operands.iter().zip(&names).enumerate().fold(issue, |issue, (offset, ((operand, _), name))| {
+        let annotation = if offset == instance {
+            Annotation::primary(operand.span())
+        } else {
+            Annotation::secondary(operand.span())
+        };
+
+        issue.with_annotation(annotation.with_message(format!("This is `{name}`.")))
+    });
+
+    context.collector.report_with_code(IssueCode::InvalidOperand, issue);
+}
+
+/// An operand's type as PHP# writes it, so a literal or a narrowed scalar shows as its scalar type.
+pub(crate) fn display_operand(operand_type: &TUnion, codebase: &CodebaseMetadata) -> String {
+    let mut shown = operand_type.clone();
+    shown.widen_scalars();
+
+    display_sharp_type(&shown, codebase)
+}
 
 #[inline]
 pub fn is_always_less_than_or_equal(lhs: &TUnion, rhs: &TUnion) -> bool {

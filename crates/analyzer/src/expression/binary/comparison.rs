@@ -2,7 +2,9 @@ use std::rc::Rc;
 
 use mago_allocator::Arena;
 use mago_bytes::BytesDisplay;
+use mago_codex::identifier::method::MethodIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
+use mago_codex::metadata::function_like::FunctionLikeMetadata;
 use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::scalar::TScalar;
@@ -11,6 +13,7 @@ use mago_codex::ttype::get_false;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_true;
 use mago_codex::ttype::union::TUnion;
+use mago_names::binding::php_operator_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -32,9 +35,12 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::expression::binary::utils::analyze_operator_call;
 use crate::expression::binary::utils::are_definitely_loosely_equal;
 use crate::expression::binary::utils::are_definitely_not_identical;
 use crate::expression::binary::utils::are_definitely_not_loosely_equal;
+use crate::expression::binary::utils::display_operand;
+use crate::expression::binary::utils::get_operator_method;
 use crate::expression::binary::utils::is_always_greater_than;
 use crate::expression::binary::utils::is_always_greater_than_or_equal;
 use crate::expression::binary::utils::is_always_identical_to;
@@ -42,7 +48,6 @@ use crate::expression::binary::utils::is_always_less_than;
 use crate::expression::binary::utils::is_always_less_than_or_equal;
 use crate::utils::expression::get_literal_array_key;
 use crate::utils::misc::unwrap_expression;
-use crate::utils::names::display_sharp_type;
 
 /// Analyzes standard comparison operations (e.g., `==`, `===`, `<`, `<=`, `>`, `>=`).
 ///
@@ -83,6 +88,17 @@ where
         report_sharp_refusal(context, binary, refusal, lhs_type, rhs_type);
     }
     let refused = refusal.is_some();
+
+    // A PHP# comparison of instances runs the operator their class declares, which returns the `bool` it decides.
+    if !refused
+        && context.dialect.is_sharp()
+        && analyze_declared_comparison(context, binary, lhs_type, rhs_type).is_some()
+    {
+        artifacts.expression_types.insert(get_expression_range(binary), Rc::new(get_bool()));
+
+        return Ok(());
+    }
+
     let sharp_equality = context.dialect.is_sharp() && binary.operator.is_equality();
     if !refused && !binary.operator.is_identity() {
         if !sharp_equality || lhs_type.is_mixed() {
@@ -688,8 +704,11 @@ pub(crate) enum Refusal {
     Identity,
     /// `==` or `!=` on a `List`, `Map` or `Set`.
     Collection,
-    /// `==` or `!=` on an instance of a class that declares no `operator ==`.
+    /// `==` or `!=` on an instance of a class that declares no `operator ==`, or `<=>` or an ordering on one whose class
+    /// declares no `operator <=>`.
     Instance,
+    /// `<=>` or an ordering on an instance that may be `null`, which only `==` and `!=` lift.
+    NullableInstance,
     /// `==` or `!=` on two values of types that never match, or a string ordered against another type.
     DifferentTypes,
 }
@@ -709,7 +728,8 @@ pub(crate) fn mixes_numbers(lhs_type: &TUnion, rhs_type: &TUnion, codebase: &Cod
 
 /// Why a PHP# file may not compare a value of `lhs_type` with one of `rhs_type` by `operator`, or `None` when it may:
 /// `==` or `!=` on two values spec section 19 cannot compare strictly, `===` or `!==` on a value that is no class
-/// instance, and an ordering of a string against any other type are refused.
+/// instance, an ordering of a string against any other type, and a comparison of instances whose class declares no
+/// operator for it are refused.
 pub(crate) fn sharp_refusal(
     operator: &BinaryOperator<'_>,
     lhs_type: &TUnion,
@@ -737,7 +757,7 @@ pub(crate) fn sharp_refusal(
             if has(Comparand::Collection) {
                 Some(Refusal::Collection)
             } else if has(Comparand::Instance) {
-                Some(Refusal::Instance)
+                get_comparison_method(operator, lhs_type, rhs_type, codebase).is_none().then_some(Refusal::Instance)
             } else if has(Comparand::Any)
                 || lhs.iter().any(|comparand| rhs.contains(comparand))
                 || mixes_numbers(lhs_type, rhs_type, codebase)
@@ -747,11 +767,23 @@ pub(crate) fn sharp_refusal(
                 Some(Refusal::DifferentTypes)
             }
         }
-        // PHP# orders a string by its bytes, so only against a string. An `Any?` keeps its own report.
+        // PHP# orders an instance by the `operator <=>` its class declares, which takes no `null`, and a string by its
+        // bytes, so only against a string. An `Any?` keeps its own report.
         BinaryOperator::LessThan(_)
         | BinaryOperator::LessThanOrEqual(_)
         | BinaryOperator::GreaterThan(_)
-        | BinaryOperator::GreaterThanOrEqual(_) => {
+        | BinaryOperator::GreaterThanOrEqual(_)
+        | BinaryOperator::Spaceship(_) => {
+            if has(Comparand::Instance) {
+                return if get_comparison_method(operator, lhs_type, rhs_type, codebase).is_none() {
+                    Some(Refusal::Instance)
+                } else if lhs_type.can_be_null() || rhs_type.can_be_null() {
+                    Some(Refusal::NullableInstance)
+                } else {
+                    None
+                };
+            }
+
             let strings =
                 lhs.iter().chain(&rhs).all(|comparand| matches!(comparand, Comparand::String | Comparand::Any));
 
@@ -761,8 +793,54 @@ pub(crate) fn sharp_refusal(
     }
 }
 
+/// The static method a PHP# comparison of instances runs: `op_Equality` for `==` and `!=`, and `op_Comparison` for
+/// `<=>` and the orderings, which the class of an instance side declares or inherits. `== null` tests for `null`, and
+/// runs none.
+pub(crate) fn get_comparison_method<'ctx>(
+    operator: &BinaryOperator<'_>,
+    lhs_type: &TUnion,
+    rhs_type: &TUnion,
+    codebase: &'ctx CodebaseMetadata,
+) -> Option<(MethodIdentifier, &'ctx FunctionLikeMetadata)> {
+    let declared = match operator {
+        BinaryOperator::Equal(_) | BinaryOperator::NotEqual(_) if lhs_type.is_null() || rhs_type.is_null() => {
+            return None;
+        }
+        BinaryOperator::Equal(span) | BinaryOperator::NotEqual(span) => BinaryOperator::Equal(*span),
+        BinaryOperator::LessThan(span)
+        | BinaryOperator::LessThanOrEqual(span)
+        | BinaryOperator::GreaterThan(span)
+        | BinaryOperator::GreaterThanOrEqual(span)
+        | BinaryOperator::Spaceship(span) => BinaryOperator::Spaceship(*span),
+        _ => return None,
+    };
+
+    get_operator_method(codebase, php_operator_name(&declared, 2)?, &[lhs_type, rhs_type])
+}
+
+/// Runs the operator a PHP# comparison of instances runs, checked as the static call it runs as, and returns what it
+/// returns. `==` lifts a nullable side itself.
+pub(crate) fn analyze_declared_comparison<'arena, A>(
+    context: &mut Context<'_, 'arena, A>,
+    binary: &Binary<'arena>,
+    lhs_type: &TUnion,
+    rhs_type: &TUnion,
+) -> Option<TUnion>
+where
+    A: Arena,
+{
+    let method = get_comparison_method(&binary.operator, lhs_type, rhs_type, context.codebase)?;
+    let (lhs_type, rhs_type) = if matches!(binary.operator, BinaryOperator::Equal(_) | BinaryOperator::NotEqual(_)) {
+        (lhs_type.to_non_nullable(), rhs_type.to_non_nullable())
+    } else {
+        (lhs_type.clone(), rhs_type.clone())
+    };
+
+    Some(analyze_operator_call(context, method, &[(binary.lhs, &lhs_type), (binary.rhs, &rhs_type)], binary.span()))
+}
+
 /// Reports `refusal` on `binary`, naming both types and the comparison to write instead.
-fn report_sharp_refusal<A>(
+pub(crate) fn report_sharp_refusal<A>(
     context: &mut Context<'_, '_, A>,
     binary: &Binary<'_>,
     refusal: Refusal,
@@ -797,20 +875,40 @@ fn report_sharp_refusal<A>(
             .with_help("Compare the elements one by one."),
         ),
         Refusal::Instance => {
-            let class_type =
-                if comparands(lhs_type, codebase).contains(&Comparand::Instance) { lhs_type } else { rhs_type };
-            let class = display_operand(&class_type.to_non_nullable(), codebase);
-            let identity = if operator.is_negated_equality() { "!==" } else { "===" };
+            // The message names the part of the operand that compares as an instance, as `Cart` of a `Cart|int`.
+            let is_instance = |atomic: &&TAtomic| {
+                comparands(&TUnion::from_atomic((*atomic).clone()), codebase).contains(&Comparand::Instance)
+            };
+            let class_type = if lhs_type.types.iter().any(|atomic| is_instance(&atomic)) { lhs_type } else { rhs_type };
+            let class = display_operand(
+                &TUnion::from_vec(class_type.types.iter().filter(is_instance).cloned().collect()),
+                codebase,
+            );
 
-            (
-                IssueCode::InvalidOperand,
+            let issue = if matches!(operator, BinaryOperator::Equal(_) | BinaryOperator::NotEqual(_)) {
+                let identity = if operator.is_negated_equality() { "!==" } else { "===" };
+
                 Issue::error(format!("{pair}: `{class}` declares no `operator ==`."))
                     .with_note(
                         "Spec section 19: `==` on a class instance exists only where its class declares `operator ==`.",
                     )
-                    .with_help(format!("Use `{identity}` to test whether both sides are the same object.")),
-            )
+                    .with_help(format!("Use `{identity}` to test whether both sides are the same object."))
+            } else {
+                Issue::error(format!("{pair}: `{class}` declares no `operator <=>`."))
+                    .with_note(format!(
+                        "Spec section 19: `{op}` on a class instance exists only where its class declares `operator <=>`."
+                    ))
+                    .with_help("Compare values the instances hold, such as their properties.")
+            };
+
+            (IssueCode::InvalidOperand, issue)
         }
+        Refusal::NullableInstance => (
+            IssueCode::InvalidOperand,
+            Issue::error(format!("{pair}: only `==` and `!=` take `null`, so test the value for `null` first."))
+                .with_note("Spec section 19 lifts `==` and `!=` over `null`, and no other operator.")
+                .with_help("Test it with `!= null` before the comparison."),
+        ),
         Refusal::DifferentTypes => (
             IssueCode::InvalidOperand,
             Issue::error(format!("{pair}."))
@@ -827,14 +925,6 @@ fn report_sharp_refusal<A>(
             .with_annotation(Annotation::primary(binary.lhs.span()).with_message(format!("This is `{lhs_name}`.")))
             .with_annotation(Annotation::secondary(binary.rhs.span()).with_message(format!("This is `{rhs_name}`."))),
     );
-}
-
-/// An operand's type as PHP# writes it, so a literal or a narrowed scalar shows as its scalar type.
-fn display_operand(operand_type: &TUnion, codebase: &CodebaseMetadata) -> String {
-    let mut shown = operand_type.clone();
-    shown.widen_scalars();
-
-    display_sharp_type(&shown, codebase)
 }
 
 /// The operand that `==`, `!=`, `===` or `!==` compares with `null` when its type cannot be `null`, as in

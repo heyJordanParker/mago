@@ -12,6 +12,7 @@ use mago_span::HasSpan;
 use mago_syntax::comments::docblock::get_docblock_before_position;
 use mago_syntax::cst::AnonymousClass;
 use mago_syntax::cst::ArrowFunction;
+use mago_syntax::cst::BinaryOperator;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::Class;
 use mago_syntax::cst::Closure;
@@ -763,9 +764,23 @@ where
     /// An operator a class cannot declare, which semantics refuses, registers as none.
     #[inline]
     fn walk_in_operator(&mut self, operator: &'arena Operator<'arena>, context: &mut Context<'ctx, 'arena, A>) {
-        match MethodParts::of_operator(operator) {
-            Some(parts) => self.register_method(&parts, context),
-            None => self.template_constraints.push(vec![]),
+        let Some(parts) = MethodParts::of_operator(operator) else {
+            self.template_constraints.push(vec![]);
+            return;
+        };
+        self.register_method(&parts, context);
+
+        // `operator ==` runs as `op_Equality(?Money $a, ?Money $b)`, which lifts `null` itself, so the PHP method
+        // takes `null`. Its body and PHP# callers keep the types the operator declares.
+        if matches!(operator.symbol, BinaryOperator::Equal(_))
+            && let Some(class) = self.stack.last().and_then(|class| self.codebase.class_likes.get(class))
+            && let Some(method) = self.codebase.function_likes.get_mut(&(class.name, ascii_lowercase_word(parts.name)))
+        {
+            for parameter in &mut method.parameters {
+                if let Some(declaration) = &mut parameter.type_declaration_metadata {
+                    declaration.type_union = declaration.type_union.clone().as_nullable();
+                }
+            }
         }
     }
 

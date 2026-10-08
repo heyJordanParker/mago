@@ -181,7 +181,7 @@ impl<'ast, 'arena> MutWalker<'ast, 'arena, ()> for SignatureBuilder<'arena> {
     /// A PHP# operator is the static method it runs as, such as `op_Addition`. One a class cannot declare, which
     /// semantics refuses, is none.
     fn walk_in_operator(&mut self, operator: &'ast Operator<'arena>, _context: &mut ()) {
-        let Some(name) = php_operator_name(operator) else {
+        let Some(name) = php_operator_name(&operator.symbol, operator.parameter_list.parameters.len()) else {
             return;
         };
         let hash = operator.fingerprint(self.resolved_names, &self.fingerprint_options);

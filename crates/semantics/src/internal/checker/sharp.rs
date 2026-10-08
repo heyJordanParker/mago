@@ -1422,7 +1422,7 @@ fn check_operator(operator: &Operator, context: &mut Context<'_, '_, '_>) {
         context.report(Issue::error(message).with_annotation(Annotation::primary(span).with_message("Declared here.")));
     };
 
-    let Some(name) = php_operator_name(operator) else {
+    let Some(name) = php_operator_name(&operator.symbol, operator.parameter_list.parameters.len()) else {
         let reason = match operator.symbol {
             BinaryOperator::NotEqual(_) | BinaryOperator::AngledNotEqual(_) => "it is derived from `==`".to_owned(),
             BinaryOperator::LessThan(_)
@@ -1485,7 +1485,7 @@ fn check_operator(operator: &Operator, context: &mut Context<'_, '_, '_>) {
             _ => None,
         })
         .take_while(|earlier| earlier.span() != operator.span())
-        .any(|earlier| php_operator_name(earlier) == Some(name));
+        .any(|earlier| php_operator_name(&earlier.symbol, earlier.parameter_list.parameters.len()) == Some(name));
     if declared_before {
         let unary = if name == b"op_UnaryNegation" { "Unary " } else { "" };
         report(format!("{unary}`operator {symbol}` is declared twice in `{class_name}`."), operator.operator.span);
@@ -2636,6 +2636,7 @@ const fn is_slice_binary_operator(operator: &BinaryOperator) -> bool {
         | BinaryOperator::LessThanOrEqual(_)
         | BinaryOperator::GreaterThan(_)
         | BinaryOperator::GreaterThanOrEqual(_)
+        | BinaryOperator::Spaceship(_)
         | BinaryOperator::And(_)
         | BinaryOperator::Or(_)
         | BinaryOperator::NullCoalesce(_) => true,
@@ -2645,7 +2646,6 @@ const fn is_slice_binary_operator(operator: &BinaryOperator) -> bool {
         | BinaryOperator::LeftShift(_)
         | BinaryOperator::RightShift(_)
         | BinaryOperator::AngledNotEqual(_)
-        | BinaryOperator::Spaceship(_)
         | BinaryOperator::StringConcat(_)
         | BinaryOperator::Instanceof(_)
         | BinaryOperator::LowAnd(_)

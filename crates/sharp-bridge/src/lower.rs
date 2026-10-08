@@ -89,6 +89,7 @@ use mago_syntax::utils::pattern::PhpShape;
 use mago_syntax::utils::pattern::php_shape;
 use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_syntax_core::utils::parse_literal_integer_as_float;
+use mago_word::Word;
 
 use crate::Unit;
 use crate::lower::checked::CheckedProgram;
@@ -233,6 +234,7 @@ const ZEND_IS_IDENTICAL: u32 = 16;
 const ZEND_IS_NOT_IDENTICAL: u32 = 17;
 const ZEND_IS_SMALLER: u32 = 20;
 const ZEND_IS_SMALLER_OR_EQUAL: u32 = 21;
+const ZEND_SPACESHIP: u32 = 170;
 const T_FILE: u32 = 347;
 
 /// A null child.
@@ -652,7 +654,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// as C# lifts it: its parameters are nullable, and its body starts with
     /// `if ($a === null || $b === null) { return $a === $b; }`, so null equals only null.
     fn operator(&mut self, operator: &Operator) -> u32 {
-        let Some(name) = php_operator_name(operator) else {
+        let Some(name) = php_operator_name(&operator.symbol, operator.parameter_list.parameters.len()) else {
             unreachable!("check_slice refuses the operator `{}`", operator.symbol);
         };
         let lifted = matches!(operator.symbol, BinaryOperator::Equal(_));
@@ -1286,8 +1288,13 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 self.node(SHARP_AST_MATCH, 0, line, &[subject, arms])
             }
             // Spec section 24: `+` on two strings joins them, and `/` on two ints divides toward zero. Section 19
-            // orders two strings by their bytes and compares an int with a float as two floats.
+            // orders two strings by their bytes and compares an int with a float as two floats, and an operator on
+            // instances runs the one their class declares.
             Expression::Binary(binary) => {
+                if let Some(call) = self.declared_operator(line, binary) {
+                    return call;
+                }
+
                 let operands = match binary.operator {
                     BinaryOperator::Addition(_) | BinaryOperator::Division(_) => {
                         self.operand_types(binary.lhs, binary.rhs)
@@ -1299,6 +1306,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                     | BinaryOperator::LessThanOrEqual(_)
                     | BinaryOperator::GreaterThan(_)
                     | BinaryOperator::GreaterThanOrEqual(_)
+                    | BinaryOperator::Spaceship(_)
                         if self.orders_strings(binary) =>
                     {
                         Operands::Strings
@@ -1323,6 +1331,15 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 }
             }
             Expression::UnaryPrefix(unary) => {
+                if let UnaryPrefixOperator::Negation(operator) = unary.operator
+                    && let Some(name) = php_operator_name(&BinaryOperator::Subtraction(operator), 1)
+                    && let Some(class) = self.types.operator_class(name, &[unary.operand])
+                {
+                    let operand = self.expression(unary.operand);
+
+                    return self.operator_call(line, class, name, &[operand]);
+                }
+
                 let (kind, attr) = prefix_kind(&unary.operator);
                 let operand = if unary.operator.is_increment_or_decrement() {
                     self.target(unary.operand)
@@ -1341,22 +1358,38 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 self.node(kind, 0, line, &[operand])
             }
-            Expression::Assignment(assignment) => match (&assignment.operator, self.operand_types_of(assignment)) {
-                (AssignmentOperator::Addition(_), Operands::Strings) => {
-                    let lhs = self.target(assignment.lhs);
-                    let rhs = self.expression(assignment.rhs);
-
-                    self.node(SHARP_AST_ASSIGN_OP, ZEND_CONCAT, line, &[lhs, rhs])
+            Expression::Assignment(assignment) => {
+                // A compound assignment to an instance assigns what the operator its class declares returns.
+                if let Some(operator) = compound_operator(&assignment.operator)
+                    && let Some(name) = php_operator_name(&operator, 2)
+                    && let Some(class) = self.types.operator_class(name, &[assignment.lhs, assignment.rhs])
+                {
+                    return self.compound_assignment(line, assignment, |this, target, value| {
+                        this.operator_call(line, class, name, &[target, value])
+                    });
                 }
-                (AssignmentOperator::Division(_), Operands::Ints) => self.intdiv_assignment(line, assignment),
-                (operator, _) => {
-                    let (kind, attr) = assignment_kind(operator);
-                    let lhs = self.target(assignment.lhs);
-                    let rhs = self.expression(assignment.rhs);
 
-                    self.node(kind, attr, line, &[lhs, rhs])
+                match (&assignment.operator, self.operand_types_of(assignment)) {
+                    (AssignmentOperator::Addition(_), Operands::Strings) => {
+                        let lhs = self.target(assignment.lhs);
+                        let rhs = self.expression(assignment.rhs);
+
+                        self.node(SHARP_AST_ASSIGN_OP, ZEND_CONCAT, line, &[lhs, rhs])
+                    }
+                    (AssignmentOperator::Division(_), Operands::Ints) => {
+                        self.compound_assignment(line, assignment, |this, target, value| {
+                            this.intdiv(line, target, value)
+                        })
+                    }
+                    (operator, _) => {
+                        let (kind, attr) = assignment_kind(operator);
+                        let lhs = self.target(assignment.lhs);
+                        let rhs = self.expression(assignment.rhs);
+
+                        self.node(kind, attr, line, &[lhs, rhs])
+                    }
                 }
-            },
+            }
             Expression::Call(Call::Method(call)) => self.method_call(expression, call),
             Expression::Call(Call::Function(FunctionCall {
                 function: Expression::Identifier(function),
@@ -1671,10 +1704,16 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_CALL, 0, line, &[function, arguments])
     }
 
-    /// `target /= value` on ints, as `target = \intdiv(target, value)`. The target's receiver runs once: one that is
-    /// not a local or `this` goes into a hidden `$receiver#N`, which the write sets and the read reads, as php-src
-    /// compiles a property's object before the value assigned to it.
-    fn intdiv_assignment(&mut self, line: u32, assignment: &Assignment) -> u32 {
+    /// `target op= value` as `target = operation(target, value)`, for an operator that differs from PHP's: `/=` on ints
+    /// runs `\intdiv`, and `+=` on an instance runs the `op_Addition` its class declares. The target's receiver runs
+    /// once: one that is not a local or `this` goes into a hidden `$receiver#N`, which the write sets and the read
+    /// reads, as php-src compiles a property's object before the value assigned to it.
+    fn compound_assignment(
+        &mut self,
+        line: u32,
+        assignment: &Assignment,
+        operation: impl FnOnce(&mut Self, u32, u32) -> u32,
+    ) -> u32 {
         let receiver = match assignment.lhs {
             Expression::Access(Access::Property(access))
                 if self.names.static_property_class(access).is_none() && !self.is_local_or_this(access.object) =>
@@ -1704,9 +1743,61 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             None => (self.target(assignment.lhs), self.expression(assignment.lhs)),
         };
         let value = self.expression(assignment.rhs);
-        let quotient = self.intdiv(line, read, value);
+        let result = operation(self, read, value);
 
-        self.node(SHARP_AST_ASSIGN, 0, line, &[target, quotient])
+        self.node(SHARP_AST_ASSIGN, 0, line, &[target, result])
+    }
+
+    /// The call of the static method a PHP# operator on instances runs, as `\App\Money::op_Addition($a, $b)` for
+    /// `a + b`: `!=` is the `!` of `op_Equality`, and an ordering compares what `op_Comparison` returns with 0. `== null`
+    /// and operands with no instance run none.
+    fn declared_operator(&mut self, line: u32, binary: &Binary) -> Option<u32> {
+        let declared = match binary.operator {
+            BinaryOperator::Equal(_) | BinaryOperator::NotEqual(_)
+                if [binary.lhs, binary.rhs]
+                    .into_iter()
+                    .any(|operand| self.types.expression_type(operand).is_null()) =>
+            {
+                return None;
+            }
+            BinaryOperator::Equal(span) | BinaryOperator::NotEqual(span) => BinaryOperator::Equal(span),
+            BinaryOperator::LessThan(span)
+            | BinaryOperator::LessThanOrEqual(span)
+            | BinaryOperator::GreaterThan(span)
+            | BinaryOperator::GreaterThanOrEqual(span)
+            | BinaryOperator::Spaceship(span) => BinaryOperator::Spaceship(span),
+            operator if operator.is_arithmetic() => operator,
+            _ => return None,
+        };
+        let name = php_operator_name(&declared, 2)?;
+        let class = self.types.operator_class(name, &[binary.lhs, binary.rhs])?;
+
+        let lhs = self.expression(binary.lhs);
+        let rhs = self.expression(binary.rhs);
+        let call = self.operator_call(line, class, name, &[lhs, rhs]);
+
+        Some(match binary.operator {
+            BinaryOperator::NotEqual(_) => self.node(SHARP_AST_UNARY_OP, ZEND_BOOL_NOT, line, &[call]),
+            BinaryOperator::LessThan(_)
+            | BinaryOperator::LessThanOrEqual(_)
+            | BinaryOperator::GreaterThan(_)
+            | BinaryOperator::GreaterThanOrEqual(_) => {
+                let zero = self.zval(line, sharp_value::SHARP_LONG, |node| node.long_value = 0);
+                let (kind, attr) = binary_kind(binary);
+
+                self.node(kind, attr, line, &[call, zero])
+            }
+            _ => call,
+        })
+    }
+
+    /// `\Class::name(arguments)`, the static method `class` declares to run an operator.
+    fn operator_call(&mut self, line: u32, class: Word, name: &[u8], arguments: &[u32]) -> u32 {
+        let class = self.string(ZEND_NAME_FQ, line, class.as_bytes());
+        let method = self.string(0, line, name);
+        let arguments = self.node(SHARP_AST_ARG_LIST, 0, line, arguments);
+
+        self.node(SHARP_AST_STATIC_CALL, 0, line, &[class, method, arguments])
     }
 
     /// Whether `expression` is a local, a parameter or `this`, which reading twice runs nothing twice.
@@ -2490,6 +2581,7 @@ fn binary_kind(binary: &Binary) -> (sharp_kind, u32) {
         BinaryOperator::LessThanOrEqual(_) => (SHARP_AST_BINARY_OP, ZEND_IS_SMALLER_OR_EQUAL),
         BinaryOperator::GreaterThan(_) => (SHARP_AST_GREATER, 0),
         BinaryOperator::GreaterThanOrEqual(_) => (SHARP_AST_GREATER_EQUAL, 0),
+        BinaryOperator::Spaceship(_) => (SHARP_AST_BINARY_OP, ZEND_SPACESHIP),
         // check_slice refuses `and`, so only the `when` of a `match` arm runs as it.
         BinaryOperator::And(_) | BinaryOperator::LowAnd(_) => (SHARP_AST_AND, 0),
         BinaryOperator::Or(_) => (SHARP_AST_OR, 0),
@@ -2500,7 +2592,6 @@ fn binary_kind(binary: &Binary) -> (sharp_kind, u32) {
         | BinaryOperator::LeftShift(_)
         | BinaryOperator::RightShift(_)
         | BinaryOperator::AngledNotEqual(_)
-        | BinaryOperator::Spaceship(_)
         | BinaryOperator::StringConcat(_)
         | BinaryOperator::Instanceof(_)
         | BinaryOperator::LowOr(_)
@@ -2534,6 +2625,19 @@ fn prefix_kind(operator: &UnaryPrefixOperator) -> (sharp_kind, u32) {
         | UnaryPrefixOperator::VoidCast(..)
         | UnaryPrefixOperator::BitwiseNot(_) => unreachable!("check_slice refuses the operator `{operator}`"),
     }
+}
+
+/// The operator a compound assignment applies, which an instance runs as the one its class declares: `+=` applies `+`.
+const fn compound_operator(operator: &AssignmentOperator) -> Option<BinaryOperator<'static>> {
+    Some(match *operator {
+        AssignmentOperator::Addition(span) => BinaryOperator::Addition(span),
+        AssignmentOperator::Subtraction(span) => BinaryOperator::Subtraction(span),
+        AssignmentOperator::Multiplication(span) => BinaryOperator::Multiplication(span),
+        AssignmentOperator::Division(span) => BinaryOperator::Division(span),
+        AssignmentOperator::Modulo(span) => BinaryOperator::Modulo(span),
+        AssignmentOperator::Exponentiation(span) => BinaryOperator::Exponentiation(span),
+        _ => return None,
+    })
 }
 
 /// The assignment operators of the slice, as php-src's grammar builds them. Every operator is named, so a new one
@@ -2598,10 +2702,12 @@ mod tests {
         lower_method("public void run() { PHP_INT_MAX = 1; }");
     }
 
+    /// `??=` reads no operand type, which the unchecked file has none of. An arithmetic one asks whether an instance
+    /// runs a declared operator first.
     #[test]
     #[should_panic(expected = "check_slice refuses writing to `ConstantAccess`")]
     fn a_compound_assignment_to_a_constant_panics() {
-        lower_method("public void run() { PHP_INT_MAX -= 1; }");
+        lower_method("public void run() { PHP_INT_MAX ??= 1; }");
     }
 
     #[test]

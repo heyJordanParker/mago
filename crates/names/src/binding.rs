@@ -30,18 +30,18 @@ pub fn php_method_name<'arena>(method: &Method<'arena>) -> &'arena [u8] {
     if method.function.is_none() && method.return_type_hint.is_none() { b"__construct" } else { method.name.value }
 }
 
-/// Returns the PHP static method a PHP# operator runs as, named after .NET's operator method.
+/// Returns the PHP static method a PHP# operator on `operands` operands runs as, named after .NET's operator method.
 ///
-/// `+` runs as `op_Addition`, and `-` with one parameter as `op_UnaryNegation`. An operator a class cannot declare,
-/// which semantics refuses, runs as none.
+/// `+` runs as `op_Addition`, and `-` on one operand as `op_UnaryNegation`. An operator a class cannot declare, which
+/// semantics refuses, runs as none: `!=` runs `op_Equality`, and `<` and the other orderings run `op_Comparison`.
 #[inline]
 #[must_use]
-pub fn php_operator_name(operator: &Operator<'_>) -> Option<&'static [u8]> {
-    Some(match operator.symbol {
+pub fn php_operator_name(symbol: &BinaryOperator<'_>, operands: usize) -> Option<&'static [u8]> {
+    Some(match symbol {
         BinaryOperator::Equal(_) => b"op_Equality",
         BinaryOperator::Spaceship(_) => b"op_Comparison",
         BinaryOperator::Addition(_) => b"op_Addition",
-        BinaryOperator::Subtraction(_) if operator.parameter_list.parameters.len() == 1 => b"op_UnaryNegation",
+        BinaryOperator::Subtraction(_) if operands == 1 => b"op_UnaryNegation",
         BinaryOperator::Subtraction(_) => b"op_Subtraction",
         BinaryOperator::Multiplication(_) => b"op_Multiply",
         BinaryOperator::Division(_) => b"op_Division",
@@ -89,7 +89,7 @@ impl<'ast, 'arena> MethodParts<'ast, 'arena> {
     #[must_use]
     pub fn of_operator(operator: &'ast Operator<'arena>) -> Option<Self> {
         Some(Self {
-            name: php_operator_name(operator)?,
+            name: php_operator_name(&operator.symbol, operator.parameter_list.parameters.len())?,
             name_span: operator.symbol.span(),
             span: operator.span(),
             attribute_lists: &operator.attribute_lists,

@@ -2358,7 +2358,7 @@ fn exponentiation_and_its_compound_assignment_are_in_the_slice() {
 #[test]
 fn operators_outside_the_slice_are_not_supported_yet() {
     let code = leak(method(
-        "        let a = extra;\n        a = @extra;\n        a = extra & 1;\n        a = extra | 1;\n        a = extra ^ 1;\n        a = extra << 1;\n        a = extra >> 1;\n        a = ~extra;\n        a = extra xor true;\n        a = extra and true;\n        a = extra or true;\n        a = extra <=> 1;\n        a = extra <> 1;\n        a %= 2;\n        a &= 2;\n        return a;\n",
+        "        let a = extra;\n        a = @extra;\n        a = extra & 1;\n        a = extra | 1;\n        a = extra ^ 1;\n        a = extra << 1;\n        a = extra >> 1;\n        a = ~extra;\n        a = extra xor true;\n        a = extra and true;\n        a = extra or true;\n        a = extra <> 1;\n        a %= 2;\n        a &= 2;\n        return a;\n",
     ));
 
     assert_eq!(
@@ -2375,11 +2375,19 @@ fn operators_outside_the_slice_are_not_supported_yet() {
             "16:19 This operator is not supported yet in PHP#.",
             "17:19 This operator is not supported yet in PHP#.",
             "18:19 This operator is not supported yet in PHP#.",
-            "19:19 This operator is not supported yet in PHP#.",
+            "19:11 This operator is not supported yet in PHP#.",
             "20:11 This operator is not supported yet in PHP#.",
-            "21:11 This operator is not supported yet in PHP#.",
         ]
     );
+}
+
+/// `<=>` orders two values, as spec section 19 writes it for numbers, strings and instances whose class declares
+/// `operator <=>`. The analyzer checks its operands.
+#[test]
+fn spaceship_is_in_the_slice() {
+    let code = leak(method("        return extra <=> 1;\n"));
+
+    assert_eq!(issues(code), Vec::<String>::new());
 }
 
 #[test]
