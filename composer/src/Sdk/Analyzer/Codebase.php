@@ -19,6 +19,7 @@ use Mago\Sdk\Analyzer\Type\FunctionLikeKind;
 use Mago\Sdk\CancellationTokenInterface;
 use Mago\Sdk\Exception\InvalidArgumentException;
 use Mago\Sdk\Exception\ProtocolException;
+use Mago\Sdk\Internal\Analyzer\CodebaseReads;
 use Mago\Sdk\Internal\Analyzer\MetadataCache;
 use Mago\Sdk\Internal\Analyzer\MetadataCodec;
 use Mago\Sdk\Internal\Analyzer\Protocol;
@@ -45,6 +46,8 @@ use function strtolower;
 final class Codebase
 {
     /**
+     * `$reads` records every read, cached or not, when the codebase serves one file's hooks or providers.
+     *
      * @internal
      * @param positive-int $parentRequestId
      */
@@ -53,6 +56,7 @@ final class Codebase
         protected readonly int $parentRequestId,
         protected readonly CancellationTokenInterface $cancellation,
         protected readonly MetadataCache $cache,
+        protected readonly ?CodebaseReads $reads = null,
     ) {}
 
     public function getClass(string $name): ?ClassLikeMetadata
@@ -384,6 +388,15 @@ final class Codebase
     {
         $keys = [];
         foreach ($identifiers as $identifier) {
+            match ($identifier->kind) {
+                FunctionLikeKind::Function_ => $this->reads?->record(Protocol::GET_FUNCTIONS, 0, $identifier->name),
+                FunctionLikeKind::Method => $this->reads?->record(
+                    Protocol::GET_CLASS_LIKES,
+                    0,
+                    $identifier->class ?? '',
+                ),
+                FunctionLikeKind::Closure => null,
+            };
             $keys[] = match ($identifier->kind) {
                 FunctionLikeKind::Function_ => "f\0" . strtolower($identifier->name),
                 FunctionLikeKind::Method => "m\0"
@@ -492,6 +505,10 @@ final class Codebase
         }
         $attributes = array_keys($attributes);
         sort($attributes);
+        // A search across classes depends on every class it searched, so it records a listing.
+        $class === null
+            ? $this->reads?->record(Protocol::FIND_METHODS, 0, '')
+            : $this->reads?->record(Protocol::GET_CLASS_LIKES, 0, $class);
 
         $key =
             strtolower($class ?? '')
@@ -723,6 +740,7 @@ final class Codebase
             if ($name === '') {
                 throw new InvalidArgumentException('Codebase metadata names cannot be empty.');
             }
+            $this->reads?->record($operation, 0, $name);
             $keys[] = $operation === Protocol::GET_CONSTANTS ? $name : strtolower($name);
         }
 
@@ -739,6 +757,7 @@ final class Codebase
     {
         $keys = [];
         foreach ($members as $member) {
+            $this->reads?->record(Protocol::GET_CLASS_LIKES, 0, $member->class);
             $memberName = match ($operation) {
                 Protocol::GET_METHODS, Protocol::GET_DECLARING_METHODS => strtolower($member->member),
                 default => $member->member,
@@ -817,6 +836,7 @@ final class Codebase
     /** @return list<string> */
     private function listNames(int $operation, ?int $classLikeKind = null): array
     {
+        $this->reads?->record($operation, $classLikeKind ?? 0, '');
         $bucketId = ($operation << 4) | ($classLikeKind ?? 0);
         if (array_key_exists($bucketId, $this->cache->lists)) {
             return $this->cache->lists[$bucketId];
@@ -850,6 +870,12 @@ final class Codebase
                 throw new InvalidArgumentException('Codebase metadata names cannot be empty.');
             }
 
+            match ($predicate) {
+                Protocol::EXISTS_NAMESPACE => $this->reads?->record(Protocol::CHECK_EXISTENCE, $predicate, $name),
+                Protocol::EXISTS_FUNCTION => $this->reads?->record(Protocol::GET_FUNCTIONS, 0, $name),
+                Protocol::EXISTS_CONSTANT => $this->reads?->record(Protocol::GET_CONSTANTS, 0, $name),
+                default => $this->reads?->record(Protocol::GET_CLASS_LIKES, 0, $name),
+            };
             $key = $predicate === Protocol::EXISTS_CONSTANT ? $name : strtolower($name);
             $keys[] = $key;
             if (!array_key_exists($key, $bucket)) {
@@ -900,6 +926,7 @@ final class Codebase
         $missingMembers = [];
         $missingKeys = [];
         foreach ($members as $member) {
+            $this->reads?->record(Protocol::GET_CLASS_LIKES, 0, $member->class);
             $memberName = $predicate === Protocol::EXISTS_METHOD ? strtolower($member->member) : $member->member;
             $key = strtolower($member->class) . "\0" . $memberName;
             $keys[] = $key;
@@ -959,6 +986,10 @@ final class Codebase
                 throw new InvalidArgumentException('Codebase metadata names cannot be empty.');
             }
 
+            // Ancestors are part of the class; descendants are a set of other classes.
+            $relation === Protocol::ALL_ANCESTORS
+                ? $this->reads?->record(Protocol::GET_CLASS_LIKES, 0, $name)
+                : $this->reads?->record(Protocol::GET_CLASS_LIKE_RELATIONS, $relation, $name);
             $key = strtolower($name);
             $keys[] = $key;
             if (!array_key_exists($key, $bucket)) {

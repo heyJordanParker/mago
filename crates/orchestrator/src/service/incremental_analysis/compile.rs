@@ -73,9 +73,10 @@ impl IncrementalAnalysisService {
     /// first, and the others inline their forms.
     ///
     /// An accepted file's inputs are its own source, `composer.lock`, and each file outside `vendor/` whose edit makes
-    /// the warm path re-analyze it: each file whose signature edit reaches it through the cascade, each file that
-    /// declares a class alias or a patch, and each file that declares a method whose return it reads from that method's
-    /// body, along every chain of such returns, with that file's own inputs.
+    /// the warm path re-analyze it: each file whose signature edit reaches it through the cascade or reaches a symbol
+    /// its extension hooks or providers read, every file when they listed names, each file that declares a class alias
+    /// or a patch, and each file that declares a method whose return it reads from that method's body, along every
+    /// chain of such returns, with that file's own inputs.
     ///
     /// `stamp` gives the size, modification time and hash of the file at a workspace-relative path, or none when no
     /// file is there. It is called once per input. An input no file is at is stored absent: its size, modification
@@ -408,8 +409,11 @@ impl<'service> Dependencies<'service> {
 
     /// The source files other than `file_id` whose signature edit makes the warm path re-analyze `file_id`.
     fn reached_by(&self, file_id: FileId) -> HashSet<FileId> {
-        let Some(signature) = self.service.codebase.get_file_signature(&file_id) else {
-            // The warm path re-analyzes a file with no signature after every signature edit.
+        let reads = self.service.file_states.get(&file_id).map(|state| &state.reads);
+        let signature = self.service.codebase.get_file_signature(&file_id);
+        let Some(signature) = signature.filter(|_| reads.is_none_or(|reads| reads.listings.is_empty())) else {
+            // The warm path re-analyzes a file with no signature after every signature edit, and a file whose hooks or
+            // providers listed names after any edit that adds or removes one.
             return self
                 .service
                 .codebase
@@ -436,6 +440,9 @@ impl<'service> Dependencies<'service> {
             for member in self.signature_members.get(&node.name).into_iter().flatten() {
                 self.changes(*member, &mut changes, &mut visited);
             }
+        }
+        for read in reads.into_iter().flat_map(|reads| &reads.symbols) {
+            self.signature_changes(*read, &mut changes, &mut visited);
         }
 
         changes
@@ -1060,12 +1067,13 @@ mod tests {
                 CodebaseDiff::new().with_keep(every_declaration.iter().copied()).with_changed(declarations(signature));
             service.codebase.safe_symbols.clear();
             service.codebase.safe_symbol_members.clear();
+            let unchanged: Vec<FileId> = files.iter().copied().filter(|file_id| *file_id != edited.id).collect();
+            let reads = super::super::symbols_read_by(&service.file_states, &service.database, &unchanged);
             let invalid_files = service
                 .codebase
-                .mark_safe_symbols(&diff, &service.native_symbol_references)
+                .mark_safe_symbols(&diff, &service.native_symbol_references, reads)
                 .expect("each fixture's cascade ends within the warm path's limit");
 
-            let unchanged: Vec<FileId> = files.iter().copied().filter(|file_id| *file_id != edited.id).collect();
             let skipped = service.files_to_skip(&service.codebase, &unchanged, &invalid_files);
             for reached in unchanged.iter().filter(|file_id| !skipped.contains(*file_id)) {
                 reached_by.get_mut(&name(reached)).expect("every file is listed").insert(name(&edited.id));

@@ -11,16 +11,21 @@ use mago_analyzer::external::ExternalAnalyzerHandle;
 use mago_analyzer::plugin::PluginRegistry;
 use mago_analyzer::settings::Settings as AnalyzerSettings;
 use mago_database::Database;
+use mago_database::DatabaseReader;
 use mago_database::file::File;
 use mago_database::file::FileId;
 use mago_database::file::FileType;
 use mago_extension::WorkerCommand;
 use mago_extension::WorkerPool;
 use mago_extension::WorkerPoolOptions;
+use mago_orchestrator::service::incremental_analysis::compile::Compilation;
 use mago_php_version::PHPVersion;
 use mago_reporting::IssueCollection;
 use mago_server::Server;
 use mago_server::Settings;
+use mago_sharp_bridge::unit::Input;
+use mago_sharp_bridge::unit::header;
+use mago_sharp_bridge::unit::source_hash;
 use mago_syntax::settings::ParserSettings;
 
 mod common;
@@ -128,4 +133,158 @@ fn a_failed_analysis_resets_the_server_so_the_next_answers_like_a_fresh_one() {
         .issues,
     );
     assert_eq!(recovered, fresh);
+}
+
+/// The messages the reading hook reports under `code`.
+fn reads(issues: &IssueCollection, code: &str) -> Vec<String> {
+    let code = format!("server-reads/{code}");
+    issues
+        .iter()
+        .filter(|issue| issue.code.as_deref() == Some(code.as_str()))
+        .map(|issue| issue.message.clone())
+        .collect()
+}
+
+#[test]
+fn a_hook_that_read_a_class_runs_again_when_the_class_signature_changes_and_not_after_a_body_edit() {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !common::php_sdk_is_available(repository, "the recorded reads test") {
+        return;
+    }
+
+    let mut server =
+        server(repository, database(&[("src/reader.php", "<?php\n// reads: Box::value\n"), ("src/box.php", BOX)]));
+    let first = server.analyze().expect("initial analysis").issues;
+    assert_eq!(reads(&first, "read"), ["Run 1: `Box::value` is Public."]);
+
+    let box_file = FileId::new(b"src/box.php");
+    server
+        .database_mut()
+        .update(box_file, Cow::Borrowed(b"<?php\nfinal class Box { public function value(): int { return 2; } }\n"));
+    let body = server.analyze_incremental(&[box_file]).expect("analysis after a body edit").issues;
+    assert_eq!(reads(&body, "read"), ["Run 1: `Box::value` is Public."], "a body edit leaves the read alone");
+
+    server
+        .database_mut()
+        .update(box_file, Cow::Borrowed(b"<?php\nfinal class Box { private function value(): int { return 2; } }\n"));
+    let hidden = server.analyze_incremental(&[box_file]).expect("analysis after a visibility change").issues;
+    assert_eq!(reads(&hidden, "read"), ["Run 2: `Box::value` is Private."]);
+}
+
+#[test]
+fn a_hook_that_listed_classes_sees_a_new_class_on_the_next_run_and_does_not_run_after_a_body_edit() {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !common::php_sdk_is_available(repository, "the listing reads test") {
+        return;
+    }
+
+    let mut server =
+        server(repository, database(&[("src/lister.php", "<?php\n// lists: classes\n"), ("src/box.php", BOX)]));
+    let first = server.analyze().expect("initial analysis").issues;
+    assert_eq!(reads(&first, "listing"), ["Run 1: classes Box."]);
+
+    let box_file = FileId::new(b"src/box.php");
+    server
+        .database_mut()
+        .update(box_file, Cow::Borrowed(b"<?php\nfinal class Box { public function value(): int { return 2; } }\n"));
+    let body = server.analyze_incremental(&[box_file]).expect("analysis after a body edit").issues;
+    assert_eq!(reads(&body, "listing"), ["Run 1: classes Box."], "a body edit leaves the listing alone");
+
+    let crate_file = FileId::new(b"src/crate.php");
+    server.database_mut().add(File::new(
+        Cow::Borrowed(b"src/crate.php"),
+        FileType::Host,
+        None,
+        Cow::Borrowed(b"<?php\nfinal class Crate {}\n"),
+    ));
+    let added = server.analyze_incremental(&[crate_file]).expect("analysis after a new class").issues;
+    assert_eq!(reads(&added, "listing"), ["Run 2: classes Box, Crate."]);
+
+    server.database_mut().delete(crate_file);
+    let removed = server.analyze_incremental(&[crate_file]).expect("analysis after a removed class").issues;
+    assert_eq!(reads(&removed, "listing"), ["Run 3: classes Box."]);
+}
+
+/// The model whose `total` return type the fixture's provider gives `Query::total`.
+fn order(returned: &str) -> String {
+    format!(
+        "<?php\n\nnamespace App\\Models;\n\nfinal class Order\n{{\n    public function total(): {returned}\n    {{\n        return {};\n    }}\n}}\n",
+        if returned == "int" { "1" } else { "'1'" }
+    )
+}
+
+const QUERY: &str = "<?php\n\nnamespace App\\Models;\n\nfinal class Query\n{\n    public function total(): mixed\n    {\n        return null;\n    }\n}\n";
+
+/// A PHP# file whose `int` return holds only while the provider answers `Query::total` with `int`.
+const REVENUE: &str = "namespace App;\n\nimport App.Models.Query;\n\npublic class Revenue\n{\n    public int total(Query query)\n    {\n        return query.total();\n    }\n}\n";
+
+fn shop(order: &str) -> Database<'static> {
+    database(&[("app/Models/Order.php", order), ("app/Models/Query.php", QUERY), ("app/Revenue.sharp", REVENUE)])
+}
+
+#[test]
+fn a_file_whose_type_a_provider_read_from_a_class_is_analyzed_again_when_the_class_signature_changes() {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !common::php_sdk_is_available(repository, "the provider reads test") {
+        return;
+    }
+
+    let mut warm = server(repository, shop(&order("int")));
+    let first = codes(&warm.analyze().expect("initial analysis").issues);
+    assert!(!first.contains_key("invalid-return-statement"), "the provider answers int: {first:#?}");
+
+    let order_file = FileId::new(b"app/Models/Order.php");
+    let edited = order("string");
+    warm.database_mut().update(order_file, Cow::Owned(edited.clone().into_bytes()));
+    let after = codes(&warm.analyze_incremental(&[order_file]).expect("analysis after a signature change").issues);
+
+    let fresh = codes(&server(repository, shop(&edited)).analyze().expect("fresh analysis").issues);
+    assert!(fresh.contains_key("invalid-return-statement"), "the provider answers string: {fresh:#?}");
+    assert_eq!(after, fresh);
+}
+
+/// Each input `server` names for its compiled `app/Revenue.sharp`, stamped from the database, and the file's bytes.
+fn compiled_revenue(server: &mut Server) -> (BTreeMap<String, Option<Input>>, Vec<u8>) {
+    let database = server.database().read_only();
+    let mut inputs = BTreeMap::new();
+    let compiled = server
+        .compile(|path| {
+            let input = database.get(&FileId::new(path)).ok().map(|file| Input {
+                path: path.to_vec(),
+                size: file.contents.len() as u64,
+                mtime_ns: 0,
+                hash: source_hash(&file.contents),
+            });
+            inputs.insert(String::from_utf8_lossy(path).into_owned(), input.clone());
+            Ok(input)
+        })
+        .expect("the compile runs");
+    let [(_, Compilation::Accepted(bytes))] = compiled.as_slice() else {
+        panic!("app/Revenue.sharp is not accepted: {compiled:?}");
+    };
+
+    (inputs, bytes.clone())
+}
+
+#[test]
+fn a_sharp_file_whose_type_a_provider_read_from_a_model_lists_the_model_among_its_inputs() {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !common::php_sdk_is_available(repository, "the provider reads compile test") {
+        return;
+    }
+
+    let mut server = server(repository, shop(&order("int")));
+    server.analyze().expect("initial analysis");
+    let (before, before_bytes) = compiled_revenue(&mut server);
+    assert!(before.contains_key("app/Models/Order.php"), "the model the provider read: {:?}", before.keys());
+
+    let order_file = FileId::new(b"app/Models/Order.php");
+    let edited = order("int").replace("return 1;", "return 2;");
+    server.database_mut().update(order_file, Cow::Owned(edited.into_bytes()));
+    server.analyze_incremental(&[order_file]).expect("analysis after a body edit");
+    let (after, after_bytes) = compiled_revenue(&mut server);
+
+    assert_ne!(before["app/Models/Order.php"], after["app/Models/Order.php"]);
+    assert_eq!(header(&before_bytes).expect("a header").key, header(&after_bytes).expect("a header").key);
+    assert_ne!(before_bytes, after_bytes, "the compiled file holds the model's new stamp");
 }
