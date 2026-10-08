@@ -400,7 +400,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                     self.file_statement(statement, statements);
                 }
             }
-            Statement::Use(_) => {}
+            // An `extern` declaration tells only the checker what plain PHP does.
+            Statement::Use(_) | Statement::Extern(_) => {}
             Statement::Class(class) => statements.push(self.class(class)),
             Statement::Interface(interface) => statements.push(self.interface(interface)),
             Statement::Enum(r#enum) => statements.push(self.r#enum(r#enum)),

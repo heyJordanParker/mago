@@ -6,6 +6,7 @@ use mago_allocator::LocalArena;
 use mago_analyzer::Analyzer;
 use mago_analyzer::analysis_result::AnalysisResult;
 use mago_analyzer::analysis_result::LateSymbolReferenceIssueReconciler;
+use mago_analyzer::effects::Effects;
 use mago_analyzer::error::AnalysisError;
 use mago_analyzer::external::FileAnalysisSnapshot;
 use mago_analyzer::external::apply_refinements;
@@ -175,6 +176,9 @@ impl AnalysisService {
         let artifacts = analyzer.analyze_with_artifacts(program, &mut analysis_result)?;
         analysis_result.issues =
             drop_follow_on_issues(&file, &semantic_issues, std::mem::take(&mut analysis_result.issues));
+        analysis_result
+            .issues
+            .extend(Effects::solve(&self.codebase, &artifacts.effect_summaries).issues(&self.codebase));
 
         if after_file {
             let reported = self.plugin_registry.run_external_after_file_analysis_hooks(

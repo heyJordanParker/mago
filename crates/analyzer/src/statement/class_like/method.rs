@@ -29,6 +29,9 @@ use crate::artifacts::AnalysisArtifacts;
 use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
+use crate::effects;
+use crate::effects::Body;
+use crate::effects::short_name;
 use crate::error::AnalysisError;
 use crate::statement::attributes::AttributeTarget;
 use crate::statement::attributes::analyze_attributes;
@@ -51,7 +54,8 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
     where
         A: Arena,
     {
-        analyze_method(&MethodParts::of_method(self), context, block_context, artifacts).map(|_| ())
+        analyze_method(&MethodParts::of_method(self), word(self.name.value), context, block_context, artifacts)
+            .map(|_| ())
     }
 }
 
@@ -72,7 +76,8 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Operator<'arena> {
             return Ok(());
         };
 
-        if let Some(class) = analyze_method(&method, context, block_context, artifacts)?
+        let member = concat_word!(b"operator ", self.symbol.as_bytes());
+        if let Some(class) = analyze_method(&method, member, context, block_context, artifacts)?
             && matches!(self.symbol, BinaryOperator::Equal(_))
         {
             check_hash(context, class, self.operator.span);
@@ -82,9 +87,11 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Operator<'arena> {
     }
 }
 
-/// Analyzes a method, and returns its class when the method was analyzed.
+/// Analyzes a method, which messages name as `member` of its class, and returns its class when the method was
+/// analyzed.
 fn analyze_method<'ctx, 'arena, A>(
     method: &MethodParts<'_, 'arena>,
+    member: Word,
     context: &mut Context<'ctx, 'arena, A>,
     block_context: &mut BlockContext<'ctx>,
     artifacts: &mut AnalysisArtifacts,
@@ -173,6 +180,17 @@ where
         )?;
 
         let method_key = (class_like_metadata.name, lowercase_method_name);
+
+        if context.dialect.is_sharp() {
+            effects::summary::record(
+                context,
+                artifacts,
+                Body::Method(class_like_metadata.name, lowercase_method_name),
+                concat_word!(short_name(class_like_metadata.original_name), ".", member),
+                method.parameter_list.parameters.iter().map(|parameter| parameter.variable.span).collect(),
+                body,
+            );
+        }
 
         if method_metadata.return_from_body.is_some() {
             let mut returned: Option<TUnion> = None;

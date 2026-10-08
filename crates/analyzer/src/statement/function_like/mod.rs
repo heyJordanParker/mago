@@ -455,6 +455,7 @@ where
     parent_artifacts.inferred_type_arguments.extend(std::mem::take(&mut artifacts.inferred_type_arguments));
     parent_artifacts.variable_definedness.extend(std::mem::take(&mut artifacts.variable_definedness));
     parent_artifacts.resolved_method_calls.append(&mut artifacts.resolved_method_calls);
+    parent_artifacts.call_targets.extend(std::mem::take(&mut artifacts.call_targets));
     parent_artifacts.symbol_references.extend(std::mem::take(&mut artifacts.symbol_references));
     parent_artifacts.pending_readonly_property_writes.append(&mut artifacts.pending_readonly_property_writes);
 

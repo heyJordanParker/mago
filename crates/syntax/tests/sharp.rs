@@ -2268,6 +2268,86 @@ fn extern_in_a_php_file_is_a_name() {
     assert_eq!(property.hint().map(|hint| source(CODE, hint)), Some("extern"));
 }
 
+/// A file-level `extern` declares the effects of a plain PHP class, method or function, spec section 29. Its target is
+/// a bare name or `Class.member`, and `uses` lists its effects.
+#[test]
+fn extern_declares_a_class_a_method_or_a_function_and_its_effects() {
+    const CODE: &str = "namespace App.Stubs;\n\nimport Stripe.StripeClient;\nimport Carbon.Carbon;\n\nextern StripeClient uses Http;\nextern Carbon.now uses Clock;\nextern now uses Clock;\nextern BigDecimal;\nextern trim;\nextern Mailer uses Http, Mail;\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "app/Stubs/Stripe.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(Statement::Namespace(namespace)) = program.statements.first() else {
+        panic!("expected a namespace, got {:#?}", program.statements);
+    };
+    let externs: Vec<(&str, bool, Vec<&str>, &str)> = namespace
+        .statements()
+        .iter()
+        .filter_map(|statement| match statement {
+            Statement::Extern(declaration) => Some(declaration),
+            _ => None,
+        })
+        .map(|declaration| {
+            (
+                source(CODE, &declaration.target),
+                declaration.target.is_dotted(),
+                declaration.uses.iter().flat_map(|uses| uses.names.iter()).map(|name| source(CODE, name)).collect(),
+                source(CODE, declaration),
+            )
+        })
+        .collect();
+    assert_eq!(
+        externs,
+        [
+            ("StripeClient", false, vec!["Http"], "extern StripeClient uses Http;"),
+            ("Carbon.now", true, vec!["Clock"], "extern Carbon.now uses Clock;"),
+            ("now", false, vec!["Clock"], "extern now uses Clock;"),
+            ("BigDecimal", false, vec![], "extern BigDecimal;"),
+            ("trim", false, vec![], "extern trim;"),
+            ("Mailer", false, vec!["Http", "Mail"], "extern Mailer uses Http, Mail;"),
+        ]
+    );
+    let Some(Statement::Extern(stripe)) =
+        namespace.statements().iter().find(|statement| matches!(statement, Statement::Extern(_)))
+    else {
+        panic!("expected an extern, got {:#?}", namespace.statements());
+    };
+    assert_eq!(stripe.r#extern.value, b"extern");
+    assert_eq!(stripe.uses.as_ref().map(|uses| source(CODE, uses)), Some("uses Http"));
+}
+
+/// `extern` declares only when a name follows it, so `extern(text)` at the start of a PHP# statement stays a call.
+#[test]
+fn extern_before_a_parenthesis_stays_a_call_in_php_sharp() {
+    const CODE: &str = "class Text\n{\n    public void run(string text)\n    {\n        extern(text);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Text.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [statement] = method_body(program) else {
+        panic!("expected one statement, got {:#?}", method_body(program));
+    };
+    let Expression::Call(Call::Function(call)) = expression(statement) else {
+        panic!("expected a call, got {statement:#?}");
+    };
+    assert_eq!(source(CODE, call.function), "extern");
+}
+
+/// PHP has no `extern` declaration, so a `.php` statement that starts with `extern` stays a call or a constant.
+#[test]
+fn extern_starting_a_php_statement_stays_a_call_or_a_constant() {
+    const CODE: &str = "<?php\n\nextern(text);\nextern;\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/text.php", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::OpeningTag(_), call, constant] = program.statements.as_slice() else {
+        panic!("expected two expression statements, got {:#?}", program.statements);
+    };
+    assert!(matches!(expression(call), Expression::Call(Call::Function(_))), "{call:#?}");
+    assert_eq!(bare_name(expression(constant)), b"extern");
+}
+
 /// The lexer reads `Self` and `self` as one keyword. The checker tells them apart by how the keyword is written.
 #[test]
 fn self_is_a_return_type_an_instantiated_class_and_the_class_of_a_static_call() {

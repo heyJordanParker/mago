@@ -76,6 +76,7 @@ use crate::cst::cst::ExitConstruct;
 use crate::cst::cst::Expression;
 use crate::cst::cst::ExpressionStatement;
 use crate::cst::cst::Extends;
+use crate::cst::cst::Extern;
 use crate::cst::cst::For;
 use crate::cst::cst::ForBody;
 use crate::cst::cst::ForColonDelimitedBody;
@@ -250,6 +251,7 @@ use crate::cst::cst::UseItemAlias;
 use crate::cst::cst::UseItemSequence;
 use crate::cst::cst::UseItems;
 use crate::cst::cst::UseType;
+use crate::cst::cst::Uses;
 use crate::cst::cst::ValueArrayElement;
 use crate::cst::cst::Variable;
 use crate::cst::cst::VariadicArrayElement;
@@ -472,6 +474,8 @@ pub enum NodeKind {
     UseItemSequence,
     UseItems,
     UseType,
+    Extern,
+    Uses,
     Yield,
     YieldFrom,
     YieldPair,
@@ -738,6 +742,8 @@ pub enum Node<'ast, 'arena> {
     UseItemSequence(&'ast UseItemSequence<'arena>),
     UseItems(&'ast UseItems<'arena>),
     UseType(&'ast UseType<'arena>),
+    Extern(&'ast Extern<'arena>),
+    Uses(&'ast Uses<'arena>),
     Yield(&'ast Yield<'arena>),
     YieldFrom(&'ast YieldFrom<'arena>),
     YieldPair(&'ast YieldPair<'arena>),
@@ -847,6 +853,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 | Self::Inline(_)
                 | Self::Namespace(_)
                 | Self::Use(_)
+                | Self::Extern(_)
                 | Self::Class(_)
                 | Self::Interface(_)
                 | Self::Trait(_)
@@ -1085,6 +1092,8 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Self::UseItemSequence(_) => NodeKind::UseItemSequence,
             Self::UseItems(_) => NodeKind::UseItems,
             Self::UseType(_) => NodeKind::UseType,
+            Self::Extern(_) => NodeKind::Extern,
+            Self::Uses(_) => NodeKind::Uses,
             Self::Yield(_) => NodeKind::Yield,
             Self::YieldFrom(_) => NodeKind::YieldFrom,
             Self::YieldPair(_) => NodeKind::YieldPair,
@@ -2534,6 +2543,23 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 UseType::Const(node) => Node::Keyword(node),
                 UseType::Function(node) => Node::Keyword(node),
             }),
+            Node::Extern(node) => {
+                f(Node::Keyword(&node.r#extern));
+                f(Node::Identifier(&node.target));
+
+                if let Some(uses) = &node.uses {
+                    f(Node::Uses(uses));
+                }
+
+                f(Node::Terminator(&node.terminator));
+            }
+            Node::Uses(node) => {
+                f(Node::Keyword(&node.uses));
+
+                for name in &node.names {
+                    f(Node::LocalIdentifier(name));
+                }
+            }
             Node::Yield(node) => f(match node {
                 Yield::Value(node) => Node::YieldValue(node),
                 Yield::Pair(node) => Node::YieldPair(node),
@@ -2561,6 +2587,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 Statement::Inline(node) => f(Node::Inline(node)),
                 Statement::Namespace(node) => f(Node::Namespace(node)),
                 Statement::Use(node) => f(Node::Use(node)),
+                Statement::Extern(node) => f(Node::Extern(node)),
                 Statement::Class(node) => f(Node::Class(node)),
                 Statement::Interface(node) => f(Node::Interface(node)),
                 Statement::Trait(node) => f(Node::Trait(node)),
@@ -2955,6 +2982,8 @@ impl HasSpan for Node<'_, '_> {
             Self::UseItemSequence(node) => node.span(),
             Self::UseItems(node) => node.span(),
             Self::UseType(node) => node.span(),
+            Self::Extern(node) => node.span(),
+            Self::Uses(node) => node.span(),
             Self::Yield(node) => node.span(),
             Self::YieldFrom(node) => node.span(),
             Self::YieldPair(node) => node.span(),

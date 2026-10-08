@@ -38,6 +38,7 @@ use crate::statement::analyze_statements;
 pub mod analysis_result;
 pub mod artifacts;
 pub mod code;
+pub mod effects;
 pub mod error;
 pub mod external;
 pub mod plugin;
