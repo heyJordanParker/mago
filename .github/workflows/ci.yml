@@ -111,8 +111,10 @@ jobs:
         if: matrix.rust == 'stable' && matrix.os == 'ubuntu-latest'
         run: cargo test -p mago-codex --features property-tests --locked
 
+      # Linux builds the release binary here because the Composer steps below run it. macOS and
+      # Windows build theirs in release-build, alongside the tests instead of after them.
       - name: cargo build
-        if: matrix.rust == 'stable'
+        if: matrix.rust == 'stable' && matrix.os == 'ubuntu-latest'
         run: cargo build --release --locked
 
       # git archive ships what Packagist ships, and a mirrored copy finds the project's autoloader the way a real install does.
@@ -156,6 +158,35 @@ jobs:
         if: matrix.rust == 'stable' && matrix.os == 'ubuntu-latest'
         run: ./target/release/mago analyze --reporting-format=github
 
+  release-build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: install rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: cache rust toolchain
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-rust-release
+          cache-on-failure: true
+
+      - name: cargo build
+        run: cargo build --release --locked
+
   typos-check:
     runs-on: ubuntu-latest
     permissions:
@@ -166,3 +197,15 @@ jobs:
 
       - name: Search for misspellings
         uses: crate-ci/typos@master
+
+  # The one required check: it passes only when every job above passed, so a job added later
+  # blocks merges without a change to the repository's rules.
+  ci-passed:
+    if: always()
+    needs: [build-and-test, release-build, typos-check]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job passed
+        uses: re-actors/alls-green@b5b5b37504aa4183270bd3d855c52a67f212be35 # release/v1
+        with:
+          jobs: ${{ toJSON(needs) }}
