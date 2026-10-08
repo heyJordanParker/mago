@@ -712,7 +712,8 @@ pub(crate) enum Refusal {
     /// `==` or `!=` on an instance of a class that declares no `operator ==`, or `<=>` or an ordering on one whose class
     /// declares no `operator <=>`.
     Instance,
-    /// `<=>` or an ordering on an instance that may be `null`, which only `==` and `!=` lift.
+    /// `<=>` or an ordering with a side that may be `null`, an instance or any other value, which only `==` and `!=`
+    /// lift.
     NullableInstance,
     /// `==` or `!=` on two values of types that never match, a string ordered against another type, or an instance
     /// compared with a value its class's operator never takes, as `money < 5`.
@@ -734,8 +735,9 @@ pub(crate) fn mixes_numbers(lhs_type: &TUnion, rhs_type: &TUnion, codebase: &Cod
 
 /// Why a PHP# file may not compare a value of `lhs_type` with one of `rhs_type` by `operator`, or `None` when it may:
 /// `==` or `!=` on two values spec section 19 cannot compare strictly, `===` or `!==` on a value that is no class
-/// instance, an ordering of a string against any other type, and a comparison of instances whose class declares no
-/// operator for it, or whose operator never takes the other side, are refused.
+/// instance, an ordering of a string against any other type, an ordering with a side that may be `null`, and a
+/// comparison of instances whose class declares no operator for it, or whose operator never takes the other side, are
+/// refused.
 pub(crate) fn sharp_refusal(
     operator: &BinaryOperator<'_>,
     lhs_type: &TUnion,
@@ -780,27 +782,32 @@ pub(crate) fn sharp_refusal(
                 Some(Refusal::DifferentTypes)
             }
         }
-        // PHP# orders an instance by the `operator <=>` its class declares, which takes no `null`, and a string by its
-        // bytes, so only against a string. An `Any?` keeps its own report.
+        // PHP# orders an instance by the `operator <=>` its class declares, and a string by its bytes, so only against a
+        // string. Only `==` and `!=` take `null`, so a side that may be `null` is refused whatever its type. An `Any?`
+        // keeps its own report.
         BinaryOperator::LessThan(_)
         | BinaryOperator::LessThanOrEqual(_)
         | BinaryOperator::GreaterThan(_)
         | BinaryOperator::GreaterThanOrEqual(_)
         | BinaryOperator::Spaceship(_) => {
-            if has(Comparand::Instance) {
-                return match get_comparison_method(operator, lhs_type, rhs_type, codebase) {
-                    None => Some(Refusal::Instance),
-                    Some(_) if lhs_type.can_be_null() || rhs_type.can_be_null() => Some(Refusal::NullableInstance),
-                    Some(method) => {
-                        (!can_take_operands(codebase, method, &[lhs_type, rhs_type])).then_some(Refusal::DifferentTypes)
-                    }
+            let different_types = if has(Comparand::Instance) {
+                let Some(method) = get_comparison_method(operator, lhs_type, rhs_type, codebase) else {
+                    return Some(Refusal::Instance);
                 };
+
+                !can_take_operands(codebase, method, &[&lhs_type.to_non_nullable(), &rhs_type.to_non_nullable()])
+            } else {
+                has(Comparand::String)
+                    && !lhs.iter().chain(&rhs).all(|comparand| matches!(comparand, Comparand::String | Comparand::Any))
+            };
+
+            if different_types {
+                Some(Refusal::DifferentTypes)
+            } else if !has(Comparand::Any) && (lhs_type.can_be_null() || rhs_type.can_be_null()) {
+                Some(Refusal::NullableInstance)
+            } else {
+                None
             }
-
-            let strings =
-                lhs.iter().chain(&rhs).all(|comparand| matches!(comparand, Comparand::String | Comparand::Any));
-
-            (has(Comparand::String) && !strings).then_some(Refusal::DifferentTypes)
         }
         _ => None,
     }

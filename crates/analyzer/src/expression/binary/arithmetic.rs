@@ -27,8 +27,10 @@ use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
+use mago_syntax::cst::Access;
 use mago_syntax::cst::Binary;
 use mago_syntax::cst::BinaryOperator;
+use mago_syntax::cst::Expression;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
@@ -38,6 +40,7 @@ use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::expression::binary::concat::fold_concat_operands;
 use crate::expression::binary::utils::analyze_instance_operator;
+use crate::expression::binary::utils::display_operand;
 use crate::expression::binary::utils::refuse_non_int_operands;
 use crate::utils::names::display_atomic;
 use crate::utils::names::display_type;
@@ -319,22 +322,7 @@ where
             let mut invalid_pair = false;
 
             if left_atomic.is_mixed() {
-                context.collector.report_with_code(
-                    IssueCode::MixedOperand,
-                    Issue::error(
-                        "Left operand in binary operation has type `mixed`."
-                    )
-                    .with_annotation(
-                        Annotation::primary(binary.lhs.span())
-                            .with_message("Operand is `mixed`.")
-                    )
-                    .with_note(
-                        "Performing operations on `mixed` is unsafe as the actual runtime type is unknown."
-                    )
-                    .with_help(
-                        "Ensure the left operand has a known type (e.g., `int`, `float`, `string`) using type hints, assertions, or checks."
-                    ),
-                );
+                report_mixed_operand(context, binary.lhs, &left_type, "Left");
 
                 pair_result_atomics.push(TAtomic::Mixed(TMixed::new()));
                 if !right_atomic.is_mixed() {
@@ -343,22 +331,7 @@ where
             }
 
             if right_atomic.is_mixed() {
-                context.collector.report_with_code(
-                    IssueCode::MixedOperand,
-                    Issue::error(
-                        "Right operand in binary operation has type `mixed`."
-                    )
-                    .with_annotation(
-                        Annotation::primary(binary.rhs.span())
-                            .with_message("Operand is `mixed`.")
-                    )
-                    .with_note(
-                        "Performing operations on `mixed` is unsafe as the actual runtime type is unknown."
-                    )
-                    .with_help(
-                        "Ensure the right operand has a known type (e.g., `int`, `float`, `string`) using type hints, assertions, or checks."
-                    ),
-                );
+                report_mixed_operand(context, binary.rhs, &right_type, "Right");
 
                 if !pair_result_atomics.iter().any(mago_codex::ttype::atomic::TAtomic::is_mixed) {
                     pair_result_atomics.push(TAtomic::Mixed(TMixed::new()));
@@ -602,6 +575,50 @@ where
     }
 
     true
+}
+
+/// Reports the `side` operand of `mixed` type. In a PHP# file, a property read is named with the rule that keeps it
+/// `Any?`: spec section 21 narrows a local or a parameter after `is`, never a property.
+fn report_mixed_operand<A>(
+    context: &mut Context<'_, '_, A>,
+    operand: &Expression<'_>,
+    operand_type: &TUnion,
+    side: &str,
+) where
+    A: Arena,
+{
+    if context.dialect.is_sharp()
+        && matches!(operand.unparenthesized(), Expression::Access(Access::Property(_) | Access::NullSafeProperty(_)))
+    {
+        let written =
+            String::from_utf8_lossy(&context.source_file.contents[operand.span().to_range_usize()]).into_owned();
+
+        context.collector.report_with_code(
+            IssueCode::MixedOperand,
+            Issue::error(format!(
+                "`{written}` is `{}` here: a property is not narrowed, because it could change between the test and the use.",
+                display_operand(context, operand_type)
+            ))
+            .with_annotation(Annotation::primary(operand.span()).with_message("This property keeps its declared type."))
+            .with_note("Spec section 21 narrows a local or a parameter after `is`, never a property.")
+            .with_help(format!(
+                "Copy the value into a local first: test it with a name, as in `if ({written} is int t)`, and use `t`."
+            )),
+        );
+
+        return;
+    }
+
+    context.collector.report_with_code(
+        IssueCode::MixedOperand,
+        Issue::error(format!("{side} operand in binary operation has type `mixed`."))
+            .with_annotation(Annotation::primary(operand.span()).with_message("Operand is `mixed`."))
+            .with_note("Performing operations on `mixed` is unsafe as the actual runtime type is unknown.")
+            .with_help(format!(
+                "Ensure the {} operand has a known type (e.g., `int`, `float`, `string`) using type hints, assertions, or checks.",
+                side.to_ascii_lowercase()
+            )),
+    );
 }
 
 #[inline]

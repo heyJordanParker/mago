@@ -5482,6 +5482,80 @@ fn equality_of_a_nullable_int_and_a_float_compares_null_before_the_floats() {
 }
 
 /// ```php
+/// return (($operand#1 = $a) === null) === (($operand#2 = ((($operand#3 = $b) === null) === (($operand#4 = $c) === null)
+///     && ($operand#3 === null || (float) $operand#3 === $operand#4)) ? 1 : 2.5) === null)
+///     && ($operand#1 === null || (float) $operand#1 === (float) $operand#2);
+/// ```
+///
+/// An int/float `==` inside another one's operand takes its own `$operand#N`s, so it never overwrites the outer `a`.
+#[test]
+fn a_nested_nullable_int_and_float_equality_takes_its_own_hidden_variables() {
+    assert_eq!(
+        body_in("bool run(int? a, int? b, float c)", "        return a == (b == c ? 1 : 2.5);\n", &[]),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                AND
+                  BINARY_OP [16]
+                    BINARY_OP [16]
+                      ASSIGN
+                        VAR
+                          ZVAL "operand#1"
+                        VAR
+                          ZVAL "a"
+                      ZVAL null
+                    BINARY_OP [16]
+                      ASSIGN
+                        VAR
+                          ZVAL "operand#2"
+                        CONDITIONAL [1]
+                          AND
+                            BINARY_OP [16]
+                              BINARY_OP [16]
+                                ASSIGN
+                                  VAR
+                                    ZVAL "operand#3"
+                                  VAR
+                                    ZVAL "b"
+                                ZVAL null
+                              BINARY_OP [16]
+                                ASSIGN
+                                  VAR
+                                    ZVAL "operand#4"
+                                  VAR
+                                    ZVAL "c"
+                                ZVAL null
+                            OR
+                              BINARY_OP [16]
+                                VAR
+                                  ZVAL "operand#3"
+                                ZVAL null
+                              BINARY_OP [16]
+                                CAST [5]
+                                  VAR
+                                    ZVAL "operand#3"
+                                VAR
+                                  ZVAL "operand#4"
+                          ZVAL 1
+                          ZVAL 2.5
+                      ZVAL null
+                  OR
+                    BINARY_OP [16]
+                      VAR
+                        ZVAL "operand#1"
+                      ZVAL null
+                    BINARY_OP [16]
+                      CAST [5]
+                        VAR
+                          ZVAL "operand#1"
+                      CAST [5]
+                        VAR
+                          ZVAL "operand#2"
+        "#}
+    );
+}
+
+/// ```php
 /// $b = \strcmp($text, "9") < 0; $b = \strcmp($text, $other) >= 0; $b = $total < 9;
 /// ```
 ///
@@ -8944,6 +9018,79 @@ fn equality_of_a_subclass_calls_the_operator_its_parent_declares() {
                       ZVAL "order"
                     VAR
                       ZVAL "other"
+        "#}
+    );
+}
+
+/// ```php
+/// return \App\Money::op_Comparison(\App\Money::op_Addition(\App\Money::op_UnaryNegation($order), $order), $money) < 0
+///     && \App\Money::op_Equality($maybe, $money)
+///     && !\App\Money::op_Equality($maybe, $other)
+///     && \App\Money::op_Comparison($money, $order) <= 0;
+/// ```
+///
+/// The bridge calls the class the checker chose for every operand shape it accepts: an operator `Order` inherits, unary
+/// and binary, a `Money` against an `Order`, a nullable left side of `==`, and two nullable sides of `!=`.
+#[test]
+fn every_operand_shape_the_checker_accepts_calls_the_class_that_declares_the_operator() {
+    assert_eq!(
+        ledger_body(
+            "bool run(Order order, Money money, Order? maybe, Money? other)",
+            "        return (-order + order) < money && maybe == money && maybe != other && money <= order;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                AND
+                  AND
+                    AND
+                      BINARY_OP [20]
+                        STATIC_CALL
+                          ZVAL "App\\Money"
+                          ZVAL "op_Comparison"
+                          ARG_LIST
+                            STATIC_CALL
+                              ZVAL "App\\Money"
+                              ZVAL "op_Addition"
+                              ARG_LIST
+                                STATIC_CALL
+                                  ZVAL "App\\Money"
+                                  ZVAL "op_UnaryNegation"
+                                  ARG_LIST
+                                    VAR
+                                      ZVAL "order"
+                                VAR
+                                  ZVAL "order"
+                            VAR
+                              ZVAL "money"
+                        ZVAL 0
+                      STATIC_CALL
+                        ZVAL "App\\Money"
+                        ZVAL "op_Equality"
+                        ARG_LIST
+                          VAR
+                            ZVAL "maybe"
+                          VAR
+                            ZVAL "money"
+                    UNARY_OP [14]
+                      STATIC_CALL
+                        ZVAL "App\\Money"
+                        ZVAL "op_Equality"
+                        ARG_LIST
+                          VAR
+                            ZVAL "maybe"
+                          VAR
+                            ZVAL "other"
+                  BINARY_OP [21]
+                    STATIC_CALL
+                      ZVAL "App\\Money"
+                      ZVAL "op_Comparison"
+                      ARG_LIST
+                        VAR
+                          ZVAL "money"
+                        VAR
+                          ZVAL "order"
+                    ZVAL 0
         "#}
     );
 }
