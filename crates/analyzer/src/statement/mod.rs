@@ -18,8 +18,8 @@ use mago_codex::ttype::combiner::CombinerOptions;
 use mago_codex::ttype::expander;
 use mago_codex::ttype::expander::TypeExpansionOptions;
 use mago_codex::ttype::get_array_parameters;
-use mago_codex::ttype::get_backed_enum;
 use mago_codex::ttype::get_backing_key_type;
+use mago_codex::ttype::get_sole_backed_enum;
 use mago_codex::ttype::union::TUnion;
 use mago_codex::ttype::union::populate_union_type;
 use mago_names::binding::php_variable_name;
@@ -456,7 +456,7 @@ where
 
 /// Reports a loop over a `Map` whose key type mixes a backed enum with other types. The engine holds each key as its
 /// backing value, and the lowering reads it back as a case only through one enum's `from`, the backed enum
-/// [`get_backed_enum`] finds in each member of the key type.
+/// [`get_sole_backed_enum`] finds in the key type.
 fn report_key_mixing_a_backed_enum<A>(
     context: &mut Context<'_, '_, A>,
     artifacts: &AnalysisArtifacts,
@@ -468,19 +468,11 @@ fn report_key_mixing_a_backed_enum<A>(
     let Some(collection_type) = artifacts.get_expression_type(for_of.expression) else {
         return;
     };
-    let enum_of = |atomic: &TAtomic| get_backed_enum(atomic, context.codebase).map(|backed_enum| backed_enum.name);
-    let is_one_enum = |key_type: &TUnion| {
-        key_type
-            .types
-            .iter()
-            .map(enum_of)
-            .collect::<Option<Vec<_>>>()
-            .is_some_and(|enums| enums.first().is_some_and(|first| enums.iter().all(|other| other == first)))
-    };
     let mixes_a_backed_enum = collection_type.types.iter().any(|atomic| match atomic {
         TAtomic::Array(TArray::Keyed(keyed_array)) => {
             keyed_array.get_generic_parameters().is_some_and(|(key_type, _)| {
-                matches!(get_backing_key_type(key_type, context.codebase), Cow::Owned(_)) && !is_one_enum(key_type)
+                matches!(get_backing_key_type(key_type, context.codebase), Cow::Owned(_))
+                    && get_sole_backed_enum(key_type, context.codebase).is_none()
             })
         }
         _ => false,

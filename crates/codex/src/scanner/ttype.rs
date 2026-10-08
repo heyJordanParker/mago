@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use mago_allocator::Arena;
 use mago_names::ResolvedNames;
-use mago_names::binding::Binding;
 use mago_names::kind::NameKind;
 use mago_names::scope::NamespaceScope;
 use mago_phpdoc_syntax::cst::r#type::Type;
@@ -326,7 +325,7 @@ fn get_union_from_identifier_hint(
 ) -> TUnion {
     let name = resolved_names.get(identifier);
 
-    if let Some(Binding::TypeParameter { .. }) = resolved_names.binding(identifier)
+    if resolved_names.is_type_parameter(identifier)
         && let Some(definitions) = type_context.get_template_definition(word(name))
     {
         return wrap_atomic(builder::get_template_atomic(definitions, word(name)));

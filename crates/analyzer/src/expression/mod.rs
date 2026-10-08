@@ -16,7 +16,6 @@ use mago_codex::ttype::get_named_object;
 use mago_codex::ttype::get_never;
 use mago_codex::ttype::union::TUnion;
 use mago_names::ResolvedNames;
-use mago_names::binding::Binding;
 use mago_names::binding::php_variable_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -27,7 +26,6 @@ use mago_span::Span;
 use mago_syntax::cst::Access;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::Expression;
-use mago_syntax::cst::Identifier;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::Parenthesized;
 use mago_syntax::cst::Pattern;
@@ -630,14 +628,11 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Parenthesized<'arena> {
 /// chain of property reads. Its type is `never`, a variable its `is` pattern names holds the type written beside it, and
 /// it adds no issue.
 pub(crate) fn is_refused(expression: &Expression<'_>, resolved_names: &ResolvedNames<'_>) -> bool {
-    let is_type_parameter =
-        |name: &Identifier<'_>| matches!(resolved_names.binding(name), Some(Binding::TypeParameter { .. }));
-
     let mut object = match expression {
         Expression::Error(_) => return true,
-        Expression::TypeOf(type_of) => return is_type_parameter(&type_of.class),
+        Expression::TypeOf(type_of) => return resolved_names.is_type_parameter(&type_of.class),
         Expression::Instantiation(instantiation) => {
-            return matches!(instantiation.class, Expression::Identifier(class) if is_type_parameter(class));
+            return matches!(instantiation.class, Expression::Identifier(class) if resolved_names.is_type_parameter(class));
         }
         Expression::Is(is) => return tests_erased_type(is.pattern, resolved_names),
         Expression::As(r#as) => return resolved_names.erased_type(r#as.hint).is_some(),
@@ -652,8 +647,8 @@ pub(crate) fn is_refused(expression: &Expression<'_>, resolved_names: &ResolvedN
     }
 
     match object {
-        Expression::TypeOf(type_of) => is_type_parameter(&type_of.class),
-        Expression::ConstantAccess(access) => is_type_parameter(&access.name),
+        Expression::TypeOf(type_of) => resolved_names.is_type_parameter(&type_of.class),
+        Expression::ConstantAccess(access) => resolved_names.is_type_parameter(&access.name),
         _ => false,
     }
 }

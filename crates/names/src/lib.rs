@@ -170,6 +170,16 @@ impl<'arena> ResolvedNames<'arena> {
         self.bindings.get(&position.offset()).copied()
     }
 
+    /// Returns whether the PHP# type name starting at the given position names a type parameter.
+    ///
+    /// Returns `false` for every name in a PHP file.
+    pub fn is_type_parameter<T>(&self, name: &T) -> bool
+    where
+        T: HasPosition,
+    {
+        matches!(self.binding(name), Some(Binding::TypeParameter { .. }))
+    }
+
     /// Returns the class of a PHP# static call, `Class.method()`: the object of `call` when the binder bound it to a
     /// class. Returns `None` for an instance call and for every call in a PHP file.
     ///
@@ -221,9 +231,7 @@ impl<'arena> ResolvedNames<'arena> {
     #[must_use]
     pub fn erased_type(&self, hint: &Hint<'_>) -> Option<Span> {
         match hint {
-            Hint::Identifier(name) if matches!(self.binding(name), Some(Binding::TypeParameter { .. })) => {
-                Some(name.span())
-            }
+            Hint::Identifier(name) if self.is_type_parameter(name) => Some(name.span()),
             Hint::Generic(generic) => Some(generic.span()),
             Hint::Function(function) => Some(function.span()),
             Hint::Nullable(nullable) => self.erased_type(nullable.hint),

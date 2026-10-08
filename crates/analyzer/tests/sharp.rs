@@ -1791,17 +1791,14 @@ fn list_wrap_of_a_value_or_a_list_of_it_is_a_list_of_the_value() {
     assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["11:58 invalid-return-statement"]);
 }
 
-/// A `List` runs as a PHP array, so `wrap` cannot tell a list of lists from a list to wrap. The refusal names the `is`
-/// form that decides it, and the call keeps the type the code asked for, so the assignment adds no second issue.
+/// A `List` runs as a PHP array, so `wrap` cannot tell a list of lists from a list to wrap. The refusal names what `T`
+/// is, and the call keeps the type the code asked for, so the assignment adds no second issue.
 #[test]
-fn list_wrap_of_a_list_is_refused_with_the_is_form_that_decides_it() {
+fn list_wrap_of_a_list_is_refused_once() {
     let sharp = "namespace Demo;\n\nclass Rows\n{\n    public List<List<int>> read(List<int> numbers)\n    {\n        List<List<int>> rows = List.wrap(numbers);\n        return rows;\n    }\n}\n";
 
     assert_eq!(issues(("src/Demo/Rows.sharp", sharp), &[]), ["7:42 invalid-argument"]);
-    assert_eq!(
-        messages(("src/Demo/Rows.sharp", sharp), &[]),
-        ["T is List<int>, itself a list; write `numbers is List<int> one ? [one] : numbers`"]
-    );
+    assert_eq!(messages(("src/Demo/Rows.sharp", sharp), &[]), ["T is List<int>, itself a list"]);
 }
 
 /// A value from plain PHP typed `mixed` arrives as `Any?`, which could hold a list.
@@ -1833,9 +1830,9 @@ fn list_wrap_of_a_map_or_a_list_of_lists_is_refused() {
     assert_eq!(
         messages(("src/Demo/Rows.sharp", sharp), &[]),
         [
-            "T is Map<string, int>, itself a map; write `counts is Map<string, int> one ? [one] : counts`",
-            "T is List<List<int>>, itself a list; write `rows is List<List<int>> one ? [one] : rows`",
-            "T is string|Map<string, int>, which can be a map; write `either is Map<string, int> one ? [one] : either`",
+            "T is Map<string, int>, itself a map",
+            "T is List<List<int>>, itself a list",
+            "T is string|Map<string, int>, which can be a map",
         ]
     );
 }

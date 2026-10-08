@@ -2846,7 +2846,10 @@ fn a_header_names_a_class_or_a_generic_class_type_and_any_other_type_is_not_supp
 fn the_generics_examples_of_the_spec_are_in_the_slice_but_a_test_of_a_type_parameter() {
     let code = "namespace App.Tenant;\n\nimport Illuminate.Database.Eloquent.Model;\n\npublic class PaginatedList<TItem : DatabaseEntity>\n{\n    public TItem first(List<TItem> items) => items[0];\n}\n\npublic class Repository\n{\n    private Map<string, Class<Element>> elements = [:];\n\n    public PaginatedList<TItem> list<TItem : DatabaseEntity>(Query<TItem> query) => new PaginatedList<TItem>(query.rows());\n\n    public void share<TItem : DatabaseEntity & Shareable>(TItem item, Any body)\n    {\n        const page = new PaginatedList<Order>(this.rows());\n        const payload = Json.decode<WebhookPayload>(body);\n        const found = this?.find<Order>(1);\n    }\n\n    public Model? load(Class<Model> type, int id) => type.find(id);\n}\n\npublic interface Validator<in TItem>\n{\n    bool check(TItem item);\n}\n\npublic interface Source<out TItem>\n{\n    TItem next();\n}\n\npublic class OrderPage : PaginatedList<Order>\n{\n}\n\npublic class Inbox\n{\n    public bool holds<TItem>(List<TItem> items, Any value) => value is TItem;\n}\n";
 
-    assert_eq!(issues(code), ["42:72 This type is not supported yet in PHP#."]);
+    assert_eq!(
+        issues(code),
+        ["42:72 `is TItem` can't be tested yet, because type arguments don't reach the running program."]
+    );
 }
 
 /// A type parameter's name is `T`, or `T` and an uppercase letter, as C# names them, spec section 11.
@@ -2942,44 +2945,54 @@ fn the_type_arguments_of_new_and_of_a_method_call_are_checked_as_types() {
 
 /// G1 erases type arguments, so whatever needs one while the code runs is not supported yet: a type parameter in a
 /// pattern, `as` or a catch clause, `typeof` of one, `new` of one, and any type with type arguments in a pattern or
-/// `as`, `Class<T>`, a `List` and a `Map` alike.
+/// `as`, `Class<T>`, a `List` and a `Map` alike. Each refusal names the test or the expression as the code writes it,
+/// and why it cannot run. The plain PHP twin, whose `@template` names no class, has no PHP# rule.
 #[test]
 fn what_needs_a_type_argument_while_the_code_runs_is_not_supported_yet() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    public bool run<TItem>(Any value, List<TItem> items)\n    {\n        const a = value is TItem;\n        const b = value is TItem item;\n        const c = value as TItem;\n        const f = value as List<TItem>;\n        const g = value as Map<string, List<TItem>>;\n        const h = value is List<TItem>;\n        const i = match (value) { TItem => 1, default => 0 };\n        const j = typeof(TItem);\n        const k = new TItem(value);\n        try {\n        } catch (TItem failure) {\n        }\n        const m = value is Class<Order>;\n        return a;\n    }\n}\n";
+    let php = "<?php\n\nclass Report\n{\n    /**\n     * @template TItem\n     * @param list<TItem> $items\n     */\n    public function run(mixed $value, array $items): bool\n    {\n        $a = $value instanceof TItem;\n        $j = TItem::class;\n        $k = new TItem($value);\n        try {\n        } catch (TItem $failure) {\n        }\n        return $a;\n    }\n}\n";
+    let because = "because type arguments don't reach the running program.";
 
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
     assert_eq!(
         issues(code),
         [
-            "7:28 This type is not supported yet in PHP#.",
-            "8:28 This type is not supported yet in PHP#.",
-            "9:28 This type is not supported yet in PHP#.",
-            "10:28 This type is not supported yet in PHP#.",
-            "11:28 This type is not supported yet in PHP#.",
-            "12:28 This type is not supported yet in PHP#.",
-            "13:35 This type is not supported yet in PHP#.",
-            "14:19 This `typeof` of a type parameter is not supported yet in PHP#.",
-            "15:19 This `new` of a type parameter is not supported yet in PHP#.",
-            "17:18 This type is not supported yet in PHP#.",
-            "19:28 This type is not supported yet in PHP#.",
+            format!("7:28 `is TItem` can't be tested yet, {because}"),
+            format!("8:28 `is TItem` can't be tested yet, {because}"),
+            format!("9:28 `as TItem` can't be tested yet, {because}"),
+            format!("10:28 `as List<TItem>` can't be tested yet, {because}"),
+            format!("11:28 `as Map<string, List<TItem>>` can't be tested yet, {because}"),
+            format!("12:28 `is List<TItem>` can't be tested yet, {because}"),
+            format!("13:35 `TItem` can't be tested yet, {because}"),
+            format!("14:19 `typeof(TItem)` can't run yet, {because}"),
+            format!("15:19 `new TItem` can't run yet, {because}"),
+            format!("17:18 `catch (TItem)` can't be tested yet, {because}"),
+            format!("19:28 `is Class<Order>` can't be tested yet, {because}"),
         ]
     );
+    assert!(check("src/Report.sharp", code).iter().all(|issue| issue.notes.is_empty()));
 }
 
 /// A static member reached through a type parameter, as in `TItem.make()`, needs the type argument while the code
-/// runs, which G1 erases, so it is not supported yet.
+/// runs, which G1 erases, so it is not supported yet. The plain PHP twin, whose `@template` names no class, has no PHP#
+/// rule.
 #[test]
 fn a_static_member_of_a_type_parameter_is_not_supported_yet() {
     let code = "namespace App.Tenant;\n\nclass Box<TItem>\n{\n    public int run<TKey>(int extra)\n    {\n        TItem.make(extra);\n        const limit = TItem.LIMIT;\n        TItem.count = limit;\n        return TKey.count(extra);\n    }\n}\n";
+    let php = "<?php\n\n/** @template TItem */\nclass Box\n{\n    /** @template TKey */\n    public function run(int $extra): int\n    {\n        TItem::make($extra);\n        $limit = TItem::LIMIT;\n        TItem::$count = $limit;\n        return TKey::count($extra);\n    }\n}\n";
+    let because = "because type arguments don't reach the running program.";
 
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
     assert_eq!(
         issues(code),
         [
-            "7:9 This static member of a type parameter is not supported yet in PHP#.",
-            "8:23 This static member of a type parameter is not supported yet in PHP#.",
-            "9:9 This static member of a type parameter is not supported yet in PHP#.",
-            "10:16 This static member of a type parameter is not supported yet in PHP#.",
+            format!("7:9 A static member of `TItem` can't be used yet, {because}"),
+            format!("8:23 A static member of `TItem` can't be used yet, {because}"),
+            format!("9:9 A static member of `TItem` can't be used yet, {because}"),
+            format!("10:16 A static member of `TKey` can't be used yet, {because}"),
         ]
     );
+    assert!(check("src/Report.sharp", code).iter().all(|issue| issue.notes.is_empty()));
 }
 
 /// G1 erases type arguments, so every `Box<…>` shares one static member, and a static member uses none of its class's
@@ -3031,34 +3044,42 @@ fn a_static_method_uses_its_own_type_parameters() {
 fn a_type_test_with_type_arguments_is_not_supported_yet() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int run(Any? item)\n    {\n        const a = item is List<int> numbers ? count(numbers) : 0;\n        const b = item as List<int>;\n        const c = match (item) { List<int> numbers => count(numbers), default => 0 };\n        const d = item is PaginatedList<Order> page ? 1 : 0;\n        const e = item as PaginatedList<Order>;\n        const f = match (item) { PaginatedList<Order> page => 1, default => 0 };\n        return a;\n    }\n}\n";
     let php = "<?php\n\nclass Report\n{\n    public function run(mixed $item): int\n    {\n        $a = is_array($item) && array_is_list($item) ? count($item) : 0;\n        $b = $item instanceof PaginatedList ? 1 : 0;\n        return $a + $b;\n    }\n}\n";
-    let refusal = "This type is not supported yet in PHP#.";
+    let because = "because type arguments don't reach the running program.";
 
     assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
     assert_eq!(
         issues(code),
         [
-            format!("7:27 {refusal}"),
-            format!("8:27 {refusal}"),
-            format!("9:34 {refusal}"),
-            format!("10:27 {refusal}"),
-            format!("11:27 {refusal}"),
-            format!("12:34 {refusal}"),
+            format!("7:27 `is List<int>` can't be tested yet, {because}"),
+            format!("8:27 `as List<int>` can't be tested yet, {because}"),
+            format!("9:34 `List<int>` can't be tested yet, {because}"),
+            format!("10:27 `is PaginatedList<Order>` can't be tested yet, {because}"),
+            format!("11:27 `as PaginatedList<Order>` can't be tested yet, {because}"),
+            format!("12:34 `PaginatedList<Order>` can't be tested yet, {because}"),
         ]
     );
+    assert!(check("src/Report.sharp", code).iter().all(|issue| issue.notes.is_empty()));
 }
 
 /// A function type runs as a `Closure` of any signature, so `is`, `as` and a `match` arm cannot test its signature,
-/// and each is refused at its type with the note of every erased type. The plain PHP twin has no PHP# rule.
+/// and each is refused at its type with the reason a signature is erased. The plain PHP twin has no PHP# rule.
 #[test]
 fn a_type_test_of_a_function_type_is_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int run(Any? value)\n    {\n        const a = value is Function<int(int)> f ? f(1) : 0;\n        const b = value as Function<int(int)>;\n        const c = match (value) { Function<int(int)> f => f(1), default => 0 };\n        return a;\n    }\n}\n";
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int run(Any? value)\n    {\n        const a = value is Function<int(int)> f ? f(1) : 0;\n        const b = value as Function<int(int)>;\n        const c = match (value) { Function<int(int)> f => f(1), default => 0 };\n        const d = value as int|Function<int(int)>;\n        return a;\n    }\n}\n";
     let php = "<?php\n\nclass Report\n{\n    public function run(mixed $value): int\n    {\n        return $value instanceof \\Closure ? $value(1) : 0;\n    }\n}\n";
-    let refusal = "This type is not supported yet in PHP#.";
+    let because = "because a function's parameter and return types don't reach the running program.";
 
     assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
-    assert_eq!(issues(code), [format!("7:28 {refusal}"), format!("8:28 {refusal}"), format!("9:35 {refusal}")]);
-    assert!(check("src/Report.sharp", code).iter().all(|issue| issue.notes
-        == ["Type arguments do not reach the running program yet, so it cannot tell which type a type parameter or a generic type names."]));
+    assert_eq!(
+        issues(code),
+        [
+            format!("7:28 `is Function<int(int)>` can't be tested yet, {because}"),
+            format!("8:28 `as Function<int(int)>` can't be tested yet, {because}"),
+            format!("9:35 `Function<int(int)>` can't be tested yet, {because}"),
+            format!("10:32 `as int|Function<int(int)>` can't be tested yet, {because}"),
+        ]
+    );
+    assert!(check("src/Report.sharp", code).iter().all(|issue| issue.notes.is_empty()));
 }
 
 /// A generic member of a union gets the checks it gets outside a union, inside its type arguments too. Each union

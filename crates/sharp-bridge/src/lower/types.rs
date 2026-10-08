@@ -8,7 +8,7 @@ use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::atomic::scalar::class_like_string::TClassLikeString;
 use mago_codex::ttype::get_array_parameters;
-use mago_codex::ttype::get_backed_enum;
+use mago_codex::ttype::get_sole_backed_enum;
 use mago_codex::ttype::union::TUnion;
 use mago_names::ResolvedNames;
 use mago_span::HasSpan;
@@ -108,19 +108,9 @@ impl<'analysis> Types<'analysis> {
     }
 
     /// The fully qualified name of the one backed enum every value of `r#type` but `null` is a case of, as
-    /// [`get_backed_enum`] finds it in each.
+    /// [`get_sole_backed_enum`] finds it.
     pub(crate) fn backed_enum(&self, r#type: &TUnion) -> Option<&'analysis [u8]> {
-        let classes: Vec<&[u8]> = r#type
-            .types
-            .iter()
-            .filter(|atomic| !atomic.is_null())
-            .map(|atomic| {
-                get_backed_enum(atomic, self.codebase).map(|backed_enum| backed_enum.original_name.as_bytes())
-            })
-            .collect::<Option<_>>()?;
-        let class = *classes.first()?;
-
-        classes.iter().all(|other| *other == class).then_some(class)
+        get_sole_backed_enum(r#type, self.codebase).map(|backed_enum| backed_enum.original_name.as_bytes())
     }
 
     /// The declaration `member` of the fully qualified class name `class` resolves to when code reads it: an enum case,

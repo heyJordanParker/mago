@@ -72,6 +72,7 @@ use mago_syntax::cst::Use;
 use mago_syntax::cst::UseItems;
 use mago_syntax::cst::While;
 use mago_syntax::cst::WhileBody;
+use mago_syntax::cst::built_in_generic_arity;
 use mago_syntax::utils::pattern::called_function;
 use mago_syntax::walker::MutWalker;
 use mago_syntax::walker::walk_binary_mut;
@@ -1037,11 +1038,11 @@ where
 
     /// Resolves the name every type is written with, a header's included. A name that names a type parameter in scope
     /// is that type parameter. A generic type, as in `PaginatedList<Order>`, names its class before its type arguments,
-    /// and `List`, `Map` and `Class` name no class.
+    /// and the names [`built_in_generic_arity`] knows name no class.
     fn walk_in_hint(&mut self, hint: &'ast Hint<'arena>, context: &mut NameResolutionContext<'arena, A>) {
         let (name, span) = match hint {
             Hint::Identifier(identifier) => (identifier.value(), identifier.span()),
-            Hint::Generic(generic) if !matches!(generic.name.value, b"List" | b"Map" | b"Class") => {
+            Hint::Generic(generic) if built_in_generic_arity(generic.name.value).is_none() => {
                 (generic.name.value, generic.name.span)
             }
             _ => return,

@@ -10,7 +10,6 @@ use mago_php_version::PHPVersion;
 use mago_reporting::Annotation;
 use mago_reporting::AnnotationKind;
 use mago_reporting::Issue;
-use mago_span::HasPosition;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::Access;
@@ -89,6 +88,7 @@ use mago_syntax::cst::UseItems;
 use mago_syntax::cst::Variable;
 use mago_syntax::cst::While;
 use mago_syntax::cst::WhileBody;
+use mago_syntax::cst::built_in_generic_arity;
 use mago_syntax_core::stack::ensure_sufficient_stack;
 
 use crate::internal::consts::RESERVED_CLASS_NAMES;
@@ -519,7 +519,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         }
         // A header names each class and interface by its short name, and a generic one with type arguments, which are
         // a parameter's types.
-        (Node::Hint(Hint::Identifier(name)), Header) if !is_type_parameter(name, context) => Some(Header),
+        (Node::Hint(Hint::Identifier(name)), Header) if !context.names.is_type_parameter(name) => Some(Header),
         (Node::Hint(hint @ Hint::Generic(generic)), Header)
             if is_slice_type(hint) && built_in_generic_arity(generic.name.value).is_none() =>
         {
@@ -898,7 +898,8 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         (Node::MethodExpressionBody(_), Method) => Some(Body),
         (Node::TryCatchClause(_), Body) => Some(TryCatchClause),
         (Node::Hint(hint), TryCatchClause) if let Some(erased) = context.names.erased_type(hint) => {
-            report_not_supported(erased, "type", ERASED_TYPE_ARGUMENTS, context);
+            let test = format!("catch ({})", BytesDisplay(context.get_code_snippet(hint)));
+            report_erased_test(&test, hint, erased, context);
 
             None
         }
@@ -1034,7 +1035,8 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             }
             hint => match context.names.erased_type(hint) {
                 Some(erased) => {
-                    report_not_supported(erased, "type", ERASED_TYPE_ARGUMENTS, context);
+                    let test = format!("as {}", BytesDisplay(context.get_code_snippet(hint)));
+                    report_erased_test(&test, hint, erased, context);
 
                     None
                 }
@@ -1061,7 +1063,12 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             None
         }
         (Node::Hint(hint), Place::Pattern) if let Some(erased) = context.names.erased_type(hint) => {
-            report_not_supported(erased, "type", ERASED_TYPE_ARGUMENTS, context);
+            let keyword = match context.ancestors.last() {
+                Some(Node::Expression(Expression::Is(_))) => "is ",
+                _ => "",
+            };
+            let test = format!("{keyword}{}", BytesDisplay(context.get_code_snippet(hint)));
+            report_erased_test(&test, hint, erased, context);
 
             None
         }
@@ -1147,14 +1154,16 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             Body | Constant,
         ) => Some(place),
         (Node::Expression(Expression::ArrayAccess(_)) | Node::ArrayAccess(_), Body) => Some(Body),
-        (Node::ConstantAccess(access), Body) if is_type_parameter(&access.name, context) => {
-            report_not_supported(access.span(), "static member of a type parameter", ERASED_TYPE_ARGUMENTS, context);
+        (Node::ConstantAccess(access), Body) if context.names.is_type_parameter(&access.name) => {
+            let refused = format!("A static member of `{}` can't be used yet", BytesDisplay(context.get_code_snippet(access)));
+            report_erased(access.span(), &refused, false, context);
 
             None
         }
         (Node::ConstantAccess(_), Body) => Some(Body),
-        (Node::TypeOf(type_of), Body | Constant) if is_type_parameter(&type_of.class, context) => {
-            report_not_supported(type_of.span(), "`typeof` of a type parameter", ERASED_TYPE_ARGUMENTS, context);
+        (Node::TypeOf(type_of), Body | Constant) if context.names.is_type_parameter(&type_of.class) => {
+            let refused = format!("`{}` can't run yet", BytesDisplay(context.get_code_snippet(type_of)));
+            report_erased(type_of.span(), &refused, false, context);
 
             None
         }
@@ -2086,22 +2095,33 @@ fn is_slice_type(hint: &Hint) -> bool {
     }
 }
 
-/// The note of a refusal of what needs a type argument while the code runs. G1 checks generics and erases them.
-const ERASED_TYPE_ARGUMENTS: &str = "Type arguments do not reach the running program yet, so it cannot tell which type a type parameter or a generic type names.";
+/// Refuses `refused`, a type test or an expression as the code writes it and what it can't do yet, because what it
+/// needs while the code runs does not reach it: a function type's parameter and return types when `function_type`, and
+/// a type argument otherwise. G1 checks generics and erases them.
+fn report_erased(span: Span, refused: &str, function_type: bool, context: &mut Context<'_, '_, '_>) {
+    let erased = if function_type { "a function's parameter and return types" } else { "type arguments" };
 
-/// The number of type arguments a generic type takes when its name is PHP#'s own `List`, `Map` or `Class`, which name
-/// no class.
-fn built_in_generic_arity(name: &[u8]) -> Option<usize> {
-    match name {
-        b"List" | b"Class" => Some(1),
-        b"Map" => Some(2),
-        _ => None,
-    }
+    context.report(
+        Issue::error(format!("{refused}, because {erased} don't reach the running program."))
+            .with_annotation(Annotation::primary(span).with_message("Not supported yet.")),
+    );
 }
 
-/// Whether the binder bound a type name to a type parameter.
-fn is_type_parameter(name: &impl HasPosition, context: &Context<'_, '_, '_>) -> bool {
-    matches!(context.names.binding(name), Some(Binding::TypeParameter { .. }))
+/// Refuses the type test `test` of `hint`, whose part at `erased` needs what G1 erases, as
+/// [`ResolvedNames::erased_type`] finds it.
+fn report_erased_test(test: &str, hint: &Hint, erased: Span, context: &mut Context<'_, '_, '_>) {
+    report_erased(erased, &format!("`{test}` can't be tested yet"), is_function_type_at(hint, erased), context);
+}
+
+/// Whether the part of `hint` at `erased` is a function type.
+fn is_function_type_at(hint: &Hint, erased: Span) -> bool {
+    match hint {
+        Hint::Function(function) => function.span() == erased,
+        Hint::Nullable(nullable) => is_function_type_at(nullable.hint, erased),
+        Hint::Parenthesized(parenthesized) => is_function_type_at(parenthesized.hint, erased),
+        Hint::Union(union) => is_function_type_at(union.left, erased) || is_function_type_at(union.right, erased),
+        _ => false,
+    }
 }
 
 /// The class whose constant or static field, property or method names `name`, a type parameter the class declares.
@@ -2167,9 +2187,9 @@ fn check_type_parameters(list: &TypeParameterList, place: Place, context: &mut C
 /// `&`, as spec section 11 writes it.
 fn is_slice_bound(hint: &Hint, context: &Context<'_, '_, '_>) -> bool {
     match hint {
-        Hint::Identifier(name @ Identifier::Local(_)) => !is_type_parameter(name, context),
+        Hint::Identifier(name @ Identifier::Local(_)) => !context.names.is_type_parameter(name),
         Hint::Generic(generic) => {
-            built_in_generic_arity(generic.name.value).is_none() && !is_type_parameter(&generic.name, context)
+            built_in_generic_arity(generic.name.value).is_none() && !context.names.is_type_parameter(&generic.name)
         }
         Hint::Intersection(intersection) => {
             is_slice_bound(intersection.left, context) && is_slice_bound(intersection.right, context)
@@ -2182,7 +2202,7 @@ fn is_slice_bound(hint: &Hint, context: &Context<'_, '_, '_>) -> bool {
 /// 25, and none on a type parameter. The analyzer checks a generic class's arity and bounds. Returns the place of the
 /// type arguments, or none when the walk skips them.
 fn check_generic(generic: &GenericHint, place: Place, context: &mut Context<'_, '_, '_>) -> Option<Place> {
-    if is_type_parameter(&generic.name, context) {
+    if context.names.is_type_parameter(&generic.name) {
         context.report(
             Issue::error(format!(
                 "A type parameter takes no type arguments: write `{}`.",
@@ -2348,8 +2368,9 @@ fn check_instantiation(instantiation: &Instantiation, context: &mut Context<'_, 
 
             return Some(Place::Instantiation);
         }
-        Expression::Identifier(class) if is_type_parameter(class, context) => {
-            report_not_supported(instantiation.span(), "`new` of a type parameter", ERASED_TYPE_ARGUMENTS, context);
+        Expression::Identifier(class) if context.names.is_type_parameter(class) => {
+            let refused = format!("`new {}` can't run yet", BytesDisplay(context.get_code_snippet(class)));
+            report_erased(instantiation.span(), &refused, false, context);
 
             return None;
         }

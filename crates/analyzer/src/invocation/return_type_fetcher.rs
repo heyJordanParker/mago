@@ -100,7 +100,7 @@ where
             display_sharp_type(value_type, codebase)
         )
     } else {
-        let collections: Vec<TAtomic> = element_type.types.iter().filter(|atomic| atomic.is_array()).cloned().collect();
+        let collections: Vec<&TAtomic> = element_type.types.iter().filter(|atomic| atomic.is_array()).collect();
         if collections.is_empty() {
             return Some(get_list(element_type));
         }
@@ -111,12 +111,8 @@ where
             "map"
         };
         let reason = if collections.len() == element_type.types.len() { "itself a" } else { "which can be a" };
-        let collection_type = display_sharp_type(&TUnion::from_vec(collections), codebase);
 
-        format!(
-            "T is {}, {reason} {kind}; write `{source} is {collection_type} one ? [one] : {source}`",
-            display_sharp_type(&element_type, codebase)
-        )
+        format!("T is {}, {reason} {kind}", display_sharp_type(&element_type, codebase))
     };
 
     context.collector.report_with_code(

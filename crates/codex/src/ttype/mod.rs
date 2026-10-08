@@ -1441,6 +1441,21 @@ pub fn get_backed_enum<'codebase>(
     })
 }
 
+/// The one backed enum every member of `union` but `null` is a case of, as [`get_backed_enum`] finds it in each.
+#[must_use]
+pub fn get_sole_backed_enum<'codebase>(
+    union: &TUnion,
+    codebase: &'codebase CodebaseMetadata,
+) -> Option<&'codebase ClassLikeMetadata> {
+    let mut backed_enums =
+        union.types.iter().filter(|atomic| !atomic.is_null()).map(|atomic| get_backed_enum(atomic, codebase));
+    let first = backed_enums.next()??;
+
+    backed_enums
+        .all(|backed_enum| backed_enum.is_some_and(|backed_enum| backed_enum.name == first.name))
+        .then_some(first)
+}
+
 #[must_use]
 pub fn get_array_parameters(array_type: &TArray, codebase: &CodebaseMetadata) -> (TUnion, TUnion) {
     match array_type {

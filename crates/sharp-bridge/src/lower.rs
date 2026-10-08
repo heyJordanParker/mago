@@ -83,6 +83,7 @@ use mago_syntax::cst::UnaryPostfixOperator;
 use mago_syntax::cst::UnaryPrefixOperator;
 use mago_syntax::cst::Variable;
 use mago_syntax::cst::WhileBody;
+use mago_syntax::cst::built_in_generic_arity;
 use mago_syntax::utils::pattern::PhpShape;
 use mago_syntax::utils::pattern::php_shape;
 use mago_syntax_core::stack::ensure_sufficient_stack;
@@ -953,11 +954,11 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 PhpType::Classes(classes)
             }
             Hint::Self_(_) => PhpType::Keyword(IS_STATIC),
-            Hint::Generic(generic) => match generic.name.value {
-                b"List" | b"Map" => PhpType::Keyword(IS_ARRAY),
-                b"Class" => PhpType::Named(b"string"),
-                _ => PhpType::Classes(vec![self.names.get(&generic.name)]),
-            },
+            Hint::Generic(generic) if built_in_generic_arity(generic.name.value).is_none() => {
+                PhpType::Classes(vec![self.names.get(&generic.name)])
+            }
+            Hint::Generic(generic) if generic.name.value == b"Class" => PhpType::Named(b"string"),
+            Hint::Generic(_) => PhpType::Keyword(IS_ARRAY),
             Hint::Function(_) => PhpType::Classes(vec![b"Closure"]),
             _ => unreachable!("check_slice refuses the type `{hint}`"),
         }
