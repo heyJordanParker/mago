@@ -3311,6 +3311,10 @@ fn a_list_read_with_an_index_that_may_not_be_an_int_is_an_error() {
         sharp_issues[0].primary_annotation().and_then(|annotation| annotation.message.as_deref()),
         Some("This index may not be an `int`.")
     );
+    assert_eq!(
+        sharp_issues[0].help.as_deref(),
+        Some("Check the index with `is int` first, as in `if (index is int) { … }`.")
+    );
 }
 
 /// An index of a type `int` contains, such as an `int` literal or a loop counter, reads a `List` as `int` does. A

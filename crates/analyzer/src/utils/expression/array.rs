@@ -661,7 +661,7 @@ where
             IssueCode::MismatchedArrayIndex,
             Issue::error(format!("`{list_type}` is indexed by `int`, but this index is `{index_type}`."))
                 .with_annotation(Annotation::primary(span).with_message("This index may not be an `int`."))
-                .with_help("Check the index with `is int` first, as in `if (key is int index) { … }`."),
+                .with_help("Check the index with `is int` first, as in `if (index is int) { … }`."),
         );
     } else {
         expected_index_types.push(expected_key_type);
