@@ -4314,6 +4314,24 @@ fn an_inherited_constructor_and_method_of_a_php_child_take_its_extends_type_argu
     );
 }
 
+/// A PHP class that passes its own template on, `@extends Page<T>` once or through `Section<T>`, takes its `T` from the
+/// argument of an inherited constructor, as `new` names no type arguments in PHP.
+#[test]
+fn a_php_child_that_passes_its_own_template_on_infers_it_from_the_inherited_constructor() {
+    let php = "<?php\n\nnamespace Demo;\n\nabstract class Entity\n{\n}\n\nclass Order extends Entity\n{\n}\n\n/** @template T of Entity */\nclass Page\n{\n    /** @param list<T> $rows */\n    public function __construct(private array $rows)\n    {\n    }\n\n    /** @return list<T> */\n    public function rows(): array\n    {\n        return $this->rows;\n    }\n}\n\n/**\n * @template T of Entity\n * @extends Page<T>\n */\nclass Section extends Page\n{\n}\n\n/**\n * @template T of Entity\n * @extends Section<T>\n */\nclass Chapter extends Section\n{\n}\n\nclass Report\n{\n    /** @param list<Order> $orders */\n    public static function sectioned(array $orders): Section\n    {\n        return new Section($orders);\n    }\n\n    /** @param list<Order> $orders */\n    public static function chaptered(array $orders): Chapter\n    {\n        return new Chapter($orders);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
+}
+
+/// Inside `Pair<TKey, TValue>`, `this.swap()` is a `Pair<TValue, TKey>`: its `first()` gives the caller's `TValue` and
+/// its `second()` the caller's `TKey`, so a method that returns its `first()` as a `TKey` is refused.
+#[test]
+fn a_receiver_of_its_own_class_with_swapped_type_arguments_gives_them_swapped() {
+    let sharp = "namespace Demo;\n\npublic class Pair<TKey, TValue>\n{\n    private TKey key;\n\n    private TValue value;\n\n    public Pair(TKey key, TValue value)\n    {\n        this.key = key;\n        this.value = value;\n    }\n\n    public TKey first() => this.key;\n\n    public TValue second() => this.value;\n\n    public Pair<TValue, TKey> swap() => new Pair<TValue, TKey>(this.value, this.key);\n\n    public TValue swappedFirst() => this.swap().first();\n\n    public TKey swappedSecond() => this.swap().second();\n\n    public TKey wrongFirst() => this.swap().first();\n}\n";
+
+    assert_eq!(issues(("src/Demo/Pair.sharp", sharp), &[]), ["25:33 invalid-return-statement"]);
+}
+
 /// `new Self(…)` in a generic class names no type arguments: `Self` is the class with its own type parameters, so its
 /// value passes where `Repo<TItem>` is expected inside the class, as a return value and as an argument, and not where
 /// `Box<int>` is. `1` is no `TItem`, and no `out` or `in` marker would let `Box<TItem>` pass as `Box<int>`, so the

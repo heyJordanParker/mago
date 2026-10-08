@@ -212,30 +212,67 @@ pub fn populate_template_result_from_invocation<'ctx, 'arena, A>(
         return;
     };
 
-    seed_inherited_type_arguments(
-        context,
-        declaring_class_metadata,
-        method_context.class_like_metadata,
-        instance_type.and_then(|instance_type| instance_type.get_type_parameters()),
-        template_result,
-    );
+    match instance_type {
+        Some(instance_type) => {
+            seed_inherited_type_arguments(
+                context,
+                declaring_class_metadata,
+                method_context.class_like_metadata,
+                instance_type.get_type_parameters(),
+                template_result,
+            );
 
-    if let Some(instance_type) = instance_type {
-        infer_templates_for_method_call(
-            context,
-            instance_type,
-            method_context,
-            method_metadata,
-            declaring_class_metadata,
-            template_result,
-        );
+            infer_templates_for_method_call(
+                context,
+                instance_type,
+                method_context,
+                method_metadata,
+                declaring_class_metadata,
+                template_result,
+            );
+        }
+        None => {
+            if let Some(type_arguments) =
+                get_bound_type_arguments(context, template_result, method_context.class_like_metadata)
+            {
+                seed_inherited_type_arguments(
+                    context,
+                    declaring_class_metadata,
+                    method_context.class_like_metadata,
+                    Some(&type_arguments),
+                    template_result,
+                );
+            }
+        }
     }
 }
 
+/// The type arguments `template_result` bounds every template of `class` to, as `new` bounds them from the type
+/// arguments it writes, or `None` while one of them is unbound, as in PHP, where `new` writes none and the arguments
+/// infer them.
+fn get_bound_type_arguments<A>(
+    context: &Context<'_, '_, A>,
+    template_result: &TemplateResult,
+    class: &ClassLikeMetadata,
+) -> Option<Vec<TUnion>>
+where
+    A: Arena,
+{
+    class
+        .template_types
+        .keys()
+        .map(|template_name| {
+            template_result
+                .get_lower_bounds_for_class_like(*template_name, class.name)
+                .map(|bounds| get_most_specific_type_from_bounds(bounds, context.codebase))
+        })
+        .collect()
+}
+
 /// Bounds each template `declaring_class` declares by the type argument `called_class` passes it through the classes
-/// it extends and implements, read with the called class's own `type_arguments` when the call has them. A constructor
-/// that `new` runs has no receiver object, so the called class alone fixes them, as `OrderPage : PaginatedList<Order>`
-/// fixes `PaginatedList`'s `TItem` to `Order`.
+/// it extends and implements, read with the called class's own `type_arguments`, as `OrderPage : PaginatedList<Order>`
+/// fixes `PaginatedList`'s `TItem` to `Order` and `new OrderList<Order>(…)` fixes it through
+/// `OrderList<TItem> : PaginatedList<TItem>`.
 fn seed_inherited_type_arguments<A>(
     context: &Context<'_, '_, A>,
     declaring_class: &ClassLikeMetadata,
