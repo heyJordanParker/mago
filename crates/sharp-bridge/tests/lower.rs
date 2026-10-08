@@ -8,11 +8,16 @@
 
 mod common;
 
+use std::borrow::Cow;
 use std::fmt::Write;
+use std::path::Path;
 use std::thread;
 
 use indoc::indoc;
 
+use mago_database::file::File;
+use mago_database::file::FileType;
+use mago_sharp_bridge::InlineForms;
 use mago_sharp_bridge::Unit;
 use mago_sharp_bridge::inline_forms;
 use mago_sharp_bridge::lower;
@@ -20,6 +25,7 @@ use mago_sharp_bridge::sharp_kind;
 use mago_sharp_bridge::sharp_node;
 use mago_sharp_bridge::sharp_str;
 use mago_sharp_bridge::sharp_value;
+use mago_sharp_bridge::unit::encode;
 
 /// A file the checker accepted and its lowered unit, or the checker's refusal.
 struct Lowered(Result<Unit, Vec<String>>);
@@ -4467,7 +4473,7 @@ fn position_current_is_a_new_position_of_its_file_line_column_and_enclosing_meth
                 NEW
                   ZVAL "Sharp\\Position"
                   ARG_LIST
-                    ZVAL "src/Report.sharp"
+                    MAGIC_CONST [347]
                     ZVAL 9
                     ZVAL 22
                     ZVAL "App.Tenant.Report.run"
@@ -4480,7 +4486,7 @@ fn position_current_is_a_new_position_of_its_file_line_column_and_enclosing_meth
                   NEW
                     ZVAL "Sharp\\Position"
                     ARG_LIST
-                      ZVAL "src/Report.sharp"
+                      MAGIC_CONST [347]
                       ZVAL 10
                       ZVAL 29
                       ZVAL "App.Tenant.Report.run"
@@ -4520,7 +4526,7 @@ fn position_current_in_an_initial_value_names_the_constructor_the_class_gets() {
                 NEW
                   ZVAL "Sharp\\Position"
                   ARG_LIST
-                    ZVAL "src/Report.sharp"
+                    MAGIC_CONST [347]
                     ZVAL 3
                     ZVAL 32
                     ZVAL "Report.Report"
@@ -4560,7 +4566,7 @@ fn position_current_in_a_written_constructor_and_its_initial_values_names_the_co
                 NEW
                   ZVAL "Sharp\\Position"
                   ARG_LIST
-                    ZVAL "src/Report.sharp"
+                    MAGIC_CONST [347]
                     ZVAL 5
                     ZVAL 32
                     ZVAL "App.Tenant.Report.Report"
@@ -4570,7 +4576,7 @@ fn position_current_in_a_written_constructor_and_its_initial_values_names_the_co
                 NEW
                   ZVAL "Sharp\\Position"
                   ARG_LIST
-                    ZVAL "src/Report.sharp"
+                    MAGIC_CONST [347]
                     ZVAL 9
                     ZVAL 22
                     ZVAL "App.Tenant.Report.Report"
@@ -4585,7 +4591,7 @@ fn position_current_in_a_written_constructor_and_its_initial_values_names_the_co
                   NEW
                     ZVAL "Sharp\\Position"
                     ARG_LIST
-                      ZVAL "src/Report.sharp"
+                      MAGIC_CONST [347]
                       ZVAL 14
                       ZVAL 16
                       ZVAL "App.Tenant.Report.run"
@@ -4709,7 +4715,7 @@ fn a_member_of_position_current_is_a_property_read_on_the_new_position() {
                   NEW
                     ZVAL "Sharp\\Position"
                     ARG_LIST
-                      ZVAL "src/Report.sharp"
+                      MAGIC_CONST [347]
                       ZVAL 9
                       ZVAL 24
                       ZVAL "App.Tenant.Report.run"
@@ -4718,6 +4724,30 @@ fn a_member_of_position_current_is_a_property_read_on_the_new_position() {
                 ZVAL 1
         "#}
     );
+}
+
+/// A compiled file runs on other machines than the one that compiled it, so one workspace file lowers to the same bytes
+/// from any workspace root, and no text of it names the file: `Position.current()` reads the file where it runs.
+#[test]
+fn a_file_lowers_to_the_same_bytes_from_any_workspace_root_and_names_no_path() {
+    let code = method("        const here = Position.current();\n        return 1;\n");
+    let encoded = ["/home/ci/build", "/srv/app/releases/42"].map(|root| {
+        let file = File::new(
+            Cow::Borrowed(b"src/Report.sharp"),
+            FileType::Host,
+            Some(Path::new(root).join("src/Report.sharp")),
+            Cow::Owned(code.clone().into_bytes()),
+        );
+        let unit = common::checked_file(&file, &[], &InlineForms::default(), lower).expect("the source lowers");
+        assert!(
+            !unit.texts().windows(b"Report.sharp".len()).any(|text| text == b"Report.sharp"),
+            "no text names the file"
+        );
+
+        encode(&unit, &file.contents, [0; 16], &[], &[])
+    });
+
+    assert_eq!(encoded[0], encoded[1]);
 }
 
 /// ```php
@@ -7486,6 +7516,18 @@ fn form_names(code: &str) -> Vec<String> {
 #[test]
 fn a_method_whose_body_is_one_call_reading_each_slot_once_gives_an_inline_form() {
     assert_eq!(form_names(TEXT.1), ["sharp\\text::shout", "sharp\\text::padded", "sharp\\text::wrapped"]);
+}
+
+/// `Position.current()` in a standard library method is the position in the library's file, inside that method. Copied
+/// into a caller, it would give the caller's file with the library's line, so a method that runs it gives no form.
+#[test]
+fn a_method_that_runs_position_current_gives_no_inline_form() {
+    assert_eq!(
+        form_names(
+            "namespace Sharp;\n\npublic class Here\n{\n    public static Position now() => Position.current();\n\n    public static string shout(string text) => strtoupper(text);\n}\n"
+        ),
+        ["sharp\\here::shout"]
+    );
 }
 
 /// ```php
