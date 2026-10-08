@@ -241,7 +241,7 @@ pub fn verify_argument_type<'arena, A>(
 
         if input_type.is_nullable() && !input_type.ignore_nullable_issues() {
             let target_name_str = invocation_target.guess_name(context);
-            let input_type_str = display_value_type(context, input_type);
+            let input_type_str = display_value_type(context, input_type, parameter_type);
             let parameter_type_str = display_type(context, parameter_type);
             let call_site = Annotation::secondary(invocation_target.span())
                 .with_message(format!("Arguments to this {target_kind_str} are incorrect"));
@@ -283,7 +283,7 @@ pub fn verify_argument_type<'arena, A>(
 
         if input_type.is_falsable() && !input_type.ignore_falsable_issues() {
             let target_name_str = invocation_target.guess_name(context);
-            let input_type_str = display_value_type(context, input_type);
+            let input_type_str = display_value_type(context, input_type, parameter_type);
             let parameter_type_str = display_type(context, parameter_type);
             let call_site = Annotation::secondary(invocation_target.span())
                 .with_message(format!("Arguments to this {target_kind_str} are incorrect"));
@@ -317,7 +317,7 @@ pub fn verify_argument_type<'arena, A>(
     }
 
     let target_name_str = invocation_target.guess_name(context);
-    let input_type_str = display_value_type(context, input_type);
+    let input_type_str = display_value_type(context, input_type, parameter_type);
     let parameter_type_str = display_type(context, parameter_type);
     let call_site = Annotation::secondary(invocation_target.span())
         .with_message(format!("Arguments to this {target_kind_str} are incorrect"));

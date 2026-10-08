@@ -78,11 +78,12 @@ where
     if context.dialect.is_sharp() { display_sharp_type(&union.clone().as_nullable(), context.codebase) } else { php }
 }
 
-/// Returns `union`, the type of a value a message checks against the type it must have, as the analyzed file writes
-/// types: in a `.sharp` file each literal is its general type, `string` for `"text"`, as PHP# writes no literal type,
-/// and in PHP its Mago type id.
+/// Returns `union`, the type of a value a message checks against `expected`, the type it must have, as the analyzed
+/// file writes types. In a `.sharp` file a literal is its general type, `string` for `"text"`, as PHP# writes no
+/// literal type, unless `expected` holds literals of its kind: `"up"` stays `"up"` against `"asc"|"desc"`, as the
+/// literal is what fails. In PHP it is its Mago type id.
 #[must_use]
-pub(crate) fn display_value_type<A>(context: &Context<'_, '_, A>, union: &TUnion) -> String
+pub(crate) fn display_value_type<A>(context: &Context<'_, '_, A>, union: &TUnion, expected: &TUnion) -> String
 where
     A: Arena,
 {
@@ -90,10 +91,26 @@ where
         return union.get_id().to_string();
     }
 
-    let mut general = union.clone();
-    general.widen_literals();
+    let literal_kind = |atomic: &TAtomic| match atomic {
+        TAtomic::Scalar(scalar) if scalar.is_literal_value() => Some(std::mem::discriminant(scalar)),
+        _ => None,
+    };
+    let general = union
+        .types
+        .iter()
+        .flat_map(|atomic| {
+            let kept = literal_kind(atomic)
+                .is_some_and(|kind| expected.types.iter().any(|wanted| literal_kind(wanted) == Some(kind)));
+            let mut atomic = TUnion::from_atomic(atomic.clone());
+            if !kept {
+                atomic.widen_literals();
+            }
 
-    display_sharp_type(&general, context.codebase)
+            atomic.types.into_owned()
+        })
+        .collect();
+
+    display_sharp_type(&TUnion::from_vec(general), context.codebase)
 }
 
 /// Returns `union` as PHP# writes the type: `List<int>`, `Map<string, int>`, `int?`, `(int|string)?`, `Any?`, a class

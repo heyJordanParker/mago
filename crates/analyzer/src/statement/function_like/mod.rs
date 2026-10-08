@@ -1682,7 +1682,7 @@ fn check_parameter_default_value<'ctx, 'arena, A>(
         return;
     }
 
-    let default_type_str = display_value_type(context, default_type);
+    let default_type_str = display_value_type(context, default_type, declared_type);
     let declared_type_str = display_type(context, declared_type);
     let param_name = parameter_metadata.name.0.as_str_lossy();
     let param_name = if is_sharp { param_name.trim_start_matches('$') } else { &*param_name };

@@ -290,7 +290,8 @@ pub fn handle_return_value<'ctx, A>(
     if function_like_metadata.flags.has_yield() {
         if let Some((return_type, is_from_generator)) = get_generator_return_type(context, &expected_return_type) {
             if !is_from_generator && function_like_metadata.return_type_metadata.is_some() {
-                let inferred_return_type_str = display_value_type(context, &inferred_return_type);
+                let inferred_return_type_str =
+                    display_value_type(context, &inferred_return_type, &expected_return_type);
                 let expected_return_type_str = display_type(context, &expected_return_type);
 
                 let type_declaration_span = function_like_metadata
@@ -402,7 +403,7 @@ pub fn handle_return_value<'ctx, A>(
         }
 
         let expected_return_type_str = display_type(context, &expected_return_type);
-        let inferred_return_type_str = display_value_type(context, &inferred_return_type);
+        let inferred_return_type_str = display_value_type(context, &inferred_return_type, &expected_return_type);
 
         if inferred_return_type.is_nullable()
             && !inferred_return_type.ignore_nullable_issues()
@@ -676,7 +677,7 @@ fn handle_property_hook_return<'ctx, A>(
     }
 
     let expected_str = display_type(context, &expected_return_type);
-    let inferred_str = display_value_type(context, &inferred_return_type);
+    let inferred_str = display_value_type(context, &inferred_return_type, &expected_return_type);
 
     if inferred_return_type.is_nullable()
         && !inferred_return_type.ignore_nullable_issues()

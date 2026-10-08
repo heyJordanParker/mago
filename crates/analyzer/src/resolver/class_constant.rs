@@ -36,6 +36,7 @@ use crate::resolver::selector::ResolvedSelector;
 use crate::resolver::selector::resolve_constant_selector;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_member;
+use crate::utils::names::short_name;
 
 /// Represents a successfully resolved class constant or enum case.
 #[derive(Debug)]
@@ -300,8 +301,12 @@ where
     A: Arena,
 {
     if metadata.kind.is_trait() && !is_valid_trait_constant_access(resolution_origin, inside_class_like_attribute) {
-        let trait_name = metadata.original_name;
-        let constant = display_member(context, trait_name, const_name);
+        let constant = display_member(context, metadata.original_name, const_name);
+        let trait_name = if context.dialect.is_sharp() {
+            short_name(metadata.original_name)
+        } else {
+            metadata.original_name.to_string()
+        };
 
         let mut issue = Issue::error(format!("Cannot access trait constant `{constant}` directly."))
             .with_annotation(Annotation::primary(class_span).with_message(format!("`{trait_name}` is a trait")))
@@ -315,6 +320,11 @@ where
                 .with_help(format!(
                     "Spell out a class that uses `{trait_name}`, or inline the value of `{const_name}`."
                 ))
+        } else if context.dialect.is_sharp() {
+            // PHP# writes no `self`, `static` or `$this`, so a class that uses the trait is the one way left.
+            issue
+                .with_note("Trait constants can only be accessed through classes that use the trait.")
+                .with_help(format!("Access this constant through a class that uses `{trait_name}`."))
         } else {
             issue
                 .with_note("Trait constants can only be accessed through classes that use the trait, or via self, static, or $this within the trait.")

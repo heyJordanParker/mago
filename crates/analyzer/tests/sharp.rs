@@ -4394,6 +4394,56 @@ fn a_value_of_a_literal_type_is_named_by_its_general_type() {
     );
 }
 
+/// A literal value keeps its literal where the type it must have holds literals of its kind: `"up"` against
+/// `"asc"|"desc"` names the value that fails. The PHP twin keeps upstream's wording.
+#[test]
+fn a_literal_value_keeps_its_literal_against_a_type_of_literals() {
+    let sort = (
+        "src/Lib/Sort.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Sort\n{\n    /** @param 'asc'|'desc' $direction */\n    public static function by(string $direction): void\n    {\n    }\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Sort;\n\npublic class Report\n{\n    public static void run()\n    {\n        Sort.by(\"up\");\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Sort;\n\nfinal class Report\n{\n    public static function run(): void\n    {\n        Sort::by('up');\n    }\n}\n";
+
+    assert_eq!(
+        messages(("src/Demo/Report.php", php), &[sort]),
+        [
+            "Invalid argument type for argument #1 of `Lib\\Sort::by`: expected `string('asc')|string('desc')`, but found `string('up')`."
+        ]
+    );
+    assert_eq!(
+        messages(("src/Demo/Report.sharp", sharp), &[sort]),
+        ["Invalid argument type for argument #1 of `Sort.by`: expected `\"asc\"|\"desc\"`, but found `\"up\"`."]
+    );
+}
+
+/// A constant of a PHP trait read through the trait is named as PHP# writes it, and its help names no `self::`,
+/// which PHP# has no form for. The PHP twin keeps upstream's wording.
+#[test]
+fn a_trait_constant_read_through_the_trait_names_it_as_sharp_writes_it() {
+    let flags =
+        ("src/Lib/Flags.php", "<?php\n\nnamespace Lib;\n\ntrait Flags\n{\n    public const int LIMIT = 3;\n}\n");
+    let sharp = "namespace Demo;\n\nimport Lib.Flags;\n\npublic class Report\n{\n    public static int run() => Flags.LIMIT;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Flags;\n\nfinal class Report\n{\n    public static function run(): int\n    {\n        return Flags::LIMIT;\n    }\n}\n";
+
+    let refusals = |analyzed| -> Vec<String> {
+        worded(analyzed, &[flags]).into_iter().filter(|line| line.contains(" direct-trait-constant-access")).collect()
+    };
+
+    assert_eq!(
+        refusals(("src/Demo/Report.php", php)),
+        [
+            "11:16 direct-trait-constant-access Cannot access trait constant `Lib\\Flags::LIMIT` directly. | `Lib\\Flags` is a trait | Constant accessed here | Trait constants can only be accessed through classes that use the trait, or via self, static, or $this within the trait. | Access this constant through a class that uses `Lib\\Flags`, or use `self::LIMIT`, `static::LIMIT`, or `$this::LIMIT` instead."
+        ]
+    );
+    assert_eq!(
+        refusals(("src/Demo/Report.sharp", sharp)),
+        [
+            "7:32 direct-trait-constant-access Cannot access trait constant `Flags.LIMIT` directly. | `Flags` is a trait | Constant accessed here | Trait constants can only be accessed through classes that use the trait. | Access this constant through a class that uses `Flags`."
+        ]
+    );
+}
+
 /// A member a message reaches through access rules, a static call or a second write is named as PHP# writes it,
 /// `Order.total`. The PHP twin keeps upstream's wording.
 #[test]

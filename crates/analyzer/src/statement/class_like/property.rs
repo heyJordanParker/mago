@@ -175,7 +175,7 @@ where
             false,
             &mut comparison_result,
         ) {
-            let value_type_str = display_value_type(context, value_type);
+            let value_type_str = display_value_type(context, value_type, &declared_type);
             let declared_type_str = display_type(context, &declared_type);
             let property =
                 display_member(context, class_metadata.original_name, mago_bytes::BytesDisplay(variable_name));

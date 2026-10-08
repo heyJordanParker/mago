@@ -86,7 +86,7 @@ where
                 Annotation::primary(property_access.class.span()).with_message(format!(
                     "{property} with declared type {}, cannot be assigned type {}",
                     display_type(context, &resolved_property.property_type),
-                    display_value_type(context, assigned_value_type),
+                    display_value_type(context, assigned_value_type, &resolved_property.property_type),
                 )),
             );
 
@@ -114,7 +114,7 @@ where
                     format!(
                         "{property} expects {}, parent type {} provided",
                         display_type(context, &resolved_property.property_type),
-                        display_value_type(context, assigned_value_type),
+                        display_value_type(context, assigned_value_type, &resolved_property.property_type),
                     ),
                 )),
             );

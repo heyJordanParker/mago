@@ -121,7 +121,7 @@ where
                 _ => resolved_property.property_name.to_string(),
             };
             let property_type_str = display_type(context, &resolved_property.property_type);
-            let assigned_type_str = display_value_type(context, assigned_value_type);
+            let assigned_type_str = display_value_type(context, assigned_value_type, &resolved_property.property_type);
 
             let mut issue;
 

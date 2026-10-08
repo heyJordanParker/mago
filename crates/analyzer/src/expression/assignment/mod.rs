@@ -653,7 +653,7 @@ pub fn analyze_assignment_to_variable<'ctx, 'arena, A>(
         let variable_name = variable_id.to_string();
         let name = variable_name.trim_start_matches('$');
         let local_type_str = display_type(context, &local_type);
-        let assigned_type_str = display_value_type(context, &assigned_type);
+        let assigned_type_str = display_value_type(context, &assigned_type, &local_type);
 
         context.collector.report_with_code(
             IssueCode::InvalidLocalAssignmentValue,

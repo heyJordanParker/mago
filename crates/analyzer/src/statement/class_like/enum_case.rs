@@ -1,5 +1,6 @@
 use mago_allocator::Arena;
 use mago_codex::ttype::TType;
+use mago_codex::ttype::union::TUnion;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -114,7 +115,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for EnumCaseBackedItem<'arena> {
         let backing_type_str = backing_type.get_id();
 
         if (backing_type.is_int() && !value_type.is_int()) || (backing_type.is_string() && !value_type.is_string()) {
-            let value_type_str = display_value_type(context, &value_type);
+            let value_type_str = display_value_type(context, &value_type, &TUnion::from_atomic(backing_type.clone()));
 
             context.collector.report_with_code(
                 IssueCode::InvalidEnumCaseValue,
