@@ -7,6 +7,7 @@ use mago_allocator::Arena;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::Node;
+use mago_syntax::dialect::Dialect;
 use mago_syntax::utils::pattern::PhpShape;
 use mago_syntax::utils::pattern::php_shape;
 
@@ -21,6 +22,8 @@ pub struct AssertionContext<'ctx, 'arena, A> {
     pub trust_existence_checks: bool,
     /// How many hidden variables the PHP# pattern forms around the expression hold.
     pub temporaries: u32,
+    /// The language of the file, which decides what `==` tests.
+    pub dialect: Dialect,
 }
 
 impl<A> AssertionContext<'_, '_, A> {

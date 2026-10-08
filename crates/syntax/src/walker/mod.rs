@@ -160,6 +160,7 @@ use crate::cst::cst::NullSafeMethodCall;
 use crate::cst::cst::NullSafePropertyAccess;
 use crate::cst::cst::NullableHint;
 use crate::cst::cst::OpeningTag;
+use crate::cst::cst::Operator;
 use crate::cst::cst::Parenthesized;
 use crate::cst::cst::ParenthesizedHint;
 use crate::cst::cst::ParenthesizedPattern;
@@ -863,6 +864,9 @@ generate_ast_walker! {
             ClassLikeMember::Method(method) => {
                 walker.walk_method(method, context);
             }
+            ClassLikeMember::Operator(operator) => {
+                walker.walk_operator(operator, context);
+            }
         }
     }
 
@@ -1255,6 +1259,22 @@ generate_ast_walker! {
 
     'arena MethodAbstractBody as method_abstract_body => {
         walker.walk_terminator(&method_abstract_body.terminator, context);
+    }
+
+    'arena Operator as operator => {
+        for attribute_list in &operator.attribute_lists {
+            walker.walk_attribute_list(attribute_list, context);
+        }
+
+        for modifier in &operator.modifiers {
+            walker.walk_modifier(modifier, context);
+        }
+
+        walker.walk_function_like_return_type_hint(&operator.return_type_hint, context);
+        walker.walk_keyword(&operator.operator, context);
+        walker.walk_binary_operator(&operator.symbol, context);
+        walker.walk_function_like_parameter_list(&operator.parameter_list, context);
+        walker.walk_method_body(&operator.body, context);
     }
 
     'arena FunctionLikeReturnTypeHint as function_like_return_type_hint => {

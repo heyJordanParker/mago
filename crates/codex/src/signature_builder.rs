@@ -2,6 +2,7 @@ use mago_fingerprint::FingerprintOptions;
 use mago_fingerprint::Fingerprintable;
 use mago_names::ResolvedNames;
 use mago_names::binding::php_method_name;
+use mago_names::binding::php_operator_name;
 use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeConstant;
 use mago_syntax::cst::Constant;
@@ -11,6 +12,7 @@ use mago_syntax::cst::EnumCaseItem;
 use mago_syntax::cst::Function;
 use mago_syntax::cst::Interface;
 use mago_syntax::cst::Method;
+use mago_syntax::cst::Operator;
 use mago_syntax::cst::Program;
 use mago_syntax::cst::Property;
 use mago_syntax::cst::PropertyItem;
@@ -171,6 +173,21 @@ impl<'ast, 'arena> MutWalker<'ast, 'arena, ()> for SignatureBuilder<'arena> {
         let node = self.create_node(name, true, false, false, hash, signature_hash);
 
         // Add method to the current class if we're inside one
+        if let Some(class_node) = self.class_stack.last_mut() {
+            class_node.children.push(node);
+        }
+    }
+
+    /// A PHP# operator is the static method it runs as, such as `op_Addition`. One a class cannot declare, which
+    /// semantics refuses, is none.
+    fn walk_in_operator(&mut self, operator: &'ast Operator<'arena>, _context: &mut ()) {
+        let Some(name) = php_operator_name(&operator.symbol, operator.parameter_list.parameters.len()) else {
+            return;
+        };
+        let hash = operator.fingerprint(self.resolved_names, &self.fingerprint_options);
+        let signature_hash = operator.fingerprint(self.resolved_names, &self.sig_only_options);
+
+        let node = self.create_node(name, true, false, false, hash, signature_hash);
         if let Some(class_node) = self.class_stack.last_mut() {
             class_node.children.push(node);
         }

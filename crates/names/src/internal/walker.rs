@@ -49,6 +49,7 @@ use mago_syntax::cst::Namespace;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::NullSafeMethodCall;
 use mago_syntax::cst::NullSafePropertyAccess;
+use mago_syntax::cst::Operator;
 use mago_syntax::cst::Pattern;
 use mago_syntax::cst::PatternMatchPatternArm;
 use mago_syntax::cst::Program;
@@ -576,6 +577,19 @@ where
         if self.sharp {
             self.locals.exit_method();
         }
+    }
+
+    /// A PHP# operator runs as the static method it lowers to, so its parameters are its body's locals.
+    fn walk_in_operator(&mut self, _operator: &'ast Operator<'arena>, _context: &mut NameResolutionContext<'arena, A>) {
+        self.locals.enter_method();
+    }
+
+    fn walk_out_operator(
+        &mut self,
+        _operator: &'ast Operator<'arena>,
+        _context: &mut NameResolutionContext<'arena, A>,
+    ) {
+        self.locals.exit_method();
     }
 
     fn walk_out_function(
