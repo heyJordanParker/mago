@@ -423,6 +423,15 @@ fn a_standard_library_name_in_a_catch_a_header_or_an_attribute_is_the_class_in_t
 }
 
 #[test]
+fn a_bare_replaces_attribute_is_the_attribute_of_the_standard_library() {
+    const CODE: &str = "namespace Sharp.Time;\n\npublic static class Date\n{\n    [Replaces(\"date\")]\n    public static string format(int timestamp) => \"\";\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(resolved(&names, CODE, "Replaces", 0), b"Sharp\\Replaces");
+}
+
+#[test]
 fn a_collection_type_keeps_its_written_name_unresolved() {
     const CODE: &str = "namespace App.Tenant.Store;\n\nclass Report\n{\n    public void run(List<int> lines, Map<string, int> sizes)\n    {\n    }\n}\n";
     let arena = LocalArena::new();

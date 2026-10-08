@@ -22,6 +22,7 @@ use mago_syntax::cst::Identifier;
 use mago_syntax::cst::LegacyArray;
 use mago_syntax::cst::Literal;
 use mago_syntax::cst::MagicConstant;
+use mago_syntax::cst::PropertyAccess;
 use mago_syntax::cst::StringPart;
 use mago_syntax::cst::UnaryPrefix;
 use mago_syntax::cst::UnaryPrefixOperator;
@@ -513,7 +514,7 @@ where
             constant: ClassLikeConstantSelector::Identifier(identifier),
             ..
         })) => {
-            let class_name_str: &[u8] = if let Expression::Identifier(identifier) = class {
+            let class_name: &[u8] = if let Expression::Identifier(identifier) = class {
                 context.resolved_names.get(identifier)
             } else if matches!(class, Expression::Self_(_) | Expression::Static(_)) {
                 enclosing_class.as_ref().map(Word::as_bytes)?
@@ -521,43 +522,17 @@ where
                 return None;
             };
 
-            if let Some(class_constants) = class_constants
-                && enclosing_class.is_some_and(|class_name| class_name_str.eq_ignore_ascii_case(class_name.as_bytes()))
-                && let Some(constant) = class_constants.get(&word(identifier.value))
-                && let Some(inferred_type) = &constant.inferred_type
-            {
-                return Some(wrap_atomic(inferred_type.clone()));
-            }
-
-            Some(wrap_atomic(if identifier.value.eq_ignore_ascii_case(b"class") {
-                TAtomic::Scalar(TScalar::ClassLikeString(TClassLikeString::literal(word(class_name_str))))
-            } else if class_name_str.eq_ignore_ascii_case(b"Attribute") {
-                let bits = match identifier.value {
-                    b"TARGET_CLASS" => Some(AttributeFlags::TARGET_CLASS.bits()),
-                    b"TARGET_FUNCTION" => Some(AttributeFlags::TARGET_FUNCTION.bits()),
-                    b"TARGET_METHOD" => Some(AttributeFlags::TARGET_METHOD.bits()),
-                    b"TARGET_PROPERTY" => Some(AttributeFlags::TARGET_PROPERTY.bits()),
-                    b"TARGET_CLASS_CONSTANT" => Some(AttributeFlags::TARGET_CLASS_CONSTANT.bits()),
-                    b"TARGET_PARAMETER" => Some(AttributeFlags::TARGET_PARAMETER.bits()),
-                    b"TARGET_CONSTANT" => Some(AttributeFlags::TARGET_CONSTANT.bits()),
-                    b"TARGET_ALL" => Some(AttributeFlags::TARGET_ALL.bits()),
-                    b"IS_REPEATABLE" => Some(AttributeFlags::IS_REPEATABLE.bits()),
-                    _ => None,
-                };
-
-                match bits {
-                    Some(bits) => return Some(get_literal_int(i64::from(bits))),
-                    None => TAtomic::Reference(TReference::Member {
-                        class_like_name: word(class_name_str),
-                        member_selector: TReferenceMemberSelector::Identifier(word(identifier.value)),
-                    }),
-                }
-            } else {
-                TAtomic::Reference(TReference::Member {
-                    class_like_name: word(class_name_str),
-                    member_selector: TReferenceMemberSelector::Identifier(word(identifier.value)),
-                })
-            }))
+            Some(infer_class_constant(class_name, identifier.value, enclosing_class, class_constants))
+        }
+        Expression::Access(Access::Property(
+            property_access @ PropertyAccess { property: ClassLikeMemberSelector::Identifier(constant), .. },
+        )) if let Some(class) = context.resolved_names.static_property_class(property_access) => {
+            Some(infer_class_constant(
+                context.resolved_names.get(&class.name),
+                constant.value,
+                enclosing_class,
+                class_constants,
+            ))
         }
         Expression::Access(Access::Property(property_access)) => {
             let ClassLikeMemberSelector::Identifier(property_name) = &property_access.property else {
@@ -701,6 +676,52 @@ where
         )))),
         _ => None,
     })
+}
+
+/// The type of the class constant `constant` of `class_name`: its inferred type when the enclosing class declares it,
+/// the class's name for `class`, the flag bits for a target or the repeat flag of `Attribute`, and a reference to the
+/// member otherwise.
+fn infer_class_constant(
+    class_name: &[u8],
+    constant: &[u8],
+    enclosing_class: Option<Word>,
+    class_constants: Option<&WordMap<ClassLikeConstantMetadata>>,
+) -> TUnion {
+    if let Some(class_constants) = class_constants
+        && enclosing_class.is_some_and(|enclosing| class_name.eq_ignore_ascii_case(enclosing.as_bytes()))
+        && let Some(metadata) = class_constants.get(&word(constant))
+        && let Some(inferred_type) = &metadata.inferred_type
+    {
+        return wrap_atomic(inferred_type.clone());
+    }
+
+    if constant.eq_ignore_ascii_case(b"class") {
+        return wrap_atomic(TAtomic::Scalar(TScalar::ClassLikeString(TClassLikeString::literal(word(class_name)))));
+    }
+
+    if class_name.eq_ignore_ascii_case(b"Attribute") {
+        let bits = match constant {
+            b"TARGET_CLASS" => Some(AttributeFlags::TARGET_CLASS.bits()),
+            b"TARGET_FUNCTION" => Some(AttributeFlags::TARGET_FUNCTION.bits()),
+            b"TARGET_METHOD" => Some(AttributeFlags::TARGET_METHOD.bits()),
+            b"TARGET_PROPERTY" => Some(AttributeFlags::TARGET_PROPERTY.bits()),
+            b"TARGET_CLASS_CONSTANT" => Some(AttributeFlags::TARGET_CLASS_CONSTANT.bits()),
+            b"TARGET_PARAMETER" => Some(AttributeFlags::TARGET_PARAMETER.bits()),
+            b"TARGET_CONSTANT" => Some(AttributeFlags::TARGET_CONSTANT.bits()),
+            b"TARGET_ALL" => Some(AttributeFlags::TARGET_ALL.bits()),
+            b"IS_REPEATABLE" => Some(AttributeFlags::IS_REPEATABLE.bits()),
+            _ => None,
+        };
+
+        if let Some(bits) = bits {
+            return get_literal_int(i64::from(bits));
+        }
+    }
+
+    wrap_atomic(TAtomic::Reference(TReference::Member {
+        class_like_name: word(class_name),
+        member_selector: TReferenceMemberSelector::Identifier(word(constant)),
+    }))
 }
 
 #[inline]

@@ -341,6 +341,19 @@ fn sharp_arguments_follow_strict_conversion_rules() {
     assert_eq!(php_issues, ["12:29 invalid-argument"]);
 }
 
+#[test]
+fn a_numeric_string_passed_to_a_php_int_parameter_is_an_invalid_argument_as_under_strict_types() {
+    let counter = "<?php\n\nnamespace Lib;\n\nfinal class Counter\n{\n    public static function take(int $value): int\n    {\n        return $value;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Counter;\n\nclass Report\n{\n    public static int total()\n    {\n        return Counter.take(\"5\");\n    }\n}\n";
+    let php = "<?php\n\ndeclare(strict_types=1);\n\nnamespace Demo;\n\nuse Lib\\Counter;\n\nclass Report\n{\n    public static function total(): int\n    {\n        return Counter::take('5');\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[("src/Lib/Counter.php", counter)]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[("src/Lib/Counter.php", counter)]);
+
+    assert_eq!(sharp_issues, ["9:29 invalid-argument"]);
+    assert_eq!(codes(&sharp_issues), codes(&php_issues));
+}
+
 /// Spec section 14.3: a method named without parentheses is a function value, typed as PHP types `$calc->add(...)`.
 #[test]
 fn a_method_named_without_a_call_is_a_closure_of_its_signature() {
@@ -3139,6 +3152,22 @@ fn a_bare_index_read_on_a_map_is_an_error() {
             "10:18 possibly-undefined-array-index",
             "11:9 possibly-undefined-array-index",
             "13:24 possibly-undefined-array-index",
+        ]
+    );
+}
+
+#[test]
+fn a_bare_index_read_on_a_map_keyed_by_a_backed_enum_is_an_error() {
+    let sharp = "namespace Demo;\n\nimport Lib.Size;\nimport Lib.Status;\n\nclass Tally\n{\n    public int standing(Map<Status, int> counts, Map<Status, Map<Size, int>> nested, Status status, Size size)\n    {\n        counts[status] += 1;\n        counts[status]++;\n        return counts[status] + nested[status][size];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
+        [
+            "10:9 possibly-undefined-array-index",
+            "11:9 possibly-undefined-array-index",
+            "12:16 possibly-undefined-array-index",
+            "12:33 possibly-undefined-array-index",
+            "12:33 possibly-undefined-array-index",
         ]
     );
 }

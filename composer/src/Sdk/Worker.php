@@ -782,7 +782,7 @@ final class Worker
             }
 
             $codebase = new Codebase($host, $requestId, $cancellation, $this->metadataCache, $reads);
-            $types = new TypeComparator($host, $requestId, $cancellation, $this->metadataCache);
+            $types = new TypeComparator($host, $requestId, $cancellation, $this->metadataCache, $reads);
             foreach ($request->providerIndices as $providerIndex) {
                 $registered = $this->propertyTypeProviders[$providerIndex] ?? null;
                 if ($registered === null) {
@@ -831,7 +831,7 @@ final class Worker
                 $request->member,
                 $request->property,
                 $request->receiverType,
-                new TypeComparator($host, $requestId, $cancellation, $this->metadataCache),
+                new TypeComparator($host, $requestId, $cancellation, $this->metadataCache, $reads),
                 $cancellation,
             );
             foreach ($request->providerIndices as $providerIndex) {
@@ -868,7 +868,7 @@ final class Worker
             }
 
             $codebase = new Codebase($host, $requestId, $cancellation, $this->metadataCache, $reads);
-            $types = new TypeComparator($host, $requestId, $cancellation, $this->metadataCache);
+            $types = new TypeComparator($host, $requestId, $cancellation, $this->metadataCache, $reads);
             foreach ($request->providerIndices as $providerIndex) {
                 $registered = $this->propertyInitializationProviders[$providerIndex] ?? null;
                 if ($registered === null) {
@@ -954,7 +954,7 @@ final class Worker
             }
 
             $codebase = new Codebase($host, $requestId, $cancellation, $this->metadataCache, $reads);
-            $types = new TypeComparator($host, $requestId, $cancellation, $this->metadataCache);
+            $types = new TypeComparator($host, $requestId, $cancellation, $this->metadataCache, $reads);
             $removed = [];
             foreach ($request->issues as $issueIndex => $issue) {
                 $context = new IssueFilterContext(
@@ -1016,7 +1016,7 @@ final class Worker
             $this->metadataCache = new MetadataCache($request->generation);
         }
         $codebase = new Codebase($host, $requestId, $cancellation, $this->metadataCache, $reads);
-        $types = new TypeComparator($host, $requestId, $cancellation, $this->metadataCache);
+        $types = new TypeComparator($host, $requestId, $cancellation, $this->metadataCache, $reads);
         if ($kind === AnalyzerProtocol::ASSERTION_REQUEST) {
             $providers = $request->invocation->kind === InvocationKind::Function
                 ? $this->functionAssertionProviders
@@ -1231,6 +1231,9 @@ final class Worker
             $fileCodebase = $reads === null
                 ? $codebase
                 : new Codebase($host, $requestId, $cancellation, $this->metadataCache, $reads);
+            $fileTypes = $reads === null
+                ? $types
+                : new TypeComparator($host, $requestId, $cancellation, $this->metadataCache, $reads);
             foreach ($request->pluginIndices as $pluginIndex) {
                 $registered = $this->analyzerPlugins[$pluginIndex] ?? null;
                 if ($registered === null) {
@@ -1249,7 +1252,7 @@ final class Worker
                         AnalyzerProtocol::AFTER_FILE_ANALYSIS_REQUEST => new AfterFileAnalysisContext(
                             $this->phpVersion,
                             $fileCodebase,
-                            $types,
+                            $fileTypes,
                             $cancellation,
                             $analysis instanceof FileAnalysis
                                 ? $analysis
@@ -1258,7 +1261,7 @@ final class Worker
                         AnalyzerProtocol::AFTER_FILE_ANALYSIS_BATCH_REQUEST => new AfterFileAnalysisContext(
                             $this->phpVersion,
                             $fileCodebase,
-                            $types,
+                            $fileTypes,
                             $cancellation,
                             $analysis instanceof FileAnalysis
                                 ? $analysis
