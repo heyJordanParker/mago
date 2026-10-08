@@ -2224,7 +2224,7 @@ where
             Annotation::primary(class_like_metadata.name_span.unwrap_or(class_like_metadata.span))
                 .with_message(format!("`{class_name}` has type parameters")),
         )
-        .with_help("Write `__serialize` and `__unserialize` alone, which keep them."),
+        .with_help("Leave `Serializable` out: `serialize()` then uses `__serialize` and `__unserialize`, or its default form, which keep them."),
     );
 }
 
