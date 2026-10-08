@@ -741,8 +741,8 @@ pub fn check_interface<'ast, 'arena>(interface: &'ast Interface<'arena>, context
                     context,
                 );
             }
-            // Only a PHP# file declares an operator, and `check_slice` refuses one in an interface.
-            ClassLikeMember::Operator(_) => {}
+            // Only a PHP# file declares an operator or a law, and `check_slice` refuses either in an interface.
+            ClassLikeMember::Operator(_) | ClassLikeMember::Law(_) => {}
         }
     }
 }
@@ -1275,6 +1275,30 @@ pub fn check_members<'ast, 'arena>(
     let mut property_names: HashMap<&[u8], (bool, Span)> = HashMap::new();
 
     for member in members {
+        // A law shares its class's method names, so a law and a method of one name are declared twice.
+        let callable_name = match member {
+            ClassLikeMember::Method(method) => Some(&method.name),
+            ClassLikeMember::Law(law) => Some(&law.name),
+            _ => None,
+        };
+        if let Some(name) = callable_name {
+            let lowercase_name = name.value.to_ascii_lowercase();
+            if let Some(previous) = method_names.get(&lowercase_name) {
+                let method_display = context.display_member(class_like_name, BytesDisplay(name.value));
+                context.report(
+                    Issue::error(format!("{class_like_kind} method `{method_display}` has already been defined"))
+                        .with_annotation(Annotation::primary(name.span()))
+                        .with_annotations([
+                            Annotation::secondary(*previous).with_message("previous definition"),
+                            Annotation::secondary(class_like_span.span())
+                                .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
+                        ]),
+                );
+            } else {
+                method_names.insert(lowercase_name, name.span());
+            }
+        }
+
         match &member {
             ClassLikeMember::Property(property) => match &property {
                 Property::Plain(plain_property) => {
@@ -1336,25 +1360,7 @@ pub fn check_members<'ast, 'arena>(
                 }
             },
             ClassLikeMember::Method(method) => {
-                let method_name_bytes: &[u8] = method.name.value;
-                let method_display = context.display_member(class_like_name, BytesDisplay(method_name_bytes));
-                let lowercase_method_name = method_name_bytes.to_ascii_lowercase();
-
-                if let Some(previous) = method_names.get(&lowercase_method_name) {
-                    context.report(
-                        Issue::error(format!("{class_like_kind} method `{method_display}` has already been defined"))
-                            .with_annotation(Annotation::primary(method.name.span()))
-                            .with_annotations([
-                                Annotation::secondary(*previous).with_message("previous definition"),
-                                Annotation::secondary(class_like_span.span())
-                                    .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
-                            ]),
-                    );
-                } else {
-                    method_names.insert(lowercase_method_name, method.name.span());
-                }
-
-                if method_name_bytes.eq_ignore_ascii_case(CONSTRUCTOR_MAGIC_METHOD) {
+                if method.name.value.eq_ignore_ascii_case(CONSTRUCTOR_MAGIC_METHOD) {
                     for parameter in &method.parameter_list.parameters {
                         if parameter.is_promoted_property() {
                             let item_name_bytes: &[u8] = parameter.variable.name;
@@ -1460,6 +1466,30 @@ pub fn check_members<'ast, 'arena>(
                     continue;
                 }
                 constant_names.insert(case_name_bytes, (false, enum_case.item.name().span()));
+            }
+            ClassLikeMember::Law(law) => {
+                for parameter in &law.parameter_list.parameters {
+                    let name = BytesDisplay(parameter.variable.name);
+                    let refusal = if let Some(default_value) = &parameter.default_value {
+                        Some((
+                            format!("so `{name}` cannot have a default"),
+                            default_value.span(),
+                            "Default written here.",
+                        ))
+                    } else {
+                        parameter.ellipsis.map(|ellipsis| {
+                            (format!("so `{name}` cannot be variadic"), ellipsis, "Variadic written here.")
+                        })
+                    };
+
+                    if let Some((reason, span, written)) = refusal {
+                        context.report(
+                            Issue::error(format!("A law's parameters range over every value, {reason}."))
+                                .with_annotation(Annotation::primary(span).with_message(written))
+                                .with_note("A law states a fact about every value of its parameters."),
+                        );
+                    }
+                }
             }
             _ => {}
         }

@@ -1220,6 +1220,9 @@ where
             ClassLikeMember::Operator(operator) => {
                 operator.analyze(context, &mut block_context, artifacts)?;
             }
+            ClassLikeMember::Law(law) => {
+                law.analyze(context, &mut block_context, artifacts)?;
+            }
             _ => {}
         }
     }

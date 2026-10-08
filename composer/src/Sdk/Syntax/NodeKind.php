@@ -70,6 +70,7 @@ enum NodeKind: string
     case MethodBody = 'MethodBody';
     case MethodExpressionBody = 'MethodExpressionBody';
     case Operator = 'Operator';
+    case Law = 'Law';
     case ComputedProperty = 'ComputedProperty';
     case HookedProperty = 'HookedProperty';
     case PlainProperty = 'PlainProperty';

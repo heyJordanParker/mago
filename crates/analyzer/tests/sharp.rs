@@ -5811,7 +5811,7 @@ fn a_getter_calling_a_function_with_no_extern_is_refused_and_names_the_missing_d
     assert_eq!(
         effect_issues(&[LABEL]),
         [
-            "app/Shop/Label.sharp:7:27 impure-getter: Getter `text` calls `trim`, which has no `extern` declaration. Getters must be pure (section 29). Help: Declare it in a .sharp file: `extern trim;` when it has no effect, or name its effects after `uses`."
+            "app/Shop/Label.sharp:7:27 impure-getter: Getter `text` calls `trim`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern trim;` when it has no effect, or name its effects after `uses`."
         ]
     );
 }
@@ -5828,7 +5828,7 @@ fn a_getter_reaching_a_method_that_calls_an_extern_with_an_effect_in_another_fil
     assert_eq!(
         effect_issues(&[cart, order, CLOCK_STUB, NOW]),
         [
-            "app/Shop/Cart.sharp:7:25 impure-getter: Getter `total` reaches `Order.price`, which calls `now` with the effect `Clock`. Getters must be pure (section 29)."
+            "app/Shop/Cart.sharp:7:25 impure-getter: Getter `total` reaches `Order.price`, which calls `now` with the effect `Clock`. Getters must be pure."
         ]
     );
 }
@@ -5842,9 +5842,7 @@ fn a_getter_writing_a_field_of_this_is_refused() {
 
     assert_eq!(
         effect_issues(&[counter]),
-        [
-            "app/Shop/Counter.sharp:7:29 impure-getter: Getter `next` changes `this.count`. Getters must be pure (section 29)."
-        ]
+        ["app/Shop/Counter.sharp:7:29 impure-getter: Getter `next` changes `this.count`. Getters must be pure."]
     );
 }
 
@@ -5883,7 +5881,7 @@ fn a_getter_calling_a_virtual_method_whose_override_has_an_effect_is_refused() {
     assert_eq!(
         effect_issues(&[quote, rates, CLOCK_STUB, NOW]),
         [
-            "app/Shop/Quote.sharp:7:26 impure-getter: Getter `amount` reaches `LiveRate.value`, which calls `now` with the effect `Clock`. Getters must be pure (section 29)."
+            "app/Shop/Quote.sharp:7:26 impure-getter: Getter `amount` reaches `LiveRate.value`, which calls `now` with the effect `Clock`. Getters must be pure."
         ]
     );
 }
@@ -5900,7 +5898,7 @@ fn a_getter_whose_list_map_lambda_calls_an_undeclared_function_is_refused() {
     assert_eq!(
         effect_issues(&[names]),
         [
-            "app/Shop/Names.sharp:7:54 impure-getter: Getter `loud` calls `strtoupper`, which has no `extern` declaration. Getters must be pure (section 29). Help: Declare it in a .sharp file: `extern strtoupper;` when it has no effect, or name its effects after `uses`."
+            "app/Shop/Names.sharp:7:54 impure-getter: Getter `loud` calls `strtoupper`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern strtoupper;` when it has no effect, or name its effects after `uses`."
         ]
     );
 }
@@ -5915,7 +5913,7 @@ fn a_getter_reading_the_environment_is_refused_with_the_effect_environment() {
     assert_eq!(
         effect_issues(&[deploy]),
         [
-            "app/Ops/Deploy.sharp:7:29 impure-getter: Getter `region` calls `Environment.variable`, which has the effect `Environment`. Getters must be pure (section 29)."
+            "app/Ops/Deploy.sharp:7:29 impure-getter: Getter `region` calls `Environment.variable`, which has the effect `Environment`. Getters must be pure."
         ]
     );
 }
@@ -5933,7 +5931,7 @@ fn a_recursive_pair_of_methods_solves_without_looping() {
     assert_eq!(
         effect_issues(&files),
         [
-            "app/Shop/Tree.sharp:9:25 impure-getter: Getter `depth` reaches `Tree.odd`, which calls `now` with the effect `Clock`. Getters must be pure (section 29)."
+            "app/Shop/Tree.sharp:9:25 impure-getter: Getter `depth` reaches `Tree.odd`, which calls `now` with the effect `Clock`. Getters must be pure."
         ]
     );
     let (codebase, summaries) = summarized(&files);
@@ -5961,12 +5959,180 @@ fn a_getter_applying_an_operator_whose_body_has_an_effect_is_refused() {
     assert_eq!(
         effect_issues(&[cart, money, CLOCK_STUB, NOW]),
         [
-            "app/Shop/Cart.sharp:7:27 impure-getter: Getter `total` reaches `Money.operator +`, which calls `now` with the effect `Clock`. Getters must be pure (section 29).",
-            "app/Shop/Cart.sharp:9:28 impure-getter: Getter `refund` reaches `Money.operator -`, which calls `now` with the effect `Clock`. Getters must be pure (section 29).",
-            "app/Shop/Cart.sharp:11:25 impure-getter: Getter `even` reaches `Money.operator ==`, which calls `now` with the effect `Clock`. Getters must be pure (section 29).",
-            "app/Shop/Cart.sharp:13:28 impure-getter: Getter `cheaper` reaches `Money.operator <=>`, which calls `now` with the effect `Clock`. Getters must be pure (section 29).",
-            "app/Shop/Cart.sharp:20:13 impure-getter: Getter `doubled` reaches `Money.operator +`, which calls `now` with the effect `Clock`. Getters must be pure (section 29).",
+            "app/Shop/Cart.sharp:7:27 impure-getter: Getter `total` reaches `Money.operator +`, which calls `now` with the effect `Clock`. Getters must be pure.",
+            "app/Shop/Cart.sharp:9:28 impure-getter: Getter `refund` reaches `Money.operator -`, which calls `now` with the effect `Clock`. Getters must be pure.",
+            "app/Shop/Cart.sharp:11:25 impure-getter: Getter `even` reaches `Money.operator ==`, which calls `now` with the effect `Clock`. Getters must be pure.",
+            "app/Shop/Cart.sharp:13:28 impure-getter: Getter `cheaper` reaches `Money.operator <=>`, which calls `now` with the effect `Clock`. Getters must be pure.",
+            "app/Shop/Cart.sharp:20:13 impure-getter: Getter `doubled` reaches `Money.operator +`, which calls `now` with the effect `Clock`. Getters must be pure.",
         ]
+    );
+}
+
+/// Spec section 28's `Money`, whose law holds over its pure `add`.
+const LAWFUL_MONEY: (&str, &str) = (
+    "app/Shared/Money.sharp",
+    "namespace App.Shared;\n\npublic class Money\n{\n    public Money(public int amount { get; }, public string currency { get; }) { }\n    public Money add(Money other) => new Money(this.amount + other.amount, this.currency);\n\n    law addKeepsCurrency(Money a, Money b) => a.add(b).currency == a.currency;\n}\n",
+);
+
+/// Spec section 28: a law is a `bool` expression over typed parameters, analyzed as a static method's body.
+#[test]
+fn a_law_over_pure_code_reports_no_issue() {
+    assert_eq!(issues(LAWFUL_MONEY, &[]), Vec::<String>::new());
+    assert_eq!(effect_issues(&[LAWFUL_MONEY]), Vec::<String>::new());
+}
+
+/// Spec section 28's state machine: a law covers every state and event through the enum's pure transition method.
+#[test]
+fn a_law_over_an_enum_transition_reports_no_issue() {
+    let payment = (
+        "app/Shop/Payment.sharp",
+        "namespace App.Shop;\n\npublic enum Payment\n{\n    case Captured;\n    case Returned;\n}\n",
+    );
+    let status = (
+        "app/Shop/Status.sharp",
+        "namespace App.Shop;\n\npublic enum Status : string\n{\n    case Open = \"open\";\n    case Paid = \"paid\";\n    case Refunded = \"refunded\";\n\n    public Status after(Payment e) => match (this) {\n        Status.Open => e == Payment.Captured ? Status.Paid : Status.Open,\n        Status.Paid => e == Payment.Returned ? Status.Refunded : Status.Paid,\n        Status.Refunded => Status.Refunded,\n    };\n\n    law refundedIsFinal(Payment e) => Status.Refunded.after(e) == Status.Refunded;\n}\n",
+    );
+
+    assert_eq!(issues(status, &[payment]), Vec::<String>::new());
+    assert_eq!(effect_issues(&[status, payment]), Vec::<String>::new());
+}
+
+const GATEWAY: (&str, &str) = (
+    "src/Billing/Gateway.php",
+    "<?php\n\nnamespace Billing;\n\nfinal class Gateway\n{\n    public static function charge(int $amount): bool\n    {\n        return $amount > 0;\n    }\n}\n",
+);
+
+/// Spec section 28: laws hold only over pure code, so a law that calls code with an effect is refused on the call.
+#[test]
+fn a_law_calling_plain_php_with_an_effect_is_refused_on_the_call() {
+    let stub = (
+        "app/Stubs/Billing.sharp",
+        "namespace App.Stubs;\n\nimport Billing.Gateway;\n\nextern Gateway.charge uses Http;\n",
+    );
+    let refund = (
+        "app/Shop/Refund.sharp",
+        "namespace App.Shop;\n\nimport Billing.Gateway;\n\npublic class Refund\n{\n    law refundAllowed(int amount) => Gateway.charge(amount);\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[refund, stub, GATEWAY]),
+        [
+            "app/Shop/Refund.sharp:7:38 impure-law: Law `refundAllowed` calls `Gateway.charge`, which has the effect `Http`. Laws hold only over pure code."
+        ]
+    );
+}
+
+/// A law that reaches an effect through PHP# code in another file names the method it reaches.
+#[test]
+fn a_law_reaching_a_method_with_an_effect_in_another_file_is_refused() {
+    let clock = (
+        "src/Lib/Clock.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Clock\n{\n    public static function now(): int\n    {\n        return time();\n    }\n}\n",
+    );
+    let stub = ("app/Stubs/Clock.sharp", "namespace App.Stubs;\n\nimport Lib.Clock;\n\nextern Clock.now uses Clock;\n");
+    let order = (
+        "app/Shop/Order.sharp",
+        "namespace App.Shop;\n\nimport Lib.Clock;\n\npublic class Order\n{\n    public int total() => Clock.now();\n}\n",
+    );
+    let checkout = (
+        "app/Shop/Checkout.sharp",
+        "namespace App.Shop;\n\npublic class Checkout\n{\n    law totalMatches(Order order) => order.total() == order.total();\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[checkout, order, stub, clock]),
+        [
+            "app/Shop/Checkout.sharp:5:38 impure-law: Law `totalMatches` reaches `Order.total`, which calls `Clock.now` with the effect `Clock`. Laws hold only over pure code."
+        ]
+    );
+}
+
+/// A law that calls plain PHP with no `extern` names the declaration it lacks, as the getter rule does.
+#[test]
+fn a_law_calling_plain_php_with_no_extern_names_the_missing_declaration() {
+    let refund = (
+        "app/Shop/Refund.sharp",
+        "namespace App.Shop;\n\nimport Billing.Gateway;\n\npublic class Refund\n{\n    law refundAllowed(int amount) => Gateway.charge(amount);\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[refund, GATEWAY]),
+        [
+            "app/Shop/Refund.sharp:7:38 impure-law: Law `refundAllowed` calls `Gateway.charge`, which has no `extern` declaration. Laws hold only over pure code. Help: Declare it in a .sharp file: `extern Gateway.charge;` when it has no effect, or name its effects after `uses`."
+        ]
+    );
+}
+
+/// A law states a fact, so its body is a `bool`.
+#[test]
+fn a_law_whose_body_is_not_a_bool_is_an_invalid_return_statement_of_the_law() {
+    let count = (
+        "app/Shared/Count.sharp",
+        "namespace App.Shared;\n\npublic class Count\n{\n    law alwaysPositive(int a) => a + 1;\n}\n",
+    );
+
+    assert_eq!(issues(count, &[]), ["5:34 invalid-return-statement"]);
+    let refused = analyze(&PLUGIN_REGISTRY, settings(), count, &[]);
+    assert_eq!(
+        refused.iter().map(|issue| (issue.message.as_str(), issue.help.as_deref())).collect::<Vec<_>>(),
+        [(
+            "Invalid return type for law `Count.alwaysPositive`: expected `bool`, but found `int`.",
+            Some("A law states a fact, so its body is a `bool`.")
+        )]
+    );
+}
+
+/// A law's parameter without a type is refused as every PHP# parameter without one is.
+#[test]
+fn a_law_parameter_without_a_type_is_refused_as_any_php_sharp_parameter_is() {
+    let count = (
+        "app/Shared/Count.sharp",
+        "namespace App.Shared;\n\npublic class Count\n{\n    law reflexive(a) => a == a;\n}\n",
+    );
+
+    assert_eq!(messages(count, &[])[0], "A PHP# parameter needs a type, as in `int extra`.");
+}
+
+/// A law ranges over its parameters alone, so `this` is refused in it as in a static method.
+#[test]
+fn this_in_a_law_is_refused_as_in_a_static_method() {
+    let law = (
+        "app/Shared/Count.sharp",
+        "namespace App.Shared;\n\npublic class Count\n{\n    private int total = 0;\n\n    law matches(int a) => this.total == a;\n}\n",
+    );
+    let static_method = (
+        "app/Shared/Count.sharp",
+        "namespace App.Shared;\n\npublic class Count\n{\n    private int total = 0;\n\n    public static bool matches(int a) => this.total == a;\n}\n",
+    );
+
+    assert_eq!(issues(law, &[]), ["7:27 undefined-variable"]);
+    assert_eq!(issues(static_method, &[]), ["7:42 undefined-variable"]);
+}
+
+/// Spec section 28: a law is checked and never runs, so a call of it names no method.
+#[test]
+fn a_call_of_a_law_is_a_non_existent_method_that_names_the_law() {
+    let ledger = (
+        "app/Shared/Ledger.sharp",
+        "namespace App.Shared;\n\npublic class Ledger\n{\n    public static bool check(Money a, Money b) => Money.addKeepsCurrency(a, b);\n}\n",
+    );
+
+    assert_eq!(codes(&issues(ledger, &[LAWFUL_MONEY])), ["non-existent-method", "mixed-return-statement"]);
+    assert_eq!(messages(ledger, &[LAWFUL_MONEY])[0], "`Money.addKeepsCurrency` is a law, and a law is never called.");
+}
+
+/// A PHP caller of a law gets the same refusal, with the law named as PHP writes a static method.
+#[test]
+fn a_php_call_of_a_law_is_a_non_existent_method_that_names_the_law_as_php_writes_it() {
+    let ledger = (
+        "src/Shared/Ledger.php",
+        "<?php\n\nnamespace App\\Shared;\n\nfinal class Ledger\n{\n    public static function check(Money $a, Money $b): bool\n    {\n        return Money::addKeepsCurrency($a, $b);\n    }\n}\n",
+    );
+
+    assert_eq!(codes(&issues(ledger, &[LAWFUL_MONEY]))[0], "non-existent-method");
+    assert_eq!(
+        messages(ledger, &[LAWFUL_MONEY])[0],
+        "`App\\Shared\\Money::addKeepsCurrency` is a law, and a law is never called."
     );
 }
 

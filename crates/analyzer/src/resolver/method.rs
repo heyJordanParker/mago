@@ -57,6 +57,7 @@ use crate::utils::expression::get_bare_name_variable_id;
 use crate::utils::expression::is_this;
 use crate::utils::names::display_atomic;
 use crate::utils::names::display_class_like_name;
+use crate::utils::names::display_code_member;
 use crate::utils::names::display_member;
 use crate::utils::names::display_method_name;
 use crate::utils::names::display_sharp_collection;
@@ -1271,6 +1272,21 @@ pub(crate) fn report_non_existent_method<A>(
 ) where
     A: Arena,
 {
+    // Spec section 28: a law is checked and never runs, so the class keeps it apart from its methods.
+    if let Some(class) = context.codebase.get_class_like(classname.as_bytes())
+        && let Some(law) = class.laws.get(&ascii_lowercase_word(method_name.as_bytes()))
+    {
+        let law_name = display_code_member(context, class.original_name, law.original_name);
+        context.collector.report_with_code(
+            IssueCode::NonExistentMethod,
+            Issue::error(format!("`{law_name}` is a law, and a law is never called."))
+                .with_annotation(Annotation::primary(selector_span).with_message("Called here."))
+                .with_annotation(Annotation::secondary(law.span).with_message("The law is stated here.")),
+        );
+
+        return;
+    }
+
     let method_name = display_method_name(context, classname, method_name);
     let classname = display_class_like_name(context, classname);
     let issue = if context.dialect.is_sharp() {

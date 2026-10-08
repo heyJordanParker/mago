@@ -19,6 +19,7 @@ use mago_syntax::cst::ForBody;
 use mago_syntax::cst::ForeachBody;
 use mago_syntax::cst::Function;
 use mago_syntax::cst::IfBody;
+use mago_syntax::cst::Law;
 use mago_syntax::cst::MethodBody;
 use mago_syntax::cst::Modifier;
 use mago_syntax::cst::ModifierSequenceExt;
@@ -43,6 +44,7 @@ use crate::metadata::flags::MetadataFlags;
 use crate::metadata::function_like::FunctionLikeKind;
 use crate::metadata::function_like::FunctionLikeMetadata;
 use crate::metadata::function_like::MethodMetadata;
+use crate::metadata::ttype::TypeMetadata;
 use crate::misc::GenericParent;
 use crate::scanner::Context;
 use crate::scanner::assertion_inference::infer_assertions_from_block_body;
@@ -62,6 +64,7 @@ use crate::scanner::typing_error_issue;
 use crate::scanner::version_claim::evaluate_version_attributes;
 use crate::ttype::atomic::TAtomic;
 use crate::ttype::builder;
+use crate::ttype::get_bool;
 use crate::ttype::get_mixed;
 use crate::ttype::resolution::TypeResolutionContext;
 use crate::ttype::template::GenericTemplate;
@@ -201,6 +204,48 @@ where
     }
 
     Some(metadata)
+}
+
+/// Scans a PHP# law, spec section 28, as a static method that returns `bool`, so its body is analyzed as one.
+#[inline]
+pub(crate) fn scan_law<'arena, A>(
+    law: &'arena Law<'arena>,
+    class_like_metadata: &ClassLikeMetadata,
+    context: &Context<'_, 'arena, A>,
+    scope: &NamespaceScope,
+    type_resolution_context: &TypeResolutionContext,
+) -> FunctionLikeMetadata
+where
+    A: Arena,
+{
+    let mut metadata = FunctionLikeMetadata::new(
+        FunctionLikeKind::Method,
+        ascii_lowercase_word(law.name.value),
+        word(law.name.value),
+        law.span(),
+        MetadataFlags::origin_flags(context.file.file_type),
+    );
+    metadata.name_span = Some(law.name.span);
+    metadata.type_resolution_context = Some(type_resolution_context.clone()).filter(|c| !c.is_empty());
+    metadata.parameters = law
+        .parameter_list
+        .parameters
+        .iter()
+        .filter_map(|p| scan_function_like_parameter(p, Some(class_like_metadata.original_name), context, scope))
+        .collect();
+    metadata.set_return_type_declaration_metadata(Some(TypeMetadata::new(get_bool(), law.name.span)));
+    metadata.method_metadata = Some(MethodMetadata {
+        is_final: true,
+        is_static: true,
+        visibility: Visibility::Public,
+        ..MethodMetadata::default()
+    });
+
+    if utils::expression_has_throws(law.body.expression) {
+        metadata.flags |= MetadataFlags::HAS_THROW;
+    }
+
+    metadata
 }
 
 #[inline]
