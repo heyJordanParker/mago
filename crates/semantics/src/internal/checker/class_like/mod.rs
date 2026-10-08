@@ -740,6 +740,8 @@ pub fn check_interface<'ast, 'arena>(interface: &'ast Interface<'arena>, context
                     context,
                 );
             }
+            // Only a PHP# file declares an operator, and `check_slice` refuses one in an interface.
+            ClassLikeMember::Operator(_) => {}
         }
     }
 }

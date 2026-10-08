@@ -47,6 +47,18 @@ where
                         },
                     });
                 }
+                cst::ClassLikeMember::Operator(operator) => {
+                    let Some(method) = self.lower_operator(operator, owner) else {
+                        continue;
+                    };
+                    let node = self.arena.alloc(method);
+                    collected.push(MemberItem {
+                        meta: (),
+                        span: member.span(),
+                        kind: MemberItemKind::Method(node),
+                        terminator: None,
+                    });
+                }
                 cst::ClassLikeMember::Property(cst::Property::Plain(property)) => {
                     let lowered = self.lower_plain_property(property);
                     let last = lowered.len().saturating_sub(1);

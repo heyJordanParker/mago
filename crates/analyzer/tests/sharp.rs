@@ -4178,3 +4178,89 @@ fn an_extern_method_in_a_project_file_is_an_error_in_any_namespace() {
         assert_eq!(issues(analyzed, &[]), ["5:33 native-body-outside-library"], "{}", analyzed.0);
     }
 }
+
+const MONEY_OPERATORS: (&str, &str) = (
+    "src/App/Money.sharp",
+    "namespace App;\n\npublic class Money\n{\n    public int cents { get; }\n\n    public Money(int cents)\n    {\n        this.cents = cents;\n    }\n\n    public int hash() => this.cents;\n\n    public static bool operator ==(Money a, Money b) => a.cents == b.cents;\n\n    public static Money operator +(Money a, Money b) => new Money(a.cents + b.cents);\n\n    public static Money operator -(Money a)\n    {\n        return new Money(-a.cents);\n    }\n}\n",
+);
+
+const ORDER_OF_MONEY: (&str, &str) = ("src/App/Order.sharp", "namespace App;\n\npublic class Order : Money\n{\n}\n");
+
+/// Each operator runs as a public static method named after .NET's operator method, which a subclass inherits.
+#[test]
+fn an_operator_is_the_static_method_it_runs_as_and_a_subclass_inherits_it() {
+    let php = "<?php\n\nnamespace App;\n\nfinal class Ledger\n{\n    public static function add(Order $a, Order $b): Money\n    {\n        return Order::op_Addition($a, $b);\n    }\n\n    public static function negate(Order $a): Money\n    {\n        return Order::op_UnaryNegation($a);\n    }\n\n    public static function same(Order $a, Order $b): bool\n    {\n        return Order::op_Equality($a, $b);\n    }\n\n    public static function less(Order $a, Order $b): Money\n    {\n        return Order::op_Subtraction($a, $b);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/App/Ledger.php", php), &[MONEY_OPERATORS, ORDER_OF_MONEY]),
+        ["24:23 non-existent-method", "24:16 mixed-return-statement"]
+    );
+}
+
+#[test]
+fn an_operator_body_is_checked_as_its_static_method_body() {
+    let wrong = "namespace App;\n\npublic class Money\n{\n    public int cents { get; }\n\n    public Money(int cents)\n    {\n        this.cents = cents;\n    }\n\n    public static Money operator +(Money a, Money b) => a.cents + b.cents;\n}\n";
+
+    assert_eq!(issues(MONEY_OPERATORS, &[]), Vec::<String>::new());
+    assert_eq!(issues(("src/App/Money.sharp", wrong), &[]), ["12:57 invalid-return-statement"]);
+}
+
+/// Equal values hash alike, so a class that declares `operator ==` declares `public int hash()` or inherits it.
+#[test]
+fn equality_needs_a_public_int_hash_in_the_class_or_a_parent() {
+    let missing =
+        "namespace App;\n\npublic class Money\n{\n    public static bool operator ==(Money a, Money b) => true;\n}\n";
+    let protected = "namespace App;\n\npublic class Money\n{\n    protected int hash() => 1;\n\n    public static bool operator ==(Money a, Money b) => true;\n}\n";
+    let string = "namespace App;\n\npublic class Money\n{\n    public string hash() => \"\";\n\n    public static bool operator ==(Money a, Money b) => true;\n}\n";
+    let entity = ("src/App/Entity.sharp", "namespace App;\n\npublic class Entity\n{\n    public int hash() => 1;\n}\n");
+    let inherited = "namespace App;\n\npublic class Order : Entity\n{\n    public static bool operator ==(Order a, Order b) => true;\n}\n";
+
+    assert_eq!(
+        messages(("src/App/Money.sharp", missing), &[]),
+        [
+            "`Money` declares `operator ==` without `public int hash()`: declare it in `Money` or a parent, so equal values hash alike."
+        ]
+    );
+    assert_eq!(issues(("src/App/Money.sharp", missing), &[]), ["5:24 unimplemented-abstract-method"]);
+    assert_eq!(issues(("src/App/Money.sharp", protected), &[]), ["7:24 unimplemented-abstract-method"]);
+    assert_eq!(issues(("src/App/Money.sharp", string), &[]), ["7:24 unimplemented-abstract-method"]);
+    assert_eq!(issues(("src/App/Order.sharp", inherited), &[entity]), Vec::<String>::new());
+}
+
+/// A subclass inherits its parent's operators, which are static, and PHP# has no overloading by parameter types, so
+/// it cannot declare them again, as C# cannot override an operator.
+#[test]
+fn a_subclass_cannot_declare_an_operator_its_parent_declares() {
+    let order = "namespace App;\n\npublic class Order : Money\n{\n    public static Order operator +(Order a, Order b) => a;\n\n    public static Order operator -(Order a) => a;\n}\n";
+
+    assert_eq!(
+        messages(("src/App/Order.sharp", order), &[MONEY_OPERATORS]),
+        [
+            "`Order` cannot declare `operator +`: it inherits it from `Money`.",
+            "`Order` cannot declare unary `operator -`: it inherits it from `Money`."
+        ]
+    );
+    assert_eq!(
+        issues(("src/App/Order.sharp", order), &[MONEY_OPERATORS]),
+        ["5:25 override-final-method", "7:25 override-final-method"]
+    );
+}
+
+/// PHP keeps its own rule: a subclass redeclares a static method its parent declares.
+#[test]
+fn a_php_subclass_keeps_redeclaring_a_static_method_named_like_an_operator() {
+    let money = (
+        "src/App/Money.php",
+        "<?php\n\nnamespace App;\n\nclass Money\n{\n    public static function op_Addition(Money $a, Money $b): Money\n    {\n        return $a;\n    }\n}\n",
+    );
+    let order = "<?php\n\nnamespace App;\n\nfinal class Order extends Money\n{\n    public static function op_Addition(Money $a, Money $b): Money\n    {\n        return $b;\n    }\n}\n";
+
+    assert_eq!(issues(("src/App/Order.php", order), &[money]), Vec::<String>::new());
+}
+
+#[test]
+fn a_php_class_keeps_its_static_op_equality_without_a_hash() {
+    let php = "<?php\n\nnamespace App;\n\nfinal class Money\n{\n    public static function op_Equality(?Money $a, ?Money $b): bool\n    {\n        return $a === $b;\n    }\n}\n";
+
+    assert_eq!(issues(("src/App/Money.php", php), &[]), Vec::<String>::new());
+}

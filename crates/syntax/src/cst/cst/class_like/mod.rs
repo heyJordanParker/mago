@@ -18,6 +18,7 @@ pub mod enum_case;
 pub mod inheritance;
 pub mod member;
 pub mod method;
+pub mod operator;
 pub mod property;
 pub mod trait_use;
 

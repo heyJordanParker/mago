@@ -3390,3 +3390,123 @@ fn a_lambda_capturing_a_loop_variable_that_changes_is_not_supported_yet() {
         ]
     );
 }
+
+/// A PHP# class `Money`, for `src/Money.sharp`, whose members start on line 5.
+fn money(members: &str) -> &'static str {
+    leak(format!("namespace App;\n\npublic class Money\n{{\n{members}}}\n"))
+}
+
+#[test]
+fn a_class_declares_each_operator_public_static_with_its_own_class_as_a_parameter() {
+    let code = money(
+        "    [Pure] public static bool operator ==(Money a, Money? b) => true;\n    static public int operator <=>(Money a, Money b) => 0;\n    public static Money operator +(Money a, Money b) => a;\n    public static Money operator -(Money a, Money b) => a;\n    public static Money operator *(Money a, int factor) => a;\n    public static Money operator /(int a, Money b) => b;\n    public static Money operator %(Money a, int b) => a;\n    public static Money operator **(Money a, int b) => a;\n    public static Money operator -(Money a)\n    {\n        return a;\n    }\n",
+    );
+
+    assert_eq!(issues_in("src/Money.sharp", code), Vec::<String>::new());
+}
+
+#[test]
+fn an_operator_a_class_cannot_declare_is_an_error_that_names_the_operators_it_derives_from() {
+    let code = money(
+        "    public static bool operator !=(Money a, Money b) => false;\n    public static bool operator <(Money a, Money b) => false;\n    public static bool operator >=(Money a, Money b) => false;\n    public static bool operator &&(Money a, Money b) => false;\n",
+    );
+
+    assert_eq!(
+        issues_in("src/Money.sharp", code),
+        [
+            "5:33 `operator !=` cannot be declared: it is derived from `==`.",
+            "6:33 `operator <` cannot be declared: it is derived from `<=>`.",
+            "7:33 `operator >=` cannot be declared: it is derived from `<=>`.",
+            "8:33 `operator &&` cannot be declared: only `+ - * / % **`, unary `-`, `==` and `<=>` can.",
+        ]
+    );
+}
+
+#[test]
+fn an_operator_that_is_not_public_static_is_an_error() {
+    let code = money(
+        "    public Money operator +(Money a, Money b) => a;\n    private static Money operator -(Money a, Money b) => a;\n    static Money operator *(Money a, Money b) => a;\n",
+    );
+
+    let message = "An operator is `public static`, as in `public static Money operator +(Money a, Money b)`.";
+    assert_eq!(
+        issues_in("src/Money.sharp", code),
+        [format!("5:18 {message}"), format!("6:26 {message}"), format!("7:18 {message}")]
+    );
+}
+
+#[test]
+fn an_operator_with_the_wrong_number_of_parameters_is_an_error() {
+    let code = money(
+        "    public static bool operator ==(Money a) => false;\n    public static Money operator +(Money a, Money b, Money c) => a;\n    public static Money operator -() => null;\n",
+    );
+
+    assert_eq!(
+        issues_in("src/Money.sharp", code),
+        [
+            "5:35 `operator ==` takes two parameters.",
+            "6:35 `operator +` takes two parameters.",
+            "7:35 `operator -` takes one parameter, to negate, or two, to subtract.",
+        ]
+    );
+}
+
+#[test]
+fn an_operator_without_its_class_as_a_parameter_is_an_error() {
+    let code = money("    public static int operator +(int a, int b) => a + b;\n");
+
+    assert_eq!(
+        issues_in("src/Money.sharp", code),
+        ["5:33 One parameter of `operator +` is `Money`, the class that declares it."]
+    );
+}
+
+#[test]
+fn equality_returns_bool_and_comparison_returns_int() {
+    let code = money(
+        "    public static int operator ==(Money a, Money b) => 1;\n    public static bool? operator <=>(Money a, Money b) => true;\n",
+    );
+
+    assert_eq!(
+        issues_in("src/Money.sharp", code),
+        ["5:19 `operator ==` returns `bool`.", "6:19 `operator <=>` returns `int`."]
+    );
+}
+
+#[test]
+fn an_operator_declared_twice_in_a_class_is_an_error() {
+    let code = money(
+        "    public static Money operator +(Money a, Money b) => a;\n    public static Money operator -(Money a) => a;\n    public static Money operator -(Money a, Money b) => a;\n    public static Money operator +(Money a, int b) => a;\n    public static Money operator -(Money a) => a;\n",
+    );
+
+    assert_eq!(
+        issues_in("src/Money.sharp", code),
+        ["8:25 `operator +` is declared twice in `Money`.", "9:25 Unary `operator -` is declared twice in `Money`."]
+    );
+}
+
+#[test]
+fn an_operator_body_is_a_method_body() {
+    let code = money(
+        "    public static Money operator +(Money a, Money b)\n    {\n        echo \"adding\";\n        return a;\n    }\n",
+    );
+
+    assert_eq!(issues_in("src/Money.sharp", code), ["7:9 PHP# has no `echo`: write `printf` or `fwrite`."]);
+}
+
+#[test]
+fn an_interface_or_an_enum_declares_no_operator() {
+    let interface =
+        "namespace App;\n\npublic interface Priced\n{\n    public static int operator +(Priced a, Priced b) => 0;\n}\n";
+    let r#enum = "namespace App;\n\npublic enum Suit\n{\n    case Hearts;\n\n    public static int operator +(Suit a, Suit b) => 0;\n}\n";
+
+    assert_eq!(issues_in("src/Priced.sharp", interface), ["5:5 This class member is not supported yet in PHP#."]);
+    assert_eq!(issues_in("src/Suit.sharp", r#enum), ["7:5 This class member is not supported yet in PHP#."]);
+}
+
+#[test]
+fn a_php_class_keeps_its_static_methods_named_like_operators() {
+    let code = "<?php\n\nclass Money\n{\n    public static function op_Equality(?Money $a, ?Money $b): bool { return true; }\n\n    public static function op_Addition(Money $a, int $b): Money { return $a; }\n}\n";
+
+    assert_eq!(issues_in("src/Money.php", code), Vec::<String>::new());
+}

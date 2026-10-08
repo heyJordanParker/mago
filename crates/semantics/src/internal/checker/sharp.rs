@@ -5,6 +5,7 @@ use mago_names::binding::BindingError;
 use mago_names::binding::Local;
 use mago_names::binding::LocalKind;
 use mago_names::binding::php_method_name;
+use mago_names::binding::php_operator_name;
 use mago_names::scope::php_name;
 use mago_php_version::PHPVersion;
 use mago_reporting::Annotation;
@@ -62,6 +63,7 @@ use mago_syntax::cst::Namespace;
 use mago_syntax::cst::NamespaceBody;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::NullableHint;
+use mago_syntax::cst::Operator;
 use mago_syntax::cst::PartialArgument;
 use mago_syntax::cst::Pattern;
 use mago_syntax::cst::PatternMatch;
@@ -114,8 +116,8 @@ const ANY: &[u8] = b"Any";
 /// - At file level: `namespace`, `import`, `class`, `interface` and `enum`. A file has at most one namespace, named
 ///   and written without braces.
 /// - A class: attributes, an optional `public`, `abstract` or `final`, a name, an optional `: Base, Interface` header,
-///   constants, fields, properties and methods, with no other modifiers, `extends` or `implements`. The engine tells
-///   the base class from the interfaces when it links the class.
+///   constants, fields, properties, methods and operators, with no other modifiers, `extends` or `implements`. The
+///   engine tells the base class from the interfaces when it links the class.
 /// - A static class, `public static class Text`, as spec sections 26 and 29 write it: `static` and an optional
 ///   `public`, no header and no constructor, and only constants and static members. The bridge lowers it to a final
 ///   PHP class.
@@ -168,6 +170,12 @@ const ANY: &[u8] = b"Any";
 ///   writes them. Its name does not start with `__`, which PHP reserves for magic methods, and is not its class's name,
 ///   compared ignoring case, which PHP# gives to the constructor, nor, compared ignoring case, a property's of its
 ///   class.
+/// - An operator, as spec section 19 writes `public static Money operator +(Money a, Money b) => …;`: `public static`,
+///   a return type, `operator`, one of `+ - * / % **`, unary `-`, `==` and `<=>`, parameters and a method body.
+///   `!=` derives from `==`, and `< > <= >=` from `<=>`, so declaring one is an error that names its source. `==`,
+///   `<=>` and the binary arithmetic operators take two parameters, unary `-` one, and one of them is the declaring
+///   class. `==` returns `bool`, and `<=>` `int`. A class declares each operator once, because each runs as one
+///   static method named after .NET's, such as `op_Addition`. An interface or an enum declares no operator.
 /// - An `extern` method, `public static extern string slug(string title);`, whose body is native, compiled into the
 ///   engine, as spec section 29 writes it: a `public static` method of a static class, with no body. Only the
 ///   standard library declares one, and the analyzer refuses one anywhere else.
@@ -293,7 +301,7 @@ const ANY: &[u8] = b"Any";
 /// constant, parameter or local. A method name that starts but does not end with `__`, as PHP's magic methods do,
 /// stays not supported yet.
 ///
-/// Seventeen more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
+/// Nineteen more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
 /// - `new` on a static class, in `analyze_class_instantiation`, and a class that extends one, in
 ///   `check_class_like_extends`, because the static class may be another file's.
 /// - an `extern` method anywhere but a standard library file whose class is under `Sharp`, in `Method`'s `analyze`,
@@ -326,6 +334,9 @@ const ANY: &[u8] = b"Any";
 ///   the engine refuses, in `validate_method_signature_compatibility`.
 /// - a full name in code, such as `App.Shared.Money.of(1)`, which spec section 23 keeps in `import` lines, in
 ///   `report_full_name`. One file cannot tell it from a class and its member, such as `Status.Active`.
+/// - an `operator ==` in a class that neither declares nor inherits a `public int hash()`, in `Operator`'s `analyze`,
+///   because the parent may be another file's.
+/// - an operator a parent already declares, in `check_inherited_operators`, because the parent may be another file's.
 #[inline]
 pub fn check_slice(node: Node<'_, '_>, context: &mut Context<'_, '_, '_>) {
     let place = match context.slice_places.last() {
@@ -550,6 +561,15 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         (Node::NamedArgument(_), Attribute) => Some(Constant),
 
         (Node::ClassLikeMember(ClassLikeMember::Method(_)), Class | Enum) => Some(place),
+        (Node::ClassLikeMember(ClassLikeMember::Operator(_)), Class) => Some(Class),
+        // An operator's parts are a method's, and `check_operator` decides its modifiers and its symbol, the one binary
+        // operator a method's parts hold.
+        (Node::Operator(operator), Class) => {
+            check_operator(operator, context);
+
+            Some(Method)
+        }
+        (Node::BinaryOperator(_), Method) => Some(Method),
         // `check_enum` reports a property in an enum, and a backing type other than `int` or `string`.
         (Node::ClassLikeMember(ClassLikeMember::Property(_)) | Node::EnumBackingTypeHint(_), Enum) => None,
         (Node::EnumCase(case), Enum) if case.item.name().value.eq_ignore_ascii_case(b"class") => {
@@ -1384,6 +1404,103 @@ fn is_slice_signature(method: &Method) -> Result<(), (&'static str, &'static str
         ))
     } else {
         Ok(())
+    }
+}
+
+/// Checks an operator a class declares, spec section 19: a symbol a class can declare, `public static`, the number of
+/// parameters its symbol takes with one of them the class itself, `bool` from `==` and `int` from `<=>`, and one
+/// declaration of it in its class. A refused symbol is the one error, because the other rules depend on it. The
+/// analyzer checks that a class that declares `==` has a `hash()`.
+fn check_operator(operator: &Operator, context: &mut Context<'_, '_, '_>) {
+    let Some(class) = enclosing_class(context.program, operator.span()) else {
+        return;
+    };
+    let names = context.names;
+    let class_name = BytesDisplay(class.name.value);
+    let symbol = BytesDisplay(operator.symbol.as_bytes());
+    let mut report = |message: String, span: Span| {
+        context.report(Issue::error(message).with_annotation(Annotation::primary(span).with_message("Declared here.")));
+    };
+
+    let Some(name) = php_operator_name(operator) else {
+        let reason = match operator.symbol {
+            BinaryOperator::NotEqual(_) | BinaryOperator::AngledNotEqual(_) => "it is derived from `==`".to_owned(),
+            BinaryOperator::LessThan(_)
+            | BinaryOperator::LessThanOrEqual(_)
+            | BinaryOperator::GreaterThan(_)
+            | BinaryOperator::GreaterThanOrEqual(_) => "it is derived from `<=>`".to_owned(),
+            _ => format!("only {} can", Operator::DECLARABLE),
+        };
+
+        return report(format!("`operator {symbol}` cannot be declared: {reason}."), operator.symbol.span());
+    };
+
+    if operator.modifiers.len() != 2
+        || !operator.modifiers.contains_static()
+        || operator.modifiers.get_public().is_none()
+    {
+        report(
+            format!(
+                "An operator is `public static`, as in `public static {class_name} operator +({class_name} a, {class_name} b)`."
+            ),
+            operator.operator.span,
+        );
+    }
+
+    let parameters = &operator.parameter_list.parameters;
+    let class_fqcn = names.get(class.name);
+    if matches!(operator.symbol, BinaryOperator::Subtraction(_)) && !matches!(parameters.len(), 1 | 2) {
+        report(
+            "`operator -` takes one parameter, to negate, or two, to subtract.".to_owned(),
+            operator.parameter_list.span(),
+        );
+    } else if !matches!(operator.symbol, BinaryOperator::Subtraction(_)) && parameters.len() != 2 {
+        report(format!("`operator {symbol}` takes two parameters."), operator.parameter_list.span());
+    } else if !parameters
+        .iter()
+        .any(|parameter| parameter.hint.as_ref().is_some_and(|hint| is_class_type(hint, class_fqcn, names)))
+    {
+        report(
+            format!("One parameter of `operator {symbol}` is `{class_name}`, the class that declares it."),
+            operator.parameter_list.span(),
+        );
+    }
+
+    let return_type = &operator.return_type_hint.hint;
+    match operator.symbol {
+        BinaryOperator::Equal(_) if !matches!(return_type, Hint::Bool(_)) => {
+            report("`operator ==` returns `bool`.".to_owned(), return_type.span());
+        }
+        BinaryOperator::Spaceship(_) if !matches!(return_type, Hint::Integer(_)) => {
+            report("`operator <=>` returns `int`.".to_owned(), return_type.span());
+        }
+        _ => {}
+    }
+
+    let declared_before = class
+        .members
+        .iter()
+        .filter_map(|member| match member {
+            ClassLikeMember::Operator(earlier) => Some(earlier),
+            _ => None,
+        })
+        .take_while(|earlier| earlier.span() != operator.span())
+        .any(|earlier| php_operator_name(earlier) == Some(name));
+    if declared_before {
+        let unary = if name == b"op_UnaryNegation" { "Unary " } else { "" };
+        report(format!("{unary}`operator {symbol}` is declared twice in `{class_name}`."), operator.operator.span);
+    }
+}
+
+/// Whether a parameter's type is the class `class_fqcn`, written by its name, nullable or not, or as `Self`.
+fn is_class_type(hint: &Hint, class_fqcn: &[u8], names: &ResolvedNames) -> bool {
+    match hint {
+        Hint::Nullable(nullable) => is_class_type(nullable.hint, class_fqcn, names),
+        Hint::Identifier(identifier) => {
+            names.resolve(identifier).is_some_and(|name| name.eq_ignore_ascii_case(class_fqcn))
+        }
+        Hint::Self_(_) => true,
+        _ => false,
     }
 }
 
@@ -2790,7 +2907,7 @@ const fn supported(place: Place) -> &'static str {
     match place {
         Place::File => "At file level, PHP# supports `namespace`, `import`, `class`, `interface` and `enum`.",
         Place::Class => {
-            "A PHP# class has attributes, an optional `public`, `abstract` or `final`, a name, an optional `: Base, Interface` header, constants, fields, properties and methods, with no other modifiers, `extends` or `implements`."
+            "A PHP# class has attributes, an optional `public`, `abstract` or `final`, a name, an optional `: Base, Interface` header, constants, fields, properties, methods and operators, with no other modifiers, `extends` or `implements`."
         }
         Place::Interface => {
             "A PHP# interface has an optional `public`, a name, an optional `: Interface` header and methods, with no attributes, other modifiers, `extends`, constants or properties."

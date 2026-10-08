@@ -19,6 +19,7 @@ use mago_syntax::cst::Implements;
 use mago_syntax::cst::Interface;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::MethodBody;
+use mago_syntax::cst::Operator;
 use mago_syntax::cst::PlainProperty;
 use mago_syntax::cst::Property;
 use mago_syntax::cst::PropertyHook;
@@ -119,6 +120,9 @@ impl Fingerprintable for ClassLikeMember<'_> {
             }
             ClassLikeMember::Method(method) => {
                 method.fingerprint_with_hasher(hasher, resolved_names, options);
+            }
+            ClassLikeMember::Operator(operator) => {
+                operator.fingerprint_with_hasher(hasher, resolved_names, options);
             }
         }
     }
@@ -547,6 +551,38 @@ impl Fingerprintable for Method<'_> {
             "by_ref".hash(hasher);
         }
         self.name.fingerprint_with_hasher(hasher, resolved_names, options);
+        self.parameter_list.fingerprint_with_hasher(hasher, resolved_names, options);
+        self.return_type_hint.fingerprint_with_hasher(hasher, resolved_names, options);
+
+        if !options.signature_only {
+            self.body.fingerprint_with_hasher(hasher, resolved_names, options);
+        }
+    }
+}
+
+impl Fingerprintable for Operator<'_> {
+    #[inline]
+    fn fingerprint_with_hasher<H>(
+        &self,
+        hasher: &mut H,
+        resolved_names: &ResolvedNames,
+        options: &FingerprintOptions<'_>,
+    ) where
+        H: std::hash::Hasher,
+    {
+        if let Some(trivia) = options.trivia_context {
+            for t in PrecedingDocblocks::new(trivia, self.span().start.offset)
+                .important_only(options.important_comment_patterns)
+            {
+                t.value.hash(hasher);
+            }
+        }
+        "operator".hash(hasher);
+        for attribute_list in &self.attribute_lists {
+            attribute_list.fingerprint_with_hasher(hasher, resolved_names, options);
+        }
+        crate::modifier::fingerprint_modifiers(self.modifiers.iter(), hasher, resolved_names, options);
+        self.symbol.fingerprint_with_hasher(hasher, resolved_names, options);
         self.parameter_list.fingerprint_with_hasher(hasher, resolved_names, options);
         self.return_type_hint.fingerprint_with_hasher(hasher, resolved_names, options);
 

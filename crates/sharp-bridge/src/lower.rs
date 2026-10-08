@@ -6,6 +6,7 @@ use mago_codex::ttype::union::TUnion;
 use mago_names::ResolvedNames;
 use mago_names::binding::Binding;
 use mago_names::binding::php_method_name;
+use mago_names::binding::php_operator_name;
 use mago_names::scope::php_name;
 use mago_php_version::PHPVersion;
 use mago_span::HasSpan;
@@ -65,6 +66,7 @@ use mago_syntax::cst::NamedArgument;
 use mago_syntax::cst::NamespaceBody;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::NullableHint;
+use mago_syntax::cst::Operator;
 use mago_syntax::cst::PartialArgument;
 use mago_syntax::cst::PartialArgumentList;
 use mago_syntax::cst::PositionalArgument;
@@ -441,6 +443,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                     self.method(method, modifier_flags(&method.modifiers), &[body])
                 }
                 ClassLikeMember::Method(method) => self.method(method, modifier_flags(&method.modifiers), &[]),
+                ClassLikeMember::Operator(operator) => self.operator(operator),
                 ClassLikeMember::Property(property) => self.property(property, parent_name),
                 ClassLikeMember::Constant(constant) => self.constant(constant),
                 _ => unreachable!("check_slice refuses the class member `{member}`"),
@@ -600,29 +603,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         }
 
         let parameters = self.node(SHARP_AST_PARAM_LIST, 0, self.line(&method.parameter_list), &parameters);
-        let mut statements = first_statements.to_vec();
-        let body = match &method.body {
-            MethodBody::Concrete(block) => {
-                for statement in &block.statements {
-                    statements.push(self.statement(statement));
-                }
-
-                self.node(SHARP_AST_STMT_LIST, 0, self.line(block), &statements)
-            }
-            MethodBody::Expression(body) => {
-                let line = self.line(body);
-                let expression = self.expression(body.expression);
-                statements.push(if method.returns_value() {
-                    self.node(SHARP_AST_RETURN, 0, line, &[expression])
-                } else {
-                    expression
-                });
-
-                self.node(SHARP_AST_STMT_LIST, 0, line, &statements)
-            }
-            MethodBody::Abstract(_) if statements.is_empty() => NULL,
-            MethodBody::Abstract(body) => self.node(SHARP_AST_STMT_LIST, 0, self.line(body), &statements),
-        };
+        let body = self.method_body(&method.body, method.returns_value(), first_statements.to_vec());
         let (start, return_type) = match &method.return_type_hint {
             Some(return_type_hint) => (return_type_hint.span(), self.hint(&return_type_hint.hint)),
             None => (method.name.span, NULL),
@@ -638,6 +619,111 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             php_method_name(method),
             &[parameters, NULL, body, return_type, attributes],
         )
+    }
+
+    /// A method's statement list: `statements`, then its block's statements, or its expression body, which it returns
+    /// when it `returns_value`. An abstract method without `statements` has none.
+    fn method_body(&mut self, body: &MethodBody, returns_value: bool, mut statements: Vec<u32>) -> u32 {
+        match body {
+            MethodBody::Concrete(block) => {
+                for statement in &block.statements {
+                    statements.push(self.statement(statement));
+                }
+
+                self.node(SHARP_AST_STMT_LIST, 0, self.line(block), &statements)
+            }
+            MethodBody::Expression(body) => {
+                let line = self.line(body);
+                let expression = self.expression(body.expression);
+                statements.push(if returns_value {
+                    self.node(SHARP_AST_RETURN, 0, line, &[expression])
+                } else {
+                    expression
+                });
+
+                self.node(SHARP_AST_STMT_LIST, 0, line, &statements)
+            }
+            MethodBody::Abstract(_) if statements.is_empty() => NULL,
+            MethodBody::Abstract(body) => self.node(SHARP_AST_STMT_LIST, 0, self.line(body), &statements),
+        }
+    }
+
+    /// An operator is the public static method it runs as, named after .NET's operator method, as php-src's grammar
+    /// builds `public static function op_Addition(\App\Money $a, \App\Money $b): \App\Money`. `==` is lifted over null,
+    /// as C# lifts it: its parameters are nullable, and its body starts with
+    /// `if ($a === null || $b === null) { return $a === $b; }`, so null equals only null.
+    fn operator(&mut self, operator: &Operator) -> u32 {
+        let Some(name) = php_operator_name(operator) else {
+            unreachable!("check_slice refuses the operator `{}`", operator.symbol);
+        };
+        let lifted = matches!(operator.symbol, BinaryOperator::Equal(_));
+
+        self.enter(name);
+        let mut parameters = Vec::new();
+        for parameter in &operator.parameter_list.parameters {
+            parameters.push(match &parameter.hint {
+                Some(hint) if lifted => {
+                    let hint = self.nullable_hint(hint);
+
+                    self.parameter_of_type(parameter, hint)
+                }
+                _ => self.parameter(parameter),
+            });
+        }
+
+        let parameters = self.node(SHARP_AST_PARAM_LIST, 0, self.line(&operator.parameter_list), &parameters);
+        let prologue = if lifted { vec![self.null_lifting(&operator.parameter_list)] } else { Vec::new() };
+        let body = self.method_body(&operator.body, true, prologue);
+        let return_type = self.hint(&operator.return_type_hint.hint);
+        let attributes = self.attributes(&operator.attribute_lists, None);
+
+        self.declaration(
+            SHARP_AST_METHOD,
+            modifier_flags(&operator.modifiers),
+            &operator.return_type_hint,
+            operator.body.span(),
+            name,
+            &[parameters, NULL, body, return_type, attributes],
+        )
+    }
+
+    /// A type that also holds null: `?T`, as php-src's grammar builds `?\App\Money`, a union with `null` last, or the
+    /// type itself when it holds null already, as `T?` and `Any` do.
+    fn nullable_hint(&mut self, hint: &Hint) -> u32 {
+        match hint {
+            Hint::Nullable(_) | Hint::Mixed(_) => self.hint(hint),
+            Hint::Union(_) => self.union(hint, Some(hint.span())),
+            _ => {
+                let index = self.hint(hint);
+                self.nodes[index as usize].attr |= ZEND_TYPE_NULLABLE;
+
+                index
+            }
+        }
+    }
+
+    /// `if ($a === null || $b === null) { return $a === $b; }` over the two parameters of `operator ==`, on the line of
+    /// its parameter list.
+    fn null_lifting(&mut self, parameters: &FunctionLikeParameterList) -> u32 {
+        let [a, b] = parameters.parameters.as_slice() else {
+            unreachable!("check_slice refuses an `operator ==` without two parameters");
+        };
+        let line = self.line(parameters);
+
+        let a_value = self.variable(a.variable.span, a.variable.name);
+        let a_is_null = self.is_null(line, a_value);
+        let b_value = self.variable(b.variable.span, b.variable.name);
+        let b_is_null = self.is_null(line, b_value);
+        let either_is_null = self.node(SHARP_AST_OR, 0, line, &[a_is_null, b_is_null]);
+
+        let a_value = self.variable(a.variable.span, a.variable.name);
+        let b_value = self.variable(b.variable.span, b.variable.name);
+        let both_are_null = self.node(SHARP_AST_BINARY_OP, ZEND_IS_IDENTICAL, line, &[a_value, b_value]);
+        let r#return = self.node(SHARP_AST_RETURN, 0, line, &[both_are_null]);
+        let statements = self.node(SHARP_AST_STMT_LIST, 0, line, &[r#return]);
+        let branch = self.node(SHARP_AST_IF_ELEM, 0, line, &[either_is_null, statements]);
+
+        self.node(SHARP_AST_IF, 0, line, &[branch])
     }
 
     /// The call an `extern` method's body runs, as php-src's grammar builds `\Sharp\Internal\Text\Text\slug($title)`:

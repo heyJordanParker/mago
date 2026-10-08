@@ -77,14 +77,23 @@ impl Lowered {
 
     /// The statements of the method `run`.
     fn body(&self) -> String {
+        self.render(self.child(self.method_named("run"), 2))
+    }
+
+    /// The method PHP declares as `name`.
+    fn declared(&self, name: &str) -> String {
+        self.render(self.method_named(name))
+    }
+
+    fn method_named(&self, name: &str) -> u32 {
         assert_eq!(self.diagnostics(), Vec::<String>::new(), "the source lowers");
         let method = self
             .nodes()
             .iter()
-            .position(|node| node.kind == sharp_kind::SHARP_AST_METHOD && self.text(node.text) == "run")
-            .expect("the source declares `run`");
+            .position(|node| node.kind == sharp_kind::SHARP_AST_METHOD && self.text(node.text) == name)
+            .unwrap_or_else(|| panic!("the source declares `{name}`"));
 
-        self.render(self.child(method as u32, 2))
+        method as u32
     }
 
     fn child(&self, node: u32, index: u32) -> u32 {
@@ -8170,4 +8179,129 @@ fn a_form_fingerprint_follows_its_body_and_not_its_lines() {
 
     assert_eq!(fingerprint(&TEXT.1.replacen("{\n", "{\n\n\n", 1)), fingerprint(TEXT.1));
     assert_ne!(fingerprint(&TEXT.1.replace("strtoupper", "strtolower")), fingerprint(TEXT.1));
+}
+
+/// `Money`, which declares `==`, `+` and unary `-` on lines 7, 9 and 11.
+const MONEY: &str = "namespace App;\n\npublic class Money\n{\n    public int hash() => 1;\n\n    public static bool operator ==(Money a, Money b) => true;\n\n    public static Money operator +(Money a, Money b) => a;\n\n    public static Money operator -(Money a) => a;\n}\n";
+
+/// ```php
+/// public static function op_Equality(?\App\Money $a, ?\App\Money $b): bool
+/// {
+///     if ($a === null || $b === null) { return $a === $b; }
+///     return true;
+/// }
+/// ```
+///
+/// `==` is lifted over null, as C# lifts it: its parameters are nullable, with `ZEND_TYPE_NULLABLE`, which is 256, and
+/// null equals only null before the declared body runs. `public static` is 17, `===` is 16, and `bool` is a name with
+/// `ZEND_NAME_NOT_FQ`, which is 1.
+#[test]
+fn equality_is_op_equality_with_nullable_parameters_and_the_null_prologue() {
+    assert_eq!(
+        Lowered::new(MONEY).declared("op_Equality"),
+        indoc! {r#"
+            METHOD [17] "op_Equality" @7-7
+              PARAM_LIST
+                PARAM
+                  ZVAL [256] "App\\Money"
+                  ZVAL "a"
+                  null
+                  null
+                  null
+                  null
+                PARAM
+                  ZVAL [256] "App\\Money"
+                  ZVAL "b"
+                  null
+                  null
+                  null
+                  null
+              null
+              STMT_LIST
+                IF
+                  IF_ELEM
+                    OR
+                      BINARY_OP [16]
+                        VAR
+                          ZVAL "a"
+                        ZVAL null
+                      BINARY_OP [16]
+                        VAR
+                          ZVAL "b"
+                        ZVAL null
+                    STMT_LIST
+                      RETURN
+                        BINARY_OP [16]
+                          VAR
+                            ZVAL "a"
+                          VAR
+                            ZVAL "b"
+                RETURN
+                  ZVAL true
+              ZVAL [1] "bool"
+              null
+        "#}
+    );
+}
+
+/// ```php
+/// public static function op_Addition(\App\Money $a, \App\Money $b): \App\Money { return $a; }
+/// public static function op_UnaryNegation(\App\Money $a): \App\Money { return $a; }
+/// ```
+///
+/// Every other operator is the static method it runs as, with its parameters as declared and no prologue. `-` with one
+/// parameter is unary `-`.
+#[test]
+fn addition_and_negation_are_their_static_methods_without_a_prologue() {
+    let lowered = Lowered::new(MONEY);
+
+    assert_eq!(
+        lowered.declared("op_Addition"),
+        indoc! {r#"
+            METHOD [17] "op_Addition" @9-9
+              PARAM_LIST
+                PARAM
+                  ZVAL "App\\Money"
+                  ZVAL "a"
+                  null
+                  null
+                  null
+                  null
+                PARAM
+                  ZVAL "App\\Money"
+                  ZVAL "b"
+                  null
+                  null
+                  null
+                  null
+              null
+              STMT_LIST
+                RETURN
+                  VAR
+                    ZVAL "a"
+              ZVAL "App\\Money"
+              null
+        "#}
+    );
+    assert_eq!(
+        lowered.declared("op_UnaryNegation"),
+        indoc! {r#"
+            METHOD [17] "op_UnaryNegation" @11-11
+              PARAM_LIST
+                PARAM
+                  ZVAL "App\\Money"
+                  ZVAL "a"
+                  null
+                  null
+                  null
+                  null
+              null
+              STMT_LIST
+                RETURN
+                  VAR
+                    ZVAL "a"
+              ZVAL "App\\Money"
+              null
+        "#}
+    );
 }
