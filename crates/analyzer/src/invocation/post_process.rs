@@ -64,6 +64,8 @@ use crate::utils::expression::get_block_expression_id;
 use crate::utils::expression::get_non_nullsafe_expression_id;
 use crate::utils::expression::get_nullsafe_base_expressions;
 use crate::utils::misc::unwrap_expression;
+use crate::utils::names::display_class_like_name;
+use crate::utils::names::display_member;
 
 pub fn post_invocation_process<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
@@ -251,10 +253,7 @@ where
     match identifier {
         FunctionLikeIdentifier::Function(_) => format!("`{original_name}`"),
         FunctionLikeIdentifier::Method(class_name, _) => {
-            let class_display =
-                context.codebase.get_class_like(class_name.as_bytes()).map(|m| m.original_name).unwrap_or(*class_name);
-
-            format!("`{class_display}::{original_name}`")
+            format!("`{}`", display_member(context, display_class_like_name(context, *class_name), original_name))
         }
         FunctionLikeIdentifier::Closure(name) => format!("`{name}`"),
     }

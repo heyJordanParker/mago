@@ -54,6 +54,8 @@ use crate::statement::attributes::analyze_class_like_attributes;
 use crate::statement::class_like::analyze_class_like;
 use crate::statement::class_like::override_attribute;
 use crate::utils::misc::check_for_paradox;
+use crate::utils::names::display_member;
+use crate::utils::names::display_sharp_member;
 
 pub mod access;
 pub mod argument_list;
@@ -232,6 +234,10 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
                 }
                 Expression::Self_(keyword) | Expression::Static(keyword) | Expression::Parent(keyword) => {
                     let keyword_str = mago_bytes::BytesDisplay(keyword.value);
+                    let keyword_name = word(keyword.value);
+                    let operator = if context.dialect.is_sharp() { "." } else { "::" };
+                    let constant = display_member(context, keyword_name, "CONSTANT");
+                    let method = display_member(context, keyword_name, "method()");
 
                     context.collector.report_with_code(
                     IssueCode::InvalidScopeKeywordContext,
@@ -241,10 +247,10 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
                                 .with_message(format!("`{keyword_str}` used as a value here")),
                         )
                         .with_note(
-                            format!("The `{keyword_str}` keyword is used to refer to a class scope and must be used with the `::` operator.")
+                            format!("The `{keyword_str}` keyword is used to refer to a class scope and must be used with the `{operator}` operator.")
                         )
                         .with_help(
-                            format!("Use `{keyword_str}::CONSTANT`, `{keyword_str}::method()`, or `new {keyword_str}()` instead.")
+                            format!("Use `{constant}`, `{method}`, or `new {keyword_str}()` instead.")
                         ),
                 );
 
@@ -545,12 +551,11 @@ where
         let Some(metadata) = context.codebase.get_enum(name.as_bytes()) else {
             continue;
         };
-        let short_name = metadata.original_name.as_bytes().rsplit(|byte| *byte == b'\\').next().unwrap_or_default();
         let mut declared: Vec<_> = metadata.enum_cases.values().collect();
         declared.sort_by_key(|case| case.span.start.offset);
         for case in declared {
             if cases.iter().any(|(enum_name, left)| *enum_name == name && left.is_none_or(|left| left == case.name)) {
-                missing.push(format!("{}.{}", String::from_utf8_lossy(short_name), case.name));
+                missing.push(display_sharp_member(metadata.original_name, case.name));
             }
         }
     }

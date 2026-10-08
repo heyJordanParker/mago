@@ -2,7 +2,6 @@ use mago_allocator::Arena;
 use std::rc::Rc;
 
 use mago_codex::context::ScopeContext;
-use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::comparator::ComparisonResult;
 use mago_codex::ttype::comparator::union_comparator;
@@ -27,7 +26,6 @@ use mago_syntax::cst::PropertyHookConcreteBody;
 use mago_syntax::cst::PropertyHookConcreteExpressionBody;
 use mago_syntax::cst::PropertyItem;
 use mago_word::Word;
-use mago_word::concat_word;
 use mago_word::word;
 
 use crate::analyzable::Analyzable;
@@ -44,6 +42,10 @@ use crate::statement::function_like::get_this_type;
 use crate::statement::function_like::report_missing_return;
 use crate::statement::function_like::report_undefined_type_references;
 use crate::statement::r#return::handle_return_value;
+use crate::utils::names::display_member;
+use crate::utils::names::display_sharp_accessor;
+use crate::utils::names::display_type;
+use crate::utils::names::display_value_type;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for Property<'arena> {
     fn analyze<'ctx, A>(
@@ -173,13 +175,13 @@ where
             false,
             &mut comparison_result,
         ) {
-            let value_type_str = value_type.get_id();
-            let declared_type_str = declared_type.get_id();
-            let class_name = class_metadata.original_name;
-            let property_name = mago_bytes::BytesDisplay(variable_name);
+            let value_type_str = display_value_type(context, value_type);
+            let declared_type_str = display_type(context, &declared_type);
+            let property =
+                display_member(context, class_metadata.original_name, mago_bytes::BytesDisplay(variable_name));
 
             let issue = Issue::error(format!(
-                    "Default value for property `{class_name}::{property_name}` is not assignable to its declared type."
+                    "Default value for property `{property}` is not assignable to its declared type."
                 ))
                 .with_annotation(
                     Annotation::primary(value.span())
@@ -282,7 +284,8 @@ where
                 && let Some(property_type) =
                     class_like.properties.get(&property_name).and_then(|property| property.type_metadata.as_ref())
             {
-                let accessor = concat_word!(class_like.original_name, "::", property_name, "::get");
+                let accessor =
+                    word(display_sharp_accessor(class_like.original_name, property_name, word(hook.name.value)));
                 report_missing_return(
                     context,
                     "property hook",

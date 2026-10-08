@@ -19,6 +19,8 @@ use mago_word::ascii_lowercase_word;
 
 use crate::code::IssueCode;
 use crate::context::Context;
+use crate::utils::names::display_member;
+use crate::utils::names::display_sharp_member;
 
 /// Checks the `#[Override]` attribute when the `check-missing-override` setting is on, and PHP#'s `override`
 /// modifier always: spec section 22 requires `override` to replace a parent class's method.
@@ -102,7 +104,10 @@ pub fn check_override_attribute<'ctx, 'arena, A>(
             }
 
             if let Some(override_span) = override_span {
-                let mut issue = Issue::error(format!("Invalid {marker} {noun} on `{class_name}::{name}`."))
+                // PHP keeps the lowercase name Mago looks the method up by, and PHP# names it as it is declared.
+                let method_name = if is_sharp { mago_bytes::BytesDisplay(method.name.value) } else { name };
+                let method_display = display_member(context, class_name, method_name);
+                let mut issue = Issue::error(format!("Invalid {marker} {noun} on `{method_display}`."))
                     .with_code(IssueCode::InvalidOverrideAttribute)
                     .with_annotation(
                         Annotation::primary(override_span)
@@ -165,17 +170,17 @@ pub fn check_override_attribute<'ctx, 'arena, A>(
         let parent_classname = parents_metadata.original_name;
 
         let original_method_name = mago_bytes::BytesDisplay(method.name.value);
+        let method_display = display_member(context, class_name, original_method_name);
+        let parent_method_display = display_member(context, parent_classname, original_method_name);
 
-        let issue = Issue::error(format!(
-            "Missing {marker} {noun} on overriding method `{class_name}::{original_method_name}`."
-        ))
-        .with_code(IssueCode::MissingOverrideAttribute)
-        .with_annotation(
-            Annotation::primary(method.name.span)
-                .with_message(format!("This method overrides `{parent_classname}::{original_method_name}`.")),
-        )
-        .with_note(format!("The {marker} {noun} clarifies intent and prevents accidental signature mismatches."))
-        .with_help(format!("Add {marker} {noun} to method declaration."));
+        let issue = Issue::error(format!("Missing {marker} {noun} on overriding method `{method_display}`."))
+            .with_code(IssueCode::MissingOverrideAttribute)
+            .with_annotation(
+                Annotation::primary(method.name.span)
+                    .with_message(format!("This method overrides `{parent_method_display}`.")),
+            )
+            .with_note(format!("The {marker} {noun} clarifies intent and prevents accidental signature mismatches."))
+            .with_help(format!("Add {marker} {noun} to method declaration."));
 
         if is_sharp {
             context.collector.report(issue);
@@ -214,27 +219,31 @@ fn check_override_modifier_on_fields<'ctx, 'arena, A>(
 
         let variable = property.first_variable();
         let name = php_variable_name(variable.name);
+        let field_name = mago_bytes::BytesDisplay(mago_bytes::trim_start_byte(variable.name, b'$'));
+        let field_display = display_sharp_member(class_name, name);
         let override_modifier = field.modifiers.iter().find(|modifier| matches!(modifier, Modifier::Override(_)));
 
         match (overridden_properties(metadata, name, context.codebase).next(), override_modifier) {
             (None, Some(override_modifier)) if !metadata.has_incomplete_hierarchy() => {
                 context.collector.report(
-                    Issue::error(format!("Invalid `override` modifier on `{class_name}::{name}`."))
+                    Issue::error(format!("Invalid `override` modifier on `{field_display}`."))
                         .with_code(IssueCode::InvalidOverrideAttribute)
                         .with_annotation(
                             Annotation::primary(override_modifier.span())
                                 .with_message("This field doesn't override any parent property."),
                         )
-                        .with_help(format!("Remove the `override` modifier from `{name}` or verify inheritance.")),
+                        .with_help(format!(
+                            "Remove the `override` modifier from `{field_name}` or verify inheritance."
+                        )),
                 );
             }
             (Some((parent, parent_property)), Some(override_modifier))
                 if parent.flags.is_sharp() && !parent_property.hooks.is_empty() =>
             {
-                let parent_name = parent.original_name;
+                let parent_display = display_sharp_member(parent.original_name, name);
 
                 context.collector.report(
-                    Issue::error(format!("Overriding the PHP# property `{parent_name}::{name}` is not supported yet."))
+                    Issue::error(format!("Overriding the PHP# property `{parent_display}` is not supported yet."))
                         .with_code(IssueCode::NotSupportedYet)
                         .with_annotation(
                             Annotation::primary(override_modifier.span()).with_message("Not supported yet."),
@@ -244,14 +253,14 @@ fn check_override_modifier_on_fields<'ctx, 'arena, A>(
                 );
             }
             (Some((parent, _)), None) => {
-                let parent_name = parent.original_name;
+                let parent_display = display_sharp_member(parent.original_name, name);
 
                 context.collector.report(
-                    Issue::error(format!("Missing `override` modifier on overriding field `{class_name}::{name}`."))
+                    Issue::error(format!("Missing `override` modifier on overriding field `{field_display}`."))
                         .with_code(IssueCode::MissingOverrideAttribute)
                         .with_annotation(
                             Annotation::primary(variable.span)
-                                .with_message(format!("This field overrides `{parent_name}::{name}`.")),
+                                .with_message(format!("This field overrides `{parent_display}`.")),
                         )
                         .with_help("Add the `override` modifier to the field declaration."),
                 );

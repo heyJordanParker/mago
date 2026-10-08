@@ -1,7 +1,6 @@
 use mago_allocator::Arena;
 use std::rc::Rc;
 
-use mago_codex::ttype::TType;
 use mago_codex::ttype::add_optional_union_type;
 use mago_codex::ttype::add_union_type;
 use mago_codex::ttype::combiner::CombinerOptions;
@@ -23,6 +22,10 @@ use crate::error::AnalysisError;
 use crate::resolver::static_property::StaticProperty;
 use crate::resolver::static_property::resolve_static_properties;
 use crate::utils::get_type_diff;
+use crate::utils::names::display_class_like_name;
+use crate::utils::names::display_sharp_member;
+use crate::utils::names::display_type;
+use crate::utils::names::display_value_type;
 
 pub(crate) fn analyze<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
@@ -61,18 +64,29 @@ where
             &mut union_comparison_result,
         );
 
-        if !type_match_found && union_comparison_result.type_coerced.is_none() {
-            let declaring_class_display: String = match resolved_property.declaring_class_id {
-                Some(w) => w.to_string(),
-                None => "<object>".to_string(),
+        let property_name = resolved_property.property_name;
+        // PHP# names the property as it reads, `Order.count`, and PHP keeps the name `php` gives it.
+        let display_property =
+            |context: &Context<'ctx, 'arena, A>, php: String| match resolved_property.declaring_class_id {
+                Some(class_id) if context.dialect.is_sharp() => {
+                    display_sharp_member(display_class_like_name(context, class_id), property_name)
+                }
+                _ => php,
             };
+
+        if !type_match_found && union_comparison_result.type_coerced.is_none() {
+            let property = display_property(
+                context,
+                match resolved_property.declaring_class_id {
+                    Some(class_id) => format!("{class_id}::{property_name}"),
+                    None => format!("<object>::{property_name}"),
+                },
+            );
             let mut issue = Issue::error("Invalid property assignment value").with_annotation(
                 Annotation::primary(property_access.class.span()).with_message(format!(
-                    "{}::{} with declared type {}, cannot be assigned type {}",
-                    declaring_class_display,
-                    resolved_property.property_name,
-                    resolved_property.property_type.get_id(),
-                    assigned_value_type.get_id(),
+                    "{property} with declared type {}, cannot be assigned type {}",
+                    display_type(context, &resolved_property.property_type),
+                    display_value_type(context, assigned_value_type),
                 )),
             );
 
@@ -84,31 +98,26 @@ where
         }
 
         if union_comparison_result.type_coerced.is_some() {
-            if union_comparison_result.type_coerced_from_nested_mixed.is_some() {
-                context.collector.report_with_code(
-                    IssueCode::MixedPropertyTypeCoercion,
-                    Issue::error("Mixed property type coercion").with_annotation(
-                        Annotation::primary(property_access.class.span()).with_message(format!(
-                            "{} expects {}, parent type {} provided",
-                            property_access_id.map_or_else(|| "This property".to_string(), |a| a.to_string()),
-                            resolved_property.property_type.get_id(),
-                            assigned_value_type.get_id(),
-                        )),
-                    ),
-                );
+            let (code, title) = if union_comparison_result.type_coerced_from_nested_mixed.is_some() {
+                (IssueCode::MixedPropertyTypeCoercion, "Mixed property type coercion")
             } else {
-                context.collector.report_with_code(
-                    IssueCode::PropertyTypeCoercion,
-                    Issue::error("Property type coercion").with_annotation(
-                        Annotation::primary(property_access.class.span()).with_message(format!(
-                            "{} expects {}, parent type {} provided",
-                            property_access_id.map_or_else(|| "This property".to_string(), |a| a.to_string()),
-                            resolved_property.property_type.get_id(),
-                            assigned_value_type.get_id(),
-                        )),
+                (IssueCode::PropertyTypeCoercion, "Property type coercion")
+            };
+            let property = display_property(
+                context,
+                property_access_id.map_or_else(|| "This property".to_string(), |id| id.to_string()),
+            );
+
+            context.collector.report_with_code(
+                code,
+                Issue::error(title).with_annotation(Annotation::primary(property_access.class.span()).with_message(
+                    format!(
+                        "{property} expects {}, parent type {} provided",
+                        display_type(context, &resolved_property.property_type),
+                        display_value_type(context, assigned_value_type),
                     ),
-                );
-            }
+                )),
+            );
         }
 
         if type_match_found && let Some(replacement) = union_comparison_result.replacement_union_type {

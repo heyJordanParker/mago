@@ -47,6 +47,8 @@ use crate::invocation::post_process::post_invocation_process;
 use crate::resolver::class_name::ResolutionOrigin;
 use crate::resolver::class_name::ResolvedClassname;
 use crate::resolver::class_name::resolve_classnames_from_expression;
+use crate::utils::names::display_member;
+use crate::utils::names::short_name;
 use crate::utils::template::get_generic_parameter_for_offset;
 use crate::visibility::check_method_visibility;
 
@@ -217,6 +219,8 @@ where
 
         return Ok(get_never());
     } else if metadata.kind.is_enum() {
+        let case = display_member(context, *classname_str, "CASE_NAME");
+        let cases = display_member(context, *classname_str, "cases()");
         context.collector.report_with_code(
             IssueCode::EnumInstantiation,
             Issue::error(format!("Enum `{classname_str}` cannot be instantiated with `new`."))
@@ -224,10 +228,11 @@ where
                     Annotation::primary(class_expression_span)
                         .with_message("Attempting to instantiate an enum with `new`"),
                 )
-                .with_note("Enum instances are created by accessing their cases directly (e.g., `MyEnum::CaseName`).")
-                .with_help(format!(
-                    "Use `{classname_str}::CASE_NAME` to get an enum case instance, or `{classname_str}::cases()` to get all cases."
-                )),
+                .with_note(format!(
+                    "Enum instances are created by accessing their cases directly (e.g., `{}`).",
+                    display_member(context, word("MyEnum"), "CaseName")
+                ))
+                .with_help(format!("Use `{case}` to get an enum case instance, or `{cases}` to get all cases.")),
         );
 
         argument_list.analyze(context, block_context, artifacts)?;
@@ -235,8 +240,7 @@ where
         return Ok(get_never());
     } else if metadata.flags.is_static() {
         // PHP# code writes a class by its short name, so the error does too.
-        let full_name = String::from_utf8_lossy(metadata.original_name.as_bytes());
-        let name = full_name.rsplit('\\').next().unwrap_or_default();
+        let name = short_name(metadata.original_name);
         context.collector.report_with_code(
             IssueCode::AbstractInstantiation,
             Issue::error(format!("`{name}` is a static class, so it has no instances: call its members on the class."))

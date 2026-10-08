@@ -66,6 +66,8 @@ use crate::utils::expression::get_nullsafe_base_expressions;
 use crate::utils::expression::get_root_expression_id;
 use crate::utils::expression::is_variable;
 use crate::utils::misc::unwrap_expression;
+use crate::utils::names::display_type;
+use crate::utils::names::display_value_type;
 
 mod array_assignment;
 pub(crate) mod property_assignment;
@@ -650,14 +652,15 @@ pub fn analyze_assignment_to_variable<'ctx, 'arena, A>(
     {
         let variable_name = variable_id.to_string();
         let name = variable_name.trim_start_matches('$');
-        let local_type_str = local_type.get_id();
+        let local_type_str = display_type(context, &local_type);
+        let assigned_type_str = display_value_type(context, &assigned_type);
 
         context.collector.report_with_code(
             IssueCode::InvalidLocalAssignmentValue,
             Issue::error(format!("Invalid assignment to `{name}`: it is declared as `{local_type_str}`."))
                 .with_annotation(
                     Annotation::primary(source_expression.map_or(variable_span, HasSpan::span))
-                        .with_message(format!("This value has type `{}`.", assigned_type.get_id())),
+                        .with_message(format!("This value has type `{assigned_type_str}`.")),
                 )
                 .with_annotation(
                     Annotation::secondary(local_type_span)

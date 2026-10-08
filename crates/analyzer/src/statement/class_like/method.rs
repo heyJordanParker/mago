@@ -35,7 +35,7 @@ use crate::statement::function_like::check_unused_function_template_parameters;
 use crate::statement::function_like::rejected_nullable_parameter;
 use crate::statement::function_like::unused_parameter;
 use crate::utils::missing_type_hints;
-use crate::utils::names::display_sharp_method;
+use crate::utils::names::display_sharp_member;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
     fn analyze<'ctx, A>(
@@ -277,7 +277,7 @@ fn check_replaced_functions<A>(
             IssueCode::DuplicateDefinition,
             Issue::error(format!(
                 "`{}` names `{function}` twice: name each function once.",
-                display_sharp_method(class, method)
+                display_sharp_member(class.original_name, method.original_name)
             ))
             .with_annotation(Annotation::primary(span).with_message("Named again here."))
             .with_annotation(Annotation::secondary(first).with_message("First named here.")),

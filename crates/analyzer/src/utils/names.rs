@@ -3,12 +3,13 @@
 use mago_allocator::Arena;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
-use mago_codex::metadata::class_like::ClassLikeMetadata;
-use mago_codex::metadata::function_like::FunctionLikeMetadata;
 use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
+use mago_codex::ttype::atomic::callable::TCallable;
 use mago_codex::ttype::atomic::object::TObject;
+use mago_codex::ttype::atomic::scalar::TScalar;
+use mago_codex::ttype::atomic::scalar::class_like_string::TClassLikeString;
 use mago_codex::ttype::get_array_parameters;
 use mago_codex::ttype::union::TUnion;
 use mago_word::Word;
@@ -45,14 +46,6 @@ where
     context.codebase.get_function(name.as_bytes()).map_or(name, |m| m.original_name)
 }
 
-/// Returns a method as PHP# calls it on its class, as in `Date.format`: the class's short name and the method's name.
-#[must_use]
-pub(crate) fn display_sharp_method(class: &ClassLikeMetadata, method: &FunctionLikeMetadata) -> String {
-    let class_name = class.original_name.as_bytes().rsplit(|byte| *byte == b'\\').next().unwrap_or_default();
-
-    format!("{}.{}", String::from_utf8_lossy(class_name), method.original_name)
-}
-
 /// Returns the PHP# collection type, as in `Map<string, int>`, that `object` stands for when it is `Sharp\ListMethods`
 /// or `Sharp\MapMethods`. The analyzer checks a method call on a `List` or `Map` against those classes, and a message
 /// names the type the code wrote instead.
@@ -65,20 +58,67 @@ pub(crate) fn display_sharp_collection(object: &TObject, codebase: &CodebaseMeta
     Some(format!("{collection}<{}>", parameters.join(", ")))
 }
 
-/// Returns `union` as PHP# writes the type: `List<int>`, `Map<string, int>`, `int?`, `(int|string)?`, `Any?`, and a
-/// class by its short name.
+/// Returns `union` as the analyzed file writes types: as PHP# writes it in a `.sharp` file, and by its Mago type id in
+/// PHP.
+#[must_use]
+pub(crate) fn display_type<A>(context: &Context<'_, '_, A>, union: &TUnion) -> String
+where
+    A: Arena,
+{
+    if context.dialect.is_sharp() { display_sharp_type(union, context.codebase) } else { union.get_id().to_string() }
+}
+
+/// Returns `union` with null added as the analyzed file writes types: as PHP# writes the nullable type in a `.sharp`
+/// file, and `php` in PHP.
+#[must_use]
+pub(crate) fn display_nullable_type<A>(context: &Context<'_, '_, A>, union: &TUnion, php: String) -> String
+where
+    A: Arena,
+{
+    if context.dialect.is_sharp() { display_sharp_type(&union.clone().as_nullable(), context.codebase) } else { php }
+}
+
+/// Returns `union`, the type of a value a message checks against the type it must have, as the analyzed file writes
+/// types: in a `.sharp` file each literal is its general type, `string` for `"text"`, as PHP# writes no literal type,
+/// and in PHP its Mago type id.
+#[must_use]
+pub(crate) fn display_value_type<A>(context: &Context<'_, '_, A>, union: &TUnion) -> String
+where
+    A: Arena,
+{
+    if !context.dialect.is_sharp() {
+        return union.get_id().to_string();
+    }
+
+    let mut general = union.clone();
+    general.widen_literals();
+
+    display_sharp_type(&general, context.codebase)
+}
+
+/// Returns `union` as PHP# writes the type: `List<int>`, `Map<string, int>`, `int?`, `(int|string)?`, `Any?`, a class
+/// by its short name, a type parameter by its name, an intersection as `A & B`, a function type as
+/// `Function<void(int)>`, `Class<Order>`, `Object`, `Iterable<int>`, and a literal as `1` or `"text"`. A refinement that
+/// PHP# cannot write is the type that holds it, such as `int` for a `positive-int` and `int|string` for an
+/// `array-key`, and is named once. `numeric`, `scalar` and `never` have no PHP# name and keep Mago's.
 #[must_use]
 pub(crate) fn display_sharp_type(union: &TUnion, codebase: &CodebaseMetadata) -> String {
     if let Some(TAtomic::Mixed(mixed)) = union.types.iter().find(|atomic| atomic.is_mixed()) {
         return if mixed.is_non_null() { "Any" } else { "Any?" }.to_owned();
     }
 
-    let parts: Vec<String> = union
-        .types
-        .iter()
-        .filter(|atomic| !atomic.is_null())
-        .map(|atomic| display_sharp_atomic(atomic, codebase))
-        .collect();
+    let mut parts: Vec<String> = Vec::new();
+    for atomic in union.types.iter().filter(|atomic| !atomic.is_null()) {
+        let written = match atomic {
+            TAtomic::Scalar(TScalar::ArrayKey) => vec!["int".to_owned(), "string".to_owned()],
+            atomic => vec![display_sharp_atomic(atomic, codebase)],
+        };
+        for part in written {
+            if !parts.contains(&part) {
+                parts.push(part);
+            }
+        }
+    }
 
     match (union.has_null(), parts.as_slice()) {
         (false, _) => parts.join("|"),
@@ -89,7 +129,7 @@ pub(crate) fn display_sharp_type(union: &TUnion, codebase: &CodebaseMetadata) ->
 }
 
 fn display_sharp_atomic(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String {
-    match atomic {
+    let written = match atomic {
         TAtomic::Array(array) => {
             let (key, value) = get_array_parameters(array, codebase);
             match array {
@@ -99,22 +139,106 @@ fn display_sharp_atomic(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String
                 }
             }
         }
+        TAtomic::Iterable(iterable) => format!("Iterable<{}>", display_sharp_type(iterable.get_value_type(), codebase)),
+        TAtomic::Object(TObject::Any) => "Object".to_owned(),
         TAtomic::Object(object) => {
             let Some(name) = object.get_name() else {
                 return atomic.get_id().to_string();
             };
-            let name = String::from_utf8_lossy(name.as_bytes());
-            let short_name = name.rsplit('\\').next().unwrap_or_default();
+            let name = short_name(codebase.get_class_like(name.as_bytes()).map_or(name, |class| class.original_name));
             match object.get_type_parameters() {
                 Some(parameters) if !parameters.is_empty() => {
                     let parameters: Vec<String> =
                         parameters.iter().map(|parameter| display_sharp_type(parameter, codebase)).collect();
-                    format!("{short_name}<{}>", parameters.join(", "))
+                    format!("{name}<{}>", parameters.join(", "))
                 }
-                _ => short_name.to_owned(),
+                _ => name,
+            }
+        }
+        TAtomic::GenericParameter(parameter) => parameter.parameter_name.to_string(),
+        TAtomic::Callable(TCallable::Signature(signature)) => {
+            let written = |union: Option<&TUnion>| {
+                union.map_or_else(|| "Any?".to_owned(), |union| display_sharp_type(union, codebase))
+            };
+            let parameters: Vec<String> =
+                signature.get_parameters().iter().map(|parameter| written(parameter.get_type_signature())).collect();
+
+            format!("Function<{}({})>", written(signature.get_return_type()), parameters.join(", "))
+        }
+        TAtomic::Scalar(TScalar::ClassLikeString(class_string)) => match class_string {
+            TClassLikeString::Literal { value } => {
+                let class =
+                    short_name(codebase.get_class_like(value.as_bytes()).map_or(*value, |class| class.original_name));
+                format!("Class<{class}>")
+            }
+            TClassLikeString::OfType { constraint, .. } => {
+                format!("Class<{}>", display_sharp_atomic(constraint, codebase))
+            }
+            TClassLikeString::Generic { parameter_name, .. } => format!("Class<{parameter_name}>"),
+            TClassLikeString::Any { .. } => "Class<Object>".to_owned(),
+        },
+        TAtomic::Scalar(scalar) => {
+            if let Some(value) = scalar.get_literal_int_value() {
+                value.to_string()
+            } else if let Some(value) = scalar.get_literal_float_value() {
+                value.to_string()
+            } else if let Some(value) = scalar.get_known_literal_string_value() {
+                format!("\"{}\"", String::from_utf8_lossy(value))
+            } else {
+                match scalar {
+                    TScalar::Integer(_) => "int".to_owned(),
+                    TScalar::String(_) => "string".to_owned(),
+                    _ => atomic.get_id().to_string(),
+                }
             }
         }
         _ => atomic.get_id().to_string(),
+    };
+
+    match atomic.get_intersection_types() {
+        Some(intersection_types) if !intersection_types.is_empty() => std::iter::once(written)
+            .chain(intersection_types.iter().map(|intersection_type| display_sharp_atomic(intersection_type, codebase)))
+            .collect::<Vec<_>>()
+            .join(" & "),
+        _ => written,
+    }
+}
+
+/// The last segment of the full name `name`, as a PHP# import writes it.
+#[must_use]
+pub(crate) fn short_name(name: Word) -> String {
+    name.as_str_lossy().rsplit('\\').next().unwrap_or_default().to_owned()
+}
+
+/// The member `member_name` of the class `class_name` as PHP# names it, `Box.put`, as C# names a member in its messages.
+/// A method, a property, a constant and an enum case read alike, so a property's `$` is dropped: `Box.total`.
+#[must_use]
+pub(crate) fn display_sharp_member(class_name: Word, member_name: impl std::fmt::Display) -> String {
+    format!("{}.{}", short_name(class_name), member_name.to_string().trim_start_matches('$'))
+}
+
+/// The accessor `hook_name` of the property `property_name` of the class `class_name` as PHP# names it, `Box.total.get`,
+/// as C# names an accessor in its messages.
+#[must_use]
+pub(crate) fn display_sharp_accessor(class_name: Word, property_name: Word, hook_name: Word) -> String {
+    display_sharp_member(class_name, format_args!("{property_name}.{hook_name}"))
+}
+
+/// The member `member_name` of the class `class_name` as the analyzed file names it: `Box.put` in a `.sharp` file, and
+/// `Box::put` in PHP, where a property keeps its `$`: `Box::$total`.
+#[must_use]
+pub(crate) fn display_member<A>(
+    context: &Context<'_, '_, A>,
+    class_name: Word,
+    member_name: impl std::fmt::Display,
+) -> String
+where
+    A: Arena,
+{
+    if context.dialect.is_sharp() {
+        display_sharp_member(class_name, member_name)
+    } else {
+        format!("{class_name}::{member_name}")
     }
 }
 
@@ -132,7 +256,8 @@ pub(crate) fn sharp_collection_name(object: &TObject) -> Option<&'static str> {
     }
 }
 
-/// Produces a user-facing display string for a `FunctionLikeIdentifier`.
+/// Produces a user-facing display string for a `FunctionLikeIdentifier`: a method reads `Order::total` in PHP and
+/// `Order.total` in a `.sharp` file.
 #[must_use]
 pub(crate) fn display_function_like_identifier<A>(
     context: &Context<'_, '_, A>,
@@ -143,11 +268,11 @@ where
 {
     match identifier {
         FunctionLikeIdentifier::Function(name) => display_function_name(context, *name).to_string(),
-        FunctionLikeIdentifier::Method(class_name, method_name) => {
-            let class_display = display_class_like_name(context, *class_name);
-            let method_display = display_method_name(context, *class_name, *method_name);
-            format!("{class_display}::{method_display}")
-        }
+        FunctionLikeIdentifier::Method(class_name, method_name) => display_member(
+            context,
+            display_class_like_name(context, *class_name),
+            display_method_name(context, *class_name, *method_name),
+        ),
         FunctionLikeIdentifier::Closure(name) => name.to_string(),
     }
 }

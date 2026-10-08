@@ -53,6 +53,10 @@ use crate::resolver::selector::resolve_member_selector;
 use crate::utils::expression::analyze_member_object;
 use crate::utils::expression::is_this;
 use crate::utils::names::display_class_like_name;
+use crate::utils::names::display_member;
+use crate::utils::names::display_sharp_member;
+use crate::utils::names::display_type;
+use crate::utils::names::short_name;
 use crate::utils::template::get_template_types_for_class_member;
 use crate::visibility::check_method_visibility;
 use crate::visibility::check_resolved_property_read_visibility;
@@ -497,6 +501,7 @@ fn report_external_invalid_property_access<A>(
     A: Arena,
 {
     let class = context.codebase.get_class_like(class.as_bytes()).map_or(class, |metadata| metadata.original_name);
+    let property = display_member(context, class, property);
     let (code, action, direction) = if for_assignment {
         (IssueCode::InvalidPropertyWrite, "write to", "read-only")
     } else {
@@ -504,7 +509,7 @@ fn report_external_invalid_property_access<A>(
     };
     context.collector.report_with_code(
         code,
-        Issue::error(format!("Cannot {action} extension-provided {direction} property `{class}::{property}`."))
+        Issue::error(format!("Cannot {action} extension-provided {direction} property `{property}`."))
             .with_annotation(Annotation::primary(span).with_message(format!("This property is {direction}"))),
     );
 }
@@ -1008,7 +1013,7 @@ where
     let DeclaredProperty { declaring_class: declaring_class_metadata, property: property_metadata, .. } = resolution;
     let declaring_class_id = declaring_class_metadata.name;
 
-    let property_display_name = format!("{}::{}", declaring_class_metadata.original_name, prop_name);
+    let property_display_name = display_member(context, declaring_class_metadata.original_name, prop_name);
     crate::utils::availability::check_property_availability(
         context,
         property_metadata,
@@ -1428,7 +1433,7 @@ pub(crate) fn check_redundant_nullsafe<'arena, A>(
         return;
     }
 
-    let object_type_str = object_type.get_id();
+    let object_type_str = display_type(context, object_type);
 
     let issue = context.as_null_check_error(
         Issue::help(format!("Redundant nullsafe operator (`{nullsafe}`) used on an expression that is never `null`."))
@@ -1456,7 +1461,7 @@ fn report_access_on_non_object<A>(
 ) where
     A: Arena,
 {
-    let type_str = atomic_type.get_id();
+    let type_str = display_type(context, &TUnion::from_atomic(atomic_type.clone()));
     context.collector.report_with_code(
         if atomic_type.is_mixed() { IssueCode::MixedPropertyAccess } else { IssueCode::InvalidPropertyAccess },
         Issue::error(format!("Attempting to access a property on a non-object type (`{type_str}`)."))
@@ -1570,6 +1575,27 @@ fn report_non_existent_property<A>(
 {
     let class_kind_str = context.codebase.get_class_like(classname.as_bytes()).map_or("class", |m| m.kind.as_str());
     let classname = display_class_like_name(context, classname);
+
+    // PHP# writes no sealed object type, so its message names the property of a class.
+    if context.dialect.is_sharp() {
+        let property = display_sharp_member(classname, prop_name);
+        let name = prop_name.as_str_lossy();
+        let name = name.trim_start_matches('$');
+
+        context.collector.report_with_code(
+            IssueCode::NonExistentProperty,
+            Issue::error(format!("Property `{property}` does not exist."))
+                .with_annotation(Annotation::primary(selector_span).with_message("Property not found here"))
+                .with_annotation(
+                    Annotation::secondary(object_span)
+                        .with_message(format!("On instance of `{}`", short_name(classname))),
+                )
+                .with_note(format!("The {class_kind_str} `{classname}` does not define the property `{name}`."))
+                .with_help("Define the property in the class or check for its existence before accessing it."),
+        );
+
+        return;
+    }
 
     context.collector.report_with_code(
         IssueCode::NonExistentProperty,

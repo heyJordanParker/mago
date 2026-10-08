@@ -563,11 +563,11 @@ fn analyze_types_the_parse_calls_of_the_standard_library_from_the_vendored_packa
             "namespace App;\n\npublic class Page\n{\n    public string count() => Int.parse(\"1\");\n\n    public string price() => Float.tryParse(\"x\");\n\n    public string flag() => Bool.tryParse(\"yes\");\n}\n"
         ),
         [
-            "src/App/Page.sharp:5:30:error - invalid-return-statement: Invalid return type for function `App\\Page::count`: expected `string`, but found `int`.",
-            "src/App/Page.sharp:7:30:error - nullable-return-statement: Function `App\\Page::price` is declared to return `string` but possibly returns a nullable value (inferred as `float|null`).",
-            "src/App/Page.sharp:7:30:error - invalid-return-statement: Invalid return type for function `App\\Page::price`: expected `string`, but found `float|null`.",
-            "src/App/Page.sharp:9:29:error - nullable-return-statement: Function `App\\Page::flag` is declared to return `string` but possibly returns a nullable value (inferred as `bool|null`).",
-            "src/App/Page.sharp:9:29:error - invalid-return-statement: Invalid return type for function `App\\Page::flag`: expected `string`, but found `bool|null`.",
+            "src/App/Page.sharp:5:30:error - invalid-return-statement: Invalid return type for method `Page.count`: expected `string`, but found `int`.",
+            "src/App/Page.sharp:7:30:error - nullable-return-statement: Method `Page.price` is declared to return `string` but possibly returns a nullable value (inferred as `float?`).",
+            "src/App/Page.sharp:7:30:error - invalid-return-statement: Invalid return type for method `Page.price`: expected `string`, but found `float?`.",
+            "src/App/Page.sharp:9:29:error - nullable-return-statement: Method `Page.flag` is declared to return `string` but possibly returns a nullable value (inferred as `bool?`).",
+            "src/App/Page.sharp:9:29:error - invalid-return-statement: Invalid return type for method `Page.flag`: expected `string`, but found `bool?`.",
         ]
     );
 }

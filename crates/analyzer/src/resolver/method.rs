@@ -55,8 +55,12 @@ use crate::utils::expression::analyze_member_object;
 use crate::utils::expression::get_bare_name_variable_id;
 use crate::utils::expression::is_this;
 use crate::utils::names::display_class_like_name;
+use crate::utils::names::display_member;
 use crate::utils::names::display_method_name;
 use crate::utils::names::display_sharp_collection;
+use crate::utils::names::display_sharp_member;
+use crate::utils::names::display_type;
+use crate::utils::names::short_name;
 use crate::visibility::check_method_visibility;
 use crate::visibility::is_method_visible;
 use crate::visibility::is_visible_from_scope;
@@ -1228,7 +1232,7 @@ fn report_call_on_non_object<A>(
 ) where
     A: Arena,
 {
-    let type_str = atomic_type.get_id();
+    let type_str = display_type(context, &TUnion::from_atomic(atomic_type.clone()));
 
     context.collector.report_with_code(
         if atomic_type.is_mixed() { IssueCode::MixedMethodAccess } else { IssueCode::InvalidMethodAccess },
@@ -1266,15 +1270,26 @@ pub(crate) fn report_non_existent_method<A>(
 {
     let classname = display_class_like_name(context, classname);
     let method_name = display_method_name(context, classname, method_name);
-    context.collector.report_with_code(
-        IssueCode::NonExistentMethod,
+    let issue = if context.dialect.is_sharp() {
+        let method = display_sharp_member(classname, method_name);
+
+        Issue::error(format!("Method `{method}` does not exist."))
+            .with_annotation(Annotation::primary(selector_span).with_message("This method selection is invalid"))
+            .with_annotation(
+                Annotation::secondary(obj_span)
+                    .with_message(format!("This expression has type `{}`", short_name(classname))),
+            )
+            .with_help(format!("Ensure the method `{method}` is defined."))
+    } else {
         Issue::error(format!("Method `{method_name}` does not exist on type `{classname}`."))
             .with_annotation(Annotation::primary(selector_span).with_message("This method selection is invalid"))
             .with_annotation(
                 Annotation::secondary(obj_span).with_message(format!("This expression has type `{classname}`")),
             )
-            .with_help(format!("Ensure the `{method_name}` method is defined in the `{classname}` class-like.")),
-    );
+            .with_help(format!("Ensure the `{method_name}` method is defined in the `{classname}` class-like."))
+    };
+
+    context.collector.report_with_code(IssueCode::NonExistentMethod, issue);
 }
 
 /// Reports a method a PHP# `List` or `Map` does not have, naming the collection type the code wrote and the methods
@@ -1493,15 +1508,15 @@ pub(super) fn report_dynamic_static_method_call<A>(
 {
     let classname = display_class_like_name(context, classname);
     let method_name = display_method_name(context, classname, method_name);
-    let mut issue =
-        Issue::error(format!("Cannot call magic static method `{classname}::{method_name}` on an instance."))
-            .with_annotation(
-                Annotation::primary(selector_span)
-                    .with_message("This magic method is static and must be called statically"),
-            )
-            .with_annotation(
-                Annotation::secondary(obj_span).with_message(format!("Called on an instance of `{classname}`")),
-            );
+    let method = display_member(context, classname, method_name);
+    let mut issue = Issue::error(format!("Cannot call magic static method `{method}` on an instance."))
+        .with_annotation(
+            Annotation::primary(selector_span)
+                .with_message("This magic method is static and must be called statically"),
+        )
+        .with_annotation(
+            Annotation::secondary(obj_span).with_message(format!("Called on an instance of `{classname}`")),
+        );
 
     if has_magic_call {
         issue = issue
@@ -1529,7 +1544,7 @@ pub(super) fn report_dynamic_static_method_call<A>(
 
     context.collector.report_with_code(
         IssueCode::DynamicStaticMethodCall,
-        issue.with_help(format!("Call this method statically instead: `{classname}::{method_name}`.")),
+        issue.with_help(format!("Call this method statically instead: `{method}`.")),
     );
 }
 

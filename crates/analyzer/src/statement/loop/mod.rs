@@ -72,6 +72,7 @@ use crate::formula::negate_or_synthesize;
 use crate::reconciler::reconcile_keyed_types;
 use crate::statement::r#loop::assignment_map_visitor::get_assignment_map;
 use crate::statement::r#loop::cleaner::clean_nodes;
+use crate::utils::names::display_member;
 
 mod assignment_map_visitor;
 mod cleaner;
@@ -1622,6 +1623,13 @@ where
                             .codebase
                             .get_enum(enum_instance.get_name().as_bytes())
                             .and_then(|class_like| class_like.enum_type.as_ref());
+                        let cases = display_member(context, enum_name, "cases()");
+                        // PHP# reads a property as `instance.name` and loops with `for (const case of …)`.
+                        let (instance, case_loop) = if context.dialect.is_sharp() {
+                            ("instance.", format!("for (const case of {cases})"))
+                        } else {
+                            ("$instance->", format!("foreach ({cases} as $case)"))
+                        };
 
                         context.collector.report_with_code(
                             IssueCode::EnumIteration,
@@ -1633,12 +1641,12 @@ where
                                     "PHP allows iterating an enum case instance like an object, which exposes its public properties: `name` (string){}.",
                                     if enum_backing_type.is_some() { " and `value` (its scalar backing value)" } else { "" },
                                 ))
-                                .with_note(format!("This is different from iterating through all defined cases of the `{enum_name}` enum using `{enum_name}::cases()`, where each item would be an enum case instance itself."))
+                                .with_note(format!("This is different from iterating through all defined cases of the `{enum_name}` enum using `{cases}`, where each item would be an enum case instance itself."))
                                 .with_note(format!(
-                                    "If you only need the properties of this specific instance, consider accessing them directly (e.g., `$instance->name`{}) for better clarity, unless iterating its few properties is explicitly intended.",
-                                    if enum_backing_type.is_some() { ", `$instance->value`" } else { "" }
+                                    "If you only need the properties of this specific instance, consider accessing them directly (e.g., `{instance}name`{}) for better clarity, unless iterating its few properties is explicitly intended.",
+                                    if enum_backing_type.is_some() { format!(", `{instance}value`") } else { String::new() }
                                 ))
-                                .with_help(format!("If your goal is to loop through all defined cases of the `{enum_name}` enum, use `{enum_name}::cases()` instead (e.g., `foreach ({enum_name}::cases() as $case)`).")),
+                                .with_help(format!("If your goal is to loop through all defined cases of the `{enum_name}` enum, use `{cases}` instead (e.g., `{case_loop}`).")),
                         );
 
                         match enum_backing_type {

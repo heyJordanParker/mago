@@ -71,6 +71,10 @@ use crate::statement::class_like::method_signature::SignatureCompatibilityIssue;
 use crate::statement::function_like::report_invalid_template_arguments;
 use crate::statement::function_like::report_undefined_type_references;
 use crate::utils::missing_type_hints;
+use crate::utils::names::display_member;
+use crate::utils::names::display_sharp_accessor;
+use crate::utils::names::display_sharp_member;
+use crate::utils::names::display_type;
 
 pub mod constant;
 pub mod enum_case;
@@ -946,6 +950,12 @@ where
             if method_metadata.is_abstract {
                 let fqcn = declaring_class_like_metadata.original_name;
                 let method_span = function_like.name_span.unwrap_or(function_like.span);
+                // PHP keeps the lowercase name Mago looks the method up by, and PHP# names it as it is declared.
+                let abstract_method = display_member(
+                    context,
+                    fqcn,
+                    if context.dialect.is_sharp() { function_like.original_name } else { *method_name },
+                );
 
                 context.collector.report_with_code(
                     IssueCode::UnimplementedAbstractMethod,
@@ -958,7 +968,7 @@ where
                     )
                     .with_annotation(
                         Annotation::secondary(method_span).with_message(
-                            format!("`{fqcn}::{method_name}` is defined as abstract here")
+                            format!("`{abstract_method}` is defined as abstract here")
                         ),
                     )
                     .with_note("When a concrete class extends an abstract class or implements an interface, it must provide an implementation for all inherited abstract methods.".to_string())
@@ -1028,20 +1038,28 @@ where
                     if !is_implemented {
                         let fqcn = parent_metadata.original_name;
                         let hook_span = hook_metadata.span;
+                        let (missing_hook, abstract_hook) = if context.dialect.is_sharp() {
+                            let accessor = display_sharp_accessor(fqcn, *property_name, *hook_name);
+                            (accessor.clone(), accessor)
+                        } else {
+                            (
+                                format!("{property_name}::{hook_name}()"),
+                                format!("{fqcn}::{property_name}::{hook_name}()"),
+                            )
+                        };
 
                         context.collector.report_with_code(
                             IssueCode::UnimplementedAbstractPropertyHook,
                             Issue::error(format!(
-                                "Class `{name}` does not implement the abstract property hook `{property_name}::{hook_name}()`.",
+                                "Class `{name}` does not implement the abstract property hook `{missing_hook}`.",
                             ))
                             .with_annotation(
                                 Annotation::primary(name_span.unwrap_or(declaration_span))
                                     .with_message(format!("`{name}` is not abstract and must implement this hook")),
                             )
                             .with_annotation(
-                                Annotation::secondary(hook_span).with_message(
-                                    format!("`{fqcn}::{property_name}::{hook_name}()` is defined as abstract here")
-                                ),
+                                Annotation::secondary(hook_span)
+                                    .with_message(format!("`{abstract_hook}` is defined as abstract here")),
                             )
                             .with_note("When a concrete class extends an abstract class or implements an interface, it must provide an implementation for all inherited abstract property hooks.".to_string())
                             .with_help(format!(
@@ -1809,7 +1827,7 @@ fn check_template_parameters<'ctx, A>(
                 &TypeExpansionOptions { self_class: Some(class_like_metadata.original_name), ..Default::default() },
             );
 
-            let extended_type_str = extended_type.get_id();
+            let extended_type_str = display_type(context, &extended_type);
 
             if parent_metadata
                 .template_variance
@@ -1905,7 +1923,7 @@ fn check_template_parameters<'ctx, A>(
                         .or_default()
                         .push(GenericTemplate::new(GenericParent::ClassLike(parent_metadata.name), extended_type));
                 } else {
-                    let replaced_type_str = replaced_template_type.get_id();
+                    let replaced_type_str = display_type(context, &replaced_template_type);
 
                     context.collector.report_with_code(
                         IssueCode::InvalidTemplateParameter,
@@ -2134,17 +2152,23 @@ fn check_uninhabitable_diamonds<'ctx, A>(
 
             let merged = get_substituted_method(method, class_like_metadata, *ancestor_name, context.codebase);
             if merged.return_type_metadata.as_ref().is_some_and(|r| r.type_union.is_never()) {
+                // PHP keeps the lowercase name Mago looks the method up by, and PHP# names it as it is declared.
+                let method_name = if context.dialect.is_sharp() { method.original_name } else { method_name };
+
                 findings.push((ancestor_display, method_name, paths.len()));
             }
         }
     }
 
     for (ancestor_display, method_name, path_count) in findings {
+        let method = if context.dialect.is_sharp() {
+            display_sharp_member(ancestor_display, method_name)
+        } else {
+            format!("{ancestor_display}::{method_name}()")
+        };
         context.collector.report_with_code(
             IssueCode::InvalidTemplateParameter,
-            Issue::error(format!(
-                "Diamond inheritance of `{ancestor_display}::{method_name}()` requires an uninhabited return type."
-            ))
+            Issue::error(format!("Diamond inheritance of `{method}` requires an uninhabited return type."))
             .with_annotation(Annotation::primary(class_span).with_message(format!(
                 "`{class_name}` reaches `{ancestor_display}` through {path_count} conflicting parameterizations"
             )))
@@ -2884,6 +2908,13 @@ fn report_signature_compatibility_issue<'ctx, A>(
     let parent_name = parent_class.original_name;
     let child_class_span = child_class.name_span.unwrap_or(child_class.span);
     let parent_class_span = parent_class.name_span.unwrap_or(parent_class.span);
+    let (child_display, parent_display) = if context.dialect.is_sharp() {
+        let method_name = parent_method.original_name;
+
+        (display_sharp_member(child_name, method_name), display_sharp_member(parent_name, method_name))
+    } else {
+        (format!("{child_name}::{method_name}()"), format!("{parent_name}::{method_name}()"))
+    };
 
     use method_signature::SignatureCompatibilityIssue;
 
@@ -2891,13 +2922,13 @@ fn report_signature_compatibility_issue<'ctx, A>(
         SignatureCompatibilityIssue::FinalMethodOverride => {
             context.collector.report_with_code(
                 IssueCode::OverrideFinalMethod,
-                Issue::error(format!("Cannot override final method `{parent_name}::{method_name}()`"))
+                Issue::error(format!("Cannot override final method `{parent_display}`"))
                     .with_annotation(
                         Annotation::primary(primary_span).with_message("Attempting to override final method here"),
                     )
                     .with_annotation(
                         Annotation::secondary(parent_class_span)
-                            .with_message(format!("Method `{parent_name}::{method_name}()` is declared as final")),
+                            .with_message(format!("Method `{parent_display}` is declared as final")),
                     )
                     .with_annotation(
                         Annotation::secondary(child_class_span).with_message(format!("In class `{child_name}`")),
@@ -2915,15 +2946,16 @@ fn report_signature_compatibility_issue<'ctx, A>(
             context.collector.report_with_code(
                 IssueCode::IncompatibleStaticModifier,
                 Issue::error(format!(
-                    "Cannot make {parent_modifier} method `{parent_name}::{method_name}()` {child_modifier} in class `{child_name}`"
+                    "Cannot make {parent_modifier} method `{parent_display}` {child_modifier} in class `{child_name}`"
                 ))
                 .with_annotation(
                     Annotation::primary(primary_span)
                         .with_message(format!("This method is {child_modifier} but should be {parent_modifier}")),
                 )
-                .with_annotation(Annotation::secondary(parent_class_span).with_message(format!(
-                    "`{parent_name}::{method_name}()` is defined as {parent_modifier} here"
-                )))
+                .with_annotation(
+                    Annotation::secondary(parent_class_span)
+                        .with_message(format!("`{parent_display}` is defined as {parent_modifier} here")),
+                )
                 .with_annotation(
                     Annotation::secondary(child_class_span).with_message(format!("In class `{child_name}`")),
                 )
@@ -2935,13 +2967,13 @@ fn report_signature_compatibility_issue<'ctx, A>(
             context.collector.report_with_code(
                 IssueCode::IncompatibleVisibility,
                 Issue::error(format!(
-                    "Visibility of `{child_name}::{method_name}()` must not be narrowed from {parent_visibility} to {child_visibility}"
+                    "Visibility of `{child_display}` must not be narrowed from {parent_visibility} to {child_visibility}"
                 ))
                 .with_annotation(Annotation::primary(primary_span).with_message(format!(
                     "Method declared as {child_visibility} but should be {parent_visibility} or wider"
                 )))
                 .with_annotation(Annotation::secondary(parent_class_span).with_message(format!(
-                    "Parent method `{parent_name}::{method_name}()` is declared as {parent_visibility} here"
+                    "Parent method `{parent_display}` is declared as {parent_visibility} here"
                 )))
                 .with_annotation(
                     Annotation::secondary(child_class_span).with_message(format!("In class `{child_name}`")),
@@ -2954,13 +2986,13 @@ fn report_signature_compatibility_issue<'ctx, A>(
             context.collector.report_with_code(
                 IssueCode::IncompatibleParameterCount,
                 Issue::error(format!(
-                    "`{child_name}::{method_name}()` must accept at least {parent_required_count} required parameters like `{parent_name}::{method_name}()`"
+                    "`{child_display}` must accept at least {parent_required_count} required parameters like `{parent_display}`"
                 ))
                 .with_annotation(Annotation::primary(primary_span).with_message(format!(
                     "Method requires {child_required_count} parameters but parent requires {parent_required_count}"
                 )))
                 .with_annotation(Annotation::secondary(parent_class_span).with_message(format!(
-                    "Parent method `{parent_name}::{method_name}()` requires {parent_required_count} parameters"
+                    "Parent method `{parent_display}` requires {parent_required_count} parameters"
                 )))
                 .with_annotation(
                     Annotation::secondary(child_class_span).with_message(format!("In class `{child_name}`")),
@@ -2979,14 +3011,15 @@ fn report_signature_compatibility_issue<'ctx, A>(
             context.collector.report_with_code(
                 IssueCode::IncompatibleParameterCount,
                 Issue::error(format!(
-                    "`{child_name}::{method_name}()` must declare parameter `{param_name}` variadic like `{parent_name}::{method_name}()`"
+                    "`{child_display}` must declare parameter `{param_name}` variadic like `{parent_display}`"
                 ))
                 .with_annotation(
                     Annotation::primary(primary_span).with_message("This method takes no variadic parameter"),
                 )
-                .with_annotation(Annotation::secondary(parent_class_span).with_message(format!(
-                    "Parent method `{parent_name}::{method_name}()` takes any number of `{param_name}`"
-                )))
+                .with_annotation(
+                    Annotation::secondary(parent_class_span)
+                        .with_message(format!("Parent method `{parent_display}` takes any number of `{param_name}`")),
+                )
                 .with_annotation(
                     Annotation::secondary(child_class_span).with_message(format!("In class `{child_name}`")),
                 )
@@ -2995,23 +3028,30 @@ fn report_signature_compatibility_issue<'ctx, A>(
             );
         }
         SignatureCompatibilityIssue::IncompatibleParameterType { parameter_index, child_type, parent_type } => {
-            let param_name: String = parent_method
-                .parameters
-                .get(parameter_index)
-                .map_or_else(|| "unknown".to_string(), |p| p.name.0.to_string());
+            let param_name = parent_method.parameters.get(parameter_index).map_or_else(
+                || word("unknown"),
+                |p| {
+                    if context.dialect.is_sharp() {
+                        word(mago_bytes::trim_start_byte(p.name.0.as_bytes(), b'$'))
+                    } else {
+                        p.name.0
+                    }
+                },
+            );
+            let child_type = display_type(context, &child_type);
+            let parent_type = display_type(context, &parent_type);
 
             context.collector.report_with_code(
                 IssueCode::IncompatibleParameterType,
                 Issue::error(format!(
-                    "Parameter `{param_name}` of `{child_name}::{method_name}()` expects type `{child_type}` but parent `{parent_name}::{method_name}()` expects type `{parent_type}`"
+                    "Parameter `{param_name}` of `{child_display}` expects type `{child_type}` but parent `{parent_display}` expects type `{parent_type}`"
                 ))
                 .with_annotation(Annotation::primary(primary_span).with_message(format!(
                     "Parameter `{param_name}` expects type `{child_type}` but parent expects `{parent_type}`"
                 )))
                 .with_annotation(
-                    Annotation::secondary(parent_class_span).with_message(format!(
-                        "Parent method `{parent_name}::{method_name}()` parameter defined here"
-                    )),
+                    Annotation::secondary(parent_class_span)
+                        .with_message(format!("Parent method `{parent_display}` parameter defined here")),
                 )
                 .with_annotation(
                     Annotation::secondary(child_class_span).with_message(format!("In class `{child_name}`")),
@@ -3021,18 +3061,22 @@ fn report_signature_compatibility_issue<'ctx, A>(
             );
         }
         SignatureCompatibilityIssue::IncompatibleReturnType { child_type, parent_type } => {
+            let child_type = display_type(context, &child_type);
+            let parent_type = display_type(context, &parent_type);
+
             context.collector.report_with_code(
                 IssueCode::IncompatibleReturnType,
                 Issue::error(format!(
-                    "Return type `{child_type}` of `{child_name}::{method_name}()` is incompatible with parent return type `{parent_type}` of `{parent_name}::{method_name}()`"
+                    "Return type `{child_type}` of `{child_display}` is incompatible with parent return type `{parent_type}` of `{parent_display}`"
                 ))
                 .with_annotation(
                     Annotation::primary(primary_span)
                         .with_message(format!("Returns type `{child_type}` but parent expects `{parent_type}`")),
                 )
-                .with_annotation(Annotation::secondary(parent_class_span).with_message(format!(
-                    "Parent method `{parent_name}::{method_name}()` return type defined here"
-                )))
+                .with_annotation(
+                    Annotation::secondary(parent_class_span)
+                        .with_message(format!("Parent method `{parent_display}` return type defined here")),
+                )
                 .with_annotation(
                     Annotation::secondary(child_class_span).with_message(format!("In class `{child_name}`")),
                 )
@@ -3041,17 +3085,20 @@ fn report_signature_compatibility_issue<'ctx, A>(
             );
         }
         SignatureCompatibilityIssue::MissingReturnTypeDeclaration { parent_type } => {
+            let parent_type = display_type(context, &parent_type);
+
             context.collector.report_with_code(
                 IssueCode::IncompatibleReturnType,
                 Issue::error(format!(
-                    "`{child_name}::{method_name}()` must declare a return type compatible with `{parent_type}` declared by `{parent_name}::{method_name}()`"
+                    "`{child_display}` must declare a return type compatible with `{parent_type}` declared by `{parent_display}`"
                 ))
                 .with_annotation(Annotation::primary(primary_span).with_message(format!(
                     "This method has no return type declaration, but the parent declares `{parent_type}`"
                 )))
-                .with_annotation(Annotation::secondary(parent_class_span).with_message(format!(
-                    "Parent method `{parent_name}::{method_name}()` return type declared here"
-                )))
+                .with_annotation(
+                    Annotation::secondary(parent_class_span)
+                        .with_message(format!("Parent method `{parent_display}` return type declared here")),
+                )
                 .with_annotation(
                     Annotation::secondary(child_class_span).with_message(format!("In class `{child_name}`")),
                 )
@@ -3081,21 +3128,15 @@ fn report_signature_compatibility_issue<'ctx, A>(
                 Issue::new(
                     level,
                     format!(
-                        "Parameter #{} of `{}::{}()` is named `{}` but parent `{}::{}()` names it `{}`",
+                        "Parameter #{} of `{child_display}` is named `{child_param_name}` but parent `{parent_display}` names it `{parent_param_name}`",
                         parameter_index + 1,
-                        child_name,
-                        method_name,
-                        child_param_name,
-                        parent_name,
-                        method_name,
-                        parent_param_name
                     ),
                 )
                 .with_annotation(Annotation::primary(primary_span).with_message(format!(
                     "Parameter named `{child_param_name}` but parent uses `{parent_param_name}`",
                 )))
                 .with_annotation(Annotation::secondary(parent_class_span).with_message(format!(
-                    "Parent method `{parent_name}::{method_name}()` parameter `{parent_param_name}` defined here",
+                    "Parent method `{parent_display}` parameter `{parent_param_name}` defined here",
                 )))
                 .with_annotation(
                     Annotation::secondary(child_class_span).with_message(format!("In class `{child_name}`")),
@@ -3347,6 +3388,8 @@ fn check_class_like_properties<'ctx, A>(
             let parent_property_span = parent_property.name_span.unwrap_or(parent_metadata.span);
             let declaring_class_name = class_like_metadata.original_name;
             let parent_class_name = parent_metadata.original_name;
+            let child_display = display_member(context, declaring_class_name, property_name);
+            let parent_display = display_member(context, parent_class_name, property_name);
 
             // PHP makes a property whose `set` is private final, so the engine refuses a PHP# override of one.
             if parent_property.flags.is_final()
@@ -3354,16 +3397,14 @@ fn check_class_like_properties<'ctx, A>(
             {
                 context.collector.report_with_code(
                     IssueCode::OverrideFinalProperty,
-                    Issue::error(format!(
-                        "Cannot override final property `{parent_class_name}::{property_name}`."
-                    ))
+                    Issue::error(format!("Cannot override final property `{parent_display}`."))
                     .with_annotation(
                         Annotation::primary(property_span)
                             .with_message("Attempting to override final property here"),
                     )
                     .with_annotation(
                         Annotation::secondary(parent_property_span)
-                            .with_message(format!("Property `{parent_class_name}::{property_name}` is declared as final")),
+                            .with_message(format!("Property `{parent_display}` is declared as final")),
                     )
                     .with_note("Final properties cannot be overridden in child classes.")
                     .with_help(format!(
@@ -3376,22 +3417,26 @@ fn check_class_like_properties<'ctx, A>(
                 if let Some(parent_hook) = parent_property.hooks.get(hook_name)
                     && parent_hook.flags.is_final()
                 {
+                    let final_hook = if context.dialect.is_sharp() {
+                        display_sharp_accessor(parent_class_name, *property_name, *hook_name)
+                    } else {
+                        format!("{parent_class_name}::{property_name}::{hook_name}()")
+                    };
+
                     context.collector.report_with_code(
                             IssueCode::OverrideFinalPropertyHook,
-                            Issue::error(format!(
-                                "Cannot override final property hook `{parent_class_name}::{property_name}::{hook_name}()`."
-                            ))
+                            Issue::error(format!("Cannot override final property hook `{final_hook}`."))
                             .with_annotation(
                                 Annotation::primary(child_hook.span)
                                     .with_message("Attempting to override final hook here"),
                             )
                             .with_annotation(
                                 Annotation::secondary(parent_hook.span)
-                                    .with_message(format!("Hook `{parent_class_name}::{property_name}::{hook_name}()` is declared as final")),
+                                    .with_message(format!("Hook `{final_hook}` is declared as final")),
                             )
                             .with_note("Final property hooks cannot be overridden in child classes.")
                             .with_help(format!(
-                                "Remove the `{hook_name}` hook from `{declaring_class_name}::{property_name}`, or remove the final modifier from the parent hook.",
+                                "Remove the `{hook_name}` hook from `{child_display}`, or remove the final modifier from the parent hook.",
                             )),
                         );
                 }
@@ -3406,7 +3451,7 @@ fn check_class_like_properties<'ctx, A>(
                 context.collector.report_with_code(
                     IssueCode::BackedPropertyReferenceHook,
                     Issue::error(format!(
-                        "Get hook of backed property `{declaring_class_name}::{property_name}` with set hook may not return by reference."
+                        "Get hook of backed property `{child_display}` with set hook may not return by reference."
                     ))
                     .with_annotation(
                         Annotation::primary(get_hook.span)
@@ -3414,7 +3459,7 @@ fn check_class_like_properties<'ctx, A>(
                     )
                     .with_annotation(
                         Annotation::secondary(parent_property_span)
-                            .with_message(format!("Property `{parent_class_name}::{property_name}` creates a backing store")),
+                            .with_message(format!("Property `{parent_display}` creates a backing store")),
                     )
                     .with_note("A backed property (with backing store) that has a set hook cannot have a by-reference get hook.")
                     .with_help("Remove the `&` from the get hook declaration, or remove the set hook."),
@@ -3425,7 +3470,7 @@ fn check_class_like_properties<'ctx, A>(
                 context.collector.report_with_code(
                         IssueCode::IncompatiblePropertyAccess,
                         Issue::error(format!(
-                            "Property `{declaring_class_name}::{property_name}` has a different read access level than `{parent_class_name}::{property_name}`."
+                            "Property `{child_display}` has a different read access level than `{parent_display}`."
                         ))
                         .with_annotation(
                             Annotation::primary(property_span)
@@ -3446,7 +3491,7 @@ fn check_class_like_properties<'ctx, A>(
                 context.collector.report_with_code(
                     IssueCode::IncompatiblePropertyAccess,
                     Issue::error(format!(
-                        "The override `{declaring_class_name}::{property_name}` is `{visibility}`, but `{parent_class_name}::{property_name}` is `{parent_visibility}`."
+                        "The override `{child_display}` is `{visibility}`, but `{parent_display}` is `{parent_visibility}`."
                     ))
                     .with_annotation(Annotation::primary(property_span).with_message(format!("Declared `{visibility}` here.")))
                     .with_annotation(
@@ -3465,7 +3510,7 @@ fn check_class_like_properties<'ctx, A>(
                 context.collector.report_with_code(
                         IssueCode::IncompatiblePropertyAccess,
                         Issue::error(format!(
-                            "Property `{declaring_class_name}::{property_name}` has a different write access level than `{parent_class_name}::{property_name}`."
+                            "Property `{child_display}` has a different write access level than `{parent_display}`."
                         ))
                         .with_annotation(
                             Annotation::primary(property_span)
@@ -3491,7 +3536,7 @@ fn check_class_like_properties<'ctx, A>(
                 context.collector.report_with_code(
                         IssueCode::IncompatibleStaticModifier,
                         Issue::error(format!(
-                            "Cannot redeclare {parent_modifier} property `{parent_class_name}::{property_name}` as {child_modifier} `{declaring_class_name}::{property_name}`."
+                            "Cannot redeclare {parent_modifier} property `{parent_display}` as {child_modifier} `{child_display}`."
                         ))
                         .with_annotation(
                             Annotation::primary(property_span)
@@ -3517,7 +3562,7 @@ fn check_class_like_properties<'ctx, A>(
                 context.collector.report_with_code(
                         IssueCode::IncompatibleReadonlyModifier,
                         Issue::error(format!(
-                            "Cannot redeclare {parent_modifier} property `{parent_class_name}::{property_name}` as {child_modifier} `{declaring_class_name}::{property_name}`."
+                            "Cannot redeclare {parent_modifier} property `{parent_display}` as {child_modifier} `{child_display}`."
                         ))
                         .with_annotation(
                             Annotation::primary(property_span)
@@ -3551,13 +3596,12 @@ fn check_class_like_properties<'ctx, A>(
                     overridden.iter().find(|(_, overridden)| overridden.type_declaration_metadata.is_none())
                 && has_accessors(members, property_metadata.name.0)
             {
-                let property_name = property_metadata.name.0;
-                let untyped_parent_name = untyped_parent.original_name;
+                let untyped_parent = display_member(context, untyped_parent.original_name, property_name);
 
                 context.collector.report_with_code(
                     IssueCode::NotSupportedYet,
                     Issue::error(format!(
-                        "A property that replaces the untyped PHP property `{untyped_parent_name}::{property_name}` is not supported yet."
+                        "A property that replaces the untyped PHP property `{untyped_parent}` is not supported yet."
                     ))
                     .with_annotation(
                         Annotation::primary(declaring_type.span)
@@ -3584,15 +3628,13 @@ fn check_class_like_properties<'ctx, A>(
                     ) {
                         has_type_incompatibility = true;
 
-                        let declaring_type_id = declaring_type.type_union.get_id();
-                        let parent_type_id = parent_type.type_union.get_id();
-                        let property_name = property_metadata.name.0;
-                        let class_name = class_like_metadata.original_name;
+                        let declaring_type_id = display_type(context, &declaring_type.type_union);
+                        let parent_type_id = display_type(context, &parent_type.type_union);
 
                         context.collector.report_with_code(
                                 IssueCode::IncompatiblePropertyType,
                                 Issue::error(format!(
-                                    "Property `{class_name}::{property_name}` has an incompatible type declaration."
+                                    "Property `{child_display}` has an incompatible type declaration."
                                 ))
                                 .with_annotation(
                                     Annotation::primary(declaring_type.span)
@@ -3610,9 +3652,6 @@ fn check_class_like_properties<'ctx, A>(
                 (Some(declaring_type), None) => {
                     has_type_incompatibility = true;
 
-                    let property_name = property_metadata.name.0;
-                    let class_name = class_like_metadata.original_name;
-
                     // A PHP# field over an untyped PHP property writes a type the engine drops when the class links, so
                     // it fits the parent's `@var` type, or any type without one, spec section 6.1.
                     if context.dialect.is_sharp() {
@@ -3625,13 +3664,13 @@ fn check_class_like_properties<'ctx, A>(
                             );
 
                             if !is_type_compatible(context.codebase, &declaring_type.type_union, &parent_type_union) {
-                                let declaring_type_id = declaring_type.type_union.get_id();
-                                let parent_type_id = parent_type_union.get_id();
+                                let declaring_type_id = display_type(context, &declaring_type.type_union);
+                                let parent_type_id = display_type(context, &parent_type_union);
 
                                 context.collector.report_with_code(
                                     IssueCode::IncompatiblePropertyType,
                                     Issue::error(format!(
-                                        "The override `{class_name}::{property_name}` has type `{declaring_type_id}`, which does not fit `{parent_type_id}`, the type of `{parent_class_name}::{property_name}`."
+                                        "The override `{child_display}` has type `{declaring_type_id}`, which does not fit `{parent_type_id}`, the type of `{parent_display}`."
                                     ))
                                     .with_annotation(
                                         Annotation::primary(declaring_type.span)
@@ -3651,7 +3690,7 @@ fn check_class_like_properties<'ctx, A>(
                     }
 
                     let mut issue = Issue::error(format!(
-                        "Property `{class_name}::{property_name}` adds a type that is missing on the parent property."
+                        "Property `{child_display}` adds a type that is missing on the parent property."
                     ))
                     .with_annotation(
                         Annotation::primary(declaring_type.span)
@@ -3673,14 +3712,12 @@ fn check_class_like_properties<'ctx, A>(
                     has_type_incompatibility = true;
 
                     if let Some(property_span) = property_metadata.name_span {
-                        let property_name = property_metadata.name.0;
-                        let class_name = class_like_metadata.original_name;
                         let parent_type_id = parent_type.type_union.get_id();
 
                         context.collector.report_with_code(
                                 IssueCode::IncompatiblePropertyType,
                                 Issue::error(format!(
-                                    "Property `{class_name}::{property_name}` is missing the type declaration from its parent."
+                                    "Property `{child_display}` is missing the type declaration from its parent."
                                 ))
                                 .with_annotation(
                                     Annotation::primary(property_span)
@@ -3724,13 +3761,11 @@ fn check_class_like_properties<'ctx, A>(
             {
                 let declaring_type_id = declaring_type.type_union.get_id();
                 let parent_type_id = localized_parent_type.get_id();
-                let property_name = property_metadata.name.0;
-                let class_name = class_like_metadata.original_name;
 
                 context.collector.report_with_code(
                         IssueCode::IncompatiblePropertyType,
                         Issue::error(format!(
-                            "Property `{class_name}::{property_name}` has an incompatible type declaration from docblock."
+                            "Property `{child_display}` has an incompatible type declaration from docblock."
                         ))
                         .with_annotation(
                             Annotation::primary(declaring_type.span)
@@ -3771,11 +3806,22 @@ fn check_class_like_properties<'ctx, A>(
 
                 let declaring_class_name = class_like_metadata.original_name;
                 let interface_name = interface_metadata.original_name;
+                let (class_hook_name, interface_hook_name) = if context.dialect.is_sharp() {
+                    (
+                        display_sharp_accessor(declaring_class_name, *property_name, *hook_name),
+                        display_sharp_accessor(interface_name, *property_name, *hook_name),
+                    )
+                } else {
+                    (
+                        format!("{declaring_class_name}::{property_name}::{hook_name}()"),
+                        format!("{interface_name}::{property_name}::{hook_name}()"),
+                    )
+                };
 
                 context.collector.report_with_code(
                     IssueCode::IncompatiblePropertyHookSignature,
                     Issue::error(format!(
-                        "Declaration of `{declaring_class_name}::{property_name}::{hook_name}()` must be compatible with `& {interface_name}::{property_name}::{hook_name}()`."
+                        "Declaration of `{class_hook_name}` must be compatible with `& {interface_hook_name}`."
                     ))
                     .with_annotation(
                         Annotation::primary(impl_hook.span)
@@ -3927,16 +3973,14 @@ fn check_class_like_constants<'ctx, 'arena, A>(
                 if child_constant.visibility > parent_constant.visibility {
                     let child_span = item.name.span();
                     let parent_span = parent_constant.span;
-                    let class_name = class_like_metadata.original_name;
+                    let constant = display_member(context, class_like_metadata.original_name, constant_name);
                     let parent_class_name = parent_metadata.original_name;
                     let child_visibility = child_constant.visibility;
                     let parent_visibility = parent_constant.visibility;
 
                     context.collector.report_with_code(
                         IssueCode::IncompatibleConstantAccess,
-                        Issue::error(format!(
-                            "Constant `{class_name}::{constant_name}` has narrower visibility than parent constant."
-                        ))
+                        Issue::error(format!("Constant `{constant}` has narrower visibility than parent constant."))
                         .with_annotation(
                             Annotation::primary(child_span)
                                 .with_message(format!("This constant is declared as `{child_visibility}`, which is narrower than the parent's `{parent_visibility}`")),
@@ -3961,14 +4005,12 @@ fn check_class_like_constants<'ctx, 'arena, A>(
                 }
                 let child_type_id = child_type.type_union.get_id();
                 let parent_type_id = parent_type.type_union.get_id();
-                let class_name = class_like_metadata.original_name;
+                let constant = display_member(context, class_like_metadata.original_name, constant_name);
                 let parent_class_name = parent_metadata.original_name;
 
                 context.collector.report_with_code(
                     IssueCode::IncompatibleConstantType,
-                    Issue::error(format!(
-                        "Constant `{class_name}::{constant_name}` has an incompatible type declaration."
-                    ))
+                    Issue::error(format!("Constant `{constant}` has an incompatible type declaration."))
                     .with_annotation(
                         Annotation::primary(child_type.span)
                             .with_message(format!("This type `{child_type_id}` is not compatible with the parent's type")),
@@ -4009,14 +4051,14 @@ fn check_class_like_constants<'ctx, 'arena, A>(
                 if child_constant.visibility != Visibility::Public {
                     let child_span = item.name.span();
                     let interface_span = interface_constant.span;
-                    let class_name = class_like_metadata.original_name;
+                    let constant = display_member(context, class_like_metadata.original_name, constant_name);
                     let interface_name = interface_metadata.original_name;
                     let child_visibility = child_constant.visibility;
 
                     context.collector.report_with_code(
                         IssueCode::IncompatibleConstantVisibility,
                         Issue::error(format!(
-                            "Constant `{class_name}::{constant_name}` must be public to implement interface `{interface_name}`."
+                            "Constant `{constant}` must be public to implement interface `{interface_name}`."
                         ))
                         .with_annotation(
                             Annotation::primary(child_span)
@@ -4037,14 +4079,12 @@ fn check_class_like_constants<'ctx, 'arena, A>(
                 {
                     let child_type_id = child_type.type_union.get_id();
                     let interface_type_id = interface_type.type_union.get_id();
-                    let class_name = class_like_metadata.original_name;
+                    let constant = display_member(context, class_like_metadata.original_name, constant_name);
                     let interface_name = interface_metadata.original_name;
 
                     context.collector.report_with_code(
                             IssueCode::IncompatibleConstantType,
-                            Issue::error(format!(
-                                "Constant `{class_name}::{constant_name}` has an incompatible type declaration."
-                            ))
+                            Issue::error(format!("Constant `{constant}` has an incompatible type declaration."))
                             .with_annotation(
                                 Annotation::primary(child_type.span)
                                     .with_message(format!("This type `{child_type_id}` is not compatible with the interface's type")),

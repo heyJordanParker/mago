@@ -2,7 +2,6 @@ use mago_allocator::Arena;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use mago_bytes::BytesDisplay;
 use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
@@ -27,6 +26,7 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::utils::expression::get_block_expression_id;
+use crate::utils::names::display_member;
 use mago_word::concat_word;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for Unset<'arena> {
@@ -367,7 +367,7 @@ fn check_property_unset<'arena, A>(
         let class_is_readonly =
             context.codebase.get_class_like(class_name.as_bytes()).is_some_and(|class| class.flags.is_readonly());
 
-        let qualified = format!("{}::${}", BytesDisplay(class_name.as_bytes()), BytesDisplay(property_name.value));
+        let qualified = display_member(context, class_name, qualified_property_name);
 
         if property_metadata.flags.is_readonly() || class_is_readonly {
             context.collector.report_with_code(

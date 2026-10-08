@@ -39,7 +39,7 @@ use crate::invocation::InvocationTarget;
 use crate::plugin::ExpressionHookResult;
 use crate::plugin::context::HookContext;
 use crate::utils::expression::get_bare_name_variable_id;
-use crate::utils::names::display_sharp_method;
+use crate::utils::names::display_sharp_member;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for FunctionCall<'arena> {
     fn analyze<'ctx, A>(
@@ -332,7 +332,9 @@ where
         .filter_map(|(_, _, method)| {
             let class = codebase.get_class_like(method.get_class_name().as_bytes())?;
 
-            Some(format!("`{}(…)`", display_sharp_method(class, codebase.get_method_by_id(method)?)))
+            let method = codebase.get_method_by_id(method)?;
+
+            Some(format!("`{}(…)`", display_sharp_member(class.original_name, method.original_name)))
         })
         .collect();
     let Some((last, others)) = methods.split_last() else {
@@ -448,7 +450,7 @@ where
     Some(if block_context.scope.is_static() {
         format!(
             "Write `{}()`: a static method reaches the members of its class through the class name.",
-            display_sharp_method(class, method)
+            display_sharp_member(class.original_name, method.original_name)
         )
     } else {
         format!("Write `this.{}()`: members of the same object are always written with `this.`.", method.original_name)

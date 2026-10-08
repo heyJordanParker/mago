@@ -40,6 +40,9 @@ use crate::invocation::InvocationTarget;
 use crate::statement::function_like::closure_parameter_types;
 use crate::utils::expression::is_referenceable;
 use crate::utils::get_type_diff;
+use crate::utils::names::display_nullable_type;
+use crate::utils::names::display_type;
+use crate::utils::names::display_value_type;
 
 /// Checks if an argument can be passed by reference.
 pub(super) fn is_argument_referenceable(
@@ -216,7 +219,9 @@ pub fn verify_argument_type<'arena, A>(
     if !parameter_type.accepts_null() {
         if input_type.is_null() {
             let target_name_str = invocation_target.guess_name(context);
-            let parameter_type_str = parameter_type.get_id();
+            let parameter_type_str = display_type(context, parameter_type);
+            let nullable_parameter_type_str =
+                display_nullable_type(context, parameter_type, format!("{parameter_type_str}|null"));
             let call_site = Annotation::secondary(invocation_target.span())
                 .with_message(format!("Arguments to this {target_kind_str} are incorrect"));
             context.collector.report_with_code(
@@ -227,7 +232,7 @@ pub fn verify_argument_type<'arena, A>(
                 .with_annotation(Annotation::primary(input_expression.span()).with_message("This argument is `null`"))
                 .with_annotation(call_site)
                 .with_help(format!(
-                    "Provide a non-null value, or declare the parameter as nullable (e.g., `{parameter_type_str}|null`)."
+                    "Provide a non-null value, or declare the parameter as nullable (e.g., `{nullable_parameter_type_str}`)."
                 )),
             );
 
@@ -236,8 +241,8 @@ pub fn verify_argument_type<'arena, A>(
 
         if input_type.is_nullable() && !input_type.ignore_nullable_issues() {
             let target_name_str = invocation_target.guess_name(context);
-            let input_type_str = input_type.get_id();
-            let parameter_type_str = parameter_type.get_id();
+            let input_type_str = display_value_type(context, input_type);
+            let parameter_type_str = display_type(context, parameter_type);
             let call_site = Annotation::secondary(invocation_target.span())
                 .with_message(format!("Arguments to this {target_kind_str} are incorrect"));
             context.collector.report_with_code(
@@ -258,7 +263,7 @@ pub fn verify_argument_type<'arena, A>(
     if !parameter_type.accepts_false() {
         if input_type.is_false() {
             let target_name_str = invocation_target.guess_name(context);
-            let parameter_type_str = parameter_type.get_id();
+            let parameter_type_str = display_type(context, parameter_type);
             let call_site = Annotation::secondary(invocation_target.span())
                 .with_message(format!("Arguments to this {target_kind_str} are incorrect"));
             context.collector.report_with_code(
@@ -278,8 +283,8 @@ pub fn verify_argument_type<'arena, A>(
 
         if input_type.is_falsable() && !input_type.ignore_falsable_issues() {
             let target_name_str = invocation_target.guess_name(context);
-            let input_type_str = input_type.get_id();
-            let parameter_type_str = parameter_type.get_id();
+            let input_type_str = display_value_type(context, input_type);
+            let parameter_type_str = display_type(context, parameter_type);
             let call_site = Annotation::secondary(invocation_target.span())
                 .with_message(format!("Arguments to this {target_kind_str} are incorrect"));
             context.collector.report_with_code(
@@ -312,8 +317,8 @@ pub fn verify_argument_type<'arena, A>(
     }
 
     let target_name_str = invocation_target.guess_name(context);
-    let input_type_str = input_type.get_id();
-    let parameter_type_str = parameter_type.get_id();
+    let input_type_str = display_value_type(context, input_type);
+    let parameter_type_str = display_type(context, parameter_type);
     let call_site = Annotation::secondary(invocation_target.span())
         .with_message(format!("Arguments to this {target_kind_str} are incorrect"));
 
@@ -347,10 +352,11 @@ pub fn verify_argument_type<'arena, A>(
             .type_coerced_from_nested_mixed
             .unwrap_or(false)
         {
+            let mixed = display_type(context, &get_mixed());
             (
                 IssueCode::LessSpecificNestedArgumentType,
-                format!("Provided type `{input_type_str}` is too general due to nested `mixed`."),
-                "The structure contains `mixed`, making it incompatible.".to_string(),
+                format!("Provided type `{input_type_str}` is too general due to nested `{mixed}`."),
+                format!("The structure contains `{mixed}`, making it incompatible."),
             )
         } else {
             (

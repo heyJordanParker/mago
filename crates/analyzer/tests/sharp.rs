@@ -868,13 +868,11 @@ fn a_property_with_accessors_over_a_php_parents_untyped_property_is_not_supporte
             .collect::<Vec<_>>(),
         [
             (
-                "A property that replaces the untyped PHP property `Lib\\Record::$label` is not supported yet."
-                    .to_owned(),
+                "A property that replaces the untyped PHP property `Record.label` is not supported yet.".to_owned(),
                 "Rename the property, or give the PHP property a type.".to_owned()
             ),
             (
-                "A property that replaces the untyped PHP property `Lib\\Record::$code` is not supported yet."
-                    .to_owned(),
+                "A property that replaces the untyped PHP property `Record.code` is not supported yet.".to_owned(),
                 "Rename the property, or give the PHP property a type.".to_owned()
             ),
         ]
@@ -1054,7 +1052,7 @@ fn virtual_and_override_are_checked_as_final_and_the_override_attribute_in_php()
     assert_eq!(codes(&sharp_issues), codes(&php_issues), "{sharp_issues:?}");
 
     let missing = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Base.sharp", sharp), &others).remove(1);
-    assert_eq!(missing.message, "Missing `override` modifier on overriding method `Demo\\Child::size`.");
+    assert_eq!(missing.message, "Missing `override` modifier on overriding method `Child.size`.");
 }
 
 /// A plain PHP base class with untyped properties typed by `@var`, one declared in a trait, typed properties, and
@@ -1088,20 +1086,20 @@ fn an_override_that_does_not_match_the_plain_php_property_is_an_error() {
     for expected in [
         (
             "incompatible-property-access",
-            "The override `Demo\\Order::$fillable` is `public`, but `Lib\\Model::$fillable` is `protected`.",
+            "The override `Order.fillable` is `public`, but `Model.fillable` is `protected`.",
         ),
         (
             "invalid-property-default-value",
-            "Default value for property `Demo\\Order::table` is not assignable to its declared type.",
+            "Default value for property `Order.table` is not assignable to its declared type.",
         ),
         (
             "incompatible-property-type",
-            "The override `Demo\\Order::$timestamps` has type `int`, which does not fit `bool`, the type of `Lib\\Model::$timestamps`.",
+            "The override `Order.timestamps` has type `int`, which does not fit `bool`, the type of `Model.timestamps`.",
         ),
-        ("incompatible-property-type", "Property `Demo\\Order::$appends` has an incompatible type declaration."),
-        ("missing-override-attribute", "Missing `override` modifier on overriding field `Demo\\Order::$with`."),
-        ("invalid-override-attribute", "Invalid `override` modifier on `Demo\\Order::$missing`."),
-        ("invalid-override-attribute", "Invalid `override` modifier on `Demo\\Order::$secret`."),
+        ("incompatible-property-type", "Property `Order.appends` has an incompatible type declaration."),
+        ("missing-override-attribute", "Missing `override` modifier on overriding field `Order.with`."),
+        ("invalid-override-attribute", "Invalid `override` modifier on `Order.missing`."),
+        ("invalid-override-attribute", "Invalid `override` modifier on `Order.secret`."),
     ] {
         assert!(reported.contains(&expected), "{expected:?} is missing from {reported:#?}");
     }
@@ -1124,7 +1122,7 @@ fn an_override_whose_type_does_not_fit_the_parent_is_reported_once() {
             .collect::<Vec<_>>(),
         [(
             "incompatible-property-type",
-            "The override `Demo\\Order::$table` has type `int`, which does not fit `null|string`, the type of `Lib\\Model::$table`.",
+            "The override `Order.table` has type `int`, which does not fit `string?`, the type of `Model.table`.",
         )]
     );
 }
@@ -1177,11 +1175,11 @@ fn an_override_that_does_not_match_the_sharp_field_is_an_error() {
         reported(
             "namespace Demo;\n\npublic class RushOrder : Order\n{\n    protected override string table = \"rush_orders\";\n}\n"
         ),
-        error("incompatible-property-type", "Property `Demo\\RushOrder::$table` has an incompatible type declaration.")
+        error("incompatible-property-type", "Property `RushOrder.table` has an incompatible type declaration.")
     );
     assert_eq!(
         reported("namespace Demo;\n\npublic class RushOrder : Order\n{\n    protected override int table = 5;\n}\n"),
-        error("incompatible-property-type", "Property `Demo\\RushOrder::$table` has an incompatible type declaration.")
+        error("incompatible-property-type", "Property `RushOrder.table` has an incompatible type declaration.")
     );
     assert_eq!(
         reported(
@@ -1189,17 +1187,14 @@ fn an_override_that_does_not_match_the_sharp_field_is_an_error() {
         ),
         error(
             "incompatible-property-access",
-            "The override `Demo\\RushOrder::$table` is `public`, but `Demo\\Order::$table` is `protected`."
+            "The override `RushOrder.table` is `public`, but `Order.table` is `protected`."
         )
     );
     assert_eq!(
         reported(
             "namespace Demo;\n\npublic class RushOrder : Order\n{\n    protected string? table = \"rush_orders\";\n}\n"
         ),
-        error(
-            "missing-override-attribute",
-            "Missing `override` modifier on overriding field `Demo\\RushOrder::$table`."
-        )
+        error("missing-override-attribute", "Missing `override` modifier on overriding field `RushOrder.table`.")
     );
     assert_eq!(
         reported(
@@ -1207,7 +1202,7 @@ fn an_override_that_does_not_match_the_sharp_field_is_an_error() {
         ),
         error(
             "not-supported-yet",
-            "A property that replaces the untyped PHP property `Lib\\Model::$table` is not supported yet."
+            "A property that replaces the untyped PHP property `Model.table` is not supported yet."
         )
     );
 }
@@ -1225,11 +1220,8 @@ fn a_field_cannot_override_a_property_whose_set_is_private() {
             .map(|issue| (issue.code.unwrap_or_default(), issue.message))
             .collect::<Vec<_>>(),
         [
-            (
-                "override-final-property".to_owned(),
-                "Cannot override final property `Demo\\Counter::$views`.".to_owned()
-            ),
-            ("override-final-property".to_owned(), "Cannot override final property `Lib\\Tally::$views`.".to_owned()),
+            ("override-final-property".to_owned(), "Cannot override final property `Counter.views`.".to_owned()),
+            ("override-final-property".to_owned(), "Cannot override final property `Tally.views`.".to_owned()),
         ]
     );
 }
@@ -1245,10 +1237,7 @@ fn overriding_a_sharp_property_with_accessor_bodies_is_not_supported_yet() {
             .into_iter()
             .map(|issue| (issue.code.unwrap_or_default(), issue.message))
             .collect::<Vec<_>>(),
-        [(
-            "not-supported-yet".to_owned(),
-            "Overriding the PHP# property `Demo\\Base::$slug` is not supported yet.".to_owned()
-        )]
+        [("not-supported-yet".to_owned(), "Overriding the PHP# property `Base.slug` is not supported yet.".to_owned())]
     );
 }
 
@@ -1298,7 +1287,7 @@ fn replacing_a_php_method_follows_php_rules_with_override_required() {
     assert!(renamed.iter().all(|issue| issue.level == Level::Error), "{renamed:?}");
     assert_eq!(
         renamed[0].message,
-        "Parameter #1 of `Demo\\RenamedReport::resize()` is named `w` but parent `Lib\\Report::resize()` names it `width`"
+        "Parameter #1 of `RenamedReport.resize` is named `w` but parent `Report.resize` names it `width`"
     );
 }
 
@@ -1524,9 +1513,9 @@ fn a_bare_call_of_a_method_that_no_function_shares_names_the_member_to_write() {
         messages(analyzed, &[]),
         [
             "Write `Calc.total()`: a static method reaches the members of its class through the class name.",
-            "Could not infer a precise return type for function `Demo\\Calc::run`. Saw type `mixed`.",
+            "Could not infer a precise return type for method `Calc.run`. Saw type `Any?`.",
             "Write `this.size()`: members of the same object are always written with `this.`.",
-            "Could not infer a precise return type for function `Demo\\Calc::measure`. Saw type `mixed`.",
+            "Could not infer a precise return type for method `Calc.measure`. Saw type `Any?`.",
         ]
     );
     assert_eq!(
@@ -1855,8 +1844,8 @@ fn the_environment_arguments_and_current_directory_are_read_only() {
     assert_eq!(
         messages(("src/Demo/Deploy.sharp", sharp), &[])[1..],
         [
-            "Cannot initialize readonly property `Sharp\\Environment::$arguments` from within `Demo\\Deploy`.",
-            "Cannot initialize readonly property `Sharp\\Environment::$currentDirectory` from within `Demo\\Deploy`.",
+            "Cannot initialize readonly property `Environment.arguments` from within `Demo\\Deploy`.",
+            "Cannot initialize readonly property `Environment.currentDirectory` from within `Demo\\Deploy`.",
         ]
     );
 }
@@ -2886,7 +2875,7 @@ fn an_override_of_a_variadic_parameter_is_variadic() {
     assert_eq!(issues(("src/Demo/Base.php", php), &[]), Vec::<String>::new());
 
     let issue = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Base.sharp", sharp), &[]).remove(0);
-    assert_eq!(issue.message, "`Demo\\Child::sum()` must declare parameter `values` variadic like `Demo\\Base::sum()`");
+    assert_eq!(issue.message, "`Child.sum` must declare parameter `values` variadic like `Base.sum`");
 }
 
 #[test]
@@ -2984,6 +2973,23 @@ fn messages(analyzed: (&'static str, &'static str), others: &[(&'static str, &'s
     analyze(&PLUGIN_REGISTRY, settings(), analyzed, others).into_iter().map(|issue| issue.message).collect()
 }
 
+/// The issues of `analyzed` as `line:column code message`, each followed by every annotation, note and help it
+/// carries, so a test sees each type the issue prints.
+fn worded(analyzed: (&'static str, &'static str), others: &[(&'static str, &'static str)]) -> Vec<String> {
+    analyze(&PLUGIN_REGISTRY, settings(), analyzed, others)
+        .iter()
+        .map(|issue| {
+            let annotations = issue.annotations.iter().filter_map(|annotation| annotation.message.as_deref());
+            std::iter::once(format!("{} {}", located(analyzed.1, issue), issue.message))
+                .chain(annotations.map(str::to_owned))
+                .chain(issue.notes.iter().cloned())
+                .chain(issue.help.clone())
+                .collect::<Vec<_>>()
+                .join(" | ")
+        })
+        .collect()
+}
+
 /// Spec section 23 keeps full names in `import` lines. A chain whose root names no class, but whose dotted start names
 /// one, is a full name, which only the codebase tells from a class and its member. The refused value has no type, as
 /// a call on a missing class has none, so returning it reports `mixed` as it does there.
@@ -2997,7 +3003,7 @@ fn a_full_name_inside_code_names_the_import_to_add() {
         messages(analyzed, &others),
         [
             "Full names appear only in `import` lines: add `import App.Shared.Money;` and write `Money`.",
-            "Could not infer a precise return type for function `App\\Tenant\\Report::run`. Saw type `mixed`.",
+            "Could not infer a precise return type for method `Report.run`. Saw type `Any?`.",
         ]
     );
     assert_eq!(issues(analyzed, &others), ["7:16 non-existent-class-like", "7:16 mixed-return-statement"]);
@@ -3013,7 +3019,7 @@ fn a_member_read_through_a_full_name_names_the_import_to_add() {
         messages(analyzed, &others),
         [
             "Full names appear only in `import` lines: add `import App.Shared.Money;` and write `Money`.",
-            "Could not infer a precise return type for function `App\\Tenant\\Report::run`. Saw type `mixed`.",
+            "Could not infer a precise return type for method `Report.run`. Saw type `Any?`.",
         ]
     );
     assert_eq!(issues(analyzed, &others), ["7:16 non-existent-class-like", "7:16 mixed-return-statement"]);
@@ -3464,11 +3470,11 @@ fn a_collection_method_message_names_the_sharp_type() {
     assert_eq!(
         messages,
         [
-            "Invalid argument type for argument #1 of `List<Line>.add`: expected `Demo\\Line`, but found `int(1)`.",
-            "Invalid argument type for argument #1 of `List<int>.set`: expected `int`, but found `string('a')`.",
+            "Invalid argument type for argument #1 of `List<Line>.add`: expected `Line`, but found `int`.",
+            "Invalid argument type for argument #1 of `List<int>.set`: expected `int`, but found `string`.",
             "Method `add` does not exist on `Map<string, int>`.",
             "Method `delete` does not exist on `List<int>`.",
-            "Invalid argument type for argument #1 of `Map<string, int>.get`: expected `string`, but found `float(1.5)`.",
+            "Invalid argument type for argument #1 of `Map<string, int>.get`: expected `string`, but found `float`.",
             "Too few arguments provided for method `List<int>.get`.",
             "Too many arguments provided for method `List<int>.get`.",
         ]
@@ -3991,4 +3997,432 @@ fn an_extern_method_in_a_project_file_is_an_error_in_any_namespace() {
         );
         assert_eq!(issues(analyzed, &[]), ["5:33 native-body-outside-library"], "{}", analyzed.0);
     }
+}
+
+/// An argument the parameter refuses is named as PHP# writes its type: `Any?`, `List<Any?>`, `int?`, a literal by its
+/// type, and `Class<Dog>`. The PHP twin keeps Mago's text.
+#[test]
+fn a_refused_argument_names_its_types_as_sharp_writes_them() {
+    let sharp = "namespace Demo;\n\npublic class Animal\n{\n}\n\npublic class Dog : Animal\n{\n}\n\npublic class Report\n{\n    public static int keep(int number) => number;\n\n    public static Dog pet(Dog dog) => dog;\n\n    public static List<int> counts(List<int> numbers) => numbers;\n\n    public static void run(Any? anything, Animal animal, List<Any?> values, int|string key, int? maybe)\n    {\n        Report.keep(anything);\n        Report.pet(animal);\n        Report.counts(values);\n        Report.keep(key);\n        Report.keep(null);\n        Report.keep(maybe);\n        Report.keep(false);\n        Report.keep(\"text\");\n        Report.keep(typeof(Dog));\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Animal\n{\n}\n\nclass Dog extends Animal\n{\n}\n\nclass Report\n{\n    public static function keep(int $number): int\n    {\n        return $number;\n    }\n\n    public static function pet(Dog $dog): Dog\n    {\n        return $dog;\n    }\n\n    /**\n     * @param list<int> $numbers\n     * @return list<int>\n     */\n    public static function counts(array $numbers): array\n    {\n        return $numbers;\n    }\n\n    /** @param list<mixed> $values */\n    public static function run(mixed $anything, Animal $animal, array $values, int|string $key, ?int $maybe): void\n    {\n        Report::keep($anything);\n        Report::pet($animal);\n        Report::counts($values);\n        Report::keep($key);\n        Report::keep(null);\n        Report::keep($maybe);\n        Report::keep(false);\n        Report::keep('text');\n        Report::keep(Dog::class);\n    }\n}\n";
+
+    assert_eq!(
+        worded(("src/Demo/Report.php", php), &[]),
+        [
+            "37:22 mixed-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `int`, but found `mixed`. | Argument has type `mixed` | Arguments to this method are incorrect | The type `mixed` is too general and does not match the expected type `int`. | Add specific type hints or assertions to the argument value.",
+            "38:21 less-specific-argument Argument type mismatch for argument #1 of `Demo\\Report::pet`: expected `Demo\\Dog`, but provided type `Demo\\Animal` is less specific. | Provided type `Demo\\Animal` is too general. | Arguments to this method are incorrect | The provided type `Demo\\Animal` can be assigned to `Demo\\Dog`, but is wider (less specific). | Provide a value that more precisely matches `Demo\\Dog` or adjust the parameter type.",
+            "39:24 less-specific-nested-argument-type Argument type mismatch for argument #1 of `Demo\\Report::counts`: expected `list<int>`, but provided type `list<mixed>` is less specific. | Provided type `list<mixed>` is too general due to nested `mixed`. | Arguments to this method are incorrect | The structure contains `mixed`, making it incompatible. | Provide a value that more precisely matches `list<int>` or adjust the parameter type.",
+            "40:22 possibly-invalid-argument Possible argument type mismatch for argument #1 of `Demo\\Report::keep`: expected `int`, but possibly received `int|string`. | This might not be type `int` | Arguments to this method are incorrect | The provided type `int|string` overlaps with `int` but is not fully contained. | Ensure the argument always has the expected type using checks or assertions.",
+            "41:22 null-argument Argument #1 of method `Demo\\Report::keep` is `null`, but parameter type `int` does not accept it. | This argument is `null` | Arguments to this method are incorrect | Provide a non-null value, or declare the parameter as nullable (e.g., `int|null`).",
+            "42:22 possibly-null-argument Argument #1 of method `Demo\\Report::keep` is possibly `null`, but parameter type `int` does not accept it. | This argument of type `int|null` might be `null` | Arguments to this method are incorrect | Add a `null` check before this call to ensure the value is not `null`.",
+            "43:22 false-argument Argument #1 of method `Demo\\Report::keep` is `false`, but parameter type `int` does not accept it. | This argument is `false` | Arguments to this method are incorrect | Provide a different value, or update the parameter type to accept false (e.g., `int|false`).",
+            "44:22 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `int`, but found `string('text')`. | This has type `string('text')` | Arguments to this method are incorrect | The provided type `string('text')` is not compatible with the expected type `int`. | Change the argument value to match `int`, or update the parameter's type declaration.",
+            "45:22 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `int`, but found `class-string('Demo\\Dog')`. | This has type `class-string('Demo\\Dog')` | Arguments to this method are incorrect | The provided type `class-string('Demo\\Dog')` is not compatible with the expected type `int`. | Change the argument value to match `int`, or update the parameter's type declaration.",
+        ]
+    );
+    assert_eq!(
+        worded(("src/Demo/Report.sharp", sharp), &[]),
+        [
+            "21:21 mixed-argument Invalid argument type for argument #1 of `Report.keep`: expected `int`, but found `Any?`. | Argument has type `Any?` | Arguments to this method are incorrect | The type `Any?` is too general and does not match the expected type `int`. | Add specific type hints or assertions to the argument value.",
+            "22:20 less-specific-argument Argument type mismatch for argument #1 of `Report.pet`: expected `Dog`, but provided type `Animal` is less specific. | Provided type `Animal` is too general. | Arguments to this method are incorrect | The provided type `Animal` can be assigned to `Dog`, but is wider (less specific). | Provide a value that more precisely matches `Dog` or adjust the parameter type.",
+            "23:23 less-specific-nested-argument-type Argument type mismatch for argument #1 of `Report.counts`: expected `List<int>`, but provided type `List<Any?>` is less specific. | Provided type `List<Any?>` is too general due to nested `Any?`. | Arguments to this method are incorrect | The structure contains `Any?`, making it incompatible. | Provide a value that more precisely matches `List<int>` or adjust the parameter type.",
+            "24:21 possibly-invalid-argument Possible argument type mismatch for argument #1 of `Report.keep`: expected `int`, but possibly received `int|string`. | This might not be type `int` | Arguments to this method are incorrect | The provided type `int|string` overlaps with `int` but is not fully contained. | Ensure the argument always has the expected type using checks or assertions.",
+            "25:21 null-argument Argument #1 of method `Report.keep` is `null`, but parameter type `int` does not accept it. | This argument is `null` | Arguments to this method are incorrect | Provide a non-null value, or declare the parameter as nullable (e.g., `int?`).",
+            "26:21 possibly-null-argument Argument #1 of method `Report.keep` is possibly `null`, but parameter type `int` does not accept it. | This argument of type `int?` might be `null` | Arguments to this method are incorrect | Add a `null` check before this call to ensure the value is not `null`.",
+            "27:21 false-argument Argument #1 of method `Report.keep` is `false`, but parameter type `int` does not accept it. | This argument is `false` | Arguments to this method are incorrect | Provide a different value, or update the parameter type to accept false (e.g., `int|false`).",
+            "28:21 invalid-argument Invalid argument type for argument #1 of `Report.keep`: expected `int`, but found `string`. | This has type `string` | Arguments to this method are incorrect | The provided type `string` is not compatible with the expected type `int`. | Change the argument value to match `int`, or update the parameter's type declaration.",
+            "29:21 invalid-argument Invalid argument type for argument #1 of `Report.keep`: expected `int`, but found `Class<Dog>`. | This has type `Class<Dog>` | Arguments to this method are incorrect | The provided type `Class<Dog>` is not compatible with the expected type `int`. | Change the argument value to match `int`, or update the parameter's type declaration.",
+        ]
+    );
+}
+
+/// A refused return value, a missing return, a computed property, a typed local, a property write and a list of
+/// `Any?` returned as a `List<int>` name their types as PHP# writes them, and name the method as PHP# writes it. The
+/// PHP twin keeps Mago's text.
+#[test]
+fn a_refused_value_names_its_types_as_sharp_writes_them() {
+    let sharp = "namespace Demo;\n\npublic class Box\n{\n    public int count = 0;\n\n    public int mixed(Any? value) => value;\n\n    public int nullable(int? value) => value;\n\n    public int empty()\n    {\n        return;\n    }\n\n    public int first(bool found)\n    {\n        if (found) {\n            return 1;\n        }\n    }\n\n    public int total => \"text\";\n\n    public int written(string text)\n    {\n        this.count = text;\n        int local = text;\n        return local;\n    }\n\n    public List<int> counts(List<Any?> values) => values;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Box\n{\n    public int $count = 0;\n\n    public function mixed(mixed $value): int\n    {\n        return $value;\n    }\n\n    public function nullable(?int $value): int\n    {\n        return $value;\n    }\n\n    public function empty(): int\n    {\n        return;\n    }\n\n    public function first(bool $found): int\n    {\n        if ($found) {\n            return 1;\n        }\n    }\n\n    public int $total {\n        get => 'text';\n    }\n\n    public function written(string $text): int\n    {\n        $this->count = $text;\n        return 1;\n    }\n\n    /**\n     * @param list<mixed> $values\n     * @return list<int>\n     */\n    public function counts(array $values): array\n    {\n        return $values;\n    }\n}\n";
+
+    assert_eq!(
+        worded(("src/Demo/Box.php", php), &[]),
+        [
+            "11:16 mixed-return-statement Could not infer a precise return type for function `Demo\\Box::mixed`. Saw type `mixed`. | Type inferred as `mixed` here. | The analysis could not determine a specific type for the value returned here, resulting in `mixed`. This can happen with complex code paths or unannotated data. | Add specific type hints to variables, parameters, or properties involved in calculating the return value. Consider adding a specific return type declaration to the function signature to catch potential mismatches earlier.",
+            "16:16 nullable-return-statement Function `Demo\\Box::nullable` is declared to return `int` but possibly returns a nullable value (inferred as `int|null`). | Nullable value returned here. | Return type declared as non-nullable `int` here. | The declared return type does not permit null, but the analysis indicates that 'null' or a nullable type could be returned from this path. | You can either change the return type declaration of `Demo\\Box::nullable` to be nullable (e.g., '?int'), or ensure that this function path always returns a non-null value.",
+            "16:16 invalid-return-statement Invalid return type for function `Demo\\Box::nullable`: expected `int`, but found `int|null`. | This has type `int|null` | The type `int|null` returned here is not compatible with the declared return type `int`. | Change the return value to match `int`, or update the function's return type declaration.",
+            "21:9 invalid-return-statement Function `Demo\\Box::empty` is declared to return `int` but no return value was specified. | No return value specified here. | Return type declared as `int` here. | The declared return type does not permit 'void', but the analysis indicates that this function path does not return a value. | You can either change the return type declaration of `Demo\\Box::empty` to be 'void', or ensure that this function path always returns a value.",
+            "24:21 missing-return-statement Missing return statement in function `first` | This function is declared to return 'int'... | ...but this path can exit without returning a value. | A function that does not explicitly return a value will implicitly return `null`. | Add a `return` statement that provides a value of type 'int' to all paths, or change the function's return type to 'int|null' and return `null` explicitly.",
+            "32:16 invalid-return-statement Property hook `Demo\\Box::$total::get` returns `string('text')` but property is typed as `int`. | Expression has type `string('text')`. | The get hook must return a value compatible with the property type `int`. | Change the returned expression to match the property type.",
+            "37:24 invalid-property-assignment-value Invalid type for property `$count`: expected `int`, but got `string`. | This expression has type `string` | This property `$count` is declared with type `int` | The type `string` is not compatible with and cannot be assigned to `int`. | Change the assigned value to match the property's type, or update the property's type declaration.",
+            "47:16 less-specific-nested-return-statement Returned type `list<mixed>` is less specific than the declared return type `list<int>` for function `Demo\\Box::counts` due to nested 'mixed'. | Returned value's type is too general here due to nested mixed | The analysis detected 'mixed' within the structure of the returned value, making the overall type less specific than what the function declared. | Ensure the structure returned by `Demo\\Box::counts` strictly adheres to the types specified in the `list<int>` return type declaration.",
+        ]
+    );
+    assert_eq!(
+        worded(("src/Demo/Box.sharp", sharp), &[]),
+        [
+            "7:37 mixed-return-statement Could not infer a precise return type for method `Box.mixed`. Saw type `Any?`. | Type inferred as `Any?` here. | The analysis could not determine a specific type for the value returned here, resulting in `Any?`. This can happen with complex code paths or unannotated data. | Add specific type hints to variables, parameters, or properties involved in calculating the return value. Consider adding a specific return type declaration to the method signature to catch potential mismatches earlier.",
+            "9:40 nullable-return-statement Method `Box.nullable` is declared to return `int` but possibly returns a nullable value (inferred as `int?`). | Nullable value returned here. | Return type declared as non-nullable `int` here. | The declared return type does not permit null, but the analysis indicates that 'null' or a nullable type could be returned from this path. | You can either change the return type declaration of `Box.nullable` to be nullable (e.g., 'int?'), or ensure that this method path always returns a non-null value.",
+            "9:40 invalid-return-statement Invalid return type for method `Box.nullable`: expected `int`, but found `int?`. | This has type `int?` | The type `int?` returned here is not compatible with the declared return type `int`. | Change the return value to match `int`, or update the method's return type declaration.",
+            "13:9 invalid-return-statement Method `Box.empty` is declared to return `int` but no return value was specified. | No return value specified here. | Return type declared as `int` here. | The declared return type does not permit 'void', but the analysis indicates that this method path does not return a value. | You can either change the return type declaration of `Box.empty` to be 'void', or ensure that this method path always returns a value.",
+            "16:16 missing-return-statement Missing return statement in method `Box.first` | This method is declared to return 'int'... | ...but this path can exit without returning a value. | A method that does not explicitly return a value will implicitly return `null`. | Add a `return` statement that provides a value of type 'int' to all paths, or change the method's return type to 'int?' and return `null` explicitly.",
+            "23:25 invalid-return-statement Property hook `Box.total.get` returns `string` but property is typed as `int`. | Expression has type `string`. | The get hook must return a value compatible with the property type `int`. | Change the returned expression to match the property type.",
+            "27:22 invalid-property-assignment-value Invalid type for property `Box.count`: expected `int`, but got `string`. | This expression has type `string` | This property `Box.count` is declared with type `int` | The type `string` is not compatible with and cannot be assigned to `int`. | Change the assigned value to match the property's type, or update the property's type declaration.",
+            "28:21 invalid-local-assignment-value Invalid assignment to `local`: it is declared as `int`. | This value has type `string`. | `local` is declared as `int` here. | Assign a `int` value, or change the type `local` is declared with.",
+            "32:51 less-specific-nested-return-statement Returned type `List<Any?>` is less specific than the declared return type `List<int>` for method `Box.counts` due to nested 'Any?'. | Returned value's type is too general here due to nested Any? | The analysis detected 'Any?' within the structure of the returned value, making the overall type less specific than what the method declared. | Ensure the structure returned by `Box.counts` strictly adheres to the types specified in the `List<int>` return type declaration.",
+        ]
+    );
+}
+
+/// An override that does not fit the member it overrides names both members and both types as PHP# writes them. The
+/// PHP twin keeps Mago's text.
+#[test]
+fn an_override_names_its_members_and_types_as_sharp_writes_them() {
+    let sharp = "namespace Demo;\n\npublic class Order\n{\n}\n\npublic class Line\n{\n}\n\npublic class Base\n{\n    public Order? item = null;\n\n    public virtual void put(Order item)\n    {\n    }\n\n    public virtual Order get(Order item) => item;\n}\n\npublic class OrderBase : Base\n{\n    public override Line? item = null;\n\n    public override void put(Line item)\n    {\n    }\n\n    public override Line get(Order item) => new Line();\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n}\n\nclass Line\n{\n}\n\nclass Base\n{\n    public ?Order $item = null;\n\n    public function put(Order $item): void\n    {\n    }\n\n    public function get(Order $item): Order\n    {\n        return $item;\n    }\n}\n\nclass OrderBase extends Base\n{\n    public ?Line $item = null;\n\n    public function put(Line $item): void\n    {\n    }\n\n    public function get(Order $item): Line\n    {\n        return new Line();\n    }\n}\n";
+
+    assert_eq!(
+        worded(("src/Demo/Base.php", php), &[]),
+        [
+            "31:21 incompatible-parameter-type Parameter `$item` of `Demo\\OrderBase::put()` expects type `Demo\\Line` but parent `Demo\\Base::put()` expects type `Demo\\Order` | Parameter `$item` expects type `Demo\\Line` but parent expects `Demo\\Order` | Parent method `Demo\\Base::put()` parameter defined here | In class `Demo\\OrderBase` | Parameter types must be contravariant: child must accept equal or wider types than parent. | Change the parameter type to be compatible with the parent method.",
+            "35:21 incompatible-return-type Return type `Demo\\Line` of `Demo\\OrderBase::get()` is incompatible with parent return type `Demo\\Order` of `Demo\\Base::get()` | Returns type `Demo\\Line` but parent expects `Demo\\Order` | Parent method `Demo\\Base::get()` return type defined here | In class `Demo\\OrderBase` | Return types must be covariant: child must return equal or narrower types than parent. | Change the return type to be compatible with the parent method.",
+            "29:12 incompatible-property-type Property `Demo\\OrderBase::$item` has an incompatible type declaration. | This type `Demo\\Line|null` is incompatible with the parent's type. | The parent property is defined with type `Demo\\Order|null` here. | PHP requires property types to be invariant, meaning the type declaration in a child class must be exactly the same as in the parent class. | Change the type of `$item` to `Demo\\Order|null` to match the parent property.",
+        ]
+    );
+    assert_eq!(
+        worded(("src/Demo/Base.sharp", sharp), &[]),
+        [
+            "26:26 incompatible-parameter-type Parameter `item` of `OrderBase.put` expects type `Line` but parent `Base.put` expects type `Order` | Parameter `item` expects type `Line` but parent expects `Order` | Parent method `Base.put` parameter defined here | In class `Demo\\OrderBase` | Parameter types must be contravariant: child must accept equal or wider types than parent. | Change the parameter type to be compatible with the parent method.",
+            "30:26 incompatible-return-type Return type `Line` of `OrderBase.get` is incompatible with parent return type `Order` of `Base.get` | Returns type `Line` but parent expects `Order` | Parent method `Base.get` return type defined here | In class `Demo\\OrderBase` | Return types must be covariant: child must return equal or narrower types than parent. | Change the return type to be compatible with the parent method.",
+            "24:21 incompatible-property-type Property `OrderBase.item` has an incompatible type declaration. | This type `Line?` is incompatible with the parent's type. | The parent property is defined with type `Order?` here. | PHP requires property types to be invariant, meaning the type declaration in a child class must be exactly the same as in the parent class. | Change the type of `$item` to `Order?` to match the parent property.",
+        ]
+    );
+}
+
+/// A message names an accessor as C# does, `Box.total.get`, wherever the `get` returns a value of another type or
+/// can end without returning. The PHP twin keeps Mago's `Demo\Box::$total::get`.
+#[test]
+fn a_message_names_an_accessor_as_sharp_writes_it() {
+    let sharp = "namespace Demo;\n\npublic class Box\n{\n    public int total => \"text\";\n\n    public int open { get { if (this.ready()) { return 1; } } }\n\n    public int amount => this.raw();\n\n    public int size => this.maybe();\n\n    public int position => strpos(\"ab\", \"b\");\n\n    public bool ready() => true;\n\n    public Any? raw() => null;\n\n    public int? maybe() => null;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Box\n{\n    public int $total {\n        get => 'text';\n    }\n\n    public int $open {\n        get {\n            if ($this->ready()) {\n                return 1;\n            }\n        }\n    }\n\n    public int $amount {\n        get => $this->raw();\n    }\n\n    public int $size {\n        get => $this->maybe();\n    }\n\n    public int $position {\n        get => strpos('ab', 'b');\n    }\n\n    public function ready(): bool\n    {\n        return true;\n    }\n\n    public function raw(): mixed\n    {\n        return null;\n    }\n\n    public function maybe(): ?int\n    {\n        return null;\n    }\n}\n";
+
+    assert_eq!(
+        worded(("src/Demo/Box.php", php), &[]),
+        [
+            "8:16 invalid-return-statement Property hook `Demo\\Box::$total::get` returns `string('text')` but property is typed as `int`. | Expression has type `string('text')`. | The get hook must return a value compatible with the property type `int`. | Change the returned expression to match the property type.",
+            "20:16 mixed-return-statement Could not infer a precise return type for property hook `Demo\\Box::$amount::get`. Saw type `mixed`. | Type inferred as `mixed` here. | The analysis could not determine a specific type for the value returned here. | Add specific type hints to variables or properties involved in calculating the return value.",
+            "24:16 nullable-return-statement Property hook `Demo\\Box::$size::get` returns nullable value `int|null` but property type is `int`. | Nullable value returned here. | The property type does not permit null, but this expression could return null. | Ensure the hook always returns a non-null value, or change the property type to `?int`.",
+            "28:16 falsable-return-statement Property hook `Demo\\Box::$position::get` returns falsable value `false|non-negative-int` but property type is `int`. | Potentially 'false' returned here. | The property type does not permit false, but this expression could return false. | Ensure the hook never returns false, or change the property type to `int|false`.",
+        ]
+    );
+    assert_eq!(
+        worded(("src/Demo/Box.sharp", sharp), &[]),
+        [
+            "5:25 invalid-return-statement Property hook `Box.total.get` returns `string` but property is typed as `int`. | Expression has type `string`. | The get hook must return a value compatible with the property type `int`. | Change the returned expression to match the property type.",
+            "7:23 missing-return-statement Missing return statement in property hook `Box.open.get` | This property hook is declared to return 'int'... | ...but this path can exit without returning a value. | A property hook that does not explicitly return a value will implicitly return `null`. | Add a `return` statement that provides a value of type 'int' to all paths, or change the property hook's return type to 'int?' and return `null` explicitly.",
+            "9:26 mixed-return-statement Could not infer a precise return type for property hook `Box.amount.get`. Saw type `Any?`. | Type inferred as `Any?` here. | The analysis could not determine a specific type for the value returned here. | Add specific type hints to variables or properties involved in calculating the return value.",
+            "11:24 nullable-return-statement Property hook `Box.size.get` returns nullable value `int?` but property type is `int`. | Nullable value returned here. | The property type does not permit null, but this expression could return null. | Ensure the hook always returns a non-null value, or change the property type to `int?`.",
+            "13:28 falsable-return-statement Property hook `Box.position.get` returns falsable value `bool|int` but property type is `int`. | Potentially 'false' returned here. | The property type does not permit false, but this expression could return false. | Ensure the hook never returns false, or change the property type to `int|false`.",
+        ]
+    );
+}
+
+/// A plain PHP parent's abstract, final and by-reference hooks are named as PHP# names an accessor, `Priced.total.get`,
+/// when a PHP# class misses or replaces them. The PHP twin keeps Mago's text.
+#[test]
+fn a_message_names_an_inherited_accessor_as_sharp_writes_it() {
+    let library = "<?php\n\nnamespace Lib;\n\ninterface Priced\n{\n    public int $total { get; }\n}\n\nclass Counter\n{\n    public int $count = 0 {\n        final get => $this->count;\n    }\n}\n\ninterface Shared\n{\n    public array $items { &get; }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Counter;\nimport Lib.Priced;\nimport Lib.Shared;\n\npublic class Order : Priced\n{\n}\n\npublic class Tally : Counter\n{\n    public override int count { get => 1; }\n}\n\npublic class Bag : Shared\n{\n    public List<int> items { get => []; }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Counter;\nuse Lib\\Priced;\nuse Lib\\Shared;\n\nclass Order implements Priced\n{\n}\n\nclass Tally extends Counter\n{\n    public int $count {\n        get => 1;\n    }\n}\n\nclass Bag implements Shared\n{\n    public array $items {\n        get => [];\n    }\n}\n";
+    let others = [("src/Lib/Library.php", library)];
+
+    assert_eq!(
+        worded(("src/Demo/Order.php", php), &others),
+        [
+            "9:7 unimplemented-abstract-property-hook Class `Demo\\Order` does not implement the abstract property hook `$total::get()`. | `Demo\\Order` is not abstract and must implement this hook | `Lib\\Priced::$total::get()` is defined as abstract here | When a concrete class extends an abstract class or implements an interface, it must provide an implementation for all inherited abstract property hooks. | You can either implement the `get` hook for property `$total` in `Demo\\Order`, or declare `Demo\\Order` as an abstract class.",
+            "16:9 override-final-property-hook Cannot override final property hook `Lib\\Counter::$count::get()`. | Attempting to override final hook here | Hook `Lib\\Counter::$count::get()` is declared as final | Final property hooks cannot be overridden in child classes. | Remove the `get` hook from `Demo\\Tally::$count`, or remove the final modifier from the parent hook.",
+            "23:9 incompatible-property-hook-signature Declaration of `Demo\\Bag::$items::get()` must be compatible with `& Lib\\Shared::$items::get()`. | This hook does not return by reference | Interface `Lib\\Shared` requires this hook to return by reference | When an interface declares a by-reference hook (`&get`), the implementing class must also return by reference. | Add `&` to the `get` hook declaration: `&get => ...`",
+        ]
+    );
+    assert_eq!(
+        worded(("src/Demo/Order.sharp", sharp), &others),
+        [
+            "7:14 unimplemented-abstract-property-hook Class `Demo\\Order` does not implement the abstract property hook `Priced.total.get`. | `Demo\\Order` is not abstract and must implement this hook | `Priced.total.get` is defined as abstract here | When a concrete class extends an abstract class or implements an interface, it must provide an implementation for all inherited abstract property hooks. | You can either implement the `get` hook for property `$total` in `Demo\\Order`, or declare `Demo\\Order` as an abstract class.",
+            "13:33 override-final-property-hook Cannot override final property hook `Counter.count.get`. | Attempting to override final hook here | Hook `Counter.count.get` is declared as final | Final property hooks cannot be overridden in child classes. | Remove the `get` hook from `Tally.count`, or remove the final modifier from the parent hook.",
+            "18:30 incompatible-property-hook-signature Declaration of `Bag.items.get` must be compatible with `& Shared.items.get`. | This hook does not return by reference | Interface `Lib\\Shared` requires this hook to return by reference | When an interface declares a by-reference hook (`&get`), the implementing class must also return by reference. | Add `&` to the `get` hook declaration: `&get => ...`",
+        ]
+    );
+}
+
+/// An override whose parameter does not take the parent's type names the parameter as PHP# writes it, without `$`.
+/// The PHP twin keeps Mago's `$item`.
+#[test]
+fn an_override_names_its_parameter_as_sharp_writes_it() {
+    let sharp = "namespace Demo;\n\npublic class Order\n{\n}\n\npublic class Line\n{\n}\n\npublic class Base\n{\n    public virtual void put(Order item)\n    {\n    }\n}\n\npublic class Child : Base\n{\n    public override void put(Line item)\n    {\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n}\n\nclass Line\n{\n}\n\nclass Base\n{\n    public function put(Order $item): void\n    {\n    }\n}\n\nclass Child extends Base\n{\n    public function put(Line $item): void\n    {\n    }\n}\n";
+
+    assert_eq!(
+        worded(("src/Demo/Base.php", php), &[]),
+        [
+            "22:21 incompatible-parameter-type Parameter `$item` of `Demo\\Child::put()` expects type `Demo\\Line` but parent `Demo\\Base::put()` expects type `Demo\\Order` | Parameter `$item` expects type `Demo\\Line` but parent expects `Demo\\Order` | Parent method `Demo\\Base::put()` parameter defined here | In class `Demo\\Child` | Parameter types must be contravariant: child must accept equal or wider types than parent. | Change the parameter type to be compatible with the parent method.",
+        ]
+    );
+    assert_eq!(
+        worded(("src/Demo/Base.sharp", sharp), &[]),
+        [
+            "20:26 incompatible-parameter-type Parameter `item` of `Child.put` expects type `Line` but parent `Base.put` expects type `Order` | Parameter `item` expects type `Line` but parent expects `Order` | Parent method `Base.put` parameter defined here | In class `Demo\\Child` | Parameter types must be contravariant: child must accept equal or wider types than parent. | Change the parameter type to be compatible with the parent method.",
+        ]
+    );
+}
+
+/// A plain PHP refinement is named by the PHP# type that holds it: a `non-empty-string` is a `string`, a
+/// `positive-int` an `int`, a `class-string` a `Class<Object>` and an `object` an `Object`, spec section 24. The PHP
+/// twin keeps Mago's text.
+#[test]
+fn a_refined_scalar_a_class_string_and_an_object_are_named_as_sharp_writes_them() {
+    let values = "<?php\n\nnamespace Lib;\n\nfinal class Values\n{\n    /** @return non-empty-string */\n    public static function name(): string\n    {\n        return 'a';\n    }\n\n    /** @return positive-int */\n    public static function count(): int\n    {\n        return 1;\n    }\n\n    /** @return class-string */\n    public static function kind(): string\n    {\n        return self::class;\n    }\n\n    public static function thing(): object\n    {\n        return new self();\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Values;\n\npublic class Report\n{\n    public static bool keep(bool flag) => flag;\n\n    public static void run()\n    {\n        Report.keep(Values.name());\n        Report.keep(Values.count());\n        Report.keep(Values.kind());\n        Report.keep(Values.thing());\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Values;\n\nclass Report\n{\n    public static function keep(bool $flag): bool\n    {\n        return $flag;\n    }\n\n    public static function run(): void\n    {\n        Report::keep(Values::name());\n        Report::keep(Values::count());\n        Report::keep(Values::kind());\n        Report::keep(Values::thing());\n    }\n}\n";
+    let others = [("src/Lib/Values.php", values)];
+
+    assert_eq!(
+        worded(("src/Demo/Report.php", php), &others),
+        [
+            "16:22 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `bool`, but found `non-empty-string`. | This has type `non-empty-string` | Arguments to this method are incorrect | The provided type `non-empty-string` is not compatible with the expected type `bool`. | Change the argument value to match `bool`, or update the parameter's type declaration.",
+            "17:22 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `bool`, but found `positive-int`. | This has type `positive-int` | Arguments to this method are incorrect | The provided type `positive-int` is not compatible with the expected type `bool`. | Change the argument value to match `bool`, or update the parameter's type declaration.",
+            "18:22 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `bool`, but found `class-string`. | This has type `class-string` | Arguments to this method are incorrect | The provided type `class-string` is not compatible with the expected type `bool`. | Change the argument value to match `bool`, or update the parameter's type declaration.",
+            "19:22 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `bool`, but found `object`. | This has type `object` | Arguments to this method are incorrect | The provided type `object` is not compatible with the expected type `bool`. | Change the argument value to match `bool`, or update the parameter's type declaration.",
+        ]
+    );
+    assert_eq!(
+        worded(("src/Demo/Report.sharp", sharp), &others),
+        [
+            "11:21 invalid-argument Invalid argument type for argument #1 of `Report.keep`: expected `bool`, but found `string`. | This has type `string` | Arguments to this method are incorrect | The provided type `string` is not compatible with the expected type `bool`. | Change the argument value to match `bool`, or update the parameter's type declaration.",
+            "12:21 invalid-argument Invalid argument type for argument #1 of `Report.keep`: expected `bool`, but found `int`. | This has type `int` | Arguments to this method are incorrect | The provided type `int` is not compatible with the expected type `bool`. | Change the argument value to match `bool`, or update the parameter's type declaration.",
+            "13:21 invalid-argument Invalid argument type for argument #1 of `Report.keep`: expected `bool`, but found `Class<Object>`. | This has type `Class<Object>` | Arguments to this method are incorrect | The provided type `Class<Object>` is not compatible with the expected type `bool`. | Change the argument value to match `bool`, or update the parameter's type declaration.",
+            "14:21 invalid-argument Invalid argument type for argument #1 of `Report.keep`: expected `bool`, but found `Object`. | This has type `Object` | Arguments to this method are incorrect | The provided type `Object` is not compatible with the expected type `bool`. | Change the argument value to match `bool`, or update the parameter's type declaration.",
+        ]
+    );
+}
+
+/// A plain PHP type that reaches PHP# is named by the PHP# type the spec gives it: an `array` is a
+/// `Map<int|string, Any?>`, an `array-key` an `int|string`, and an `iterable` an `Iterable<…>` of its values, spec
+/// sections 12 and 24. `numeric` and `scalar` have no PHP# name and keep Mago's. The PHP twin keeps Mago's text.
+#[test]
+fn a_plain_php_type_is_named_by_the_type_the_spec_gives_it() {
+    let values = "<?php\n\nnamespace Lib;\n\nfinal class Values\n{\n    public static function rows(): array\n    {\n        return [];\n    }\n\n    /** @return array-key */\n    public static function key(): int|string\n    {\n        return 1;\n    }\n\n    /** @return iterable<int> */\n    public static function each(): iterable\n    {\n        return [];\n    }\n\n    /** @return numeric */\n    public static function amount(): int|float|string\n    {\n        return 1;\n    }\n\n    /** @return scalar */\n    public static function plain(): int|float|string|bool\n    {\n        return 1;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Values;\n\npublic class Report\n{\n    public static bool keep(bool flag) => flag;\n\n    public static void run()\n    {\n        Report.keep(Values.rows());\n        Report.keep(Values.key());\n        Report.keep(Values.each());\n        Report.keep(Values.amount());\n        Report.keep(Values.plain());\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Values;\n\nclass Report\n{\n    public static function keep(bool $flag): bool\n    {\n        return $flag;\n    }\n\n    public static function run(): void\n    {\n        Report::keep(Values::rows());\n        Report::keep(Values::key());\n        Report::keep(Values::each());\n        Report::keep(Values::amount());\n        Report::keep(Values::plain());\n    }\n}\n";
+    let others = [("src/Lib/Values.php", values)];
+
+    assert_eq!(
+        messages(("src/Demo/Report.php", php), &others),
+        [
+            "Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `bool`, but found `array<array-key, mixed>`.",
+            "Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `bool`, but found `array-key`.",
+            "Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `bool`, but found `iterable<mixed, int>`.",
+            "Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `bool`, but found `numeric`.",
+            "Possible argument type mismatch for argument #1 of `Demo\\Report::keep`: expected `bool`, but possibly received `scalar`.",
+        ]
+    );
+    assert_eq!(
+        messages(("src/Demo/Report.sharp", sharp), &others),
+        [
+            "Invalid argument type for argument #1 of `Report.keep`: expected `bool`, but found `Map<int|string, Any?>`.",
+            "Invalid argument type for argument #1 of `Report.keep`: expected `bool`, but found `int|string`.",
+            "Invalid argument type for argument #1 of `Report.keep`: expected `bool`, but found `Iterable<int>`.",
+            "Invalid argument type for argument #1 of `Report.keep`: expected `bool`, but found `numeric`.",
+            "Possible argument type mismatch for argument #1 of `Report.keep`: expected `bool`, but possibly received `scalar`.",
+        ]
+    );
+}
+
+/// A method's return type error names the method as PHP# writes it, `Order.total`, calls it a method, and names the
+/// returned literal by its type, as spec section 27's example of the engine's refusal shows. The PHP twin keeps
+/// upstream's wording.
+#[test]
+fn a_return_type_error_names_the_method_as_sharp_writes_it() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public int total() => \"text\";\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    public function total(): int\n    {\n        return \"text\";\n    }\n}\n";
+
+    assert_eq!(
+        worded(("src/Demo/Order.php", php), &[]),
+        [
+            "9:16 invalid-return-statement Invalid return type for function `Demo\\Order::total`: expected `int`, but found `string('text')`. | This has type `string('text')` | The type `string('text')` returned here is not compatible with the declared return type `int`. | Change the return value to match `int`, or update the function's return type declaration."
+        ]
+    );
+    assert_eq!(
+        messages(("src/Demo/Order.sharp", sharp), &[]),
+        ["Invalid return type for method `Order.total`: expected `int`, but found `string`."]
+    );
+    assert_eq!(
+        worded(("src/Demo/Order.sharp", sharp), &[]),
+        [
+            "5:27 invalid-return-statement Invalid return type for method `Order.total`: expected `int`, but found `string`. | This has type `string` | The type `string` returned here is not compatible with the declared return type `int`. | Change the return value to match `int`, or update the method's return type declaration."
+        ]
+    );
+}
+
+/// A property's type errors name the property as PHP# writes it, `Order.total`, at its default and where it is
+/// written. The PHP twin keeps upstream's `Demo\Order::$count` and `$total`.
+#[test]
+fn a_property_type_error_names_the_property_as_sharp_writes_it() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public int total = 0;\n    private int count = \"x\";\n\n    public void change()\n    {\n        this.total = \"ten\";\n    }\n\n    public int read() => this.count;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    public int $total = 0;\n    private int $count = \"x\";\n\n    public function change(): void\n    {\n        $this->total = \"ten\";\n    }\n\n    public function read(): int\n    {\n        return $this->count;\n    }\n}\n";
+
+    assert_eq!(
+        worded(("src/Demo/Order.php", php), &[]),
+        [
+            "8:26 invalid-property-default-value Default value for property `Demo\\Order::$count` is not assignable to its declared type. | This default value has type `string('x')` | Property is declared with type `int` | A property's default value must be assignable to the property's declared type. | Change the default value to match the declared type, or update the property type to accept the default.",
+            "12:24 invalid-property-assignment-value Invalid type for property `$total`: expected `int`, but got `string('ten')`. | This expression has type `string('ten')` | This property `$total` is declared with type `int` | The type `string('ten')` is not compatible with and cannot be assigned to `int`. | Change the assigned value to match the property's type, or update the property's type declaration.",
+        ]
+    );
+    assert_eq!(
+        worded(("src/Demo/Order.sharp", sharp), &[]),
+        [
+            "6:25 invalid-property-default-value Default value for property `Order.count` is not assignable to its declared type. | This default value has type `string` | Property is declared with type `int` | A property's default value must be assignable to the property's declared type. | Change the default value to match the declared type, or update the property type to accept the default.",
+            "10:22 invalid-property-assignment-value Invalid type for property `Order.total`: expected `int`, but got `string`. | This expression has type `string` | This property `Order.total` is declared with type `int` | The type `string` is not compatible with and cannot be assigned to `int`. | Change the assigned value to match the property's type, or update the property's type declaration.",
+        ]
+    );
+}
+
+/// A class constant and an enum case are named as PHP# writes them, `Order.LIMIT` and `Status.Active`, where their
+/// value is checked and where a read names one that does not exist. The PHP twin keeps upstream's wording.
+#[test]
+fn a_constant_and_an_enum_case_are_named_as_sharp_writes_them() {
+    let sharp = "namespace Demo;\n\nenum Status : string\n{\n    case Active = 1;\n}\n\nclass Order\n{\n    public const int LIMIT = \"x\";\n\n    public static Status first() => Status.Missing;\n\n    public static int limit() => Order.NOPE;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nenum Status: string\n{\n    case Active = 1;\n}\n\nclass Order\n{\n    public const int LIMIT = \"x\";\n\n    public static function first(): Status\n    {\n        return Status::Missing;\n    }\n\n    public static function limit(): int\n    {\n        return Order::NOPE;\n    }\n}\n";
+
+    assert_eq!(
+        worded(("src/Demo/Status.php", php), &[]),
+        [
+            "7:19 invalid-enum-case-value Invalid case value for `Demo\\Status::Active`. Expected `string`, but got `int(1)`. | This value has the type `int(1)` | Enum `Demo\\Status` is defined here with a `string` backing type | Ensure the case value is a literal string or a constant expression that resolves to a string.",
+            "12:30 invalid-constant-value Value for constant `Demo\\Order::LIMIT` is not assignable to its declared type. | This value has type `string('x')` | Constant is declared with type `int` | A class constant's value must be assignable to its declared type. | Change the value to match the declared type, or update the declared type to accept the value.",
+            "16:24 non-existent-class-constant Enum constant or case `Missing` does not exist. | Constant or case `Missing` not found in enum `Demo\\Status` | On this enum `Demo\\Status` | Check for typos or ensure `Missing` is defined in `Demo\\Status` or its ancestors/interfaces.",
+            "16:16 never-return Cannot return value with type 'never' from this function. | This expression has type 'never'. | This return statement is effectively unreachable. | A 'never' return type indicates that a function is guaranteed to exit the script, throw an exception, or loop indefinitely. Code following a call to such a function is unreachable. | Since the preceding expression never returns, this 'return' statement cannot be reached. You can likely remove the 'return' keyword entirely.",
+            "21:23 non-existent-class-constant Class-like constant `NOPE` does not exist. | Constant `NOPE` not found in `Demo\\Order` | On this class `Demo\\Order` | Check for typos or ensure `NOPE` is defined in `Demo\\Order` or its ancestors/interfaces.",
+            "21:16 never-return Cannot return value with type 'never' from this function. | This expression has type 'never'. | This return statement is effectively unreachable. | A 'never' return type indicates that a function is guaranteed to exit the script, throw an exception, or loop indefinitely. Code following a call to such a function is unreachable. | Since the preceding expression never returns, this 'return' statement cannot be reached. You can likely remove the 'return' keyword entirely.",
+        ]
+    );
+    assert_eq!(
+        worded(("src/Demo/Status.sharp", sharp), &[]),
+        [
+            "5:19 invalid-enum-case-value Invalid case value for `Status.Active`. Expected `string`, but got `int`. | This value has the type `int` | Enum `Demo\\Status` is defined here with a `string` backing type | Ensure the case value is a literal string or a constant expression that resolves to a string.",
+            "10:30 invalid-constant-value Value for constant `Order.LIMIT` is not assignable to its declared type. | This value has type `string` | Constant is declared with type `int` | A class constant's value must be assignable to its declared type. | Change the value to match the declared type, or update the declared type to accept the value.",
+            "12:44 non-existent-property `Status.Missing` does not exist. | This names no constant, case or static property | The enum `Demo\\Status` has no constant, case or static property named `Missing`",
+            "12:37 invalid-return-statement Invalid return type for method `Order.first`: expected `Status`, but found `null`. | This has type `null` | The type `null` returned here is not compatible with the declared return type `Status`. | Change the return value to match `Status`, or update the method's return type declaration.",
+            "14:40 non-existent-property `Order.NOPE` does not exist. | This names no constant, case or static property | The class `Demo\\Order` has no constant, case or static property named `NOPE`",
+            "14:34 invalid-return-statement Invalid return type for method `Order.limit`: expected `int`, but found `null`. | This has type `null` | The type `null` returned here is not compatible with the declared return type `int`. | Change the return value to match `int`, or update the method's return type declaration.",
+        ]
+    );
+}
+
+/// A method or property a class does not have is named as PHP# writes it, `Order.missing`, on an instance, and
+/// through the class. The PHP twin keeps upstream's wording.
+#[test]
+fn an_undefined_method_and_property_are_named_as_sharp_writes_them() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public int total = 0;\n}\n\nclass Report\n{\n    public static int run(Order order) => order.missing();\n\n    public static int read(Order order) => order.gone;\n\n    public static int call() => Order.nothing();\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    public int $total = 0;\n}\n\nclass Report\n{\n    public static function run(Order $order): int\n    {\n        return $order->missing();\n    }\n\n    public static function read(Order $order): int\n    {\n        return $order->gone;\n    }\n\n    public static function call(): int\n    {\n        return Order::nothing();\n    }\n}\n";
+
+    assert_eq!(
+        messages(("src/Demo/Report.php", php), &[]),
+        [
+            "Method `missing` does not exist on type `Demo\\Order`.",
+            "Could not infer a precise return type for function `Demo\\Report::run`. Saw type `mixed`.",
+            "Property `$gone` does not exist on class `Demo\\Order`.",
+            "Could not infer a precise return type for function `Demo\\Report::read`. Saw type `mixed`.",
+            "Method `nothing` does not exist on type `Demo\\Order`.",
+            "Could not infer a precise return type for function `Demo\\Report::call`. Saw type `mixed`.",
+        ]
+    );
+    assert_eq!(
+        worded(("src/Demo/Report.php", php), &[])[..3],
+        [
+            "14:24 non-existent-method Method `missing` does not exist on type `Demo\\Order`. | This method selection is invalid | This expression has type `Demo\\Order` | Ensure the `missing` method is defined in the `Demo\\Order` class-like.",
+            "14:16 mixed-return-statement Could not infer a precise return type for function `Demo\\Report::run`. Saw type `mixed`. | Type inferred as `mixed` here. | The analysis could not determine a specific type for the value returned here, resulting in `mixed`. This can happen with complex code paths or unannotated data. | Add specific type hints to variables, parameters, or properties involved in calculating the return value. Consider adding a specific return type declaration to the function signature to catch potential mismatches earlier.",
+            "19:24 non-existent-property Property `$gone` does not exist on class `Demo\\Order`. | Property not found here | On instance of `Demo\\Order` | The class `Demo\\Order` does not define the property `$gone`. | Define the property in the class or check for its existence before accessing it.",
+        ]
+    );
+    assert_eq!(
+        messages(("src/Demo/Report.sharp", sharp), &[]),
+        [
+            "Method `Order.missing` does not exist.",
+            "Could not infer a precise return type for method `Report.run`. Saw type `Any?`.",
+            "Property `Order.gone` does not exist.",
+            "Could not infer a precise return type for method `Report.read`. Saw type `Any?`.",
+            "Method `Order.nothing` does not exist.",
+            "Could not infer a precise return type for method `Report.call`. Saw type `Any?`.",
+        ]
+    );
+    assert_eq!(
+        worded(("src/Demo/Report.sharp", sharp), &[])[..3],
+        [
+            "10:49 non-existent-method Method `Order.missing` does not exist. | This method selection is invalid | This expression has type `Order` | Ensure the method `Order.missing` is defined.",
+            "10:43 mixed-return-statement Could not infer a precise return type for method `Report.run`. Saw type `Any?`. | Type inferred as `Any?` here. | The analysis could not determine a specific type for the value returned here, resulting in `Any?`. This can happen with complex code paths or unannotated data. | Add specific type hints to variables, parameters, or properties involved in calculating the return value. Consider adding a specific return type declaration to the method signature to catch potential mismatches earlier.",
+            "12:50 non-existent-property Property `Order.gone` does not exist. | Property not found here | On instance of `Order` | The class `Demo\\Order` does not define the property `gone`. | Define the property in the class or check for its existence before accessing it.",
+        ]
+    );
+}
+
+/// A value of a literal type is named by its general type, `string` and not `"a"`, where a message compares it with
+/// the type it must have: an argument, a local's written type and a parameter's default. A type PHP declares as
+/// literals, `'a'|'b'`, is still named as declared. The PHP twin keeps upstream's literal types.
+#[test]
+fn a_value_of_a_literal_type_is_named_by_its_general_type() {
+    let mode = (
+        "src/Lib/Mode.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Mode\n{\n    /** @param 'a'|'b' $mode */\n    public static function set(string $mode): void\n    {\n    }\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Mode;\n\npublic class Pick\n{\n    public const string NAME = \"a\";\n\n    public static void run(string text)\n    {\n        Mode.set(text);\n        Pick.take(Pick.NAME);\n        let count = 1;\n        count = \"many\";\n    }\n\n    public static void take(int value = \"none\")\n    {\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Mode;\n\nfinal class Pick\n{\n    public const string NAME = 'a';\n\n    public static function run(string $text): void\n    {\n        Mode::set($text);\n        Pick::take(Pick::NAME);\n    }\n\n    public static function take(int $value = 'none'): void\n    {\n    }\n}\n";
+
+    assert_eq!(
+        worded(("src/Demo/Pick.php", php), &[mode]),
+        [
+            "13:19 possibly-invalid-argument Possible argument type mismatch for argument #1 of `Lib\\Mode::set`: expected `string('a')|string('b')`, but possibly received `string`. | This might not be type `string('a')|string('b')` | Arguments to this method are incorrect | The provided type `string` overlaps with `string('a')|string('b')` but is not fully contained. | Ensure the argument always has the expected type using checks or assertions.",
+            "14:20 invalid-argument Invalid argument type for argument #1 of `Demo\\Pick::take`: expected `int`, but found `string('a')`. | This has type `string('a')` | Arguments to this method are incorrect | The provided type `string('a')` is not compatible with the expected type `int`. | Change the argument value to match `int`, or update the parameter's type declaration.",
+            "17:46 invalid-parameter-default-value Default value for parameter `$value` is not assignable to its declared type. | This default value has type `string('none')` | Parameter `$value` is declared with type `int` | A parameter's default value must be assignable to the parameter's declared type. | Change the default value to match the declared type, or widen the parameter type to accept the default.",
+        ]
+    );
+    assert_eq!(
+        worded(("src/Demo/Pick.sharp", sharp), &[mode]),
+        [
+            "11:18 possibly-invalid-argument Possible argument type mismatch for argument #1 of `Mode.set`: expected `\"a\"|\"b\"`, but possibly received `string`. | This might not be type `\"a\"|\"b\"` | Arguments to this method are incorrect | The provided type `string` overlaps with `\"a\"|\"b\"` but is not fully contained. | Ensure the argument always has the expected type using checks or assertions.",
+            "12:19 invalid-argument Invalid argument type for argument #1 of `Pick.take`: expected `int`, but found `string`. | This has type `string` | Arguments to this method are incorrect | The provided type `string` is not compatible with the expected type `int`. | Change the argument value to match `int`, or update the parameter's type declaration.",
+            "14:17 invalid-local-assignment-value Invalid assignment to `count`: it is declared as `int`. | This value has type `string`. | `count` is declared as `int` here. | Assign a `int` value, or change the type `count` is declared with.",
+            "17:41 invalid-parameter-default-value Default value for parameter `value` is not assignable to its declared type. | This default value has type `string` | Parameter `value` is declared with type `int` | A parameter's default value must be assignable to the parameter's declared type. | Change the default value to match the declared type, or widen the parameter type to accept the default.",
+        ]
+    );
+}
+
+/// A member a message reaches through access rules, a static call or a second write is named as PHP# writes it,
+/// `Order.total`. The PHP twin keeps upstream's wording.
+#[test]
+fn a_member_access_refusal_names_the_member_as_sharp_writes_it() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public int count { get; }\n\n    private int secret() => 1;\n\n    public int total { get; private set; } = 0;\n\n    public Order()\n    {\n        this.count = 1;\n        this.count = 2;\n    }\n}\n\nclass Run\n{\n    public static int go(Order order)\n    {\n        order.total = 3;\n\n        return order.secret() + Order.secret();\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Order\n{\n    public readonly int $count;\n\n    public private(set) int $total = 0;\n\n    public function __construct()\n    {\n        $this->count = 1;\n        $this->count = 2;\n    }\n\n    private function secret(): int\n    {\n        return 1;\n    }\n}\n\nfinal class Run\n{\n    public static function go(Order $order): int\n    {\n        $order->total = 3;\n\n        return $order->secret() + Order::secret();\n    }\n}\n";
+
+    let refusals = |analyzed| -> Vec<String> {
+        worded(analyzed, &[]).into_iter().filter(|line| line.contains(" invalid-")).collect()
+    };
+
+    assert_eq!(
+        refusals(("src/Demo/Run.php", php)),
+        [
+            "14:16 invalid-property-write Cannot modify a readonly property after initialization. | This readonly property is already initialized | Write to `Demo\\Order::$count` occurs here | Property is defined as `readonly` here | Readonly properties may be initialized only once. Every later assignment throws an `Error` at runtime. | Remove this assignment or move the property's one-time initialization to this location.",
+            "27:17 invalid-property-write Cannot write to private property `$total` on class `Demo\\Order`. | This member is private and cannot be accessed here | Invalid access occurs here, from within `demo\\run` | Member is defined as `private` here | Make the property `$total` writable (e.g., `public` or `public(set)`), or add a public setter method.",
+            "29:24 invalid-method-access Cannot access private method `Demo\\Order::secret`. | This member is private and cannot be accessed here | Invalid access occurs here, from within `demo\\run` | Member is defined as `private` here | Change the visibility of method `secret` to `public`, or call it from an allowed scope.",
+            "29:42 invalid-method-access Cannot access private method `Demo\\Order::secret`. | This member is private and cannot be accessed here | Invalid access occurs here, from within `demo\\run` | Member is defined as `private` here | Change the visibility of method `secret` to `public`, or call it from an allowed scope.",
+            "29:42 invalid-static-method-access Cannot call non-static method `Demo\\Order::secret` statically. | This is a non-static method | To call this method, you must first create an instance of the class (e.g., `$obj = new MyClass(); $obj->method();`).",
+        ]
+    );
+    assert_eq!(
+        refusals(("src/Demo/Run.sharp", sharp)),
+        [
+            "14:14 invalid-property-write Cannot modify a readonly property after initialization. | This readonly property is already initialized | Write to `Order.count` occurs here | Property is defined as `readonly` here | Readonly properties may be initialized only once. Every later assignment throws an `Error` at runtime. | Remove this assignment or move the property's one-time initialization to this location.",
+            "22:15 invalid-property-write Cannot write to private property `Order.total`. | This member is private and cannot be accessed here | Invalid access occurs here, from within `demo\\run` | Member is defined as `private` here | Make the property `Order.total` writable (e.g., `public` or `public(set)`), or add a public setter method.",
+            "24:22 invalid-method-access Cannot access private method `Order.secret`. | This member is private and cannot be accessed here | Invalid access occurs here, from within `demo\\run` | Member is defined as `private` here | Change the visibility of method `secret` to `public`, or call it from an allowed scope.",
+            "24:39 invalid-method-access Cannot access private method `Order.secret`. | This member is private and cannot be accessed here | Invalid access occurs here, from within `demo\\run` | Member is defined as `private` here | Change the visibility of method `secret` to `public`, or call it from an allowed scope.",
+            "24:39 invalid-static-method-access Cannot call non-static method `Order.secret` statically. | This is a non-static method | To call this method, you must first create an instance of the class (e.g., `const obj = new MyClass(); obj.method();`).",
+        ]
+    );
 }

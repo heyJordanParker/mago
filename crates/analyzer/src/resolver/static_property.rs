@@ -31,6 +31,7 @@ use crate::resolver::property::PropertyResolutionResult;
 use crate::resolver::property::ResolvedProperty;
 use crate::utils::expression::get_block_expression_id;
 use crate::utils::expression::get_variable_id;
+use crate::utils::names::display_sharp_member;
 use crate::visibility::check_static_property_read_visibility;
 
 /// The parts of a static property access.
@@ -312,14 +313,23 @@ where
 
     if !property_metadata.flags.is_static() {
         let classname = declaring_class_metadata.original_name;
+        let issue = if context.dialect.is_sharp() {
+            let property = display_sharp_member(classname, property_name);
+            let name = property_name.as_str_lossy();
+            let name = name.trim_start_matches('$');
 
-        context.collector.report_with_code(
-            IssueCode::InvalidStaticPropertyAccess,
+            Issue::error(format!("Cannot access instance property `{property}` statically."))
+                .with_annotation(Annotation::primary(name_span).with_message("This is an instance property"))
+                .with_note("Static properties are declared with the `static` keyword and read through the class, not an instance.")
+                .with_help(format!("Read this property through an instance of the class, as `value.{name}`, or declare the property as `static`."))
+        } else {
             Issue::error(format!("Cannot access instance property `{classname}::{property_name}` statically."))
                 .with_annotation(Annotation::primary(name_span).with_message("This is an instance property"))
                 .with_note("Static properties are declared with the `static` keyword and accessed with `::` on a class name, not an instance.")
-                .with_help(format!("To access this property, you need an instance of the class (e.g., `$instance->{property_name}`), or declare the property as `static`.")),
-        );
+                .with_help(format!("To access this property, you need an instance of the class (e.g., `$instance->{property_name}`), or declare the property as `static`."))
+        };
+
+        context.collector.report_with_code(IssueCode::InvalidStaticPropertyAccess, issue);
 
         result.has_error_path = true;
         return None;
@@ -371,8 +381,20 @@ fn report_non_existent_property<A>(
 {
     let class_kind_str = context.codebase.get_class_like(classname.as_bytes()).map_or("class", |m| m.kind.as_str());
 
-    context.collector.report_with_code(
-        IssueCode::NonExistentProperty,
+    // PHP# writes a constant, an enum case and a static property alike, `Class.name`, so the read names no kind.
+    let issue = if context.dialect.is_sharp() {
+        let member = display_sharp_member(classname, property_name);
+        let name = property_name.as_str_lossy();
+        let name = name.trim_start_matches('$');
+
+        Issue::error(format!("`{member}` does not exist."))
+            .with_annotation(
+                Annotation::primary(selector_span).with_message("This names no constant, case or static property"),
+            )
+            .with_annotation(Annotation::secondary(class_like_name_span).with_message(format!(
+                "The {class_kind_str} `{classname}` has no constant, case or static property named `{name}`",
+            )))
+    } else {
         Issue::error(format!("Static property `{property_name}` does not exist on {class_kind_str} `{classname}`."))
             .with_annotation(
                 Annotation::primary(selector_span)
@@ -380,6 +402,8 @@ fn report_non_existent_property<A>(
             )
             .with_annotation(Annotation::secondary(class_like_name_span).with_message(format!(
                 "The {class_kind_str} `{classname}` does not have a static property named `{property_name}`",
-            ))),
-    );
+            )))
+    };
+
+    context.collector.report_with_code(IssueCode::NonExistentProperty, issue);
 }
