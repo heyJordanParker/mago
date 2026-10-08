@@ -3022,7 +3022,9 @@ fn type_arguments_of_new_and_calls_lower_to_nothing() {
 /// whose text is its bounds: the type text of each type parameter's bound, `Any?` for one without a bound. `new` of
 /// the class is a `SHARP_TYPE_ARGS` over the `NEW`, whose text is the type arguments the checker found, each in its
 /// full dotted name. `new Self` gives the new object `this`'s type arguments, so its text is null. A type argument
-/// that names a type parameter has a value only the running code knows, so that `new` carries no type arguments yet.
+/// that names a type parameter of the class writes it as `$` and its index, and the engine gives it `this`'s type
+/// argument at that index. One that names a method's own type parameter has a value only the call knows, so that `new`
+/// carries no type arguments yet.
 #[test]
 fn new_of_a_generic_php_sharp_class_carries_its_type_arguments() {
     let lowered = Lowered::with(
@@ -3036,6 +3038,8 @@ fn new_of_a_generic_php_sharp_class_carries_its_type_arguments() {
             }
 
             public PaginatedList<TItem, TKey> copy() => new Self(this.rows);
+
+            public PaginatedList<TItem, List<TKey>?> nested() => new PaginatedList<TItem, List<TKey>?>(this.rows);
         }
 
         public class Report
@@ -3093,6 +3097,22 @@ fn new_of_a_generic_php_sharp_class_carries_its_type_arguments() {
                           ZVAL "this"
                         ZVAL "rows"
                   null
+        "#}
+    );
+    assert_eq!(
+        lowered.body_of("nested"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                SHARP_TYPE_ARGS
+                  NEW
+                    ZVAL "App\\PaginatedList"
+                    ARG_LIST
+                      PROP
+                        VAR
+                          ZVAL "this"
+                        ZVAL "rows"
+                  ZVAL "$0, List<$1>?"
         "#}
     );
     assert_eq!(

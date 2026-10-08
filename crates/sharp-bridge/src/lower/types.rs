@@ -2,11 +2,13 @@ use mago_analyzer::artifacts::AnalysisArtifacts;
 use mago_codex::identifier::method::MethodIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::property::PropertyMetadata;
+use mago_codex::misc::GenericParent;
 use mago_codex::ttype::TType;
 use mago_codex::ttype::add_optional_union_type;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::callable::TCallable;
+use mago_codex::ttype::atomic::generic::TGenericParameter;
 use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::atomic::scalar::class_like_string::TClassLikeString;
@@ -127,19 +129,31 @@ impl<'analysis> Types<'analysis> {
     }
 
     /// The type arguments the `new` at `span` gives the fully qualified class name `class`, as the checker found them,
-    /// when it is a PHP# generic class: the [`type_text`] of each in declaration order, joined by `, `. A type argument
-    /// that names a type parameter has a value only the running code knows, so such a `new` has none.
+    /// when it is a PHP# generic class: the type text of each in declaration order, joined by `, `. A type parameter of
+    /// the class the `new` is in is written as `$` and its index, which the engine replaces with `this`'s type argument
+    /// at that index. A method's own type parameter has a value only its call knows, so a `new` that names one has none.
     pub(crate) fn type_arguments(&self, class: &[u8], span: Span) -> Option<String> {
         self.bounds(class)?;
         let arguments =
             self.artifacts.inferred_type_arguments.get(&(span.start.offset, span.end.offset)).unwrap_or_else(|| {
                 unreachable!("the analysis records the type arguments of every generic `new`, not {span:?}")
             });
-        if arguments.iter().any(TUnion::has_template_types) {
+        let of_a_method = |template: &&TAtomic| {
+            !matches!(
+                template,
+                TAtomic::GenericParameter(TGenericParameter { defining_entity: GenericParent::ClassLike(_), .. })
+                    | TAtomic::Scalar(TScalar::ClassLikeString(TClassLikeString::Generic {
+                        defining_entity: GenericParent::ClassLike(_),
+                        ..
+                    }))
+            )
+        };
+        if arguments.iter().any(|argument| argument.get_template_types().iter().any(of_a_method)) {
             return None;
         }
 
-        let arguments: Vec<String> = arguments.iter().map(|argument| type_text(argument, self.codebase)).collect();
+        let arguments: Vec<String> =
+            arguments.iter().map(|argument| text(argument, self.codebase, Parameter::Index)).collect();
 
         Some(arguments.join(", "))
     }
@@ -399,12 +413,26 @@ pub(crate) fn agreed_kind(mut kinds: impl Iterator<Item = DeclarationKind>) -> D
     kind
 }
 
+/// How a type text writes a type parameter of a class.
+#[derive(Clone, Copy)]
+enum Parameter {
+    /// By its name.
+    Name,
+    /// As `$` and its index among its class's type parameters, `$0` for the first.
+    Index,
+}
+
 /// `r#type` in the one PHP# spelling the engine parses, task 090's type text: a class by its full dotted name as it is
 /// declared, the built-in types, `List<T>`, `Map<K, V>`, `Iterable<T>`, `Class<T>`, `Function<R(P1, P2)>`, a type
 /// parameter by its name, `T?`, `(A|B)?`, `A & B`, and an intersection in parentheses inside a union or a nullable
 /// type, `(A & B)|C` and `(A & B)?`. Union and intersection members are sorted by their text, and a space comes only
 /// after a comma and around `&`.
 pub(crate) fn type_text(r#type: &TUnion, codebase: &CodebaseMetadata) -> String {
+    text(r#type, codebase, Parameter::Name)
+}
+
+/// [`type_text`], with each type parameter of a class written as `parameter` says.
+fn text(r#type: &TUnion, codebase: &CodebaseMetadata, parameter: Parameter) -> String {
     if let Some(TAtomic::Mixed(mixed)) = r#type.types.iter().find(|atomic| atomic.is_mixed()) {
         return if mixed.is_non_null() { "Any" } else { "Any?" }.to_owned();
     }
@@ -413,7 +441,7 @@ pub(crate) fn type_text(r#type: &TUnion, codebase: &CodebaseMetadata) -> String 
         .types
         .iter()
         .filter(|atomic| !atomic.is_null())
-        .map(|atomic| intersection_text(atomic, codebase))
+        .map(|atomic| intersection_text(atomic, codebase, parameter))
         .collect();
     members.sort_unstable();
     members.dedup();
@@ -431,22 +459,32 @@ pub(crate) fn type_text(r#type: &TUnion, codebase: &CodebaseMetadata) -> String 
 }
 
 /// `atomic` and each type it intersects, `A & B` with its members sorted by their text, and whether it intersects any.
-fn intersection_text(atomic: &TAtomic, codebase: &CodebaseMetadata) -> (String, bool) {
+fn intersection_text(atomic: &TAtomic, codebase: &CodebaseMetadata, parameter: Parameter) -> (String, bool) {
     let Some(intersected) = atomic.get_intersection_types().filter(|intersected| !intersected.is_empty()) else {
-        return (atomic_text(atomic, codebase), false);
+        return (atomic_text(atomic, codebase, parameter), false);
     };
 
     let mut members: Vec<String> =
-        std::iter::once(atomic).chain(intersected).map(|member| atomic_text(member, codebase)).collect();
+        std::iter::once(atomic).chain(intersected).map(|member| atomic_text(member, codebase, parameter)).collect();
     members.sort_unstable();
     members.dedup();
 
     (members.join(" & "), true)
 }
 
-fn atomic_text(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String {
-    let list = |types: &mut dyn Iterator<Item = &TUnion>| {
-        types.map(|r#type| type_text(r#type, codebase)).collect::<Vec<_>>().join(", ")
+fn atomic_text(atomic: &TAtomic, codebase: &CodebaseMetadata, parameter: Parameter) -> String {
+    let type_text = |r#type: &TUnion| text(r#type, codebase, parameter);
+    let list = |types: &mut dyn Iterator<Item = &TUnion>| types.map(type_text).collect::<Vec<_>>().join(", ");
+    let parameter_text = |name: Word, defining_entity: GenericParent| match (parameter, defining_entity) {
+        (Parameter::Index, GenericParent::ClassLike(class)) => {
+            let index = codebase
+                .get_class_like(class.as_bytes())
+                .and_then(|class| class.template_types.get_index_of(&name))
+                .unwrap_or_else(|| unreachable!("a class declares each of its type parameters, not `{name}`"));
+
+            format!("${index}")
+        }
+        _ => name.to_string(),
     };
 
     match atomic {
@@ -463,7 +501,7 @@ fn atomic_text(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String {
             }
             _ => class_text(object.name, codebase),
         },
-        TAtomic::Array(TArray::List(array)) => format!("List<{}>", type_text(&array.element_type, codebase)),
+        TAtomic::Array(TArray::List(array)) => format!("List<{}>", type_text(&array.element_type)),
         TAtomic::Array(TArray::Keyed(array)) => {
             let (key, value) = array.parameters.as_ref().unwrap_or_else(|| {
                 unreachable!("PHP# writes a Map with its key and value types, not `{}`", atomic.get_id())
@@ -471,22 +509,22 @@ fn atomic_text(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String {
 
             format!("Map<{}>", list(&mut [key.as_ref(), value.as_ref()].into_iter()))
         }
-        TAtomic::Iterable(iterable) => format!("Iterable<{}>", type_text(iterable.get_value_type(), codebase)),
-        TAtomic::GenericParameter(parameter) => parameter.parameter_name.to_string(),
+        TAtomic::Iterable(iterable) => format!("Iterable<{}>", type_text(iterable.get_value_type())),
+        TAtomic::GenericParameter(generic) => parameter_text(generic.parameter_name, generic.defining_entity),
         TAtomic::Scalar(TScalar::ClassLikeString(class_value)) => {
             let class = match class_value {
                 TClassLikeString::Literal { value } => class_text(*value, codebase),
-                TClassLikeString::OfType { constraint, .. } => atomic_text(constraint, codebase),
-                TClassLikeString::Generic { parameter_name, .. } => parameter_name.to_string(),
+                TClassLikeString::OfType { constraint, .. } => atomic_text(constraint, codebase, parameter),
+                TClassLikeString::Generic { parameter_name, defining_entity, .. } => {
+                    parameter_text(*parameter_name, *defining_entity)
+                }
                 TClassLikeString::Any { .. } => "Object".to_owned(),
             };
 
             format!("Class<{class}>")
         }
         TAtomic::Callable(TCallable::Signature(signature)) => {
-            let written = |r#type: Option<&TUnion>| {
-                r#type.map_or_else(|| "Any?".to_owned(), |r#type| type_text(r#type, codebase))
-            };
+            let written = |r#type: Option<&TUnion>| r#type.map_or_else(|| "Any?".to_owned(), type_text);
             let parameters: Vec<String> =
                 signature.get_parameters().iter().map(|parameter| written(parameter.get_type_signature())).collect();
 
