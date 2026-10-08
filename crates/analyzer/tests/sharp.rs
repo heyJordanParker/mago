@@ -5334,9 +5334,9 @@ fn a_method_value_is_specialized_for_its_receiver() {
 }
 
 /// A method value's `Self` is its receiver, whose type arguments may name the class's own type parameters, so the
-/// method's `TItem` becomes the receiver's type argument before `Self` becomes the receiver: `boxes.same` on a
-/// `Box<List<TItem>>` inside `Box<TItem>` is a `Function<Box<List<TItem>>()>`, not a
-/// `Function<Box<List<List<TItem>>>()>`. The PHP twin's `$boxes->same(...)` keeps Mago's issues.
+/// class's `TItem` is replaced by the receiver's type argument once: `boxes.same` on a `Box<List<TItem>>` inside
+/// `Box<TItem>` is a `Function<Box<List<TItem>>()>`, not a `Function<Box<List<List<TItem>>>()>`. The PHP twin's
+/// `$boxes->same(...)` keeps Mago's issues.
 #[test]
 fn a_method_value_of_a_receiver_naming_its_own_type_parameter_replaces_it_once() {
     let sharp = "namespace Demo;\n\npublic class Box<TItem>\n{\n    public Self same() => this;\n\n    public Function<Box<List<TItem>>()> read(Box<List<TItem>> boxes) => boxes.same;\n\n    public Function<Box<List<List<TItem>>>()> wrong(Box<List<TItem>> boxes) => boxes.same;\n}\n";
@@ -5408,5 +5408,135 @@ fn a_php_template_key_beside_a_backed_enum_binds_as_upstream_binds_it() {
         [
             "30:16 invalid-return-statement Invalid return type for function `Demo\\Tally::run`: expected `int`, but found `string`. Change the return value to match `int`, or update the function's return type declaration."
         ]
+    );
+}
+
+/// `Self` is the receiver's class with the receiver's type arguments, spec section 11, also where the receiver's class
+/// adds a type parameter to the class that declares the method: `pair.same` on a `Pair<int, string>`, whose header is
+/// `Box<TKey>`, is a `Function<Pair<int, string>()>`, as `pair.same()` is a `Pair<int, string>`, and `orders.same` on
+/// an `OrderBox` is a `Function<OrderBox()>`. The PHP twin's `$pair->same(...)` keeps Mago's issues.
+#[test]
+fn a_method_value_of_a_subclass_that_adds_a_type_parameter_is_its_receiver() {
+    let sharp = "namespace Demo;\n\npublic class Order\n{\n}\n\npublic class Box<TItem>\n{\n    public Self same() => this;\n\n    public TItem? first() => null;\n}\n\npublic class Pair<TKey, TValue> : Box<TKey>\n{\n    public TValue? value() => null;\n}\n\npublic class OrderBox : Box<Order>\n{\n}\n\npublic class Report\n{\n    public static Function<Pair<int, string>()> pairs(Pair<int, string> pair) => pair.same;\n\n    public static Pair<int, string> called(Pair<int, string> pair) => pair.same();\n\n    public static Function<int()> orders(OrderBox orders) => orders.same;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n}\n\n/** @template TItem */\nclass Box\n{\n    public function same(): static\n    {\n        return $this;\n    }\n\n    /** @return TItem|null */\n    public function first(): mixed\n    {\n        return null;\n    }\n}\n\n/**\n * @template TKey\n * @template TValue\n * @extends Box<TKey>\n */\nclass Pair extends Box\n{\n    /** @return TValue|null */\n    public function value(): mixed\n    {\n        return null;\n    }\n}\n\n/** @extends Box<Order> */\nclass OrderBox extends Box\n{\n}\n\nclass Report\n{\n    /**\n     * @param Pair<int, string> $pair\n     * @return \\Closure(): Pair<int, string>\n     */\n    public static function pairs(Pair $pair): \\Closure\n    {\n        return $pair->same(...);\n    }\n\n    /**\n     * @param Pair<int, string> $pair\n     * @return Pair<int, string>\n     */\n    public static function called(Pair $pair): Pair\n    {\n        return $pair->same();\n    }\n\n    /** @return \\Closure(): int */\n    public static function orders(OrderBox $orders): \\Closure\n    {\n        return $orders->same(...);\n    }\n}\n";
+
+    assert_eq!(
+        explained(("src/Demo/Box.php", php), &[]),
+        [
+            "51:16 less-specific-return-statement Returned type `(closure(): demo\\box<mixed>&static)` is less specific than the declared return type `(closure(): Demo\\Pair<int, string>)` for function `Demo\\Report::pairs`. Consider returning a value that more precisely matches the declared `(closure(): Demo\\Pair<int, string>)` type, or adjust the function's return type declaration if the broader type is intended.",
+            "60:16 less-specific-nested-return-statement Returned type `Demo\\Pair<mixed, mixed>&static` is less specific than the declared return type `Demo\\Pair<int, string>` for function `Demo\\Report::called` due to nested 'mixed'. Ensure the structure returned by `Demo\\Report::called` strictly adheres to the types specified in the `Demo\\Pair<int, string>` return type declaration.",
+            "66:16 invalid-return-statement Invalid return type for function `Demo\\Report::orders`: expected `(closure(): int)`, but found `(closure(): demo\\box<mixed>&static)`. Change the return value to match `(closure(): int)`, or update the function's return type declaration.",
+        ]
+    );
+    assert_eq!(
+        explained(("src/Demo/Box.sharp", sharp), &[]),
+        [
+            "29:62 invalid-return-statement Invalid return type for function `Demo\\Report::orders`: expected `Function<int()>`, but found `Function<OrderBox()>`. Change the return value to match `Function<int()>`, or update the function's return type declaration."
+        ]
+    );
+}
+
+/// A receiver's type argument keeps the `Self` of the code that wrote it: inside `Node`, `this.children()` is a
+/// `Tree<Self>` whose `Self` is the `Node` the body runs on, so `first` on it returns a `Node?`, not a `Tree`, whether
+/// it is called or read as a method value. The PHP twin's `static` keeps Mago's issues.
+#[test]
+fn self_in_a_receivers_type_argument_stays_the_class_that_wrote_it() {
+    let sharp = "namespace Demo;\n\npublic abstract class Node\n{\n    public abstract Tree<Self> children();\n\n    public Function<Tree<Node>?()> wrong() => this.children().first;\n\n    public Tree<Node>? called() => this.children().first();\n}\n\npublic abstract class Tree<out TItem> : Node\n{\n    public TItem? first() => null;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nabstract class Node\n{\n    /** @return Tree<static> */\n    abstract public function children(): Tree;\n\n    /** @return \\Closure(): (Tree<Node>|null) */\n    public function wrong(): \\Closure\n    {\n        return $this->children()->first(...);\n    }\n\n    /** @return Tree<Node>|null */\n    public function called(): ?Tree\n    {\n        return $this->children()->first();\n    }\n}\n\n/** @template-covariant TItem */\nabstract class Tree extends Node\n{\n    /** @return TItem|null */\n    public function first(): mixed\n    {\n        return null;\n    }\n}\n";
+
+    assert_eq!(
+        explained(("src/Demo/Node.php", php), &[]),
+        [
+            "13:16 less-specific-return-statement Returned type `(closure(): demo\\node&static|null)` is less specific than the declared return type `(closure(): Demo\\Tree<Demo\\Node>|null)` for function `Demo\\Node::wrong`. Consider returning a value that more precisely matches the declared `(closure(): Demo\\Tree<Demo\\Node>|null)` type, or adjust the function's return type declaration if the broader type is intended."
+        ]
+    );
+    assert_eq!(
+        explained(("src/Demo/Node.sharp", sharp), &[]),
+        [
+            "7:47 less-specific-return-statement Returned type `Function<Node?()>` is less specific than the declared return type `Function<Tree<Node>?()>` for function `Demo\\Node::wrong`. Consider returning a value that more precisely matches the declared `Function<Tree<Node>?()>` type, or adjust the function's return type declaration if the broader type is intended.",
+            "9:36 less-specific-return-statement Returned type `Node?` is less specific than the declared return type `Tree<Node>?` for function `Demo\\Node::called`. Consider returning a value that more precisely matches the declared `Tree<Node>?` type, or adjust the function's return type declaration if the broader type is intended.",
+        ]
+    );
+}
+
+/// A call and the method value it reads are one member of one receiver, spec sections 11 and 14.3, so `x.same()` is
+/// the type `x.same` returns on every receiver: a class without type parameters, a generic class, a subclass that names
+/// the type arguments in its header, a subclass that adds a type parameter, a receiver whose type argument names the
+/// class's own type parameter, `this`, a type parameter bounded by a generic class, and a `Tree<Self>`. Each form is
+/// declared to return a `bool`, so its message names the type it gives. The PHP twin's `static` keeps Mago's issues.
+#[test]
+fn a_call_and_its_method_value_give_one_type_on_every_receiver() {
+    let sharp = "namespace Demo;\n\npublic class Order\n{\n}\n\npublic class Plain\n{\n    public Self same() => this;\n}\n\npublic class Box<TItem>\n{\n    public Self same() => this;\n\n    public bool nested(Box<List<TItem>> boxes) => boxes.same();\n\n    public Function<bool()> nestedValue(Box<List<TItem>> boxes) => boxes.same;\n\n    public bool own() => this.same();\n\n    public Function<bool()> ownValue() => this.same;\n}\n\npublic class OrderBox : Box<Order>\n{\n}\n\npublic class Pair<TKey, TValue> : Box<TKey>\n{\n    public TValue? value() => null;\n}\n\npublic abstract class Node\n{\n    public Self same() => this;\n\n    public abstract Tree<Self> children();\n\n    public bool tree() => this.children().same();\n\n    public Function<bool()> treeValue() => this.children().same;\n\n    public bool item() => this.children().first();\n\n    public Function<bool()> itemValue() => this.children().first;\n}\n\npublic abstract class Tree<out TItem> : Node\n{\n    public TItem? first() => null;\n}\n\npublic class Report\n{\n    public static bool plain(Plain plain) => plain.same();\n\n    public static Function<bool()> plainValue(Plain plain) => plain.same;\n\n    public static bool boxed(Box<int> box) => box.same();\n\n    public static Function<bool()> boxedValue(Box<int> box) => box.same;\n\n    public static bool orders(OrderBox orders) => orders.same();\n\n    public static Function<bool()> ordersValue(OrderBox orders) => orders.same;\n\n    public static bool pairs(Pair<int, string> pair) => pair.same();\n\n    public static Function<bool()> pairsValue(Pair<int, string> pair) => pair.same;\n\n    public static bool bounded<TBox : Box<int>>(TBox box) => box.same();\n\n    public static Function<bool()> boundedValue<TBox : Box<int>>(TBox box) => box.same;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n}\n\nclass Plain\n{\n    public function same(): static\n    {\n        return $this;\n    }\n}\n\n/** @template TItem */\nclass Box\n{\n    public function same(): static\n    {\n        return $this;\n    }\n\n    /** @param Box<list<TItem>> $boxes */\n    public function nested(Box $boxes): bool\n    {\n        return $boxes->same();\n    }\n\n    /**\n     * @param Box<list<TItem>> $boxes\n     * @return \\Closure(): bool\n     */\n    public function nestedValue(Box $boxes): \\Closure\n    {\n        return $boxes->same(...);\n    }\n\n    public function own(): bool\n    {\n        return $this->same();\n    }\n\n    /** @return \\Closure(): bool */\n    public function ownValue(): \\Closure\n    {\n        return $this->same(...);\n    }\n}\n\n/** @extends Box<Order> */\nclass OrderBox extends Box\n{\n}\n\n/**\n * @template TKey\n * @template TValue\n * @extends Box<TKey>\n */\nclass Pair extends Box\n{\n    /** @return TValue|null */\n    public function value(): mixed\n    {\n        return null;\n    }\n}\n\nabstract class Node\n{\n    public function same(): static\n    {\n        return $this;\n    }\n\n    /** @return Tree<static> */\n    abstract public function children(): Tree;\n\n    public function tree(): bool\n    {\n        return $this->children()->same();\n    }\n\n    /** @return \\Closure(): bool */\n    public function treeValue(): \\Closure\n    {\n        return $this->children()->same(...);\n    }\n\n    public function item(): bool\n    {\n        return $this->children()->first();\n    }\n\n    /** @return \\Closure(): bool */\n    public function itemValue(): \\Closure\n    {\n        return $this->children()->first(...);\n    }\n}\n\n/** @template-covariant TItem */\nabstract class Tree extends Node\n{\n    /** @return TItem|null */\n    public function first(): mixed\n    {\n        return null;\n    }\n}\n\nclass Report\n{\n    public static function plain(Plain $plain): bool\n    {\n        return $plain->same();\n    }\n\n    /** @return \\Closure(): bool */\n    public static function plainValue(Plain $plain): \\Closure\n    {\n        return $plain->same(...);\n    }\n\n    /** @param Box<int> $box */\n    public static function boxed(Box $box): bool\n    {\n        return $box->same();\n    }\n\n    /**\n     * @param Box<int> $box\n     * @return \\Closure(): bool\n     */\n    public static function boxedValue(Box $box): \\Closure\n    {\n        return $box->same(...);\n    }\n\n    public static function orders(OrderBox $orders): bool\n    {\n        return $orders->same();\n    }\n\n    /** @return \\Closure(): bool */\n    public static function ordersValue(OrderBox $orders): \\Closure\n    {\n        return $orders->same(...);\n    }\n\n    /** @param Pair<int, string> $pair */\n    public static function pairs(Pair $pair): bool\n    {\n        return $pair->same();\n    }\n\n    /**\n     * @param Pair<int, string> $pair\n     * @return \\Closure(): bool\n     */\n    public static function pairsValue(Pair $pair): \\Closure\n    {\n        return $pair->same(...);\n    }\n\n    /**\n     * @template TBox of Box<int>\n     * @param TBox $box\n     */\n    public static function bounded(Box $box): bool\n    {\n        return $box->same();\n    }\n\n    /**\n     * @template TBox of Box<int>\n     * @param TBox $box\n     * @return \\Closure(): bool\n     */\n    public static function boundedValue(Box $box): \\Closure\n    {\n        return $box->same(...);\n    }\n}\n";
+    let gives = |function: &str, found: &str| {
+        vec![
+            format!("Invalid return type for function `Demo\\{function}`: expected `bool`, but found `{found}`."),
+            format!(
+                "Invalid return type for function `Demo\\{function}Value`: expected `Function<bool()>`, but found `Function<{found}()>`."
+            ),
+        ]
+    };
+
+    assert_eq!(
+        messages(("src/Demo/Report.php", php), &[]),
+        [
+            "Invalid return type for function `Demo\\Box::nested`: expected `bool`, but found `demo\\box<list<('TItem.demo\\box extends mixed)>>&static`.",
+            "Invalid return type for function `Demo\\Box::nestedValue`: expected `(closure(): bool)`, but found `(closure(): demo\\box<mixed>&static)`.",
+            "Invalid return type for function `Demo\\Box::own`: expected `bool`, but found `demo\\box<('TItem.demo\\box extends mixed)>&static`.",
+            "Invalid return type for function `Demo\\Box::ownValue`: expected `(closure(): bool)`, but found `(closure(): demo\\box<mixed>&static)`.",
+            "Invalid return type for function `Demo\\Node::tree`: expected `bool`, but found `Demo\\Tree<Demo\\Tree<Demo\\Node&static>&static>&static`.",
+            "Invalid return type for function `Demo\\Node::treeValue`: expected `(closure(): bool)`, but found `(closure(): demo\\node&static)`.",
+            "Function `Demo\\Node::item` is declared to return `bool` but possibly returns a nullable value (inferred as `Demo\\Tree<Demo\\Tree<Demo\\Node&static>&static>&static|null`).",
+            "Invalid return type for function `Demo\\Node::item`: expected `bool`, but found `Demo\\Tree<Demo\\Tree<Demo\\Node&static>&static>&static|null`.",
+            "Invalid return type for function `Demo\\Node::itemValue`: expected `(closure(): bool)`, but found `(closure(): demo\\node&static|null)`.",
+            "Invalid return type for function `Demo\\Report::plain`: expected `bool`, but found `Demo\\Plain&static`.",
+            "Invalid return type for function `Demo\\Report::plainValue`: expected `(closure(): bool)`, but found `(closure(): Demo\\Plain&static)`.",
+            "Invalid return type for function `Demo\\Report::boxed`: expected `bool`, but found `Demo\\Box<int>&static`.",
+            "Invalid return type for function `Demo\\Report::boxedValue`: expected `(closure(): bool)`, but found `(closure(): Demo\\Box<mixed>&static)`.",
+            "Invalid return type for function `Demo\\Report::orders`: expected `bool`, but found `Demo\\OrderBox<mixed>&static`.",
+            "Invalid return type for function `Demo\\Report::ordersValue`: expected `(closure(): bool)`, but found `(closure(): demo\\box<mixed>&static)`.",
+            "Invalid return type for function `Demo\\Report::pairs`: expected `bool`, but found `Demo\\Pair<mixed, mixed>&static`.",
+            "Invalid return type for function `Demo\\Report::pairsValue`: expected `(closure(): bool)`, but found `(closure(): demo\\box<mixed>&static)`.",
+            "Invalid return type for function `Demo\\Report::bounded`: expected `bool`, but found `Demo\\Box<int>&static`.",
+            "Invalid return type for function `Demo\\Report::boundedValue`: expected `(closure(): bool)`, but found `(closure(): Demo\\Box<mixed>&static)`.",
+        ]
+    );
+    assert_eq!(
+        messages(("src/Demo/Report.sharp", sharp), &[]),
+        [
+            gives("Box::nested", "Box<List<TItem>>"),
+            gives("Box::own", "Box<TItem>"),
+            gives("Node::tree", "Tree<Node>"),
+            vec![
+                "Function `Demo\\Node::item` is declared to return `bool` but possibly returns a nullable value (inferred as `Node?`).".to_owned(),
+            ],
+            gives("Node::item", "Node?"),
+            gives("Report::plain", "Plain"),
+            gives("Report::boxed", "Box<int>"),
+            gives("Report::orders", "OrderBox"),
+            gives("Report::pairs", "Pair<int, string>"),
+            gives("Report::bounded", "Box<int>"),
+        ]
+        .concat()
+    );
+}
+
+/// A derived type a PHP docblock nests in a return type reads the type argument of its call, not the bound of the type
+/// parameter: `keys.nested(values)` with a `Map<string, int>` is a `List<string>` where the method returns
+/// `list<key-of<T>>`, as the PHP twin's `list<string>`, never the `List<int|string>` of `T`'s bound.
+#[test]
+fn a_derived_type_nested_in_a_php_return_type_reads_the_type_argument_of_its_call() {
+    let keys = "<?php\n\nnamespace Lib;\n\nfinal class Keys\n{\n    /**\n     * @template T of array<array-key, mixed>\n     * @param T $values\n     * @return list<key-of<T>>\n     */\n    public function nested(array $values): array\n    {\n        return array_keys($values);\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Keys;\n\npublic class Report\n{\n    public static bool nested(Keys keys, Map<string, int> values) => keys.nested(values);\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Keys;\n\nclass Report\n{\n    /** @param array<string, int> $values */\n    public static function nested(Keys $keys, array $values): bool\n    {\n        return $keys->nested($values);\n    }\n}\n";
+    let others = [("src/Lib/Keys.php", keys)];
+
+    assert_eq!(
+        messages(("src/Demo/Report.php", php), &others),
+        ["Invalid return type for function `Demo\\Report::nested`: expected `bool`, but found `list<string>`."]
+    );
+    assert_eq!(
+        messages(("src/Demo/Report.sharp", sharp), &others),
+        ["Invalid return type for function `Demo\\Report::nested`: expected `bool`, but found `List<string>`."]
     );
 }

@@ -33,6 +33,7 @@ use mago_word::empty_word;
 
 use crate::context::Context;
 use crate::invocation::Invocation;
+use crate::resolver::property::specialize_member_type;
 
 /// Resolves a type resulting from an invocation.
 pub fn resolve_invocation_type<'ctx, 'arena, A>(
@@ -130,23 +131,35 @@ where
 
     resulting_union.types = Cow::Owned(resulting_atomics);
 
-    if !template_result.lower_bounds.is_empty() || resulting_union.has_template_types() {
+    // A PHP# member of a receiver has the type a method value of it has, spec section 11, so `specialize_member_type`
+    // computes both, and nothing expands its result again.
+    let sharp_receiver = invocation
+        .target
+        .get_method_context()
+        .filter(|_| context.dialect.is_sharp() || invocation.target.get_dialect().is_sharp())
+        .and_then(|method_context| match &method_context.class_type {
+            StaticClassType::Object(receiver) => Some((method_context, receiver)),
+            _ => None,
+        });
+
+    if let Some((method_context, receiver)) = sharp_receiver {
+        let declaring_class = method_context
+            .declaring_method_id
+            .and_then(|method| context.codebase.get_class_like(method.get_class_name().as_bytes()))
+            .unwrap_or(method_context.class_like_metadata);
+
+        resulting_union = specialize_member_type(context, receiver, declaring_class, template_result, |options| {
+            let mut member_type = resulting_union;
+            expander::expand_union(context.codebase, &mut member_type, options);
+            member_type
+        });
+    } else if !template_result.lower_bounds.is_empty() || resulting_union.has_template_types() {
         // Replace templates first so derived types (e.g. `template-type<T, ...>`)
         // see concrete object/target types before expansion runs their resolution logic.
         // Running expansion first would eagerly walk the abstract `T`'s constraint and lose the substitution site.
         resulting_union = inferred_type_replacer::replace(&resulting_union, template_result, context.codebase);
 
-        // PHP#'s `Self` is the receiver's class with the receiver's type arguments, spec section 11, so it is bound to
-        // the receiver before this pass fills the declaring class's omitted type arguments: an unbound `Self` of
-        // `Box<TItem>` would become `Box<Any?>`, and a receiver `OrderBox : Box<Order>` would inherit the stray `Any?`.
-        let options = match invocation.target.get_method_context() {
-            Some(method_context) if context.dialect.is_sharp() || invocation.target.get_dialect().is_sharp() => {
-                TypeExpansionOptions { static_class_type: method_context.class_type.clone(), ..Default::default() }
-            }
-            _ => TypeExpansionOptions::default(),
-        };
-
-        expander::expand_union(context.codebase, &mut resulting_union, &options);
+        expander::expand_union(context.codebase, &mut resulting_union, &TypeExpansionOptions::default());
     }
 
     let static_class_type;
@@ -198,11 +211,17 @@ where
         .get_all_child_nodes()
         .into_iter()
         .any(|node| matches!(node, TypeRef::Atomic(TAtomic::Variable(_))));
-    if !has_lexically_bound_parameter {
+    if sharp_receiver.is_none() && !has_lexically_bound_parameter {
         expander::expand_union(
             context.codebase,
             &mut resulting_union,
-            &TypeExpansionOptions { self_class, static_class_type, function_is_final, allow_mixin_static_rebind },
+            &TypeExpansionOptions {
+                self_class,
+                static_class_type,
+                function_is_final,
+                allow_mixin_static_rebind,
+                ..Default::default()
+            },
         );
     }
 

@@ -25,6 +25,7 @@ use mago_codex::ttype::expander::TypeExpansionOptions;
 use mago_codex::ttype::expander::get_signature_of_function_like_metadata;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_never;
+use mago_codex::ttype::template::TemplateBound;
 use mago_codex::ttype::template::TemplateResult;
 use mago_codex::ttype::template::inferred_type_replacer;
 use mago_codex::ttype::union::TUnion;
@@ -50,6 +51,7 @@ use crate::external::PropertyAccessKind;
 use crate::resolver::class_name::report_non_existent_class_like;
 use crate::resolver::method::run_forwarded_methods;
 use crate::resolver::selector::resolve_member_selector;
+use crate::statement::function_like::get_this_type;
 use crate::utils::expression::analyze_member_object;
 use crate::utils::expression::is_this;
 use crate::utils::names::display_class_like_name;
@@ -1264,20 +1266,10 @@ pub fn localize_property_type<A>(
 where
     A: Arena,
 {
-    let mut template_types = get_template_types_for_class_member(
+    let template_types = get_receiver_type_arguments(
         context,
-        Some(property_declaring_class_metadata),
-        Some(property_declaring_class_metadata.name),
-        Some(property_class_metadata),
-        &property_class_metadata.template_types,
-        &IndexMap::default(),
-    );
-
-    update_template_types(
-        context,
-        &mut template_types,
-        property_class_metadata,
         object_type_parameters,
+        property_class_metadata,
         property_declaring_class_metadata,
     );
 
@@ -1286,6 +1278,78 @@ where
         &TemplateResult::new(IndexMap::default(), template_types),
         context.codebase,
     )
+}
+
+/// The type arguments a receiver of `receiver_class` with `receiver_type_parameters` gives its class's type
+/// parameters and the ones of `declaring_class`, which declares the member it reads.
+fn get_receiver_type_arguments<A>(
+    context: &Context<'_, '_, A>,
+    receiver_type_parameters: &[TUnion],
+    receiver_class: &ClassLikeMetadata,
+    declaring_class: &ClassLikeMetadata,
+) -> HashMap<Word, HashMap<GenericParent, TUnion>>
+where
+    A: Arena,
+{
+    let mut template_types = get_template_types_for_class_member(
+        context,
+        Some(declaring_class),
+        Some(declaring_class.name),
+        Some(receiver_class),
+        &receiver_class.template_types,
+        &IndexMap::default(),
+    );
+
+    update_template_types(context, &mut template_types, receiver_class, receiver_type_parameters, declaring_class);
+
+    template_types
+}
+
+/// PHP#'s type of a member `declaring_class` declares, called or read as a method value through `receiver`, spec
+/// section 11. `expand_member` expands the member's declared type with the options it is given, which bind `Self` to
+/// the receiver's class with its own type parameters, as `get_this_type` builds it, and keep a derived type over a type
+/// parameter. One replacement then gives those type parameters, and the declaring class's, the receiver's type
+/// arguments, beside a call's `type_arguments`. The last expansion binds no `Self`, so a `Self` that a receiver's type
+/// argument holds stays the class that wrote it, and evaluates the kept derived types against the replaced types.
+pub(crate) fn specialize_member_type<A>(
+    context: &Context<'_, '_, A>,
+    receiver: &TObject,
+    declaring_class: &ClassLikeMetadata,
+    type_arguments: &TemplateResult,
+    expand_member: impl FnOnce(&TypeExpansionOptions) -> TUnion,
+) -> TUnion
+where
+    A: Arena,
+{
+    let receiver_class = receiver
+        .get_name()
+        .and_then(|name| context.codebase.get_class_like(name.as_bytes()))
+        .unwrap_or(declaring_class);
+    let member_type = expand_member(&TypeExpansionOptions {
+        self_class: Some(declaring_class.name),
+        static_class_type: StaticClassType::Object(get_this_type(context, receiver_class, None)),
+        keep_generic_derived_types: true,
+        ..Default::default()
+    });
+
+    let mut type_arguments = type_arguments.clone();
+    let receiver_type_parameters = receiver.get_type_parameters().unwrap_or_default();
+    for (name, bounds) in
+        get_receiver_type_arguments(context, receiver_type_parameters, receiver_class, declaring_class)
+    {
+        for (parent, bound) in bounds {
+            type_arguments
+                .lower_bounds
+                .entry(name)
+                .or_default()
+                .insert(parent, vec![TemplateBound::new(bound, 0, None)]);
+        }
+    }
+
+    let mut member_type = inferred_type_replacer::replace(&member_type, &type_arguments, context.codebase);
+    expander::expand_union(context.codebase, &mut member_type, &TypeExpansionOptions::default());
+
+    member_type
 }
 
 /// The declared type of the property `property_name` read through `receiver`, from its first object that declares it,
@@ -1578,8 +1642,7 @@ fn report_possibly_non_existent_property<A>(
 /// Spec section 14.3: a PHP# read `x.name` of a class with no property `name` gives its method `name` as a closure,
 /// as PHP's `$x->name(...)` does, and `Class.name` gives its static method, as `Class::name(...)` does. The engine
 /// runs both on the read's missing-member path. Reports a method the read cannot reach, as the call would. Returns
-/// the closure's type, the method of `receiver`, localized by `localize_member_type` before `Self` becomes the receiver,
-/// so a receiver's type argument that names the class's own type parameter is replaced once.
+/// the closure's type, the method of `receiver` as `specialize_member_type` gives a call of it.
 pub(crate) fn resolve_method_value<A>(
     context: &mut Context<'_, '_, A>,
     block_context: &BlockContext<'_>,
@@ -1615,24 +1678,21 @@ where
         false,
     );
 
-    let declaring_class = context.codebase.get_class_like(class_name.as_bytes())?;
-    let mut signature = get_signature_of_function_like_metadata(
-        &FunctionLikeIdentifier::Method(class_name, method.get_method_name()),
-        context.codebase.get_method_by_id(&method)?,
-        context.codebase,
-        &TypeExpansionOptions { self_class: Some(class_name), ..Default::default() },
-    );
-    signature.is_closure = true;
+    let codebase = context.codebase;
+    let declaring_class = codebase.get_class_like(class_name.as_bytes())?;
+    let method_metadata = codebase.get_method_by_id(&method)?;
 
-    let mut method_type = TUnion::from_atomic(TAtomic::Callable(TCallable::Signature(signature)));
-    localize_member_type(context, &mut method_type, receiver, declaring_class);
-    expander::expand_union(
-        context.codebase,
-        &mut method_type,
-        &TypeExpansionOptions { static_class_type: StaticClassType::Object(receiver.clone()), ..Default::default() },
-    );
+    Some(specialize_member_type(context, receiver, declaring_class, &TemplateResult::default(), |options| {
+        let mut signature = get_signature_of_function_like_metadata(
+            &FunctionLikeIdentifier::Method(class_name, method.get_method_name()),
+            method_metadata,
+            codebase,
+            options,
+        );
+        signature.is_closure = true;
 
-    Some(method_type)
+        TUnion::from_atomic(TAtomic::Callable(TCallable::Signature(signature)))
+    }))
 }
 
 fn report_non_existent_property<A>(
