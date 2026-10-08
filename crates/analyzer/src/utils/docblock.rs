@@ -28,8 +28,7 @@ use crate::artifacts::AnalysisArtifacts;
 use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
-use crate::utils::names::display_type;
-use crate::utils::names::display_variable_name;
+use mago_bytes::BytesDisplay;
 
 /// Populates the context with variable types defined in the docblock.
 ///
@@ -154,12 +153,15 @@ where
             if allow_tracing && let TagValue::Trace(trace) = &tag.value {
                 let variable_name_bytes = trace.variable.value;
                 let variable_atom = mago_word::word(variable_name_bytes);
-                let variable_name = display_variable_name(context.dialect, variable_name_bytes);
+                let variable_name = BytesDisplay(variable_name_bytes);
                 match block_context.locals.get(&variable_atom) {
                     Some(variable_type) => {
-                        let variable_type_str = display_type(context, variable_type);
+                        let variable_type_str = variable_type.get_id();
 
-                        let issue = Issue::note(format!(
+
+                        context.collector.report_with_code(
+                            IssueCode::PsalmTrace,
+                            Issue::note(format!(
                                 "Trace: Type of `{variable_name}` is `{variable_type_str}`"
                             ))
                             .with_annotation(
@@ -168,17 +170,10 @@ where
                             )
                             .with_note(
                                 "Spotted a `@psalm-trace` tag! While this works for compatibility, Mago has a more powerful way to inspect types.",
-                            );
-
-                        context.collector.report_with_code(
-                            IssueCode::PsalmTrace,
-                            if context.dialect.is_sharp() {
-                                issue
-                            } else {
-                                issue.with_help(
-                                    "For more flexible debugging, try using `Mago\\inspect()` directly in your code. It can inspect any expression, not just variables (e.g., `Mago\\inspect($foo->bar());`)."
-                                )
-                            },
+                            )
+                            .with_help(
+                                "For more flexible debugging, try using `Mago\\inspect()` directly in your code. It can inspect any expression, not just variables (e.g., `Mago\\inspect($foo->bar());`)."
+                            ),
                         );
                     }
                     None => {
@@ -236,10 +231,7 @@ where
                     context.collector.report_with_code(
                         IssueCode::InvalidDocblock,
                         Issue::error(match variable_name {
-                            Some(w) => format!(
-                                "Invalid type in `@var` tag for variable `{}`.",
-                                display_variable_name(context.dialect, w.as_bytes())
-                            ),
+                            Some(w) => format!("Invalid type in `@var` tag for variable `{w}`."),
                             None => "Invalid type in `@var` tag for variable `expression`.".to_string(),
                         })
                         .with_annotation(Annotation::primary(type_error.span()).with_message(type_error.to_string()))
@@ -364,9 +356,8 @@ pub fn insert_variable_from_docblock<'ctx, A>(
             && !can_expression_types_be_identical(context.codebase, &previous_type, &variable_type, false, false);
 
         if is_impossible {
-            let variable_type_str = display_type(context, &variable_type);
-            let previous_type_str = display_type(context, &previous_type);
-            let variable_name = display_variable_name(context.dialect, variable_name.as_bytes());
+            let variable_type_str = variable_type.get_id();
+            let previous_type_str = previous_type.get_id();
 
             context.collector.report_with_code(
                 IssueCode::DocblockTypeMismatch,
@@ -381,14 +372,12 @@ pub fn insert_variable_from_docblock<'ctx, A>(
                     )),
             );
         } else if is_redundant {
-            let variable_type_str = display_type(context, &variable_type);
-            let variable_name = display_variable_name(context.dialect, variable_name.as_bytes());
-
             context.collector.report_with_code(
                 IssueCode::RedundantDocblockType,
                 Issue::warning(format!("Redundant docblock type for variable `{variable_name}`."))
                     .with_annotation(Annotation::primary(variable_type_span).with_message(format!(
-                        "This docblock asserts the type should be `{variable_type_str}`, which is identical to the previously defined type.",
+                        "This docblock asserts the type should be `{}`, which is identical to the previously defined type.",
+                        variable_type.get_id(),
                     )))
                     .with_help("You can remove this redundant `@var` docblock tag."),
             );
@@ -444,11 +433,11 @@ pub fn check_docblock_type_incompatibility<A>(
         && !can_expression_types_be_identical(context.codebase, inferred_type, docblock_type, false, true);
 
     if is_impossible {
-        let docblock_type_str = display_type(context, docblock_type);
-        let inferred_type_str = display_type(context, inferred_type);
+        let docblock_type_str = docblock_type.get_id();
+        let inferred_type_str = inferred_type.get_id();
 
         let mut issue = if let Some(value_expression_variable_id) = value_expression_variable_id {
-            let value_expression_variable_id = display_variable_name(context.dialect, value_expression_variable_id);
+            let value_expression_variable_id = BytesDisplay(value_expression_variable_id);
             Issue::error(format!("Docblock type mismatch for variable `{value_expression_variable_id}`."))
                 .with_annotation(
                     Annotation::primary(dockblock_type_span)
@@ -462,7 +451,7 @@ pub fn check_docblock_type_incompatibility<A>(
         };
 
         if let Some(value_expression_variable_id) = value_expression_variable_id {
-            let value_expression_variable_id = display_variable_name(context.dialect, value_expression_variable_id);
+            let value_expression_variable_id = BytesDisplay(value_expression_variable_id);
             if let Some(source_expression) = source_expression {
                 issue = issue.with_annotation(Annotation::secondary(source_expression.span()).with_message(format!(
                     "...but this expression provides an incompatible type `{inferred_type_str}`."
@@ -497,11 +486,11 @@ pub fn check_docblock_type_incompatibility<A>(
     }
 
     if is_redundant {
-        let docblock_type_str = display_type(context, docblock_type);
-        let inferred_type_str = display_type(context, inferred_type);
+        let docblock_type_str = docblock_type.get_id();
+        let inferred_type_str = inferred_type.get_id();
 
         let mut issue = if let Some(value_expression_variable_id) = value_expression_variable_id {
-            let value_expression_variable_id = display_variable_name(context.dialect, value_expression_variable_id);
+            let value_expression_variable_id = BytesDisplay(value_expression_variable_id);
             Issue::warning(format!("Redundant docblock type for variable `{value_expression_variable_id}`."))
                 .with_annotation(Annotation::primary(dockblock_type_span).with_message(format!(
                     "This docblock asserts the type should be `{docblock_type_str}`, which is identical to the inferred type."
@@ -515,7 +504,7 @@ pub fn check_docblock_type_incompatibility<A>(
         };
 
         if let Some(value_expression_variable_id) = value_expression_variable_id {
-            let value_expression_variable_id = display_variable_name(context.dialect, value_expression_variable_id);
+            let value_expression_variable_id = BytesDisplay(value_expression_variable_id);
             issue = issue
                 .with_annotation(Annotation::secondary(value_expression_span).with_message(format!(
                     "The variable `{value_expression_variable_id}` type is known to be `{inferred_type_str}` here."

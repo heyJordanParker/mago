@@ -529,7 +529,7 @@ where
                 if !is_compatible {
                     let docblock_type_str = effective_type.get_id();
                     let native_type_str = native_type.type_union.get_id();
-                    let param_name = display_variable_name(context.dialect, parameter_metadata.name.0.as_bytes());
+                    let param_name = parameter_metadata.name.0;
 
                     let issue = Issue::error(format!(
                         "Docblock type `{docblock_type_str}` for parameter `{param_name}` is incompatible with native type `{native_type_str}`."
@@ -578,7 +578,7 @@ where
                     if !dropped.is_empty() {
                         let docblock_type_str = effective_type.get_id();
                         let native_type_str = expanded_native.get_id();
-                        let param_name = display_variable_name(context.dialect, parameter_metadata.name.0.as_bytes());
+                        let param_name = parameter_metadata.name.0;
                         let dropped_list =
                             dropped.iter().map(|a| a.get_id().to_string()).collect::<Vec<_>>().join("`, `");
 

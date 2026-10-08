@@ -481,7 +481,9 @@ impl<'input> Lexer<'input> {
                         let remaining = self.input.peek(2, self.input.len() - self.input.current_offset());
                         match scan_multi_line_comment(remaining) {
                             Some(len) => {
-                                let is_docblock = asterisk == &b'*' && len > 2;
+                                // A PHP# file has no docblocks: `/** … */` is only a comment, so no tag in it reaches
+                                // the scanner, the analyzer or any other reader of docblocks.
+                                let is_docblock = !self.sharp && asterisk == &b'*' && len > 2;
                                 if is_docblock {
                                     (TokenKind::DocBlockComment, len + 2)
                                 } else {

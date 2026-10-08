@@ -4714,10 +4714,10 @@ fn an_index_read_message_names_its_type_and_null_check_as_sharp_writes_them() {
     );
 }
 
-/// A docblock message names its types as PHP# writes them, and leaves out the `Mago\inspect()` call PHP# has no form
-/// for.
+/// A `.sharp` file's docblock is only a comment: an inline `@psalm-trace` reports nothing and an inline `@var` asserts
+/// nothing. The PHP twin keeps upstream's reports.
 #[test]
-fn a_docblock_message_names_its_types_as_sharp_writes_them() {
+fn an_inline_docblock_in_a_sharp_file_traces_and_asserts_nothing() {
     let sharp = "namespace Demo;\n\nclass Order\n{\n    public int run(int? count)\n    {\n        /** @psalm-trace $count */\n        let total = 1;\n        /** @var string $total */\n        let other = total;\n        return 1;\n    }\n}\n";
     let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    public function run(?int $count): int\n    {\n        /** @psalm-trace $count */\n        $total = 1;\n        /** @var string $total */\n        $other = $total;\n        return 1;\n    }\n}\n";
     let docblock = |analyzed| -> Vec<String> {
@@ -4734,13 +4734,28 @@ fn a_docblock_message_names_its_types_as_sharp_writes_them() {
             "11:18 docblock-type-mismatch Docblock type mismatch for variable `$total`. | This docblock asserts the type should be `string`, but it was previously defined as `int(1)`. | The type of the variable defined in the docblock does not match the previously defined type. | Change the docblock type to match `int(1)`, or update the variable definition to a compatible type `string`.",
         ]
     );
+    assert_eq!(docblock(("src/Demo/Order.sharp", sharp)), Vec::<String>::new());
+}
+
+/// A `.sharp` file's docblock changes no declared type: `@var` on a field, and `@template`, `@param` and `@return` on
+/// a method. The PHP twin reads them as upstream does.
+#[test]
+fn a_docblock_in_a_sharp_file_changes_no_declared_type() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    /** @var int */\n    public string total = \"\";\n\n    /**\n     * @template T\n     * @param T label\n     * @return int\n     */\n    public string name(string label) => label;\n\n    public string read() => this.total;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    /** @var int */\n    public string $total = \"\";\n\n    /**\n     * @template T\n     * @param T $label\n     * @return int\n     */\n    public function name(string $label): string\n    {\n        return $label;\n    }\n\n    public function read(): string\n    {\n        return $this->total;\n    }\n}\n";
+
     assert_eq!(
-        docblock(("src/Demo/Order.sharp", sharp)),
+        issues(("src/Demo/Order.php", php), &[]),
         [
-            "7:26 psalm-trace Trace: Type of `count` is `int?` | Type is: `int?` | Spotted a `@psalm-trace` tag! While this works for compatibility, Mago has a more powerful way to inspect types.",
-            "9:18 docblock-type-mismatch Docblock type mismatch for variable `total`. | This docblock asserts the type should be `string`, but it was previously defined as `1`. | The type of the variable defined in the docblock does not match the previously defined type. | Change the docblock type to match `1`, or update the variable definition to a compatible type `string`.",
+            "8:12 docblock-type-mismatch",
+            "8:28 invalid-property-default-value",
+            "15:42 docblock-type-mismatch",
+            "15:26 docblock-type-mismatch",
+            "17:16 less-specific-nested-return-statement",
+            "22:16 invalid-return-statement",
         ]
     );
+    assert_eq!(issues(("src/Demo/Order.sharp", sharp), &[]), Vec::<String>::new());
 }
 
 /// A read or call through a value that may be null names PHP#'s null-safe operator `?.` and its null check
