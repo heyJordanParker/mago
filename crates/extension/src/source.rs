@@ -17,7 +17,7 @@ use crate::PayloadWriter;
 pub const NO_NODE: u32 = u32::MAX;
 
 /// Width of one packed syntax-node record.
-pub const NODE_RECORD_SIZE: usize = 21;
+pub const NODE_RECORD_SIZE: usize = 22;
 
 /// Width of one packed resolved-name record, excluding its start column.
 pub const NAME_RECORD_SIZE: usize = 14;
@@ -27,7 +27,7 @@ pub const TRIVIA_RECORD_SIZE: usize = 9;
 
 /// Writes the ordered node-kind table used to validate SDK compatibility.
 pub fn write_node_kind_table(writer: &mut PayloadWriter) {
-    writer.write_u32(NodeKind::iter().count() as u32);
+    writer.write_u32(NodeKind::COUNT as u32);
     for kind in NodeKind::iter() {
         let name = kind.to_string();
         writer.write_u32(name.len() as u32);
@@ -67,7 +67,7 @@ impl<'arena> SourceSnapshot<'arena> {
     pub fn complete_with_targets<'ast>(
         program: &'ast Program<'arena>,
         resolved_names: &ResolvedNames<'arena>,
-        target_kinds: Option<&[bool; u8::MAX as usize + 1]>,
+        target_kinds: Option<&[bool; NodeKind::COUNT]>,
     ) -> Result<Self, PayloadError> {
         Self::complete_with_target_filter(program, resolved_names, |node| {
             target_kinds.is_some_and(|target_kinds| target_kinds[node.kind() as usize])
@@ -107,7 +107,7 @@ impl<'arena> SourceSnapshot<'arena> {
     pub fn filtered<'ast>(
         program: &'ast Program<'arena>,
         resolved_names: &ResolvedNames<'arena>,
-        target_kinds: &[bool; u8::MAX as usize + 1],
+        target_kinds: &[bool; NodeKind::COUNT],
     ) -> Result<Option<Self>, PayloadError> {
         Self::targeted_with_filter(
             program,
@@ -256,7 +256,7 @@ impl<'arena> SourceSnapshot<'arena> {
 
         writer.write_length(self.nodes.len())?;
         for node in &self.nodes {
-            writer.write_u8(node.kind as u8);
+            writer.write_u16(node.kind as u16);
             writer.write_u32(node.start);
             writer.write_u32(node.end);
             writer.write_u32(node.parent.unwrap_or(NO_NODE));
