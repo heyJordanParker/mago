@@ -11,7 +11,6 @@ use mago_codex::ttype::combine_union_types;
 use mago_codex::ttype::combiner::CombinerOptions;
 use mago_codex::ttype::comparator::ComparisonResult;
 use mago_codex::ttype::comparator::union_comparator::is_contained_by;
-use mago_codex::ttype::expander::StaticClassType;
 use mago_codex::ttype::expander::TypeExpansionOptions;
 use mago_codex::ttype::expander::expand_union;
 use mago_codex::ttype::get_mixed;
@@ -37,6 +36,7 @@ use crate::context::scope::control_action::ControlAction;
 use crate::error::AnalysisError;
 use crate::expression::is_refused;
 use crate::statement::function_like::expect_function_type;
+use crate::statement::function_like::get_scope_static_class_type;
 use crate::utils::docblock::check_docblock_type_incompatibility;
 use crate::utils::docblock::get_type_from_var_docblock;
 use crate::utils::expression::get_direct_variable_id;
@@ -168,11 +168,7 @@ pub fn handle_return_value<'ctx, A>(
 
     let mut expansion_options = TypeExpansionOptions {
         self_class: block_context.scope.get_class_like_name(),
-        static_class_type: if let Some(calling_class) = block_context.scope.get_class_like_name() {
-            StaticClassType::Name(calling_class)
-        } else {
-            StaticClassType::None
-        },
+        static_class_type: get_scope_static_class_type(context, &block_context.scope),
         ..Default::default()
     };
 
@@ -253,11 +249,7 @@ pub fn handle_return_value<'ctx, A>(
                 &mut expected_type,
                 &TypeExpansionOptions {
                     self_class: block_context.scope.get_class_like_name(),
-                    static_class_type: if let Some(calling_class) = block_context.scope.get_class_like_name() {
-                        StaticClassType::Name(calling_class)
-                    } else {
-                        StaticClassType::None
-                    },
+                    static_class_type: get_scope_static_class_type(context, &block_context.scope),
                     function_is_final: if let Some(method_metadata) = &function_like_metadata.method_metadata {
                         method_metadata.is_final
                     } else {

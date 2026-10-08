@@ -15,7 +15,6 @@ use mago_syntax::dialect::Dialect;
 use mago_word::Word;
 use mago_word::word;
 
-use crate::metadata::class_like::TemplateTypes;
 use crate::metadata::ttype::TypeMetadata;
 use crate::misc::GenericParent;
 use crate::scanner::Context;
@@ -24,7 +23,6 @@ use crate::ttype::atomic::TAtomic;
 use crate::ttype::atomic::callable::TCallable;
 use crate::ttype::atomic::callable::TCallableSignature;
 use crate::ttype::atomic::callable::parameter::TCallableParameter;
-use crate::ttype::atomic::generic::TGenericParameter;
 use crate::ttype::atomic::mixed::TMixed;
 use crate::ttype::atomic::object::TObject;
 use crate::ttype::atomic::object::named::TNamedObject;
@@ -59,27 +57,17 @@ use crate::ttype::template::GenericTemplate;
 use crate::ttype::union::TUnion;
 use crate::ttype::wrap_atomic;
 
-/// The type metadata of a type written in code. `class_templates` are the type parameters of the class that `classname`
-/// names, which PHP#'s `Self` carries.
 #[inline]
 pub fn get_type_metadata_from_hint<'arena, A>(
     hint: &'arena Hint<'arena>,
     classname: Option<Word>,
-    class_templates: Option<&TemplateTypes>,
     type_context: &TypeResolutionContext,
     context: &Context<'_, 'arena, A>,
 ) -> TypeMetadata
 where
     A: Arena,
 {
-    let type_union = union_from_hint(
-        hint,
-        classname,
-        class_templates,
-        context.resolved_names,
-        type_context,
-        context.program.dialect,
-    );
+    let type_union = union_from_hint(hint, classname, context.resolved_names, type_context, context.program.dialect);
 
     let mut type_metadata = TypeMetadata::new(type_union, hint.span());
     type_metadata.from_docblock = false;
@@ -132,7 +120,7 @@ where
             .iter()
             .map(|parameter| {
                 let constraint = parameter.bound.as_ref().map_or_else(get_mixed, |bound| {
-                    get_type_metadata_from_hint(&bound.hint, Some(classname), None, &*type_context, context).type_union
+                    get_type_metadata_from_hint(&bound.hint, Some(classname), &*type_context, context).type_union
                 });
 
                 (word(parameter.name.value), GenericTemplate::new(defining_entity, constraint))
@@ -159,22 +147,19 @@ pub fn get_union_from_hint(
     resolved_names: &ResolvedNames<'_>,
     type_context: &TypeResolutionContext,
 ) -> TUnion {
-    union_from_hint(hint, classname, None, resolved_names, type_context, Dialect::Php)
+    union_from_hint(hint, classname, resolved_names, type_context, Dialect::Php)
 }
 
 /// `get_union_from_hint` for a type written in `dialect`. PHP#'s `Self` is PHP's `static`, spec section 25, and the
-/// checker refuses PHP's `self`, which the lexer reads as the same keyword. `Self` is its class with the class's own
-/// type parameters, `class_templates`, as `this` is, spec section 11.
+/// checker refuses PHP's `self`, which the lexer reads as the same keyword.
 fn union_from_hint(
     hint: &Hint<'_>,
     classname: Option<Word>,
-    class_templates: Option<&TemplateTypes>,
     resolved_names: &ResolvedNames<'_>,
     type_context: &TypeResolutionContext,
     dialect: Dialect,
 ) -> TUnion {
-    let convert =
-        |hint: &Hint<'_>| union_from_hint(hint, classname, class_templates, resolved_names, type_context, dialect);
+    let convert = |hint: &Hint<'_>| union_from_hint(hint, classname, resolved_names, type_context, dialect);
 
     match hint {
         Hint::Parenthesized(parenthesized_hint) => convert(parenthesized_hint.hint),
@@ -219,23 +204,8 @@ fn union_from_hint(
         Hint::Static(_) | Hint::Self_(_) => {
             let classname = classname.unwrap_or_else(|| word("static"));
             let is_static = matches!(hint, Hint::Static(_)) || dialect.is_sharp();
-            let type_parameters =
-                class_templates.filter(|templates| dialect.is_sharp() && !templates.is_empty()).map(|templates| {
-                    templates
-                        .iter()
-                        .map(|(name, template)| {
-                            wrap_atomic(TAtomic::GenericParameter(TGenericParameter::new(
-                                *name,
-                                Arc::new(template.constraint.clone()),
-                                template.defining_entity,
-                            )))
-                        })
-                        .collect()
-                });
 
-            wrap_atomic(TAtomic::Object(TObject::Named(
-                TNamedObject::new(classname).with_is_static(is_static).with_type_parameters(type_parameters),
-            )))
+            wrap_atomic(TAtomic::Object(TObject::Named(TNamedObject::new(classname).with_is_static(is_static))))
         }
         Hint::Void(_) => get_void(),
         Hint::Never(_) => get_never(),

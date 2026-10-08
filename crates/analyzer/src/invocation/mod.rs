@@ -26,6 +26,7 @@ use mago_syntax::cst::Pipe;
 use mago_syntax::cst::PlaceholderArgument;
 use mago_syntax::cst::PositionalArgument;
 use mago_syntax::cst::VariadicPlaceholderArgument;
+use mago_syntax::dialect::Dialect;
 use mago_word::Word;
 
 use crate::context::Context;
@@ -289,6 +290,16 @@ impl<'ctx> InvocationTarget<'ctx> {
         match self {
             InvocationTarget::FunctionLike { metadata, .. } => Some(metadata),
             InvocationTarget::Callable { .. } | InvocationTarget::ExternalMethod { .. } => None,
+        }
+    }
+
+    /// Returns the dialect the target is declared in: PHP# for a function or method a `.sharp` file declares, plain PHP
+    /// otherwise. Its parameter types are read in it, as a PHP# type parameter's bound is.
+    #[inline]
+    pub const fn get_dialect(&self) -> Dialect {
+        match self.get_function_like_metadata() {
+            Some(metadata) if metadata.flags.is_sharp() => Dialect::Sharp,
+            _ => Dialect::Php,
         }
     }
 

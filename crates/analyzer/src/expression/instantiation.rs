@@ -242,6 +242,25 @@ where
     }
     // class kind is a regular class; no kind-specific instantiation diagnostic to emit
 
+    // G1 erases type arguments, so `new` on a class value of a generic PHP# class can't give the object its type
+    // arguments, written or not, spec section 25. The call is checked as the code writes it, so the code around it adds
+    // no second issue.
+    let is_new_on_generic_class_value = context.dialect.is_sharp()
+        && classname.is_from_class_string()
+        && metadata.flags.is_sharp()
+        && !metadata.template_types.is_empty();
+    if is_new_on_generic_class_value {
+        let code = String::from_utf8_lossy(
+            &context.source_file.contents
+                [instantiation_span.start.offset as usize..instantiation_span.end.offset as usize],
+        );
+        context.collector.report_with_code(
+            IssueCode::NotSupportedYet,
+            Issue::error(format!("`{code}` can't run yet, because type arguments don't reach the running program."))
+                .with_annotation(Annotation::primary(class_expression_span).with_message("Not supported yet.")),
+        );
+    }
+
     if classname.is_from_class_string() && (metadata.kind.is_interface() || metadata.kind.is_trait()) {
         let kind_name = if metadata.kind.is_interface() { "interface" } else { "trait" };
 
@@ -338,6 +357,7 @@ where
 
             own_type_parameters
         }
+        None if is_new_on_generic_class_value => None,
         None => {
             report_missing_type_arguments(context, metadata, class_expression_span);
 

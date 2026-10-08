@@ -34,6 +34,7 @@ use mago_syntax::dialect::Dialect;
 use mago_word::Word;
 use mago_word::word;
 
+use crate::utils::names::display_sharp_type;
 use crate::utils::names::short_name;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -591,10 +592,16 @@ pub(super) fn erase(r#type: &TUnion, codebase: &CodebaseMetadata) -> TUnion {
     TUnion::from_vec(combiner::combine(erased, codebase, CombinerOptions::default()))
 }
 
-/// The type `erased`, which `erase` returns, as PHP writes it in a declaration, `array`, `iterable`, `Closure`, `mixed`,
-/// or a class by its full name, in backticks. A message in a `dialect` PHP# file says it is PHP's, as in PHP's `mixed`,
-/// since PHP# writes no such type.
-pub(super) fn display_erased(erased: &TUnion, dialect: Dialect) -> String {
+/// The type `erased`, which `erase` returns, in backticks, as a `dialect` file writes it. PHP writes it as in a
+/// declaration, `array`, `iterable`, `Closure`, `mixed`, or a class by its full name. PHP# writes it as
+/// `display_sharp_type` does, `Order` or `Entity?`, but has no `mixed` or `array`, so a PHP# file writes a type with
+/// either in it as PHP's, as in PHP's `mixed` or PHP's `array|null`.
+pub(super) fn display_erased(erased: &TUnion, dialect: Dialect, codebase: &CodebaseMetadata) -> String {
+    let is_php_only = erased.types.iter().any(|atomic| matches!(atomic, TAtomic::Mixed(_) | TAtomic::Array(_)));
+    if dialect.is_sharp() && !is_php_only {
+        return format!("`{}`", display_sharp_type(erased, codebase));
+    }
+
     let members: Vec<String> = erased
         .types
         .iter()

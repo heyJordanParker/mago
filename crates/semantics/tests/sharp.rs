@@ -3027,16 +3027,38 @@ fn a_static_method_uses_its_own_type_parameters() {
     assert_eq!(issues(code), Vec::<String>::new());
 }
 
-/// `Self` is the class with its own type parameters, so a static member of a generic class can't return it, as it
-/// can't name `TItem`. A static member of a class without type parameters returns `Self`. The plain PHP twin's
-/// `static` has no PHP# rule.
+/// `Self` is the class with its own type parameters, so a static member of a generic class can't return it or create
+/// one with `new Self()`, as it can't name `TItem`: the refusal names `Self` and every type parameter it carries. A
+/// static member of a class without type parameters returns `Self`. The plain PHP twin's `static` has no PHP# rule.
 #[test]
 fn a_static_member_of_a_generic_class_cannot_return_self() {
-    let code = "namespace App.Tenant;\n\npublic class Box<TItem>\n{\n    public required Box()\n    {\n    }\n\n    public static Self make() => new Self();\n}\n\npublic class Plain\n{\n    public required Plain()\n    {\n    }\n\n    public static Self make() => new Self();\n}\n";
+    let code = "namespace App.Tenant;\n\npublic class Box<TItem>\n{\n    public required Box()\n    {\n    }\n\n    public static Self make() => new Self();\n}\n\npublic class Plain\n{\n    public required Plain()\n    {\n    }\n\n    public static Self make() => new Self();\n}\n\npublic class Pair<TFirst, TSecond>\n{\n    public static Self? none() => null;\n}\n\npublic class Triple<TFirst, TSecond, TThird>\n{\n    public static Self? none() => null;\n}\n";
     let php = "<?php\n\n/** @template TItem */\nclass Box\n{\n    final public function __construct()\n    {\n    }\n\n    public static function make(): static\n    {\n        return new static();\n    }\n}\n";
 
     assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
-    assert_eq!(issues(code), ["9:19 A static member can't use `TItem`, because every `Box<…>` shares it."]);
+    assert_eq!(
+        issues(code),
+        [
+            "9:19 A static member can't use `Self`, because `Self` carries `TItem`, which every `Box<…>` shares.",
+            "9:38 A static member can't use `Self`, because `Self` carries `TItem`, which every `Box<…>` shares.",
+            "23:19 A static member can't use `Self`, because `Self` carries `TFirst` and `TSecond`, which every `Pair<…>` shares.",
+            "28:19 A static member can't use `Self`, because `Self` carries `TFirst`, `TSecond` and `TThird`, which every `Triple<…>` shares.",
+        ]
+    );
+}
+
+/// `new Self(…)` in a static method of a generic class gets the static member refusal, whatever the method returns.
+/// In an instance method it creates the receiver's own class. The plain PHP twin's `new static()` has no PHP# rule.
+#[test]
+fn new_self_in_a_static_member_of_a_generic_class_names_self() {
+    let code = "namespace App.Tenant;\n\npublic class Box<TItem>\n{\n    public required Box(TItem item)\n    {\n    }\n\n    public static Box<int> make() => new Self(1);\n\n    public Self copy(TItem item) => new Self(item);\n}\n";
+    let php = "<?php\n\n/** @template TItem */\nclass Box\n{\n    /** @param TItem $item */\n    final public function __construct(mixed $item)\n    {\n    }\n\n    /** @return Box<int> */\n    public static function make(): Box\n    {\n        return new static(1);\n    }\n}\n";
+
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
+    assert_eq!(
+        issues(code),
+        ["9:42 A static member can't use `Self`, because `Self` carries `TItem`, which every `Box<…>` shares."]
+    );
 }
 
 /// `Class<Box>` names the class itself, as C#'s `typeof(Box<>)` does, so its type argument is a class written without

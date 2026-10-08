@@ -275,6 +275,7 @@ where
                     *argument_offset,
                     argument_type.1,
                     false,
+                    invocation.target.get_dialect(),
                 );
             }
         }
@@ -420,6 +421,7 @@ where
                 *argument_offset,
                 argument_type.1,
                 true,
+                invocation.target.get_dialect(),
             );
         }
     }
@@ -774,7 +776,13 @@ where
             let default_type =
                 unused_parameter.get_default_type().map_or_else(|| Cow::Owned(get_mixed()), Cow::Borrowed);
 
-            infer_parameter_templates_from_default(context, &parameter_type, &default_type, template_result);
+            infer_parameter_templates_from_default(
+                context,
+                &parameter_type,
+                &default_type,
+                template_result,
+                invocation.target.get_dialect(),
+            );
 
             let Some(parameter_name) = unused_parameter.get_name() else {
                 continue;
@@ -839,6 +847,7 @@ where
                     last_parameter_offset,
                     argument_expression.span(),
                     false,
+                    invocation.target.get_dialect(),
                 );
             }
         }
@@ -1373,6 +1382,7 @@ fn infer_generic_callable_arguments<'ctx, 'arena, A>(
                         argument_offset,
                         *argument_span,
                         false,
+                        invocation.target.get_dialect(),
                     );
                 }
             }

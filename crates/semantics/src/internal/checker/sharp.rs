@@ -445,16 +445,9 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             Some(File)
         }
         (Node::Hint(hint @ (Hint::Identifier(_) | Hint::Self_(_))), _)
-            if let Some((class, parameter)) = static_member_use(hint, context) =>
+            if let Some(refusal) = static_member_use(hint, context) =>
         {
-            context.report(
-                Issue::error(format!(
-                    "A static member can't use `{}`, because every `{}<…>` shares it.",
-                    BytesDisplay(parameter.name.value),
-                    BytesDisplay(class.name.value)
-                ))
-                .with_annotation(Annotation::primary(hint.span()).with_message("Used in a static member.")),
-            );
+            report_static_member_use(hint.span(), refusal, context);
 
             None
         }
@@ -2124,38 +2117,79 @@ fn report_erased_test(test: &str, erased: &Hint, context: &mut Context<'_, '_, '
     );
 }
 
-/// The class whose constant or static field, property or method uses one of the class's type parameters through
-/// `hint`, with that type parameter: the one a name binds, or the first for `Self`, which carries them all. `None` for
-/// any other type, a static method's own type parameter included, because the method declares it.
-fn static_member_use<'ast, 'arena>(
-    hint: &Hint<'_>,
-    context: &Context<'_, 'ast, 'arena>,
-) -> Option<(ClassLike<'ast, 'arena>, &'ast mago_syntax::cst::TypeParameter<'arena>)> {
-    let class = enclosing_class(context.program, hint.span())?;
-    let parameters = &class.type_parameters?.parameters;
-    let parameter = match hint {
+/// The refusal of `hint` in a constant or static field, property or method of its class, when `hint` names one of the
+/// class's type parameters or is `Self`, which carries them all. `None` for any other type, a static method's own type
+/// parameter included, because the method declares it.
+fn static_member_use(hint: &Hint<'_>, context: &Context<'_, '_, '_>) -> Option<String> {
+    match hint {
         Hint::Identifier(name) => {
             let Some(Binding::TypeParameter { declaration }) = context.names.binding(name) else {
                 return None;
             };
+            let class = static_member_class(hint.span(), context)?;
+            let parameter = class
+                .type_parameters?
+                .parameters
+                .iter()
+                .find(|parameter| parameter.span().contains(&declaration.start))?;
 
-            parameters.iter().find(|parameter| parameter.span().contains(&declaration.start))?
+            Some(format!(
+                "A static member can't use `{}`, because every `{}<…>` shares it.",
+                BytesDisplay(parameter.name.value),
+                BytesDisplay(class.name.value)
+            ))
         }
-        Hint::Self_(keyword) if is_sharp_self(keyword) => parameters.first()?,
-        _ => return None,
+        Hint::Self_(keyword) if is_sharp_self(keyword) => static_self_use(hint.span(), context),
+        _ => None,
+    }
+}
+
+/// The refusal of PHP#'s `Self` at `span` in a constant or static field, property or method of a generic class, as a
+/// type or in `new Self(…)`: `Self` carries the class's type parameters, which no static member names.
+fn static_self_use(span: Span, context: &Context<'_, '_, '_>) -> Option<String> {
+    let class = static_member_class(span, context)?;
+    let names: Vec<String> = class
+        .type_parameters?
+        .parameters
+        .iter()
+        .map(|parameter| format!("`{}`", BytesDisplay(parameter.name.value)))
+        .collect();
+    let carried = match names.split_last()? {
+        (last, []) => last.clone(),
+        (last, rest) => format!("{} and {last}", rest.join(", ")),
     };
-    let uses_it = class.members.iter().any(|member| {
-        let (span, is_static) = match member {
+
+    Some(format!(
+        "A static member can't use `Self`, because `Self` carries {carried}, which every `{}<…>` shares.",
+        BytesDisplay(class.name.value)
+    ))
+}
+
+/// The class of the constant or static field, property or method that holds `span`.
+fn static_member_class<'ast, 'arena>(
+    span: Span,
+    context: &Context<'_, 'ast, 'arena>,
+) -> Option<ClassLike<'ast, 'arena>> {
+    let class = enclosing_class(context.program, span)?;
+    let in_static_member = class.members.iter().any(|member| {
+        let (member_span, is_static) = match member {
             ClassLikeMember::Method(method) => (method.span(), method.modifiers.contains_static()),
             ClassLikeMember::Property(property) => (property.span(), property.modifiers().contains_static()),
             ClassLikeMember::Constant(constant) => (constant.span(), true),
             _ => return false,
         };
 
-        is_static && span.contains(&hint.span().start)
+        is_static && member_span.contains(&span.start)
     });
 
-    uses_it.then_some((class, parameter))
+    in_static_member.then_some(class)
+}
+
+/// Reports `refusal`, which `static_member_use` or `static_self_use` words, at `span`.
+fn report_static_member_use(span: Span, refusal: String, context: &mut Context<'_, '_, '_>) {
+    context.report(
+        Issue::error(refusal).with_annotation(Annotation::primary(span).with_message("Used in a static member.")),
+    );
 }
 
 /// Reports each type parameter of a list whose name is not `T`, or `T` and an uppercase letter, as C# names them, a
@@ -2363,9 +2397,10 @@ fn report_php_static(keyword: &Keyword, context: &mut Context<'_, '_, '_>) {
 
 /// Decides `new` on a class written by its short name, on `Self`, or on PHP's `self` or `static`. `new Self(…)` needs
 /// the class's constructor marked `required`, spec section 25, because `Self` can be any subclass, and names no type
-/// arguments, spec section 11, because `Self` is the class with its own type parameters. PHP's `self` and
-/// `static` are reported at the keyword, so the arguments are still checked. `new` of a type parameter needs its type
-/// argument while the code runs, which G1 erases.
+/// arguments, spec section 11, because `Self` is the class with its own type parameters, which a static member of a
+/// generic class can't name. PHP's `self` and `static`, and `Self` in such a static member, are reported at the
+/// keyword, so the arguments are still checked. `new` of a type parameter needs its type argument while the code runs,
+/// which G1 erases.
 fn check_instantiation(instantiation: &Instantiation, context: &mut Context<'_, '_, '_>) -> Option<Place> {
     match instantiation.class {
         Expression::Self_(keyword) if !is_sharp_self(keyword) => {
@@ -2383,6 +2418,11 @@ fn check_instantiation(instantiation: &Instantiation, context: &mut Context<'_, 
             report_erased(instantiation.span(), &refused, false, context);
 
             return None;
+        }
+        Expression::Self_(keyword) if let Some(refusal) = static_self_use(keyword.span, context) => {
+            report_static_member_use(keyword.span, refusal, context);
+
+            return Some(Place::Instantiation);
         }
         Expression::Self_(_) if let Some(type_arguments) = &instantiation.type_arguments => {
             context.report(

@@ -85,6 +85,7 @@ where
     let span = method.span();
 
     let mut flags = MetadataFlags::origin_flags(context.file.file_type);
+    flags.set(MetadataFlags::SHARP, context.program.dialect.is_sharp());
 
     if method.ampersand.is_some() {
         flags |= MetadataFlags::BY_REFERENCE;
@@ -130,7 +131,6 @@ where
         metadata.set_return_type_declaration_metadata(Some(get_type_metadata_from_hint(
             &return_hint.hint,
             Some(class_like_metadata.original_name),
-            Some(&class_like_metadata.template_types),
             &type_context,
             context,
         )));
@@ -238,6 +238,7 @@ where
     let verdict = evaluate_version_attributes(&function.attribute_lists, context, context.php_version);
 
     let mut flags = MetadataFlags::origin_flags(context.file.file_type);
+    flags.set(MetadataFlags::SHARP, context.program.dialect.is_sharp());
 
     if utils::block_has_yield(&function.body) {
         flags |= MetadataFlags::HAS_YIELD;
@@ -283,7 +284,6 @@ where
         metadata.set_return_type_declaration_metadata(Some(get_type_metadata_from_hint(
             &return_hint.hint,
             classname,
-            None,
             &type_resolution_context,
             context,
         )));
@@ -318,6 +318,7 @@ where
     let span = closure.span();
 
     let mut flags = MetadataFlags::origin_flags(context.file.file_type);
+    flags.set(MetadataFlags::SHARP, context.program.dialect.is_sharp());
 
     if utils::block_has_yield(&closure.body) {
         flags |= MetadataFlags::HAS_YIELD;
@@ -348,7 +349,6 @@ where
         metadata.set_return_type_declaration_metadata(Some(get_type_metadata_from_hint(
             &return_hint.hint,
             classname,
-            None,
             &type_resolution_context,
             context,
         )));
@@ -379,6 +379,7 @@ where
     let span = arrow_function.span();
 
     let mut flags = MetadataFlags::origin_flags(context.file.file_type);
+    flags.set(MetadataFlags::SHARP, context.program.dialect.is_sharp());
 
     if utils::expression_has_yield(arrow_function.expression) {
         flags |= MetadataFlags::HAS_YIELD;
@@ -408,7 +409,6 @@ where
         metadata.set_return_type_declaration_metadata(Some(get_type_metadata_from_hint(
             &return_hint.hint,
             classname,
-            None,
             &type_resolution_context,
             context,
         )));

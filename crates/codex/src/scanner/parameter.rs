@@ -77,7 +77,7 @@ where
             .with_attributes(scan_attribute_lists(&parameter.attribute_lists, context, scope, classname));
 
     metadata.set_type_declaration_metadata(
-        parameter.hint.as_ref().map(|hint| get_type_metadata_from_hint(hint, classname, None, type_context, context)),
+        parameter.hint.as_ref().map(|hint| get_type_metadata_from_hint(hint, classname, type_context, context)),
     );
 
     if let Some(default_value) = &parameter.default_value {

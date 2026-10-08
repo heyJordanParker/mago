@@ -107,7 +107,7 @@ where
         parameter
             .hint
             .as_ref()
-            .map(|hint| get_type_metadata_from_hint(hint, Some(class_like_metadata.name), None, type_context, context)),
+            .map(|hint| get_type_metadata_from_hint(hint, Some(class_like_metadata.name), type_context, context)),
     );
 
     if let Some(hook_list) = &parameter.hooks {
@@ -250,7 +250,7 @@ where
                     metadata.set_default_type_metadata(default_type);
                     metadata.set_visibility(read_visibility, write_visibility);
                     metadata.set_type_declaration_metadata(plain_property.hint.as_ref().map(|hint| {
-                        get_type_metadata_from_hint(hint, Some(class_like_metadata.name), None, type_context, context)
+                        get_type_metadata_from_hint(hint, Some(class_like_metadata.name), type_context, context)
                     }));
 
                     if let Some(document) = document.as_ref() {
@@ -338,9 +338,11 @@ where
             metadata.set_default_type_metadata(default_type);
             metadata.set_span(Some(hooked_property.span()));
             metadata.set_visibility(read_visibility, write_visibility);
-            metadata.set_type_declaration_metadata(hooked_property.hint.as_ref().map(|hint| {
-                get_type_metadata_from_hint(hint, Some(class_like_metadata.name), None, type_context, context)
-            }));
+            metadata.set_type_declaration_metadata(
+                hooked_property.hint.as_ref().map(|hint| {
+                    get_type_metadata_from_hint(hint, Some(class_like_metadata.name), type_context, context)
+                }),
+            );
 
             if let Some(document) = document.as_ref() {
                 update_property_metadata_from_docblock(
@@ -384,9 +386,11 @@ where
             metadata.set_name_span(Some(computed_property.variable.span));
             metadata.set_span(Some(computed_property.span()));
             metadata.set_visibility(read_visibility, read_visibility);
-            metadata.set_type_declaration_metadata(computed_property.hint.as_ref().map(|hint| {
-                get_type_metadata_from_hint(hint, Some(class_like_metadata.name), None, type_context, context)
-            }));
+            metadata.set_type_declaration_metadata(
+                computed_property.hint.as_ref().map(|hint| {
+                    get_type_metadata_from_hint(hint, Some(class_like_metadata.name), type_context, context)
+                }),
+            );
 
             if let Some(document) = document.as_ref() {
                 update_property_metadata_from_docblock(
@@ -639,7 +643,7 @@ where
     let mut param_metadata = FunctionLikeParameterMetadata::new(name, param.span(), name_span, flags);
 
     if let Some(hint) = &param.hint {
-        let type_meta = get_type_metadata_from_hint(hint, None, None, type_context, context);
+        let type_meta = get_type_metadata_from_hint(hint, None, type_context, context);
         param_metadata.set_type_declaration_metadata(Some(type_meta));
     } else if let Some(prop_type) = &property_metadata.type_metadata {
         param_metadata.set_type_declaration_metadata(Some(prop_type.clone()));

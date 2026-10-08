@@ -1209,7 +1209,7 @@ where
             .arguments
             .iter()
             .map(|argument| {
-                get_type_metadata_from_hint(argument, Some(original_name), None, &type_context, context).type_union
+                get_type_metadata_from_hint(argument, Some(original_name), &type_context, context).type_union
             })
             .collect();
         let counts = if class_like_metadata.kind.is_interface() {

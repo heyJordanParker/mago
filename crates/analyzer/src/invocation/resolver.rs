@@ -136,7 +136,17 @@ where
         // Running expansion first would eagerly walk the abstract `T`'s constraint and lose the substitution site.
         resulting_union = inferred_type_replacer::replace(&resulting_union, template_result, context.codebase);
 
-        expander::expand_union(context.codebase, &mut resulting_union, &TypeExpansionOptions::default());
+        // PHP#'s `Self` is the receiver's class with the receiver's type arguments, spec section 11, so it is bound to
+        // the receiver before this pass fills the declaring class's omitted type arguments: an unbound `Self` of
+        // `Box<TItem>` would become `Box<Any?>`, and a receiver `OrderBox : Box<Order>` would inherit the stray `Any?`.
+        let options = match invocation.target.get_method_context() {
+            Some(method_context) if context.dialect.is_sharp() => {
+                TypeExpansionOptions { static_class_type: method_context.class_type.clone(), ..Default::default() }
+            }
+            _ => TypeExpansionOptions::default(),
+        };
+
+        expander::expand_union(context.codebase, &mut resulting_union, &options);
     }
 
     let static_class_type;

@@ -628,7 +628,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Parenthesized<'arena> {
 /// `new` of a type parameter, it tests or converts a value to a type with an
 /// [erased part](mago_names::ResolvedNames::erased_type) in `is`, `as` or a `match` arm, or it reads or calls a member of
 /// a type parameter or of `typeof` of one through any chain of property reads. [`report_untested_generic_classes`]
-/// refuses a test of a generic class written without its type arguments. Its type is `never`, a variable its `is`
+/// refuses a test of a generic PHP# class written without its type arguments. Its type is `never`, a variable its `is`
 /// pattern names holds the type written beside it, and it adds no other issue.
 pub(crate) fn is_refused<A>(expression: &Expression<'_>, context: &Context<'_, '_, A>) -> bool
 where
@@ -737,8 +737,9 @@ where
     context.resolved_names.erased_type(hint).is_some() || untested_generic_class(hint, context).is_some()
 }
 
-/// The name in a PHP# type test's `hint` of a generic class written without its type arguments, alone or inside a
-/// nullable type or a union, as [`mago_names::ResolvedNames::erased_type`] walks a type. `None` in a PHP file.
+/// The name in a PHP# type test's `hint` of a generic PHP# class written without its type arguments, alone or inside a
+/// nullable type or a union, as [`mago_names::ResolvedNames::erased_type`] walks a type. A PHP class whose docblock
+/// declares templates, as `Traversable` does, is no generic class to PHP#, so a test of it runs. `None` in a PHP file.
 fn untested_generic_class<'ast, A>(
     hint: &'ast Hint<'ast>,
     context: &Context<'_, '_, A>,
@@ -751,7 +752,7 @@ where
             context
                 .codebase
                 .get_class_like(context.resolved_names.get(name))
-                .is_some_and(|class| !class.template_types.is_empty())
+                .is_some_and(|class| class.flags.is_sharp() && !class.template_types.is_empty())
                 .then_some(name)
         }
         Hint::Nullable(nullable) => untested_generic_class(nullable.hint, context),

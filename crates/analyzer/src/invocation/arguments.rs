@@ -329,11 +329,11 @@ pub fn verify_argument_type<'arena, A>(
     }
 
     // Spec section 11 checks a value from plain PHP where it enters PHP#, so a plain PHP caller passes the backing
-    // values where PHP# takes a `Map` keyed by a backed enum.
+    // values where PHP# takes a `Map` keyed by a backed enum, its key read as the target writes it.
     let backing_parameter_type = if context.dialect.is_sharp() {
         None
     } else {
-        get_backing_array_type(parameter_type, context.codebase, context.dialect)
+        get_backing_array_type(parameter_type, context.codebase, invocation_target.get_dialect())
     };
     let parameter_type = backing_parameter_type.as_ref().unwrap_or(parameter_type);
 

@@ -5149,3 +5149,150 @@ fn a_plain_php_type_is_named_by_the_type_the_spec_gives_it() {
         ]
     );
 }
+
+/// A plain PHP caller passes the backing values where a generic PHP# method takes a `Map<TKey, int>` with `TKey`
+/// bound by a backed enum, as it does where the method takes a `Map<Status, int>`: the method's key is read as PHP#
+/// writes it. A plain PHP template bounded by the enum keeps upstream Mago's issues.
+#[test]
+fn a_plain_php_caller_passes_the_backing_values_where_a_generic_method_takes_a_map_keyed_by_its_type_parameter() {
+    let keys = "namespace Demo;\n\nimport Lib.Status;\n\npublic class Keys\n{\n    public static int count<TKey : Status>(Map<TKey, int> counts) => 0;\n}\n";
+    let php_keys = "<?php\n\nnamespace Demo;\n\nuse Lib\\Status;\n\nfinal class Keys\n{\n    /**\n     * @template TKey of Status\n     * @param array<TKey, int> $counts\n     */\n    public static function count(array $counts): int\n    {\n        return 0;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Caller\n{\n    public function run(): int\n    {\n        return Keys::count(['active' => 1]) + Keys::count([1 => 1]);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Caller.php", php), &[("src/Demo/Keys.php", php_keys), ("src/Lib/Status.php", STATUS)]),
+        [
+            "9:28 template-constraint-violation",
+            "9:28 possibly-invalid-argument",
+            "9:59 template-constraint-violation",
+            "9:59 possibly-invalid-argument",
+        ]
+    );
+    assert_eq!(
+        issues(("src/Demo/Caller.php", php), &[("src/Demo/Keys.sharp", keys), ("src/Lib/Status.php", STATUS)]),
+        ["9:59 possibly-invalid-argument"]
+    );
+}
+
+/// `Self` is the receiver's own type, spec section 11: `same()`, which `Box<TItem>` declares, returns a
+/// `Tagged<string>` on a `Tagged<string>`, whose `tag` takes a `string`, and an `OrderBox` on an `OrderBox`, which
+/// has no type parameters. The PHP twin's `static` keeps Mago's issues.
+#[test]
+fn self_inherited_by_a_subclass_is_the_subclass_with_its_own_type_arguments() {
+    let sharp = "namespace Demo;\n\npublic class Order\n{\n}\n\npublic class Box<TItem>\n{\n    public Self same() => this;\n\n    public TItem? first() => null;\n}\n\npublic class Tagged<TTag> : Box<int>\n{\n    public void tag(TTag tag)\n    {\n    }\n}\n\npublic class OrderBox : Box<Order>\n{\n}\n\npublic class Report\n{\n    public static int keep(int number) => number;\n\n    public static void run(Tagged<string> tagged, OrderBox orders)\n    {\n        tagged.same().tag(1);\n        Report.keep(orders.same());\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n}\n\n/** @template TItem */\nclass Box\n{\n    public function same(): static\n    {\n        return $this;\n    }\n\n    /** @return TItem|null */\n    public function first(): mixed\n    {\n        return null;\n    }\n}\n\n/**\n * @template TTag\n * @extends Box<int>\n */\nclass Tagged extends Box\n{\n    /** @param TTag $tag */\n    public function tag(mixed $tag): void\n    {\n    }\n}\n\n/** @extends Box<Order> */\nclass OrderBox extends Box\n{\n}\n\nclass Report\n{\n    public static function keep(int $number): int\n    {\n        return $number;\n    }\n\n    /** @param Tagged<string> $tagged */\n    public static function run(Tagged $tagged, OrderBox $orders): void\n    {\n        $tagged->same()->tag(1);\n        Report::keep($orders->same());\n    }\n}\n";
+
+    assert_eq!(
+        explained(("src/Demo/Box.php", php), &[]),
+        [
+            "51:30 invalid-argument Invalid argument type for argument #1 of `Demo\\Tagged::tag`: expected `string`, but found `int(1)`. Change the argument value to match `string`, or update the parameter's type declaration.",
+            "52:22 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `int`, but found `Demo\\OrderBox<mixed>&static`. Change the argument value to match `int`, or update the parameter's type declaration.",
+        ]
+    );
+    assert_eq!(
+        explained(("src/Demo/Box.sharp", sharp), &[]),
+        [
+            "31:27 invalid-argument Invalid argument type for argument #1 of `Demo\\Tagged::tag`: expected `string`, but found `1`. Change the argument value to match `string`, or update the parameter's type declaration.",
+            "32:21 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::keep`: expected `int`, but found `OrderBox`. Change the argument value to match `int`, or update the parameter's type declaration.",
+        ]
+    );
+}
+
+/// `Self` in an override is the overriding class, so an implementation or an override of a method returning `Self`
+/// returns `Self` too, whatever type arguments its header gives the parent. The PHP twin's `static` keeps Mago's
+/// issues.
+#[test]
+fn an_override_of_a_method_returning_self_returns_self() {
+    let sharp = "namespace Demo;\n\npublic interface Builder<TResult>\n{\n    Self named(string name);\n\n    TResult build();\n}\n\npublic class Counter<TTag> : Builder<int>\n{\n    public Self named(string name) => this;\n\n    public int build() => 0;\n\n    public void tag(TTag tag)\n    {\n    }\n}\n\npublic class Base<TResult>\n{\n    public virtual Self named(string name) => this;\n\n    public virtual TResult? build() => null;\n}\n\npublic class Child<TTag> : Base<int>\n{\n    public override Self named(string name) => this;\n\n    public void tag(TTag tag)\n    {\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\n/** @template TResult */\ninterface Builder\n{\n    public function named(string $name): static;\n\n    /** @return TResult */\n    public function build(): mixed;\n}\n\n/**\n * @template TTag\n * @implements Builder<int>\n */\nclass Counter implements Builder\n{\n    public function named(string $name): static\n    {\n        return $this;\n    }\n\n    public function build(): int\n    {\n        return 0;\n    }\n\n    /** @param TTag $tag */\n    public function tag(mixed $tag): void\n    {\n    }\n}\n\n/** @template TResult */\nclass Base\n{\n    public function named(string $name): static\n    {\n        return $this;\n    }\n\n    /** @return TResult|null */\n    public function build(): mixed\n    {\n        return null;\n    }\n}\n\n/**\n * @template TTag\n * @extends Base<int>\n */\nclass Child extends Base\n{\n    public function named(string $name): static\n    {\n        return $this;\n    }\n\n    /** @param TTag $tag */\n    public function tag(mixed $tag): void\n    {\n    }\n}\n";
+
+    assert_eq!(explained(("src/Demo/Builder.php", php), &[]), Vec::<String>::new());
+    assert_eq!(explained(("src/Demo/Builder.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// G1 erases type arguments, so `new` on a class value of a generic PHP# class can't give the object its type
+/// arguments: it is refused as the code writes it, with or without type arguments. `new` on a class value of a class
+/// without type parameters, spec section 25, and `new Self(…)` in an instance method stay legal. The PHP twin's
+/// `new $type()` on a `class-string` of the PHP# class keeps Mago's issues.
+#[test]
+fn new_on_a_class_value_of_a_generic_class_is_not_supported_yet() {
+    let classes = "namespace Demo;\n\npublic class Box<TItem>\n{\n    public required Box()\n    {\n    }\n\n    public Self copy() => new Self();\n\n    public TItem? first() => null;\n}\n\npublic class Plain\n{\n    public required Plain()\n    {\n    }\n}\n";
+    let sharp = "namespace Demo;\n\npublic class Report\n{\n    private Class<Box> kind = typeof(Box);\n\n    private Class<Plain> plain = typeof(Plain);\n\n    public Any? make() => new (this.kind)();\n\n    public Any? typed() => new (this.kind)<string>();\n\n    public Plain made() => new (this.plain)();\n\n    public Any? held()\n    {\n        return new (this.kind)();\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    /** @param class-string<Box> $type */\n    public static function make(string $type): mixed\n    {\n        return new $type();\n    }\n\n    /** @param class-string<Plain> $type */\n    public static function plain(string $type): Plain\n    {\n        return new $type();\n    }\n}\n";
+    let because = "because type arguments don't reach the running program. | Not supported yet.";
+
+    assert_eq!(explained(("src/Demo/Report.php", php), &[("src/Demo/Classes.sharp", classes)]), Vec::<String>::new());
+    assert_eq!(explained(("src/Demo/Classes.sharp", classes), &[]), Vec::<String>::new());
+    assert_eq!(
+        worded(("src/Demo/Report.sharp", sharp), &[("src/Demo/Classes.sharp", classes)]),
+        [
+            format!("9:31 not-supported-yet `new (this.kind)()` can't run yet, {because}"),
+            format!("11:32 not-supported-yet `new (this.kind)<string>()` can't run yet, {because}"),
+            format!("17:20 not-supported-yet `new (this.kind)()` can't run yet, {because}"),
+        ]
+    );
+}
+
+/// A generic method over a `Map` keyed by its type parameter infers the type argument from a `Map<Status, int>`'s
+/// key, `Status`, which its bound takes. The PHP twin's template bounded by the enum keeps Mago's issues.
+#[test]
+fn a_generic_method_over_a_map_keyed_by_a_backed_enum_infers_the_enum() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\npublic class Keys\n{\n    public static int count<TKey : Status>(Map<TKey, int> counts) => 0;\n\n    public static int total(Map<Status, int> counts) => Keys.count(counts);\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Status;\n\nfinal class Keys\n{\n    /**\n     * @template TKey of Status\n     * @param array<TKey, int> $counts\n     */\n    public static function count(array $counts): int\n    {\n        return 0;\n    }\n\n    /** @param array<string, int> $counts */\n    public static function total(array $counts): int\n    {\n        return Keys::count($counts);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Keys.php", php), &[("src/Lib/Status.php", STATUS)]),
+        ["13:34 docblock-type-mismatch", "21:28 template-constraint-violation", "21:28 invalid-argument"]
+    );
+    assert_eq!(issues(("src/Demo/Keys.sharp", sharp), &[("src/Lib/Status.php", STATUS)]), Vec::<String>::new());
+}
+
+/// A plain PHP class whose docblock declares templates, as `Traversable`, `Iterator`, `IteratorAggregate` and
+/// `Generator` do, takes no PHP# type arguments, so `is`, `as` and a `match` arm test it as any class. The PHP twin's
+/// `instanceof` keeps Mago's issues.
+#[test]
+fn a_type_test_of_a_php_class_with_docblock_templates_passes() {
+    let sharp = "namespace Demo;\n\nimport Generator;\nimport Iterator;\nimport IteratorAggregate;\nimport Traversable;\n\npublic class Report\n{\n    public static bool each(Any? value) => value is Traversable;\n\n    public static bool step(Any? value) => value is Iterator;\n\n    public static bool held(Any? value) => value is IteratorAggregate;\n\n    public static bool made(Any? value) => value is Generator;\n\n    public static Any? kept(Any? value) => value as Traversable;\n\n    public static int matched(Any? value) => match (value) { Iterator => 1, default => 0 };\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Generator;\nuse Iterator;\nuse IteratorAggregate;\nuse Traversable;\n\nclass Report\n{\n    public static function each(mixed $value): bool\n    {\n        return $value instanceof Traversable && !$value instanceof Iterator && !$value instanceof IteratorAggregate && !$value instanceof Generator;\n    }\n}\n";
+
+    assert_eq!(explained(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
+    assert_eq!(explained(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// Plain PHP reads a backed enum key as upstream Mago does: only the enum itself is its backing type, so an
+/// intersection with the enum stays the intersection, and an `iterable<HasLabel&Status, int>` is no
+/// `iterable<string, int>`, as upstream 39a57d08f reports.
+#[test]
+fn a_php_intersection_key_with_a_backed_enum_keeps_upstreams_key_type() {
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\HasLabel;\nuse Lib\\Status;\n\nfinal class Tally\n{\n    /**\n     * @param iterable<HasLabel&Status, int> $counts\n     * @return iterable<string, int>\n     */\n    public static function named(iterable $counts): iterable\n    {\n        return $counts;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tally.php", php), &[("src/Lib/Labels.php", LABELS)]),
+        ["16:16 invalid-return-statement"]
+    );
+}
+
+/// An erased type is named as PHP# writes it, `Entity` or `Order?`, and as PHP's only where PHP# has no word for a part
+/// of it, `mixed` and `array`, so `array|null` is PHP's whole. The PHP twin keeps Mago's issues.
+#[test]
+fn an_erased_parameter_type_is_named_as_sharp_writes_it() {
+    let sharp = "namespace Demo;\n\npublic abstract class Entity\n{\n}\n\npublic class Order : Entity\n{\n}\n\npublic class Box<TItem : Entity>\n{\n    public virtual void put(TItem item)\n    {\n    }\n\n    public virtual void fill(TItem? item)\n    {\n    }\n}\n\npublic class OrderBox : Box<Order>\n{\n    public override void put(Order item)\n    {\n    }\n\n    public override void fill(Order? item)\n    {\n    }\n}\n\npublic class Slot<TValue>\n{\n    public virtual void keep(TValue value)\n    {\n    }\n}\n\npublic class ListSlot : Slot<List<int>?>\n{\n    public override void keep(List<int>? value)\n    {\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nabstract class Entity\n{\n}\n\nclass Order extends Entity\n{\n}\n\n/** @template TItem of Entity */\nclass Box\n{\n    /** @param TItem $item */\n    public function put(Entity $item): void\n    {\n    }\n}\n\n/** @extends Box<Order> */\nclass OrderBox extends Box\n{\n    public function put(Entity $item): void\n    {\n    }\n}\n";
+    let note = "PHP# erases type parameters when it compiles, and PHP refuses a parameter narrower than the one it overrides when it links the class.";
+
+    assert_eq!(worded(("src/Demo/Box.php", php), &[]), Vec::<String>::new());
+    assert_eq!(
+        worded(("src/Demo/Box.sharp", sharp), &[]),
+        [
+            format!(
+                "28:38 incompatible-parameter-type Parameter `item` of `OrderBox.fill` must take at least `Entity?`, the type `Box.fill` erases it to. | Erases to `Order?`. | `Box.fill` takes `Entity?` once its type parameters are erased. | {note} | Write `item` with a type that erases to `Entity?`, or bound the type parameter, as in `Box<TItem : Order>`, so both sides erase to the bound."
+            ),
+            format!(
+                "24:36 incompatible-parameter-type Parameter `item` of `OrderBox.put` must take at least `Entity`, the type `Box.put` erases it to. | Erases to `Order`. | `Box.put` takes `Entity` once its type parameters are erased. | {note} | Write `item` with a type that erases to `Entity`, or bound the type parameter, as in `Box<TItem : Order>`, so both sides erase to the bound."
+            ),
+            format!(
+                "42:42 incompatible-parameter-type Parameter `value` of `ListSlot.keep` must take at least PHP's `mixed`, the type `Slot.keep` erases it to. | Erases to PHP's `array|null`. | `Slot.keep` takes PHP's `mixed` once its type parameters are erased. | {note} | Write `value` with a type that erases to PHP's `mixed`."
+            ),
+        ]
+    );
+}

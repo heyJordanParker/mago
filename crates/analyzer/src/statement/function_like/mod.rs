@@ -8,6 +8,7 @@ use mago_word::Word;
 use mago_word::concat_word;
 use mago_word::word;
 
+use mago_codex::context::ScopeContext;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
 use mago_codex::metadata::class_like::TemplateTypes;
@@ -800,18 +801,12 @@ where
 
     let mut signature_union = type_metadata.type_union.clone();
 
-    let calling_class = block_context.scope.get_class_like_name();
-
     expander::expand_union(
         context.codebase,
         &mut signature_union,
         &TypeExpansionOptions {
-            self_class: calling_class,
-            static_class_type: if let Some(calling_class) = calling_class {
-                StaticClassType::Name(calling_class)
-            } else {
-                StaticClassType::None
-            },
+            self_class: block_context.scope.get_class_like_name(),
+            static_class_type: get_scope_static_class_type(context, &block_context.scope),
             function_is_final: if let Some(method_metadata) = &function_like_metadata.method_metadata {
                 method_metadata.is_final
             } else {
@@ -1033,6 +1028,21 @@ where
         intersection_types: if intersections.is_empty() { None } else { Some(intersections) },
         remapped_parameters: false,
     })
+}
+
+/// The class `static` names in the body `scope` holds. PHP#'s `Self` is that class with its own type parameters, as
+/// `this` is, spec section 11, so a body checks what it returns as `Self` against `Box<TItem>`, not a bare `Box`.
+pub fn get_scope_static_class_type<A>(context: &Context<'_, '_, A>, scope: &ScopeContext<'_>) -> StaticClassType
+where
+    A: Arena,
+{
+    match scope.get_class_like() {
+        Some(class) if context.dialect.is_sharp() => {
+            StaticClassType::Object(get_this_type(context, class, scope.get_function_like()))
+        }
+        Some(class) => StaticClassType::Name(class.name),
+        None => StaticClassType::None,
+    }
 }
 
 fn add_symbol_references(

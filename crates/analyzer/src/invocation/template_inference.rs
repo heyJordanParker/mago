@@ -47,6 +47,7 @@ use mago_codex::ttype::wrap_atomic;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::Span;
+use mago_syntax::dialect::Dialect;
 
 use crate::code::IssueCode;
 use crate::context::Context;
@@ -58,11 +59,13 @@ pub struct InferenceOptions {
     pub infer_only_if_new: bool,
     pub argument_offset: Option<usize>,
     pub is_top_level: bool,
+    /// The dialect the container type is written in, the call target's.
+    pub dialect: Dialect,
 }
 
 impl Default for InferenceOptions {
     fn default() -> Self {
-        Self { infer_only_if_new: false, argument_offset: None, is_top_level: true }
+        Self { infer_only_if_new: false, argument_offset: None, is_top_level: true, dialect: Dialect::Php }
     }
 }
 
@@ -111,6 +114,30 @@ where
             .template_types
             .get(&parameter_name)
             .is_some_and(|templates| templates.iter().any(|template| template.defining_entity == *defining_entity))
+}
+
+/// The key types inference compares for `container_key_type`, which `container_dialect` code writes, and
+/// `input_key_type`. PHP# keys a `Map` by a backed enum's cases, which run as their backing values, spec section 12, so a
+/// key that holds the cases meets a key that holds none as its backing type: a PHP# `Map` reaches plain PHP as its
+/// backing values, and plain PHP's backing values, passed where PHP# takes the cases, bind no type parameter to a case.
+/// Two keys that hold the cases compare as written, so a `Map<Status, int>` binds the `TKey` of `Map<TKey, int>` to
+/// `Status`.
+fn comparable_key_types<'key, A>(
+    context: &Context<'_, '_, A>,
+    container_key_type: &'key TUnion,
+    input_key_type: &'key TUnion,
+    container_dialect: Dialect,
+) -> (Cow<'key, TUnion>, Cow<'key, TUnion>)
+where
+    A: Arena,
+{
+    match (
+        get_backing_key_type(container_key_type, context.codebase, container_dialect),
+        get_backing_key_type(input_key_type, context.codebase, context.dialect),
+    ) {
+        (Cow::Owned(_), Cow::Owned(_)) => (Cow::Borrowed(container_key_type), Cow::Borrowed(input_key_type)),
+        key_types => key_types,
+    }
 }
 
 /// Whether `input_object` is the very class the container is parameterizing, without carrying
@@ -365,12 +392,18 @@ fn infer_templates_from_input_and_container_types<A>(
                                         }
                                     }
 
-                                    // A PHP# `Map` keyed by a backed enum reaches plain PHP as its backing values.
                                     if let Some(input_key_type) = input_key_type {
-                                        infer_templates_from_input_and_container_types(
+                                        let (container_key_type, input_key_type) = comparable_key_types(
                                             context,
                                             &container_parameter.0,
-                                            &get_backing_key_type(&input_key_type, context.codebase, context.dialect),
+                                            &input_key_type,
+                                            options.dialect,
+                                        );
+
+                                        infer_templates_from_input_and_container_types(
+                                            context,
+                                            &container_key_type,
+                                            &input_key_type,
                                             template_result,
                                             options,
                                             violations,
@@ -574,10 +607,17 @@ fn infer_templates_from_input_and_container_types<A>(
                         return;
                     };
 
-                    infer_templates_from_input_and_container_types(
+                    let (container_key_type, input_key_type) = comparable_key_types(
                         context,
                         container_iterable.get_key_type(),
-                        &get_backing_key_type(&input_params.0, context.codebase, context.dialect),
+                        &input_params.0,
+                        options.dialect,
+                    );
+
+                    infer_templates_from_input_and_container_types(
+                        context,
+                        &container_key_type,
+                        &input_key_type,
                         template_result,
                         options,
                         violations,
@@ -1189,6 +1229,8 @@ pub fn infer_templates_for_method_call<'ctx, A>(
 /// * `argument_span`: The source code location of the argument, for error reporting.
 /// * `is_callable_argument`: A flag indicating if the argument is a callable, which
 ///   can influence inference strategy.
+/// * `target_dialect`: The dialect the call's target is declared in, which `parameter_type` is read in.
+#[allow(clippy::too_many_arguments)]
 pub fn infer_parameter_templates_from_argument<A>(
     context: &mut Context<'_, '_, A>,
     parameter_type: &TUnion,
@@ -1197,6 +1239,7 @@ pub fn infer_parameter_templates_from_argument<A>(
     argument_offset: usize,
     argument_span: Span,
     is_callable_argument: bool,
+    target_dialect: Dialect,
 ) where
     A: Arena,
 {
@@ -1209,6 +1252,7 @@ pub fn infer_parameter_templates_from_argument<A>(
         InferenceOptions {
             infer_only_if_new: is_callable_argument,
             argument_offset: Some(argument_offset),
+            dialect: target_dialect,
             ..Default::default()
         },
         &mut violations,
@@ -1251,11 +1295,13 @@ pub fn infer_parameter_templates_from_argument<A>(
 /// * `parameter_type`: The declared type of the parameter (the "container").
 /// * `default_type`: The type of the parameter's default value (the "input").
 /// * `template_result`: The map where inferred template types are stored.
+/// * `target_dialect`: The dialect the call's target is declared in, which `parameter_type` is read in.
 pub fn infer_parameter_templates_from_default<A>(
     context: &Context<'_, '_, A>,
     parameter_type: &TUnion,
     default_type: &TUnion,
     template_result: &mut TemplateResult,
+    target_dialect: Dialect,
 ) where
     A: Arena,
 {
@@ -1264,7 +1310,7 @@ pub fn infer_parameter_templates_from_default<A>(
         parameter_type,
         default_type,
         template_result,
-        InferenceOptions { infer_only_if_new: true, ..Default::default() },
+        InferenceOptions { infer_only_if_new: true, dialect: target_dialect, ..Default::default() },
         &mut Vec::new(),
     );
 }

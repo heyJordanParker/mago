@@ -1420,32 +1420,39 @@ pub fn get_backing_key_type<'key>(
 
 /// The backed enum whose cases every value of `atomic` is.
 ///
-/// That is the enum itself, or, in a type `dialect` code writes, a PHP# type parameter's backed enum among the members
-/// of its bound, whichever member the bound writes first. A plain PHP template stays itself, as upstream Mago reads it.
+/// In plain PHP that is the enum an enum type names, as upstream Mago reads it. In PHP# it is the backed enum among the
+/// members of `atomic`, or of a type parameter's bound, whichever member the type writes first.
 #[must_use]
 pub fn get_backed_enum<'codebase>(
     atomic: &TAtomic,
     codebase: &'codebase CodebaseMetadata,
     dialect: Dialect,
 ) -> Option<&'codebase ClassLikeMetadata> {
+    let backed_enum = |name: Word| {
+        codebase
+            .get_class_like(name.as_bytes())
+            .filter(|class_like| class_like.kind.is_enum() && class_like.enum_type.is_some())
+    };
+
+    if !dialect.is_sharp() {
+        return match atomic {
+            TAtomic::Object(TObject::Enum(object)) => backed_enum(object.name),
+            _ => None,
+        };
+    }
+
     let bound = match atomic {
         TAtomic::GenericParameter(parameter) => match parameter.constraint.types.as_ref() {
-            [bound] if dialect.is_sharp() => bound,
+            [bound] => bound,
             _ => return None,
         },
         _ => atomic,
     };
 
-    std::iter::once(bound).chain(bound.get_intersection_types().unwrap_or_default()).find_map(|member| {
-        let name = match member {
-            TAtomic::Object(TObject::Named(object)) => object.name,
-            TAtomic::Object(TObject::Enum(object)) => object.name,
-            _ => return None,
-        };
-
-        codebase
-            .get_class_like(name.as_bytes())
-            .filter(|class_like| class_like.kind.is_enum() && class_like.enum_type.is_some())
+    std::iter::once(bound).chain(bound.get_intersection_types().unwrap_or_default()).find_map(|member| match member {
+        TAtomic::Object(TObject::Named(object)) => backed_enum(object.name),
+        TAtomic::Object(TObject::Enum(object)) => backed_enum(object.name),
+        _ => None,
     })
 }
 

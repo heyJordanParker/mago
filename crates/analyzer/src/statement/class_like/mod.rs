@@ -3131,8 +3131,8 @@ fn report_signature_compatibility_issue<'ctx, A>(
                 .map(|p| p.name_span)
                 .filter(|span| span.file_id == primary_span.file_id)
                 .unwrap_or(primary_span);
-            let child_type = method_signature::display_erased(&child_type, context.dialect);
-            let parent_type = method_signature::display_erased(&parent_type, context.dialect);
+            let child_type = method_signature::display_erased(&child_type, context.dialect, context.codebase);
+            let parent_type = method_signature::display_erased(&parent_type, context.dialect, context.codebase);
             // A PHP# file names a method as C# does, `Box.put`.
             let (child_method, parent_method) = if context.dialect.is_sharp() {
                 let method_name = parent_method.original_name;
@@ -3804,9 +3804,13 @@ fn check_class_like_properties<'ctx, A>(
                         ) {
                             has_type_incompatibility = true;
 
-                            let erased_type_id = method_signature::display_erased(&erased_type, context.dialect);
-                            let erased_parent_type_id =
-                                method_signature::display_erased(&erased_parent_type, context.dialect);
+                            let erased_type_id =
+                                method_signature::display_erased(&erased_type, context.dialect, context.codebase);
+                            let erased_parent_type_id = method_signature::display_erased(
+                                &erased_parent_type,
+                                context.dialect,
+                                context.codebase,
+                            );
                             let property_name = mago_bytes::trim_start_byte(property_metadata.name.0.as_bytes(), b'$');
                             let property_name = String::from_utf8_lossy(property_name);
                             let class_name = class_like_metadata.original_name;
