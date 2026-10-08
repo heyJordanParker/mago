@@ -62,6 +62,7 @@ use crate::resolver::method::resolve_method_targets;
 use crate::resolver::property::check_redundant_nullsafe;
 use crate::utils::expression::get_block_expression_id;
 use crate::utils::expression::is_this;
+use crate::utils::names::display_member;
 use crate::visibility::check_method_visibility;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for MethodCall<'arena> {
@@ -326,8 +327,8 @@ where
             .get_method_by_id(&resolved_method.method_identifier)
             .expect("method metadata should exist for resolved method");
 
-        let method_display = format!(
-            "{}::{}",
+        let method_display = display_member(
+            context,
             resolved_method.method_identifier.get_class_name(),
             resolved_method.method_identifier.get_method_name(),
         );

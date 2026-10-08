@@ -21,7 +21,7 @@ pub fn check_extends(
     context: &mut Context<'_, '_, '_>,
 ) {
     let class_like_name_d = BytesDisplay(class_like_name);
-    let class_like_fqcn_d = BytesDisplay(class_like_fqcn);
+    let class_like_fqcn_d = context.display_class_like_name(class_like_fqcn);
 
     if extension_limit && extends.types.len() > 1 {
         context.report(
@@ -98,7 +98,7 @@ pub fn check_implements(
     context: &mut Context<'_, '_, '_>,
 ) {
     let class_like_name_d = BytesDisplay(class_like_name);
-    let class_like_fqcn_d = BytesDisplay(class_like_fqcn);
+    let class_like_fqcn_d = context.display_class_like_name(class_like_fqcn);
 
     if check_for_self_implement {
         for implemented_type in &implements.types {

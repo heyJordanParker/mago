@@ -23,6 +23,7 @@ use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::PartialApplication;
 use mago_syntax::cst::PartialArgument;
+use mago_syntax::dialect::Dialect;
 use mago_word::Word;
 use mago_word::word;
 
@@ -213,6 +214,8 @@ impl<'codebase, 'artifacts, 'block> ProviderContext<'codebase, 'artifacts, 'bloc
 pub struct HookContext<'ctx, 'block> {
     pub(crate) codebase: &'ctx CodebaseMetadata,
     pub(crate) source_file: &'ctx File,
+    /// The dialect of the analyzed program, so a built-in hook writes its messages as the file writes code.
+    pub(crate) dialect: Dialect,
     pub(crate) resolved_names: &'ctx ResolvedNames<'ctx>,
     pub(crate) block_context: &'block mut BlockContext<'ctx>,
     pub(crate) artifacts: &'block mut AnalysisArtifacts,
@@ -232,6 +235,7 @@ impl<'ctx, 'block> HookContext<'ctx, 'block> {
         Self {
             codebase: context.codebase,
             source_file: context.source_file,
+            dialect: context.dialect,
             resolved_names: context.resolved_names,
             artifacts,
             block_context,

@@ -43,6 +43,7 @@ use crate::resolver::method::report_possibly_missing_magic_call;
 use crate::resolver::method::resolve_forwarded_call;
 use crate::resolver::selector::resolve_member_selector;
 use crate::utils::names::display_class_like_name;
+use crate::utils::names::display_member;
 use crate::utils::names::display_method_name;
 use crate::visibility::check_method_visibility;
 use crate::visibility::is_method_visible;
@@ -665,14 +666,24 @@ where
 {
     let class_lower = method_id.get_class_name();
     let method_lower = method_id.get_method_name();
-    let class_name = display_class_like_name(context, class_lower);
-    let method_name = display_method_name(context, class_lower, method_lower);
+    let method = display_member(
+        context,
+        display_class_like_name(context, class_lower),
+        display_method_name(context, class_lower, method_lower),
+    );
+    let instance_call = if context.dialect.is_sharp() {
+        "const obj = new MyClass(); obj.method();"
+    } else {
+        "$obj = new MyClass(); $obj->method();"
+    };
 
     context.collector.report_with_code(
         IssueCode::InvalidStaticMethodAccess,
-        Issue::error(format!("Cannot call non-static method `{class_name}::{method_name}` statically."))
+        Issue::error(format!("Cannot call non-static method `{method}` statically."))
             .with_annotation(Annotation::primary(span).with_message("This is a non-static method"))
-            .with_help("To call this method, you must first create an instance of the class (e.g., `$obj = new MyClass(); $obj->method();`)."),
+            .with_help(format!(
+                "To call this method, you must first create an instance of the class (e.g., `{instance_call}`)."
+            )),
     );
 }
 

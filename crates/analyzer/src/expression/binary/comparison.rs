@@ -5,7 +5,6 @@ use mago_bytes::BytesDisplay;
 use mago_codex::identifier::method::MethodIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::function_like::FunctionLikeMetadata;
-use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::get_bool;
@@ -49,6 +48,7 @@ use crate::expression::binary::utils::is_always_less_than;
 use crate::expression::binary::utils::is_always_less_than_or_equal;
 use crate::utils::expression::get_literal_array_key;
 use crate::utils::misc::unwrap_expression;
+use crate::utils::names::display_type;
 
 /// Analyzes standard comparison operations (e.g., `==`, `===`, `<`, `<=`, `>`, `>=`).
 ///
@@ -179,27 +179,25 @@ where
         let rhs_is_only_array = rhs_type.is_array();
 
         if is_relational && lhs_is_only_array && !rhs_has_array && !rhs_type.is_null() {
+            let rhs = display_type(context, rhs_type);
+
             context.collector.report_with_code(
                 IssueCode::InvalidOperand,
-                Issue::warning(format!(
-                    "Comparing an `array` with a non-array type `{}` using `{op_str}`.",
-                    rhs_type.get_id(),
-                ))
+                Issue::warning(format!("Comparing an `array` with a non-array type `{rhs}` using `{op_str}`."))
                 .with_annotation(Annotation::primary(binary.lhs.span()).with_message("This is an array"))
-                .with_annotation(Annotation::secondary(binary.rhs.span()).with_message(format!("This has type `{}`", rhs_type.get_id())))
+                .with_annotation(Annotation::secondary(binary.rhs.span()).with_message(format!("This has type `{rhs}`")))
                 .with_note("PHP's comparison rules for arrays against other types can be non-obvious (e.g., an array is usually considered 'greater' than non-null scalars).")
                 .with_help("Ensure both operands are of comparable types or explicitly cast/convert them before comparison if this behavior is not intended."),
             );
 
             reported_general_invalid_operand = true;
         } else if is_relational && !lhs_has_array && rhs_is_only_array && !lhs_type.is_null() {
+            let lhs = display_type(context, lhs_type);
+
             context.collector.report_with_code(
                 IssueCode::InvalidOperand,
-                Issue::warning(format!(
-                    "Comparing a non-array type `{}` with an `array` using `{op_str}`.",
-                    lhs_type.get_id(),
-                ))
-                .with_annotation(Annotation::primary(binary.lhs.span()).with_message(format!("This has type `{}`", lhs_type.get_id())))
+                Issue::warning(format!("Comparing a non-array type `{lhs}` with an `array` using `{op_str}`."))
+                .with_annotation(Annotation::primary(binary.lhs.span()).with_message(format!("This has type `{lhs}`")))
                 .with_annotation(Annotation::secondary(binary.rhs.span()).with_message("This is an array"))
                 .with_note("PHP's comparison rules for arrays against other types can be non-obvious.")
                 .with_help("Ensure both operands are of comparable types or explicitly cast/convert them before comparison if this behavior is not intended."),
@@ -207,28 +205,32 @@ where
 
             reported_general_invalid_operand = true;
         } else if is_relational && lhs_has_array && !rhs_has_array && !rhs_type.is_null() {
+            let lhs = display_type(context, lhs_type);
+            let rhs = display_type(context, rhs_type);
+
             context.collector.report_with_code(
                 IssueCode::PossiblyInvalidOperand,
                 Issue::warning(format!(
-                    "Left operand may be an `array` when compared with non-array type `{}` using `{op_str}`.",
-                    rhs_type.get_id(),
+                    "Left operand may be an `array` when compared with non-array type `{rhs}` using `{op_str}`."
                 ))
-                .with_annotation(Annotation::primary(binary.lhs.span()).with_message(format!("This may be an array (type `{}`)", lhs_type.get_id())))
-                .with_annotation(Annotation::secondary(binary.rhs.span()).with_message(format!("This has type `{}`", rhs_type.get_id())))
+                .with_annotation(Annotation::primary(binary.lhs.span()).with_message(format!("This may be an array (type `{lhs}`)")))
+                .with_annotation(Annotation::secondary(binary.rhs.span()).with_message(format!("This has type `{rhs}`")))
                 .with_note("PHP's comparison rules for arrays against other types can be non-obvious (an array is usually considered 'greater' than non-null scalars), so this comparison's result depends on which variant of the union the array side resolves to at runtime.")
                 .with_help("Narrow the array side to a non-array type before comparing, or handle the array case separately."),
             );
 
             reported_general_invalid_operand = true;
         } else if is_relational && !lhs_has_array && rhs_has_array && !lhs_type.is_null() {
+            let lhs = display_type(context, lhs_type);
+            let rhs = display_type(context, rhs_type);
+
             context.collector.report_with_code(
                 IssueCode::PossiblyInvalidOperand,
                 Issue::warning(format!(
-                    "Right operand may be an `array` when compared with non-array type `{}` using `{op_str}`.",
-                    lhs_type.get_id(),
+                    "Right operand may be an `array` when compared with non-array type `{lhs}` using `{op_str}`."
                 ))
-                .with_annotation(Annotation::primary(binary.lhs.span()).with_message(format!("This has type `{}`", lhs_type.get_id())))
-                .with_annotation(Annotation::secondary(binary.rhs.span()).with_message(format!("This may be an array (type `{}`)", rhs_type.get_id())))
+                .with_annotation(Annotation::primary(binary.lhs.span()).with_message(format!("This has type `{lhs}`")))
+                .with_annotation(Annotation::secondary(binary.rhs.span()).with_message(format!("This may be an array (type `{rhs}`)")))
                 .with_note("PHP's comparison rules for arrays against other types can be non-obvious, so this comparison's result depends on which variant of the union the array side resolves to at runtime.")
                 .with_help("Narrow the array side to a non-array type before comparing, or handle the array case separately."),
             );
@@ -599,11 +601,12 @@ fn check_comparison_operand<'ast, 'arena, A>(
             .with_help("Ensure this operand is non-null and has a comparable type. Explicitly check for `null` if it's an expected state."),
         );
     } else if operand_type.can_be_null() && !operand_type.is_mixed() {
+        let operand_type_str = display_type(context, operand_type);
+
         context.collector.report_with_code(
             IssueCode::PossiblyNullOperand,
             Issue::warning(format!(
-                "{} operand in `{}` comparison might be `null` (type `{}`).",
-                side, op_str, operand_type.get_id()
+                "{side} operand in `{op_str}` comparison might be `null` (type `{operand_type_str}`)."
             ))
             .with_annotation(Annotation::primary(operand.span()).with_message("This might be `null`"))
             .with_note(format!("If this operand is `null` at runtime, PHP's specific comparison rules for `null` with `{op_str}` will apply."))
@@ -632,11 +635,12 @@ fn check_comparison_operand<'ast, 'arena, A>(
             .with_help("Ensure this operand is not `false` or explicitly handle the `false` case if it represents a distinct state (e.g., an error from a function)."),
         );
     } else if operand_type.is_falsable() && !operand_type.ignore_falsable_issues() {
+        let operand_type_str = display_type(context, operand_type);
+
         context.collector.report_with_code(
             IssueCode::PossiblyFalseOperand,
             Issue::warning(format!(
-                "{} operand in `{}` comparison might be `false` (type `{}`).",
-                side, op_str, operand_type.get_id()
+                "{side} operand in `{op_str}` comparison might be `false` (type `{operand_type_str}`)."
             ))
             .with_annotation(Annotation::primary(operand.span()).with_message("This might be `false`"))
             .with_note(format!("If this operand is `false` at runtime, PHP's specific comparison rules for `false` with `{op_str}` will apply."))
@@ -870,7 +874,7 @@ pub(crate) fn report_sharp_refusal<A>(
 {
     let codebase = context.codebase;
     let operator = &binary.operator;
-    let (lhs_name, rhs_name) = (display_operand(lhs_type, codebase), display_operand(rhs_type, codebase));
+    let (lhs_name, rhs_name) = (display_operand(context, lhs_type), display_operand(context, rhs_type));
     let op = BytesDisplay(operator.as_bytes());
     let pair = format!("`{op}` cannot compare `{lhs_name}` with `{rhs_name}`");
 
@@ -900,8 +904,8 @@ pub(crate) fn report_sharp_refusal<A>(
             };
             let class_type = if lhs_type.types.iter().any(|atomic| is_instance(&atomic)) { lhs_type } else { rhs_type };
             let class = display_operand(
+                context,
                 &TUnion::from_vec(class_type.types.iter().filter(is_instance).cloned().collect()),
-                codebase,
             );
 
             let issue = if matches!(operator, BinaryOperator::Equal(_) | BinaryOperator::NotEqual(_)) {
@@ -990,7 +994,7 @@ fn report_redundant_null_comparison<'arena, A>(
         return;
     }
 
-    let operand_type_str = operand_type.get_id();
+    let operand_type_str = display_type(context, operand_type);
     let issue = context.as_null_check_error(
         Issue::help(format!(
             "Redundant `{}` comparison: `{operand_type_str}` is never `null`.",
@@ -1023,6 +1027,15 @@ fn report_redundant_comparison<'arena, A>(
         return;
     }
 
+    let left = match artifacts.get_expression_type(&binary.lhs) {
+        Some(t) => format!("Left operand is `{}`", display_type(context, t)),
+        None => "Left operand type is unknown".to_string(),
+    };
+    let right = match artifacts.get_expression_type(&binary.rhs) {
+        Some(t) => format!("Right operand is `{}`", display_type(context, t)),
+        None => "Right operand type is unknown".to_string(),
+    };
+
     context.collector.report_with_code(
         IssueCode::RedundantComparison,
         Issue::help(format!(
@@ -1030,18 +1043,8 @@ fn report_redundant_comparison<'arena, A>(
             BytesDisplay(binary.operator.as_bytes()),
             comparison_description
         ))
-        .with_annotation(Annotation::primary(binary.lhs.span()).with_message(
-            match artifacts.get_expression_type(&binary.lhs) {
-                Some(t) => format!("Left operand is `{}`", t.get_id()),
-                None => "Left operand type is unknown".to_string(),
-            },
-        ))
-        .with_annotation(Annotation::secondary(binary.rhs.span()).with_message(
-            match artifacts.get_expression_type(&binary.rhs) {
-                Some(t) => format!("Right operand is `{}`", t.get_id()),
-                None => "Right operand type is unknown".to_string(),
-            },
-        ))
+        .with_annotation(Annotation::primary(binary.lhs.span()).with_message(left))
+        .with_annotation(Annotation::secondary(binary.rhs.span()).with_message(right))
         .with_note(format!(
             "The `{}` operator will always return {} in this case.",
             BytesDisplay(binary.operator.as_bytes()),

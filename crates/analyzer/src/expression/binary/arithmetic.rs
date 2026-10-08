@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use mago_codex::assertion::Assertion;
 use mago_codex::metadata::CodebaseMetadata;
-use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::array::key::ArrayKey;
@@ -43,6 +42,8 @@ use crate::expression::binary::concat::fold_concat_operands;
 use crate::expression::binary::utils::analyze_instance_operator;
 use crate::expression::binary::utils::display_operand;
 use crate::expression::binary::utils::refuse_non_int_operands;
+use crate::utils::names::display_atomic;
+use crate::utils::names::display_type;
 
 #[inline]
 pub fn analyze_arithmetic_operation<'ctx, 'arena, A>(
@@ -115,13 +116,12 @@ where
             return Ok(());
         }
 
+        let left = display_type(context, &left_type);
+        let right = display_type(context, &right_type);
+
         context.collector.report_with_code(
             IssueCode::InvalidOperand,
-            Issue::error(format!(
-                "`+` cannot join `{}` and `{}`: it joins two strings or adds two numbers.",
-                left_type.get_id(),
-                right_type.get_id()
-            ))
+            Issue::error(format!("`+` cannot join `{left}` and `{right}`: it joins two strings or adds two numbers."))
             .with_annotation(Annotation::primary(binary.span()).with_message("A string may meet another value here."))
             .with_annotation(Annotation::secondary(operator).with_message("`+` used here."))
             .with_note("Spec section 18 makes joining a string with any other value an error, so `\"1\" + 1` cannot produce `\"11\"`.")
@@ -148,17 +148,16 @@ where
         // Let's set result to mixed and return, similar to Psalm's behavior.
         final_result_type = Some(get_mixed());
     } else if left_type.is_nullable() && !left_type.ignore_nullable_issues() {
+        let left = display_type(context, &left_type);
+
         context.collector.report_with_code(
             IssueCode::PossiblyNullOperand,
-            Issue::warning(format!(
-                "Left operand in arithmetic operation might be `null` (type `{}`).",
-                left_type.get_id()
-            ))
-            .with_annotation(Annotation::primary(binary.lhs.span()).with_message("This might be `null`."))
-            .with_note("Performing arithmetic operations on `null` typically results in `0`.")
-            .with_help(
-                "Ensure the left operand is non-null before the operation, potentially using checks or assertions.",
-            ),
+            Issue::warning(format!("Left operand in arithmetic operation might be `null` (type `{left}`)."))
+                .with_annotation(Annotation::primary(binary.lhs.span()).with_message("This might be `null`."))
+                .with_note("Performing arithmetic operations on `null` typically results in `0`.")
+                .with_help(
+                    "Ensure the left operand is non-null before the operation, potentially using checks or assertions.",
+                ),
         );
     }
 
@@ -173,12 +172,11 @@ where
 
         final_result_type = Some(get_mixed());
     } else if right_type.is_nullable() && !right_type.ignore_nullable_issues() {
+        let right = display_type(context, &right_type);
+
         context.collector.report_with_code(
             IssueCode::PossiblyNullOperand,
-            Issue::warning(format!(
-                "Right operand in arithmetic operation might be `null` (type `{}`).",
-                right_type.get_id()
-            ))
+            Issue::warning(format!("Right operand in arithmetic operation might be `null` (type `{right}`)."))
             .with_annotation(Annotation::primary(binary.rhs.span()).with_message("This might be `null`"))
             .with_note("Performing arithmetic operations on `null` typically results in `0`.")
             .with_help(
@@ -216,12 +214,11 @@ where
         // We'll treat it as 0 in the loop below, but the warning is issued.
         // If *only* false, Psalm might bail; let's continue for now
     } else if left_type.is_falsable() && !left_type.ignore_falsable_issues() && !is_bitwise {
+        let left = display_type(context, &left_type);
+
         context.collector.report_with_code(
             IssueCode::PossiblyFalseOperand,
-            Issue::warning(format!(
-                "Left operand in arithmetic operation might be `false` (type `{}`).",
-                left_type.get_id()
-            ))
+            Issue::warning(format!("Left operand in arithmetic operation might be `false` (type `{left}`)."))
             .with_annotation(
                 Annotation::primary(binary.lhs.span())
                     .with_message("This might be `false`.")
@@ -253,12 +250,11 @@ where
             ),
         );
     } else if right_type.is_falsable() && !right_type.ignore_falsable_issues() && !is_bitwise {
+        let right = display_type(context, &right_type);
+
         context.collector.report_with_code(
             IssueCode::PossiblyFalseOperand,
-            Issue::warning(format!(
-                "Right operand in arithmetic operation might be `false` (type `{}`).",
-                right_type.get_id()
-            ))
+            Issue::warning(format!("Right operand in arithmetic operation might be `false` (type `{right}`)."))
             .with_annotation(
                 Annotation::primary(binary.rhs.span())
                     .with_message("This might be `false`.")
@@ -362,7 +358,7 @@ where
                     has_valid_right_operand = true;
                 } else if left_atomic.is_array() {
                     invalid_right_messages.push((
-                        format!("Cannot add array to non-array type {}", right_atomic.get_id()),
+                        format!("Cannot add array to non-array type {}", display_atomic(context, &right_atomic)),
                         binary.rhs.span(),
                     ));
 
@@ -370,7 +366,7 @@ where
                     invalid_pair = true;
                 } else {
                     invalid_left_messages.push((
-                        format!("Cannot add {} to non-array type array", left_atomic.get_id()),
+                        format!("Cannot add {} to non-array type array", display_atomic(context, &left_atomic)),
                         binary.lhs.span(),
                     ));
 
@@ -426,26 +422,32 @@ where
                 }
             } else if left_atomic.is_numeric() {
                 invalid_right_messages.push((
-                    format!("Cannot perform arithmetic operation with non-numeric type {}", right_atomic.get_id()),
+                    format!(
+                        "Cannot perform arithmetic operation with non-numeric type {}",
+                        display_atomic(context, &right_atomic)
+                    ),
                     binary.rhs.span(),
                 ));
                 has_valid_left_operand = true;
                 invalid_pair = true;
             } else if right_atomic.is_numeric() {
                 invalid_left_messages.push((
-                    format!("Cannot perform arithmetic operation with non-numeric type {}", left_atomic.get_id()),
+                    format!(
+                        "Cannot perform arithmetic operation with non-numeric type {}",
+                        display_atomic(context, &left_atomic)
+                    ),
                     binary.lhs.span(),
                 ));
                 has_valid_right_operand = true;
                 invalid_pair = true;
             } else {
                 invalid_left_messages.push((
-                    format!("Cannot perform arithmetic operation on type {}", left_atomic.get_id()),
+                    format!("Cannot perform arithmetic operation on type {}", display_atomic(context, &left_atomic)),
                     binary.lhs.span(),
                 ));
 
                 invalid_right_messages.push((
-                    format!("Cannot perform arithmetic operation on type {}", right_atomic.get_id()),
+                    format!("Cannot perform arithmetic operation on type {}", display_atomic(context, &right_atomic)),
                     binary.rhs.span(),
                 ));
 
@@ -595,7 +597,7 @@ fn report_mixed_operand<A>(
             IssueCode::MixedOperand,
             Issue::error(format!(
                 "`{written}` is `{}` here: a property is not narrowed, because it could change between the test and the use.",
-                display_operand(operand_type, context.codebase)
+                display_operand(context, operand_type)
             ))
             .with_annotation(Annotation::primary(operand.span()).with_message("This property keeps its declared type."))
             .with_note("Spec section 21 narrows a local or a parameter after `is`, never a property.")

@@ -67,6 +67,9 @@ use crate::expression::binary::utils::analyze_instance_operator;
 use crate::expression::binary::utils::refuse_non_int_operands;
 use crate::expression::call::method_call::analyze_implicit_method_call;
 use crate::utils::expression::get_block_expression_id;
+use crate::utils::names::display_atomic;
+use crate::utils::names::display_class_like_name;
+use crate::utils::names::display_type;
 use crate::utils::php_emulation::str_increment_bytes;
 use crate::utils::php_emulation::str_is_numeric_bytes;
 use crate::utils::php_emulation::string_to_int;
@@ -108,12 +111,13 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for UnaryPrefix<'arena> {
             && !operand_type.is_int_or_float()
             && !operand_type.is_never()
         {
+            let operand_type_str = display_type(context, operand_type);
+
             context.collector.report_with_code(
                 IssueCode::InvalidOperand,
                 Issue::error(format!(
-                    "`{}` converts only a number, but this is `{}`.",
-                    BytesDisplay(self.operator.as_bytes()),
-                    operand_type.get_id()
+                    "`{}` converts only a number, but this is `{operand_type_str}`.",
+                    BytesDisplay(self.operator.as_bytes())
                 ))
                 .with_annotation(
                     Annotation::primary(self.span()).with_message("This value is not an `int` or a `float`."),
@@ -286,7 +290,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for UnaryPrefix<'arena> {
                                     format!(
                                         "Cannot negate template parameter `{}` with constraint `{}`",
                                         parameter.parameter_name,
-                                        parameter.constraint.get_id()
+                                        display_type(context, &parameter.constraint)
                                     ),
                                     operand_span,
                                 ));
@@ -296,7 +300,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for UnaryPrefix<'arena> {
                             invalid_operand_messages.push(("Cannot negate `array`".to_string(), operand_span));
                         }
                         TAtomic::Object(_) => {
-                            let type_id = operand_part.get_id();
+                            let type_id = display_atomic(context, operand_part);
                             invalid_operand_messages
                                 .push((format!("Cannot negate object of type `{type_id}`"), operand_span));
                         }
@@ -751,13 +755,14 @@ where
                     possibilities.push(TAtomic::Scalar(TScalar::string()));
                 }
                 TScalar::Generic | TScalar::ArrayKey => {
+                    let scalar_str = display_atomic(context, &TAtomic::Scalar(scalar.clone()));
+
                     context.collector.report_with_code(
                         IssueCode::InvalidOperand,
                         Issue::warning(format!(
-                            "Incrementing a generic scalar type (`{}`). This may not yield the expected result.",
-                            scalar.get_id()
+                            "Incrementing a generic scalar type (`{scalar_str}`). This may not yield the expected result."
                         ))
-                        .with_annotation(Annotation::primary(operand.span()).with_message(format!("Type is `{}`", scalar.get_id())))
+                        .with_annotation(Annotation::primary(operand.span()).with_message(format!("Type is `{scalar_str}`")))
                         .with_help("Ensure the generic type resolves to a numeric type or string suitable for increment, or provide a more specific type."),
                     );
 
@@ -782,12 +787,11 @@ where
 
                     possibilities.push(TAtomic::Never);
                 } else {
+                    let callable_str = display_atomic(context, &TAtomic::Callable(callable.clone()));
+
                     context.collector.report_with_code(
                             IssueCode::InvalidOperand,
-                            Issue::error(format!(
-                                "Cannot reliably increment callable of type `{}`.",
-                                callable.get_id()
-                            ))
+                            Issue::error(format!("Cannot reliably increment callable of type `{callable_str}`."))
                             .with_annotation(Annotation::primary(operand.span()).with_message("Invalid callable type for increment"))
                             .with_note("Incrementing array callables or invocable objects without specific overload behavior leads to errors."),
                         );
@@ -818,7 +822,7 @@ where
             _ => {
                 if !reported_invalid {
                     reported_invalid = true;
-                    let type_name = operand_type.get_id();
+                    let type_name = display_type(context, operand_type);
                     context.collector.report_with_code(
                         IssueCode::InvalidOperand,
                         Issue::error(format!(
@@ -985,13 +989,14 @@ where
                         possibilities.push(TAtomic::Scalar(TScalar::string()));
                     }
                     TScalar::Generic | TScalar::ArrayKey => {
+                        let scalar_str = display_atomic(context, &TAtomic::Scalar(scalar.clone()));
+
                         context.collector.report_with_code(
                             IssueCode::InvalidOperand,
                             Issue::warning(format!(
-                                "Decrementing a generic scalar type (`{}`). This may not yield the expected result.",
-                                scalar.get_id()
+                                "Decrementing a generic scalar type (`{scalar_str}`). This may not yield the expected result."
                             ))
-                                .with_annotation(Annotation::primary(operand.span()).with_message(format!("Type is `{}`", scalar.get_id())))
+                                .with_annotation(Annotation::primary(operand.span()).with_message(format!("Type is `{scalar_str}`")))
                                 .with_help("Ensure the generic type resolves to a numeric type or string suitable for increment, or provide a more specific type."),
                         );
 
@@ -1019,12 +1024,11 @@ where
 
                     possibilities.push(TAtomic::Never);
                 } else {
+                    let callable_str = display_atomic(context, &TAtomic::Callable(callable.clone()));
+
                     context.collector.report_with_code(
                         IssueCode::InvalidOperand,
-                        Issue::error(format!(
-                            "Cannot reliably decrement callable of type `{}`.",
-                            callable.get_id()
-                        ))
+                        Issue::error(format!("Cannot reliably decrement callable of type `{callable_str}`."))
                             .with_annotation(Annotation::primary(operand.span()).with_message("Invalid callable type for decrement"))
                             .with_note("Decrementing array callables or invocable objects without specific overload behavior leads to errors."),
                     );
@@ -1053,7 +1057,7 @@ where
                 possibilities.push(TAtomic::Mixed(TMixed::new()));
             }
             _ => {
-                let type_name = operand_atomic_type.get_id();
+                let type_name = display_atomic(context, operand_atomic_type);
                 context.collector.report_with_code(
                         IssueCode::InvalidOperand,
                         Issue::error(format!(
@@ -1114,6 +1118,8 @@ fn report_redundant_type_cast<'ast, 'arena, A>(
 ) where
     A: Arena,
 {
+    let known_type = display_type(context, known_type);
+
     context.collector.propose_with_code(
         IssueCode::RedundantCast,
         Issue::help(format!(
@@ -1122,7 +1128,7 @@ fn report_redundant_type_cast<'ast, 'arena, A>(
         ))
         .with_annotation(
             Annotation::primary(expression.operand.span())
-                .with_message(format!("This expression already has type `{}`.", known_type.get_id())),
+                .with_message(format!("This expression already has type `{known_type}`.")),
         )
         .with_note("Casting a value to a type it already possesses has no effect.")
         .with_help(format!("Remove the redundant `{}` cast.", BytesDisplay(cast_operator.as_bytes()))),
@@ -1831,12 +1837,11 @@ where
                             .with_help("Remove the cast or ensure the expression being cast is not a `Closure`."),
                     );
                 } else {
+                    let callable_str = display_atomic(context, &TAtomic::Callable(callable.clone()));
+
                     context.collector.report_with_code(
                         IssueCode::InvalidTypeCast,
-                        Issue::warning(format!(
-                            "Cannot reliably cast callable of type `{}` to `string`.",
-                            callable.get_id()
-                        ))
+                        Issue::warning(format!("Cannot reliably cast callable of type `{callable_str}` to `string`."))
                         .with_annotation(
                             Annotation::primary(expression_span.span())
                                 .with_message("Invalid cast from callable to string"),
@@ -1896,14 +1901,16 @@ where
                 };
 
                 let Some(class_metadata) = context.codebase.get_class_like(class_like_name.as_bytes()) else {
+                    let missing_class = display_class_like_name(context, class_like_name);
+
                     context.collector.report_with_code(
                         IssueCode::InvalidTypeCast,
                         Issue::error(format!(
-                            "Cannot cast object of type `{class_like_name}` to `string` because the class does not exist.",
+                            "Cannot cast object of type `{missing_class}` to `string` because the class does not exist.",
                         ))
                         .with_annotation(
                             Annotation::primary(expression_span.span())
-                                .with_message(format!("Class `{class_like_name}` does not exist."))
+                                .with_message(format!("Class `{missing_class}` does not exist."))
                         )
                         .with_note("Casting an object to `string` requires the class to exist and implement `Stringable` or have a `__toString()` method.")
                         .with_help("Ensure the class exists or avoid casting this object type to `string`."),
@@ -1914,15 +1921,21 @@ where
                 };
 
                 if class_metadata.kind.is_enum() {
+                    let enum_name = if context.dialect.is_sharp() {
+                        display_class_like_name(context, class_like_name)
+                    } else {
+                        class_like_name
+                    };
+
                     context.collector.report_with_code(
                         IssueCode::InvalidTypeCast,
                         Issue::error(format!(
                             "Cannot cast enum instance of type `{}` to `string`.",
-                            object.get_id(),
+                            display_atomic(context, t),
                         ))
                         .with_annotation(
                             Annotation::primary(expression_span.span())
-                                .with_message(format!("Enum `{class_like_name}` cannot be cast to `string`."))
+                                .with_message(format!("Enum `{enum_name}` cannot be cast to `string`."))
                         )
                         .with_note("Casting an enum instance to `string` is not allowed and will throw a fatal error at runtime.")
                         .with_help("Use the enum's name or value instead, or avoid casting the enum instance to `string`."),
@@ -1957,7 +1970,7 @@ where
 
                     possibilities.extend(result.types.into_owned());
                 } else {
-                    let class_name_str = class_metadata.original_name;
+                    let class_name_str = display_class_like_name(context, class_metadata.original_name);
 
                     context.collector.report_with_code(
                         IssueCode::InvalidTypeCast,

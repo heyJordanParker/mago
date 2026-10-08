@@ -28,6 +28,7 @@ use mago_codex::ttype::template::TemplateResult;
 use mago_codex::ttype::union::TUnion;
 use mago_names::binding::Binding;
 use mago_names::binding::php_variable_name;
+use mago_names::display_sharp_member;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -54,9 +55,12 @@ use crate::resolver::selector::resolve_member_selector;
 use crate::utils::expression::analyze_member_object;
 use crate::utils::expression::get_bare_name_variable_id;
 use crate::utils::expression::is_this;
+use crate::utils::names::display_atomic;
 use crate::utils::names::display_class_like_name;
+use crate::utils::names::display_member;
 use crate::utils::names::display_method_name;
 use crate::utils::names::display_sharp_collection;
+use crate::utils::names::display_type;
 use crate::visibility::check_method_visibility;
 use crate::visibility::is_method_visible;
 use crate::visibility::is_visible_from_scope;
@@ -238,6 +242,7 @@ where
                 result.encountered_null = true;
                 if !object_type.ignore_nullable_issues() && !is_null_safe && !object_type.has_nullsafe_null() {
                     result.has_invalid_target = true;
+                    let nullsafe = if context.dialect.is_sharp() { "?." } else { "?->" };
 
                     context.collector.report_with_code(
                         if object_type.is_null() {
@@ -249,7 +254,9 @@ where
                             .with_annotation(
                                 Annotation::primary(object.span()).with_message("This expression can be `null`"),
                             )
-                            .with_help("Use the nullsafe operator (`?->`) if `null` is an expected value."),
+                            .with_help(format!(
+                                "Use the nullsafe operator (`{nullsafe}`) if `null` is an expected value."
+                            )),
                     );
                 }
 
@@ -359,7 +366,7 @@ where
                                     result.encountered_mixed |= has_incomplete_hierarchy;
                                 } else if has_incomplete_hierarchy {
                                     result.encountered_mixed = true;
-                                } else if let Some(collection) = display_sharp_collection(obj_type, context.codebase) {
+                                } else if let Some(collection) = display_sharp_collection(context, obj_type) {
                                     report_non_existent_collection_method(
                                         context,
                                         object.span(),
@@ -1104,8 +1111,8 @@ where
             continue;
         }
 
-        let required_constraint_str = constraint.type_union.get_id();
-        let actual_template_type_str = actual_template_type.get_id();
+        let required_constraint_str = display_type(context, &constraint.type_union);
+        let actual_template_type_str = display_type(context, &actual_template_type);
 
         context.collector.report_with_code(
             IssueCode::WhereConstraintViolation,
@@ -1228,7 +1235,7 @@ fn report_call_on_non_object<A>(
 ) where
     A: Arena,
 {
-    let type_str = atomic_type.get_id();
+    let type_str = display_atomic(context, atomic_type);
 
     context.collector.report_with_code(
         if atomic_type.is_mixed() { IssueCode::MixedMethodAccess } else { IssueCode::InvalidMethodAccess },
@@ -1264,17 +1271,27 @@ pub(crate) fn report_non_existent_method<A>(
 ) where
     A: Arena,
 {
-    let classname = display_class_like_name(context, classname);
     let method_name = display_method_name(context, classname, method_name);
-    context.collector.report_with_code(
-        IssueCode::NonExistentMethod,
+    let classname = display_class_like_name(context, classname);
+    let issue = if context.dialect.is_sharp() {
+        let method = display_sharp_member(classname, method_name);
+
+        Issue::error(format!("Method `{method}` does not exist."))
+            .with_annotation(Annotation::primary(selector_span).with_message("This method selection is invalid"))
+            .with_annotation(
+                Annotation::secondary(obj_span).with_message(format!("This expression has type `{classname}`")),
+            )
+            .with_help(format!("Ensure the method `{method}` is defined."))
+    } else {
         Issue::error(format!("Method `{method_name}` does not exist on type `{classname}`."))
             .with_annotation(Annotation::primary(selector_span).with_message("This method selection is invalid"))
             .with_annotation(
                 Annotation::secondary(obj_span).with_message(format!("This expression has type `{classname}`")),
             )
-            .with_help(format!("Ensure the `{method_name}` method is defined in the `{classname}` class-like.")),
-    );
+            .with_help(format!("Ensure the `{method_name}` method is defined in the `{classname}` class-like."))
+    };
+
+    context.collector.report_with_code(IssueCode::NonExistentMethod, issue);
 }
 
 /// Reports a method a PHP# `List` or `Map` does not have, naming the collection type the code wrote and the methods
@@ -1316,8 +1333,8 @@ pub(crate) fn report_non_documented_method<A>(
 ) where
     A: Arena,
 {
-    let classname = display_class_like_name(context, classname);
     let method_name = display_method_name(context, classname, method_name);
+    let classname = display_class_like_name(context, classname);
     context.collector.report_with_code(
         IssueCode::NonDocumentedMethod,
         Issue::warning(format!(
@@ -1422,8 +1439,8 @@ pub(super) fn report_possibly_missing_magic_call<A>(
     A: Arena,
 {
     let magic_method_name = if is_static { "__callStatic" } else { "__call" };
-    let classname = display_class_like_name(context, classname);
     let method_name = display_method_name(context, classname, method_name);
+    let classname = display_class_like_name(context, classname);
 
     context.collector.report_with_code(
         IssueCode::PossiblyNonExistentMethod,
@@ -1457,8 +1474,8 @@ pub(super) fn report_magic_call_without_call_method<A>(
     A: Arena,
 {
     let magic_method_name = if is_static { "__callStatic" } else { "__call" };
-    let classname = display_class_like_name(context, classname);
     let method_name = display_method_name(context, classname, method_name);
+    let classname = display_class_like_name(context, classname);
 
     context.collector.report_with_code(
         IssueCode::MissingMagicMethod,
@@ -1491,26 +1508,27 @@ pub(super) fn report_dynamic_static_method_call<A>(
 ) where
     A: Arena,
 {
-    let classname = display_class_like_name(context, classname);
     let method_name = display_method_name(context, classname, method_name);
-    let mut issue =
-        Issue::error(format!("Cannot call magic static method `{classname}::{method_name}` on an instance."))
-            .with_annotation(
-                Annotation::primary(selector_span)
-                    .with_message("This magic method is static and must be called statically"),
-            )
-            .with_annotation(
-                Annotation::secondary(obj_span).with_message(format!("Called on an instance of `{classname}`")),
-            );
+    let classname = display_class_like_name(context, classname);
+    let method = display_member(context, classname, method_name);
+    let instance_access = if context.dialect.is_sharp() { "." } else { "->" };
+    let mut issue = Issue::error(format!("Cannot call magic static method `{method}` on an instance."))
+        .with_annotation(
+            Annotation::primary(selector_span)
+                .with_message("This magic method is static and must be called statically"),
+        )
+        .with_annotation(
+            Annotation::secondary(obj_span).with_message(format!("Called on an instance of `{classname}`")),
+        );
 
     if has_magic_call {
         issue = issue
             .with_note(format!(
                 "The magic method `{method_name}` is documented as `static` and is intended to be handled by `__callStatic()`."
             ))
-            .with_note(
-                "However, because it's being called on an instance (`->`), the call will be routed to the existing `__call()` method instead."
-            )
+            .with_note(format!(
+                "However, because it's being called on an instance (`{instance_access}`), the call will be routed to the existing `__call()` method instead."
+            ))
             .with_note(
                 "This is likely not the intended behavior and may lead to unexpected errors."
             );
@@ -1519,9 +1537,9 @@ pub(super) fn report_dynamic_static_method_call<A>(
             .with_note(
                 "Magic methods defined with `@method static` are handled by `__callStatic()`."
             )
-            .with_note(
-                "When called on an instance (`->`), PHP attempts to route the call to a `__call()` method."
-            )
+            .with_note(format!(
+                "When called on an instance (`{instance_access}`), PHP attempts to route the call to a `__call()` method."
+            ))
             .with_note(format!(
                 "Since the class `{classname}` is missing a `__call()` method, this will cause a fatal `Error` at runtime."
             ));
@@ -1529,7 +1547,7 @@ pub(super) fn report_dynamic_static_method_call<A>(
 
     context.collector.report_with_code(
         IssueCode::DynamicStaticMethodCall,
-        issue.with_help(format!("Call this method statically instead: `{classname}::{method_name}`.")),
+        issue.with_help(format!("Call this method statically instead: `{method}`.")),
     );
 }
 

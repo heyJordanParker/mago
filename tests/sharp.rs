@@ -563,11 +563,11 @@ fn analyze_types_the_parse_calls_of_the_standard_library_from_the_vendored_packa
             "namespace App;\n\npublic class Page\n{\n    public string count() => Int.parse(\"1\");\n\n    public string price() => Float.tryParse(\"x\");\n\n    public string flag() => Bool.tryParse(\"yes\");\n}\n"
         ),
         [
-            "src/App/Page.sharp:5:30:error - invalid-return-statement: Invalid return type for function `App\\Page::count`: expected `string`, but found `int`.",
-            "src/App/Page.sharp:7:30:error - nullable-return-statement: Function `App\\Page::price` is declared to return `string` but possibly returns a nullable value (inferred as `float|null`).",
-            "src/App/Page.sharp:7:30:error - invalid-return-statement: Invalid return type for function `App\\Page::price`: expected `string`, but found `float|null`.",
-            "src/App/Page.sharp:9:29:error - nullable-return-statement: Function `App\\Page::flag` is declared to return `string` but possibly returns a nullable value (inferred as `bool|null`).",
-            "src/App/Page.sharp:9:29:error - invalid-return-statement: Invalid return type for function `App\\Page::flag`: expected `string`, but found `bool|null`.",
+            "src/App/Page.sharp:5:30:error - invalid-return-statement: Invalid return type for method `Page.count`: expected `string`, but found `int`.",
+            "src/App/Page.sharp:7:30:error - nullable-return-statement: Method `Page.price` is declared to return `string` but possibly returns a nullable value (inferred as `float?`).",
+            "src/App/Page.sharp:7:30:error - invalid-return-statement: Invalid return type for method `Page.price`: expected `string`, but found `float?`.",
+            "src/App/Page.sharp:9:29:error - nullable-return-statement: Method `Page.flag` is declared to return `string` but possibly returns a nullable value (inferred as `bool?`).",
+            "src/App/Page.sharp:9:29:error - invalid-return-statement: Invalid return type for method `Page.flag`: expected `string`, but found `bool?`.",
         ]
     );
 }
@@ -630,7 +630,7 @@ fn analyze_reports_a_call_of_a_wrapped_function_with_the_method_that_replaces_it
     assert_eq!(
         page_errors("namespace App;\n\npublic class Page\n{\n    public string year() => date(\"Y\");\n}\n"),
         [
-            "src/App/Page.sharp:5:29:error - wrapped-function: `date` is wrapped by the standard library: write `Date.format(…)`."
+            "src/App/Page.sharp:5:29:error - wrapped-function: `date` is wrapped by the standard library: write `Date.format(…)`. Add `import Sharp.Time.Date;` to the file."
         ]
     );
 }
@@ -642,7 +642,47 @@ fn analyze_names_both_methods_that_replace_a_function() {
             "namespace App;\n\npublic class Page\n{\n    public bool found() => preg_match(\"/a/\", \"a\") is int;\n}\n"
         ),
         [
-            "src/App/Page.sharp:5:28:error - wrapped-function: `preg_match` is wrapped by the standard library: write `Regex.matches(…)` or `Regex.match(…)`."
+            "src/App/Page.sharp:5:28:error - wrapped-function: `preg_match` is wrapped by the standard library: write `Regex.matches(…)` or `Regex.match(…)`. Add `import Sharp.Text.Regex;` to the file."
+        ]
+    );
+}
+
+/// Spec section 23: code names a class by the short name an import binds. A `.sharp` file that doesn't import the
+/// wrapping class gets the import to add with the method to write. Plain PHP keeps upstream's text: it reports no call.
+#[test]
+fn analyze_names_the_import_a_wrapped_function_call_needs_and_reports_nothing_in_php() {
+    let directory = library_workspace(
+        "namespace App;\n\npublic class Page\n{\n    public bool found() => preg_match(\"/a/\", \"a\") is int;\n}\n",
+    );
+    write(
+        directory.path(),
+        "src/App/Finder.php",
+        "<?php\n\ndeclare(strict_types=1);\n\nnamespace App;\n\nfinal class Finder\n{\n    public static function found(): bool\n    {\n        return preg_match('/a/', 'a') === 1;\n    }\n}\n",
+    );
+
+    let output = run(directory.path(), "analyze", &["--reporting-format", "emacs"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let page: Vec<&str> = stdout.lines().filter(|line| line.starts_with("src/App/Page.sharp:")).collect();
+
+    assert_eq!(
+        page,
+        [
+            "src/App/Page.sharp:5:28:error - wrapped-function: `preg_match` is wrapped by the standard library: write `Regex.matches(…)` or `Regex.match(…)`. Add `import Sharp.Text.Regex;` to the file."
+        ],
+        "{stdout}"
+    );
+    assert_eq!(issues_in(&stdout, "src/App/Finder.php"), Vec::<String>::new(), "{stdout}");
+}
+
+/// A file that already imports the wrapping class is told only the method to write.
+#[test]
+fn analyze_names_no_import_for_a_wrapping_class_the_file_imports() {
+    assert_eq!(
+        page_errors(
+            "namespace App;\n\nimport Sharp.Text.Regex;\n\npublic class Page\n{\n    public bool found() => preg_match(\"/a/\", \"a\") is int;\n}\n"
+        ),
+        [
+            "src/App/Page.sharp:7:28:error - wrapped-function: `preg_match` is wrapped by the standard library: write `Regex.matches(…)` or `Regex.match(…)`."
         ]
     );
 }
@@ -655,7 +695,7 @@ fn analyze_names_four_methods_that_replace_a_function_in_the_order_the_library_d
             "namespace App;\n\npublic class Page\n{\n    public bool valid(string address) => filter_var(address, FILTER_VALIDATE_EMAIL) is string;\n}\n"
         ),
         [
-            "src/App/Page.sharp:5:42:error - wrapped-function: `filter_var` is wrapped by the standard library: write `Bool.tryParse(…)`, `Email.isValid(…)`, `Ip.isValid(…)` or `Url.isValid(…)`."
+            "src/App/Page.sharp:5:42:error - wrapped-function: `filter_var` is wrapped by the standard library: write `Bool.tryParse(…)`, `Email.isValid(…)`, `Ip.isValid(…)` or `Url.isValid(…)`. Add `import Sharp.Net.Email;`, `import Sharp.Net.Ip;` and `import Sharp.Net.Url;` to the file."
         ]
     );
 }
@@ -961,7 +1001,7 @@ fn analyze_reports_only_the_wrapping_method_for_a_function_the_library_wraps_and
     assert_eq!(
         page,
         [
-            "src/App/Page.sharp:5:40:error - wrapped-function: `strval` is wrapped by the standard library: write `Number.text(…)`."
+            "src/App/Page.sharp:5:40:error - wrapped-function: `strval` is wrapped by the standard library: write `Number.text(…)`. Add `import Sharp.Text.Number;` to the file."
         ],
         "{stdout}"
     );

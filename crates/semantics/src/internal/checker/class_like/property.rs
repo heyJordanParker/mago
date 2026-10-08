@@ -26,10 +26,10 @@ pub fn check_property(
     class_like_is_readonly: bool,
     context: &mut Context<'_, '_, '_>,
 ) {
-    let class_like_name = BytesDisplay(class_like_name);
-    let class_like_fqcn = BytesDisplay(class_like_fqcn);
+    let class_like_fqcn = context.display_class_like_name(class_like_fqcn);
     let first_variable = property.first_variable();
     let first_variable_name = BytesDisplay(first_variable.name);
+    let property_display = context.display_member(class_like_name, first_variable_name);
 
     let modifiers = property.modifiers();
     let mut last_final: Option<Span> = None;
@@ -49,21 +49,19 @@ pub fn check_property(
 
                 if !is_hooked_property || !class_allows_abstract {
                     context.report(
-                        Issue::error(format!(
-                            "Property `{class_like_name}::{first_variable_name}` cannot be declared abstract"
-                        ))
-                        .with_annotation(
-                            Annotation::primary(modifier.span())
-                                .with_message("`abstract` modifier cannot be used on properties"),
-                        )
-                        .with_annotation(
-                            Annotation::secondary(first_variable.span())
-                                .with_message(format!("Property `{first_variable_name}` declared here.")),
-                        )
-                        .with_annotation(
-                            Annotation::secondary(class_like_span)
-                                .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
-                        ),
+                        Issue::error(format!("Property `{property_display}` cannot be declared abstract"))
+                            .with_annotation(
+                                Annotation::primary(modifier.span())
+                                    .with_message("`abstract` modifier cannot be used on properties"),
+                            )
+                            .with_annotation(
+                                Annotation::secondary(first_variable.span())
+                                    .with_message(format!("Property `{first_variable_name}` declared here.")),
+                            )
+                            .with_annotation(
+                                Annotation::secondary(class_like_span)
+                                    .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
+                            ),
                     );
                 }
 
@@ -72,44 +70,42 @@ pub fn check_property(
             Modifier::Static(_) => {
                 if let Some(last_readonly) = last_readonly {
                     context.report(
-                        Issue::error(format!(
-                            "Readonly property `{class_like_name}::{first_variable_name}` cannot be static."
-                        ))
-                        .with_annotation(
-                            Annotation::primary(modifier.span())
-                                .with_message("`static` modifier cannot be used on readonly properties."),
-                        )
-                        .with_annotation(
-                            Annotation::primary(last_readonly).with_message("Property is marked as readonly here."),
-                        )
-                        .with_annotation(
-                            Annotation::secondary(first_variable.span())
-                                .with_message(format!("Property `{first_variable_name}` declared here.")),
-                        )
-                        .with_annotation(
-                            Annotation::secondary(class_like_span)
-                                .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
-                        ),
+                        Issue::error(format!("Readonly property `{property_display}` cannot be static."))
+                            .with_annotation(
+                                Annotation::primary(modifier.span())
+                                    .with_message("`static` modifier cannot be used on readonly properties."),
+                            )
+                            .with_annotation(
+                                Annotation::primary(last_readonly).with_message("Property is marked as readonly here."),
+                            )
+                            .with_annotation(
+                                Annotation::secondary(first_variable.span())
+                                    .with_message(format!("Property `{first_variable_name}` declared here.")),
+                            )
+                            .with_annotation(
+                                Annotation::secondary(class_like_span)
+                                    .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
+                            ),
                     );
                 }
 
                 if let Some(last_static) = last_static {
                     context.report(
-                        Issue::error(format!(
-                            "Property `{class_like_name}::{first_variable_name}` has multiple `static` modifiers."
-                        ))
-                        .with_annotation(
-                            Annotation::primary(modifier.span()).with_message("Duplicate `static` modifier."),
-                        )
-                        .with_annotation(Annotation::secondary(last_static).with_message("Previous `static` modifier."))
-                        .with_annotation(
-                            Annotation::secondary(first_variable.span())
-                                .with_message(format!("Property `{first_variable_name}` declared here.")),
-                        )
-                        .with_annotation(
-                            Annotation::secondary(class_like_span)
-                                .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
-                        ),
+                        Issue::error(format!("Property `{property_display}` has multiple `static` modifiers."))
+                            .with_annotation(
+                                Annotation::primary(modifier.span()).with_message("Duplicate `static` modifier."),
+                            )
+                            .with_annotation(
+                                Annotation::secondary(last_static).with_message("Previous `static` modifier."),
+                            )
+                            .with_annotation(
+                                Annotation::secondary(first_variable.span())
+                                    .with_message(format!("Property `{first_variable_name}` declared here.")),
+                            )
+                            .with_annotation(
+                                Annotation::secondary(class_like_span)
+                                    .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
+                            ),
                     );
                 }
 
@@ -118,7 +114,7 @@ pub fn check_property(
                 {
                     context.report(
                             Issue::error(format!(
-                                "Asymmetric visibility for static property `{class_like_name}::{first_variable_name}` is not available in your current PHP version, this feature was introduced in PHP 8.5.",
+                                "Asymmetric visibility for static property `{property_display}` is not available in your current PHP version, this feature was introduced in PHP 8.5.",
                             ))
                             .with_annotation(
                                 Annotation::primary(last_visibility).with_message("This write visibility modifier is used here"),
@@ -153,46 +149,42 @@ pub fn check_property(
 
                 if let Some(last_static) = last_static {
                     context.report(
-                        Issue::error(format!(
-                            "Static property `{class_like_name}::{first_variable_name}` cannot be readonly."
-                        ))
-                        .with_annotation(
-                            Annotation::primary(modifier.span())
-                                .with_message("`readonly` modifier cannot be used on static properties."),
-                        )
-                        .with_annotation(
-                            Annotation::primary(last_static).with_message("Property is marked as static here."),
-                        )
-                        .with_annotation(
-                            Annotation::secondary(first_variable.span())
-                                .with_message(format!("Property `{first_variable_name}` declared here.")),
-                        )
-                        .with_annotation(
-                            Annotation::secondary(class_like_span)
-                                .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
-                        ),
+                        Issue::error(format!("Static property `{property_display}` cannot be readonly."))
+                            .with_annotation(
+                                Annotation::primary(modifier.span())
+                                    .with_message("`readonly` modifier cannot be used on static properties."),
+                            )
+                            .with_annotation(
+                                Annotation::primary(last_static).with_message("Property is marked as static here."),
+                            )
+                            .with_annotation(
+                                Annotation::secondary(first_variable.span())
+                                    .with_message(format!("Property `{first_variable_name}` declared here.")),
+                            )
+                            .with_annotation(
+                                Annotation::secondary(class_like_span)
+                                    .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
+                            ),
                     );
                 }
 
                 if let Some(last_readonly) = last_readonly {
                     context.report(
-                        Issue::error(format!(
-                            "Property `{class_like_name}::{first_variable_name}` has multiple `readonly` modifiers."
-                        ))
-                        .with_annotation(
-                            Annotation::primary(modifier.span()).with_message("Duplicate `readonly` modifier."),
-                        )
-                        .with_annotation(
-                            Annotation::secondary(last_readonly).with_message("Previous `readonly` modifier."),
-                        )
-                        .with_annotation(
-                            Annotation::secondary(first_variable.span())
-                                .with_message(format!("Property `{first_variable_name}` declared here.")),
-                        )
-                        .with_annotation(
-                            Annotation::secondary(class_like_span)
-                                .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
-                        ),
+                        Issue::error(format!("Property `{property_display}` has multiple `readonly` modifiers."))
+                            .with_annotation(
+                                Annotation::primary(modifier.span()).with_message("Duplicate `readonly` modifier."),
+                            )
+                            .with_annotation(
+                                Annotation::secondary(last_readonly).with_message("Previous `readonly` modifier."),
+                            )
+                            .with_annotation(
+                                Annotation::secondary(first_variable.span())
+                                    .with_message(format!("Property `{first_variable_name}` declared here.")),
+                            )
+                            .with_annotation(
+                                Annotation::secondary(class_like_span)
+                                    .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
+                            ),
                     );
                 }
 
@@ -222,23 +214,21 @@ pub fn check_property(
             Modifier::Private(_) | Modifier::Protected(_) | Modifier::Public(_) => {
                 if let Some(last_visibility) = last_read_visibility {
                     context.report(
-                        Issue::error(format!(
-                            "Property `{class_like_name}::{first_variable_name}` has multiple visibility modifiers."
-                        ))
-                        .with_annotation(
-                            Annotation::primary(modifier.span()).with_message("Duplicate visibility modifier."),
-                        )
-                        .with_annotation(
-                            Annotation::primary(last_visibility).with_message("Previous visibility modifier."),
-                        )
-                        .with_annotation(
-                            Annotation::secondary(first_variable.span())
-                                .with_message(format!("Property `{first_variable_name}` declared here.")),
-                        )
-                        .with_annotation(
-                            Annotation::secondary(class_like_span)
-                                .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
-                        ),
+                        Issue::error(format!("Property `{property_display}` has multiple visibility modifiers."))
+                            .with_annotation(
+                                Annotation::primary(modifier.span()).with_message("Duplicate visibility modifier."),
+                            )
+                            .with_annotation(
+                                Annotation::primary(last_visibility).with_message("Previous visibility modifier."),
+                            )
+                            .with_annotation(
+                                Annotation::secondary(first_variable.span())
+                                    .with_message(format!("Property `{first_variable_name}` declared here.")),
+                            )
+                            .with_annotation(
+                                Annotation::secondary(class_like_span)
+                                    .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
+                            ),
                     );
                 }
 
@@ -262,23 +252,23 @@ pub fn check_property(
 
                 if let Some(last_visibility) = last_write_visibility {
                     context.report(
-                        Issue::error(format!(
-                            "Property `{class_like_name}::{first_variable_name}` has multiple write visibility modifiers."
-                        ))
-                        .with_annotation(
-                            Annotation::primary(modifier.span()).with_message("Duplicate write visibility modifier."),
-                        )
-                        .with_annotation(
-                            Annotation::primary(last_visibility).with_message("Previous write visibility modifier."),
-                        )
-                        .with_annotation(
-                            Annotation::secondary(first_variable.span())
-                                .with_message(format!("Property `{first_variable_name}` declared here.")),
-                        )
-                        .with_annotation(
-                            Annotation::secondary(class_like_span)
-                                .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
-                        ),
+                        Issue::error(format!("Property `{property_display}` has multiple write visibility modifiers."))
+                            .with_annotation(
+                                Annotation::primary(modifier.span())
+                                    .with_message("Duplicate write visibility modifier."),
+                            )
+                            .with_annotation(
+                                Annotation::primary(last_visibility)
+                                    .with_message("Previous write visibility modifier."),
+                            )
+                            .with_annotation(
+                                Annotation::secondary(first_variable.span())
+                                    .with_message(format!("Property `{first_variable_name}` declared here.")),
+                            )
+                            .with_annotation(
+                                Annotation::secondary(class_like_span)
+                                    .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
+                            ),
                     );
                 }
 
@@ -287,7 +277,7 @@ pub fn check_property(
                 {
                     context.report(
                             Issue::error(format!(
-                                "Asymmetric visibility for static property `{class_like_name}::{first_variable_name}` is not available in your current PHP version, this feature was introduced in PHP 8.5.",
+                                "Asymmetric visibility for static property `{property_display}` is not available in your current PHP version, this feature was introduced in PHP 8.5.",
                             ))
                             .with_annotation(
                                 Annotation::primary(modifier.span()).with_message("This write visibility modifier is used here"),
@@ -316,63 +306,57 @@ pub fn check_property(
 
     if let (Some(abstract_span), Some(private_span)) = (last_abstract, last_private) {
         context.report(
-            Issue::error(format!(
-                "Property `{class_like_name}::{first_variable_name}` cannot be both abstract and private."
-            ))
-            .with_annotation(Annotation::primary(abstract_span).with_message("`abstract` modifier used here."))
-            .with_annotation(Annotation::primary(private_span).with_message("`private` modifier used here."))
-            .with_annotation(
-                Annotation::secondary(first_variable.span())
-                    .with_message(format!("Property `{first_variable_name}` declared here.")),
-            )
-            .with_annotation(
-                Annotation::secondary(class_like_span)
-                    .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
-            )
-            .with_help("Abstract properties must be visible to subclasses. Use `protected` or `public` instead."),
+            Issue::error(format!("Property `{property_display}` cannot be both abstract and private."))
+                .with_annotation(Annotation::primary(abstract_span).with_message("`abstract` modifier used here."))
+                .with_annotation(Annotation::primary(private_span).with_message("`private` modifier used here."))
+                .with_annotation(
+                    Annotation::secondary(first_variable.span())
+                        .with_message(format!("Property `{first_variable_name}` declared here.")),
+                )
+                .with_annotation(
+                    Annotation::secondary(class_like_span)
+                        .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
+                )
+                .with_help("Abstract properties must be visible to subclasses. Use `protected` or `public` instead."),
         );
     }
 
     if let (Some(abstract_span), Some(final_span)) = (last_abstract, last_final) {
         context.report(
-            Issue::error(format!(
-                "Property `{class_like_name}::{first_variable_name}` cannot be both abstract and final."
-            ))
-            .with_annotation(Annotation::primary(abstract_span).with_message("`abstract` modifier used here."))
-            .with_annotation(Annotation::primary(final_span).with_message("`final` modifier used here."))
-            .with_annotation(
-                Annotation::secondary(first_variable.span())
-                    .with_message(format!("Property `{first_variable_name}` declared here.")),
-            )
-            .with_annotation(
-                Annotation::secondary(class_like_span)
-                    .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
-            ),
+            Issue::error(format!("Property `{property_display}` cannot be both abstract and final."))
+                .with_annotation(Annotation::primary(abstract_span).with_message("`abstract` modifier used here."))
+                .with_annotation(Annotation::primary(final_span).with_message("`final` modifier used here."))
+                .with_annotation(
+                    Annotation::secondary(first_variable.span())
+                        .with_message(format!("Property `{first_variable_name}` declared here.")),
+                )
+                .with_annotation(
+                    Annotation::secondary(class_like_span)
+                        .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
+                ),
         );
     }
 
     if let (Some(final_span), Some(private_span)) = (last_final, last_private) {
         context.report(
-            Issue::error(format!(
-                "Property `{class_like_name}::{first_variable_name}` cannot be both final and private."
-            ))
-            .with_annotation(Annotation::primary(final_span).with_message("`final` modifier used here."))
-            .with_annotation(Annotation::primary(private_span).with_message("`private` modifier used here."))
-            .with_annotation(
-                Annotation::secondary(first_variable.span())
-                    .with_message(format!("Property `{first_variable_name}` declared here.")),
-            )
-            .with_annotation(
-                Annotation::secondary(class_like_span)
-                    .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
-            )
-            .with_help("Private properties cannot be overridden, so `final` is meaningless."),
+            Issue::error(format!("Property `{property_display}` cannot be both final and private."))
+                .with_annotation(Annotation::primary(final_span).with_message("`final` modifier used here."))
+                .with_annotation(Annotation::primary(private_span).with_message("`private` modifier used here."))
+                .with_annotation(
+                    Annotation::secondary(first_variable.span())
+                        .with_message(format!("Property `{first_variable_name}` declared here.")),
+                )
+                .with_annotation(
+                    Annotation::secondary(class_like_span)
+                        .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
+                )
+                .with_help("Private properties cannot be overridden, so `final` is meaningless."),
         );
     }
 
     if class_like_is_interface && let Some(final_span) = last_final {
         context.report(
-            Issue::error(format!("Property `{class_like_name}::{first_variable_name}` in interface cannot be final."))
+            Issue::error(format!("Property `{property_display}` in interface cannot be final."))
                 .with_annotation(Annotation::primary(final_span).with_message("`final` modifier used here."))
                 .with_annotation(
                     Annotation::secondary(first_variable.span())
@@ -390,7 +374,7 @@ pub fn check_property(
         && let Some(last) = modifiers.last()
     {
         context.report(
-            Issue::error(format!("Var property `{class_like_name}::{first_variable_name}` cannot have modifiers."))
+            Issue::error(format!("Var property `{property_display}` cannot have modifiers."))
                 .with_annotation(
                     Annotation::primary(first.span().join(last.span())).with_message("Modifiers used here."),
                 )
@@ -431,13 +415,25 @@ pub fn check_property(
         if hint.is_bottom() {
             let hint_name = BytesDisplay(context.get_code_snippet(hint));
             context.report(
-                Issue::error(format!(
-                    "Property `{class_like_name}::{first_variable_name}` cannot have type `{hint_name}`."
-                ))
-                .with_annotation(
-                    Annotation::primary(hint.span())
-                        .with_message(format!("Type `{hint_name}` is not allowed on properties.")),
-                )
+                Issue::error(format!("Property `{property_display}` cannot have type `{hint_name}`."))
+                    .with_annotation(
+                        Annotation::primary(hint.span())
+                            .with_message(format!("Type `{hint_name}` is not allowed on properties.")),
+                    )
+                    .with_annotation(
+                        Annotation::secondary(first_variable.span())
+                            .with_message(format!("Property `{first_variable_name}` declared here.")),
+                    )
+                    .with_annotation(
+                        Annotation::secondary(class_like_span)
+                            .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
+                    ),
+            );
+        }
+    } else if let Some(readonly) = last_readonly {
+        context.report(
+            Issue::error(format!("Readonly property `{property_display}` must have a type hint."))
+                .with_annotation(Annotation::primary(readonly).with_message("Property is marked as readonly here."))
                 .with_annotation(
                     Annotation::secondary(first_variable.span())
                         .with_message(format!("Property `{first_variable_name}` declared here.")),
@@ -446,22 +442,6 @@ pub fn check_property(
                     Annotation::secondary(class_like_span)
                         .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
                 ),
-            );
-        }
-    } else if let Some(readonly) = last_readonly {
-        context.report(
-            Issue::error(format!(
-                "Readonly property `{class_like_name}::{first_variable_name}` must have a type hint."
-            ))
-            .with_annotation(Annotation::primary(readonly).with_message("Property is marked as readonly here."))
-            .with_annotation(
-                Annotation::secondary(first_variable.span())
-                    .with_message(format!("Property `{first_variable_name}` declared here.")),
-            )
-            .with_annotation(
-                Annotation::secondary(class_like_span)
-                    .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
-            ),
         );
     }
 
@@ -484,11 +464,12 @@ pub fn check_property(
             for item in &plain_property.items {
                 if let PropertyItem::Concrete(property_concrete_item) = &item {
                     let item_name = BytesDisplay(property_concrete_item.variable.name);
+                    let item_display = context.display_member(class_like_name, item_name);
 
                     if !property_concrete_item.value.is_constant(&context.version, false) {
                         context.report(
                             Issue::error(format!(
-                                "Property `{class_like_name}::{item_name}` value contains a non-constant expression."
+                                "Property `{item_display}` value contains a non-constant expression."
                             ))
                             .with_annotation(
                                 Annotation::primary(property_concrete_item.value.span())
@@ -507,24 +488,23 @@ pub fn check_property(
 
                     if let Some(readonly) = last_readonly {
                         context.report(
-                            Issue::error(format!(
-                                "Readonly property `{class_like_name}::{item_name}` cannot have a default value."
-                            ))
-                            .with_annotation(
-                                Annotation::primary(property_concrete_item.value.span())
-                                    .with_message("This is a default value."),
-                            )
-                            .with_annotation(Annotation::primary(readonly).with_message(format!(
-                                "Property `{class_like_name}::{item_name}` is marked as readonly here."
-                            )))
-                            .with_annotation(
-                                Annotation::secondary(property_concrete_item.variable.span())
-                                    .with_message(format!("Property `{item_name}` is declared here.")),
-                            )
-                            .with_annotation(
-                                Annotation::secondary(class_like_span)
-                                    .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
-                            ),
+                            Issue::error(format!("Readonly property `{item_display}` cannot have a default value."))
+                                .with_annotation(
+                                    Annotation::primary(property_concrete_item.value.span())
+                                        .with_message("This is a default value."),
+                                )
+                                .with_annotation(
+                                    Annotation::primary(readonly)
+                                        .with_message(format!("Property `{item_display}` is marked as readonly here.")),
+                                )
+                                .with_annotation(
+                                    Annotation::secondary(property_concrete_item.variable.span())
+                                        .with_message(format!("Property `{item_name}` is declared here.")),
+                                )
+                                .with_annotation(
+                                    Annotation::secondary(class_like_span)
+                                        .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
+                                ),
                         );
                     }
                 }
@@ -540,13 +520,15 @@ pub fn check_property(
             }
 
             let item_name = BytesDisplay(hooked_property.item.variable().name);
+            let item_display = context.display_member(class_like_name, item_name);
 
             if let Some(readonly) = last_readonly {
                 context.report(
-                    Issue::error(format!("Hooked property `{class_like_name}::{item_name}` cannot be readonly."))
-                        .with_annotation(Annotation::primary(readonly).with_message(format!(
-                            "Property `{class_like_name}::{item_name}` is marked as readonly here."
-                        )))
+                    Issue::error(format!("Hooked property `{item_display}` cannot be readonly."))
+                        .with_annotation(
+                            Annotation::primary(readonly)
+                                .with_message(format!("Property `{item_display}` is marked as readonly here.")),
+                        )
                         .with_annotation(
                             Annotation::secondary(hooked_property.hook_list.span())
                                 .with_message("Property hooks are defined here."),
@@ -562,7 +544,7 @@ pub fn check_property(
                 );
             } else if class_like_is_readonly {
                 context.report(
-                    Issue::error(format!("Hooked property `{class_like_name}::{item_name}` cannot be readonly."))
+                    Issue::error(format!("Hooked property `{item_display}` cannot be readonly."))
                         .with_annotation(
                             Annotation::primary(hooked_property.hook_list.span())
                                 .with_message("Property hooks are defined here."),
@@ -581,10 +563,11 @@ pub fn check_property(
 
             if let Some(r#static) = last_static {
                 context.report(
-                    Issue::error(format!("Hooked property `{class_like_name}::{item_name}` cannot be static."))
-                        .with_annotation(Annotation::primary(r#static).with_message(format!(
-                            "Property `{class_like_name}::{item_name}` is marked as static here."
-                        )))
+                    Issue::error(format!("Hooked property `{item_display}` cannot be static."))
+                        .with_annotation(
+                            Annotation::primary(r#static)
+                                .with_message(format!("Property `{item_display}` is marked as static here.")),
+                        )
                         .with_annotation(
                             Annotation::secondary(hooked_property.hook_list.span())
                                 .with_message("Property hooks are defined here."),
@@ -610,7 +593,7 @@ pub fn check_property(
                 if !has_abstract_hook {
                     context.report(
                         Issue::error(format!(
-                            "Abstract property `{class_like_name}::{item_name}` must specify at least one abstract hook."
+                            "Abstract property `{item_display}` must specify at least one abstract hook."
                         ))
                         .with_annotation(
                             Annotation::primary(abstract_span).with_message("`abstract` modifier used here."),
@@ -635,7 +618,7 @@ pub fn check_property(
             // Check: empty hook list is not allowed
             if hooked_property.hook_list.hooks.is_empty() {
                 context.report(
-                    Issue::error(format!("Property `{class_like_name}::{item_name}` hook list must not be empty."))
+                    Issue::error(format!("Property `{item_display}` hook list must not be empty."))
                         .with_annotation(
                             Annotation::primary(hooked_property.hook_list.span()).with_message("Empty hook list here."),
                         )
@@ -666,7 +649,7 @@ pub fn check_property(
                 if has_concrete_get && has_concrete_set {
                     context.report(
                         Issue::error(format!(
-                            "Cannot specify default value for virtual hooked property `{class_like_name}::{item_name}`."
+                            "Cannot specify default value for virtual hooked property `{item_display}`."
                         ))
                         .with_annotation(
                             Annotation::primary(concrete_item.value.span())
@@ -691,8 +674,10 @@ pub fn check_property(
             }
 
             let mut hook_names: Vec<(Vec<u8>, Span)> = vec![];
+            let hook_owner = item_display.to_string();
             for hook in &hooked_property.hook_list.hooks {
                 let name = BytesDisplay(hook.name.value);
+                let hook_display = context.display_member(hook_owner.as_bytes(), name);
                 let lowered_name = hook.name.value.to_ascii_lowercase();
 
                 let invalid_modifiers: Vec<_> =
@@ -703,10 +688,11 @@ pub fn check_property(
                 {
                     context.report(
                         Issue::error(format!(
-                            "Hook `{name}` for property `{class_like_name}::{item_name}` can only have `final` modifier."
+                            "Hook `{name}` for property `{item_display}` can only have `final` modifier."
                         ))
                         .with_annotation(
-                            Annotation::primary(first.span().join(last.span())).with_message("Invalid hook modifier here."),
+                            Annotation::primary(first.span().join(last.span()))
+                                .with_message("Invalid hook modifier here."),
                         )
                         .with_annotation(
                             Annotation::secondary(hooked_property.item.variable().span())
@@ -723,26 +709,26 @@ pub fn check_property(
                     && let Some(final_modifier) = hook.modifiers.iter().find(|m| matches!(m, Modifier::Final(_)))
                 {
                     context.report(
-                            Issue::error(format!(
-                                "Hook `{name}` for property `{class_like_name}::{item_name}` cannot be both abstract and final."
-                            ))
-                            .with_annotation(
-                                Annotation::primary(final_modifier.span()).with_message("`final` modifier used here."),
-                            )
-                            .with_annotation(
-                                Annotation::secondary(hook.name.span())
-                                    .with_message(format!("Hook `{name}` is declared here.")),
-                            )
-                            .with_annotation(
-                                Annotation::secondary(hooked_property.item.variable().span())
-                                    .with_message(format!("Property `{item_name}` is declared here.")),
-                            )
-                            .with_annotation(
-                                Annotation::secondary(class_like_span)
-                                    .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
-                            )
-                            .with_note("Interface property hooks are implicitly abstract."),
-                        );
+                        Issue::error(format!(
+                            "Hook `{name}` for property `{item_display}` cannot be both abstract and final."
+                        ))
+                        .with_annotation(
+                            Annotation::primary(final_modifier.span()).with_message("`final` modifier used here."),
+                        )
+                        .with_annotation(
+                            Annotation::secondary(hook.name.span())
+                                .with_message(format!("Hook `{name}` is declared here.")),
+                        )
+                        .with_annotation(
+                            Annotation::secondary(hooked_property.item.variable().span())
+                                .with_message(format!("Property `{item_name}` is declared here.")),
+                        )
+                        .with_annotation(
+                            Annotation::secondary(class_like_span)
+                                .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
+                        )
+                        .with_note("Interface property hooks are implicitly abstract."),
+                    );
                 }
 
                 let property_is_abstract = modifiers.contains_abstract();
@@ -784,7 +770,7 @@ pub fn check_property(
                                 if !property_has_type && let Some(param_hint) = first_parameter.hint.as_ref() {
                                     context.report(
                                         Issue::error(format!(
-                                            "Type of parameter `{first_parameter_name}` of hook `{class_like_name}::{item_name}::{name}` must be compatible with property type."
+                                            "Type of parameter `{first_parameter_name}` of hook `{hook_display}` must be compatible with property type."
                                         ))
                                         .with_annotation(
                                             Annotation::primary(param_hint.span()).with_message(
@@ -814,7 +800,7 @@ pub fn check_property(
                                 {
                                     context.report(
                                         Issue::error(format!(
-                                            "Type of parameter `{first_parameter_name}` of hook `{class_like_name}::{item_name}::{name}` must be compatible with property type."
+                                            "Type of parameter `{first_parameter_name}` of hook `{hook_display}` must be compatible with property type."
                                         ))
                                         .with_annotation(
                                             Annotation::primary(first_parameter.variable.span()).with_message(
@@ -841,7 +827,7 @@ pub fn check_property(
                                 if let Some(ellipsis) = first_parameter.ellipsis {
                                     context.report(
                                         Issue::error(format!(
-                                            "Parameter `{first_parameter_name}` of hook `{class_like_name}::{item_name}::{name}` must not be variadic."
+                                            "Parameter `{first_parameter_name}` of hook `{hook_display}` must not be variadic."
                                         ))
                                         .with_annotation(Annotation::primary(ellipsis.span()).with_message(format!(
                                             "Parameter `{first_parameter_name}` is marked as variadic here."
@@ -870,7 +856,7 @@ pub fn check_property(
                                 if let Some(ampersand) = first_parameter.ampersand {
                                     context.report(
                                         Issue::error(format!(
-                                            "Parameter `{first_parameter_name}` of hook `{class_like_name}::{item_name}::{name}` must not be pass-by-reference."
+                                            "Parameter `{first_parameter_name}` of hook `{hook_display}` must not be pass-by-reference."
                                         ))
                                         .with_annotation(Annotation::primary(ampersand.span()).with_message(format!(
                                             "Parameter `{first_parameter_name}` is marked as pass-by-reference here."
@@ -899,7 +885,7 @@ pub fn check_property(
                                 if let Some(default_value) = &first_parameter.default_value {
                                     context.report(
                                         Issue::error(format!(
-                                            "Parameter `{first_parameter_name}` of hook `{class_like_name}::{item_name}::{name}` must not have a default value."
+                                            "Parameter `{first_parameter_name}` of hook `{hook_display}` must not have a default value."
                                         ))
                                         .with_annotation(Annotation::primary(default_value.span()))
                                         .with_annotation(
@@ -925,10 +911,9 @@ pub fn check_property(
                             } else {
                                 context.report(
                                     Issue::error(format!(
-                                        "Hook `{}` of property `{}::{}` must accept exactly one parameter, found {}.",
+                                        "Hook `{}` of property `{}` must accept exactly one parameter, found {}.",
                                         name,
-                                        class_like_name,
-                                        item_name,
+                                        item_display,
                                         parameter_list.parameters.len()
                                     ))
                                     .with_annotation(
@@ -954,7 +939,7 @@ pub fn check_property(
                         b"get" => {
                             context.report(
                                 Issue::error(format!(
-                                    "Hook `{name}` of property `{class_like_name}::{item_name}` must not have a parameters list."
+                                    "Hook `{name}` of property `{item_display}` must not have a parameters list."
                                 ))
                                 .with_annotation(
                                     Annotation::primary(parameter_list.span())
@@ -969,9 +954,8 @@ pub fn check_property(
                                         .with_message(format!("Property `{item_name}` is declared here.")),
                                 )
                                 .with_annotation(
-                                    Annotation::secondary(class_like_span).with_message(format!(
-                                        "{class_like_kind} `{class_like_fqcn}` defined here."
-                                    )),
+                                    Annotation::secondary(class_like_span)
+                                        .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
                                 ),
                             );
                         }
@@ -982,7 +966,7 @@ pub fn check_property(
                 if !lowered_name.as_slice().eq(b"set") && !lowered_name.as_slice().eq(b"get") {
                     context.report(
                         Issue::error(format!(
-                            "Hooked property `{class_like_name}::{item_name}` contains an unknown hook `{name}`, expected `set` or `get`."
+                            "Hooked property `{item_display}` contains an unknown hook `{name}`, expected `set` or `get`."
                         ))
                         .with_annotation(
                             Annotation::primary(hook.name.span())
@@ -1001,24 +985,22 @@ pub fn check_property(
 
                 if let Some((_, previous_span)) = hook_names.iter().find(|(previous, _)| previous.eq(&lowered_name)) {
                     context.report(
-                        Issue::error(format!(
-                            "Hook `{name}` has already been defined for property `{class_like_name}::{item_name}`."
-                        ))
-                        .with_annotation(
-                            Annotation::primary(hook.name.span()).with_message(format!("Duplicate hook `{name}`.")),
-                        )
-                        .with_annotation(
-                            Annotation::secondary(*previous_span)
-                                .with_message(format!("Previous declaration of hook `{previous_span}`")),
-                        )
-                        .with_annotation(
-                            Annotation::secondary(hooked_property.item.variable().span())
-                                .with_message(format!("Property `{item_name}` is declared here.")),
-                        )
-                        .with_annotation(
-                            Annotation::secondary(class_like_span)
-                                .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
-                        ),
+                        Issue::error(format!("Hook `{name}` has already been defined for property `{item_display}`."))
+                            .with_annotation(
+                                Annotation::primary(hook.name.span()).with_message(format!("Duplicate hook `{name}`.")),
+                            )
+                            .with_annotation(
+                                Annotation::secondary(*previous_span)
+                                    .with_message(format!("Previous declaration of hook `{previous_span}`")),
+                            )
+                            .with_annotation(
+                                Annotation::secondary(hooked_property.item.variable().span())
+                                    .with_message(format!("Property `{item_name}` is declared here.")),
+                            )
+                            .with_annotation(
+                                Annotation::secondary(class_like_span)
+                                    .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
+                            ),
                     );
                 } else {
                     hook_names.push((lowered_name, hook.name.span()));

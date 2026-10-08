@@ -36,13 +36,16 @@ pub fn check_for_new_without_parenthesis(object_expr: &Expression, context: &mut
 #[inline]
 pub fn check_instantiation_class_reference(instantiation: &Instantiation, context: &mut Context<'_, '_, '_>) {
     if let Some((span, operator)) = invalid_class_reference_break(instantiation.class) {
-        context.report(
-            Issue::error(format!("`{operator}` cannot follow a class name in a `new` expression."))
-                .with_annotation(Annotation::primary(span).with_message(format!("`{operator}` not allowed here")))
-                .with_annotation(Annotation::secondary(instantiation.new.span).with_message("`new` starts here"))
-                .with_note("Only variable roots may extend with member access; class names terminate.")
-                .with_help("Wrap the new expression in parentheses, e.g. `(new Foo())->bar()`."),
-        );
+        let issue = Issue::error(format!("`{operator}` cannot follow a class name in a `new` expression."))
+            .with_annotation(Annotation::primary(span).with_message(format!("`{operator}` not allowed here")))
+            .with_annotation(Annotation::secondary(instantiation.new.span).with_message("`new` starts here"))
+            .with_note("Only variable roots may extend with member access; class names terminate.");
+
+        context.report(if context.program.dialect.is_sharp() {
+            issue
+        } else {
+            issue.with_help("Wrap the new expression in parentheses, e.g. `(new Foo())->bar()`.")
+        });
     }
 }
 

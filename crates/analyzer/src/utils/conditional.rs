@@ -5,7 +5,6 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use mago_codex::assertion::Assertion;
-use mago_codex::ttype::TType;
 use mago_codex::ttype::union::TUnion;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -26,8 +25,8 @@ use crate::context::block::BlockContext;
 use crate::context::scope::conditional_scope::IfConditionalScope;
 use crate::context::scope::if_scope::IfScope;
 use crate::error::AnalysisError;
-use crate::expression::binary::utils::display_operand;
 use crate::reconciler::reconcile_keyed_types;
+use crate::utils::names::display_type;
 
 pub(crate) fn analyze<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
@@ -286,16 +285,8 @@ where
     T: HasSpan,
     A: Arena,
 {
-    let display = |context: &Context<'_, '_, A>| {
-        if context.dialect.is_sharp() {
-            display_operand(expression_type, context.codebase)
-        } else {
-            expression_type.get_id().to_string()
-        }
-    };
-
     if expression_type.is_always_falsy() {
-        let type_id = display(context);
+        let type_id = display_type(context, expression_type);
         context.collector.report_with_code(
             IssueCode::ImpossibleCondition,
             Issue::warning(format!(
@@ -313,7 +304,7 @@ where
             ),
         );
     } else if expression_type.is_always_truthy() {
-        let type_id = display(context);
+        let type_id = display_type(context, expression_type);
         context.collector.report_with_code(
             IssueCode::RedundantCondition,
             Issue::warning(format!(

@@ -31,6 +31,7 @@ use mago_word::Word;
 
 use crate::code::IssueCode;
 use crate::context::Context;
+use crate::utils::names::display_property_name;
 
 /// Represents a checkable member (property or method) with its metadata.
 #[derive(Clone)]
@@ -497,6 +498,8 @@ fn report_unused_property<A>(
 ) where
     A: Arena,
 {
+    let (prefix, name_offset) = if context.dialect.is_sharp() { ("_", 0) } else { ("$_", 1) };
+    let property_name = display_property_name(context, property_name);
     let issue = Issue::help(format!("Property `{property_name}` is never used."))
         .with_code(IssueCode::UnusedProperty)
         .with_annotations([
@@ -504,12 +507,14 @@ fn report_unused_property<A>(
             Annotation::secondary(class_span),
         ])
         .with_note("This property is declared but never read or written within the class.")
-        .with_help(
-            "Consider prefixing the property with an underscore (`$_`) to indicate that it is intentionally unused, or remove it if it is not needed.",
-        );
+        .with_help(format!(
+            "Consider prefixing the property with an underscore (`{prefix}`) to indicate that it is intentionally unused, or remove it if it is not needed.",
+        ));
 
     context.collector.propose(issue, |edits| {
-        edits.push(TextEdit::insert(property_span.start_offset() + 1, "_").with_safety(Safety::PotentiallyUnsafe));
+        edits.push(
+            TextEdit::insert(property_span.start_offset() + name_offset, "_").with_safety(Safety::PotentiallyUnsafe),
+        );
     });
 }
 
@@ -522,6 +527,7 @@ fn report_write_only_property<A>(
 ) where
     A: Arena,
 {
+    let property_name = display_property_name(context, property_name);
     let issue = Issue::help(format!("Property `{property_name}` is written to but never read."))
         .with_code(IssueCode::WriteOnlyProperty)
         .with_annotations([

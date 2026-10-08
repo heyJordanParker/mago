@@ -341,19 +341,19 @@ where
                 if !found_parent {
                     // The keyword is `super` in PHP#.
                     let keyword = BytesDisplay(parent_keyword.value);
+                    let class_name = display_class_like_name(context, self_meta.original_name);
 
                     context.collector.report_with_code(
                         IssueCode::InvalidParentType,
                         Issue::error(format!(
-                            "Cannot use `{keyword}` as the current type (`{}`) does not have a parent class.",
-                            self_meta.original_name
+                            "Cannot use `{keyword}` as the current type (`{class_name}`) does not have a parent class.",
                         ))
                         .with_annotation(
                             Annotation::primary(parent_keyword.span()).with_message(format!("`{keyword}` used here")),
                         )
                         .with_annotation(
                             Annotation::secondary(self_meta.name_span.unwrap_or(self_meta.span))
-                                .with_message(format!("Class `{}` has no parent", self_meta.original_name)),
+                                .with_message(format!("Class `{class_name}` has no parent")),
                         ),
                     );
 
