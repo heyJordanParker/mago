@@ -317,6 +317,7 @@ fn reads() -> Reads {
         signatures: vec![read("App\\Shared\\Money", 11), read("App\\Shared\\Money::add", 12)],
         bodies: vec![read("App\\Shared\\Money::total", 13)],
         inlined: vec![read("Sharp\\List::count", 31)],
+        listed: vec![read("class-likes", 41)],
     }
 }
 
@@ -347,6 +348,12 @@ fn the_key_changes_with_the_source_and_with_each_read() {
             let moved = reads.signatures.remove(1);
             reads.bodies.push(moved);
         }),
+        ("a listing's answer", |reads| reads.listed[0].fingerprint = 42),
+        ("one more listing", |reads| reads.listed.push(read("functions", 43))),
+        ("an inlined form moved to the listings", |reads| {
+            let moved = reads.inlined.remove(0);
+            reads.listed.push(moved);
+        }),
     ] {
         let mut edited = reads();
         edit(&mut edited);
@@ -376,6 +383,7 @@ fn a_body_edit_keeps_the_key_until_the_inferred_return_changes() {
         signatures: vec![read("App\\Shared\\Money", 11)],
         bodies: vec![read("App\\Shared\\Money::total", xxhash_rust::xxh3::xxh3_64(inferred_return.as_bytes()))],
         inlined: Vec::new(),
+        listed: Vec::new(),
     };
     let before = key(source, &total("int"));
 

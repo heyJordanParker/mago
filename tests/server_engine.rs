@@ -208,12 +208,12 @@ fn a_hook_that_listed_classes_sees_a_new_class_on_the_next_run_and_does_not_run_
 /// The model whose `total` return type the fixture's provider gives `Query::total`.
 fn order(returned: &str) -> String {
     format!(
-        "<?php\n\nnamespace App\\Models;\n\nfinal class Order\n{{\n    public function total(): {returned}\n    {{\n        return {};\n    }}\n}}\n",
+        "<?php\n\nnamespace App\\Models;\n\nfinal class Order\n{{\n    public int $count = 0;\n\n    public function total(): {returned}\n    {{\n        return {};\n    }}\n}}\n",
         if returned == "int" { "1" } else { "'1'" }
     )
 }
 
-const QUERY: &str = "<?php\n\nnamespace App\\Models;\n\nfinal class Query\n{\n    public function total(): mixed\n    {\n        return null;\n    }\n}\n";
+const QUERY: &str = "<?php\n\nnamespace App\\Models;\n\nfinal class Query\n{\n    public function total(): mixed\n    {\n        return null;\n    }\n\n    public function models(): mixed\n    {\n        return null;\n    }\n}\n";
 
 /// A PHP# file whose `int` return holds only while the provider answers `Query::total` with `int`.
 const REVENUE: &str = "namespace App;\n\nimport App.Models.Query;\n\npublic class Revenue\n{\n    public int total(Query query)\n    {\n        return query.total();\n    }\n}\n";
@@ -243,8 +243,8 @@ fn a_file_whose_type_a_provider_read_from_a_class_is_analyzed_again_when_the_cla
     assert_eq!(after, fresh);
 }
 
-/// Each input `server` names for its compiled `app/Revenue.sharp`, stamped from the database, and the file's bytes.
-fn compiled_revenue(server: &mut Server) -> (BTreeMap<String, Option<Input>>, Vec<u8>) {
+/// Each input `server` names for its one compiled PHP# file, stamped from the database, and the file's bytes.
+fn compiled(server: &mut Server) -> (BTreeMap<String, Option<Input>>, Vec<u8>) {
     let database = server.database().read_only();
     let mut inputs = BTreeMap::new();
     let compiled = server
@@ -260,7 +260,7 @@ fn compiled_revenue(server: &mut Server) -> (BTreeMap<String, Option<Input>>, Ve
         })
         .expect("the compile runs");
     let [(_, Compilation::Accepted(bytes))] = compiled.as_slice() else {
-        panic!("app/Revenue.sharp is not accepted: {compiled:?}");
+        panic!("the PHP# file is not accepted: {compiled:?}");
     };
 
     (inputs, bytes.clone())
@@ -275,16 +275,94 @@ fn a_sharp_file_whose_type_a_provider_read_from_a_model_lists_the_model_among_it
 
     let mut server = server(repository, shop(&order("int")));
     server.analyze().expect("initial analysis");
-    let (before, before_bytes) = compiled_revenue(&mut server);
+    let (before, before_bytes) = compiled(&mut server);
     assert!(before.contains_key("app/Models/Order.php"), "the model the provider read: {:?}", before.keys());
 
     let order_file = FileId::new(b"app/Models/Order.php");
     let edited = order("int").replace("return 1;", "return 2;");
     server.database_mut().update(order_file, Cow::Owned(edited.into_bytes()));
     server.analyze_incremental(&[order_file]).expect("analysis after a body edit");
-    let (after, after_bytes) = compiled_revenue(&mut server);
+    let (after, after_bytes) = compiled(&mut server);
 
     assert_ne!(before["app/Models/Order.php"], after["app/Models/Order.php"]);
     assert_eq!(header(&before_bytes).expect("a header").key, header(&after_bytes).expect("a header").key);
     assert_ne!(before_bytes, after_bytes, "the compiled file holds the model's new stamp");
+}
+
+#[test]
+fn changing_a_property_type_of_the_model_a_provider_read_gives_the_sharp_file_a_new_key() {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !common::php_sdk_is_available(repository, "the provider reads key test") {
+        return;
+    }
+
+    let mut server = server(repository, shop(&order("int")));
+    server.analyze().expect("initial analysis");
+    let (_, before) = compiled(&mut server);
+
+    let order_file = FileId::new(b"app/Models/Order.php");
+    let edited = order("int").replace("public int $count = 0;", "public string $count = '';");
+    server.database_mut().update(order_file, Cow::Owned(edited.into_bytes()));
+    server.analyze_incremental(&[order_file]).expect("analysis after a property type change");
+    let (_, after) = compiled(&mut server);
+
+    assert_ne!(header(&before).expect("a header").key, header(&after).expect("a header").key);
+}
+
+#[test]
+fn changing_a_property_type_of_the_parent_of_the_model_a_provider_read_gives_the_sharp_file_a_new_key() {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !common::php_sdk_is_available(repository, "the provider reads parent key test") {
+        return;
+    }
+
+    let parent = "<?php\n\nnamespace App\\Models;\n\nclass Model\n{\n    public int $count = 0;\n}\n";
+    let order = order("int").replace("final class Order\n", "final class Order extends Model\n");
+    let order = order.replace("    public int $count = 0;\n\n", "");
+    let mut server = server(
+        repository,
+        database(&[
+            ("app/Models/Model.php", parent),
+            ("app/Models/Order.php", &order),
+            ("app/Models/Query.php", QUERY),
+            ("app/Revenue.sharp", REVENUE),
+        ]),
+    );
+    server.analyze().expect("initial analysis");
+    let (_, before) = compiled(&mut server);
+
+    let parent_file = FileId::new(b"app/Models/Model.php");
+    let edited = parent.replace("public int $count = 0;", "public string $count = '';");
+    server.database_mut().update(parent_file, Cow::Owned(edited.into_bytes()));
+    server.analyze_incremental(&[parent_file]).expect("analysis after a parent's property type change");
+    let (_, after) = compiled(&mut server);
+
+    assert_ne!(header(&before).expect("a header").key, header(&after).expect("a header").key);
+}
+
+/// A PHP# file whose `int` return holds only while the provider, which lists every class to answer, answers
+/// `Query::models` with `int`.
+const CATALOG: &str = "namespace App;\n\nimport App.Models.Query;\n\npublic class Catalog\n{\n    public int models(Query query)\n    {\n        return query.models();\n    }\n}\n";
+
+#[test]
+fn adding_a_class_to_the_classes_a_provider_listed_gives_the_sharp_file_a_new_key() {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !common::php_sdk_is_available(repository, "the provider listing key test") {
+        return;
+    }
+
+    let mut server = server(repository, database(&[("app/Models/Query.php", QUERY), ("app/Catalog.sharp", CATALOG)]));
+    server.analyze().expect("initial analysis");
+    let (_, before) = compiled(&mut server);
+
+    let invoice = server.database_mut().add(File::new(
+        Cow::Borrowed(b"app/Models/Invoice.php"),
+        FileType::Host,
+        None,
+        Cow::Borrowed(b"<?php\n\nnamespace App\\Models;\n\nfinal class Invoice {}\n"),
+    ));
+    server.analyze_incremental(&[invoice]).expect("analysis after a new class");
+    let (_, after) = compiled(&mut server);
+
+    assert_ne!(header(&before).expect("a header").key, header(&after).expect("a header").key);
 }

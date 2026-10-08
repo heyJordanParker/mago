@@ -197,7 +197,8 @@ final class ServerReadsPlugin implements Plugin, AfterFileAnalysisHook
 
 /**
  * A return-type provider that answers `App\Models\Query::total()` with the return type
- * `App\Models\Order::total()` declares, read from the codebase.
+ * `App\Models\Order::total()` declares, read from the codebase, and `App\Models\Query::models()`
+ * with `int` once it listed every class.
  *
  * @mago-expect lint:single-class-per-file
  */
@@ -215,11 +216,18 @@ final class ServerModelPlugin implements Plugin, MethodReturnTypeProvider
 
     public function getTargets(): array
     {
-        return [MethodTarget::exact('App\\Models\\Query', 'total')];
+        return [
+            MethodTarget::exact('App\\Models\\Query', 'total'),
+            MethodTarget::exact('App\\Models\\Query', 'models'),
+        ];
     }
 
     public function getReturnType(ReturnTypeProviderContext $context): ?Type
     {
+        if ($context->invocation->name === 'models') {
+            return $context->codebase->getClassNames() === [] ? null : Type::int();
+        }
+
         return $context->codebase->getMethod('App\\Models\\Order', 'total')?->returnType?->type;
     }
 }

@@ -98,12 +98,12 @@ pub struct Read {
     pub fingerprint: u64,
 }
 
-/// What a file's check read from other declarations. Only these enter the key, so an edit that changes none of
-/// them leaves the compiled code's name unchanged.
+/// What a file's check, and the extensions that analyzed it, read from other declarations. Only these enter the key,
+/// so an edit that changes none of them leaves the compiled code's name unchanged.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Reads {
-    /// Each declaration the check read through its signature, fingerprinted by codex's
-    /// `DefSignatureNode::signature_hash`.
+    /// Each declaration the check read through its signature, and each declaration an extension read with its
+    /// ancestors, fingerprinted by codex's `DefSignatureNode::signature_hash`.
     pub signatures: Vec<Read>,
     /// Each method whose inferred return the check read, named `Class::method` and fingerprinted by the xxh3-64 of
     /// that return type's `TUnion::get_id()`.
@@ -111,6 +111,9 @@ pub struct Reads {
     /// Each library method whose body the file inlines, named `Class::method` and fingerprinted by the xxh3-64 of the
     /// inlined form's bytes.
     pub inlined: Vec<Read>,
+    /// Each set of names an extension listed while it analyzed the file, fingerprinted by a hash of the names the set
+    /// holds, so a name joining or leaving it changes the key.
+    pub listed: Vec<Read>,
 }
 
 /// The fields of a header that passed load checks 1 and 2.
@@ -155,7 +158,7 @@ fn key_of(compiler: &[&[u8]], source_hash: [u8; 16], reads: &Reads) -> [u8; 16] 
     }
     hasher.update(&source_hash);
 
-    for list in [&reads.signatures, &reads.bodies, &reads.inlined] {
+    for list in [&reads.signatures, &reads.bodies, &reads.inlined, &reads.listed] {
         let mut list: Vec<&Read> = list.iter().collect();
         list.sort();
         list.dedup();

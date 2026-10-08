@@ -10,6 +10,7 @@ use xxhash_rust::xxh3::xxh3_64;
 use mago_allocator::LocalArena;
 use mago_analyzer::analysis_result::AnalysisResult;
 use mago_analyzer::external::ExternalAnalysisSession;
+use mago_analyzer::external::Listing;
 use mago_codex::reference::CascadeEdge;
 use mago_codex::reference::ReferenceOrigin;
 use mago_codex::reference::SymbolReferences;
@@ -214,8 +215,9 @@ impl IncrementalAnalysisService {
         Ok(compiled)
     }
 
-    /// What each file's analysis read from other files: each declaration it read through its signature, and each
-    /// method whose return is taken from its body, with the files that declare those methods.
+    /// What each file's analysis read from other files: each declaration it read through its signature, each method
+    /// whose return is taken from its body, with the files that declare those methods, and each declaration and set of
+    /// names its extensions read.
     fn reads(&self) -> HashMap<FileId, (Reads, HashSet<FileId>)> {
         let mut declarations: HashMap<SymbolIdentifier, (FileId, u64)> = HashMap::default();
         for (file_id, signature) in &self.codebase.file_signatures {
@@ -283,7 +285,39 @@ impl IncrementalAnalysisService {
             file_reads.signatures.push(Read { name, fingerprint: hash });
         });
 
+        for (file_id, state) in self.file_states.iter().filter(|(_, state)| !state.reads.is_empty()) {
+            let (file_reads, _) = reads.entry(*file_id).or_default();
+            for symbol in state.reads.symbols.iter().flat_map(|&(name, _)| self.with_ancestors(name)) {
+                if let Some((target, target_file, hash)) = declared((symbol, empty_word()))
+                    && target_file != *file_id
+                {
+                    file_reads.signatures.push(Read { name: target.0.as_bytes().to_vec(), fingerprint: hash });
+                }
+            }
+            for listing in &state.reads.listings {
+                file_reads
+                    .listed
+                    .push(Read { name: listing_name(listing), fingerprint: listing.answer(&self.codebase) });
+            }
+        }
+
         reads
+    }
+
+    /// `name` and, when it names a class-like, every class, interface and trait it inherits from, since an extension
+    /// that read a class-like read its inherited members too.
+    fn with_ancestors(&self, name: Word) -> Vec<Word> {
+        let Some(class_like) = self.codebase.class_likes.get(&name) else {
+            return vec![name];
+        };
+
+        let classes = std::iter::once(name).chain(class_like.all_parent_classes.iter().copied());
+        let traits = classes
+            .clone()
+            .filter_map(|class| self.codebase.class_likes.get(&ascii_lowercase_word(class.as_bytes())))
+            .flat_map(|class| class.used_traits.iter().copied());
+
+        classes.chain(class_like.all_parent_interfaces.iter().copied()).chain(traits).collect()
     }
 
     /// Lowers each of `files` with `forms` to inline, the files the analysis reported `errors` in refused.
@@ -313,6 +347,19 @@ impl IncrementalAnalysisService {
                 })
             })
             .collect()
+    }
+}
+
+/// The name `listing` enters a key under: what it lists, and the class-like or namespace it lists for.
+fn listing_name(listing: &Listing) -> Vec<u8> {
+    match listing {
+        Listing::ClassLikes(kind) => format!("class-likes of kind {kind}").into_bytes(),
+        Listing::Functions => b"functions".to_vec(),
+        Listing::Constants => b"constants".to_vec(),
+        Listing::DirectDescendants(class) => [b"direct descendants of ", class.as_bytes()].concat(),
+        Listing::Descendants(class) => [b"descendants of ", class.as_bytes()].concat(),
+        Listing::Namespace(namespace) => [b"namespace ", namespace.as_bytes()].concat(),
+        Listing::Methods => b"methods".to_vec(),
     }
 }
 
