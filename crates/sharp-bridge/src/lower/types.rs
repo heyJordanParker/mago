@@ -1,9 +1,11 @@
 use mago_analyzer::artifacts::AnalysisArtifacts;
 use mago_codex::identifier::method::MethodIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
+use mago_codex::metadata::parameter::FunctionLikeParameterMetadata;
 use mago_codex::metadata::property::PropertyMetadata;
 use mago_codex::ttype::add_optional_union_type;
 use mago_codex::ttype::atomic::TAtomic;
+use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::atomic::scalar::class_like_string::TClassLikeString;
@@ -11,6 +13,7 @@ use mago_codex::ttype::get_array_parameters;
 use mago_codex::ttype::union::TUnion;
 use mago_names::ResolvedNames;
 use mago_span::HasSpan;
+use mago_syntax::cst::Argument;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::ConstantAccess;
@@ -246,6 +249,47 @@ impl<'analysis> Types<'analysis> {
         key_type
     }
 
+    /// The positions of the arguments of the method call `call`, null-safe or not, that go in as its receiver's key.
+    /// The analyzer checks a call on a `Map` against `Sharp\MapMethods<K, V>`, whose `K` the `Map`'s key type fills
+    /// (spec section 12), so an argument goes in as a key when its parameter is a template parameter bounded by
+    /// `array-key`, as in `get(K $key)`. The caller asks only about a call on a value.
+    pub(crate) fn key_arguments(&self, call: &Expression) -> Vec<usize> {
+        let (object, method, arguments) = match call {
+            Expression::Call(Call::Method(call)) => (call.object, &call.method, &call.argument_list),
+            Expression::Call(Call::NullSafeMethod(call)) => (call.object, &call.method, &call.argument_list),
+            _ => unreachable!("only a method call has arguments a receiver takes as its key"),
+        };
+        let mut receivers = self.expression_type(object).types.iter().filter(|atomic| !atomic.is_null()).peekable();
+        if receivers.peek().is_none() || !receivers.all(|atomic| matches!(atomic, TAtomic::Array(TArray::Keyed(_)))) {
+            return Vec::new();
+        }
+        let ClassLikeMemberSelector::Identifier(method) = method else {
+            unreachable!("check_slice refuses the method name `{method}`");
+        };
+        let metadata = self.codebase.get_method(b"Sharp\\MapMethods", method.value).unwrap_or_else(|| {
+            unreachable!("the checker refuses `Map.{}()`, which names no method", String::from_utf8_lossy(method.value))
+        });
+
+        arguments
+            .arguments
+            .iter()
+            .enumerate()
+            .filter(|(position, argument)| {
+                let parameter = match argument {
+                    Argument::Positional(argument) if argument.ellipsis.is_none() => metadata.parameters.get(*position),
+                    Argument::Positional(_) => None,
+                    Argument::Named(argument) => metadata
+                        .parameters
+                        .iter()
+                        .find(|parameter| parameter.name.0.as_bytes().strip_prefix(b"$") == Some(argument.name.value)),
+                };
+
+                parameter.is_some_and(takes_key)
+            })
+            .map(|(position, _)| position)
+            .collect()
+    }
+
     /// The property `class` declares or inherits by the name `property`, if any.
     fn property_declaration(&self, class: &[u8], property: &[u8]) -> Option<Declaration> {
         let variable = [b"$", property].concat();
@@ -344,6 +388,13 @@ pub(crate) fn class_value_classes(r#type: &TUnion) -> Option<Vec<&[u8]>> {
         .collect::<Option<_>>()?;
 
     (!classes.is_empty()).then_some(classes)
+}
+
+/// Whether `parameter` takes a collection's key: its type is a template parameter bounded by `array-key`.
+fn takes_key(parameter: &FunctionLikeParameterMetadata) -> bool {
+    parameter.type_metadata.as_ref().is_some_and(|r#type| {
+        matches!(r#type.type_union.types.as_ref(), [TAtomic::GenericParameter(template)] if template.constraint.is_array_key())
+    })
 }
 
 /// The kind of member every class a receiver can be declares, which the checker requires to be one kind. Its details,

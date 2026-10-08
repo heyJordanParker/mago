@@ -88,6 +88,7 @@ use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_syntax_core::utils::parse_literal_integer_as_float;
 
 use crate::Unit;
+use crate::kind::SHARP_T_FILE;
 use crate::lower::checked::CheckedProgram;
 use crate::sharp_kind;
 use crate::sharp_kind::SHARP_AST_AND;
@@ -192,8 +193,8 @@ use types::agreed_kind;
 use types::class_value_classes;
 use types::receiver_classes;
 
-/// The values php-src gives the attrs the lowering emits, from `zend_compile.h`, `zend_vm_opcodes.h` and
-/// `zend_language_parser.h`.
+/// The values php-src gives the attrs the lowering emits, from `zend_compile.h` and `zend_vm_opcodes.h`. The tokens
+/// it emits are generated in `kind.rs`.
 const ZEND_NAME_FQ: u32 = 0;
 const ZEND_NAME_NOT_FQ: u32 = 1;
 const ZEND_ACC_PUBLIC: u32 = 1 << 0;
@@ -232,7 +233,6 @@ const ZEND_IS_EQUAL: u32 = 18;
 const ZEND_IS_NOT_EQUAL: u32 = 19;
 const ZEND_IS_SMALLER: u32 = 20;
 const ZEND_IS_SMALLER_OR_EQUAL: u32 = 21;
-const T_FILE: u32 = 347;
 
 /// A null child.
 const NULL: u32 = u32::MAX;
@@ -1268,13 +1268,13 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                     Some(Binding::Local(_)) => self.variable(function.span(), function.value()),
                     _ => self.string(ZEND_NAME_FQ, self.line(function), function.value()),
                 };
-                let arguments = self.arguments(argument_list);
+                let arguments = self.arguments(argument_list, &[]);
 
                 self.node(SHARP_AST_CALL, 0, line, &[function, arguments])
             }
             Expression::Construct(Construct::Exit(ExitConstruct { arguments: Some(arguments), .. })) => {
                 let function = self.string(ZEND_NAME_FQ, line, b"exit");
-                let arguments = self.arguments(arguments);
+                let arguments = self.arguments(arguments, &[]);
 
                 self.node(SHARP_AST_CALL, 0, line, &[function, arguments])
             }
@@ -1284,7 +1284,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 ..
             }) => {
                 let class = self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class));
-                let arguments = self.arguments(arguments);
+                let arguments = self.arguments(arguments, &[]);
 
                 self.node(SHARP_AST_NEW, 0, line, &[class, arguments])
             }
@@ -1295,7 +1295,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 ..
             }) => {
                 let class = self.string(ZEND_NAME_NOT_FQ, self.line(keyword), b"static");
-                let arguments = self.arguments(arguments);
+                let arguments = self.arguments(arguments, &[]);
 
                 self.node(SHARP_AST_NEW, 0, line, &[class, arguments])
             }
@@ -1329,14 +1329,15 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 let tested = self.tested_links.contains(&expression.span());
                 if tested && let Some((class, _)) = self.class_value(call.object) {
                     let method = self.member(&call.method);
-                    let arguments = self.arguments(&call.argument_list);
+                    let arguments = self.arguments(&call.argument_list, &[]);
 
                     return self.node(SHARP_AST_STATIC_CALL, 0, line, &[class, method, arguments]);
                 }
 
                 let object = if tested { self.expression(call.object) } else { self.null_safe_object(call.object) };
                 let method = self.member(&call.method);
-                let arguments = self.arguments(&call.argument_list);
+                let keys = self.types.key_arguments(expression);
+                let arguments = self.arguments(&call.argument_list, &keys);
 
                 if tested {
                     let property = self.node(SHARP_AST_PROP, 0, line, &[object, method]);
@@ -1723,8 +1724,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(kind, 0, self.line(element), &value_and_key)
     }
 
-    /// A key going into a `Map`, in a literal or an index. A `Map` keyed by a backed enum holds each case as its
-    /// backing value, so a case goes in as its `->value`.
+    /// A key going into a `Map`, in a literal, an index or an argument a `Map` method takes as a key. A `Map` keyed by
+    /// a backed enum holds each case as its backing value, so a case goes in as its `->value`.
     fn key(&mut self, key: &Expression) -> u32 {
         let lowered = self.expression(key);
         if self.backed_enum(self.types.expression_type(key)).is_none() {
@@ -1948,7 +1949,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             },
         };
         let method = self.member(&call.method);
-        let arguments = self.arguments(&call.argument_list);
+        let keys = if kind == SHARP_AST_METHOD_CALL { self.types.key_arguments(expression) } else { Vec::new() };
+        let arguments = self.arguments(&call.argument_list, &keys);
 
         if kind == SHARP_AST_METHOD_CALL && self.is_property_call(expression, call.object) {
             let property = self.node(SHARP_AST_PROP, 0, line, &[object, method]);
@@ -1966,7 +1968,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     fn current_position(&mut self, class: &ConstantAccess, call: &MethodCall) -> u32 {
         let (line, column) = self.lines.line_and_column(class.span().start.offset);
         let name = self.string(ZEND_NAME_FQ, line, b"Sharp\\Position");
-        let file = self.node(SHARP_AST_MAGIC_CONST, T_FILE, line, &[]);
+        let file = self.node(SHARP_AST_MAGIC_CONST, SHARP_T_FILE, line, &[]);
         let line_number = self.zval(line, sharp_value::SHARP_LONG, |node| node.long_value = i64::from(line));
         let column = self.zval(line, sharp_value::SHARP_LONG, |node| node.long_value = i64::from(column));
         let function = self.function.clone();
@@ -1994,12 +1996,15 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.string(0, self.line(name.span), name.value)
     }
 
-    fn arguments(&mut self, list: &ArgumentList) -> u32 {
+    /// A call's arguments, the one at each position in `keys` going in as a key, as `Map.get`'s does.
+    fn arguments(&mut self, list: &ArgumentList, keys: &[usize]) -> u32 {
         let mut arguments = Vec::new();
-        for argument in &list.arguments {
+        for (position, argument) in list.arguments.iter().enumerate() {
+            let is_key = keys.contains(&position);
             arguments.push(match argument {
+                Argument::Positional(positional) if is_key => self.key(positional.value),
                 Argument::Positional(positional) => self.positional_argument(positional),
-                Argument::Named(named) => self.named_argument(named),
+                Argument::Named(named) => self.named_argument(named, is_key),
             });
         }
 
@@ -2012,7 +2017,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         for argument in &list.arguments {
             arguments.push(match argument {
                 PartialArgument::Positional(positional) => self.positional_argument(positional),
-                PartialArgument::Named(named) => self.named_argument(named),
+                PartialArgument::Named(named) => self.named_argument(named, false),
                 _ => unreachable!("check_slice refuses a placeholder argument"),
             });
         }
@@ -2030,10 +2035,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_UNPACK, 0, self.nodes[value as usize].line, &[value])
     }
 
-    fn named_argument(&mut self, argument: &NamedArgument) -> u32 {
+    fn named_argument(&mut self, argument: &NamedArgument, is_key: bool) -> u32 {
         let line = self.line(argument.name.span);
         let name = self.string(0, line, argument.name.value);
-        let value = self.expression(argument.value);
+        let value = if is_key { self.key(argument.value) } else { self.expression(argument.value) };
 
         self.node(SHARP_AST_NAMED_ARG, 0, line, &[name, value])
     }
