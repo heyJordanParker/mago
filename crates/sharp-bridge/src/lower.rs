@@ -146,7 +146,6 @@ use crate::sharp_kind::SHARP_AST_NAME_LIST;
 use crate::sharp_kind::SHARP_AST_NAMED_ARG;
 use crate::sharp_kind::SHARP_AST_NAMESPACE;
 use crate::sharp_kind::SHARP_AST_NEW;
-use crate::sharp_kind::SHARP_AST_SHARP_TYPE_ARGS;
 use crate::sharp_kind::SHARP_AST_NULLSAFE_METHOD_CALL;
 use crate::sharp_kind::SHARP_AST_NULLSAFE_PROP;
 use crate::sharp_kind::SHARP_AST_OR;
@@ -163,6 +162,7 @@ use crate::sharp_kind::SHARP_AST_PROP_GROUP;
 use crate::sharp_kind::SHARP_AST_PROPERTY_HOOK;
 use crate::sharp_kind::SHARP_AST_PROPERTY_HOOK_SHORT_BODY;
 use crate::sharp_kind::SHARP_AST_RETURN;
+use crate::sharp_kind::SHARP_AST_SHARP_TYPE_ARGS;
 use crate::sharp_kind::SHARP_AST_SILENCE;
 use crate::sharp_kind::SHARP_AST_STATIC_CALL;
 use crate::sharp_kind::SHARP_AST_STATIC_PROP;
@@ -1371,7 +1371,9 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             // `new` of a PHP# generic class carries the type arguments the checker found in a `SHARP_TYPE_ARGS` over it.
             Expression::Instantiation(
                 instantiation @ Instantiation {
-                    class: Expression::Identifier(class), argument_list: Some(arguments), ..
+                    class: Expression::Identifier(class),
+                    argument_list: Some(arguments),
+                    ..
                 },
             ) => {
                 let name = self.names.get(class);

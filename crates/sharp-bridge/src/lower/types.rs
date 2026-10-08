@@ -131,9 +131,10 @@ impl<'analysis> Types<'analysis> {
     /// that names a type parameter has a value only the running code knows, so such a `new` has none.
     pub(crate) fn type_arguments(&self, class: &[u8], span: Span) -> Option<String> {
         self.bounds(class)?;
-        let arguments = self.artifacts.inferred_type_arguments.get(&(span.start.offset, span.end.offset)).unwrap_or_else(
-            || unreachable!("the analysis records the type arguments of every generic `new`, not {span:?}"),
-        );
+        let arguments =
+            self.artifacts.inferred_type_arguments.get(&(span.start.offset, span.end.offset)).unwrap_or_else(|| {
+                unreachable!("the analysis records the type arguments of every generic `new`, not {span:?}")
+            });
         if arguments.iter().any(TUnion::has_template_types) {
             return None;
         }
@@ -459,7 +460,9 @@ fn atomic_text(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String {
             format!("Class<{class}>")
         }
         TAtomic::Callable(TCallable::Signature(signature)) => {
-            let written = |r#type: Option<&TUnion>| r#type.map_or_else(|| "Any?".to_owned(), |r#type| type_text(r#type, codebase));
+            let written = |r#type: Option<&TUnion>| {
+                r#type.map_or_else(|| "Any?".to_owned(), |r#type| type_text(r#type, codebase))
+            };
             let parameters: Vec<String> =
                 signature.get_parameters().iter().map(|parameter| written(parameter.get_type_signature())).collect();
 
@@ -529,7 +532,9 @@ mod tests {
             .collect();
 
         wrap_atomic(TAtomic::Callable(TCallable::Signature(
-            TCallableSignature::new(false, true).with_parameters(parameters).with_return_type(Some(Arc::new(return_type))),
+            TCallableSignature::new(false, true)
+                .with_parameters(parameters)
+                .with_return_type(Some(Arc::new(return_type))),
         )))
     }
 
@@ -578,12 +583,19 @@ mod tests {
 
         assert_eq!(text(&function(get_bool(), &[order, get_int()])), "Function<bool(App.Order, int)>");
         assert_eq!(text(&function(get_void(), &[])), "Function<void()>");
-        assert_eq!(text(&function(get_list(get_int()).as_nullable(), &[get_string().as_nullable()])), "Function<List<int>?(string?)>");
+        assert_eq!(
+            text(&function(get_list(get_int()).as_nullable(), &[get_string().as_nullable()])),
+            "Function<List<int>?(string?)>"
+        );
     }
 
     #[test]
     fn a_type_parameter_is_its_name_and_a_class_value_names_its_class() {
-        let parameter = TGenericParameter::new(word("TItem"), Arc::new(get_mixed()), GenericParent::ClassLike(word("App\\PaginatedList")));
+        let parameter = TGenericParameter::new(
+            word("TItem"),
+            Arc::new(get_mixed()),
+            GenericParent::ClassLike(word("App\\PaginatedList")),
+        );
         let class_value = TClassLikeString::literal(word("App\\Order"));
 
         assert_eq!(text(&wrap_atomic(TAtomic::GenericParameter(parameter))), "TItem");
