@@ -146,6 +146,7 @@ use crate::sharp_kind::SHARP_AST_NAME_LIST;
 use crate::sharp_kind::SHARP_AST_NAMED_ARG;
 use crate::sharp_kind::SHARP_AST_NAMESPACE;
 use crate::sharp_kind::SHARP_AST_NEW;
+use crate::sharp_kind::SHARP_AST_SHARP_TYPE_ARGS;
 use crate::sharp_kind::SHARP_AST_NULLSAFE_METHOD_CALL;
 use crate::sharp_kind::SHARP_AST_NULLSAFE_PROP;
 use crate::sharp_kind::SHARP_AST_OR;
@@ -473,6 +474,14 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 b"__construct",
                 &[parameters, NULL, body, NULL, NULL],
             ));
+        }
+
+        // A PHP# generic class declares the hidden slot that holds each object's type arguments, which start as its
+        // bounds.
+        if let Some(bounds) = self.types.bounds(self.class) {
+            let line = self.line(class.name);
+            let bounds = self.string(0, line, bounds.as_bytes());
+            members.push(self.node(SHARP_AST_SHARP_TYPE_ARGS, 0, line, &[NULL, bounds]));
         }
 
         let members = self.node(SHARP_AST_STMT_LIST, 0, self.line(class.left_brace), &members);
@@ -1359,17 +1368,28 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 self.node(SHARP_AST_CALL, 0, line, &[function, arguments])
             }
-            Expression::Instantiation(Instantiation {
-                class: Expression::Identifier(class),
-                argument_list: Some(arguments),
-                ..
-            }) => {
-                let class = self.string(ZEND_NAME_FQ, self.line(class), self.names.get(class));
+            // `new` of a PHP# generic class carries the type arguments the checker found in a `SHARP_TYPE_ARGS` over it.
+            Expression::Instantiation(
+                instantiation @ Instantiation {
+                    class: Expression::Identifier(class), argument_list: Some(arguments), ..
+                },
+            ) => {
+                let name = self.names.get(class);
+                let class = self.string(ZEND_NAME_FQ, self.line(class), name);
                 let arguments = self.arguments(arguments);
+                let new = self.node(SHARP_AST_NEW, 0, line, &[class, arguments]);
 
-                self.node(SHARP_AST_NEW, 0, line, &[class, arguments])
+                match self.types.type_arguments(name, instantiation.span()) {
+                    Some(type_arguments) => {
+                        let type_arguments = self.string(0, line, type_arguments.as_bytes());
+
+                        self.node(SHARP_AST_SHARP_TYPE_ARGS, 0, line, &[new, type_arguments])
+                    }
+                    None => new,
+                }
             }
-            // `new Self(…)` is `new static(…)`, the name php-src's grammar writes with `ZEND_NAME_NOT_FQ`.
+            // `new Self(…)` is `new static(…)`, the name php-src's grammar writes with `ZEND_NAME_NOT_FQ`. In a PHP#
+            // generic class it gives the new object `this`'s type arguments: a `SHARP_TYPE_ARGS` without a text.
             Expression::Instantiation(Instantiation {
                 class: Expression::Self_(keyword),
                 argument_list: Some(arguments),
@@ -1377,8 +1397,13 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             }) => {
                 let class = self.string(ZEND_NAME_NOT_FQ, self.line(keyword), b"static");
                 let arguments = self.arguments(arguments);
+                let new = self.node(SHARP_AST_NEW, 0, line, &[class, arguments]);
 
-                self.node(SHARP_AST_NEW, 0, line, &[class, arguments])
+                if self.types.bounds(self.class).is_some() {
+                    self.node(SHARP_AST_SHARP_TYPE_ARGS, 0, line, &[new, NULL])
+                } else {
+                    new
+                }
             }
             // `Class.y`, and `y` read through a class value, is the fetch of the member the checker found on the class:
             // a constant or enum case, a static property, or a static method as a first-class callable.

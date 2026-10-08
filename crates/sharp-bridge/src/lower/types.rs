@@ -2,8 +2,11 @@ use mago_analyzer::artifacts::AnalysisArtifacts;
 use mago_codex::identifier::method::MethodIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::property::PropertyMetadata;
+use mago_codex::ttype::TType;
 use mago_codex::ttype::add_optional_union_type;
 use mago_codex::ttype::atomic::TAtomic;
+use mago_codex::ttype::atomic::array::TArray;
+use mago_codex::ttype::atomic::callable::TCallable;
 use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::atomic::scalar::class_like_string::TClassLikeString;
@@ -12,6 +15,7 @@ use mago_codex::ttype::get_sole_backed_enum;
 use mago_codex::ttype::union::TUnion;
 use mago_names::ResolvedNames;
 use mago_span::HasSpan;
+use mago_span::Span;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::ConstantAccess;
@@ -106,6 +110,37 @@ impl<'analysis> Types<'analysis> {
         };
 
         Declaration { kind, class: metadata.original_name, name: metadata.original_name, public: true }
+    }
+
+    /// The bounds of the fully qualified class name `class` when it is a PHP# generic class, whose objects carry their
+    /// type arguments: the [`type_text`] of each type parameter's bound in declaration order, joined by `, `.
+    pub(crate) fn bounds(&self, class: &[u8]) -> Option<String> {
+        let metadata = self.codebase.get_class_like(class)?;
+        if !metadata.flags.is_sharp() || metadata.template_types.is_empty() {
+            return None;
+        }
+
+        let bounds: Vec<String> =
+            metadata.template_types.values().map(|template| type_text(&template.constraint, self.codebase)).collect();
+
+        Some(bounds.join(", "))
+    }
+
+    /// The type arguments the `new` at `span` gives the fully qualified class name `class`, as the checker found them,
+    /// when it is a PHP# generic class: the [`type_text`] of each in declaration order, joined by `, `. A type argument
+    /// that names a type parameter has a value only the running code knows, so such a `new` has none.
+    pub(crate) fn type_arguments(&self, class: &[u8], span: Span) -> Option<String> {
+        self.bounds(class)?;
+        let arguments = self.artifacts.inferred_type_arguments.get(&(span.start.offset, span.end.offset)).unwrap_or_else(
+            || unreachable!("the analysis records the type arguments of every generic `new`, not {span:?}"),
+        );
+        if arguments.iter().any(TUnion::has_template_types) {
+            return None;
+        }
+
+        let arguments: Vec<String> = arguments.iter().map(|argument| type_text(argument, self.codebase)).collect();
+
+        Some(arguments.join(", "))
     }
 
     /// The fully qualified name of the one backed enum every value of `r#type` but `null` is a case of, as
@@ -361,4 +396,197 @@ pub(crate) fn agreed_kind(mut kinds: impl Iterator<Item = DeclarationKind>) -> D
     }
 
     kind
+}
+
+/// `r#type` in the one PHP# spelling the engine parses, task 090's type text: a class by its full dotted name as it is
+/// declared, the built-in types, `List<T>`, `Map<K, V>`, `Iterable<T>`, `Class<T>`, `Function<R(P1, P2)>`, a type
+/// parameter by its name, `T?` and `(A|B)?`, union members sorted by text, and a space only after a comma.
+pub(crate) fn type_text(r#type: &TUnion, codebase: &CodebaseMetadata) -> String {
+    if let Some(TAtomic::Mixed(mixed)) = r#type.types.iter().find(|atomic| atomic.is_mixed()) {
+        return if mixed.is_non_null() { "Any" } else { "Any?" }.to_owned();
+    }
+
+    let mut members: Vec<String> =
+        r#type.types.iter().filter(|atomic| !atomic.is_null()).map(|atomic| atomic_text(atomic, codebase)).collect();
+    members.sort_unstable();
+    members.dedup();
+
+    match (r#type.has_null(), members.as_slice()) {
+        (false, _) => members.join("|"),
+        (true, []) => "null".to_owned(),
+        (true, [member]) => format!("{member}?"),
+        (true, _) => format!("({})?", members.join("|")),
+    }
+}
+
+fn atomic_text(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String {
+    let list = |types: &mut dyn Iterator<Item = &TUnion>| {
+        types.map(|r#type| type_text(r#type, codebase)).collect::<Vec<_>>().join(", ")
+    };
+
+    match atomic {
+        TAtomic::Scalar(TScalar::Integer(_)) => "int".to_owned(),
+        TAtomic::Scalar(TScalar::Float(_)) => "float".to_owned(),
+        TAtomic::Scalar(TScalar::Bool(_)) => "bool".to_owned(),
+        TAtomic::Scalar(TScalar::String(_)) => "string".to_owned(),
+        TAtomic::Void => "void".to_owned(),
+        TAtomic::Object(TObject::Any) => "Object".to_owned(),
+        TAtomic::Object(TObject::Enum(object)) => class_text(object.name, codebase),
+        TAtomic::Object(TObject::Named(object)) => match object.get_type_parameters() {
+            Some(arguments) if !arguments.is_empty() => {
+                format!("{}<{}>", class_text(object.name, codebase), list(&mut arguments.iter()))
+            }
+            _ => class_text(object.name, codebase),
+        },
+        TAtomic::Array(TArray::List(array)) => format!("List<{}>", type_text(&array.element_type, codebase)),
+        TAtomic::Array(TArray::Keyed(array)) => {
+            let (key, value) = array.parameters.as_ref().unwrap_or_else(|| {
+                unreachable!("PHP# writes a Map with its key and value types, not `{}`", atomic.get_id())
+            });
+
+            format!("Map<{}>", list(&mut [key.as_ref(), value.as_ref()].into_iter()))
+        }
+        TAtomic::Iterable(iterable) => format!("Iterable<{}>", type_text(iterable.get_value_type(), codebase)),
+        TAtomic::GenericParameter(parameter) => parameter.parameter_name.to_string(),
+        TAtomic::Scalar(TScalar::ClassLikeString(class_value)) => {
+            let class = match class_value {
+                TClassLikeString::Literal { value } => class_text(*value, codebase),
+                TClassLikeString::OfType { constraint, .. } => atomic_text(constraint, codebase),
+                TClassLikeString::Generic { parameter_name, .. } => parameter_name.to_string(),
+                TClassLikeString::Any { .. } => "Object".to_owned(),
+            };
+
+            format!("Class<{class}>")
+        }
+        TAtomic::Callable(TCallable::Signature(signature)) => {
+            let written = |r#type: Option<&TUnion>| r#type.map_or_else(|| "Any?".to_owned(), |r#type| type_text(r#type, codebase));
+            let parameters: Vec<String> =
+                signature.get_parameters().iter().map(|parameter| written(parameter.get_type_signature())).collect();
+
+            format!("Function<{}({})>", written(signature.get_return_type()), parameters.join(", "))
+        }
+        _ => unreachable!("the checker refuses a type PHP# can't write, not `{}`", atomic.get_id()),
+    }
+}
+
+/// The full dotted name of the class `name`, as it is declared.
+fn class_text(name: Word, codebase: &CodebaseMetadata) -> String {
+    let declared = codebase.get_class_like(name.as_bytes()).map_or(name, |class| class.original_name);
+
+    declared.as_str_lossy().trim_start_matches('\\').replace('\\', ".")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use mago_codex::metadata::CodebaseMetadata;
+    use mago_codex::misc::GenericParent;
+    use mago_codex::ttype::atomic::TAtomic;
+    use mago_codex::ttype::atomic::callable::TCallable;
+    use mago_codex::ttype::atomic::callable::TCallableSignature;
+    use mago_codex::ttype::atomic::callable::parameter::TCallableParameter;
+    use mago_codex::ttype::atomic::generic::TGenericParameter;
+    use mago_codex::ttype::atomic::iterable::TIterable;
+    use mago_codex::ttype::atomic::mixed::TMixed;
+    use mago_codex::ttype::atomic::object::TObject;
+    use mago_codex::ttype::atomic::object::named::TNamedObject;
+    use mago_codex::ttype::atomic::scalar::TScalar;
+    use mago_codex::ttype::atomic::scalar::class_like_string::TClassLikeString;
+    use mago_codex::ttype::get_bool;
+    use mago_codex::ttype::get_float;
+    use mago_codex::ttype::get_int;
+    use mago_codex::ttype::get_keyed_array;
+    use mago_codex::ttype::get_list;
+    use mago_codex::ttype::get_mixed;
+    use mago_codex::ttype::get_object;
+    use mago_codex::ttype::get_string;
+    use mago_codex::ttype::get_void;
+    use mago_codex::ttype::union::TUnion;
+    use mago_codex::ttype::wrap_atomic;
+    use mago_word::word;
+
+    use super::type_text;
+
+    fn text(r#type: &TUnion) -> String {
+        type_text(r#type, &CodebaseMetadata::default())
+    }
+
+    fn class(name: &str, arguments: Vec<TUnion>) -> TUnion {
+        let arguments = (!arguments.is_empty()).then_some(arguments);
+
+        wrap_atomic(TAtomic::Object(TObject::Named(TNamedObject::new_with_type_parameters(word(name), arguments))))
+    }
+
+    fn union(members: &[TUnion]) -> TUnion {
+        TUnion::from_vec(members.iter().flat_map(|member| member.types.iter().cloned()).collect())
+    }
+
+    fn function(return_type: TUnion, parameters: &[TUnion]) -> TUnion {
+        let parameters = parameters
+            .iter()
+            .map(|parameter| TCallableParameter::new(Some(Arc::new(parameter.clone())), false, false, false))
+            .collect();
+
+        wrap_atomic(TAtomic::Callable(TCallable::Signature(
+            TCallableSignature::new(false, true).with_parameters(parameters).with_return_type(Some(Arc::new(return_type))),
+        )))
+    }
+
+    #[test]
+    fn a_class_is_its_full_dotted_name_and_the_built_in_types_are_their_names() {
+        assert_eq!(text(&class("App\\Order", vec![])), "App.Order");
+        assert_eq!(text(&class("Order", vec![])), "Order");
+        assert_eq!(text(&get_int()), "int");
+        assert_eq!(text(&get_float()), "float");
+        assert_eq!(text(&get_bool()), "bool");
+        assert_eq!(text(&get_string()), "string");
+        assert_eq!(text(&get_void()), "void");
+        assert_eq!(text(&get_object()), "Object");
+        assert_eq!(text(&wrap_atomic(TAtomic::Mixed(TMixed::new().with_is_non_null(true)))), "Any");
+        assert_eq!(text(&get_mixed()), "Any?");
+    }
+
+    #[test]
+    fn a_generic_type_writes_its_arguments_nested_with_a_space_after_each_comma() {
+        let order = class("App\\Order", vec![]);
+        let page = class("App\\PaginatedList", vec![get_keyed_array(get_string(), get_list(order.clone()))]);
+
+        assert_eq!(text(&page), "App.PaginatedList<Map<string, List<App.Order>>>");
+        assert_eq!(text(&class("App\\Pair", vec![order.clone(), get_int()])), "App.Pair<App.Order, int>");
+        assert_eq!(text(&wrap_atomic(TAtomic::Iterable(TIterable::of_value(Arc::new(order))))), "Iterable<App.Order>");
+    }
+
+    #[test]
+    fn a_nullable_type_ends_in_a_question_mark_and_a_nullable_union_is_in_parentheses() {
+        assert_eq!(text(&get_int().as_nullable()), "int?");
+        assert_eq!(text(&class("App\\Order", vec![]).as_nullable()), "App.Order?");
+        assert_eq!(text(&union(&[get_string(), get_int()]).as_nullable()), "(int|string)?");
+        assert_eq!(text(&get_list(get_int().as_nullable())), "List<int?>");
+    }
+
+    #[test]
+    fn union_members_are_sorted_by_their_text() {
+        let union = union(&[get_string(), class("App\\Zone", vec![]), get_int(), class("App\\Area", vec![])]);
+
+        assert_eq!(text(&union), "App.Area|App.Zone|int|string");
+    }
+
+    #[test]
+    fn a_function_type_writes_its_return_type_then_its_parameter_types() {
+        let order = class("App\\Order", vec![]);
+
+        assert_eq!(text(&function(get_bool(), &[order, get_int()])), "Function<bool(App.Order, int)>");
+        assert_eq!(text(&function(get_void(), &[])), "Function<void()>");
+        assert_eq!(text(&function(get_list(get_int()).as_nullable(), &[get_string().as_nullable()])), "Function<List<int>?(string?)>");
+    }
+
+    #[test]
+    fn a_type_parameter_is_its_name_and_a_class_value_names_its_class() {
+        let parameter = TGenericParameter::new(word("TItem"), Arc::new(get_mixed()), GenericParent::ClassLike(word("App\\PaginatedList")));
+        let class_value = TClassLikeString::literal(word("App\\Order"));
+
+        assert_eq!(text(&wrap_atomic(TAtomic::GenericParameter(parameter))), "TItem");
+        assert_eq!(text(&wrap_atomic(TAtomic::Scalar(TScalar::ClassLikeString(class_value)))), "Class<App.Order>");
+    }
 }

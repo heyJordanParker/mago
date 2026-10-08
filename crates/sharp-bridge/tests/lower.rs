@@ -83,12 +83,17 @@ impl Lowered {
 
     /// The statements of the method `run`.
     fn body(&self) -> String {
+        self.body_of("run")
+    }
+
+    /// The statements of the first method the source declares as `name`.
+    fn body_of(&self, name: &str) -> String {
         assert_eq!(self.diagnostics(), Vec::<String>::new(), "the source lowers");
         let method = self
             .nodes()
             .iter()
-            .position(|node| node.kind == sharp_kind::SHARP_AST_METHOD && self.text(node.text) == "run")
-            .expect("the source declares `run`");
+            .position(|node| node.kind == sharp_kind::SHARP_AST_METHOD && self.text(node.text) == name)
+            .unwrap_or_else(|| panic!("the source declares `{name}`"));
 
         self.render(self.child(method as u32, 2))
     }
@@ -1971,8 +1976,9 @@ fn a_function_type_is_the_closure_class() {
 /// }
 /// ```
 ///
-/// Generics are erased, so a type parameter is the type of its bound, its list lowers to nothing, and a `List` of it
-/// is still `array`, as the PHP twin a developer writes with `@template` declares it.
+/// PHP types are erased, so a type parameter is the type of its bound, its list lowers to nothing, and a `List` of it
+/// is still `array`, as the PHP twin a developer writes with `@template` declares it. The class's last member is the
+/// `SHARP_TYPE_ARGS` that declares its hidden type-argument slot, whose text is its bounds.
 #[test]
 fn a_type_parameter_is_its_bound_and_its_list_lowers_to_nothing() {
     let lowered = Lowered::with(
@@ -2063,6 +2069,9 @@ fn a_type_parameter_is_its_bound_and_its_list_lowers_to_nothing() {
                       ZVAL null
                   ZVAL [256] "Lib\\DatabaseEntity"
                   null
+                SHARP_TYPE_ARGS
+                  null
+                  ZVAL "Lib.DatabaseEntity"
               null
               null
         "#}
@@ -2960,8 +2969,8 @@ fn type_arguments_file(arguments: [&str; 3]) -> String {
 /// $found = $this->repository?->find($id);
 /// ```
 ///
-/// Generics are erased, so the type arguments of `new`, a static call and a null-safe call lower to nothing, and each
-/// is the node it is without them.
+/// A plain PHP class's `@template` type arguments are erased, so the type arguments of `new`, a static call and a
+/// null-safe call lower to nothing, and each is the node it is without them.
 #[test]
 fn type_arguments_of_new_and_calls_lower_to_nothing() {
     let library = [(
@@ -3007,6 +3016,97 @@ fn type_arguments_of_new_and_calls_lower_to_nothing() {
         "#}
     );
     assert_eq!(generic.tree(), plain.tree());
+}
+
+/// A PHP# generic class declares its hidden type-argument slot with a last member, a `SHARP_TYPE_ARGS` without a `new`
+/// whose text is its bounds: the type text of each type parameter's bound, `Any?` for one without a bound. `new` of
+/// the class is a `SHARP_TYPE_ARGS` over the `NEW`, whose text is the type arguments the checker found, each in its
+/// full dotted name. `new Self` gives the new object `this`'s type arguments, so its text is null. A type argument
+/// that names a type parameter has a value only the running code knows, so that `new` carries no type arguments yet.
+#[test]
+fn new_of_a_generic_php_sharp_class_carries_its_type_arguments() {
+    let lowered = Lowered::with(
+        indoc! {"
+        namespace App;
+
+        public class PaginatedList<TItem : DatabaseEntity, TKey>
+        {
+            public required PaginatedList(private List<TItem> rows)
+            {
+            }
+
+            public PaginatedList<TItem, TKey> copy() => new Self(this.rows);
+        }
+
+        public class Report
+        {
+            public PaginatedList<Order, int> run(List<Order> rows) => new PaginatedList<Order, int>(rows);
+
+            public PaginatedList<TItem, int> open<TItem : DatabaseEntity>(List<TItem> rows) => new PaginatedList<TItem, int>(rows);
+        }
+    "},
+        &[(
+            "src/App/Entities.php",
+            "<?php namespace App; abstract class DatabaseEntity {} final class Order extends DatabaseEntity {}",
+        )],
+    );
+    let last_member = |class: u32| {
+        let members = lowered.child(lowered.child(lowered.root(), class), 2);
+
+        lowered.child(members, lowered.nodes()[members as usize].child_count - 1)
+    };
+
+    assert_eq!(
+        lowered.render(last_member(2)),
+        indoc! {r#"
+            SHARP_TYPE_ARGS
+              null
+              ZVAL "App.DatabaseEntity, Any?"
+        "#}
+    );
+    assert_eq!(lowered.nodes()[last_member(3) as usize].kind, sharp_kind::SHARP_AST_METHOD);
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                SHARP_TYPE_ARGS
+                  NEW
+                    ZVAL "App\\PaginatedList"
+                    ARG_LIST
+                      VAR
+                        ZVAL "rows"
+                  ZVAL "App.Order, int"
+        "#}
+    );
+    assert_eq!(
+        lowered.body_of("copy"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                SHARP_TYPE_ARGS
+                  NEW
+                    ZVAL [1] "static"
+                    ARG_LIST
+                      PROP
+                        VAR
+                          ZVAL "this"
+                        ZVAL "rows"
+                  null
+        "#}
+    );
+    assert_eq!(
+        lowered.body_of("open"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                NEW
+                  ZVAL "App\\PaginatedList"
+                  ARG_LIST
+                    VAR
+                      ZVAL "rows"
+        "#}
+    );
 }
 
 /// PHP has no class visibility, so a `public` class is the same class.
@@ -6211,8 +6311,8 @@ fn a_loop_key_written_as_a_type_parameter_reads_back_as_its_bound() {
     let generic = Lowered::with(&source("Report<TKey : Status>", "TKey"), &library);
     let erased = Lowered::with(&source("Report", "Status"), &library);
 
-    assert_eq!(generic.tree(), erased.tree());
-    assert!(generic.tree().contains(r#"ZVAL "Lib\\Status""#), "{}", generic.tree());
+    assert_eq!(generic.body_of("count"), erased.body_of("count"));
+    assert!(generic.body_of("count").contains(r#"ZVAL "Lib\\Status""#), "{}", generic.body_of("count"));
 }
 
 /// `Lib\Status`, a backed enum that implements `Lib\HasLabel`, beside the interface `Lib\Other`.
