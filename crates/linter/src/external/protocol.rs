@@ -39,7 +39,7 @@ use super::ExternalRule;
 
 pub const LINTER_PROTOCOL_MAGIC: [u8; 4] = *b"MLNT";
 pub const LINTER_PROTOCOL_MAJOR: u16 = 1;
-pub const LINTER_PROTOCOL_MINOR: u16 = 1;
+pub const LINTER_PROTOCOL_MINOR: u16 = 2;
 
 const HEADER_LENGTH: usize = 12;
 const DESCRIBE_REQUEST: u16 = 1;
@@ -179,7 +179,7 @@ pub(super) fn encode_lint_request<'arena>(
     program: &Program<'arena>,
     resolved_names: &ResolvedNames<'arena>,
     active_rules: &[u16],
-    target_kinds: &[bool; u8::MAX as usize + 1],
+    target_kinds: &[bool; NodeKind::COUNT],
     trace_enabled: bool,
 ) -> Result<Option<LintRequest>, ExternalLintError> {
     if file.contents.len() > u32::MAX as usize {
@@ -507,7 +507,7 @@ pub(super) mod testing {
         let node_count = reader.read_u32("node count")? as usize;
         let mut raw_nodes = Vec::with_capacity(node_count);
         for _ in 0..node_count {
-            let kind_index = reader.read_u8("node kind index")? as usize;
+            let kind_index = reader.read_u16("node kind index")? as usize;
             let kind =
                 kinds.get(kind_index).ok_or_else(|| protocol(format!("invalid node kind index {kind_index}")))?.clone();
             let start = reader.read_u32("node start")?;

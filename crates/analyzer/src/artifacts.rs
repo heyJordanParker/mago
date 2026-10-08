@@ -18,6 +18,7 @@ use mago_codex::ttype::union::TUnion;
 use mago_span::HasSpan;
 use mago_span::Span;
 use mago_syntax::cst::Node;
+use mago_syntax::cst::NodeKind;
 
 use crate::context::block::BlockContext;
 use crate::context::block::ReferenceConstraintSource;
@@ -75,7 +76,7 @@ pub struct AnalysisArtifacts {
     /// What each method whose return is taken from its body returned, keyed by class and method.
     pub body_returns: HashMap<(Word, Word), TUnion>,
     pub(crate) variable_definedness: HashMap<(u32, u32), WordMap<VariableDefinedness>>,
-    variable_definedness_targets: Option<Arc<[bool; u8::MAX as usize + 1]>>,
+    variable_definedness_targets: Option<Arc<[bool; NodeKind::COUNT]>>,
     pub(crate) pending_readonly_property_writes: Vec<PendingReadonlyPropertyWrite>,
     pub(crate) static_local_types: Option<WordMap<TUnion>>,
 }
@@ -150,15 +151,12 @@ impl AnalysisArtifacts {
         }
     }
 
-    pub(crate) fn with_variable_definedness_targets(
-        mut self,
-        targets: Option<Arc<[bool; u8::MAX as usize + 1]>>,
-    ) -> Self {
+    pub(crate) fn with_variable_definedness_targets(mut self, targets: Option<Arc<[bool; NodeKind::COUNT]>>) -> Self {
         self.variable_definedness_targets = targets;
         self
     }
 
-    pub(crate) fn variable_definedness_targets(&self) -> Option<Arc<[bool; u8::MAX as usize + 1]>> {
+    pub(crate) fn variable_definedness_targets(&self) -> Option<Arc<[bool; NodeKind::COUNT]>> {
         self.variable_definedness_targets.clone()
     }
 
@@ -299,11 +297,7 @@ impl AnalysisArtifacts {
     }
 }
 
-fn node_or_same_span_descendant_is_targeted(
-    node: Node<'_, '_>,
-    span: Span,
-    targets: &[bool; u8::MAX as usize + 1],
-) -> bool {
+fn node_or_same_span_descendant_is_targeted(node: Node<'_, '_>, span: Span, targets: &[bool; NodeKind::COUNT]) -> bool {
     if targets[node.kind() as usize] {
         return true;
     }

@@ -88,6 +88,7 @@ use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_syntax_core::utils::parse_literal_integer_as_float;
 
 use crate::Unit;
+use crate::kind::SHARP_T_FILE;
 use crate::lower::checked::CheckedProgram;
 use crate::sharp_kind;
 use crate::sharp_kind::SHARP_AST_AND;
@@ -192,8 +193,8 @@ use types::agreed_kind;
 use types::class_value_classes;
 use types::receiver_classes;
 
-/// The values php-src gives the attrs the lowering emits, from `zend_compile.h`, `zend_vm_opcodes.h` and
-/// `zend_language_parser.h`.
+/// The values php-src gives the attrs the lowering emits, from `zend_compile.h` and `zend_vm_opcodes.h`. The tokens
+/// it emits are generated in `kind.rs`.
 const ZEND_NAME_FQ: u32 = 0;
 const ZEND_NAME_NOT_FQ: u32 = 1;
 const ZEND_ACC_PUBLIC: u32 = 1 << 0;
@@ -232,7 +233,6 @@ const ZEND_IS_EQUAL: u32 = 18;
 const ZEND_IS_NOT_EQUAL: u32 = 19;
 const ZEND_IS_SMALLER: u32 = 20;
 const ZEND_IS_SMALLER_OR_EQUAL: u32 = 21;
-const T_FILE: u32 = 347;
 
 /// A null child.
 const NULL: u32 = u32::MAX;
@@ -1967,7 +1967,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     fn current_position(&mut self, class: &ConstantAccess, call: &MethodCall) -> u32 {
         let (line, column) = self.lines.line_and_column(class.span().start.offset);
         let name = self.string(ZEND_NAME_FQ, line, b"Sharp\\Position");
-        let file = self.node(SHARP_AST_MAGIC_CONST, T_FILE, line, &[]);
+        let file = self.node(SHARP_AST_MAGIC_CONST, SHARP_T_FILE, line, &[]);
         let line_number = self.zval(line, sharp_value::SHARP_LONG, |node| node.long_value = i64::from(line));
         let column = self.zval(line, sharp_value::SHARP_LONG, |node| node.long_value = i64::from(column));
         let function = self.function.clone();
