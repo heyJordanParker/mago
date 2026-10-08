@@ -1713,6 +1713,35 @@ fn bitwise_not_of_an_int_is_an_int_in_both_dialects() {
     assert_eq!(messages(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
 }
 
+/// Spec section 21 narrows no property, because it could change between the test and the use, so `order.total` stays
+/// `Any?` after `is int`. The error says so and names the fix, a name bound by the test. PHP narrows the property, and
+/// its error on an untested `mixed` operand keeps its wording.
+#[test]
+fn an_operand_read_from_a_tested_property_says_properties_are_not_narrowed() {
+    let sharp = "namespace Demo;\n\npublic class Order\n{\n    public Any? total { get; set; }\n\n    public Order(Any? total)\n    {\n        this.total = total;\n    }\n\n    public static int next(Order order)\n    {\n        if (order.total is int) {\n            return order.total + 1;\n        }\n        if (order.total is int t) {\n            return t + 1;\n        }\n        return 0;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Order\n{\n    public function __construct(public mixed $total)\n    {\n    }\n\n    public static function next(Order $order): int\n    {\n        if (is_int($order->total)) {\n            return $order->total + 1;\n        }\n        return 0;\n    }\n}\n";
+
+    assert_eq!(
+        refusals(("src/Demo/Order.sharp", sharp), &[]),
+        [
+            "15:20 mixed-operand `order.total` is `Any?` here: a property is not narrowed, because it could change between the test and the use. | Copy the value into a local first: test it with a name, as in `if (order.total is int t)`, and use `t`.",
+            "15:20 mixed-return-statement Could not infer a precise return type for function `Demo\\Order::next`. Saw type `mixed`. | Add specific type hints to variables, parameters, or properties involved in calculating the return value. Consider adding a specific return type declaration to the function signature to catch potential mismatches earlier.",
+        ]
+    );
+    assert_eq!(issues(("src/Demo/Order.php", php), &[]), Vec::<String>::new());
+
+    let untested = "<?php\n\nnamespace Demo;\n\nfinal class Order\n{\n    public function __construct(public mixed $total)\n    {\n    }\n\n    public static function next(Order $order): void\n    {\n        echo $order->total + 1;\n        echo 1 + $order->total;\n    }\n}\n";
+    assert_eq!(
+        refusals(("src/Demo/Order.php", untested), &[]),
+        [
+            "13:14 mixed-operand Left operand in binary operation has type `mixed`. | Ensure the left operand has a known type (e.g., `int`, `float`, `string`) using type hints, assertions, or checks.",
+            "13:14 mixed-argument The first value for `echo` is too general. | Add a specific type hint or assertion for this value.",
+            "14:18 mixed-operand Right operand in binary operation has type `mixed`. | Ensure the right operand has a known type (e.g., `int`, `float`, `string`) using type hints, assertions, or checks.",
+            "14:14 mixed-argument The first value for `echo` is too general. | Add a specific type hint or assertion for this value.",
+        ]
+    );
+}
+
 /// A condition that always holds names its PHP# type, as the condition error beside it does. PHP names its own type.
 #[test]
 fn a_condition_that_always_holds_names_its_php_sharp_type() {
