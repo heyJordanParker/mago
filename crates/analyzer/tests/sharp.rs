@@ -1702,6 +1702,29 @@ fn a_bitwise_and_as_a_condition_is_an_int_that_is_not_bool() {
     assert_eq!(issues(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
 }
 
+/// A condition that always holds names its PHP# type, as the condition error beside it does. PHP names its own type.
+#[test]
+fn a_condition_that_always_holds_names_its_php_sharp_type() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int can()\n    {\n        const WRITE = 2;\n        if (WRITE) {\n            return 1;\n        }\n        let ready = true;\n        if (ready) {\n            return 2;\n        }\n        return 0;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function can(): int\n    {\n        $WRITE = 2;\n        if ($WRITE) {\n            return 1;\n        }\n        $ready = true;\n        if ($ready) {\n            return 2;\n        }\n        return 0;\n    }\n}\n";
+
+    assert_eq!(
+        messages(("src/Demo/Report.sharp", sharp), &[]),
+        [
+            "This condition (type `int`) will always evaluate to true.",
+            "`if` takes a `bool`, but this is `int`.",
+            "This condition (type `bool`) will always evaluate to true.",
+        ]
+    );
+    assert_eq!(
+        messages(("src/Demo/Report.php", php), &[]),
+        [
+            "This condition (type `int(2)`) will always evaluate to true.",
+            "This condition (type `true`) will always evaluate to true.",
+        ]
+    );
+}
+
 /// `|`, `&` and `^` on two `bool`s name the operator that joins them, and the rest of the code reads the `bool` it
 /// meant. A compound form is named as written. PHP turns both `bool`s into ints.
 #[test]
