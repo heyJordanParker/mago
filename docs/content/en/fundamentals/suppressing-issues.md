@@ -18,6 +18,8 @@ Multiple codes can be suppressed at once with a comma-separated list, and a `(N)
 
 Spaces and tabs around commas are allowed. You can repeat the same category before each code: `@mago-expect analysis:mixed-operand(2), analysis:unused-variable`.
 
+An `@mago-expect` or `@mago-ignore` pragma can't hide an error in a PHP# file: the error stays reported, with an `unsuppressible-error` warning on the pragma.
+
 ## `@mago-expect`
 
 Asserts that a specific issue is expected on the line that follows. The strictest of the two pragmas, and the one we recommend by default.
