@@ -1029,6 +1029,12 @@ where
             context.codebase,
         );
         let key_type = display_sharp_type(&key_parameter, context.codebase);
+        let key_pattern = key_parameter
+            .types
+            .iter()
+            .map(|atomic| display_sharp_type(&TUnion::from_atomic(atomic.clone()), context.codebase))
+            .collect::<Vec<_>>()
+            .join(" or ");
         let index_type = display_sharp_type(index_type, context.codebase);
         context.collector.report_with_code(
             IssueCode::MismatchedArrayIndex,
@@ -1037,7 +1043,7 @@ where
                     Annotation::primary(span).with_message(format!("This key may not be of type `{key_type}`.")),
                 )
                 .with_help(format!(
-                    "Check the key with `is {key_type}` first, as in `if (name is {key_type} key) {{ … }}`."
+                    "Check the key with `is {key_pattern}` first, as in `if (name is {key_pattern}) {{ … }}`."
                 )),
         );
     } else {

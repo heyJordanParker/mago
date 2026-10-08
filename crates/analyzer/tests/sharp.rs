@@ -3373,6 +3373,17 @@ fn a_map_read_with_a_key_outside_its_key_type_is_an_error() {
         sharp_issues[0].primary_annotation().and_then(|annotation| annotation.message.as_deref()),
         Some("This key may not be of type `string`.")
     );
+
+    let either = "namespace Demo;\n\nclass Keys\n{\n    public int read(Map<int|string, int> counts, Any? value) => counts[value] ?? 0;\n}\n";
+    let either_issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Keys.sharp", either), &[]);
+
+    assert_eq!(
+        either_issues.iter().map(|issue| (located(either, issue), issue.help.as_deref())).collect::<Vec<_>>(),
+        [(
+            "5:72 mismatched-array-index".to_owned(),
+            Some("Check the key with `is int or string` first, as in `if (name is int or string) { … }`.")
+        )]
+    );
 }
 
 /// A key of the `Map`'s key type reads it, handled or not: a `string` reads a `Map<string, int>` and a `Map` literal,
@@ -3384,6 +3395,10 @@ fn a_map_read_with_a_key_of_its_key_type_is_accepted() {
 
     assert_eq!(issues(("src/Demo/Tally.php", php), &[("src/Lib/Status.php", STATUS)]), Vec::<String>::new());
     assert_eq!(issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]), Vec::<String>::new());
+
+    let checked = "namespace Demo;\n\nimport Lib.Status;\n\nclass Keys\n{\n    public int named(Map<string, int> counts, Any? value)\n    {\n        if (value is string) {\n            return counts[value] ?? 0;\n        }\n        return 0;\n    }\n\n    public int numbered(Map<int, int> counts, Any? value)\n    {\n        if (value is int) {\n            return counts[value] ?? 0;\n        }\n        return 0;\n    }\n\n    public int stated(Map<Status, int> counts, Any? value)\n    {\n        if (value is Status) {\n            return counts[value] ?? 0;\n        }\n        return 0;\n    }\n\n    public int either(Map<int|string, int> counts, Any? value)\n    {\n        if (value is int or string) {\n            return counts[value] ?? 0;\n        }\n        return 0;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Keys.sharp", checked), &[("src/Lib/Status.php", STATUS)]), Vec::<String>::new());
 }
 
 /// A bare `Map` read is refused for its missing key, and its key is checked as a handled read's is.
