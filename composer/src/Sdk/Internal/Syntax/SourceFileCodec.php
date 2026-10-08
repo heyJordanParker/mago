@@ -19,7 +19,7 @@ use function count;
  */
 final class SourceFileCodec
 {
-    private const MAXIMUM_NODE_KINDS = 256;
+    private const MAXIMUM_NODE_KINDS = 65_536;
 
     /**
      * @param list<NodeKind> $kinds

@@ -137,6 +137,7 @@ use crate::sharp_kind::SHARP_AST_GREATER_EQUAL;
 use crate::sharp_kind::SHARP_AST_IF;
 use crate::sharp_kind::SHARP_AST_IF_ELEM;
 use crate::sharp_kind::SHARP_AST_INSTANCEOF;
+use crate::sharp_kind::SHARP_AST_MAGIC_CONST;
 use crate::sharp_kind::SHARP_AST_MATCH;
 use crate::sharp_kind::SHARP_AST_MATCH_ARM;
 use crate::sharp_kind::SHARP_AST_MATCH_ARM_LIST;
@@ -194,7 +195,8 @@ use types::agreed_kind;
 use types::class_value_classes;
 use types::receiver_classes;
 
-/// The values php-src gives the attrs the lowering emits, from `zend_compile.h` and `zend_vm_opcodes.h`.
+/// The values php-src gives the attrs the lowering emits, from `zend_compile.h`, `zend_vm_opcodes.h` and
+/// `zend_language_parser.h`.
 const ZEND_NAME_FQ: u32 = 0;
 const ZEND_NAME_NOT_FQ: u32 = 1;
 const ZEND_ACC_PUBLIC: u32 = 1 << 0;
@@ -231,6 +233,7 @@ const ZEND_IS_IDENTICAL: u32 = 16;
 const ZEND_IS_NOT_IDENTICAL: u32 = 17;
 const ZEND_IS_SMALLER: u32 = 20;
 const ZEND_IS_SMALLER_OR_EQUAL: u32 = 21;
+const T_FILE: u32 = 347;
 
 /// A null child.
 const NULL: u32 = u32::MAX;
@@ -250,7 +253,7 @@ enum Operands {
 pub fn lower(checked: &CheckedProgram<'_>) -> Unit {
     let lines = Lines::new(&checked.file().contents);
 
-    Lowering::new(&lines, &checked.file().name, checked.names(), checked.types()).program(checked)
+    Lowering::new(&lines, checked.names(), checked.types()).program(checked)
 }
 
 /// The offset each line starts at, counted as the Zend scanner counts: `\n`, `\r\n` and a lone `\r` each end a line.
@@ -289,8 +292,6 @@ impl Lines {
 /// Lowers one checked file. Every node is pushed after its children, and each node's children are contiguous.
 struct Lowering<'lowering, 'arena> {
     lines: &'lowering Lines,
-    /// The path of the file being lowered, as the checked file names it.
-    path: &'lowering [u8],
     names: &'lowering ResolvedNames<'arena>,
     types: &'lowering Types<'lowering>,
     /// The full name of the class-like being lowered, as PHP writes it.
@@ -319,13 +320,11 @@ struct Lowering<'lowering, 'arena> {
 impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     fn new(
         lines: &'lowering Lines,
-        path: &'lowering [u8],
         names: &'lowering ResolvedNames<'arena>,
         types: &'lowering Types<'lowering>,
     ) -> Self {
         Self {
             lines,
-            path,
             names,
             types,
             class: b"",
@@ -2153,11 +2152,12 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
     /// Spec section 27: `Position.current()` in a body is the position where it is written, a new `Position` of the
     /// file, the line and byte column of `Position`, and the function, as
-    /// `new \Sharp\Position(__FILE__, 9, 22, 'App.Tenant.Report.run')`.
+    /// `new \Sharp\Position(__FILE__, 9, 22, 'App.Tenant.Report.run')`. The engine compiles the file under its source's
+    /// absolute path, which `__FILE__` reads where the file runs, so the compiled file holds no path.
     fn current_position(&mut self, class: &ConstantAccess, call: &MethodCall) -> u32 {
         let (line, column) = self.lines.line_and_column(class.span().start.offset);
         let name = self.string(ZEND_NAME_FQ, line, b"Sharp\\Position");
-        let file = self.string(0, line, self.path);
+        let file = self.node(SHARP_AST_MAGIC_CONST, T_FILE, line, &[]);
         let line_number = self.zval(line, sharp_value::SHARP_LONG, |node| node.long_value = i64::from(line));
         let column = self.zval(line, sharp_value::SHARP_LONG, |node| node.long_value = i64::from(column));
         let function = self.function.clone();
