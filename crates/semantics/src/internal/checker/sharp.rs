@@ -261,12 +261,13 @@ const ANY: &[u8] = b"Any";
 /// - Casts: `(int)`, `(float)` and `(string)` in a method body, as spec section 24 writes them. PHP's other casts and
 ///   its cast aliases, such as `(bool)` and `(integer)`, are errors. A cast is lowercase only, so the lexer reads
 ///   `(Int)` as the class `Int` in parentheses, as in `typeof(Int)`.
-/// - A bare `Int`, `Float`, `Bool`, `Position`, `Environment` or `List` names the class `Sharp\<Name>` of the standard
-///   library wherever a class is named, unless the file imports or declares a class-like of that name, spec section 23.
-///   So `Int.parse(text)`, `Bool.tryParse(value)`, `Position.current()`, `new Environment()` and `List.wrap(value)`
-///   call it. PHP reserves `Int`, `Float`, `Bool` and `List`, so no file declares or imports a class of those, except
-///   the standard library's own `Sharp.Int`, `Sharp.Float` and `Sharp.Bool`: a file whose namespace is exactly `Sharp`
-///   declares them, as the engine allows, and any file may import them.
+/// - A bare `Int`, `Float`, `Bool`, `Position`, `Environment`, `List` or `Replaces` names the class `Sharp\<Name>` of
+///   the standard library wherever a class is named, unless the file imports or declares a class-like of that name,
+///   spec section 23. So `Int.parse(text)`, `Bool.tryParse(value)`, `Position.current()`, `new Environment()` and
+///   `List.wrap(value)` call it, and `[Replaces("date")]` is its attribute. PHP reserves `Int`, `Float`, `Bool` and
+///   `List`, so no file declares or imports a class of those, except the standard library's own `Sharp.Int`,
+///   `Sharp.Float` and `Sharp.Bool`: a file whose namespace is exactly `Sharp` declares them, as the engine allows,
+///   and any file may import them.
 ///
 /// The check runs on every node the checking walk enters, and refuses any node, or any position of a node, that this
 /// list does not name. It reports each refusal once, at its outermost node, and skips the nodes inside the refusal's
