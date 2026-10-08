@@ -205,6 +205,48 @@ fn a_hook_that_listed_classes_sees_a_new_class_on_the_next_run_and_does_not_run_
     assert_eq!(reads(&removed, "listing"), ["Run 3: classes Box."]);
 }
 
+/// The messages the reading hook reports under `comparison`, sorted, since files analyzed together report in any order.
+fn comparisons(issues: &IssueCollection) -> Vec<String> {
+    let mut messages = reads(issues, "comparison");
+    messages.sort();
+    messages
+}
+
+/// Two files whose hook compares `Box`: the worker answers the second file's comparison from its cache.
+#[test]
+fn hooks_that_compared_a_class_run_again_when_the_class_changes_parent_and_not_after_a_body_edit() {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !common::php_sdk_is_available(repository, "the comparison reads test") {
+        return;
+    }
+
+    let mut server = server(
+        repository,
+        database(&[
+            ("src/billing.php", "<?php\n// compares: Box\n"),
+            ("src/payroll.php", "<?php\n// compares: Box\n"),
+            ("src/base.php", "<?php\nclass Base {}\n"),
+            ("src/box.php", BOX),
+        ]),
+    );
+    let first = server.analyze().expect("initial analysis").issues;
+    assert_eq!(comparisons(&first), ["Run 1: `Box` is not a `Base`.", "Run 2: `Box` is not a `Base`."]);
+
+    let box_file = FileId::new(b"src/box.php");
+    server
+        .database_mut()
+        .update(box_file, Cow::Borrowed(b"<?php\nfinal class Box { public function value(): int { return 2; } }\n"));
+    let body = server.analyze_incremental(&[box_file]).expect("analysis after a body edit").issues;
+    assert_eq!(comparisons(&body), comparisons(&first), "a body edit leaves the comparisons alone");
+
+    server.database_mut().update(
+        box_file,
+        Cow::Borrowed(b"<?php\nfinal class Box extends Base { public function value(): int { return 2; } }\n"),
+    );
+    let extended = server.analyze_incremental(&[box_file]).expect("analysis after a parent change").issues;
+    assert_eq!(comparisons(&extended), ["Run 3: `Box` is a `Base`.", "Run 4: `Box` is a `Base`."]);
+}
+
 /// The model whose `total` return type the fixture's provider gives `Query::total`.
 fn order(returned: &str) -> String {
     format!(
@@ -213,7 +255,7 @@ fn order(returned: &str) -> String {
     )
 }
 
-const QUERY: &str = "<?php\n\nnamespace App\\Models;\n\nfinal class Query\n{\n    public function total(): mixed\n    {\n        return null;\n    }\n\n    public function models(): mixed\n    {\n        return null;\n    }\n}\n";
+const QUERY: &str = "<?php\n\nnamespace App\\Models;\n\nfinal class Query\n{\n    public function total(): mixed\n    {\n        return null;\n    }\n\n    public function models(): mixed\n    {\n        return null;\n    }\n\n    public function billable(): mixed\n    {\n        return null;\n    }\n}\n";
 
 /// A PHP# file whose `int` return holds only while the provider answers `Query::total` with `int`.
 const REVENUE: &str = "namespace App;\n\nimport App.Models.Query;\n\npublic class Revenue\n{\n    public int total(Query query)\n    {\n        return query.total();\n    }\n}\n";
@@ -365,4 +407,42 @@ fn adding_a_class_to_the_classes_a_provider_listed_gives_the_sharp_file_a_new_ke
     let (_, after) = compiled(&mut server);
 
     assert_ne!(header(&before).expect("a header").key, header(&after).expect("a header").key);
+}
+
+/// The model the fixture's provider compares against `App\Models\Model`, declared with `parent` as its parent class.
+fn order_extending(parent: &str) -> String {
+    format!("<?php\n\nnamespace App\\Models;\n\nfinal class Order extends {parent} {{}}\n")
+}
+
+/// A PHP# file whose `int` return the provider answers by asking whether `Order` is a `Model`.
+const BILLING: &str = "namespace App;\n\nimport App.Models.Query;\n\npublic class Billing\n{\n    public int billable(Query query)\n    {\n        return query.billable();\n    }\n}\n";
+
+#[test]
+fn changing_the_parent_of_a_model_a_provider_compared_changes_the_sharp_file_inputs_and_key() {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if !common::php_sdk_is_available(repository, "the comparator reads compile test") {
+        return;
+    }
+
+    let mut server = server(
+        repository,
+        database(&[
+            ("app/Models/Model.php", "<?php\n\nnamespace App\\Models;\n\nclass Model {}\n"),
+            ("app/Models/Record.php", "<?php\n\nnamespace App\\Models;\n\nclass Record {}\n"),
+            ("app/Models/Order.php", &order_extending("Model")),
+            ("app/Models/Query.php", QUERY),
+            ("app/Billing.sharp", BILLING),
+        ]),
+    );
+    server.analyze().expect("initial analysis");
+    let (before, before_bytes) = compiled(&mut server);
+    assert!(before.contains_key("app/Models/Order.php"), "the model the provider compared: {:?}", before.keys());
+
+    let order_file = FileId::new(b"app/Models/Order.php");
+    server.database_mut().update(order_file, Cow::Owned(order_extending("Record").into_bytes()));
+    server.analyze_incremental(&[order_file]).expect("analysis after a parent change");
+    let (after, after_bytes) = compiled(&mut server);
+
+    assert_ne!(before["app/Models/Order.php"], after["app/Models/Order.php"]);
+    assert_ne!(header(&before_bytes).expect("a header").key, header(&after_bytes).expect("a header").key);
 }

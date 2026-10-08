@@ -147,9 +147,10 @@ Within one callback, batching remains important even when data might be cached: 
 
 ## Reads and incremental analysis
 
-Mago records what a file's providers, issue filters, after-file hooks, and targeted hooks read through `codebase`, cached answers included, and analyzes the file again when that changes:
+Mago records what a file's providers, issue filters, after-file hooks, and targeted hooks read through `codebase` and `types`, cached answers included, and analyzes the file again when that changes:
 
 - a class-like, function, or constant they read changes its signature, appears, or disappears; a read of a class-like member counts as a read of the class-like, so any signature change to the class-like or its ancestors counts;
+- a class-like named anywhere in a type they compared through `types` changes its signature, appears, or disappears, including one named in a generic argument, a union, an intersection, a `class-string`, or an object shape;
 - a list of names they read, such as `getClassNames()`, `getClassDescendants()`, or `namespaceExists()`, gains or loses a name;
 - any class-like changes its signature, after a `findMethods()` search that did not name one class.
 
