@@ -3272,6 +3272,70 @@ fn an_index_write_to_a_list_is_an_error() {
     );
 }
 
+/// A `List`'s keys are the `int`s from 0 to its last index, so a read whose index may be anything else is an error,
+/// as an unchecked `Any` is (spec section 24). A plain PHP `list<int>` keeps reading a wider key, as PHP does.
+#[test]
+fn a_list_read_with_an_index_that_may_not_be_an_int_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Lookup\n{\n    public int read(List<int> items, Any sure, Any? maybe, int|string either, int? missing, string name)\n    {\n        const a = items[sure];\n        const b = items[maybe];\n        const c = items[either];\n        const d = items[missing];\n        const e = items[name];\n        return a + b + c + d + e;\n    }\n\n    public string show(List<List<int>> rows, List<string> names, int|string key)\n    {\n        return `${names[key]} ${rows[0][key]}`;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Lookup\n{\n    /**\n     * @param list<int> $items\n     */\n    public function read(array $items, mixed $sure, mixed $maybe, int|string $either, ?int $missing, string $name): int\n    {\n        $a = $items[$sure];\n        $b = $items[$maybe];\n        $c = $items[$either];\n        $d = $items[$missing];\n        $e = $items[$name];\n        return $a + $b + $c + $d + $e;\n    }\n\n    /**\n     * @param list<list<int>> $rows\n     * @param list<string> $names\n     */\n    public function show(array $rows, array $names, int|string $key): string\n    {\n        return \"{$names[$key]} {$rows[0][$key]}\";\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Lookup.php", php), &[]),
+        ["15:21 possibly-null-array-index", "16:21 mismatched-array-index"]
+    );
+
+    let sharp_issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Lookup.sharp", sharp), &[]);
+    let located_issues: Vec<String> = sharp_issues.iter().map(|issue| located(sharp, issue)).collect();
+
+    assert_eq!(
+        located_issues,
+        [
+            "7:19 mismatched-array-index",
+            "8:19 mismatched-array-index",
+            "9:19 mismatched-array-index",
+            "10:19 mismatched-array-index",
+            "11:19 mismatched-array-index",
+            "17:19 mismatched-array-index",
+            "17:33 mismatched-array-index",
+        ]
+    );
+    assert_eq!(
+        sharp_issues.iter().map(|issue| issue.message.as_str()).collect::<Vec<_>>()[..3],
+        [
+            "`List<int>` is indexed by `int`, but this index is `Any`.",
+            "`List<int>` is indexed by `int`, but this index is `Any?`.",
+            "`List<int>` is indexed by `int`, but this index is `int|string`.",
+        ]
+    );
+    assert_eq!(
+        sharp_issues[0].primary_annotation().and_then(|annotation| annotation.message.as_deref()),
+        Some("This index may not be an `int`.")
+    );
+}
+
+/// An index of a type `int` contains, such as an `int` literal or a loop counter, reads a `List` as `int` does. A
+/// handled read takes an `int` index too.
+#[test]
+fn a_list_read_with_an_index_of_a_type_int_contains_is_accepted_and_a_handled_read_checks_its_index_too() {
+    let sharp = "namespace Demo;\n\nclass Lookup\n{\n    public int read(List<int> items, int index, int|string either)\n    {\n        let total = items[index] + items[0] + (items[index] ?? 0);\n        for (let i = 0; i < count(items); i++) {\n            total += items[i];\n        }\n        return total + (items[either] ?? 0);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Lookup\n{\n    /**\n     * @param list<int> $items\n     */\n    public function read(array $items, int $index, int|string $either): int\n    {\n        $total = $items[$index] + $items[0] + ($items[$index] ?? 0);\n        for ($i = 0; $i < count($items); $i++) {\n            $total += $items[$i];\n        }\n        return $total + ($items[$either] ?? 0);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Lookup.php", php), &[]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Lookup.sharp", sharp), &[]), ["11:25 mismatched-array-index"]);
+}
+
+/// `strict_list_index_checks` asks a plain PHP `list<int>` for a `non-negative-int` index. A PHP# `List` is indexed by
+/// any `int`, and the engine throws `OutOfRangeException` for `items[-1]` as for any index past the end.
+#[test]
+fn a_list_read_takes_any_int_index_under_strict_list_index_checks() {
+    let sharp = "namespace Demo;\n\nclass Lookup\n{\n    public int read(List<int> items, int index) => items[index] + items[-1];\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Lookup\n{\n    /**\n     * @param list<int> $items\n     */\n    public function read(array $items, int $index): int\n    {\n        return $items[$index] + $items[-1];\n    }\n}\n";
+    let strict = || Settings { strict_list_index_checks: true, ..settings() };
+
+    assert_eq!(issues_with(strict(), ("src/Demo/Lookup.php", php), &[]), ["12:40 mismatched-array-index"]);
+    assert_eq!(issues_with(strict(), ("src/Demo/Lookup.sharp", sharp), &[]), Vec::<String>::new());
+}
+
 /// `for (const [k, v] of x)` reads the keys of a `Map`. A `List`'s indexes come from `entries()`, as spec section 12
 /// writes. The key of a `Map<string, V>` reads back as a `string`, because the lowering casts a key PHP stored as an
 /// `int`.
