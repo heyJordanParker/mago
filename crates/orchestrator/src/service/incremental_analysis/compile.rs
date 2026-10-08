@@ -73,8 +73,9 @@ impl IncrementalAnalysisService {
     /// An accepted file's inputs are its own source, `composer.lock`, and each file outside `vendor/` whose edit makes
     /// the warm path re-analyze it: each file whose signature edit reaches it through the cascade or reaches a symbol
     /// its extension hooks or providers read, every file when they listed names, each file that declares a class alias
-    /// or a patch, and each file that declares a method whose return it reads from that method's body, along every
-    /// chain of such returns, with that file's own inputs.
+    /// or a patch, each standard library file, whose `[Replaces]` decides which calls compile, and each file that
+    /// declares a method whose return it reads from that method's body, along every chain of such returns, with that
+    /// file's own inputs.
     ///
     /// `stamp` gives the size, modification time and hash of the file at a workspace-relative path, or none when no
     /// file is there. It is called once per input. An input no file is at is stored absent: its size, modification
@@ -129,7 +130,12 @@ impl IncrementalAnalysisService {
             .codebase
             .class_like_alias_declarations()
             .map(|(_, _, span)| span.file_id)
-            .chain(self.database.files().filter(|file| file.file_type.is_patch()).map(|file| file.id))
+            .chain(
+                self.database
+                    .files()
+                    .filter(|file| file.file_type.is_patch() || file.is_standard_library)
+                    .map(|file| file.id),
+            )
             .collect();
 
         let inputs_start = std::time::Instant::now();

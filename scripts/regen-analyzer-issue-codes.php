@@ -354,6 +354,8 @@ final class AnalyzerCodeModuleGenerator
         'native-body-outside-library',
         'silence-outside-library',
         'reserved-name-outside-library',
+        'replaces-outside-library',
+        'wrapped-function',
     ];
 
     /**
