@@ -1,5 +1,6 @@
 use mago_allocator::Arena;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
+use mago_codex::metadata::function_like::FunctionLikeMetadata;
 use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::callable::TCallable;
 use mago_codex::ttype::atomic::callable::TCallableSignature;
@@ -32,6 +33,7 @@ use crate::invocation::InvocationTarget;
 use crate::plugin::ExpressionHookResult;
 use crate::plugin::context::HookContext;
 use crate::utils::expression::get_bare_name_variable_id;
+use crate::utils::names::display_sharp_method;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for FunctionCall<'arena> {
     fn analyze<'ctx, A>(
@@ -154,9 +156,14 @@ where
             let span = function_name.span();
             if context.dialect.is_sharp()
                 && let Some(FunctionLikeIdentifier::Function(resolved)) = t.get_function_like_identifier()
-                && resolved.as_bytes().contains(&b'\\')
             {
-                report_namespaced_function_call(context, *resolved, span);
+                if resolved.as_bytes().contains(&b'\\') {
+                    report_namespaced_function_call(context, *resolved, span);
+                }
+
+                if !context.source_file.is_standard_library {
+                    report_wrapped_function_call(context, metadata, span);
+                }
             }
 
             crate::utils::casing::check_function_casing_with_metadata(context, metadata, name, span);
@@ -288,6 +295,38 @@ where
     );
 }
 
+/// Decision 040: once the standard library wraps a PHP function, a PHP# call of it outside the library names the
+/// library's methods to write instead, in the order the library declares them.
+fn report_wrapped_function_call<A>(context: &mut Context<'_, '_, A>, function: &FunctionLikeMetadata, span: Span)
+where
+    A: Arena,
+{
+    let codebase = context.codebase;
+    let Some(wrappers) = codebase.wrapped_functions.get(&ascii_lowercase_word(function.original_name.as_bytes()))
+    else {
+        return;
+    };
+
+    let methods: Vec<String> = wrappers
+        .iter()
+        .filter_map(|(_, _, method)| {
+            let class = codebase.get_class_like(method.get_class_name().as_bytes())?;
+
+            Some(format!("`{}(…)`", display_sharp_method(class, codebase.get_method_by_id(method)?)))
+        })
+        .collect();
+    let Some((last, others)) = methods.split_last() else {
+        return;
+    };
+    let methods = if others.is_empty() { last.clone() } else { format!("{} or {last}", others.join(", ")) };
+
+    context.collector.report_with_code(
+        IssueCode::WrappedFunction,
+        Issue::error(format!("`{}` is wrapped by the standard library: write {methods}.", function.original_name))
+            .with_annotation(Annotation::primary(span).with_message("Called here.")),
+    );
+}
+
 /// Spec section 4 writes every member as `this.m()` or `Class.m()`, so a bare call is the global function's. When the
 /// enclosing class declares a method of that name, returns the message that names the member call to write, for the
 /// call that finds no function.
@@ -299,12 +338,9 @@ where
     let method = context.codebase.get_method(class.name.as_bytes(), name)?;
 
     Some(if block_context.scope.is_static() {
-        let class_name = class.original_name.as_bytes().rsplit(|byte| *byte == b'\\').next().unwrap_or_default();
-
         format!(
-            "Write `{}.{}()`: a static method reaches the members of its class through the class name.",
-            String::from_utf8_lossy(class_name),
-            method.original_name
+            "Write `{}()`: a static method reaches the members of its class through the class name.",
+            display_sharp_method(class, method)
         )
     } else {
         format!("Write `this.{}()`: members of the same object are always written with `this.`.", method.original_name)

@@ -310,7 +310,37 @@ const TYPE_CLASSES: [(&str, &str); 3] = [
     ),
     (
         "Bool",
-        "namespace Sharp;\n\npublic static class Bool\n{\n    public static bool? tryParse(Any? value) => filter_var(value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);\n}\n",
+        "namespace Sharp;\n\npublic static class Bool\n{\n    [Replaces(\"filter_var\")]\n    public static bool? tryParse(Any? value) => filter_var(value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);\n}\n",
+    ),
+];
+
+/// The standard library's `Replaces` attribute, decision 040, and the library classes whose methods wrap PHP functions:
+/// `Date.format` wraps `date` and `gmdate`, `Regex.matches` and `Regex.match` both wrap `preg_match`, and
+/// `Email.isValid`, `Ip.isValid` and `Url.isValid` wrap `filter_var`, as `Bool.tryParse` does.
+const WRAPPERS: [(&str, &str); 6] = [
+    (
+        "Replaces",
+        "namespace Sharp;\n\nimport Attribute;\n\n[Attribute(Attribute.TARGET_METHOD)]\npublic class Replaces\n{\n    public Replaces(string ...functions)\n    {\n    }\n}\n",
+    ),
+    (
+        "Time/Date",
+        "namespace Sharp.Time;\n\npublic static class Date\n{\n    [Replaces(\"date\", \"gmdate\")]\n    public static string format(int timestamp, string pattern) => date(pattern, timestamp);\n}\n",
+    ),
+    (
+        "Text/Regex",
+        "namespace Sharp.Text;\n\npublic static class Regex\n{\n    [Replaces(\"preg_match\")]\n    public static bool matches(string pattern, string text) => preg_match(pattern, text) is int found && found == 1;\n\n    [Replaces(\"preg_match\")]\n    public static bool match(string pattern, string text) => preg_match(pattern, text) is int found && found == 1;\n}\n",
+    ),
+    (
+        "Net/Email",
+        "namespace Sharp.Net;\n\npublic static class Email\n{\n    [Replaces(\"filter_var\")]\n    public static bool isValid(string address) => filter_var(address, FILTER_VALIDATE_EMAIL) is string;\n}\n",
+    ),
+    (
+        "Net/Ip",
+        "namespace Sharp.Net;\n\npublic static class Ip\n{\n    [Replaces(\"filter_var\")]\n    public static bool isValid(string address) => filter_var(address, FILTER_VALIDATE_IP) is string;\n}\n",
+    ),
+    (
+        "Net/Url",
+        "namespace Sharp.Net;\n\npublic static class Url\n{\n    [Replaces(\"filter_var\")]\n    public static bool isValid(string url) => filter_var(url, FILTER_VALIDATE_URL) is string;\n}\n",
     ),
 ];
 
@@ -323,11 +353,12 @@ fn write(root: &Path, name: &str, contents: &str) {
     std::fs::write(path, contents).unwrap();
 }
 
-/// The standard library's package under `root`: its `composer.json`, its `Text`, and its `Int`, `Float` and `Bool`.
+/// The standard library's package under `root`: its `composer.json`, its `Text`, its `Int`, `Float` and `Bool`, and
+/// its `Replaces` with the classes that wrap PHP functions.
 fn write_library(root: &Path) {
     write(root, "composer.json", LIBRARY_PACKAGE);
     write(root, "library/Sharp/Text/Text.sharp", TEXT);
-    for (class, source) in TYPE_CLASSES {
+    for (class, source) in TYPE_CLASSES.into_iter().chain(WRAPPERS) {
         write(root, &format!("library/Sharp/{class}.sharp"), source);
     }
 }
@@ -431,7 +462,7 @@ fn compile_treats_the_repository_of_the_standard_library_as_the_library() {
     let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
 
     assert_eq!(output.status.code(), Some(1), "{printed}");
-    assert!(printed.contains("Compiled 5 PHP# files into .sharp/. 1 PHP# file was refused"), "{printed}");
+    assert!(printed.contains("Compiled 11 PHP# files into .sharp/. 1 PHP# file was refused"), "{printed}");
     assert!(root.join(".sharp/library/Sharp/Text/Text.sharpc").is_file(), "{printed}");
     let title = std::fs::read(root.join(".sharp/example/App/Title.sharpc")).unwrap();
     assert!(title.windows(b"strtoupper".len()).any(|window| window == b"strtoupper"), "the form is inlined");
@@ -591,6 +622,121 @@ fn analyze_trusts_a_vendored_file_of_another_package_under_sharp() {
 
     assert!(output.status.success(), "{stdout}{stderr}");
     assert!(stderr.contains("No issues found."), "{stdout}{stderr}");
+}
+
+/// Decision 040: once the standard library wraps a PHP function, a project's call of it names the method to write.
+#[test]
+fn analyze_reports_a_call_of_a_wrapped_function_with_the_method_that_replaces_it() {
+    assert_eq!(
+        page_errors("namespace App;\n\npublic class Page\n{\n    public string year() => date(\"Y\");\n}\n"),
+        [
+            "src/App/Page.sharp:5:29:error - wrapped-function: `date` is wrapped by the standard library: write `Date.format(…)`."
+        ]
+    );
+}
+
+#[test]
+fn analyze_names_both_methods_that_replace_a_function() {
+    assert_eq!(
+        page_errors(
+            "namespace App;\n\npublic class Page\n{\n    public bool found() => preg_match(\"/a/\", \"a\") is int;\n}\n"
+        ),
+        [
+            "src/App/Page.sharp:5:28:error - wrapped-function: `preg_match` is wrapped by the standard library: write `Regex.matches(…)` or `Regex.match(…)`."
+        ]
+    );
+}
+
+/// The replacements come in the order the library declares them: the path order of its files, then source order.
+#[test]
+fn analyze_names_four_methods_that_replace_a_function_in_the_order_the_library_declares_them() {
+    assert_eq!(
+        page_errors(
+            "namespace App;\n\npublic class Page\n{\n    public bool valid(string address) => filter_var(address, FILTER_VALIDATE_EMAIL) is string;\n}\n"
+        ),
+        [
+            "src/App/Page.sharp:5:42:error - wrapped-function: `filter_var` is wrapped by the standard library: write `Bool.tryParse(…)`, `Email.isValid(…)`, `Ip.isValid(…)` or `Url.isValid(…)`."
+        ]
+    );
+}
+
+/// Only the standard library decides which PHP functions are wrapped, as only it declares native bodies.
+#[test]
+fn analyze_reports_replaces_in_a_project_file() {
+    assert_eq!(
+        page_errors(
+            "namespace App;\n\npublic static class Page\n{\n    [Replaces(\"date\")]\n    public static string year() => \"2026\";\n}\n"
+        ),
+        [
+            "src/App/Page.sharp:5:6:error - replaces-outside-library: Only the standard library declares which PHP functions it wraps: remove `[Replaces]` from `year`."
+        ]
+    );
+}
+
+/// A library method names each function once, inside one `[Replaces]` or across two.
+#[test]
+fn analyze_reports_a_library_method_that_names_a_function_twice() {
+    let directory = tempfile::tempdir().unwrap();
+    write(directory.path(), "mago.toml", "php-version = \"8.4\"\n\n[source]\npaths = [\"library\"]\n");
+    write_library(directory.path());
+    write(
+        directory.path(),
+        "library/Sharp/Time/Date.sharp",
+        "namespace Sharp.Time;\n\npublic static class Date\n{\n    [Replaces(\"date\", \"gmdate\", \"date\")]\n    public static string format(int timestamp, string pattern) => date(pattern, timestamp);\n\n    [Replaces(\"gmdate\")]\n    [Replaces(\"gmdate\")]\n    public static string utc(int timestamp, string pattern) => gmdate(pattern, timestamp);\n}\n",
+    );
+
+    let output = run(directory.path(), "analyze", &["--reporting-format", "emacs"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut issues = issues_in(&stdout, "library/Sharp/Time/Date.sharp");
+    issues.sort();
+
+    assert_eq!(issues, ["5:33 duplicate-definition", "9:15 duplicate-definition"], "{stdout}");
+    assert!(
+        stdout.contains(
+            "library/Sharp/Time/Date.sharp:5:33:error - duplicate-definition: `Date.format` names `date` twice: name each function once."
+        ),
+        "{stdout}"
+    );
+}
+
+/// In the library's own repository, a library body calls the functions the library wraps, and a file of another
+/// package beside it may not.
+#[test]
+fn analyze_accepts_a_wrapped_function_in_a_library_body_and_reports_it_in_another_package() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    write(root, "mago.toml", "php-version = \"8.4\"\n");
+    write_library(root);
+    write(root, "example/composer.json", "{\n    \"name\": \"acme/example\"\n}\n");
+    write(
+        root,
+        "example/App/Clock.sharp",
+        "namespace App;\n\npublic class Clock\n{\n    public string year() => date(\"Y\");\n}\n",
+    );
+
+    let output = run(root, "analyze", &["--reporting-format", "emacs"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert_eq!(issues_in(&stdout, "example/App/Clock.sharp"), ["5:29 wrapped-function"], "{stdout}");
+    assert!(!stdout.lines().any(|line| line.starts_with("library/")), "{stdout}");
+}
+
+/// Plain PHP keeps every PHP function: only a `.sharp` file's call of a wrapped function is refused.
+#[test]
+fn analyze_reports_a_wrapped_function_in_a_sharp_file_and_not_in_a_php_file() {
+    let directory =
+        library_workspace("namespace App;\n\npublic class Page\n{\n    public string year() => date(\"Y\");\n}\n");
+    write(
+        directory.path(),
+        "src/App/Clock.php",
+        "<?php\n\ndeclare(strict_types=1);\n\nnamespace App;\n\nfinal class Clock\n{\n    public static function year(): string\n    {\n        return date('Y');\n    }\n}\n",
+    );
+
+    let output = run(directory.path(), "analyze", &["--reporting-format", "emacs"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert_eq!(issues_in(&stdout, "src/App/Page.sharp"), ["5:29 wrapped-function"], "{stdout}");
+    assert_eq!(issues_in(&stdout, "src/App/Clock.php"), Vec::<String>::new(), "{stdout}");
 }
 
 #[test]
