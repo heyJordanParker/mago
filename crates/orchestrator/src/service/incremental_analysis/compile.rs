@@ -127,7 +127,12 @@ impl IncrementalAnalysisService {
             .codebase
             .class_like_alias_declarations()
             .map(|(_, _, span)| span.file_id)
-            .chain(self.database.files().filter(|file| file.file_type.is_patch()).map(|file| file.id))
+            .chain(
+                self.database
+                    .files()
+                    .filter(|file| file.file_type.is_patch() || file.is_standard_library)
+                    .map(|file| file.id),
+            )
             .collect();
 
         let inputs_start = std::time::Instant::now();

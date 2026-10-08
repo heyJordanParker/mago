@@ -703,6 +703,29 @@ fn analyze_reports_a_library_method_that_names_a_function_twice() {
     );
 }
 
+/// In the standard library's own repository, an edit to a library file can add a `[Replaces]` that refuses a call in
+/// any `.sharp` file, so every library file is an input of every compiled file.
+#[test]
+fn compile_names_each_library_file_an_input_of_a_sharp_file_in_the_repository_of_the_standard_library() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    write(root, "mago.toml", "php-version = \"8.4\"\n");
+    write_library(root);
+    write(root, "example/composer.json", "{\n    \"name\": \"acme/example\"\n}\n");
+    write(
+        root,
+        "example/App/Clock.sharp",
+        "namespace App;\n\npublic class Clock\n{\n    public string clean(string text) => trim(text);\n}\n",
+    );
+
+    let output = run(root, "compile", &[]);
+    let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+
+    let clock = std::fs::read(root.join(".sharp/example/App/Clock.sharpc")).expect(&printed);
+    let date = b"library/Sharp/Time/Date.sharp";
+    assert!(clock.windows(date.len()).any(|window| window == date), "{printed}");
+}
+
 /// A PHP# attribute class keeps the targets its `[Attribute(Attribute.TARGET_METHOD)]` reads, so `[Replaces]` on a
 /// class is refused as PHP refuses it.
 #[test]
