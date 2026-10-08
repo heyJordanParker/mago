@@ -1666,6 +1666,96 @@ fn not_before_is_adds_no_issue_and_not_of_a_value_that_is_not_bool_keeps_its_rep
     assert_eq!(issues, ["10:14 invalid-operand `!` takes a `bool`, but this is `int`."]);
 }
 
+/// Spec section 19's flags: ints joined with `|`, tested with `&`, and `&` binds tighter than `!=` in PHP#. The `.php`
+/// twin writes the parentheses PHP needs for the same meaning.
+#[test]
+fn the_bitwise_operators_and_their_compound_forms_take_ints_as_in_php() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int flags(int granted, int count, int n)\n    {\n        const READ = 1;\n        const WRITE = 2;\n        const DELETE = 4;\n        let permissions = granted | WRITE;\n        permissions |= DELETE;\n        if (permissions & WRITE != 0) {\n            permissions = permissions ^ READ;\n        }\n        if ((permissions & WRITE) != 0) {\n            permissions >>= 1;\n        }\n        const mask = 1 << count;\n        n %= 3;\n        n &= ~mask;\n        n ^= permissions >> 1;\n        n <<= 2;\n        return ~mask & permissions | n;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function flags(int $granted, int $count, int $n): int\n    {\n        $READ = 1;\n        $WRITE = 2;\n        $DELETE = 4;\n        $permissions = $granted | $WRITE;\n        $permissions |= $DELETE;\n        if (($permissions & $WRITE) != 0) {\n            $permissions = $permissions ^ $READ;\n        }\n        if (($permissions & $WRITE) != 0) {\n            $permissions >>= 1;\n        }\n        $mask = 1 << $count;\n        $n %= 3;\n        $n &= ~$mask;\n        $n ^= $permissions >> 1;\n        $n <<= 2;\n        return ~$mask & $permissions | $n;\n    }\n}\n";
+
+    let sharp_issues = issues(("src/Demo/Report.sharp", sharp), &[]);
+    let php_issues = issues(("src/Demo/Report.php", php), &[]);
+
+    assert_eq!(sharp_issues, Vec::<String>::new());
+    assert_eq!(codes(&sharp_issues), codes(&php_issues), "{php_issues:?}");
+}
+
+/// A flag test is a comparison: the `int` that `&` gives is no condition, as spec section 21 makes every condition a
+/// `bool`. PHP tests its truthiness.
+#[test]
+fn a_bitwise_and_as_a_condition_is_an_int_that_is_not_bool() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static bool can(int permissions)\n    {\n        const WRITE = 2;\n        if (permissions & WRITE) {\n            return true;\n        }\n        return false;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function can(int $permissions): bool\n    {\n        $WRITE = 2;\n        if ($permissions & $WRITE) {\n            return true;\n        }\n        return false;\n    }\n}\n";
+
+    assert_eq!(
+        refusals(("src/Demo/Report.sharp", sharp), &[]),
+        [
+            "8:13 invalid-operand `if` takes a `bool`, but this is `int`. | Compare the value, as in `count > 0` or `name != \"\"`."
+        ]
+    );
+    assert_eq!(issues(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
+}
+
+/// `|`, `&` and `^` on two `bool`s name the operator that joins them, and the rest of the code reads the `bool` it
+/// meant. A compound form is named as written. PHP turns both `bool`s into ints.
+#[test]
+fn a_bitwise_operator_on_two_bools_names_the_bool_operator_to_write() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static bool show(bool isAdmin, bool isOwner)\n    {\n        const either = isAdmin | isOwner;\n        const both = isAdmin & isOwner;\n        const one = isAdmin ^ isOwner;\n        isAdmin |= isOwner;\n        return either && both && one && isAdmin;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function show(bool $isAdmin, bool $isOwner): bool\n    {\n        $either = $isAdmin | $isOwner;\n        $both = $isAdmin & $isOwner;\n        $one = $isAdmin ^ $isOwner;\n        $isAdmin |= $isOwner;\n        return $either && $both && $one && $isAdmin;\n    }\n}\n";
+    let help = "`||`, `&&` and `!=` join two `bool` values.";
+
+    assert_eq!(
+        refusals(("src/Demo/Report.sharp", sharp), &[]),
+        [
+            format!(
+                "7:24 invalid-operand `|` takes `int`, but both sides are `bool`: write `||` for two `bool` values. | {help}"
+            ),
+            format!(
+                "8:22 invalid-operand `&` takes `int`, but both sides are `bool`: write `&&` for two `bool` values. | {help}"
+            ),
+            format!(
+                "9:21 invalid-operand `^` takes `int`, but both sides are `bool`: write `!=` for two `bool` values. | {help}"
+            ),
+            format!(
+                "10:9 invalid-operand `|=` takes `int`, but both sides are `bool`: write `||` for two `bool` values. | {help}"
+            ),
+        ]
+    );
+    assert_eq!(issues(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
+}
+
+/// Any other operand that is not an `int` is refused by its PHP# type, a nullable `int` included. PHP turns a `float`
+/// into an int silently, refuses the `string`, warns on the nullable `int`, and reads its unchecked results as
+/// `mixed`.
+#[test]
+fn a_bitwise_operator_on_a_value_that_is_not_an_int_is_refused_by_its_type() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int pack(float ratio, string name, int? count)\n    {\n        const a = ratio | 1;\n        const b = name & 1;\n        const c = count << 1;\n        const d = ~ratio;\n        return a + b + c + d;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function pack(float $ratio, string $name, ?int $count): int\n    {\n        $a = $ratio | 1;\n        $b = $name & 1;\n        $c = $count << 1;\n        $d = ~$ratio;\n        return $a + $b + $c + $d;\n    }\n}\n";
+    let convert = "Use an `int`: `(int)` converts a `float`, and `Int.parse` reads a `string`.";
+
+    assert_eq!(
+        refusals(("src/Demo/Report.sharp", sharp), &[]),
+        [
+            format!("7:19 invalid-operand `|` takes `int`, but this is `float`. | {convert}"),
+            format!("8:19 invalid-operand `&` takes `int`, but this is `string`. | {convert}"),
+            "9:19 invalid-operand `<<` takes `int`, but this is `int?`. | Test it with `!= null` first.".to_string(),
+            format!("10:20 invalid-operand `~` takes `int`, but this is `float`. | {convert}"),
+        ]
+    );
+    assert_eq!(
+        issues(("src/Demo/Report.php", php), &[]),
+        [
+            "10:14 invalid-operand",
+            "10:9 mixed-assignment",
+            "11:14 possibly-null-operand",
+            "13:21 mixed-operand",
+            "13:16 mixed-operand",
+            "13:16 mixed-operand",
+            "13:16 mixed-return-statement",
+        ]
+    );
+}
+
 #[test]
 fn casts_between_numbers_have_the_types_they_have_in_php() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    public static string cents(float price, int count)\n    {\n        const cents = (int)(price * 100);\n        const share = (float)count / 3;\n        return (string)cents + (string)share + (string)(int)share;\n    }\n}\n";

@@ -13,6 +13,8 @@ use mago_codex::ttype::comparator::union_comparator::can_expression_types_be_ide
 use mago_codex::ttype::expander;
 use mago_codex::ttype::expander::StaticClassType;
 use mago_codex::ttype::expander::TypeExpansionOptions;
+use mago_codex::ttype::get_bool;
+use mago_codex::ttype::get_int;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::union::TUnion;
 use mago_names::binding::php_operator_name;
@@ -227,6 +229,71 @@ fn report_refused_operator<A>(
     });
 
     context.collector.report_with_code(IssueCode::InvalidOperand, issue);
+}
+
+/// Refuses each operand of the PHP# bitwise operator written at `operator` that is not an `int`, as spec section 19
+/// gives `|`, `&`, `^`, `~`, `<<`, `>>` and their compound forms to `int` only. Two `bool`s name the operator that
+/// joins them. When it refuses, returns the type the rest of the code reads: the `bool` two `bool`s meant, else `int`.
+pub(crate) fn refuse_non_int_operands<A>(
+    context: &mut Context<'_, '_, A>,
+    operator: Span,
+    operands: &[(&Expression<'_>, &TUnion)],
+) -> Option<TUnion>
+where
+    A: Arena,
+{
+    let codebase = context.codebase;
+    let written = String::from_utf8_lossy(&context.source_file.contents[operator.to_range_usize()]).into_owned();
+    let note = "Spec section 19 gives `|`, `&`, `^`, `~`, `<<`, `>>` and their compound forms to `int` only.";
+
+    if let [(lhs, lhs_type), (rhs, rhs_type)] = operands
+        && lhs_type.is_bool()
+        && rhs_type.is_bool()
+        && let Some(joiner) = match written.trim_end_matches('=') {
+            "|" => Some("||"),
+            "&" => Some("&&"),
+            "^" => Some("!="),
+            _ => None,
+        }
+    {
+        context.collector.report_with_code(
+            IssueCode::InvalidOperand,
+            Issue::error(format!(
+                "`{written}` takes `int`, but both sides are `bool`: write `{joiner}` for two `bool` values."
+            ))
+            .with_annotation(Annotation::primary(lhs.span()).with_message("This is `bool`."))
+            .with_annotation(Annotation::secondary(rhs.span()).with_message("This is `bool`."))
+            .with_note(note)
+            .with_help("`||`, `&&` and `!=` join two `bool` values."),
+        );
+
+        return Some(get_bool());
+    }
+
+    let mut refused = false;
+    for (operand, operand_type) in operands {
+        if operand_type.is_int() || operand_type.is_never() {
+            continue;
+        }
+
+        let name = display_operand(operand_type, codebase);
+        let help = if operand_type.is_nullable() && operand_type.to_non_nullable().is_int() {
+            "Test it with `!= null` first."
+        } else {
+            "Use an `int`: `(int)` converts a `float`, and `Int.parse` reads a `string`."
+        };
+
+        context.collector.report_with_code(
+            IssueCode::InvalidOperand,
+            Issue::error(format!("`{written}` takes `int`, but this is `{name}`."))
+                .with_annotation(Annotation::primary(operand.span()).with_message(format!("This is `{name}`.")))
+                .with_note(note)
+                .with_help(help),
+        );
+        refused = true;
+    }
+
+    refused.then(get_int)
 }
 
 /// An operand's type as PHP# writes it, so a literal or a narrowed scalar shows as its scalar type.

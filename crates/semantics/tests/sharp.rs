@@ -464,7 +464,7 @@ fn a_function_called_by_its_bare_name_is_in_the_slice() {
 #[test]
 fn a_construct_outside_the_slice_is_not_supported_yet_in_a_catch_block_or_a_call_argument() {
     let code = leak(method(
-        "        try {\n        } catch (Missing failure) {\n            extra = extra & 1;\n        }\n        return count(this.run(...));\n",
+        "        try {\n        } catch (Missing failure) {\n            extra = extra <> 1;\n        }\n        return count(this.run(...));\n",
     ));
 
     assert_eq!(
@@ -1949,7 +1949,7 @@ fn a_class_constant_has_an_access_modifier_an_optional_type_and_a_constant_value
 
 #[test]
 fn a_class_constant_outside_the_slice_is_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nclass Report\n{\n    const A = 1;\n    public const B = 1, C = 2;\n    final public const D = 1;\n    public const E = 2 << 3;\n    public const iterable F = [];\n}\n";
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    const A = 1;\n    public const B = 1, C = 2;\n    final public const D = 1;\n    public const E = 2 <> 3;\n    public const iterable F = [];\n}\n";
 
     assert_eq!(
         issues(code),
@@ -2355,10 +2355,23 @@ fn exponentiation_and_its_compound_assignment_are_in_the_slice() {
     assert_eq!(issues(code), Vec::<String>::new());
 }
 
+/// Spec section 19 gives flags `|`, `&`, `^`, `~`, `<<`, `>>` and their compound forms, and lists `%=`. The analyzer
+/// checks their operands. A parameter default, which is a constant expression, takes them too.
+#[test]
+fn bitwise_operators_their_compound_assignments_and_modulo_assignment_are_in_the_slice() {
+    let body = leak(method(
+        "        let a = extra & 1 | extra ^ 2;\n        a = extra << 1 >> 2;\n        a = ~extra;\n        a &= 1;\n        a |= 2;\n        a ^= 4;\n        a <<= 1;\n        a >>= 1;\n        a %= 3;\n        return a;\n",
+    ));
+    let default = "class Report\n{\n    public int run(int mask = ~0 & 1 | 2 ^ 4 << 1 >> 1)\n    {\n        return mask;\n    }\n}\n";
+
+    assert_eq!(issues(body), Vec::<String>::new());
+    assert_eq!(issues(default), Vec::<String>::new());
+}
+
 #[test]
 fn operators_outside_the_slice_are_not_supported_yet() {
     let code = leak(method(
-        "        let a = extra;\n        a = @extra;\n        a = extra & 1;\n        a = extra | 1;\n        a = extra ^ 1;\n        a = extra << 1;\n        a = extra >> 1;\n        a = ~extra;\n        a = extra xor true;\n        a = extra and true;\n        a = extra or true;\n        a = extra <> 1;\n        a %= 2;\n        a &= 2;\n        return a;\n",
+        "        let a = extra;\n        a = @extra;\n        a = extra xor true;\n        a = extra and true;\n        a = extra or true;\n        a = extra <> 1;\n        return a;\n",
     ));
 
     assert_eq!(
@@ -2369,14 +2382,6 @@ fn operators_outside_the_slice_are_not_supported_yet() {
             "10:19 This operator is not supported yet in PHP#.",
             "11:19 This operator is not supported yet in PHP#.",
             "12:19 This operator is not supported yet in PHP#.",
-            "13:19 This operator is not supported yet in PHP#.",
-            "14:13 This operator is not supported yet in PHP#.",
-            "15:19 This operator is not supported yet in PHP#.",
-            "16:19 This operator is not supported yet in PHP#.",
-            "17:19 This operator is not supported yet in PHP#.",
-            "18:19 This operator is not supported yet in PHP#.",
-            "19:11 This operator is not supported yet in PHP#.",
-            "20:11 This operator is not supported yet in PHP#.",
         ]
     );
 }

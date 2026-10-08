@@ -39,6 +39,7 @@ use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::expression::binary::concat::fold_concat_operands;
 use crate::expression::binary::utils::analyze_instance_operator;
+use crate::expression::binary::utils::refuse_non_int_operands;
 
 #[inline]
 pub fn analyze_arithmetic_operation<'ctx, 'arena, A>(
@@ -69,6 +70,13 @@ where
     if context.dialect.is_sharp() {
         let operands = [(binary.lhs, left_type.as_ref()), (binary.rhs, right_type.as_ref())];
         if let Some(result_type) = analyze_instance_operator(context, &binary.operator, &operands, binary.span()) {
+            assign_arithmetic_type(artifacts, result_type, binary);
+            return Ok(());
+        }
+
+        if binary.operator.is_bitwise()
+            && let Some(result_type) = refuse_non_int_operands(context, binary.operator.span(), &operands)
+        {
             assign_arithmetic_type(artifacts, result_type, binary);
             return Ok(());
         }
@@ -186,14 +194,7 @@ where
         return Ok(());
     }
 
-    let is_bitwise = matches!(
-        binary.operator,
-        BinaryOperator::BitwiseAnd(_)
-            | BinaryOperator::BitwiseOr(_)
-            | BinaryOperator::BitwiseXor(_)
-            | BinaryOperator::LeftShift(_)
-            | BinaryOperator::RightShift(_)
-    );
+    let is_bitwise = binary.operator.is_bitwise();
 
     if left_type.is_false() && !is_bitwise {
         context.collector.report_with_code(

@@ -2639,13 +2639,13 @@ const fn is_slice_binary_operator(operator: &BinaryOperator) -> bool {
         | BinaryOperator::Spaceship(_)
         | BinaryOperator::And(_)
         | BinaryOperator::Or(_)
-        | BinaryOperator::NullCoalesce(_) => true,
-        BinaryOperator::BitwiseAnd(_)
+        | BinaryOperator::NullCoalesce(_)
+        | BinaryOperator::BitwiseAnd(_)
         | BinaryOperator::BitwiseOr(_)
         | BinaryOperator::BitwiseXor(_)
         | BinaryOperator::LeftShift(_)
-        | BinaryOperator::RightShift(_)
-        | BinaryOperator::AngledNotEqual(_)
+        | BinaryOperator::RightShift(_) => true,
+        BinaryOperator::AngledNotEqual(_)
         | BinaryOperator::StringConcat(_)
         | BinaryOperator::Instanceof(_)
         | BinaryOperator::LowAnd(_)
@@ -2659,7 +2659,10 @@ const fn is_slice_binary_operator(operator: &BinaryOperator) -> bool {
 /// compile until it is decided.
 fn is_slice_prefix_operator(operator: &UnaryPrefixOperator, place: Place) -> bool {
     match operator {
-        UnaryPrefixOperator::Negation(_) | UnaryPrefixOperator::Plus(_) | UnaryPrefixOperator::Not(_) => true,
+        UnaryPrefixOperator::Negation(_)
+        | UnaryPrefixOperator::Plus(_)
+        | UnaryPrefixOperator::Not(_)
+        | UnaryPrefixOperator::BitwiseNot(_) => true,
         UnaryPrefixOperator::PreIncrement(_)
         | UnaryPrefixOperator::PreDecrement(_)
         | UnaryPrefixOperator::ErrorControl(_) => place == Place::Body,
@@ -2676,8 +2679,7 @@ fn is_slice_prefix_operator(operator: &UnaryPrefixOperator, place: Place) -> boo
         | UnaryPrefixOperator::UnsetCast(..)
         | UnaryPrefixOperator::StringCast(..)
         | UnaryPrefixOperator::BinaryCast(..)
-        | UnaryPrefixOperator::VoidCast(..)
-        | UnaryPrefixOperator::BitwiseNot(_) => false,
+        | UnaryPrefixOperator::VoidCast(..) => false,
     }
 }
 
@@ -2869,15 +2871,15 @@ const fn is_slice_assignment_operator(operator: &AssignmentOperator) -> bool {
         | AssignmentOperator::Subtraction(_)
         | AssignmentOperator::Multiplication(_)
         | AssignmentOperator::Division(_)
+        | AssignmentOperator::Modulo(_)
         | AssignmentOperator::Exponentiation(_)
-        | AssignmentOperator::Coalesce(_) => true,
-        AssignmentOperator::Modulo(_)
-        | AssignmentOperator::Concat(_)
+        | AssignmentOperator::Coalesce(_)
         | AssignmentOperator::BitwiseAnd(_)
         | AssignmentOperator::BitwiseOr(_)
         | AssignmentOperator::BitwiseXor(_)
         | AssignmentOperator::LeftShift(_)
-        | AssignmentOperator::RightShift(_) => false,
+        | AssignmentOperator::RightShift(_) => true,
+        AssignmentOperator::Concat(_) => false,
     }
 }
 

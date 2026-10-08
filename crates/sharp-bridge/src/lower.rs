@@ -228,8 +228,14 @@ const ZEND_SUB: u32 = 2;
 const ZEND_MUL: u32 = 3;
 const ZEND_DIV: u32 = 4;
 const ZEND_MOD: u32 = 5;
+const ZEND_SL: u32 = 6;
+const ZEND_SR: u32 = 7;
 const ZEND_CONCAT: u32 = 8;
+const ZEND_BW_OR: u32 = 9;
+const ZEND_BW_AND: u32 = 10;
+const ZEND_BW_XOR: u32 = 11;
 const ZEND_POW: u32 = 12;
+const ZEND_BW_NOT: u32 = 13;
 const ZEND_BOOL_NOT: u32 = 14;
 const ZEND_IS_IDENTICAL: u32 = 16;
 const ZEND_IS_NOT_IDENTICAL: u32 = 17;
@@ -2580,6 +2586,11 @@ fn binary_kind(binary: &Binary) -> (sharp_kind, u32) {
         BinaryOperator::Division(_) => (SHARP_AST_BINARY_OP, ZEND_DIV),
         BinaryOperator::Modulo(_) => (SHARP_AST_BINARY_OP, ZEND_MOD),
         BinaryOperator::Exponentiation(_) => (SHARP_AST_BINARY_OP, ZEND_POW),
+        BinaryOperator::BitwiseOr(_) => (SHARP_AST_BINARY_OP, ZEND_BW_OR),
+        BinaryOperator::BitwiseAnd(_) => (SHARP_AST_BINARY_OP, ZEND_BW_AND),
+        BinaryOperator::BitwiseXor(_) => (SHARP_AST_BINARY_OP, ZEND_BW_XOR),
+        BinaryOperator::LeftShift(_) => (SHARP_AST_BINARY_OP, ZEND_SL),
+        BinaryOperator::RightShift(_) => (SHARP_AST_BINARY_OP, ZEND_SR),
         BinaryOperator::Equal(_) | BinaryOperator::Identical(_) => (SHARP_AST_BINARY_OP, ZEND_IS_IDENTICAL),
         BinaryOperator::NotEqual(_) | BinaryOperator::NotIdentical(_) => (SHARP_AST_BINARY_OP, ZEND_IS_NOT_IDENTICAL),
         BinaryOperator::LessThan(_) => (SHARP_AST_BINARY_OP, ZEND_IS_SMALLER),
@@ -2591,12 +2602,7 @@ fn binary_kind(binary: &Binary) -> (sharp_kind, u32) {
         BinaryOperator::And(_) | BinaryOperator::LowAnd(_) => (SHARP_AST_AND, 0),
         BinaryOperator::Or(_) => (SHARP_AST_OR, 0),
         BinaryOperator::NullCoalesce(_) => (SHARP_AST_COALESCE, 0),
-        BinaryOperator::BitwiseAnd(_)
-        | BinaryOperator::BitwiseOr(_)
-        | BinaryOperator::BitwiseXor(_)
-        | BinaryOperator::LeftShift(_)
-        | BinaryOperator::RightShift(_)
-        | BinaryOperator::AngledNotEqual(_)
+        BinaryOperator::AngledNotEqual(_)
         | BinaryOperator::StringConcat(_)
         | BinaryOperator::Instanceof(_)
         | BinaryOperator::LowOr(_)
@@ -2611,6 +2617,7 @@ fn prefix_kind(operator: &UnaryPrefixOperator) -> (sharp_kind, u32) {
         UnaryPrefixOperator::Negation(_) => (SHARP_AST_UNARY_MINUS, 0),
         UnaryPrefixOperator::Plus(_) => (SHARP_AST_UNARY_PLUS, 0),
         UnaryPrefixOperator::Not(_) => (SHARP_AST_UNARY_OP, ZEND_BOOL_NOT),
+        UnaryPrefixOperator::BitwiseNot(_) => (SHARP_AST_UNARY_OP, ZEND_BW_NOT),
         UnaryPrefixOperator::PreIncrement(_) => (SHARP_AST_PRE_INC, 0),
         UnaryPrefixOperator::PreDecrement(_) => (SHARP_AST_PRE_DEC, 0),
         UnaryPrefixOperator::IntCast(..) => (SHARP_AST_CAST, IS_LONG),
@@ -2627,8 +2634,7 @@ fn prefix_kind(operator: &UnaryPrefixOperator) -> (sharp_kind, u32) {
         | UnaryPrefixOperator::ObjectCast(..)
         | UnaryPrefixOperator::UnsetCast(..)
         | UnaryPrefixOperator::BinaryCast(..)
-        | UnaryPrefixOperator::VoidCast(..)
-        | UnaryPrefixOperator::BitwiseNot(_) => unreachable!("check_slice refuses the operator `{operator}`"),
+        | UnaryPrefixOperator::VoidCast(..) => unreachable!("check_slice refuses the operator `{operator}`"),
     }
 }
 
@@ -2654,15 +2660,15 @@ fn assignment_kind(operator: &AssignmentOperator) -> (sharp_kind, u32) {
         AssignmentOperator::Subtraction(_) => (SHARP_AST_ASSIGN_OP, ZEND_SUB),
         AssignmentOperator::Multiplication(_) => (SHARP_AST_ASSIGN_OP, ZEND_MUL),
         AssignmentOperator::Division(_) => (SHARP_AST_ASSIGN_OP, ZEND_DIV),
+        AssignmentOperator::Modulo(_) => (SHARP_AST_ASSIGN_OP, ZEND_MOD),
         AssignmentOperator::Exponentiation(_) => (SHARP_AST_ASSIGN_OP, ZEND_POW),
+        AssignmentOperator::BitwiseOr(_) => (SHARP_AST_ASSIGN_OP, ZEND_BW_OR),
+        AssignmentOperator::BitwiseAnd(_) => (SHARP_AST_ASSIGN_OP, ZEND_BW_AND),
+        AssignmentOperator::BitwiseXor(_) => (SHARP_AST_ASSIGN_OP, ZEND_BW_XOR),
+        AssignmentOperator::LeftShift(_) => (SHARP_AST_ASSIGN_OP, ZEND_SL),
+        AssignmentOperator::RightShift(_) => (SHARP_AST_ASSIGN_OP, ZEND_SR),
         AssignmentOperator::Coalesce(_) => (SHARP_AST_ASSIGN_COALESCE, 0),
-        AssignmentOperator::Modulo(_)
-        | AssignmentOperator::Concat(_)
-        | AssignmentOperator::BitwiseAnd(_)
-        | AssignmentOperator::BitwiseOr(_)
-        | AssignmentOperator::BitwiseXor(_)
-        | AssignmentOperator::LeftShift(_)
-        | AssignmentOperator::RightShift(_) => unreachable!("check_slice refuses the operator `{operator}`"),
+        AssignmentOperator::Concat(_) => unreachable!("check_slice refuses the operator `{operator}`"),
     }
 }
 

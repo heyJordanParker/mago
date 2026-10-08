@@ -5496,6 +5496,80 @@ fn compound_assignments_are_assign_ops() {
 }
 
 /// ```php
+/// $b = $extra | $extra; $b = $extra & $extra; $b = $extra ^ $extra; $b = $extra << $extra; $b = $extra >> $extra;
+/// $b = ~$extra;
+/// ```
+///
+/// `[9]`, `[10]`, `[11]`, `[6]` and `[7]` are `ZEND_BW_OR`, `ZEND_BW_AND`, `ZEND_BW_XOR`, `ZEND_SL` and `ZEND_SR`, and
+/// `[13]` is `ZEND_BW_NOT`, in php-src's `Zend/zend_vm_opcodes.h`. PHP throws `ArithmeticError` for a negative shift
+/// count, and `<<` drops the bits it shifts out, as spec section 19 has them.
+#[test]
+fn bitwise_operators_are_the_binary_and_unary_ops_php_gives_them() {
+    let tree = body(
+        "        let b = extra | extra;\n        b = extra & extra;\n        b = extra ^ extra;\n        b = extra << extra;\n        b = extra >> extra;\n        b = ~extra;\n        return b;\n",
+    );
+
+    assert_eq!(
+        assigned_values(&tree),
+        ["BINARY_OP [9]", "BINARY_OP [10]", "BINARY_OP [11]", "BINARY_OP [6]", "BINARY_OP [7]", "UNARY_OP [13]"]
+    );
+}
+
+/// ```php
+/// $a |= 1; $a &= 2; $a ^= 4; $a <<= 1; $a >>= 1; $a %= 3;
+/// ```
+///
+/// Each compound form applies the opcode of its operator: `[9]`, `[10]`, `[11]`, `[6]`, `[7]` and `[5]` are
+/// `ZEND_BW_OR`, `ZEND_BW_AND`, `ZEND_BW_XOR`, `ZEND_SL`, `ZEND_SR` and `ZEND_MOD`.
+#[test]
+fn bitwise_and_modulo_compound_assignments_are_assign_ops() {
+    let tree = body(
+        "        let a = extra;\n        a |= 1;\n        a &= 2;\n        a ^= 4;\n        a <<= 1;\n        a >>= 1;\n        a %= 3;\n        return a;\n",
+    );
+    let operators: Vec<&str> = tree.lines().filter(|line| line.starts_with("  ") && !line.starts_with("   ")).collect();
+
+    assert_eq!(
+        operators,
+        [
+            "  ASSIGN",
+            "  ASSIGN_OP [9]",
+            "  ASSIGN_OP [10]",
+            "  ASSIGN_OP [11]",
+            "  ASSIGN_OP [6]",
+            "  ASSIGN_OP [7]",
+            "  ASSIGN_OP [5]",
+            "  RETURN",
+        ]
+    );
+}
+
+/// ```php
+/// return ($extra & 2) !== 0 ? 1 : 0;
+/// ```
+///
+/// `&` binds tighter than `!=` in PHP#, so the flag test compares the `[10]` `ZEND_BW_AND` with 0, where PHP's own
+/// grammar would read `$extra & (2 != 0)`. `[17]` is `ZEND_IS_NOT_IDENTICAL`.
+#[test]
+fn a_flag_test_compares_the_bitwise_and_with_zero() {
+    assert_eq!(
+        body("        return extra & 2 != 0 ? 1 : 0;\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CONDITIONAL
+                  BINARY_OP [17]
+                    BINARY_OP [10]
+                      VAR
+                        ZVAL "extra"
+                      ZVAL 2
+                    ZVAL 0
+                  ZVAL 1
+                  ZVAL 0
+        "#}
+    );
+}
+
+/// ```php
 /// return -$a ** $a ** 2;
 /// ```
 ///
