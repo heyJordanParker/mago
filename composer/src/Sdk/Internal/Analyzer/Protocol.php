@@ -66,7 +66,6 @@ use function count;
 use function intdiv;
 use function is_string;
 use function pack;
-use function strncmp;
 use function substr;
 use function unpack;
 
@@ -152,7 +151,7 @@ final class Protocol
     private const MAGIC_U32 = 0x4D41_4E41;
     private const MAJOR = 1;
     private const MINOR = 9;
-    private const VERSION_U32 = (self::MAJOR << 16) | self::MINOR;
+    public const VERSION_U32 = (self::MAJOR << 16) | self::MINOR;
     private const DESCRIBE_RESPONSE = 0x8001;
     private const RETURN_TYPE_RESPONSE = 0x8002;
     private const TYPE_COMPARISON_RESPONSE = 0x8003;
@@ -177,12 +176,6 @@ final class Protocol
     private const MAXIMUM_ISSUE_NOTES = 0x0001_0000;
     private const MAXIMUM_ISSUE_ANNOTATIONS = 0x0001_0000;
     private const MAXIMUM_ISSUE_EDITS = 0x0001_0000;
-    private const RETURN_TYPE_REQUEST_HEADER = "MANA\x00\x01\x00\x05\x00\x02\x00\x00";
-    private const CALLABLE_SIGNATURE_REQUEST_HEADER = "MANA\x00\x01\x00\x05\x00\x0C\x00\x00";
-    private const ASSERTION_REQUEST_HEADER = "MANA\x00\x01\x00\x05\x00\x12\x00\x00";
-    private const UNHANDLED_RETURN_TYPE_RESPONSE = "MANA\x00\x01\x00\x05\x80\x02\x00\x00\x00";
-    private const UNHANDLED_CALLABLE_SIGNATURE_RESPONSE = "MANA\x00\x01\x00\x05\x80\x0C\x00\x00\x00";
-    private const UNHANDLED_ASSERTION_RESPONSE = "MANA\x00\x01\x00\x05\x80\x12\x00\x00\x00";
     private const INVOCATION_FUNCTION = 1;
     private const INVOCATION_INSTANCE_METHOD = 2;
     private const INVOCATION_STATIC_METHOD = 3;
@@ -195,18 +188,6 @@ final class Protocol
     /** @return array{int<0, 65535>, PayloadReader} */
     public static function readRequest(string $payload): array
     {
-        if (strncmp($payload, self::RETURN_TYPE_REQUEST_HEADER, 12) === 0) {
-            return [self::RETURN_TYPE_REQUEST, new PayloadReader($payload, 12)];
-        }
-
-        if (strncmp($payload, self::CALLABLE_SIGNATURE_REQUEST_HEADER, 12) === 0) {
-            return [self::CALLABLE_SIGNATURE_REQUEST, new PayloadReader($payload, 12)];
-        }
-
-        if (strncmp($payload, self::ASSERTION_REQUEST_HEADER, 12) === 0) {
-            return [self::ASSERTION_REQUEST, new PayloadReader($payload, 12)];
-        }
-
         /** @var array{1: int<0, 4294967295>, 2: int<0, 4294967295>, 3: int<0, 4294967295>} $header */
         $header = unpack('N3', $payload);
         if ($header[1] !== self::MAGIC_U32) {
@@ -1284,17 +1265,16 @@ final class Protocol
     public static function writeReturnTypeResponse(?Type $type): string
     {
         if ($type === null) {
-            return self::UNHANDLED_RETURN_TYPE_RESPONSE;
+            return pack('N3C', self::MAGIC_U32, self::VERSION_U32, self::RETURN_TYPE_RESPONSE << 16, 0);
         }
 
         return pack('N3C', self::MAGIC_U32, self::VERSION_U32, self::RETURN_TYPE_RESPONSE << 16, 1) . $type->encode();
     }
 
-    /** @mago-expect lint:halstead */
     public static function writeCallableSignatureResponse(?EffectiveCallableSignature $signature): string
     {
         if ($signature === null) {
-            return self::UNHANDLED_CALLABLE_SIGNATURE_RESPONSE;
+            return pack('N3C', self::MAGIC_U32, self::VERSION_U32, self::CALLABLE_SIGNATURE_RESPONSE << 16, 0);
         }
 
         $writer = self::createMessage(self::CALLABLE_SIGNATURE_RESPONSE);
@@ -1327,7 +1307,7 @@ final class Protocol
     public static function writeAssertionResponse(?InvocationAssertions $assertions): string
     {
         if ($assertions === null || $assertions->isEmpty()) {
-            return self::UNHANDLED_ASSERTION_RESPONSE;
+            return pack('N3C', self::MAGIC_U32, self::VERSION_U32, self::ASSERTION_RESPONSE << 16, 0);
         }
 
         $writer = self::createMessage(self::ASSERTION_RESPONSE);
