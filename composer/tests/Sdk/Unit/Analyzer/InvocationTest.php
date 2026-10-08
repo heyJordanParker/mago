@@ -17,7 +17,9 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Throwable;
 
+use function array_diff;
 use function pack;
+use function range;
 use function sprintf;
 use function substr;
 
@@ -133,27 +135,26 @@ final class InvocationTest extends TestCase
     }
 
     /**
-     * @return iterable<string, array{int}>
+     * @return iterable<string, array{int, int}>
      */
-    public static function invocationRequestKinds(): iterable
+    public static function requestsFromOtherVersions(): iterable
     {
-        yield 'return type' => [Protocol::RETURN_TYPE_REQUEST];
-        yield 'callable signature' => [Protocol::CALLABLE_SIGNATURE_REQUEST];
-        yield 'assertion' => [Protocol::ASSERTION_REQUEST];
+        $currentMinor = Protocol::VERSION_U32 & 0xFFFF;
+        foreach (array_diff(range(0, $currentMinor + 1), [$currentMinor]) as $minor) {
+            yield "return type, minor {$minor}" => [Protocol::RETURN_TYPE_REQUEST, $minor];
+            yield "callable signature, minor {$minor}" => [Protocol::CALLABLE_SIGNATURE_REQUEST, $minor];
+            yield "assertion, minor {$minor}" => [Protocol::ASSERTION_REQUEST, $minor];
+        }
     }
 
-    #[DataProvider('invocationRequestKinds')]
-    public function testRequestFromAnotherVersionIsRejected(int $kind): void
+    #[DataProvider('requestsFromOtherVersions')]
+    public function testRequestFromAnotherVersionIsRejected(int $kind, int $minor): void
     {
-        $version = Protocol::VERSION_U32 + 1;
+        $major = Protocol::VERSION_U32 >> 16;
         $this->expectException(ProtocolException::class);
-        $this->expectExceptionMessage(sprintf(
-            'Unsupported analyzer protocol version %d.%d.',
-            $version >> 16,
-            $version & 0xFFFF,
-        ));
+        $this->expectExceptionMessage(sprintf('Unsupported analyzer protocol version %d.%d.', $major, $minor));
 
-        Protocol::readRequest(pack('N3', 0x4D41_4E41, $version, $kind << 16));
+        Protocol::readRequest(pack('N3', 0x4D41_4E41, ($major << 16) | $minor, $kind << 16));
     }
 
     /**
