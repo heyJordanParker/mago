@@ -30,6 +30,7 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::invocation::InvocationTarget;
 use crate::invocation::arguments::verify_argument_type;
+use crate::utils::names::display_sharp_class;
 use crate::utils::names::display_sharp_type;
 use crate::utils::php_emulation::numeric_string_equals_int;
 
@@ -50,10 +51,26 @@ pub(crate) fn get_operator_method<'ctx>(
     })
 }
 
+/// Whether each of `operand_types` can be the value the matching parameter of the static method `method` takes. An
+/// `int` never is the `Money` that `Money::op_Comparison` takes, so `money < 5` is refused before the call is checked.
+pub(crate) fn can_take_operands(
+    codebase: &CodebaseMetadata,
+    (method, metadata): (MethodIdentifier, &FunctionLikeMetadata),
+    operand_types: &[&TUnion],
+) -> bool {
+    operand_types.iter().zip(&metadata.parameters).all(|(operand_type, parameter)| {
+        parameter.get_type_metadata().is_none_or(|parameter_type| {
+            let parameter_type = expand_in_class(codebase, &method, &parameter_type.type_union);
+
+            can_expression_types_be_identical(codebase, operand_type, &parameter_type, false, false)
+        })
+    })
+}
+
 /// Runs the PHP# arithmetic operator `symbol` on `operands` when one of them is an instance: the static method its
 /// class declares or inherits, checked as the call it runs as, gives the result. An instance whose class declares
-/// none is refused, and the rest of the code is checked as if the operator gave that instance. Operands with no
-/// instance run none.
+/// none, or an operand the operator does not take, is refused, and the rest of the code is checked as if the operator
+/// gave that instance. Operands with no instance run none.
 pub(crate) fn analyze_instance_operator<'arena, A>(
     context: &mut Context<'_, 'arena, A>,
     symbol: &BinaryOperator<'_>,
@@ -70,13 +87,29 @@ where
     let operand_types: Vec<&TUnion> = operands.iter().map(|(_, operand_type)| *operand_type).collect();
 
     Some(match get_operator_method(codebase, name, &operand_types) {
-        Some(method) => analyze_operator_call(context, method, operands, span),
-        None => {
-            report_undeclared_operator(context, symbol, operands, instance);
+        Some(method) if can_take_operands(codebase, method, &operand_types) => {
+            analyze_operator_call(context, method, operands, span)
+        }
+        method => {
+            report_refused_operator(context, symbol, operands, instance, method);
 
             operands[instance].1.to_non_nullable()
         }
     })
+}
+
+/// `union` as the class declaring `method` reads it, so its `self` is that class.
+fn expand_in_class(codebase: &CodebaseMetadata, method: &MethodIdentifier, union: &TUnion) -> TUnion {
+    let class = codebase.get_class_like(method.get_class_name().as_bytes()).map(|class| class.name);
+    let options = TypeExpansionOptions {
+        self_class: class,
+        static_class_type: class.map_or(StaticClassType::None, StaticClassType::Name),
+        ..Default::default()
+    };
+    let mut union = union.clone();
+    expander::expand_union(codebase, &mut union, &options);
+
+    union
 }
 
 /// The one class of an instance of `operand_type`, `null` aside. An enum, which no operator takes, is none.
@@ -101,18 +134,7 @@ where
     A: Arena,
 {
     let codebase = context.codebase;
-    let class = codebase.get_class_like(method.get_class_name().as_bytes()).map(|class| class.name);
-    let options = TypeExpansionOptions {
-        self_class: class,
-        static_class_type: class.map_or(StaticClassType::None, StaticClassType::Name),
-        ..Default::default()
-    };
-    let expand = |union: &TUnion| {
-        let mut union = union.clone();
-        expander::expand_union(codebase, &mut union, &options);
-
-        union
-    };
+    let expand = |union: &TUnion| expand_in_class(codebase, &method, union);
 
     let target = InvocationTarget::FunctionLike {
         identifier: FunctionLikeIdentifier::Method(method.get_class_name(), method.get_method_name()),
@@ -133,37 +155,65 @@ where
     metadata.return_type_metadata.as_ref().map_or_else(get_mixed, |return_type| expand(&return_type.type_union))
 }
 
-/// Reports a PHP# arithmetic operator `symbol` on `operands`, the one at `instance` an instance whose class neither
-/// declares nor inherits the operator. One operand makes the operator unary.
-fn report_undeclared_operator<A>(
+/// Reports a PHP# arithmetic operator `symbol` on `operands`, the one at `instance` an instance. Its class neither
+/// declares nor inherits the operator, or `declared`, the operator it declares, takes no such operands. One operand
+/// makes the operator unary.
+fn report_refused_operator<A>(
     context: &mut Context<'_, '_, A>,
     symbol: &BinaryOperator<'_>,
     operands: &[(&Expression<'_>, &TUnion)],
     instance: usize,
+    declared: Option<(MethodIdentifier, &FunctionLikeMetadata)>,
 ) where
     A: Arena,
 {
     let codebase = context.codebase;
     let op = BytesDisplay(symbol.as_bytes());
     let names: Vec<String> = operands.iter().map(|(_, operand_type)| display_operand(operand_type, codebase)).collect();
-    let class = display_operand(&operands[instance].1.to_non_nullable(), codebase);
 
-    let issue = match names.as_slice() {
-        [operand] => Issue::error(format!(
-            "Unary `{op}` cannot apply to `{operand}`: `{class}` declares no unary `operator {op}`."
-        ))
-        .with_note(format!(
-            "Spec section 19: unary `{op}` on a class instance exists only where its class declares unary `operator {op}`."
-        ))
-        .with_help("Apply it to a value the instance holds, such as a property."),
-        [lhs, rhs, ..] => {
+    let issue = match (names.as_slice(), declared) {
+        ([operand], None) => {
+            let class = display_operand(&operands[instance].1.to_non_nullable(), codebase);
+
+            Issue::error(format!("Unary `{op}` cannot apply to `{operand}`: `{class}` declares no unary `operator {op}`."))
+                .with_note(format!(
+                    "Spec section 19: unary `{op}` on a class instance exists only where its class declares unary `operator {op}`."
+                ))
+                .with_help("Apply it to a value the instance holds, such as a property.")
+        }
+        ([lhs, rhs, ..], None) => {
+            let class = display_operand(&operands[instance].1.to_non_nullable(), codebase);
+
             Issue::error(format!("`{op}` cannot apply to `{lhs}` and `{rhs}`: `{class}` declares no `operator {op}`."))
                 .with_note(format!(
                     "Spec section 19: `{op}` on a class instance exists only where its class declares `operator {op}`."
                 ))
                 .with_help("Apply it to values the instances hold, such as their properties.")
         }
-        [] => return,
+        (names, Some((method, metadata))) => {
+            let class = codebase
+                .get_class_like(method.get_class_name().as_bytes())
+                .map_or_else(|| method.get_class_name().to_string(), |class| display_sharp_class(class).into_owned());
+            let taken: Vec<String> = metadata
+                .parameters
+                .iter()
+                .filter_map(|parameter| parameter.get_type_metadata())
+                .map(|parameter_type| {
+                    display_operand(&expand_in_class(codebase, &method, &parameter_type.type_union), codebase)
+                })
+                .collect();
+            let (names, taken) = (names.join("` and `"), taken.join("` and `"));
+            let (opening, unary) = if operands.len() == 1 { ("Unary ", "unary ") } else { ("", "") };
+
+            Issue::error(format!(
+                "{opening}`{op}` cannot apply to `{names}`: `{class}` declares {unary}`operator {op}` on `{taken}`."
+            ))
+            .with_note(format!(
+                "Spec section 19: `{op}` on a class instance runs the `operator {op}` its class declares, on the types it declares."
+            ))
+            .with_help("Apply it to values of the types the operator takes.")
+        }
+        ([], None) => return,
     };
 
     let issue = operands.iter().zip(&names).enumerate().fold(issue, |issue, (offset, ((operand, _), name))| {

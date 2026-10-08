@@ -39,6 +39,7 @@ use crate::expression::binary::utils::analyze_operator_call;
 use crate::expression::binary::utils::are_definitely_loosely_equal;
 use crate::expression::binary::utils::are_definitely_not_identical;
 use crate::expression::binary::utils::are_definitely_not_loosely_equal;
+use crate::expression::binary::utils::can_take_operands;
 use crate::expression::binary::utils::display_operand;
 use crate::expression::binary::utils::get_operator_method;
 use crate::expression::binary::utils::is_always_greater_than;
@@ -709,7 +710,8 @@ pub(crate) enum Refusal {
     Instance,
     /// `<=>` or an ordering on an instance that may be `null`, which only `==` and `!=` lift.
     NullableInstance,
-    /// `==` or `!=` on two values of types that never match, or a string ordered against another type.
+    /// `==` or `!=` on two values of types that never match, a string ordered against another type, or an instance
+    /// compared with a value its class's operator never takes, as `money < 5`.
     DifferentTypes,
 }
 
@@ -729,7 +731,7 @@ pub(crate) fn mixes_numbers(lhs_type: &TUnion, rhs_type: &TUnion, codebase: &Cod
 /// Why a PHP# file may not compare a value of `lhs_type` with one of `rhs_type` by `operator`, or `None` when it may:
 /// `==` or `!=` on two values spec section 19 cannot compare strictly, `===` or `!==` on a value that is no class
 /// instance, an ordering of a string against any other type, and a comparison of instances whose class declares no
-/// operator for it are refused.
+/// operator for it, or whose operator never takes the other side, are refused.
 pub(crate) fn sharp_refusal(
     operator: &BinaryOperator<'_>,
     lhs_type: &TUnion,
@@ -757,7 +759,14 @@ pub(crate) fn sharp_refusal(
             if has(Comparand::Collection) {
                 Some(Refusal::Collection)
             } else if has(Comparand::Instance) {
-                get_comparison_method(operator, lhs_type, rhs_type, codebase).is_none().then_some(Refusal::Instance)
+                match get_comparison_method(operator, lhs_type, rhs_type, codebase) {
+                    None => Some(Refusal::Instance),
+                    Some(method) => {
+                        let operands = [&lhs_type.to_non_nullable(), &rhs_type.to_non_nullable()];
+
+                        (!can_take_operands(codebase, method, &operands)).then_some(Refusal::DifferentTypes)
+                    }
+                }
             } else if has(Comparand::Any)
                 || lhs.iter().any(|comparand| rhs.contains(comparand))
                 || mixes_numbers(lhs_type, rhs_type, codebase)
@@ -775,12 +784,12 @@ pub(crate) fn sharp_refusal(
         | BinaryOperator::GreaterThanOrEqual(_)
         | BinaryOperator::Spaceship(_) => {
             if has(Comparand::Instance) {
-                return if get_comparison_method(operator, lhs_type, rhs_type, codebase).is_none() {
-                    Some(Refusal::Instance)
-                } else if lhs_type.can_be_null() || rhs_type.can_be_null() {
-                    Some(Refusal::NullableInstance)
-                } else {
-                    None
+                return match get_comparison_method(operator, lhs_type, rhs_type, codebase) {
+                    None => Some(Refusal::Instance),
+                    Some(_) if lhs_type.can_be_null() || rhs_type.can_be_null() => Some(Refusal::NullableInstance),
+                    Some(method) => {
+                        (!can_take_operands(codebase, method, &[lhs_type, rhs_type])).then_some(Refusal::DifferentTypes)
+                    }
                 };
             }
 

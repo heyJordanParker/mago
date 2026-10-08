@@ -4361,19 +4361,37 @@ fn comparing_a_value_that_may_be_an_instance_names_its_class() {
     );
 }
 
-/// `money * 2` runs `operator *`, which `Money` does not declare. `money == 5` runs `Money::op_Equality(money, 5)`,
-/// whose argument check refuses the `int`.
+/// `money * 2` runs `operator *`, which `Money` does not declare. `money == 5` would run `Money::op_Equality(money, 5)`,
+/// which takes no `int`, so it is refused as a comparison of two types that never match.
 #[test]
 fn an_undeclared_operator_and_a_wrong_operand_are_refused() {
     let sharp = "namespace App;\n\npublic class Pricing\n{\n    public Money doubled(Money money) => money * 2;\n\n    public bool five(Money money) => money == 5;\n}\n";
 
     assert_eq!(
-        issues(("src/App/Pricing.sharp", sharp), &[MONEY_OPERATORS]),
-        ["5:42 invalid-operand", "7:47 invalid-argument"]
+        refusals(("src/App/Pricing.sharp", sharp), &[MONEY_OPERATORS]),
+        [
+            "5:42 invalid-operand `*` cannot apply to `Money` and `int`: `Money` declares no `operator *`. | Apply it to values the instances hold, such as their properties.",
+            "7:38 invalid-operand `==` cannot compare `Money` with `int`. | Convert one side so both sides have the same type.",
+        ]
     );
+}
+
+/// An operand the declared operator does not take is refused in PHP# words, before the static call it would run as is
+/// checked: `money < 5` would pass an `int` to `Money::op_Comparison`. PHP compares and adds objects by its own rules.
+#[test]
+fn an_operand_the_declared_operator_does_not_take_is_refused_by_its_php_sharp_types() {
+    let sharp = "namespace App;\n\npublic class Pricing\n{\n    public bool a(Money money) => money != \"5\";\n\n    public bool b(Money money) => money < 5;\n\n    public int c(Money money) => 5 <=> money;\n\n    public Money d(Money money) => money + 5;\n\n    public bool e(Money money, Order order) => money < order && money + order == order;\n}\n";
+    let php = "<?php\n\nnamespace App;\n\nfinal class Pricing\n{\n    public function a(Money $money): bool { return $money != \"5\"; }\n\n    public function b(Money $money): bool { return $money < 5; }\n\n    public function c(Money $money): int { return 5 <=> $money; }\n\n    public function e(Money $money, Order $order): bool { return $money < $order && $money == $order; }\n}\n";
+
+    assert_eq!(issues(("src/App/Pricing.php", php), &[MONEY_OPERATORS, AUDITED_ORDER]), Vec::<String>::new());
     assert_eq!(
-        messages(("src/App/Pricing.sharp", sharp), &[MONEY_OPERATORS])[0],
-        "`*` cannot apply to `Money` and `int`: `Money` declares no `operator *`."
+        refusals(("src/App/Pricing.sharp", sharp), &[MONEY_OPERATORS, AUDITED_ORDER]),
+        [
+            "5:35 invalid-operand `!=` cannot compare `Money` with `string`. | Convert one side so both sides have the same type.",
+            "7:35 invalid-operand `<` cannot compare `Money` with `int`. | Convert one side so both sides have the same type.",
+            "9:34 invalid-operand `<=>` cannot compare `int` with `Money`. | Convert one side so both sides have the same type.",
+            "11:36 invalid-operand `+` cannot apply to `Money` and `int`: `Money` declares `operator +` on `Money` and `Money`. | Apply it to values of the types the operator takes.",
+        ]
     );
 }
 
@@ -4419,6 +4437,25 @@ fn a_php_caller_passes_null_to_op_equality_and_a_sharp_caller_does_not() {
     assert_eq!(
         issues(("src/App/Check.sharp", sharp), &[MONEY_OPERATORS]),
         ["5:84 null-argument", "5:118 possibly-null-argument"]
+    );
+}
+
+/// A PHP caller checks its arguments against the PHP method a PHP# method runs as, whose `List<int>` and
+/// `Map<string, int>` parameters keep their element types, so a wrongly typed list or map is still reported.
+#[test]
+fn a_php_caller_keeps_the_element_types_of_a_sharp_methods_collection_parameters() {
+    let tally = (
+        "src/Demo/Tally.sharp",
+        "namespace Demo;\n\npublic class Tally\n{\n    public static int total(List<int> items, Map<string, int> counts) => 0;\n}\n",
+    );
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Report\n{\n    public static function run(): int\n    {\n        return Tally::total(['a'], [1 => 'x']);\n    }\n}\n";
+
+    assert_eq!(
+        messages(("src/Demo/Report.php", php), &[tally]),
+        [
+            "Possible argument type mismatch for argument #1 of `Demo\\Tally::total`: expected `list<int>`, but possibly received `list{string('a')}`.",
+            "Possible argument type mismatch for argument #2 of `Demo\\Tally::total`: expected `array<string, int>`, but possibly received `array{1: string('x')}`.",
+        ]
     );
 }
 
