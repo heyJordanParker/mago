@@ -154,7 +154,7 @@ final class Protocol
     private const MAGIC_U32 = 0x4D41_4E41;
     private const MAJOR = 1;
     private const MINOR = 8;
-    private const VERSION_U32 = (self::MAJOR << 16) | self::MINOR;
+    public const VERSION_U32 = (self::MAJOR << 16) | self::MINOR;
     private const DESCRIBE_RESPONSE = 0x8001;
     private const RETURN_TYPE_RESPONSE = 0x8002;
     private const TYPE_COMPARISON_RESPONSE = 0x8003;

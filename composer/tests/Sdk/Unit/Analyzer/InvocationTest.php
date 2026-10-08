@@ -18,6 +18,7 @@ use PHPUnit\Framework\TestCase;
 use Throwable;
 
 use function pack;
+use function sprintf;
 use function substr;
 
 /**
@@ -144,10 +145,15 @@ final class InvocationTest extends TestCase
     #[DataProvider('invocationRequestKinds')]
     public function testRequestFromAnotherVersionIsRejected(int $kind): void
     {
+        $version = Protocol::VERSION_U32 + 1;
         $this->expectException(ProtocolException::class);
-        $this->expectExceptionMessage('Unsupported analyzer protocol version 1.5.');
+        $this->expectExceptionMessage(sprintf(
+            'Unsupported analyzer protocol version %d.%d.',
+            $version >> 16,
+            $version & 0xFFFF,
+        ));
 
-        Protocol::readRequest(pack('N3', 0x4D41_4E41, 0x0001_0005, $kind << 16));
+        Protocol::readRequest(pack('N3', 0x4D41_4E41, $version, $kind << 16));
     }
 
     /**
@@ -219,7 +225,7 @@ final class InvocationTest extends TestCase
 
     private static function messagePayload(string $payload): string
     {
-        return pack('N3', 0x4D41_4E41, 0x0001_0008, 2 << 16) . $payload;
+        return pack('N3', 0x4D41_4E41, Protocol::VERSION_U32, 2 << 16) . $payload;
     }
 
     private static function decode(string $payload): ReturnTypeRequest
