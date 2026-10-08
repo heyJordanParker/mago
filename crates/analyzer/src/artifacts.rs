@@ -8,6 +8,7 @@ use mago_word::WordMap;
 use mago_word::WordSet;
 
 use mago_algebra::assertion_set::AssertionSet;
+use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::reference::SymbolReferences;
 use mago_codex::ttype::combine_union_types;
@@ -273,6 +274,14 @@ impl AnalysisArtifacts {
         T: HasSpan,
     {
         self.expression_types.insert(get_expression_range(expression), Rc::new(t));
+    }
+
+    /// The function-likes the PHP# call `call` resolved to when the analysis checked it.
+    pub fn get_callees<T>(&self, call: &T) -> impl Iterator<Item = &FunctionLikeIdentifier>
+    where
+        T: HasSpan,
+    {
+        self.call_targets.get(&get_expression_range(call)).into_iter().flatten().map(|target| &target.callee)
     }
 
     /// Get the type of expression `expression`.
