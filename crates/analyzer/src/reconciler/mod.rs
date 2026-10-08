@@ -51,6 +51,7 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::context::scope::var_has_root;
 use crate::resolver::property::resolve_declared_property;
+use crate::utils::names::display_type;
 
 pub mod assertion_reconciler;
 pub mod negated_assertion_reconciler;
@@ -1456,6 +1457,12 @@ pub(crate) fn trigger_issue_for_impossible<A>(
 
     if not_operator {
         assertion_atom = word(&assertion_atom.as_bytes()[1..]);
+    }
+
+    if context.dialect.is_sharp()
+        && let Some(atomic) = assertion.get_type()
+    {
+        assertion_atom = word(display_type(context, &TUnion::from_atomic(atomic.clone())));
     }
 
     let mut redundant = redundant;

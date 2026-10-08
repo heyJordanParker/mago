@@ -28,6 +28,7 @@ use crate::artifacts::AnalysisArtifacts;
 use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
+use crate::utils::names::display_type;
 use mago_bytes::BytesDisplay;
 
 /// Populates the context with variable types defined in the docblock.
@@ -156,12 +157,9 @@ where
                 let variable_name = BytesDisplay(variable_name_bytes);
                 match block_context.locals.get(&variable_atom) {
                     Some(variable_type) => {
-                        let variable_type_str = variable_type.get_id();
+                        let variable_type_str = display_type(context, variable_type);
 
-
-                        context.collector.report_with_code(
-                            IssueCode::PsalmTrace,
-                            Issue::note(format!(
+                        let issue = Issue::note(format!(
                                 "Trace: Type of `{variable_name}` is `{variable_type_str}`"
                             ))
                             .with_annotation(
@@ -170,10 +168,17 @@ where
                             )
                             .with_note(
                                 "Spotted a `@psalm-trace` tag! While this works for compatibility, Mago has a more powerful way to inspect types.",
-                            )
-                            .with_help(
-                                "For more flexible debugging, try using `Mago\\inspect()` directly in your code. It can inspect any expression, not just variables (e.g., `Mago\\inspect($foo->bar());`)."
-                            ),
+                            );
+
+                        context.collector.report_with_code(
+                            IssueCode::PsalmTrace,
+                            if context.dialect.is_sharp() {
+                                issue
+                            } else {
+                                issue.with_help(
+                                    "For more flexible debugging, try using `Mago\\inspect()` directly in your code. It can inspect any expression, not just variables (e.g., `Mago\\inspect($foo->bar());`)."
+                                )
+                            },
                         );
                     }
                     None => {
@@ -356,8 +361,8 @@ pub fn insert_variable_from_docblock<'ctx, A>(
             && !can_expression_types_be_identical(context.codebase, &previous_type, &variable_type, false, false);
 
         if is_impossible {
-            let variable_type_str = variable_type.get_id();
-            let previous_type_str = previous_type.get_id();
+            let variable_type_str = display_type(context, &variable_type);
+            let previous_type_str = display_type(context, &previous_type);
 
             context.collector.report_with_code(
                 IssueCode::DocblockTypeMismatch,
@@ -372,12 +377,13 @@ pub fn insert_variable_from_docblock<'ctx, A>(
                     )),
             );
         } else if is_redundant {
+            let variable_type_str = display_type(context, &variable_type);
+
             context.collector.report_with_code(
                 IssueCode::RedundantDocblockType,
                 Issue::warning(format!("Redundant docblock type for variable `{variable_name}`."))
                     .with_annotation(Annotation::primary(variable_type_span).with_message(format!(
-                        "This docblock asserts the type should be `{}`, which is identical to the previously defined type.",
-                        variable_type.get_id(),
+                        "This docblock asserts the type should be `{variable_type_str}`, which is identical to the previously defined type.",
                     )))
                     .with_help("You can remove this redundant `@var` docblock tag."),
             );
@@ -433,8 +439,8 @@ pub fn check_docblock_type_incompatibility<A>(
         && !can_expression_types_be_identical(context.codebase, inferred_type, docblock_type, false, true);
 
     if is_impossible {
-        let docblock_type_str = docblock_type.get_id();
-        let inferred_type_str = inferred_type.get_id();
+        let docblock_type_str = display_type(context, docblock_type);
+        let inferred_type_str = display_type(context, inferred_type);
 
         let mut issue = if let Some(value_expression_variable_id) = value_expression_variable_id {
             let value_expression_variable_id = BytesDisplay(value_expression_variable_id);
@@ -486,8 +492,8 @@ pub fn check_docblock_type_incompatibility<A>(
     }
 
     if is_redundant {
-        let docblock_type_str = docblock_type.get_id();
-        let inferred_type_str = inferred_type.get_id();
+        let docblock_type_str = display_type(context, docblock_type);
+        let inferred_type_str = display_type(context, inferred_type);
 
         let mut issue = if let Some(value_expression_variable_id) = value_expression_variable_id {
             let value_expression_variable_id = BytesDisplay(value_expression_variable_id);

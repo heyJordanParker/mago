@@ -1702,7 +1702,7 @@ fn exit_with_a_value_that_is_not_an_int_names_the_message_to_write_and_exit_1() 
         [
             "This is `string`, not an `int`.",
             "This is `int|string`, not an `int`.",
-            "This is `mixed`, not an `int`.",
+            "This is `Any?`, not an `int`.",
             "This is `string`, not an `int`.",
         ]
     );
@@ -1723,10 +1723,10 @@ fn exit_with_a_value_that_cannot_be_a_message_names_the_int_status() {
     assert_eq!(
         messages,
         [
-            "`exit` takes an `int` status: this is `int|null`.",
+            "`exit` takes an `int` status: this is `int?`.",
             "`exit` takes an `int` status: this is `float`.",
             "`exit` takes an `int` status: this is `bool`.",
-            "`exit` takes an `int` status: this is `list<int>`.",
+            "`exit` takes an `int` status: this is `List<int>`.",
         ]
     );
     for refusal in &refusals {
@@ -3807,7 +3807,7 @@ fn a_spread_of_a_value_that_is_neither_a_list_nor_a_map_is_an_error() {
     assert_eq!(
         messages(("src/Demo/Report.sharp", sharp), &[("src/Lib/Prices.php", PRICES)]),
         [
-            "Cannot spread a value of type `iterable<int, int>`: PHP# spreads a `List` or a `Map`.",
+            "Cannot spread a value of type `Iterable<int>`: PHP# spreads a `List` or a `Map`.",
             "Cannot use spread operator on non-iterable type `int`.",
         ]
     );
@@ -4551,4 +4551,233 @@ fn a_misplaced_or_repeated_attribute_is_named_as_sharp_writes_it() {
             "9:6 attribute-not-repeatable Attribute `Field` is not declared as repeatable and has already been used. | Duplicate use of non-repeatable attribute `Field` | Attribute `Field` was first used here | The attribute `Field` is not declared with `Attribute::IS_REPEATABLE` in its `#[Attribute]` flags. Non-repeatable attributes can only be applied once to a given target (e.g., a class, method, property). | Remove this duplicate `Field` attribute, or if multiple instances are intended and valid, modify the attribute class `Field` to include `Attribute::IS_REPEATABLE` in its `#[Attribute]` declaration (e.g., `#[Attribute(Attribute::TARGET_ALL | Attribute::IS_REPEATABLE)]`).",
         ]
     );
+}
+
+/// An arithmetic message names its operand's type as PHP# writes it: an object by its short name, `Order`, and a
+/// nullable `int` as `int?`. The PHP twin keeps upstream's `Demo\Order` and `int|null`.
+#[test]
+fn an_arithmetic_message_names_its_operand_type_as_sharp_writes_it() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public int twice(Order order) => order * 2;\n\n    public int next(int? count) => count + 1;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    public function twice(Order $order): int\n    {\n        return $order * 2;\n    }\n\n    public function next(?int $count): int\n    {\n        return $count + 1;\n    }\n}\n";
+
+    assert_eq!(
+        worded(("src/Demo/Order.php", php), &[]),
+        [
+            "9:16 invalid-operand Invalid type for left operand. | Cannot perform arithmetic operation with non-numeric type Demo\\Order | The type(s) of the left operand are not compatible with this binary operation. | Ensure the left operand has a type suitable for this operation (e.g., number for arithmetic, string for concatenation).",
+            "9:16 mixed-return-statement Could not infer a precise return type for function `Demo\\Order::twice`. Saw type `mixed`. | Type inferred as `mixed` here. | The analysis could not determine a specific type for the value returned here, resulting in `mixed`. This can happen with complex code paths or unannotated data. | Add specific type hints to variables, parameters, or properties involved in calculating the return value. Consider adding a specific return type declaration to the function signature to catch potential mismatches earlier.",
+            "14:16 possibly-null-operand Left operand in arithmetic operation might be `null` (type `int|null`). | This might be `null`. | Performing arithmetic operations on `null` typically results in `0`. | Ensure the left operand is non-null before the operation, potentially using checks or assertions.",
+        ]
+    );
+    assert_eq!(
+        worded(("src/Demo/Order.sharp", sharp), &[]),
+        [
+            "5:38 invalid-operand Invalid type for left operand. | Cannot perform arithmetic operation with non-numeric type Order | The type(s) of the left operand are not compatible with this binary operation. | Ensure the left operand has a type suitable for this operation (e.g., number for arithmetic, string for concatenation).",
+            "5:38 mixed-return-statement Could not infer a precise return type for method `Order.twice`. Saw type `Any?`. | Type inferred as `Any?` here. | The analysis could not determine a specific type for the value returned here, resulting in `Any?`. This can happen with complex code paths or unannotated data. | Add specific type hints to variables, parameters, or properties involved in calculating the return value. Consider adding a specific return type declaration to the method signature to catch potential mismatches earlier.",
+            "7:36 possibly-null-operand Left operand in arithmetic operation might be `null` (type `int?`). | This might be `null`. | Performing arithmetic operations on `null` typically results in `0`. | Ensure the left operand is non-null before the operation, potentially using checks or assertions.",
+        ]
+    );
+}
+
+/// A comparison message names its operand's type as PHP# writes it, `Order?` for a nullable object. The PHP twin
+/// keeps upstream's `Demo\Order|null`.
+#[test]
+fn a_comparison_message_names_its_operand_type_as_sharp_writes_it() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public bool early(Order? order) => order < 1;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    public function early(?Order $order): bool\n    {\n        return $order < 1;\n    }\n}\n";
+
+    assert_eq!(
+        worded(("src/Demo/Order.php", php), &[]),
+        [
+            "9:16 possibly-null-operand Left operand in `<` comparison might be `null` (type `Demo\\Order|null`). | This might be `null` | If this operand is `null` at runtime, PHP's specific comparison rules for `null` with `<` will apply. | Ensure this operand is non-null or that comparison with `null` is intended and handled safely.",
+        ]
+    );
+    assert_eq!(
+        worded(("src/Demo/Order.sharp", sharp), &[]),
+        [
+            "5:40 possibly-null-operand Left operand in `<` comparison might be `null` (type `Order?`). | This might be `null` | If this operand is `null` at runtime, PHP's specific comparison rules for `null` with `<` will apply. | Ensure this operand is non-null or that comparison with `null` is intended and handled safely.",
+        ]
+    );
+}
+
+/// A type check the variable's type can never pass names that type as PHP# writes it, `string?`. The PHP twin keeps
+/// upstream's `null|string`.
+#[test]
+fn an_impossible_type_check_names_the_variable_type_as_sharp_writes_it() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public bool known(string? code)\n    {\n        if (code is int) {\n            return true;\n        }\n\n        return false;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    public function known(?string $code): bool\n    {\n        if (is_int($code)) {\n            return true;\n        }\n\n        return false;\n    }\n}\n";
+
+    let type_of = |analyzed| -> Vec<String> {
+        worded(analyzed, &[])
+            .into_iter()
+            .filter(|line| line.contains(" impossible-type-comparison "))
+            .filter_map(|line| {
+                line.split(" of type `").nth(1).and_then(|rest| rest.split('`').next()).map(str::to_owned)
+            })
+            .collect()
+    };
+
+    assert_eq!(type_of(("src/Demo/Order.php", php)), ["null|string"]);
+    assert_eq!(type_of(("src/Demo/Order.sharp", sharp)), ["string?"]);
+}
+
+/// A loop over a value that may be null names its type as PHP# writes it, `List<int>?`, a loop over `null` names
+/// PHP#'s null check `x != null` (spec section 19), and neither names PHP's `foreach` (spec section 17). The PHP twin
+/// keeps upstream's `list<int>|null`, `foreach` and `$iterable !== null`.
+#[test]
+fn a_loop_message_names_its_type_and_null_check_as_sharp_writes_them() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public int total(List<int>? items)\n    {\n        int sum = 0;\n        for (const item of items) {\n            sum = sum + item;\n        }\n\n        return sum;\n    }\n\n    public int none()\n    {\n        int sum = 0;\n        for (const item of null) {\n            sum = sum + 1;\n        }\n\n        return sum;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    /**\n     * @param list<int>|null $items\n     */\n    public function total(?array $items): int\n    {\n        $sum = 0;\n        foreach ($items as $item) {\n            $sum = $sum + $item;\n        }\n\n        return $sum;\n    }\n\n    public function none(): int\n    {\n        $sum = 0;\n        foreach (null as $item) {\n            $sum = $sum + 1;\n        }\n\n        return $sum;\n    }\n}\n";
+    let loops = |analyzed| -> Vec<String> {
+        worded(analyzed, &[]).into_iter().filter(|line| line.contains("-iterator ")).collect()
+    };
+
+    assert_eq!(
+        loops(("src/Demo/Order.php", php)),
+        [
+            "13:18 possibly-null-iterator Expression being iterated (type `list<int>|null`) might be `null` at runtime. | This might be `null` | This `foreach` might not be executed | If this expression is `null`, it will be treated as an empty array, and the loop body will not execute. | Consider checking for `null` before the loop if this is not intended.",
+            "23:18 null-iterator Iterating over `null` in `foreach`. | This expression is `null` | This `foreach` will not be executed | In PHP, iterating over `null` with `foreach` behaves like iterating an empty array; the loop body will not execute | This can hide uninitialized variables or logic errors. | Ensure the expression is initialized to an array or a Traversable object. If `null` is a possible expected state, consider an explicit check before the loop (e.g., `if ($iterable !== null)`).",
+        ]
+    );
+    assert_eq!(
+        loops(("src/Demo/Order.sharp", sharp)),
+        [
+            "8:28 possibly-null-iterator Expression being iterated (type `List<int>?`) might be `null` at runtime. | This might be `null` | This loop might not be executed | If this expression is `null`, it will be treated as an empty list, and the loop body will not execute. | Consider checking for `null` before the loop if this is not intended.",
+            "18:28 null-iterator Iterating over `null` in a loop. | This expression is `null` | This loop will not be executed | Iterating over `null` behaves like iterating an empty list; the loop body will not execute | This can hide uninitialized variables or logic errors. | Ensure the expression is initialized to an `Iterable<T>`. If `null` is a possible expected state, consider an explicit check before the loop (e.g., `if (iterable != null)`).",
+        ]
+    );
+}
+
+/// An unused field names the underscore prefix PHP# writes, `_`, and its fix inserts `_` before the name, since a
+/// PHP# field has no `$`. The PHP twin keeps upstream's `$_` and inserts `_` after the `$`.
+#[test]
+fn an_unused_field_names_and_writes_the_underscore_prefix_of_the_file() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    private int total = 0;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    private int $total = 0;\n}\n";
+    let fixed = |analyzed: (&'static str, &'static str)| -> Vec<String> {
+        analyze(&PLUGIN_REGISTRY, settings(), analyzed, &[])
+            .iter()
+            .filter(|issue| issue.code.as_deref() == Some("unused-property"))
+            .flat_map(|issue| issue.edits.values().flatten())
+            .map(|edit| {
+                let mut source = analyzed.1.to_owned();
+                source.insert_str(edit.range.start as usize, &String::from_utf8_lossy(&edit.new_text));
+                source.lines().find(|line| line.contains("total")).unwrap_or_default().trim().to_owned()
+            })
+            .collect()
+    };
+    let unused = |analyzed| -> Vec<String> {
+        worded(analyzed, &[]).into_iter().filter(|line| line.contains(" unused-property ")).collect()
+    };
+
+    assert_eq!(
+        unused(("src/Demo/Order.php", php)),
+        [
+            "7:17 unused-property Property `$total` is never used. | Property `$total` is declared here. | This property is declared but never read or written within the class. | Consider prefixing the property with an underscore (`$_`) to indicate that it is intentionally unused, or remove it if it is not needed."
+        ]
+    );
+    assert_eq!(fixed(("src/Demo/Order.php", php)), ["private int $_total = 0;"]);
+    assert_eq!(
+        unused(("src/Demo/Order.sharp", sharp)),
+        [
+            "5:17 unused-property Property `total` is never used. | Property `total` is declared here. | This property is declared but never read or written within the class. | Consider prefixing the property with an underscore (`_`) to indicate that it is intentionally unused, or remove it if it is not needed."
+        ]
+    );
+    assert_eq!(fixed(("src/Demo/Order.sharp", sharp)), ["private int _total = 0;"]);
+}
+
+/// An index read on a value that cannot take one names the value's type as PHP# writes it, and the null check as PHP#
+/// writes it.
+#[test]
+fn an_index_read_message_names_its_type_and_null_check_as_sharp_writes_them() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public int pick(Order? o) => o[0];\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    public function pick(?Order $o): int\n    {\n        return $o[0];\n    }\n}\n";
+    let refused = |analyzed| -> Vec<String> {
+        worded(analyzed, &[])
+            .into_iter()
+            .filter(|line| line.contains(" invalid-array-access ") || line.contains(" possibly-null-array-access "))
+            .collect()
+    };
+
+    assert_eq!(
+        refused(("src/Demo/Order.php", php)),
+        [
+            "9:16 invalid-array-access Cannot access array index on object `Demo\\Order` that does not implement `ArrayAccess`. | Object does not implement `ArrayAccess`. | Only objects implementing `ArrayAccess` can be accessed like arrays. | Ensure the object implements `ArrayAccess` before attempting to access it as an array.",
+            "9:16 possibly-null-array-access Cannot perform array access on possibly `null` value. | The expression might be `null` here. | Attempting to read an array index on `null` will result in a runtime error. | Ensure the variable holds an array before accessing it, possibly by checking with `is_array()` or initializing it.",
+        ]
+    );
+    assert_eq!(
+        refused(("src/Demo/Order.sharp", sharp)),
+        [
+            "5:34 invalid-array-access Cannot access array index on object `Order` that does not implement `ArrayAccess`. | Object does not implement `ArrayAccess`. | Only objects implementing `ArrayAccess` can be accessed like arrays. | Ensure the object implements `ArrayAccess` before attempting to access it as an array.",
+            "5:34 possibly-null-array-access Cannot perform array access on possibly `null` value. | The expression might be `null` here. | Attempting to read an array index on `null` will result in a runtime error. | Ensure the value is not `null` before reading an index, as in `if (value != null)`.",
+        ]
+    );
+}
+
+/// A docblock message names its types as PHP# writes them, and leaves out the `Mago\inspect()` call PHP# has no form
+/// for.
+#[test]
+fn a_docblock_message_names_its_types_as_sharp_writes_them() {
+    let sharp = "namespace Demo;\n\nclass Order\n{\n    public int run(int? count)\n    {\n        /** @psalm-trace $count */\n        let total = 1;\n        /** @var string $total */\n        let other = total;\n        return 1;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    public function run(?int $count): int\n    {\n        /** @psalm-trace $count */\n        $total = 1;\n        /** @var string $total */\n        $other = $total;\n        return 1;\n    }\n}\n";
+    let docblock = |analyzed| -> Vec<String> {
+        worded(analyzed, &[])
+            .into_iter()
+            .filter(|line| line.contains(" psalm-trace ") || line.contains(" docblock-type-mismatch "))
+            .collect()
+    };
+
+    assert_eq!(
+        docblock(("src/Demo/Order.php", php)),
+        [
+            "9:26 psalm-trace Trace: Type of `$count` is `int|null` | Type is: `int|null` | Spotted a `@psalm-trace` tag! While this works for compatibility, Mago has a more powerful way to inspect types. | For more flexible debugging, try using `Mago\\inspect()` directly in your code. It can inspect any expression, not just variables (e.g., `Mago\\inspect($foo->bar());`).",
+            "11:18 docblock-type-mismatch Docblock type mismatch for variable `$total`. | This docblock asserts the type should be `string`, but it was previously defined as `int(1)`. | The type of the variable defined in the docblock does not match the previously defined type. | Change the docblock type to match `int(1)`, or update the variable definition to a compatible type `string`.",
+        ]
+    );
+    assert_eq!(
+        docblock(("src/Demo/Order.sharp", sharp)),
+        [
+            "7:26 psalm-trace Trace: Type of `$count` is `int?` | Type is: `int?` | Spotted a `@psalm-trace` tag! While this works for compatibility, Mago has a more powerful way to inspect types.",
+            "9:18 docblock-type-mismatch Docblock type mismatch for variable `$total`. | This docblock asserts the type should be `string`, but it was previously defined as `1`. | The type of the variable defined in the docblock does not match the previously defined type. | Change the docblock type to match `1`, or update the variable definition to a compatible type `string`.",
+        ]
+    );
+}
+
+/// A read or call through a value that may be null names PHP#'s null-safe operator `?.` and its null check
+/// `x != null`, spec sections 14.4 and 19, and its fix writes `?.` into the file. The PHP twin keeps upstream's `?->`,
+/// `$obj !== null` and its `?->` fix.
+#[test]
+fn a_possibly_null_member_access_names_and_writes_the_null_safe_operator_of_the_file() {
+    let box_class = (
+        "src/Lib/Box.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Box\n{\n    public int $value = 0;\n\n    public function count(): int\n    {\n        return 1;\n    }\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Box;\n\nclass Report\n{\n    public static int? read(Box? box) => box.value;\n\n    public static int? count(Box? box) => box.count();\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Box;\n\nclass Report\n{\n    public static function read(?Box $box): ?int\n    {\n        return $box->value;\n    }\n\n    public static function count(?Box $box): ?int\n    {\n        return $box->count();\n    }\n}\n";
+    let fixes = |analyzed| -> Vec<String> {
+        analyze(&PLUGIN_REGISTRY, settings(), analyzed, &[box_class])
+            .iter()
+            .flat_map(|issue| issue.edits.values().flatten())
+            .map(|edit| String::from_utf8_lossy(&edit.new_text).into_owned())
+            .collect()
+    };
+
+    assert_eq!(
+        worded(("src/Demo/Report.php", php), &[box_class]),
+        [
+            "11:16 possibly-null-property-access Attempting to access a property on a possibly `null` value. | This expression can be `null` here | If this expression is `null` at runtime, PHP will raise a warning and the property access will result in `null`. | Use the nullsafe operator (`?->`) to safely access the property, or add a check to ensure the value is not `null` (e.g., `if ($obj !== null)`).",
+            "16:16 possible-method-access-on-null Attempting to call a method on `null`. | This expression can be `null` | Use the nullsafe operator (`?->`) if `null` is an expected value.",
+            "16:16 mixed-return-statement Could not infer a precise return type for function `Demo\\Report::count`. Saw type `mixed`. | Type inferred as `mixed` here. | The analysis could not determine a specific type for the value returned here, resulting in `mixed`. This can happen with complex code paths or unannotated data. | Add specific type hints to variables, parameters, or properties involved in calculating the return value. Consider adding a specific return type declaration to the function signature to catch potential mismatches earlier.",
+        ]
+    );
+    assert_eq!(fixes(("src/Demo/Report.php", php)), ["?->"]);
+    assert_eq!(
+        worded(("src/Demo/Report.sharp", sharp), &[box_class]),
+        [
+            "7:42 possibly-null-property-access Attempting to access a property on a possibly `null` value. | This expression can be `null` here | If this expression is `null` at runtime, PHP will raise a warning and the property access will result in `null`. | Use the nullsafe operator (`?.`) to safely access the property, or add a check to ensure the value is not `null` (e.g., `if (obj != null)`).",
+            "9:43 possible-method-access-on-null Attempting to call a method on `null`. | This expression can be `null` | Use the nullsafe operator (`?.`) if `null` is an expected value.",
+            "9:43 mixed-return-statement Could not infer a precise return type for method `Report.count`. Saw type `Any?`. | Type inferred as `Any?` here. | The analysis could not determine a specific type for the value returned here, resulting in `Any?`. This can happen with complex code paths or unannotated data. | Add specific type hints to variables, parameters, or properties involved in calculating the return value. Consider adding a specific return type declaration to the method signature to catch potential mismatches earlier.",
+        ]
+    );
+    assert_eq!(fixes(("src/Demo/Report.sharp", sharp)), ["?."]);
 }

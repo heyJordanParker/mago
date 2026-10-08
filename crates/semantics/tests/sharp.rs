@@ -3387,3 +3387,38 @@ fn a_class_error_names_the_class_as_sharp_writes_it() {
         ]
     );
 }
+
+/// Spec section 14 gives no form that calls a lambda where it is written, and no form that reads a member of a `new`
+/// expression, so the errors for those PHP forms name no code to write in a `.sharp` file. The PHP twin keeps
+/// upstream's examples.
+#[test]
+fn an_error_for_a_php_form_without_a_sharp_form_names_no_php_code() {
+    let code = "namespace Demo;\n\nclass Order\n{\n    public int run()\n    {\n        const order = new Order[0]();\n        return () => { return 1; }();\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    public function run(): int\n    {\n        $order = new Order[0]();\n        return function () { return 1; }();\n    }\n}\n";
+    let helps = |path, code| -> Vec<(String, Option<String>)> {
+        check(path, code).into_iter().map(|issue| (issue.message, issue.help)).collect()
+    };
+
+    assert_eq!(
+        helps("src/Demo/Order.php", php),
+        [
+            (
+                "`[` cannot follow a class name in a `new` expression.".to_owned(),
+                Some("Wrap the new expression in parentheses, e.g. `(new Foo())->bar()`.".to_owned())
+            ),
+            (
+                "Immediately invoked closure must be wrapped in parentheses.".to_owned(),
+                Some("Wrap the closure in parentheses before invoking it, e.g. `(function() { ... })()`.".to_owned())
+            ),
+        ]
+    );
+    assert_eq!(
+        helps("src/Demo/Order.sharp", code),
+        [
+            ("This expression is not supported yet in PHP#.".to_owned(), None),
+            ("`[` cannot follow a class name in a `new` expression.".to_owned(), None),
+            ("This expression is not supported yet in PHP#.".to_owned(), None),
+            ("Immediately invoked closure must be wrapped in parentheses.".to_owned(), None),
+        ]
+    );
+}

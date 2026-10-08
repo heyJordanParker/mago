@@ -15,7 +15,6 @@ use mago_algebra::find_satisfying_assignments;
 use mago_algebra::saturate_clauses;
 use mago_codex::assertion::Assertion;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
-use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::resource::TResource;
@@ -66,6 +65,7 @@ use crate::utils::expression::get_nullsafe_base_expressions;
 use crate::utils::misc::unwrap_expression;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_member;
+use crate::utils::names::display_type;
 
 pub fn post_invocation_process<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
@@ -1031,8 +1031,8 @@ where
                                     false,
                                 ) =>
                             {
-                                let asserted_type_id = asserted_type.get_id();
-                                let expected_type_id = resolved_assertion_type.get_id();
+                                let asserted_type_id = display_type(context, asserted_type);
+                                let expected_type_id = display_type(context, &resolved_assertion_type);
 
                                 context.collector.report_with_code(
                                         IssueCode::ImpossibleTypeComparison,
@@ -1055,8 +1055,8 @@ where
                                 {
                                     intersection
                                 } else {
-                                    let asserted_type_id = asserted_type.get_id();
-                                    let expected_type_id = resolved_assertion_type.get_id();
+                                    let asserted_type_id = display_type(context, asserted_type);
+                                    let expected_type_id = display_type(context, &resolved_assertion_type);
 
                                     context.collector.report_with_code(
                                         IssueCode::ImpossibleTypeComparison,
@@ -1094,10 +1094,10 @@ where
                     && (!any_possible || always_redundant)
                     && let Some(asserted_type) = &asserted_type
                 {
-                    let asserted_type_id = asserted_type.get_id();
+                    let asserted_type_id = display_type(context, asserted_type);
                     let expected_type_id = resolved_or_clause
                         .iter()
-                        .filter_map(|a| a.get_type().map(|t| t.get_id().to_string()))
+                        .filter_map(|a| a.get_type().map(|t| display_type(context, &TUnion::from_atomic(t.clone()))))
                         .collect::<Vec<_>>()
                         .join("|");
 

@@ -575,7 +575,7 @@ where
     else {
         return;
     };
-    let type_str = atomic_type.get_id();
+    let type_str = display_type(context, &TUnion::from_atomic(atomic_type.clone()));
 
     context.collector.report_with_code(
         IssueCode::InvalidArgument,

@@ -51,6 +51,7 @@ use mago_span::Span;
 use crate::code::IssueCode;
 use crate::context::Context;
 use crate::invocation::MethodTargetContext;
+use crate::utils::names::display_type;
 
 #[derive(Debug, Clone, Copy)]
 pub struct InferenceOptions {
@@ -1177,18 +1178,18 @@ pub fn infer_parameter_templates_from_argument<A>(
     );
 
     for violation in violations {
+        let inferred_bound = display_type(context, &violation.inferred_bound);
+        let constraint = display_type(context, &violation.constraint);
+
         context.collector.report_with_code(
             IssueCode::TemplateConstraintViolation,
             Issue::error(format!("Argument type mismatch for template `{}`.", violation.template_name,))
                 .with_annotation(Annotation::primary(argument_span).with_message(format!(
-                    "This argument has type `{}`, which is not compatible with the required template constraint `{}`.",
-                    violation.inferred_bound.get_id(),
-                    violation.constraint.get_id()
+                    "This argument has type `{inferred_bound}`, which is not compatible with the required template constraint `{constraint}`."
                 )))
                 .with_note(format!(
-                    "Template parameter `{}` is constrained with `{}`.",
-                    violation.template_name,
-                    violation.constraint.get_id()
+                    "Template parameter `{}` is constrained with `{constraint}`.",
+                    violation.template_name
                 ))
                 .with_help("Ensure the argument's type satisfies the template constraint."),
         );

@@ -1,7 +1,6 @@
 use mago_allocator::Arena;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::metadata::function_like::FunctionLikeMetadata;
-use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::callable::TCallable;
 use mago_codex::ttype::atomic::callable::TCallableSignature;
 use mago_codex::ttype::cast::cast_atomic_to_callable;
@@ -40,6 +39,7 @@ use crate::invocation::InvocationTarget;
 use crate::plugin::ExpressionHookResult;
 use crate::plugin::context::HookContext;
 use crate::utils::expression::get_bare_name_variable_id;
+use crate::utils::names::display_type;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for FunctionCall<'arena> {
     fn analyze<'ctx, A>(
@@ -274,7 +274,7 @@ where
                 source: None,
             });
         } else {
-            let type_name = atomic.get_id();
+            let type_name = display_type(context, &TUnion::from_atomic(atomic.clone()));
 
             context.collector.report_with_code(
                 IssueCode::InvalidCallable,

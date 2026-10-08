@@ -242,6 +242,7 @@ where
                 result.encountered_null = true;
                 if !object_type.ignore_nullable_issues() && !is_null_safe && !object_type.has_nullsafe_null() {
                     result.has_invalid_target = true;
+                    let nullsafe = if context.dialect.is_sharp() { "?." } else { "?->" };
 
                     context.collector.report_with_code(
                         if object_type.is_null() {
@@ -253,7 +254,9 @@ where
                             .with_annotation(
                                 Annotation::primary(object.span()).with_message("This expression can be `null`"),
                             )
-                            .with_help("Use the nullsafe operator (`?->`) if `null` is an expected value."),
+                            .with_help(format!(
+                                "Use the nullsafe operator (`{nullsafe}`) if `null` is an expected value."
+                            )),
                     );
                 }
 
@@ -1509,6 +1512,7 @@ pub(super) fn report_dynamic_static_method_call<A>(
     let method_name = display_method_name(context, classname, method_name);
     let classname = display_class_like_name(context, classname);
     let method = display_member(context, classname, method_name);
+    let instance_access = if context.dialect.is_sharp() { "." } else { "->" };
     let mut issue = Issue::error(format!("Cannot call magic static method `{method}` on an instance."))
         .with_annotation(
             Annotation::primary(selector_span)
@@ -1523,9 +1527,9 @@ pub(super) fn report_dynamic_static_method_call<A>(
             .with_note(format!(
                 "The magic method `{method_name}` is documented as `static` and is intended to be handled by `__callStatic()`."
             ))
-            .with_note(
-                "However, because it's being called on an instance (`->`), the call will be routed to the existing `__call()` method instead."
-            )
+            .with_note(format!(
+                "However, because it's being called on an instance (`{instance_access}`), the call will be routed to the existing `__call()` method instead."
+            ))
             .with_note(
                 "This is likely not the intended behavior and may lead to unexpected errors."
             );
@@ -1534,9 +1538,9 @@ pub(super) fn report_dynamic_static_method_call<A>(
             .with_note(
                 "Magic methods defined with `@method static` are handled by `__callStatic()`."
             )
-            .with_note(
-                "When called on an instance (`->`), PHP attempts to route the call to a `__call()` method."
-            )
+            .with_note(format!(
+                "When called on an instance (`{instance_access}`), PHP attempts to route the call to a `__call()` method."
+            ))
             .with_note(format!(
                 "Since the class `{classname}` is missing a `__call()` method, this will cause a fatal `Error` at runtime."
             ));

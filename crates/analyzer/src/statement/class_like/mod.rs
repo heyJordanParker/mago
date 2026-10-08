@@ -1885,8 +1885,7 @@ fn check_template_parameters<'ctx, A>(
                             IssueCode::InvalidTemplateParameter,
                             Issue::error("Inconsistent template: expected a template parameter, but found a concrete type.")
                                 .with_annotation(Annotation::primary(parent_definition_span).with_message(format!(
-                                    "Expected a template parameter, but got `{}`",
-                                    extended_type.get_id(),
+                                    "Expected a template parameter, but got `{extended_type_str}`",
                                 )))
                                 .with_note(format!("Because `{parent_name}` is marked `@consistent-templates`, its template parameters must be extended with other template parameters, not concrete types."))
                                 .with_help(format!("Change this to a template parameter defined on `{class_name}`.")),
@@ -1896,11 +1895,13 @@ fn check_template_parameters<'ctx, A>(
                         && let child_template_type = &child_template.constraint
                         && child_template_type.get_id() != template_type.get_id()
                     {
+                        let child_constraint = display_type(context, child_template_type);
+                        let parent_constraint = display_type(context, &template_type);
                         context.collector.report_with_code(
                             IssueCode::InvalidTemplateParameter,
                             Issue::error("Inconsistent template: template parameter constraints do not match.")
-                                .with_annotation(Annotation::primary(class_name_span).with_message(format!("This template parameter has constraint `{}`...", child_template_type.get_id())))
-                                .with_annotation(Annotation::secondary(parent_definition_span).with_message(format!("...but parent `{parent_name}` requires a constraint of `{}` for this template.", template_type.get_id())))
+                                .with_annotation(Annotation::primary(class_name_span).with_message(format!("This template parameter has constraint `{child_constraint}`...")))
+                                .with_annotation(Annotation::secondary(parent_definition_span).with_message(format!("...but parent `{parent_name}` requires a constraint of `{parent_constraint}` for this template.")))
                                 .with_note(format!("Because `{parent_name}` is marked `@consistent-templates`, the constraints of its template parameters must be identical in child classes."))
                                 .with_help("Adjust the constraint on the child template parameter to match the parent's."),
                         );
@@ -3724,7 +3725,7 @@ fn check_class_like_properties<'ctx, A>(
                     has_type_incompatibility = true;
 
                     if let Some(property_span) = property_metadata.name_span {
-                        let parent_type_id = parent_type.type_union.get_id();
+                        let parent_type_id = display_type(context, &parent_type.type_union);
 
                         context.collector.report_with_code(
                                 IssueCode::IncompatiblePropertyType,

@@ -194,7 +194,8 @@ where
                 result.has_ambiguous_path = true;
 
                 if !block_context.flags.inside_isset() {
-                    report_ambiguous_access(context, property_selector, object_expression.span(), word("object"));
+                    let object_type = display_type(context, &TUnion::from_atomic(object_atomic.clone()));
+                    report_ambiguous_access(context, property_selector, object_expression.span(), &object_type);
                 }
 
                 continue;
@@ -219,12 +220,8 @@ where
                 } else {
                     result.has_ambiguous_path = true;
                     if !block_context.flags.inside_isset() {
-                        report_ambiguous_access(
-                            context,
-                            property_selector,
-                            object_expression.span(),
-                            object_type.get_id(),
-                        );
+                        let object_type = display_type(context, &object_type);
+                        report_ambiguous_access(context, property_selector, object_expression.span(), &object_type);
                     }
                 }
 
@@ -254,12 +251,8 @@ where
                 } else {
                     result.has_ambiguous_path = true;
                     if !block_context.flags.inside_isset() {
-                        report_ambiguous_access(
-                            context,
-                            property_selector,
-                            object_expression.span(),
-                            object_type.get_id(),
-                        );
+                        let object_type = display_type(context, &object_type);
+                        report_ambiguous_access(context, property_selector, object_expression.span(), &object_type);
                     }
                 }
 
@@ -287,12 +280,8 @@ where
                         result.has_ambiguous_path = true;
 
                         if !block_context.flags.inside_isset() {
-                            report_ambiguous_access(
-                                context,
-                                property_selector,
-                                object_expression.span(),
-                                object_type.get_id(),
-                            );
+                            let object_type = display_type(context, &object_type);
+                            report_ambiguous_access(context, property_selector, object_expression.span(), &object_type);
                         }
 
                         continue;
@@ -1379,6 +1368,9 @@ fn report_access_on_null<'ctx, A>(
             );
         }
         (false, false) => {
+            let (nullsafe, null_check) =
+                if context.dialect.is_sharp() { ("?.", "if (obj != null)") } else { ("?->", "if ($obj !== null)") };
+
             if !block_context.flags.inside_isset() {
                 if block_context.flags.inside_assignment() {
                     context.collector.report_with_code(
@@ -1389,7 +1381,7 @@ fn report_access_on_null<'ctx, A>(
                                     .with_message("This expression can be `null` here"),
                             )
                             .with_note("If this expression is `null` at runtime, PHP will raise a warning and the property access will result in `null`.")
-                            .with_help("Add a check to ensure the value is not `null` (e.g., `if ($obj !== null)`).")
+                            .with_help(format!("Add a check to ensure the value is not `null` (e.g., `{null_check}`)."))
                     );
                 } else {
                     context.collector.report_with_code(
@@ -1400,8 +1392,8 @@ fn report_access_on_null<'ctx, A>(
                                     .with_message("This expression can be `null` here"),
                             )
                             .with_note("If this expression is `null` at runtime, PHP will raise a warning and the property access will result in `null`.")
-                            .with_help("Use the nullsafe operator (`?->`) to safely access the property, or add a check to ensure the value is not `null` (e.g., `if ($obj !== null)`).")
-                            .with_edit(operator_span.file_id, TextEdit::replace(operator_span, "?->")),
+                            .with_help(format!("Use the nullsafe operator (`{nullsafe}`) to safely access the property, or add a check to ensure the value is not `null` (e.g., `{null_check}`)."))
+                            .with_edit(operator_span.file_id, TextEdit::replace(operator_span, nullsafe)),
                     );
                 }
             }
@@ -1476,7 +1468,7 @@ fn report_ambiguous_access<A>(
     context: &mut Context<'_, '_, A>,
     selector: &ClassLikeMemberSelector,
     object_span: Span,
-    object_type: Word,
+    object_type: &str,
 ) where
     A: Arena,
 {
@@ -1500,12 +1492,14 @@ fn report_possibly_non_existent_property<A>(
 ) where
     A: Arena,
 {
+    let object_type = display_type(context, object_type);
+
     context.collector.report_with_code(
         IssueCode::PossiblyNonExistentProperty,
-        Issue::error(format!("Property `{prop_name}` might not exist on object `{}`.", object_type.get_id()))
+        Issue::error(format!("Property `{prop_name}` might not exist on object `{object_type}`."))
             .with_annotation(Annotation::primary(selector_span).with_message("Property might not exist here"))
             .with_annotation(
-                Annotation::secondary(object_span).with_message(format!("On instance of `{}`", object_type.get_id())),
+                Annotation::secondary(object_span).with_message(format!("On instance of `{object_type}`")),
             )
             .with_note(
                 "If this property does not exist at runtime, PHP will raise a warning and the expression will evaluate to `null`.",

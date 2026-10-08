@@ -32,9 +32,11 @@ macro_rules! intersect_simple {
             if acceptable_types.is_empty() || (!did_remove_type && !$is_equality) {
                 if let Some(k) = $key {
                     if let Some(span) = $span {
+                        let old_var_type_atom =
+                            mago_word::word($crate::utils::names::display_type($context, $existing_var_type));
                         trigger_issue_for_impossible(
                             $context,
-                            $existing_var_type.get_id(),
+                            old_var_type_atom,
                             &k,
                             $assertion,
                             !did_remove_type,

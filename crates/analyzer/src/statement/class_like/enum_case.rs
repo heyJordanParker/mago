@@ -1,5 +1,4 @@
 use mago_allocator::Arena;
-use mago_codex::ttype::TType;
 use mago_codex::ttype::union::TUnion;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -18,6 +17,7 @@ use crate::statement::attributes::AttributeTarget;
 use crate::statement::attributes::analyze_attributes;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_member;
+use crate::utils::names::display_type;
 use crate::utils::names::display_value_type;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for EnumCase<'arena> {
@@ -113,10 +113,10 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for EnumCaseBackedItem<'arena> {
             return Ok(());
         };
 
-        let backing_type_str = backing_type.get_id();
-
         if (backing_type.is_int() && !value_type.is_int()) || (backing_type.is_string() && !value_type.is_string()) {
-            let value_type_str = display_value_type(context, &value_type, &TUnion::from_atomic(backing_type.clone()));
+            let backing_union = TUnion::from_atomic(backing_type.clone());
+            let backing_type_str = display_type(context, &backing_union);
+            let value_type_str = display_value_type(context, &value_type, &backing_union);
 
             context.collector.report_with_code(
                 IssueCode::InvalidEnumCaseValue,

@@ -51,6 +51,7 @@ use crate::reconciler::map_generic_constraint_or_else;
 use crate::reconciler::negated_assertion_reconciler;
 use crate::reconciler::simple_assertion_reconciler;
 use crate::reconciler::trigger_issue_for_impossible;
+use crate::utils::names::display_type;
 use crate::utils::php_emulation::numeric_string_equals_int;
 
 pub fn reconcile<A>(
@@ -74,7 +75,7 @@ where
     };
 
     if is_negation {
-        let old_var_type_atom = existing_var_type.get_id();
+        let old_var_type_atom = word(display_type(context, existing_var_type));
         return negated_assertion_reconciler::reconcile(
             context,
             assertion,
@@ -89,7 +90,7 @@ where
     if assertion.has_literal_value()
         && let Some(assertion_type) = assertion.get_type()
     {
-        let old_var_type_atom = existing_var_type.get_id();
+        let old_var_type_atom = word(display_type(context, existing_var_type));
         return handle_literal_equality(
             context,
             assertion,
@@ -122,18 +123,12 @@ where
         if can_report_issues && let (Some(key), Some(span)) = (key, span) {
             if existing_var_type.types == refined_type.types {
                 if !assertion.has_equality() && !assertion_type.is_mixed() {
-                    trigger_issue_for_impossible(
-                        context,
-                        existing_var_type.get_id(),
-                        key,
-                        assertion,
-                        true,
-                        negated,
-                        span,
-                    );
+                    let old_var_type_atom = word(display_type(context, existing_var_type));
+                    trigger_issue_for_impossible(context, old_var_type_atom, key, assertion, true, negated, span);
                 }
             } else if refined_type.is_never() {
-                trigger_issue_for_impossible(context, existing_var_type.get_id(), key, assertion, false, negated, span);
+                let old_var_type_atom = word(display_type(context, existing_var_type));
+                trigger_issue_for_impossible(context, old_var_type_atom, key, assertion, false, negated, span);
             }
         }
 
