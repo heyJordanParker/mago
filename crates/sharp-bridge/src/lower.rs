@@ -1616,8 +1616,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         }
     }
 
-    /// Whether the ordering `binary` compares strings. The checker orders a string only against a string, `null`
-    /// aside, so a string on either side means strings on both.
+    /// Whether the ordering `binary` compares strings. The checker orders a string only against a string, and never a
+    /// side that may be `null`, so a string on either side means strings on both.
     fn orders_strings(&self, binary: &Binary) -> bool {
         [binary.lhs, binary.rhs]
             .into_iter()

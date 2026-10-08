@@ -2243,6 +2243,36 @@ fn ordering_a_string_against_a_number_is_refused() {
     );
 }
 
+/// Spec section 19 lifts only `==` and `!=` over `null`, so an ordering or `<=>` with a side that may be `null` is refused
+/// for a string, an int and a float, as for an instance. Once the side is tested for `null`, it orders. PHP keeps its
+/// loose `<`, which orders `null` as `""` or `0`.
+#[test]
+fn ordering_a_nullable_value_is_refused_until_it_is_tested_for_null() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static bool a(string? name) => name < \"b\";\n\n    public static bool b(int? count) => count <= 1;\n\n    public static bool c(float? ratio) => ratio > 1.5;\n\n    public static int d(int? count, int total) => count <=> total;\n\n    public static bool e(string? name) => \"b\" >= name;\n\n    public static bool f(string? name) => name != null && name < \"b\";\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function a(?string $name): bool { return $name < \"b\"; }\n\n    public static function b(?int $count): bool { return $count <= 1; }\n\n    public static function c(?float $ratio): bool { return $ratio > 1.5; }\n\n    public static function d(?int $count, int $total): int { return $count <=> $total; }\n\n    public static function e(?string $name): bool { return \"b\" >= $name; }\n\n    public static function f(?string $name): bool { return $name !== null && $name < \"b\"; }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.php", php), &[]),
+        [
+            "7:60 possibly-null-operand",
+            "9:58 possibly-null-operand",
+            "11:60 possibly-null-operand",
+            "13:69 possibly-null-operand",
+            "15:67 possibly-null-operand",
+        ]
+    );
+    assert_eq!(
+        refusals(("src/Demo/Report.sharp", sharp), &[]),
+        [
+            "5:43 invalid-operand `<` cannot compare `string?` with `string`: only `==` and `!=` take `null`, so test the value for `null` first. | Test it with `!= null` before the comparison.",
+            "7:41 invalid-operand `<=` cannot compare `int?` with `int`: only `==` and `!=` take `null`, so test the value for `null` first. | Test it with `!= null` before the comparison.",
+            "9:43 invalid-operand `>` cannot compare `float?` with `float`: only `==` and `!=` take `null`, so test the value for `null` first. | Test it with `!= null` before the comparison.",
+            "11:51 invalid-operand `<=>` cannot compare `int?` with `int`: only `==` and `!=` take `null`, so test the value for `null` first. | Test it with `!= null` before the comparison.",
+            "13:43 invalid-operand `>=` cannot compare `string` with `string?`: only `==` and `!=` take `null`, so test the value for `null` first. | Test it with `!= null` before the comparison.",
+        ]
+    );
+}
+
 /// Spec section 19: `==` and `!=` on a nullable type are lifted, so null equals only null, and an `Any?` compares by
 /// value with a string or a number. None of them is an issue in PHP#, though PHP's loose `==` reports them.
 #[test]
@@ -4502,16 +4532,18 @@ fn an_operand_the_declared_operator_does_not_take_is_refused_by_its_php_sharp_ty
     );
 }
 
-/// Decision 046 lifts only `==` and `!=` over null, so ordering a nullable instance is refused until it is tested.
+/// Decision 046 lifts only `==` and `!=` over null, so ordering a nullable instance is refused until it is tested. An
+/// operand the operator never takes is named first, as testing for `null` would not let it order.
 #[test]
 fn ordering_a_nullable_instance_is_refused_until_it_is_tested_for_null() {
-    let sharp = "namespace App;\n\npublic class Range\n{\n    public bool below(Money? low, Money high) => low < high;\n\n    public int compare(Money low, Money? high) => low <=> high;\n\n    public bool tested(Money? low, Money high) => low != null && low < high;\n}\n";
+    let sharp = "namespace App;\n\npublic class Range\n{\n    public bool below(Money? low, Money high) => low < high;\n\n    public int compare(Money low, Money? high) => low <=> high;\n\n    public bool tested(Money? low, Money high) => low != null && low < high;\n\n    public bool five(Money? low) => low < 5;\n}\n";
 
     assert_eq!(
         refusals(("src/App/Range.sharp", sharp), &[MONEY_OPERATORS]),
         [
             "5:50 invalid-operand `<` cannot compare `Money?` with `Money`: only `==` and `!=` take `null`, so test the value for `null` first. | Test it with `!= null` before the comparison.",
             "7:51 invalid-operand `<=>` cannot compare `Money` with `Money?`: only `==` and `!=` take `null`, so test the value for `null` first. | Test it with `!= null` before the comparison.",
+            "11:37 invalid-operand `<` cannot compare `Money?` with `int`. | Convert one side so both sides have the same type.",
         ]
     );
 }
