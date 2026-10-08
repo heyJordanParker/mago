@@ -588,8 +588,10 @@ impl<'input> Lexer<'input> {
                             }
                         }
 
+                        // PHP reads a cast ignoring case, and PHP# casts are lowercase only, so `(Int)` in a `.sharp`
+                        // file is the class `Int` in parentheses.
                         for (value, kind) in internal::consts::CAST_TYPES {
-                            if let Some(length) = self.input.match_sequence_ignore_whitespace(value, true) {
+                            if let Some(length) = self.input.match_sequence_ignore_whitespace(value, !self.sharp) {
                                 break 'parenthesis (kind, length);
                             }
                         }

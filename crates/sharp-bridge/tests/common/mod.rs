@@ -66,6 +66,22 @@ pub const FAILURES: (&str, &str) = (
     "<?php namespace App\\Tenant; final class Missing extends \\Exception {} final class Broken extends \\Exception {}",
 );
 
+/// The standard library's `Sharp\Int`, with the signatures of its `parse` and `tryParse`.
+pub const INT: (&str, &str) = (
+    "vendor/heyjordanparker/php-sharp-composer/library/Sharp/Int.sharp",
+    "namespace Sharp;\n\npublic static class Int\n{\n    public static int parse(Any? value) => 0;\n\n    public static int? tryParse(Any? value) => null;\n}\n",
+);
+
+/// The standard library's `Sharp\Float`, with the signatures of its `parse` and `tryParse`.
+pub const FLOAT: (&str, &str) = (
+    "vendor/heyjordanparker/php-sharp-composer/library/Sharp/Float.sharp",
+    "namespace Sharp;\n\npublic static class Float\n{\n    public static float parse(Any? value) => 0.0;\n\n    public static float? tryParse(Any? value) => null;\n}\n",
+);
+
+/// The standard library's package in `vendor/`. A checked file under it is the standard library's, as the loader marks
+/// a file whose nearest `composer.json` names the package.
+const STANDARD_LIBRARY: &str = "vendor/heyjordanparker/php-sharp-composer/";
+
 static PRELUDE: LazyLock<Prelude> = LazyLock::new(Prelude::build);
 static PLUGIN_REGISTRY: LazyLock<PluginRegistry> = LazyLock::new(PluginRegistry::with_library_providers);
 
@@ -111,7 +127,8 @@ pub fn checked_inlining<R>(
         metadata.extend(scan_program(&arena, &file, program, &names, settings.version));
     }
 
-    let file = File::ephemeral(Cow::Owned(path.as_bytes().to_vec()), Cow::Owned(code.as_bytes().to_vec()));
+    let mut file = File::ephemeral(Cow::Owned(path.as_bytes().to_vec()), Cow::Owned(code.as_bytes().to_vec()));
+    file.is_standard_library = path.starts_with(STANDARD_LIBRARY);
     let program = parse_file_with_dialect(&arena, &file, Dialect::Sharp, ParserSettings::default());
     let names = NameResolver::new(&arena).resolve(program);
     let semantic_issues = SemanticsChecker::new(PHPVersion::PHP85).check(&file, program, &names);
