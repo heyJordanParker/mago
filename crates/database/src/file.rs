@@ -68,6 +68,12 @@ pub struct File {
     /// The type of the file, indicating its origin.
     pub file_type: FileType,
 
+    /// Whether the file is a PHP# source of the standard library: a `.sharp` file whose nearest `composer.json` names
+    /// the standard library's Composer package, vendored or in the package's own repository. The loader sets it, only
+    /// the library may declare native bodies and write `@`, and `mago compile` lowers the library first and inlines its
+    /// forms into the other files.
+    pub is_standard_library: bool,
+
     /// The contents of the file, if available.
     pub contents: Cow<'static, [u8]>,
 
@@ -101,7 +107,7 @@ impl File {
         let size = contents.len() as u32;
         let lines = line_starts(contents.as_ref());
 
-        Self { id, name, path, file_type, contents, size, lines }
+        Self { id, name, path, file_type, is_standard_library: false, contents, size, lines }
     }
 
     /// Creates a new `File` instance by reading its contents from the filesystem.

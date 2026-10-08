@@ -45,9 +45,6 @@ use mago_word::empty_word;
 use super::IncrementalAnalysisService;
 use crate::error::OrchestratorError;
 
-/// The folder of the standard library's Composer package, whose methods other files inline.
-const LIBRARY: &[u8] = b"vendor/heyjordanparker/php-sharp-composer/";
-
 /// The folder Composer installs packages into. `composer.lock` stands for every file in it.
 const VENDOR: &[u8] = b"vendor/";
 
@@ -69,8 +66,8 @@ type Lowered = Result<(Unit, Vec<(Vec<u8>, InlineForm)>), IssueCollection>;
 impl IncrementalAnalysisService {
     /// Compiles each `.sharp` file of the last analysis, in file name order.
     ///
-    /// A file is accepted when the analysis reported no error-level issue in it. The standard library's files lower
-    /// first, and the others inline their forms.
+    /// A file is accepted when the analysis reported no error-level issue in it. The standard library's files, those
+    /// `File::is_standard_library` marks, lower first, and the others inline their forms.
     ///
     /// An accepted file's inputs are its own source, `composer.lock`, and each file outside `vendor/` whose edit makes
     /// the warm path re-analyze it: each file whose signature edit reaches it through the cascade or reaches a symbol
@@ -110,7 +107,7 @@ impl IncrementalAnalysisService {
         }
 
         let session = self.plugin_registry.create_external_analysis_session(self.database.files());
-        let (library, rest): (Vec<_>, Vec<_>) = files.iter().partition(|file| file.name.starts_with(LIBRARY));
+        let (library, rest): (Vec<_>, Vec<_>) = files.iter().partition(|file| file.is_standard_library);
 
         let lowered_library = self.lower_all(&library, &InlineForms::default(), &errors, session.as_ref())?;
         let forms: InlineForms = lowered_library
@@ -530,7 +527,8 @@ mod tests {
     }
 
     /// A project of files, each a workspace-relative name and its contents. A PHP file under `vendor/` is vendored, and
-    /// every other file is a host file, as `mago compile` loads every `.sharp` file.
+    /// every other file is a host file, as `mago compile` loads every `.sharp` file. A file under the standard
+    /// library's package is the library's, as the loader marks it from the package's `composer.json`.
     fn project(files: &[(&str, &str)]) -> Database<'static> {
         let mut database =
             Database::new(DatabaseConfiguration::new(Path::new("/project"), vec![], vec![], vec![], vec![]));
@@ -542,12 +540,14 @@ mod tests {
             } else {
                 FileType::Host
             };
-            database.add(File::new(
+            let mut file = File::new(
                 Cow::Owned(name.as_bytes().to_vec()),
                 file_type,
                 Some(Path::new("/project").join(name)),
                 Cow::Owned(contents.as_bytes().to_vec()),
-            ));
+            );
+            file.is_standard_library = name.starts_with("vendor/heyjordanparker/php-sharp-composer/");
+            database.add(file);
         }
 
         database
