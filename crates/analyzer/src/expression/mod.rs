@@ -19,14 +19,18 @@ use mago_reporting::Level;
 use mago_span::HasPosition;
 use mago_span::HasSpan;
 use mago_span::Span;
+use mago_syntax::cst::As;
 use mago_syntax::cst::Expression;
+use mago_syntax::cst::LocalIdentifier;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::Parenthesized;
 use mago_syntax::cst::PatternMatch;
 use mago_syntax::cst::PatternMatchArm;
 use mago_syntax::cst::PropertiesPattern;
 use mago_syntax::cst::Statement;
+use mago_syntax::cst::TypePattern;
 use mago_syntax::utils::pattern::PhpShape;
+use mago_syntax::utils::pattern::called_function;
 use mago_syntax::walker::Walker;
 use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_word::Word;
@@ -327,14 +331,17 @@ where
     });
     context.temporaries -= temporaries;
 
-    // A properties pattern's `is_object` is its null check, which a value that cannot be null makes redundant. C#
-    // reports nothing there, and no source the user wrote can drop the check.
-    let mut object_checks = Vec::new();
+    // The PHP of a pattern calls a type test that no source the user wrote calls. It is the PHP# syntax itself, so it is
+    // never replaced by syntax. A properties pattern's `is_object` is its null check, which a value that cannot be null
+    // makes redundant. C# reports nothing there, and no source the user wrote can drop the check.
+    let mut pattern_calls = Vec::new();
     match node {
-        Node::Expression(expression) => ObjectChecks.walk_expression(expression, &mut object_checks),
-        Node::Statement(statement) => ObjectChecks.walk_statement(statement, &mut object_checks),
+        Node::Expression(expression) => PatternCalls.walk_expression(expression, &mut pattern_calls),
+        Node::Statement(statement) => PatternCalls.walk_statement(statement, &mut pattern_calls),
         _ => {}
     }
+    let pattern_call =
+        |span: Span| pattern_calls.iter().find(|call: &&LocalIdentifier| call.span.start.offset == span.start.offset);
     // The last arm of a `match` without `default` takes every value the arms before it leave, as `default` does, so its
     // test is always true and not redundant. An arm before it that is always true leaves nothing for the arms after it.
     let last_arm_test: Option<Span> = match node {
@@ -356,6 +363,7 @@ where
         .into_iter()
         .filter(|issue| {
             let span = issue.primary_span();
+            let called = span.and_then(pattern_call);
             let redundant = is_code(issue, IssueCode::RedundantTypeComparison)
                 || is_code(issue, IssueCode::RedundantLogicalOperation);
             let always_true = redundant
@@ -364,7 +372,8 @@ where
 
             // PHP's report on `match (true)` names `true`, so a PHP# `match` reports what it misses itself.
             !is_code(issue, IssueCode::MatchNotExhaustive)
-                && (!redundant || span.is_none_or(|span| !object_checks.contains(&span.start.offset)))
+                && (!is_code(issue, IssueCode::ReplacedBySyntax) || called.is_none())
+                && (!redundant || called.is_none_or(|call| call.value != b"is_object"))
                 && (!always_true
                     || span.is_none_or(|span| !last_arm_test.is_some_and(|test| test.contains(&span.start))))
         })
@@ -564,12 +573,24 @@ fn enum_value(atomic: &TAtomic, codebase: &CodebaseMetadata) -> Option<(Word, Op
     }
 }
 
-/// Collects the offset of each properties pattern's `{`, where its PHP's `is_object` check starts.
-struct ObjectChecks;
+/// Collects each function a pattern's PHP calls to test a value's type, at the span `called_function` gives it.
+struct PatternCalls;
 
-impl<'ast, 'arena> Walker<'ast, 'arena, Vec<u32>> for ObjectChecks {
-    fn walk_in_properties_pattern(&self, properties: &'ast PropertiesPattern<'arena>, offsets: &mut Vec<u32>) {
-        offsets.push(properties.left_brace.start.offset);
+impl<'ast, 'arena> Walker<'ast, 'arena, Vec<LocalIdentifier<'static>>> for PatternCalls {
+    fn walk_in_type_pattern(&self, type_pattern: &'ast TypePattern<'arena>, calls: &mut Vec<LocalIdentifier<'static>>) {
+        calls.extend(called_function(Node::TypePattern(type_pattern)));
+    }
+
+    fn walk_in_as(&self, r#as: &'ast As<'arena>, calls: &mut Vec<LocalIdentifier<'static>>) {
+        calls.extend(called_function(Node::As(r#as)));
+    }
+
+    fn walk_in_properties_pattern(
+        &self,
+        properties: &'ast PropertiesPattern<'arena>,
+        calls: &mut Vec<LocalIdentifier<'static>>,
+    ) {
+        calls.extend(called_function(Node::PropertiesPattern(properties)));
     }
 }
 
