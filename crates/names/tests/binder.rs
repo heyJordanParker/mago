@@ -736,11 +736,7 @@ fn the_erased_part_of_a_type_is_what_needs_a_type_argument_while_the_code_runs()
     assert!(program.errors.is_empty(), "{:#?}", program.errors);
     let names = NameResolver::new(&arena).resolve(program);
     let erased = Node::Program(program).filter_map(|node| match node {
-        Node::As(r#as) => Some(names.erased_type(r#as.hint).map(|erased| {
-            let span = erased.span();
-
-            &CODE[span.start.offset as usize..span.end.offset as usize]
-        })),
+        Node::As(r#as) => Some(names.erased_type(r#as.hint).map(|erased| &CODE[erased.span().to_range_usize()])),
         _ => None,
     });
 

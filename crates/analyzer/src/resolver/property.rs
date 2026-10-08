@@ -22,7 +22,7 @@ use mago_codex::ttype::comparator::union_comparator;
 use mago_codex::ttype::expander;
 use mago_codex::ttype::expander::StaticClassType;
 use mago_codex::ttype::expander::TypeExpansionOptions;
-use mago_codex::ttype::expander::get_signature_of_function_like_identifier;
+use mago_codex::ttype::expander::get_signature_of_function_like_metadata;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_never;
 use mago_codex::ttype::template::TemplateResult;
@@ -830,7 +830,7 @@ where
         let method_name = word(trim_start_byte(prop_name.as_bytes(), b'$'));
         if !for_assignment
             && let Some(method_type) =
-                resolve_method_value(context, block_context, artifacts, class_id, method_name, access_span)
+                resolve_method_value(context, block_context, artifacts, object, method_name, access_span)
         {
             check_private_method_reach(
                 context,
@@ -1061,22 +1061,7 @@ where
                 ..Default::default()
             },
         );
-
-        if !declaring_class_metadata.template_types.is_empty()
-            && let TObject::Named(named_object) = object
-        {
-            *ty = localize_property_type(
-                context,
-                ty,
-                named_object.get_type_parameters().unwrap_or_default(),
-                if class_id.as_bytes().eq_ignore_ascii_case(declaring_class_id.as_bytes()) {
-                    declaring_class_metadata
-                } else {
-                    context.codebase.get_class_like(class_id.as_bytes()).unwrap_or(declaring_class_metadata)
-                },
-                declaring_class_metadata,
-            );
-        }
+        localize_member_type(context, ty, object, declaring_class_metadata);
     };
 
     expand_and_localize(&mut property_type);
@@ -1241,6 +1226,32 @@ where
         declaring_class.name.as_bytes(),
         block_context.scope.get_class_like_name(),
     )
+}
+
+/// Localizes `member_type`, which `declaring_class` declares, for a read through `receiver`: the declaring class's type
+/// parameters become the receiver's type arguments, or the ones the receiver's class names in its header.
+fn localize_member_type<A>(
+    context: &Context<'_, '_, A>,
+    member_type: &mut TUnion,
+    receiver: &TObject,
+    declaring_class: &ClassLikeMetadata,
+) where
+    A: Arena,
+{
+    let TObject::Named(receiver) = receiver else {
+        return;
+    };
+    if declaring_class.template_types.is_empty() {
+        return;
+    }
+
+    *member_type = localize_property_type(
+        context,
+        member_type,
+        receiver.get_type_parameters().unwrap_or_default(),
+        context.codebase.get_class_like(receiver.name.as_bytes()).unwrap_or(declaring_class),
+        declaring_class,
+    );
 }
 
 pub fn localize_property_type<A>(
@@ -1575,18 +1586,20 @@ fn report_possibly_non_existent_property<A>(
 /// Spec section 14.3: a PHP# read `x.name` of a class with no property `name` gives its method `name` as a closure,
 /// as PHP's `$x->name(...)` does, and `Class.name` gives its static method, as `Class::name(...)` does. The engine
 /// runs both on the read's missing-member path. Reports a method the read cannot reach, as the call would. Returns
-/// the closure's type.
+/// the closure's type, the method of `receiver`: `Self` is the receiver, and the declaring class's type parameters are
+/// the receiver's type arguments, as a property read localizes them.
 pub(crate) fn resolve_method_value<A>(
     context: &mut Context<'_, '_, A>,
     block_context: &BlockContext<'_>,
     artifacts: &mut AnalysisArtifacts,
-    class_id: Word,
+    receiver: &TObject,
     method_name: Word,
     access_span: Span,
 ) -> Option<TUnion>
 where
     A: Arena,
 {
+    let class_id = receiver.get_name()?;
     if !context.dialect.is_sharp() || !context.codebase.method_exists(class_id.as_bytes(), method_name.as_bytes()) {
         return None;
     }
@@ -1610,13 +1623,23 @@ where
         false,
     );
 
-    let mut signature = get_signature_of_function_like_identifier(
+    let declaring_class = context.codebase.get_class_like(class_name.as_bytes())?;
+    let mut signature = get_signature_of_function_like_metadata(
         &FunctionLikeIdentifier::Method(class_name, method.get_method_name()),
+        context.codebase.get_method_by_id(&method)?,
         context.codebase,
-    )?;
+        &TypeExpansionOptions {
+            self_class: Some(class_name),
+            static_class_type: StaticClassType::Object(receiver.clone()),
+            ..Default::default()
+        },
+    );
     signature.is_closure = true;
 
-    Some(TUnion::from_atomic(TAtomic::Callable(TCallable::Signature(signature))))
+    let mut method_type = TUnion::from_atomic(TAtomic::Callable(TCallable::Signature(signature)));
+    localize_member_type(context, &mut method_type, receiver, declaring_class);
+
+    Some(method_type)
 }
 
 fn report_non_existent_property<A>(

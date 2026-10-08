@@ -140,7 +140,7 @@ where
         // the receiver before this pass fills the declaring class's omitted type arguments: an unbound `Self` of
         // `Box<TItem>` would become `Box<Any?>`, and a receiver `OrderBox : Box<Order>` would inherit the stray `Any?`.
         let options = match invocation.target.get_method_context() {
-            Some(method_context) if context.dialect.is_sharp() => {
+            Some(method_context) if context.dialect.is_sharp() || invocation.target.get_dialect().is_sharp() => {
                 TypeExpansionOptions { static_class_type: method_context.class_type.clone(), ..Default::default() }
             }
             _ => TypeExpansionOptions::default(),

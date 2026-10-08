@@ -36,6 +36,7 @@ use crate::statement::function_like::check_template_arguments;
 use crate::statement::get_type_from_hint;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_function_like_identifier;
+use crate::utils::names::display_sharp_member;
 use crate::utils::template::get_template_types_for_class_member;
 
 /// Populates the `TemplateResult` with template types from the invocation target.
@@ -241,10 +242,9 @@ pub fn seed_method_type_arguments<'ctx, A>(
             continue;
         };
 
-        // PHP# names a method as C# does, `Store.count`.
         let owner = match identifier {
             FunctionLikeIdentifier::Method(class_name, _) => {
-                format!("{}.{}", display_class_like_name(context, *class_name), metadata.original_name)
+                display_sharp_member(display_class_like_name(context, *class_name), metadata.original_name)
             }
             _ => display_function_like_identifier(context, identifier),
         };

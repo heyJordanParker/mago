@@ -192,6 +192,12 @@ pub(crate) fn short_name(name: Word) -> String {
     name.as_str_lossy().rsplit('\\').next().unwrap_or_default().to_owned()
 }
 
+/// The member `member_name` of the class `class_name` as PHP# names it, `Box.put`, as C# names a member in its messages.
+#[must_use]
+pub(crate) fn display_sharp_member(class_name: Word, member_name: impl std::fmt::Display) -> String {
+    format!("{}.{member_name}", short_name(class_name))
+}
+
 /// The accessor `hook_name` of the property `property_name` of the class `class_name` as PHP# names it, `Box.total.get`,
 /// as C# names an accessor in its messages.
 #[must_use]

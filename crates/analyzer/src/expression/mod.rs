@@ -714,9 +714,7 @@ pub(crate) fn report_untested_generic_class<A>(
     let Some(class) = untested_generic_class(hint, context) else {
         return;
     };
-    let span = hint.span();
-    let code =
-        String::from_utf8_lossy(&context.source_file.contents[span.start.offset as usize..span.end.offset as usize]);
+    let code = String::from_utf8_lossy(&context.source_file.contents[hint.span().to_range_usize()]);
 
     context.collector.report_with_code(
         IssueCode::NotSupportedYet,

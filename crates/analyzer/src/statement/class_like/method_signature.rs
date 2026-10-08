@@ -594,10 +594,12 @@ pub(super) fn erase(r#type: &TUnion, codebase: &CodebaseMetadata) -> TUnion {
 
 /// The type `erased`, which `erase` returns, in backticks, as a `dialect` file writes it. PHP writes it as in a
 /// declaration, `array`, `iterable`, `Closure`, `mixed`, or a class by its full name. PHP# writes it as
-/// `display_sharp_type` does, `Order` or `Entity?`, but has no `mixed` or `array`, so a PHP# file writes a type with
-/// either in it as PHP's, as in PHP's `mixed` or PHP's `array|null`.
+/// `display_sharp_type` does, `Order` or `Entity?`, but has no `mixed`, `array`, `iterable` or `Closure`, so a PHP#
+/// file writes a type with any of them in it as PHP's, as in PHP's `mixed`, PHP's `Closure` or PHP's `array|null`.
 pub(super) fn display_erased(erased: &TUnion, dialect: Dialect, codebase: &CodebaseMetadata) -> String {
-    let is_php_only = erased.types.iter().any(|atomic| matches!(atomic, TAtomic::Mixed(_) | TAtomic::Array(_)));
+    let is_php_only = erased.types.iter().any(|atomic| {
+        matches!(atomic, TAtomic::Mixed(_) | TAtomic::Array(_) | TAtomic::Iterable(_) | TAtomic::Callable(_))
+    });
     if dialect.is_sharp() && !is_php_only {
         return format!("`{}`", display_sharp_type(erased, codebase));
     }

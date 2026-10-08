@@ -250,14 +250,15 @@ where
         && metadata.flags.is_sharp()
         && !metadata.template_types.is_empty();
     if is_new_on_generic_class_value {
-        let code = String::from_utf8_lossy(
-            &context.source_file.contents
-                [instantiation_span.start.offset as usize..instantiation_span.end.offset as usize],
+        let new_class = String::from_utf8_lossy(
+            &context.source_file.contents[instantiation_span.join(class_expression_span).to_range_usize()],
         );
         context.collector.report_with_code(
             IssueCode::NotSupportedYet,
-            Issue::error(format!("`{code}` can't run yet, because type arguments don't reach the running program."))
-                .with_annotation(Annotation::primary(class_expression_span).with_message("Not supported yet.")),
+            Issue::error(format!(
+                "`{new_class}(…)` can't run yet, because type arguments don't reach the running program."
+            ))
+            .with_annotation(Annotation::primary(class_expression_span).with_message("Not supported yet.")),
         );
     }
 

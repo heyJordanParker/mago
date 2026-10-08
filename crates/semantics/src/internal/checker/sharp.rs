@@ -21,6 +21,7 @@ use mago_syntax::cst::BinaryOperator;
 use mago_syntax::cst::Block;
 use mago_syntax::cst::Break;
 use mago_syntax::cst::Call;
+use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeConstant;
 use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::ClassLikeMemberSelector;
@@ -444,9 +445,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
             Some(File)
         }
-        (Node::Hint(hint @ (Hint::Identifier(_) | Hint::Self_(_))), _)
-            if let Some(refusal) = static_member_use(hint, context) =>
-        {
+        (Node::Hint(hint), _) if let Some(refusal) = static_member_use(hint, context) => {
             report_static_member_use(hint.span(), refusal, context);
 
             None
@@ -477,15 +476,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             File,
         ) => Some(File),
         (Node::Class(class), File) => {
-            report_methods_named_as_properties(
-                ClassLike {
-                    name: &class.name,
-                    span: class.span(),
-                    type_parameters: class.type_parameters.as_ref(),
-                    members: &class.members,
-                },
-                context,
-            );
+            report_methods_named_as_properties(class, context);
 
             Some(Class)
         }
@@ -1628,9 +1619,9 @@ fn is_slice_property(property: &Property, version: &PHPVersion, names: &Resolved
 /// Reports each method named as a property of its class, compared ignoring case as PHP finds a method. Spec section 14
 /// calls a property holding a function as `order.priceOf(line)`, and the engine calls the property only when the
 /// class has no method of that name, so one name declares one member, as in C#.
-fn report_methods_named_as_properties(class: ClassLike, context: &mut Context<'_, '_, '_>) {
+fn report_methods_named_as_properties(class: &Class, context: &mut Context<'_, '_, '_>) {
     let mut properties: Vec<&DirectVariable> = Vec::new();
-    for member in class.members {
+    for member in &class.members {
         match member {
             ClassLikeMember::Property(property) => properties.extend(property.variables()),
             ClassLikeMember::Method(method) => properties.extend(
@@ -1645,7 +1636,7 @@ fn report_methods_named_as_properties(class: ClassLike, context: &mut Context<'_
         }
     }
 
-    for member in class.members {
+    for member in &class.members {
         let ClassLikeMember::Method(method) = member else {
             continue;
         };
@@ -2127,17 +2118,14 @@ fn static_member_use(hint: &Hint<'_>, context: &Context<'_, '_, '_>) -> Option<S
                 return None;
             };
             let class = static_member_class(hint.span(), context)?;
-            let parameter = class
-                .type_parameters?
-                .parameters
-                .iter()
-                .find(|parameter| parameter.span().contains(&declaration.start))?;
 
-            Some(format!(
-                "A static member can't use `{}`, because every `{}<…>` shares it.",
-                BytesDisplay(parameter.name.value),
-                BytesDisplay(class.name.value)
-            ))
+            class.type_parameters?.span().contains(&declaration.start).then(|| {
+                format!(
+                    "A static member can't use `{}`, because every `{}<…>` shares it.",
+                    BytesDisplay(name.value()),
+                    BytesDisplay(class.name.value)
+                )
+            })
         }
         Hint::Self_(keyword) if is_sharp_self(keyword) => static_self_use(hint.span(), context),
         _ => None,
@@ -2160,7 +2148,7 @@ fn static_self_use(span: Span, context: &Context<'_, '_, '_>) -> Option<String> 
     };
 
     Some(format!(
-        "A static member can't use `Self`, because `Self` carries {carried}, which every `{}<…>` shares.",
+        "A static member can't use `Self`, because every `{}<…>` shares it and `Self` carries {carried}.",
         BytesDisplay(class.name.value)
     ))
 }

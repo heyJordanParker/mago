@@ -5211,13 +5211,14 @@ fn an_override_of_a_method_returning_self_returns_self() {
 }
 
 /// G1 erases type arguments, so `new` on a class value of a generic PHP# class can't give the object its type
-/// arguments: it is refused as the code writes it, with or without type arguments. `new` on a class value of a class
+/// arguments: it is refused as `new` and the class value the code writes, with or without type arguments, and its
+/// arguments, on one line or many, are `(…)`. `new` on a class value of a class
 /// without type parameters, spec section 25, and `new Self(…)` in an instance method stay legal. The PHP twin's
 /// `new $type()` on a `class-string` of the PHP# class keeps Mago's issues.
 #[test]
 fn new_on_a_class_value_of_a_generic_class_is_not_supported_yet() {
     let classes = "namespace Demo;\n\npublic class Box<TItem>\n{\n    public required Box()\n    {\n    }\n\n    public Self copy() => new Self();\n\n    public TItem? first() => null;\n}\n\npublic class Plain\n{\n    public required Plain()\n    {\n    }\n}\n";
-    let sharp = "namespace Demo;\n\npublic class Report\n{\n    private Class<Box> kind = typeof(Box);\n\n    private Class<Plain> plain = typeof(Plain);\n\n    public Any? make() => new (this.kind)();\n\n    public Any? typed() => new (this.kind)<string>();\n\n    public Plain made() => new (this.plain)();\n\n    public Any? held()\n    {\n        return new (this.kind)();\n    }\n}\n";
+    let sharp = "namespace Demo;\n\npublic class Report\n{\n    private Class<Box> kind = typeof(Box);\n\n    private Class<Plain> plain = typeof(Plain);\n\n    public Any? make() => new (this.kind)();\n\n    public Any? typed() => new (this.kind)<string>();\n\n    public Plain made() => new (this.plain)();\n\n    public Any? held()\n    {\n        return new (this.kind)();\n    }\n\n    public Any? built()\n    {\n        return new (this.kind)(\n            (int number) => {\n                return number;\n            }\n        );\n    }\n}\n";
     let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    /** @param class-string<Box> $type */\n    public static function make(string $type): mixed\n    {\n        return new $type();\n    }\n\n    /** @param class-string<Plain> $type */\n    public static function plain(string $type): Plain\n    {\n        return new $type();\n    }\n}\n";
     let because = "because type arguments don't reach the running program. | Not supported yet.";
 
@@ -5226,9 +5227,11 @@ fn new_on_a_class_value_of_a_generic_class_is_not_supported_yet() {
     assert_eq!(
         worded(("src/Demo/Report.sharp", sharp), &[("src/Demo/Classes.sharp", classes)]),
         [
-            format!("9:31 not-supported-yet `new (this.kind)()` can't run yet, {because}"),
-            format!("11:32 not-supported-yet `new (this.kind)<string>()` can't run yet, {because}"),
-            format!("17:20 not-supported-yet `new (this.kind)()` can't run yet, {because}"),
+            format!("9:31 not-supported-yet `new (this.kind)(…)` can't run yet, {because}"),
+            format!("11:32 not-supported-yet `new (this.kind)(…)` can't run yet, {because}"),
+            format!("17:20 not-supported-yet `new (this.kind)(…)` can't run yet, {because}"),
+            format!("22:20 not-supported-yet `new (this.kind)(…)` can't run yet, {because}"),
+            "23:13 too-many-arguments Too many arguments provided for method `Demo\\Box::__construct`. | Unexpected argument provided here | For this method call | Expected 0 argument(s), but received 1. | Remove the extra argument(s).".to_owned(),
         ]
     );
 }
@@ -5247,13 +5250,12 @@ fn a_generic_method_over_a_map_keyed_by_a_backed_enum_infers_the_enum() {
     assert_eq!(issues(("src/Demo/Keys.sharp", sharp), &[("src/Lib/Status.php", STATUS)]), Vec::<String>::new());
 }
 
-/// A plain PHP class whose docblock declares templates, as `Traversable`, `Iterator`, `IteratorAggregate` and
-/// `Generator` do, takes no PHP# type arguments, so `is`, `as` and a `match` arm test it as any class. The PHP twin's
-/// `instanceof` keeps Mago's issues.
+/// A plain PHP class whose docblock declares templates, as `Traversable` and `Iterator` do, takes no PHP# type
+/// arguments, so `is`, `as` and a `match` arm test it as any class. The PHP twin's `instanceof` keeps Mago's issues.
 #[test]
 fn a_type_test_of_a_php_class_with_docblock_templates_passes() {
-    let sharp = "namespace Demo;\n\nimport Generator;\nimport Iterator;\nimport IteratorAggregate;\nimport Traversable;\n\npublic class Report\n{\n    public static bool each(Any? value) => value is Traversable;\n\n    public static bool step(Any? value) => value is Iterator;\n\n    public static bool held(Any? value) => value is IteratorAggregate;\n\n    public static bool made(Any? value) => value is Generator;\n\n    public static Any? kept(Any? value) => value as Traversable;\n\n    public static int matched(Any? value) => match (value) { Iterator => 1, default => 0 };\n}\n";
-    let php = "<?php\n\nnamespace Demo;\n\nuse Generator;\nuse Iterator;\nuse IteratorAggregate;\nuse Traversable;\n\nclass Report\n{\n    public static function each(mixed $value): bool\n    {\n        return $value instanceof Traversable && !$value instanceof Iterator && !$value instanceof IteratorAggregate && !$value instanceof Generator;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Iterator;\nimport Traversable;\n\npublic class Report\n{\n    public static bool each(Any? value) => value is Traversable;\n\n    public static Any? kept(Any? value) => value as Traversable;\n\n    public static int matched(Any? value) => match (value) { Iterator => 1, default => 0 };\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Traversable;\n\nclass Report\n{\n    public static function each(mixed $value): bool\n    {\n        return $value instanceof Traversable;\n    }\n}\n";
 
     assert_eq!(explained(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
     assert_eq!(explained(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
@@ -5292,6 +5294,90 @@ fn an_erased_parameter_type_is_named_as_sharp_writes_it() {
             ),
             format!(
                 "42:42 incompatible-parameter-type Parameter `value` of `ListSlot.keep` must take at least PHP's `mixed`, the type `Slot.keep` erases it to. | Erases to PHP's `array|null`. | `Slot.keep` takes PHP's `mixed` once its type parameters are erased. | {note} | Write `value` with a type that erases to PHP's `mixed`."
+            ),
+        ]
+    );
+}
+
+/// A method read as a value is the method of its receiver, spec section 14.3, so `TItem` is the receiver's type
+/// argument and `Self` the receiver's own type, spec section 11, as in a call: `box.first` on a `Box<int>` returns an
+/// `int?` and `box.same` a `Box<int>`, as an argument too, and `orders.same` on an `OrderBox` returns an `OrderBox`.
+/// The PHP twin's `$box->first(...)` keeps Mago's issues.
+#[test]
+fn a_method_value_is_specialized_for_its_receiver() {
+    let sharp = "namespace Demo;\n\npublic class Order\n{\n}\n\npublic class Box<TItem>\n{\n    public TItem? first() => null;\n\n    public Self same() => this;\n}\n\npublic class OrderBox : Box<Order>\n{\n}\n\npublic class Report\n{\n    public static Function<int?()> firsts(Box<int> box) => box.first;\n\n    public static Function<Box<int>()> sames(Box<int> box) => box.same;\n\n    public static Function<string?()> wrong(Box<int> box) => box.first;\n\n    public static Function<OrderBox()> orders(OrderBox orders) => orders.same;\n\n    public static int? take(Function<int?()> read) => read();\n\n    public static string? text(Function<string?()> read) => read();\n\n    public static int? passed(Box<int> box) => Report.take(box.first);\n\n    public static string? refused(Box<int> box) => Report.text(box.first);\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n}\n\n/** @template TItem */\nclass Box\n{\n    /** @return TItem|null */\n    public function first(): mixed\n    {\n        return null;\n    }\n\n    public function same(): static\n    {\n        return $this;\n    }\n}\n\n/** @extends Box<Order> */\nclass OrderBox extends Box\n{\n}\n\nclass Report\n{\n    /**\n     * @param Box<int> $box\n     * @return \\Closure(): (int|null)\n     */\n    public static function firsts(Box $box): \\Closure\n    {\n        return $box->first(...);\n    }\n\n    /**\n     * @param Box<int> $box\n     * @return \\Closure(): Box<int>\n     */\n    public static function sames(Box $box): \\Closure\n    {\n        return $box->same(...);\n    }\n\n    /**\n     * @param Box<int> $box\n     * @return \\Closure(): (string|null)\n     */\n    public static function wrong(Box $box): \\Closure\n    {\n        return $box->first(...);\n    }\n\n    /** @return \\Closure(): OrderBox */\n    public static function orders(OrderBox $orders): \\Closure\n    {\n        return $orders->same(...);\n    }\n\n    /** @param \\Closure(): (int|null) $read */\n    public static function take(\\Closure $read): ?int\n    {\n        return $read();\n    }\n\n    /** @param \\Closure(): (string|null) $read */\n    public static function text(\\Closure $read): ?string\n    {\n        return $read();\n    }\n\n    /** @param Box<int> $box */\n    public static function passed(Box $box): ?int\n    {\n        return Report::take($box->first(...));\n    }\n\n    /** @param Box<int> $box */\n    public static function refused(Box $box): ?string\n    {\n        return Report::text($box->first(...));\n    }\n}\n";
+
+    assert_eq!(
+        explained(("src/Demo/Box.php", php), &[]),
+        [
+            "46:16 less-specific-nested-return-statement Returned type `(closure(): Demo\\Box<mixed>&static)` is less specific than the declared return type `(closure(): Demo\\Box<int>)` for function `Demo\\Report::sames` due to nested 'mixed'. Ensure the structure returned by `Demo\\Report::sames` strictly adheres to the types specified in the `(closure(): Demo\\Box<int>)` return type declaration.",
+            "55:16 invalid-return-statement Invalid return type for function `Demo\\Report::wrong`: expected `(closure(): null|string)`, but found `(closure(): int|null)`. Change the return value to match `(closure(): null|string)`, or update the function's return type declaration.",
+            "61:16 less-specific-return-statement Returned type `(closure(): demo\\box<mixed>&static)` is less specific than the declared return type `(closure(): Demo\\OrderBox)` for function `Demo\\Report::orders`. Consider returning a value that more precisely matches the declared `(closure(): Demo\\OrderBox)` type, or adjust the function's return type declaration if the broader type is intended.",
+            "85:29 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::text`: expected `(closure(): null|string)`, but found `(closure(): int|null)`. Change the argument value to match `(closure(): null|string)`, or update the parameter's type declaration.",
+        ]
+    );
+    assert_eq!(
+        explained(("src/Demo/Box.sharp", sharp), &[]),
+        [
+            "24:62 invalid-return-statement Invalid return type for function `Demo\\Report::wrong`: expected `Function<string?()>`, but found `Function<int?()>`. Change the return value to match `Function<string?()>`, or update the function's return type declaration.",
+            "34:64 invalid-argument Invalid argument type for argument #1 of `Demo\\Report::text`: expected `Function<string?()>`, but found `Function<int?()>`. Change the argument value to match `Function<string?()>`, or update the parameter's type declaration.",
+        ]
+    );
+}
+
+/// A plain PHP caller of a PHP# method reads its signature as PHP# writes it, spec section 11, so `Self` is the
+/// receiver's own type: `same()` on a `Pair<int, string>` returns a `Pair<int, string>`. A plain PHP method returning
+/// `static` keeps Mago's issues.
+#[test]
+fn a_plain_php_caller_of_a_method_returning_self_gets_the_receivers_type() {
+    let sharp = "namespace Demo;\n\npublic class Box<TItem>\n{\n    public Self same() => this;\n}\n\npublic class Pair<TFirst, TSecond> : Box<int>\n{\n    public TFirst? first() => null;\n\n    public TSecond? second() => null;\n}\n";
+    let php_box = "<?php\n\nnamespace Demo;\n\n/** @template TItem */\nclass Box\n{\n    public function same(): static\n    {\n        return $this;\n    }\n}\n\n/**\n * @template TFirst\n * @template TSecond\n * @extends Box<int>\n */\nclass Pair extends Box\n{\n    /** @return TFirst|null */\n    public function first(): mixed\n    {\n        return null;\n    }\n\n    /** @return TSecond|null */\n    public function second(): mixed\n    {\n        return null;\n    }\n}\n";
+    let caller = "<?php\n\nnamespace Demo;\n\nfinal class Caller\n{\n    /**\n     * @param Pair<int, string> $pair\n     * @return Pair<int, string>\n     */\n    public function run(Pair $pair): Pair\n    {\n        return $pair->same();\n    }\n}\n";
+
+    assert_eq!(
+        explained(("src/Demo/Caller.php", caller), &[("src/Demo/Box.php", php_box)]),
+        [
+            "13:16 less-specific-nested-return-statement Returned type `Demo\\Pair<mixed, mixed>&static` is less specific than the declared return type `Demo\\Pair<int, string>` for function `Demo\\Caller::run` due to nested 'mixed'. Ensure the structure returned by `Demo\\Caller::run` strictly adheres to the types specified in the `Demo\\Pair<int, string>` return type declaration."
+        ]
+    );
+    assert_eq!(explained(("src/Demo/Caller.php", caller), &[("src/Demo/Box.sharp", sharp)]), Vec::<String>::new());
+}
+
+/// Plain PHP reads a template key beside a backed enum as upstream Mago does: the container's key stays as written,
+/// so `TKey` of an `iterable<TKey|Status, int>` binds the `string` of an `iterable<string, int>`, and `run` returns a
+/// `string` where it declares an `int`, as upstream 39a57d08f reports.
+#[test]
+fn a_php_template_key_beside_a_backed_enum_binds_as_upstream_binds_it() {
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Status;\n\nfinal class Tally\n{\n    /**\n     * @template TKey\n     * @param iterable<TKey|Status, int> $counts\n     * @return TKey\n     * @throws \\RuntimeException\n     */\n    public static function first(iterable $counts): mixed\n    {\n        foreach ($counts as $key => $_) {\n            return $key;\n        }\n\n        throw new \\RuntimeException();\n    }\n\n    /**\n     * @param iterable<string, int> $counts\n     * @throws \\RuntimeException\n     */\n    public static function run(iterable $counts): int\n    {\n        return self::first($counts);\n    }\n}\n";
+
+    assert_eq!(
+        explained(("src/Demo/Tally.php", php), &[("src/Lib/Status.php", STATUS)]),
+        [
+            "30:16 invalid-return-statement Invalid return type for function `Demo\\Tally::run`: expected `int`, but found `string`. Change the return value to match `int`, or update the function's return type declaration."
+        ]
+    );
+}
+
+/// A function type erases to PHP's `Closure` and a plain PHP `iterable` stays PHP's `iterable`, types PHP# has no word
+/// for, so they are named as PHP's, as `mixed` and `array` are. The PHP twin keeps Mago's issues.
+#[test]
+fn an_erased_closure_or_iterable_is_named_as_php_writes_it() {
+    let sharp = "namespace Demo;\n\nimport Lib.Feed;\n\npublic class Slot<TValue>\n{\n    public virtual void keep(TValue value)\n    {\n    }\n}\n\npublic class FunctionSlot : Slot<Function<int(int)>>\n{\n    public override void keep(Function<int(int)> value)\n    {\n    }\n}\n\npublic class Numbers : Feed<List<int>>\n{\n    public override void keep(List<int> values)\n    {\n    }\n}\n";
+    let feed = "<?php\n\nnamespace Lib;\n\n/** @template T of iterable */\nabstract class Feed\n{\n    /** @param T $values */\n    abstract public function keep(iterable $values): void;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Feed;\n\n/** @extends Feed<list<int>> */\nclass Numbers extends Feed\n{\n    /** @param list<int> $values */\n    public function keep(iterable $values): void\n    {\n    }\n}\n";
+    let others = [("src/Lib/Feed.php", feed)];
+
+    assert_eq!(worded(("src/Demo/Numbers.php", php), &others), Vec::<String>::new());
+    let note = "PHP# erases type parameters when it compiles, and PHP refuses a parameter narrower than the one it overrides when it links the class.";
+    assert_eq!(
+        worded(("src/Demo/Slot.sharp", sharp), &others),
+        [
+            format!(
+                "14:50 incompatible-parameter-type Parameter `value` of `FunctionSlot.keep` must take at least PHP's `mixed`, the type `Slot.keep` erases it to. | Erases to PHP's `Closure`. | `Slot.keep` takes PHP's `mixed` once its type parameters are erased. | {note} | Write `value` with a type that erases to PHP's `mixed`."
+            ),
+            format!(
+                "21:41 incompatible-parameter-type Parameter `values` of `Numbers.keep` must take at least PHP's `iterable`, the type `Feed.keep` erases it to. | Erases to PHP's `array`. | `Feed.keep` takes PHP's `iterable` once its type parameters are erased. | {note} | Write `values` with a type that erases to PHP's `iterable`."
             ),
         ]
     );

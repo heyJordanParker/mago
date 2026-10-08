@@ -121,7 +121,7 @@ where
 /// key that holds the cases meets a key that holds none as its backing type: a PHP# `Map` reaches plain PHP as its
 /// backing values, and plain PHP's backing values, passed where PHP# takes the cases, bind no type parameter to a case.
 /// Two keys that hold the cases compare as written, so a `Map<Status, int>` binds the `TKey` of `Map<TKey, int>` to
-/// `Status`.
+/// `Status`. A plain PHP container's key stays as written, as upstream Mago compares it.
 fn comparable_key_types<'key, A>(
     context: &Context<'_, '_, A>,
     container_key_type: &'key TUnion,
@@ -131,10 +131,12 @@ fn comparable_key_types<'key, A>(
 where
     A: Arena,
 {
-    match (
-        get_backing_key_type(container_key_type, context.codebase, container_dialect),
-        get_backing_key_type(input_key_type, context.codebase, context.dialect),
-    ) {
+    let input_backing_type = get_backing_key_type(input_key_type, context.codebase, context.dialect);
+    if !container_dialect.is_sharp() {
+        return (Cow::Borrowed(container_key_type), input_backing_type);
+    }
+
+    match (get_backing_key_type(container_key_type, context.codebase, container_dialect), input_backing_type) {
         (Cow::Owned(_), Cow::Owned(_)) => (Cow::Borrowed(container_key_type), Cow::Borrowed(input_key_type)),
         key_types => key_types,
     }

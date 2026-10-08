@@ -78,6 +78,7 @@ use crate::statement::function_like::report_undefined_type_references;
 use crate::utils::missing_type_hints;
 use crate::utils::names::and_list;
 use crate::utils::names::display_sharp_accessor;
+use crate::utils::names::display_sharp_member;
 use crate::utils::names::display_type;
 use crate::utils::names::short_name;
 use crate::utils::template::find_broken_marker;
@@ -3133,14 +3134,10 @@ fn report_signature_compatibility_issue<'ctx, A>(
                 .unwrap_or(primary_span);
             let child_type = method_signature::display_erased(&child_type, context.dialect, context.codebase);
             let parent_type = method_signature::display_erased(&parent_type, context.dialect, context.codebase);
-            // A PHP# file names a method as C# does, `Box.put`.
             let (child_method, parent_method) = if context.dialect.is_sharp() {
                 let method_name = parent_method.original_name;
 
-                (
-                    format!("{}.{method_name}", short_name(child_name)),
-                    format!("{}.{method_name}", short_name(parent_name)),
-                )
+                (display_sharp_member(child_name, method_name), display_sharp_member(parent_name, method_name))
             } else {
                 (format!("{child_name}::{method_name}()"), format!("{parent_name}::{method_name}()"))
             };
@@ -3159,8 +3156,8 @@ fn report_signature_compatibility_issue<'ctx, A>(
             );
         }
         SignatureCompatibilityIssue::ChangedTemplateBound { template, child_method, parent_method, bound } => {
-            let child_method = format!("{}.{child_method}", short_name(child_name));
-            let parent_method = format!("{}.{parent_method}", short_name(parent_name));
+            let child_method = display_sharp_member(child_name, child_method);
+            let parent_method = display_sharp_member(parent_name, parent_method);
             let (message, help) = match bound.map(|bound| display_type(context, &bound)) {
                 Some(bound) => (
                     format!("`{child_method}` must keep the bound `{bound}` of `{parent_method}`."),
@@ -3819,12 +3816,11 @@ fn check_class_like_properties<'ctx, A>(
                                 &erased_parent_type_id,
                                 method_signature::bound_example(context.codebase, Some(parent_type), &erased_type),
                             );
-                            // A PHP# file names a property as C# does, `Slot.item`.
                             let message = if context.dialect.is_sharp() {
                                 format!(
-                                    "Property `{}.{property_name}` must have {erased_parent_type_id}, the type `{}.{property_name}` erases to.",
-                                    short_name(class_name),
-                                    short_name(parent_class_name)
+                                    "Property `{}` must have {erased_parent_type_id}, the type `{}` erases to.",
+                                    display_sharp_member(class_name, &property_name),
+                                    display_sharp_member(parent_class_name, &property_name)
                                 )
                             } else {
                                 format!(

@@ -3039,39 +3039,11 @@ fn a_static_member_of_a_generic_class_cannot_return_self() {
     assert_eq!(
         issues(code),
         [
-            "9:19 A static member can't use `Self`, because `Self` carries `TItem`, which every `Box<…>` shares.",
-            "9:38 A static member can't use `Self`, because `Self` carries `TItem`, which every `Box<…>` shares.",
-            "23:19 A static member can't use `Self`, because `Self` carries `TFirst` and `TSecond`, which every `Pair<…>` shares.",
-            "28:19 A static member can't use `Self`, because `Self` carries `TFirst`, `TSecond` and `TThird`, which every `Triple<…>` shares.",
+            "9:19 A static member can't use `Self`, because every `Box<…>` shares it and `Self` carries `TItem`.",
+            "9:38 A static member can't use `Self`, because every `Box<…>` shares it and `Self` carries `TItem`.",
+            "23:19 A static member can't use `Self`, because every `Pair<…>` shares it and `Self` carries `TFirst` and `TSecond`.",
+            "28:19 A static member can't use `Self`, because every `Triple<…>` shares it and `Self` carries `TFirst`, `TSecond` and `TThird`.",
         ]
-    );
-}
-
-/// `new Self(…)` in a static method of a generic class gets the static member refusal, whatever the method returns.
-/// In an instance method it creates the receiver's own class. The plain PHP twin's `new static()` has no PHP# rule.
-#[test]
-fn new_self_in_a_static_member_of_a_generic_class_names_self() {
-    let code = "namespace App.Tenant;\n\npublic class Box<TItem>\n{\n    public required Box(TItem item)\n    {\n    }\n\n    public static Box<int> make() => new Self(1);\n\n    public Self copy(TItem item) => new Self(item);\n}\n";
-    let php = "<?php\n\n/** @template TItem */\nclass Box\n{\n    /** @param TItem $item */\n    final public function __construct(mixed $item)\n    {\n    }\n\n    /** @return Box<int> */\n    public static function make(): Box\n    {\n        return new static(1);\n    }\n}\n";
-
-    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
-    assert_eq!(
-        issues(code),
-        ["9:42 A static member can't use `Self`, because `Self` carries `TItem`, which every `Box<…>` shares."]
-    );
-}
-
-/// `Class<Box>` names the class itself, as C#'s `typeof(Box<>)` does, so its type argument is a class written without
-/// type arguments, and `Class<Box<Order>>` is refused. The plain PHP twin's `class-string` has no PHP# rule.
-#[test]
-fn a_class_type_names_a_class_without_type_arguments() {
-    let code = "namespace App.Tenant;\n\npublic class Store\n{\n    private Class<Box> kind = typeof(Box);\n    private Class<Box<Order>>? boxed = null;\n}\n";
-    let php = "<?php\n\nclass Store\n{\n    /** @var class-string<Box> */\n    private string $kind = Box::class;\n}\n";
-
-    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
-    assert_eq!(
-        issues(code),
-        ["6:19 `Class`'s type argument is a class, an interface or a type parameter, as in `Class<Order>`."]
     );
 }
 

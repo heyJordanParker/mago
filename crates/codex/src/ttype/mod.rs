@@ -1450,8 +1450,7 @@ pub fn get_backed_enum<'codebase>(
     };
 
     std::iter::once(bound).chain(bound.get_intersection_types().unwrap_or_default()).find_map(|member| match member {
-        TAtomic::Object(TObject::Named(object)) => backed_enum(object.name),
-        TAtomic::Object(TObject::Enum(object)) => backed_enum(object.name),
+        TAtomic::Object(object) => backed_enum(object.get_name()?),
         _ => None,
     })
 }
