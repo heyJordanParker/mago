@@ -38,13 +38,14 @@ fn write(root: &Path, name: &str, contents: &str) {
     std::fs::write(path, contents).unwrap();
 }
 
+fn command(root: &Path, colors: &str) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_mago"));
+    command.args(["--no-version-check", "--colors", colors, "compile"]).env("MAGO_LOG", "info").current_dir(root);
+    command
+}
+
 fn compile(root: &Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_mago"))
-        .args(["--no-version-check", "--colors", "never", "compile"])
-        .env("MAGO_LOG", "info")
-        .current_dir(root)
-        .output()
-        .unwrap()
+    command(root, "never").output().unwrap()
 }
 
 fn printed(output: &Output) -> String {
@@ -141,6 +142,34 @@ fn compile_deletes_the_compiled_file_of_a_renamed_or_removed_source() {
     std::fs::remove_file(root.join("app/Invoice.sharp")).unwrap();
     assert!(compile(root).status.success());
     assert_eq!(files_under(&root.join(".sharp")), [Path::new("vendor/acme/money/src/Money.sharpc")]);
+}
+
+#[test]
+fn compile_prints_no_color_under_colors_never_even_when_force_color_is_set() {
+    let directory = project(BROKEN_ORDER, MONEY);
+    let output = command(directory.path(), "never")
+        .env("FORCE_COLOR", "1")
+        .env("MAGO_REPORTING_FORMAT", "rich")
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1), "{}", printed(&output));
+    assert!(printed(&output).contains("app/Order.sharp"), "{}", printed(&output));
+    assert!(!printed(&output).contains("\x1b["), "{}", printed(&output));
+}
+
+#[test]
+fn compile_prints_color_under_colors_always_even_when_no_color_is_set() {
+    let directory = project(BROKEN_ORDER, MONEY);
+    let output = command(directory.path(), "always")
+        .env_remove("FORCE_COLOR")
+        .env("NO_COLOR", "1")
+        .env("MAGO_REPORTING_FORMAT", "rich")
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1), "{}", printed(&output));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("\x1b["), "{}", printed(&output));
 }
 
 #[test]
