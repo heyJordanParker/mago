@@ -3311,6 +3311,10 @@ fn a_list_read_with_an_index_that_may_not_be_an_int_is_an_error() {
         sharp_issues[0].primary_annotation().and_then(|annotation| annotation.message.as_deref()),
         Some("This index may not be an `int`.")
     );
+    assert_eq!(
+        sharp_issues[0].help.as_deref(),
+        Some("Check the index with `is int` first, as in `if (index is int) { … }`.")
+    );
 }
 
 /// An index of a type `int` contains, such as an `int` literal or a loop counter, reads a `List` as `int` does. A
@@ -3334,6 +3338,97 @@ fn a_list_read_takes_any_int_index_under_strict_list_index_checks() {
 
     assert_eq!(issues_with(strict(), ("src/Demo/Lookup.php", php), &[]), ["12:40 mismatched-array-index"]);
     assert_eq!(issues_with(strict(), ("src/Demo/Lookup.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// A `Map` key is an `int`, a `string` or a backed enum, as the `Map` declares it (spec section 12), and never null. A
+/// handled read takes the key a bare read takes, so a key that may be null or of another type is an error. A plain PHP
+/// `array<string, int>` keeps reading a handled key of any array key type, as PHP does.
+#[test]
+fn a_map_read_with_a_key_outside_its_key_type_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Tally\n{\n    public int read(Map<string, int> counts, string? name, int id, int|string either)\n    {\n        const a = counts[name] ?? 0;\n        const b = counts[id] ?? 0;\n        const c = counts[either] ?? 0;\n        const d = isset(counts[name]) ? 1 : 0;\n        return a + b + c + d;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Tally\n{\n    /**\n     * @param array<string, int> $counts\n     */\n    public function read(array $counts, ?string $name, int $id, int|string $either): int\n    {\n        $a = $counts[$name] ?? 0;\n        $b = $counts[$id] ?? 0;\n        $c = $counts[$either] ?? 0;\n        $d = isset($counts[$name]) ? 1 : 0;\n        return $a + $b + $c + $d;\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tally.php", php), &[]),
+        ["12:22 possibly-null-array-index", "15:28 possibly-null-array-index"]
+    );
+
+    let sharp_issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Tally.sharp", sharp), &[]);
+    let located_issues: Vec<String> = sharp_issues.iter().map(|issue| located(sharp, issue)).collect();
+
+    assert_eq!(
+        located_issues,
+        [
+            "7:26 mismatched-array-index",
+            "8:26 mismatched-array-index",
+            "9:26 mismatched-array-index",
+            "10:32 mismatched-array-index",
+        ]
+    );
+    assert_eq!(
+        sharp_issues.iter().map(|issue| issue.message.as_str()).collect::<Vec<_>>()[..3],
+        [
+            "`Map<string, int>` is keyed by `string`, but this key is `string?`.",
+            "`Map<string, int>` is keyed by `string`, but this key is `int`.",
+            "`Map<string, int>` is keyed by `string`, but this key is `int|string`.",
+        ]
+    );
+    assert_eq!(
+        sharp_issues[0].primary_annotation().and_then(|annotation| annotation.message.as_deref()),
+        Some("This key may not be of type `string`.")
+    );
+
+    let either = "namespace Demo;\n\nclass Keys\n{\n    public int read(Map<int|string, int> counts, Any? value) => counts[value] ?? 0;\n}\n";
+    let either_issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Keys.sharp", either), &[]);
+
+    assert_eq!(
+        either_issues.iter().map(|issue| (located(either, issue), issue.help.as_deref())).collect::<Vec<_>>(),
+        [(
+            "5:72 mismatched-array-index".to_owned(),
+            Some("Check the key with `is int or string` first, as in `if (name is int or string) { … }`.")
+        )]
+    );
+}
+
+/// A key of the `Map`'s key type reads it, handled or not: a `string` reads a `Map<string, int>` and a `Map` literal,
+/// and a `Status` reads a `Map<Status, int>`, which runs as its backing value.
+#[test]
+fn a_map_read_with_a_key_of_its_key_type_is_accepted() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Tally\n{\n    public int read(Map<string, int> counts, Map<Status, int> states, string name, Status status)\n    {\n        const named = [\"a\": 1];\n        const a = counts[name] ?? 0;\n        const b = states[status] ?? 0;\n        const c = isset(counts[name]) ? 1 : 0;\n        const d = named[name] ?? 0;\n        return a + b + c + d;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Status;\n\nclass Tally\n{\n    /**\n     * @param array<string, int> $counts\n     * @param array<string, int> $states\n     */\n    public function read(array $counts, array $states, string $name, Status $status): int\n    {\n        $named = ['a' => 1];\n        $a = $counts[$name] ?? 0;\n        $b = $states[$status->value] ?? 0;\n        $c = isset($counts[$name]) ? 1 : 0;\n        $d = $named[$name] ?? 0;\n        return $a + $b + $c + $d;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tally.php", php), &[("src/Lib/Status.php", STATUS)]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]), Vec::<String>::new());
+
+    let checked = "namespace Demo;\n\nimport Lib.Status;\n\nclass Keys\n{\n    public int named(Map<string, int> counts, Any? value)\n    {\n        if (value is string) {\n            return counts[value] ?? 0;\n        }\n        return 0;\n    }\n\n    public int numbered(Map<int, int> counts, Any? value)\n    {\n        if (value is int) {\n            return counts[value] ?? 0;\n        }\n        return 0;\n    }\n\n    public int stated(Map<Status, int> counts, Any? value)\n    {\n        if (value is Status) {\n            return counts[value] ?? 0;\n        }\n        return 0;\n    }\n\n    public int either(Map<int|string, int> counts, Any? value)\n    {\n        if (value is int or string) {\n            return counts[value] ?? 0;\n        }\n        return 0;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Keys.sharp", checked), &[("src/Lib/Status.php", STATUS)]), Vec::<String>::new());
+}
+
+/// A bare `Map` read is refused for its missing key, and its key is checked as a handled read's is.
+#[test]
+fn a_bare_map_read_with_a_key_outside_its_key_type_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Tally\n{\n    public int read(Map<string, int> counts, string? name, int id)\n    {\n        return counts[name] + counts[id];\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Tally\n{\n    /**\n     * @param array<string, int> $counts\n     */\n    public function read(array $counts, ?string $name, int $id): int\n    {\n        return $counts[$name] + $counts[$id];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tally.php", php), &[]),
+        ["12:24 possibly-null-array-index", "12:41 mismatched-array-index"]
+    );
+
+    let sharp_issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Tally.sharp", sharp), &[]);
+    let located_issues: Vec<String> = sharp_issues.iter().map(|issue| located(sharp, issue)).collect();
+
+    assert_eq!(
+        located_issues,
+        [
+            "7:23 mismatched-array-index",
+            "7:16 possibly-undefined-array-index",
+            "7:38 mismatched-array-index",
+            "7:31 possibly-undefined-array-index",
+        ]
+    );
+    assert_eq!(sharp_issues[2].message, "`Map<string, int>` is keyed by `string`, but this key is `int`.");
 }
 
 /// `for (const [k, v] of x)` reads the keys of a `Map`. A `List`'s indexes come from `entries()`, as spec section 12
