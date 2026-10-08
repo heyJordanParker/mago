@@ -144,3 +144,13 @@ Metadata is represented by immutable DTOs under `Mago\Sdk\Analyzer\Metadata`:
 The `Codebase` facade caches lookup results, existence checks, lists, and method projections. Missing lookup and existence results are cached too. `TypeComparator::compareMultiple()` caches both true and false outcomes. These caches belong to one frozen analysis generation; do not persist returned metadata across unrelated Mago runs in an external database unless the extension also owns invalidation.
 
 Within one callback, batching remains important even when data might be cached: it handles cold paths efficiently and allows the native side to optimize one request.
+
+## Reads and incremental analysis
+
+Mago records what a file's providers, issue filters, after-file hooks, and targeted hooks read through `codebase`, cached answers included, and analyzes the file again when that changes:
+
+- a class-like, function, or constant they read changes its signature, appears, or disappears; a read of a class-like member counts as a read of the class-like, so any signature change to the class-like or its ancestors counts;
+- a list of names they read, such as `getClassNames()`, `getClassDescendants()`, or `namespaceExists()`, gains or loses a name;
+- any class-like changes its signature, after a `findMethods()` search that did not name one class.
+
+An edit to a method body changes none of these, so it does not run another file's providers or hooks again. The files whose edit can change a read also count among the inputs of a compiled PHP# file.

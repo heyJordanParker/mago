@@ -1514,9 +1514,11 @@ impl PluginRegistry {
     /// Requests the call an external provider says a magic method or property forwards to.
     ///
     /// Provider failures are logged and preserve native magic-call resolution.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn get_forwarded_call(
         &self,
         codebase: &CodebaseMetadata,
+        source_file: &File,
         class: &[u8],
         member: &[u8],
         property: bool,
@@ -1531,7 +1533,7 @@ impl PluginRegistry {
             optional_external_hint(
                 "call forwarding provider",
                 analyzer.with(|analyzer| {
-                    analyzer.get_forwarded_call(class, member, property, receiver_type, codebase, session)
+                    analyzer.get_forwarded_call(class, member, property, receiver_type, source_file, codebase, session)
                 }),
             )
         })
@@ -1555,6 +1557,7 @@ impl PluginRegistry {
     pub fn is_property_initialized(
         &self,
         codebase: &CodebaseMetadata,
+        source_file: &File,
         class_metadata: &ClassLikeMetadata,
         property_metadata: &PropertyMetadata,
         external_session: Option<&ExternalAnalysisSession>,
@@ -1579,6 +1582,7 @@ impl PluginRegistry {
                         analyzer.is_property_initialized(
                             class_metadata.name.as_bytes(),
                             property_metadata,
+                            source_file,
                             codebase,
                             session,
                         )
@@ -1594,6 +1598,7 @@ impl PluginRegistry {
     pub fn get_class_initializers(
         &self,
         codebase: &CodebaseMetadata,
+        source_file: &File,
         class_metadata: &ClassLikeMetadata,
         external_session: Option<&ExternalAnalysisSession>,
     ) -> WordSet {
@@ -1607,7 +1612,9 @@ impl PluginRegistry {
             .map(|(analyzer, session)| {
                 optional_external_hint(
                     "class initializer provider",
-                    analyzer.with(|analyzer| analyzer.get_class_initializers(class_metadata, codebase, session)),
+                    analyzer.with(|analyzer| {
+                        analyzer.get_class_initializers(class_metadata, source_file, codebase, session)
+                    }),
                 )
             })
             .unwrap_or_default()
