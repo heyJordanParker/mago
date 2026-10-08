@@ -73,7 +73,8 @@ use crate::statement::r#loop::assignment_map_visitor::get_assignment_map;
 use crate::statement::r#loop::cleaner::clean_nodes;
 use crate::utils::names::display_atomic;
 use crate::utils::names::display_class_like_name;
-use crate::utils::names::display_member;
+use crate::utils::names::display_code_member;
+use crate::utils::names::display_missing_imports;
 use crate::utils::names::display_type;
 
 mod assignment_map_visitor;
@@ -1666,13 +1667,16 @@ where
                             .codebase
                             .get_enum(enum_instance.get_name().as_bytes())
                             .and_then(|class_like| class_like.enum_type.as_ref());
-                        let cases = display_member(context, enum_name, "cases()");
+                        let cases = display_code_member(context, enum_instance.get_name(), "cases()");
                         // PHP# reads a property as `instance.name` and loops with `for (const case of …)`.
                         let (instance, case_loop) = if context.dialect.is_sharp() {
                             ("instance.", format!("for (const case of {cases})"))
                         } else {
                             ("$instance->", format!("foreach ({cases} as $case)"))
                         };
+                        let imports = display_missing_imports(context, [enum_instance.get_name()])
+                            .map(|imports| format!(" {imports}"))
+                            .unwrap_or_default();
 
                         context.collector.report_with_code(
                             IssueCode::EnumIteration,
@@ -1689,7 +1693,7 @@ where
                                     "If you only need the properties of this specific instance, consider accessing them directly (e.g., `{instance}name`{}) for better clarity, unless iterating its few properties is explicitly intended.",
                                     if enum_backing_type.is_some() { format!(", `{instance}value`") } else { String::new() }
                                 ))
-                                .with_help(format!("If your goal is to loop through all defined cases of the `{enum_name}` enum, use `{cases}` instead (e.g., `{case_loop}`).")),
+                                .with_help(format!("If your goal is to loop through all defined cases of the `{enum_name}` enum, use `{cases}` instead (e.g., `{case_loop}`).{imports}")),
                         );
 
                         match enum_backing_type {

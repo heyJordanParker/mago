@@ -4932,3 +4932,81 @@ fn a_class_that_shares_its_short_name_only_with_a_built_in_class_keeps_its_short
         ]
     );
 }
+
+/// Code a help tells the developer to write names an enum by the short name its file binds, as PHP# refuses a full
+/// name in code (spec section 23). Prose keeps the dotted name that tells two enums of one short name apart. The PHP
+/// twin keeps upstream's text.
+#[test]
+fn an_enum_instantiation_help_writes_the_name_the_file_binds() {
+    let app_status =
+        ("src/App/Orders/Status.php", "<?php\n\nnamespace App\\Orders;\n\nenum Status\n{\n    case Open;\n}\n");
+    let billing_status =
+        ("src/Billing/Status.php", "<?php\n\nnamespace Billing;\n\nenum Status\n{\n    case Due;\n}\n");
+    let sharp = "namespace App.Orders;\n\nclass Shop\n{\n    public Status open() => new Status();\n}\n";
+    let php = "<?php\n\nnamespace App\\Orders;\n\nclass Shop\n{\n    public function open(): Status\n    {\n        return new Status();\n    }\n}\n";
+    let refused = |analyzed| -> Vec<String> {
+        worded(analyzed, &[app_status, billing_status])
+            .into_iter()
+            .filter(|line| line.contains(" enum-instantiation "))
+            .collect()
+    };
+
+    assert_eq!(
+        refused(("src/App/Orders/Shop.php", php)),
+        [
+            "9:20 enum-instantiation Enum `App\\Orders\\Status` cannot be instantiated with `new`. | Attempting to instantiate an enum with `new` | Enum instances are created by accessing their cases directly (e.g., `MyEnum::CaseName`). | Use `App\\Orders\\Status::CASE_NAME` to get an enum case instance, or `App\\Orders\\Status::cases()` to get all cases."
+        ]
+    );
+    assert_eq!(
+        refused(("src/App/Orders/Shop.sharp", sharp)),
+        [
+            "5:33 enum-instantiation Enum `App.Orders.Status` cannot be instantiated with `new`. | Attempting to instantiate an enum with `new` | Enum instances are created by accessing their cases directly (e.g., `MyEnum.CaseName`). | Use `Status.CASE_NAME` to get an enum case instance, or `Status.cases()` to get all cases."
+        ]
+    );
+}
+
+/// A `match` that misses cases of an enum its file doesn't import names the import the missing arms need.
+#[test]
+fn a_match_that_misses_cases_of_an_unimported_enum_names_the_import() {
+    let sharp = "namespace Demo;\n\nimport Lib.Ticket;\n\nclass Report\n{\n    public static string state(Ticket ticket) => match (ticket.status()) {\n    };\n}\n";
+
+    let issues =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Status.php", TICKETS)]);
+
+    assert_eq!(
+        written_errors(sharp, &issues),
+        [
+            "match match-not-exhaustive This `match` misses `Status.Open`, `Status.Closed` and `Status.Archived`. Add `import Lib.Status;` to the file.",
+            "match (ticket.status()) {\n    } empty-match-expression Match expression cannot be empty.",
+        ]
+    );
+}
+
+/// Iterating an enum value names the loop over its cases as the file writes it: the enum's bound short name, and the
+/// import when the file doesn't bind it. The PHP twin keeps upstream's text.
+#[test]
+fn an_enum_iteration_help_writes_the_name_the_file_binds_and_its_import() {
+    let billing_status =
+        ("src/Billing/Status.php", "<?php\n\nnamespace Billing;\n\nenum Status\n{\n    case Due;\n}\n");
+    let sharp = "namespace Demo;\n\nimport Lib.Ticket;\n\nclass Report\n{\n    public static void fields(Ticket ticket)\n    {\n        for (const field of ticket.status()) {\n        }\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Ticket;\n\nclass Report\n{\n    public static function fields(Ticket $ticket): void\n    {\n        foreach ($ticket->status() as $field) {\n        }\n    }\n}\n";
+    let iterated = |analyzed| -> Vec<String> {
+        worded(analyzed, &[("src/Lib/Status.php", TICKETS), billing_status])
+            .into_iter()
+            .filter(|line| line.contains(" enum-iteration "))
+            .collect()
+    };
+
+    assert_eq!(
+        iterated(("src/Demo/Report.php", php)),
+        [
+            "11:18 enum-iteration Iterating directly over the enum enum `Lib\\Status`. This will yield its public properties. | This enum instance is being iterated directly | PHP allows iterating an enum case instance like an object, which exposes its public properties: `name` (string). | This is different from iterating through all defined cases of the `Lib\\Status` enum using `Lib\\Status::cases()`, where each item would be an enum case instance itself. | If you only need the properties of this specific instance, consider accessing them directly (e.g., `$instance->name`) for better clarity, unless iterating its few properties is explicitly intended. | If your goal is to loop through all defined cases of the `Lib\\Status` enum, use `Lib\\Status::cases()` instead (e.g., `foreach (Lib\\Status::cases() as $case)`)."
+        ]
+    );
+    assert_eq!(
+        iterated(("src/Demo/Report.sharp", sharp)),
+        [
+            "9:29 enum-iteration Iterating directly over the enum enum `Lib.Status`. This will yield its public properties. | This enum instance is being iterated directly | PHP allows iterating an enum case instance like an object, which exposes its public properties: `name` (string). | This is different from iterating through all defined cases of the `Lib.Status` enum using `Status.cases()`, where each item would be an enum case instance itself. | If you only need the properties of this specific instance, consider accessing them directly (e.g., `instance.name`) for better clarity, unless iterating its few properties is explicitly intended. | If your goal is to loop through all defined cases of the `Lib.Status` enum, use `Status.cases()` instead (e.g., `for (const case of Status.cases())`). Add `import Lib.Status;` to the file."
+        ]
+    );
+}

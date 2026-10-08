@@ -12,6 +12,7 @@ use mago_codex::ttype::atomic::scalar::class_like_string::TClassLikeString;
 use mago_codex::ttype::get_array_parameters;
 use mago_codex::ttype::union::TUnion;
 use mago_names::display_sharp_member;
+use mago_names::kind::NameKind;
 use mago_names::short_name;
 use mago_syntax::dialect::Dialect;
 use mago_word::Word;
@@ -47,6 +48,56 @@ where
     } else {
         short_name(name)
     }
+}
+
+/// Returns the sentence that names the `import` lines a `.sharp` file needs before code that names `class_names` by
+/// their short names compiles, as `Add `import Sharp.Text.Regex;` to the file.`: one line for each class-like the file
+/// doesn't [bind](binds_class_like), once each, in the order given. Returns `None` when the file binds them all, and in
+/// a PHP file.
+pub(crate) fn display_missing_imports<A>(
+    context: &Context<'_, '_, A>,
+    class_names: impl IntoIterator<Item = Word>,
+) -> Option<String>
+where
+    A: Arena,
+{
+    if !context.dialect.is_sharp() {
+        return None;
+    }
+
+    let mut imports: Vec<String> = Vec::new();
+    for class_name in class_names {
+        let name = context.codebase.get_class_like(class_name.as_bytes()).map_or(class_name, |m| m.original_name);
+        let import = format!(
+            "`import {};`",
+            String::from_utf8_lossy(mago_bytes::trim_start_byte(name.as_bytes(), b'\\')).replace('\\', ".")
+        );
+        if !binds_class_like(context, name) && !imports.contains(&import) {
+            imports.push(import);
+        }
+    }
+
+    let (last, others) = imports.split_last()?;
+    let imports = if others.is_empty() { last.clone() } else { format!("{} and {last}", others.join(", ")) };
+
+    Some(format!("Add {imports} to the file."))
+}
+
+/// Whether the analyzed file binds the short name of the class-like `name` to it, as spec section 23 binds a name: by
+/// an import, by declaring it, or by sharing its namespace. A class-like directly in `Sharp` is imported by default,
+/// unless the file imports or declares another class-like of its short name.
+fn binds_class_like<A>(context: &Context<'_, '_, A>, name: Word) -> bool
+where
+    A: Arena,
+{
+    let name = mago_bytes::trim_start_byte(name.as_bytes(), b'\\');
+    let (bound, imported) = context.scope.resolve(NameKind::Default, short_name(name));
+    if bound.eq_ignore_ascii_case(name) {
+        return true;
+    }
+
+    !imported
+        && name.iter().rposition(|byte| *byte == b'\\').is_some_and(|end| name[..end].eq_ignore_ascii_case(b"Sharp"))
 }
 
 /// Returns the property `name`, which the codebase keys with its `$`, as the analyzed file names it in prose: `total`
@@ -348,6 +399,25 @@ where
         display_sharp_member(sharp_class_like_name(context, class_name), member_name)
     } else {
         format!("{class_name}::{member_name}")
+    }
+}
+
+/// The member `member_name` of the class `class_name` as code the analyzed file writes: `Status.cases()` by the short
+/// name an import binds in a `.sharp` file, as PHP# refuses a full name in code (spec section 23), and `Status::cases()`
+/// in PHP. Prose names a member with [`display_member`], whose dotted name tells two classes of one short name apart.
+#[must_use]
+pub(crate) fn display_code_member<A>(
+    context: &Context<'_, '_, A>,
+    class_name: Word,
+    member_name: impl std::fmt::Display,
+) -> String
+where
+    A: Arena,
+{
+    if context.dialect.is_sharp() {
+        display_sharp_member(class_name, member_name)
+    } else {
+        display_member(context, class_name, member_name)
     }
 }
 

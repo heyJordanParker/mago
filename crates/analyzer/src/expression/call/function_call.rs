@@ -40,6 +40,7 @@ use crate::plugin::ExpressionHookResult;
 use crate::plugin::context::HookContext;
 use crate::utils::expression::get_bare_name_variable_id;
 use crate::utils::names::display_atomic;
+use crate::utils::names::display_missing_imports;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for FunctionCall<'arena> {
     fn analyze<'ctx, A>(
@@ -327,7 +328,7 @@ where
         return false;
     };
 
-    let methods: Vec<String> = wrappers
+    let (classes, methods): (Vec<Word>, Vec<String>) = wrappers
         .iter()
         .filter_map(|(_, _, method)| {
             let class = codebase.get_class_like(method.get_class_name().as_bytes())?;
@@ -336,18 +337,25 @@ where
 
             // Code to write names the class by its short name, as its import binds it: PHP# refuses a full name in
             // code, so the dotted name that tells two classes apart in prose would not compile here.
-            Some(format!("`{}(…)`", display_sharp_member(class.original_name, method.original_name)))
+            Some((
+                class.original_name,
+                format!("`{}(…)`", display_sharp_member(class.original_name, method.original_name)),
+            ))
         })
-        .collect();
+        .unzip();
     let Some((last, others)) = methods.split_last() else {
         return false;
     };
     let methods = if others.is_empty() { last.clone() } else { format!("{} or {last}", others.join(", ")) };
+    let imports = display_missing_imports(context, classes).map(|imports| format!(" {imports}")).unwrap_or_default();
 
     context.collector.report_with_code(
         IssueCode::WrappedFunction,
-        Issue::error(format!("`{}` is wrapped by the standard library: write {methods}.", function.original_name))
-            .with_annotation(Annotation::primary(span).with_message("Called here.")),
+        Issue::error(format!(
+            "`{}` is wrapped by the standard library: write {methods}.{imports}",
+            function.original_name
+        ))
+        .with_annotation(Annotation::primary(span).with_message("Called here.")),
     );
 
     true

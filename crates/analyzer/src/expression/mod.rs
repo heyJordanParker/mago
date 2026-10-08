@@ -56,6 +56,7 @@ use crate::statement::class_like::analyze_class_like;
 use crate::statement::class_like::override_attribute;
 use crate::utils::misc::check_for_paradox;
 use crate::utils::names::display_member;
+use crate::utils::names::display_missing_imports;
 
 pub mod access;
 pub mod argument_list;
@@ -462,10 +463,10 @@ fn report_unhandled<'ctx, 'arena, A>(
         .iter()
         .all(|atomic| matches!(atomic, TAtomic::Null) || enum_value(atomic, context.codebase).is_some());
 
-    let missing = if is_enum {
+    let (missing, enums) = if is_enum {
         missing_cases(pattern_match.span(), &value_type, handled, context, block_context, artifacts)
     } else {
-        vec![]
+        (vec![], vec![])
     };
     let message = match missing.as_slice() {
         _ if !is_enum => "A `match` needs a `default` arm.".to_owned(),
@@ -476,6 +477,10 @@ fn report_unhandled<'ctx, 'arena, A>(
 
             format!("This `match` misses {} and `{last}`.", rest.join(", "))
         }
+    };
+    let message = match display_missing_imports(context, enums) {
+        Some(imports) => format!("{message} {imports}"),
+        None => message,
     };
 
     context.collector.report_with_code(
@@ -492,7 +497,7 @@ fn report_unhandled<'ctx, 'arena, A>(
 }
 
 /// The cases of the enum `value_type` that no `handled` test of the `match` at `span` matches, as PHP# writes them,
-/// `Status.Open`, in the order the enum declares them, and `null` last.
+/// `Status.Open`, in the order the enum declares them, and `null` last, with the enums those cases name.
 fn missing_cases<'ctx, 'arena, A>(
     span: Span,
     value_type: &TUnion,
@@ -500,7 +505,7 @@ fn missing_cases<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
     block_context: &BlockContext<'ctx>,
     artifacts: &AnalysisArtifacts,
-) -> Vec<String>
+) -> (Vec<String>, Vec<Word>)
 where
     A: Arena,
 {
@@ -547,6 +552,7 @@ where
             enums.push(*name);
         }
     }
+    let mut named = Vec::new();
     for name in enums {
         let Some(metadata) = context.codebase.get_enum(name.as_bytes()) else {
             continue;
@@ -556,6 +562,9 @@ where
         for case in declared {
             if cases.iter().any(|(enum_name, left)| *enum_name == name && left.is_none_or(|left| left == case.name)) {
                 missing.push(display_sharp_member(metadata.original_name, case.name));
+                if !named.contains(&metadata.original_name) {
+                    named.push(metadata.original_name);
+                }
             }
         }
     }
@@ -563,7 +572,7 @@ where
         missing.push("null".to_owned());
     }
 
-    missing
+    (missing, named)
 }
 
 /// The enum and the case a type holds: one case, or every case of the enum when the case is `None`. `None` for a type

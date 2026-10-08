@@ -48,6 +48,7 @@ use crate::resolver::class_name::ResolutionOrigin;
 use crate::resolver::class_name::ResolvedClassname;
 use crate::resolver::class_name::resolve_classnames_from_expression;
 use crate::utils::names::display_class_like_name;
+use crate::utils::names::display_code_member;
 use crate::utils::names::display_member;
 use crate::utils::template::get_generic_parameter_for_offset;
 use crate::visibility::check_method_visibility;
@@ -221,8 +222,8 @@ where
 
         return Ok(get_never());
     } else if metadata.kind.is_enum() {
-        let case = display_member(context, classname_str, "CASE_NAME");
-        let cases = display_member(context, classname_str, "cases()");
+        let case = display_code_member(context, metadata.original_name, "CASE_NAME");
+        let cases = display_code_member(context, metadata.original_name, "cases()");
         context.collector.report_with_code(
             IssueCode::EnumInstantiation,
             Issue::error(format!("Enum `{classname_str}` cannot be instantiated with `new`."))
