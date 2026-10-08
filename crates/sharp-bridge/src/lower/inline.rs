@@ -26,6 +26,7 @@ use super::Lines;
 use super::Lowering;
 use super::NULL;
 use super::ZEND_NAME_FQ;
+use super::is_current_position;
 use super::types::DeclarationKind;
 use super::types::receiver_classes;
 use crate::lower::checked::CheckedProgram;
@@ -100,8 +101,7 @@ pub fn inline_forms(checked: &CheckedProgram<'_>) -> Vec<(Vec<u8>, InlineForm)> 
         let name = checked.names().get(&class.name);
         for member in &class.members {
             if let ClassLikeMember::Method(method) = member
-                && let Some(form) =
-                    Lowering::new(&lines, &checked.file().name, checked.names(), checked.types()).form(name, method)
+                && let Some(form) = Lowering::new(&lines, checked.names(), checked.types()).form(name, method)
             {
                 forms.push((key(name, method.name.value), form));
             }
@@ -248,7 +248,8 @@ impl Lowering<'_, '_> {
         }
     }
 
-    /// The steps of `Class.m()` or `object.m()`: the receiver's, then the arguments', then the call.
+    /// The steps of `Class.m()` or `object.m()`: the receiver's, then the arguments', then the call. `Position.current()`
+    /// is the position in the library's method, which a copy in the caller would not give.
     fn method_call_steps(
         &self,
         expression: &Expression,
@@ -256,10 +257,11 @@ impl Lowering<'_, '_> {
         names: &[&[u8]],
         steps: &mut Vec<Step>,
     ) -> bool {
-        if self.names.static_call_class(call).is_none()
-            && !(self.takes_receiver(call.object) && self.steps(call.object, names, steps))
-        {
-            return false;
+        match self.names.static_call_class(call) {
+            Some(class) if is_current_position(self.names.get(&class.name), call) => return false,
+            Some(_) => {}
+            None if self.takes_receiver(call.object) && self.steps(call.object, names, steps) => {}
+            None => return false,
         }
         let declaration = self.types.call_target(expression);
 
