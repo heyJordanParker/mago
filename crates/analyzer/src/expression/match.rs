@@ -10,7 +10,6 @@ use mago_algebra::saturate_clauses;
 use mago_allocator::Arena;
 use mago_codex::consts::MAX_ENUM_CASES_FOR_ANALYSIS;
 use mago_codex::metadata::CodebaseMetadata;
-use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::key::ArrayKey;
 use mago_codex::ttype::atomic::object::TObject;
@@ -53,6 +52,7 @@ use crate::reconciler::reconcile_keyed_types;
 use crate::utils::expression::get_expression_id;
 use crate::utils::expression::get_literal_array_key;
 use crate::utils::misc::unwrap_expression;
+use crate::utils::names::display_type;
 use crate::utils::symbol_existence::extract_function_constant_existence;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for Match<'arena> {
@@ -825,16 +825,18 @@ where
     }
 
     fn report_non_exhaustive(&mut self, subject_type: &TUnion, unhandled_type: &TUnion) {
+        let subject_type = display_type(self.context, subject_type);
+        let unhandled_type = display_type(self.context, unhandled_type);
+
         self.context.collector.report_with_code(
             IssueCode::MatchNotExhaustive,
             Issue::error(format!(
-                "Non-exhaustive `match` expression: subject of type `{}` is not fully handled.",
-                subject_type.get_id()
+                "Non-exhaustive `match` expression: subject of type `{subject_type}` is not fully handled."
             ))
-            .with_annotation(Annotation::primary(self.stmt.expression.span()).with_message(format!(
-                "Unhandled portion of subject: `{}`",
-                unhandled_type.get_id()
-            )))
+            .with_annotation(
+                Annotation::primary(self.stmt.expression.span())
+                    .with_message(format!("Unhandled portion of subject: `{unhandled_type}`")),
+            )
             .with_annotation(
                 Annotation::secondary(self.stmt.span()).with_message(
                     "The `match` arms here do not cover all possible types and lack a `default` arm.",
@@ -844,8 +846,7 @@ where
                 "If the subject expression evaluates to one of the unhandled types at runtime, PHP will throw an `UnhandledMatchError`.",
             )
             .with_help(format!(
-                "Add conditional arms to cover type(s) `{}` or include a `default` arm to handle all other possibilities.",
-                unhandled_type.get_id()
+                "Add conditional arms to cover type(s) `{unhandled_type}` or include a `default` arm to handle all other possibilities."
             )),
         );
     }

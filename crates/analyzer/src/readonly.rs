@@ -16,6 +16,8 @@ use crate::context::block::BlockContext;
 use crate::expression::assignment::PropertyWriteKind;
 use crate::statement::class_like::initialization::compute_class_initializer_initializations;
 use crate::statement::class_like::initialization::compute_transitive_initializations;
+use crate::utils::names::display_class_like_name;
+use crate::utils::names::display_member;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LocalInitializationState {
@@ -453,29 +455,38 @@ fn report_parent_constructor_reinitialization<A>(
 ) where
     A: Arena,
 {
-    let class_name = class_metadata.original_name;
+    let property = display_member(context, class_metadata.original_name, property_name);
     let parent_class_name = parent_property_class.original_name;
+    // PHP# calls the base class's constructor as `: super(…)`, spec section 9.
+    let (parent_initializes, parent_call) = if context.dialect.is_sharp() {
+        (
+            format!(
+                "The `{}` constructor initializes this inherited property again",
+                display_class_like_name(context, parent_class_name)
+            ),
+            "`super(…)`",
+        )
+    } else {
+        (
+            format!("`{parent_class_name}::__construct()` initializes this inherited property again"),
+            "`parent::__construct()`",
+        )
+    };
 
     context.collector.report_with_code(
         IssueCode::InvalidPropertyWrite,
-        Issue::error(format!(
-            "Readonly property `{class_name}::{property_name}` is initialized before the parent constructor runs."
-        ))
-        .with_annotation(
-            Annotation::primary(property_span)
-                .with_message("This promoted property is initialized before the constructor body"),
-        )
-        .with_annotation(
-            Annotation::secondary(parent_property_span).with_message(format!(
-                "`{parent_class_name}::__construct()` initializes this inherited property again"
+        Issue::error(format!("Readonly property `{property}` is initialized before the parent constructor runs."))
+            .with_annotation(
+                Annotation::primary(property_span)
+                    .with_message("This promoted property is initialized before the constructor body"),
+            )
+            .with_annotation(Annotation::secondary(parent_property_span).with_message(parent_initializes))
+            .with_note(
+                "Promoted properties are initialized before the constructor body. A parent constructor that initializes the same property performs a second write, which throws an `Error` at runtime.",
+            )
+            .with_help(format!(
+                "Pass inherited properties to {parent_call} as regular parameters; promote only properties initialized by this class."
             )),
-        )
-        .with_note(
-            "Promoted properties are initialized before the constructor body. A parent constructor that initializes the same property performs a second write, which throws an `Error` at runtime.",
-        )
-        .with_help(
-            "Pass inherited properties to `parent::__construct()` as regular parameters; promote only properties initialized by this class.",
-        ),
     );
 }
 
@@ -614,11 +625,11 @@ fn report_invalid_write<A>(
         ),
     };
 
+    let property = display_member(context, declaring_class, pending.property_name);
     let mut issue = Issue::error(title)
         .with_annotation(Annotation::primary(pending.member_span).with_message(primary))
         .with_annotation(
-            Annotation::secondary(pending.access_span)
-                .with_message(format!("Write to `{declaring_class}::{}` occurs here", pending.property_name)),
+            Annotation::secondary(pending.access_span).with_message(format!("Write to `{property}` occurs here")),
         )
         .with_note(note)
         .with_help(help);
@@ -641,10 +652,8 @@ where
         .get_class_like(pending.declaring_class.as_bytes())
         .map_or(pending.declaring_class, |metadata| metadata.original_name);
 
-    let mut issue = Issue::warning(format!(
-        "Readonly property `{declaring_class}::{}` may already be initialized.",
-        pending.property_name
-    ))
+    let property = display_member(context, declaring_class, pending.property_name);
+    let mut issue = Issue::warning(format!("Readonly property `{property}` may already be initialized."))
     .with_annotation(
         Annotation::primary(pending.member_span)
             .with_message("This assignment succeeds only while the property is uninitialized"),

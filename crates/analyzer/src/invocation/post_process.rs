@@ -15,7 +15,6 @@ use mago_algebra::find_satisfying_assignments;
 use mago_algebra::saturate_clauses;
 use mago_codex::assertion::Assertion;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
-use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::resource::TResource;
@@ -64,6 +63,11 @@ use crate::utils::expression::get_block_expression_id;
 use crate::utils::expression::get_non_nullsafe_expression_id;
 use crate::utils::expression::get_nullsafe_base_expressions;
 use crate::utils::misc::unwrap_expression;
+use crate::utils::names::display_atomic;
+use crate::utils::names::display_class_like_name;
+use crate::utils::names::display_member;
+use crate::utils::names::display_type;
+use crate::utils::names::display_variable_name;
 
 pub fn post_invocation_process<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
@@ -251,10 +255,7 @@ where
     match identifier {
         FunctionLikeIdentifier::Function(_) => format!("`{original_name}`"),
         FunctionLikeIdentifier::Method(class_name, _) => {
-            let class_display =
-                context.codebase.get_class_like(class_name.as_bytes()).map(|m| m.original_name).unwrap_or(*class_name);
-
-            format!("`{class_display}::{original_name}`")
+            format!("`{}`", display_member(context, display_class_like_name(context, *class_name), original_name))
         }
         FunctionLikeIdentifier::Closure(name) => format!("`{name}`"),
     }
@@ -939,6 +940,7 @@ where
             Some(assertion_variable) => {
                 let non_nullsafe_assertion_variable = get_non_nullsafe_expression_id(assertion_variable);
                 let assertion_variable = non_nullsafe_assertion_variable.unwrap_or(assertion_variable);
+                let assertion_name = display_variable_name(context, assertion_variable.as_bytes());
                 let mut new_variable_possibilities: AssertionSet = vec![];
                 let mut resolved_or_clause: Disjunction<Assertion> = Vec::new();
 
@@ -1032,20 +1034,20 @@ where
                                     false,
                                 ) =>
                             {
-                                let asserted_type_id = asserted_type.get_id();
-                                let expected_type_id = resolved_assertion_type.get_id();
+                                let asserted_type_id = display_type(context, asserted_type);
+                                let expected_type_id = display_type(context, &resolved_assertion_type);
 
                                 context.collector.report_with_code(
                                         IssueCode::ImpossibleTypeComparison,
                                         Issue::error(format!(
-                                            "Impossible type assertion: `{assertion_variable}` of type `{asserted_type_id}` can never be `{expected_type_id}`."
+                                            "Impossible type assertion: `{assertion_name}` of type `{asserted_type_id}` can never be `{expected_type_id}`."
                                         ))
                                         .with_annotation(
                                             Annotation::primary(invocation.span)
-                                                .with_message(format!("Argument `{assertion_variable}` has type `{asserted_type_id}`")),
+                                                .with_message(format!("Argument `{assertion_name}` has type `{asserted_type_id}`")),
                                         )
                                         .with_note(format!(
-                                            "The assertion expects `{assertion_variable}` to be `{expected_type_id}`, but no value of type `{asserted_type_id}` can satisfy this."
+                                            "The assertion expects `{assertion_name}` to be `{expected_type_id}`, but no value of type `{asserted_type_id}` can satisfy this."
                                         ))
                                         .with_help("Check that the correct variable is being passed, or update the assertion type."),
                                     );
@@ -1056,20 +1058,20 @@ where
                                 {
                                     intersection
                                 } else {
-                                    let asserted_type_id = asserted_type.get_id();
-                                    let expected_type_id = resolved_assertion_type.get_id();
+                                    let asserted_type_id = display_type(context, asserted_type);
+                                    let expected_type_id = display_type(context, &resolved_assertion_type);
 
                                     context.collector.report_with_code(
                                         IssueCode::ImpossibleTypeComparison,
                                         Issue::error(format!(
-                                            "Impossible type assertion: `{assertion_variable}` of type `{asserted_type_id}` can never be identical to `{expected_type_id}`."
+                                            "Impossible type assertion: `{assertion_name}` of type `{asserted_type_id}` can never be identical to `{expected_type_id}`."
                                         ))
                                         .with_annotation(
                                             Annotation::primary(invocation.span)
-                                                .with_message(format!("Argument `{assertion_variable}` has type `{asserted_type_id}`")),
+                                                .with_message(format!("Argument `{assertion_name}` has type `{asserted_type_id}`")),
                                         )
                                         .with_note(format!(
-                                            "The assertion expects `{assertion_variable}` to be identical to `{expected_type_id}`, but no value of type `{asserted_type_id}` can satisfy this."
+                                            "The assertion expects `{assertion_name}` to be identical to `{expected_type_id}`, but no value of type `{asserted_type_id}` can satisfy this."
                                         ))
                                         .with_help("Check that the correct variable is being passed, or update the assertion type."),
                                     );
@@ -1095,10 +1097,10 @@ where
                     && (!any_possible || always_redundant)
                     && let Some(asserted_type) = &asserted_type
                 {
-                    let asserted_type_id = asserted_type.get_id();
+                    let asserted_type_id = display_type(context, asserted_type);
                     let expected_type_id = resolved_or_clause
                         .iter()
-                        .filter_map(|a| a.get_type().map(|t| t.get_id().to_string()))
+                        .filter_map(|a| a.get_type().map(|t| display_atomic(context, t)))
                         .collect::<Vec<_>>()
                         .join("|");
 
@@ -1110,14 +1112,14 @@ where
                         if !any_possible && !suppress_redundant {
                             pending_redundant_issues.push(
                                 Issue::warning(format!(
-                                    "Redundant type assertion: `{assertion_variable}` of type `{asserted_type_id}` is always not `{expected_type_id}`."
+                                    "Redundant type assertion: `{assertion_name}` of type `{asserted_type_id}` is always not `{expected_type_id}`."
                                 ))
                                 .with_annotation(
                                     Annotation::primary(invocation.span)
-                                        .with_message(format!("Argument `{assertion_variable}` has type `{asserted_type_id}`")),
+                                        .with_message(format!("Argument `{assertion_name}` has type `{asserted_type_id}`")),
                                 )
                                 .with_note(format!(
-                                    "The negated assertion against `{expected_type_id}` always holds because `{assertion_variable}` is `{asserted_type_id}`."
+                                    "The negated assertion against `{expected_type_id}` always holds because `{assertion_name}` is `{asserted_type_id}`."
                                 ))
                                 .with_help("Consider removing this assertion as it has no effect."),
                             );
@@ -1129,14 +1131,14 @@ where
                         } else {
                             pending_redundant_issues.push(
                                 Issue::warning(format!(
-                                    "Redundant type assertion: `{assertion_variable}` is already `{asserted_type_id}`."
+                                    "Redundant type assertion: `{assertion_name}` is already `{asserted_type_id}`."
                                 ))
                                 .with_annotation(
                                     Annotation::primary(invocation.span)
-                                        .with_message(format!("Argument `{assertion_variable}` already has type `{asserted_type_id}`")),
+                                        .with_message(format!("Argument `{assertion_name}` already has type `{asserted_type_id}`")),
                                 )
                                 .with_note(format!(
-                                    "The assertion against `{expected_type_id}` always holds because `{assertion_variable}` is `{asserted_type_id}`."
+                                    "The assertion against `{expected_type_id}` always holds because `{assertion_name}` is `{asserted_type_id}`."
                                 ))
                                 .with_help("Consider removing this assertion or replacing it with `default` if used in a `match` arm."),
                             );
@@ -1145,14 +1147,14 @@ where
                         context.collector.report_with_code(
                             IssueCode::ImpossibleTypeComparison,
                             Issue::error(format!(
-                                "Impossible type assertion: `{assertion_variable}` of type `{asserted_type_id}` can never be `{expected_type_id}`."
+                                "Impossible type assertion: `{assertion_name}` of type `{asserted_type_id}` can never be `{expected_type_id}`."
                             ))
                             .with_annotation(
                                 Annotation::primary(invocation.span)
-                                    .with_message(format!("Argument `{assertion_variable}` has type `{asserted_type_id}`")),
+                                    .with_message(format!("Argument `{assertion_name}` has type `{asserted_type_id}`")),
                             )
                             .with_note(format!(
-                                "The assertion expects `{assertion_variable}` to be `{expected_type_id}`, but no value of type `{asserted_type_id}` can satisfy this."
+                                "The assertion expects `{assertion_name}` to be `{expected_type_id}`, but no value of type `{asserted_type_id}` can satisfy this."
                             ))
                             .with_help("Check that the correct variable is being passed, or update the assertion type."),
                         );

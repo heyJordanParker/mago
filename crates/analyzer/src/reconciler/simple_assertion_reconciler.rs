@@ -62,6 +62,7 @@ use crate::reconciler::map_generic_constraint_or_else;
 use crate::reconciler::refine_array_key;
 use crate::reconciler::simple_negated_assertion_reconciler::subtract_null;
 use crate::reconciler::trigger_issue_for_impossible;
+use crate::utils::names::display_type;
 
 // This performs type intersections and more general reconciliations
 pub(crate) fn reconcile<A>(
@@ -468,7 +469,7 @@ where
         && let Some(key) = key
         && let Some(span) = span
     {
-        let old_var_type_atom = existing_var_type.get_id();
+        let old_var_type_atom = word(display_type(context, existing_var_type));
 
         trigger_issue_for_impossible(context, old_var_type_atom, key, assertion, !did_remove_type, negated, span);
     }
@@ -536,7 +537,7 @@ where
         && let Some(key) = key
         && let Some(span) = span
     {
-        let old_var_type_atom = existing_var_type.get_id();
+        let old_var_type_atom = word(display_type(context, existing_var_type));
 
         trigger_issue_for_impossible(context, old_var_type_atom, key, assertion, !did_remove_type, negated, span);
     }
@@ -587,7 +588,7 @@ where
         && let Some(key) = key
         && let Some(span) = span
     {
-        let old_var_type_atom = existing_var_type.get_id();
+        let old_var_type_atom = word(display_type(context, existing_var_type));
 
         trigger_issue_for_impossible(context, old_var_type_atom, key, assertion, !did_remove_type, negated, span);
     }
@@ -617,15 +618,8 @@ where
         && let Some(key) = key
         && let Some(span) = span
     {
-        trigger_issue_for_impossible(
-            context,
-            existing_var_type.get_id(),
-            key,
-            assertion,
-            !did_remove_type,
-            negated,
-            span,
-        );
+        let old_var_type_atom = word(display_type(context, existing_var_type));
+        trigger_issue_for_impossible(context, old_var_type_atom, key, assertion, !did_remove_type, negated, span);
     }
 
     if !acceptable_types.is_empty() {
@@ -1479,7 +1473,7 @@ where
         && let Some(span) = span
         && (!did_remove_type || acceptable_types.is_empty())
     {
-        let old_var_type_atom = existing_var_type.get_id();
+        let old_var_type_atom = word(display_type(context, existing_var_type));
 
         trigger_issue_for_impossible(context, old_var_type_atom, key, assertion, !did_remove_type, negated, span);
     }
@@ -1569,7 +1563,7 @@ where
         && let Some(span) = span
         && (!did_remove_type || acceptable_types.is_empty())
     {
-        let old_var_type_atom = existing_var_type.get_id();
+        let old_var_type_atom = word(display_type(context, existing_var_type));
 
         trigger_issue_for_impossible(context, old_var_type_atom, key, assertion, !did_remove_type, negated, span);
     }
@@ -1596,7 +1590,7 @@ fn reconcile_countable_with_bound<A>(
 where
     A: Arena,
 {
-    let old_var_type_atom = existing_var_type.get_id();
+    let old_var_type_atom = word(display_type(context, existing_var_type));
 
     let mut did_remove_type = false;
 
@@ -1726,7 +1720,7 @@ where
         if let Some(key) = key
             && let Some(span) = span
         {
-            let old_var_type_atom = existing_var_type.get_id();
+            let old_var_type_atom = word(display_type(context, existing_var_type));
 
             trigger_issue_for_impossible(context, old_var_type_atom, key, assertion, redundant, negated, span);
         }
@@ -1753,7 +1747,7 @@ fn reconcile_integer_comparison<A>(
 where
     A: Arena,
 {
-    let old_var_type_atom = existing_var_type.get_id();
+    let old_var_type_atom = word(display_type(context, existing_var_type));
 
     let existing_var_types = existing_var_type.types.as_ref();
     let mut existing_var_type = existing_var_type.clone();
@@ -1863,7 +1857,7 @@ where
         if let Some(key) = key
             && let Some(span) = span
         {
-            let old_var_type_atom = existing_var_type.get_id();
+            let old_var_type_atom = word(display_type(context, existing_var_type));
 
             trigger_issue_for_impossible(context, old_var_type_atom, key, assertion, false, negated, span);
         }
@@ -1895,7 +1889,8 @@ where
     if let Some(key) = key
         && let Some(span) = span
     {
-        trigger_issue_for_impossible(context, existing_var_type.get_id(), key, assertion, true, negated, span);
+        let old_var_type_atom = word(display_type(context, existing_var_type));
+        trigger_issue_for_impossible(context, old_var_type_atom, key, assertion, true, negated, span);
     }
 
     get_mixed()
@@ -2021,7 +2016,7 @@ where
         && let Some(span) = span
         && (!did_remove_type || acceptable_types.is_empty())
     {
-        let old_var_type_atom = existing_var_type.get_id();
+        let old_var_type_atom = word(display_type(context, existing_var_type));
 
         trigger_issue_for_impossible(context, old_var_type_atom, key, assertion, !did_remove_type, negated, span);
     }
@@ -2159,7 +2154,7 @@ where
         && let Some(span) = span
         && acceptable_types.is_empty()
     {
-        let old_var_type_atom = existing_var_type.get_id();
+        let old_var_type_atom = word(display_type(context, existing_var_type));
 
         trigger_issue_for_impossible(context, old_var_type_atom, key, assertion, false, negated, span);
     }
@@ -2381,7 +2376,7 @@ where
         && let Some(key) = key
         && let Some(span) = span
     {
-        let old_var_type_atom = existing_var_type.get_id();
+        let old_var_type_atom = word(display_type(context, existing_var_type));
 
         trigger_issue_for_impossible(context, old_var_type_atom, key, assertion, !did_remove_type, negated, span);
     }

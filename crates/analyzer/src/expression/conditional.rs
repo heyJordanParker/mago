@@ -8,7 +8,6 @@ use mago_algebra::clause::Clause;
 use mago_algebra::find_satisfying_assignments;
 use mago_algebra::saturate_clauses;
 use mago_codex::assertion::Assertion;
-use mago_codex::ttype::TType;
 use mago_codex::ttype::combine_optional_union_types;
 use mago_codex::ttype::combine_union_types;
 use mago_codex::ttype::get_mixed;
@@ -36,6 +35,7 @@ use crate::reconciler::assertion_reconciler;
 use crate::reconciler::reconcile_keyed_types;
 use crate::utils::conditional;
 use crate::utils::expression::is_derived_access_path;
+use crate::utils::names::display_type;
 use crate::utils::symbol_existence::extract_function_constant_existence;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for Conditional<'arena> {
@@ -389,15 +389,16 @@ where
     if let Some(condition_type) = condition_type.as_ref() {
         if condition_type.is_always_truthy() {
             is_condition_truthy = true;
+            let condition_type_str = display_type(context, condition_type);
 
             let issue =
                 if let Some(then) = then {
                     // `$A ? $B : $C` where `$A` is always truthy
                     Issue::help("Redundant ternary operator: condition is always truthy.")
-                        .with_annotation(Annotation::primary(condition.span()).with_message(format!(
-                            "This condition (type `{}`) is always truthy",
-                            condition_type.get_id()
-                        )))
+                        .with_annotation(
+                            Annotation::primary(condition.span())
+                                .with_message(format!("This condition (type `{condition_type_str}`) is always truthy")),
+                        )
                         .with_annotation(Annotation::secondary(then.span()).with_message(
                             "This `then` branch is always evaluated, making it the result of the expression",
                         ))
@@ -413,8 +414,7 @@ where
                     // `$A ?: $C` where `$A` is always truthy
                     Issue::help("Redundant Elvis operator: left-hand side is always truthy.")
                     .with_annotation(Annotation::primary(condition.span()).with_message(format!(
-                        "This expression (type `{}`) is always truthy",
-                        condition_type.get_id()
+                        "This expression (type `{condition_type_str}`) is always truthy"
                     )))
                     .with_annotation(
                         Annotation::secondary(r#else.span())
@@ -444,16 +444,17 @@ where
             });
         } else if condition_type.is_always_falsy() {
             is_condition_falsy = true;
+            let condition_type_str = display_type(context, condition_type);
 
             // https://en.wikipedia.org/wiki/Ternary_conditional_operator
             let issue =
                 if let Some(then) = then {
                     // `$A ? $B : $C` where `$A` is always falsy
                     Issue::warning("Redundant ternary operator: condition is always falsy.")
-                        .with_annotation(Annotation::primary(condition.span()).with_message(format!(
-                            "This condition (type `{}`) is always falsy",
-                            condition_type.get_id()
-                        )))
+                        .with_annotation(
+                            Annotation::primary(condition.span())
+                                .with_message(format!("This condition (type `{condition_type_str}`) is always falsy")),
+                        )
                         .with_annotation(
                             Annotation::secondary(then.span())
                                 .with_message("This `then` branch will never be evaluated"),
@@ -469,8 +470,7 @@ where
                     // `$A ?: $C` where `$A` is always falsy
                     Issue::warning("Redundant Elvis operator: left-hand side is always falsy.")
                     .with_annotation(Annotation::primary(condition.span()).with_message(format!(
-                        "This expression (type `{}`) is always falsy",
-                        condition_type.get_id()
+                        "This expression (type `{condition_type_str}`) is always falsy"
                     )))
                     .with_annotation(Annotation::secondary(r#else.span()).with_message(
                         "This right-hand side is always evaluated, making it the result of the expression",

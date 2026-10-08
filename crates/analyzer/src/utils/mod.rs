@@ -43,8 +43,11 @@ where
         formatter = formatter.with_color();
     }
 
-    let container_id = container.get_pretty_id().to_string();
-    let input_id = input.get_pretty_id().to_string();
+    let (container_id, input_id) = if context.dialect.is_sharp() {
+        (names::display_sharp_type(context, container), names::display_sharp_type(context, input))
+    } else {
+        (container.get_pretty_id().to_string(), input.get_pretty_id().to_string())
+    };
     let patch = diffy::create_patch(&container_id, &input_id);
     let diff = formatter.fmt_patch(&patch);
 

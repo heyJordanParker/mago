@@ -1,5 +1,4 @@
 use mago_allocator::Arena;
-use mago_codex::ttype::TType;
 use mago_codex::ttype::get_int_or_string;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_never;
@@ -18,6 +17,7 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::context::scope::control_action::ControlAction;
 use crate::error::AnalysisError;
+use crate::utils::names::display_type;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for ExitConstruct<'arena> {
     fn analyze<'ctx, A>(
@@ -50,17 +50,18 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ExitConstruct<'arena> {
             && !argument_type.is_int()
             && !argument_type.is_never()
         {
+            let argument_type_str = display_type(context, argument_type);
             let issue = if argument_type.has_string() || argument_type.has_mixed() {
                 Issue::error("PHP# has no `die`: write the message to STDERR, then `exit(1)`.")
                     .with_annotation(
                         Annotation::primary(self.span())
-                            .with_message(format!("This is `{}`, not an `int`.", argument_type.get_id())),
+                            .with_message(format!("This is `{argument_type_str}`, not an `int`.")),
                     )
                     .with_note(
                         "`die(\"…\")` and `exit(\"…\")` print the message and exit with status 0, which reports success.",
                     )
             } else {
-                Issue::error(format!("`exit` takes an `int` status: this is `{}`.", argument_type.get_id()))
+                Issue::error(format!("`exit` takes an `int` status: this is `{argument_type_str}`."))
                     .with_annotation(Annotation::primary(self.span()).with_message("This status is not an `int`."))
             };
 

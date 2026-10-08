@@ -11,6 +11,7 @@ use mago_codex::metadata::class_like::ClassLikeMetadata;
 use mago_codex::reference::ReferenceOrigin;
 use mago_codex::ttype::expander::StaticClassType;
 use mago_codex::ttype::template::TemplateResult;
+use mago_names::short_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -31,8 +32,8 @@ use crate::invocation::InvocationTarget;
 use crate::invocation::MethodInvocationKind;
 use crate::invocation::MethodTargetContext;
 use crate::invocation::analyzer::analyze_invocation;
+use crate::utils::names::display_class_like_name;
 use crate::visibility::check_method_visibility;
-use mago_bytes::BytesDisplay;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -121,7 +122,12 @@ where
     let mut used_attributes = HashMap::default();
     for attribute in attributes {
         let attribute_name_bytes = context.resolved_names.get(&attribute.name);
-        let attribute_name = BytesDisplay(attribute_name_bytes);
+        // PHP names the attribute as the file resolves it, before any lookup corrects its case.
+        let attribute_name = if context.dialect.is_sharp() {
+            display_class_like_name(context, word(attribute_name_bytes)).to_string()
+        } else {
+            String::from_utf8_lossy(attribute_name_bytes).into_owned()
+        };
 
         let Some(metadata) = context.codebase.get_class_like(attribute_name_bytes) else {
             context.collector.report_with_code(
@@ -292,7 +298,7 @@ where
         if let Some(argument_list) = &attribute.argument_list {
             if !argument_list.arguments.is_empty() {
                 if !metadata.has_incomplete_hierarchy() {
-                    let attribute_name = metadata.original_name;
+                    let attribute_name = display_class_like_name(context, metadata.original_name);
                     context.collector.report_with_code(
                         IssueCode::TooManyArguments,
                         Issue::error(format!(
@@ -381,13 +387,11 @@ fn report_invalid_target<'ctx, 'arena, A>(
 ) where
     A: Arena,
 {
-    let attribute_name = metadata.original_name;
-    let attribute_name_bytes = attribute_name.as_bytes();
-    let short_attribute_name = match memchr::memrchr(b'\\', attribute_name_bytes) {
-        Some(i) => &attribute_name_bytes[i + 1..],
-        None => attribute_name_bytes,
-    };
-    let short_attribute_name = BytesDisplay(short_attribute_name);
+    let attribute_name = display_class_like_name(context, metadata.original_name);
+    let short_attribute_name = short_name(metadata.original_name);
+    // The analyzed file writes this attribute as `[Name]` in PHP#. The attribute class declares itself with
+    // `#[Attribute]` in its own PHP file.
+    let attribute_marker = if context.dialect.is_sharp() { "[" } else { "#[" };
     let allowed_targets = flags.get_target_names().join(", ");
 
     context.collector.report_with_code(
@@ -402,7 +406,7 @@ fn report_invalid_target<'ctx, 'arena, A>(
                 "The definition of `{attribute_name}` restricts its use to the following targets: {allowed_targets}."
             ))
             .with_help(format!(
-                "Remove the `#[{short_attribute_name}]` attribute from this location, or update the `#[Attribute]` declaration on the `{attribute_name}` class to include `{}` as a valid target.",
+                "Remove the `{attribute_marker}{short_attribute_name}]` attribute from this location, or update the `#[Attribute]` declaration on the `{attribute_name}` class to include `{}` as a valid target.",
                 target.as_str()
             ))
     );

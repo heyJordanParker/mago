@@ -264,7 +264,7 @@ fn a_method_without_a_body_returns_the_checker_error() {
     assert_eq!(
         lowered.diagnostics(),
         [
-            "3:21 compile error: Non-Abstract method `Report::run` must have a concrete body.",
+            "3:21 compile error: Non-Abstract method `Report.run` must have a concrete body.",
             "1:7 compile error: Class `Report` does not implement the abstract method `run`."
         ]
     );
@@ -993,7 +993,7 @@ fn field_in_a_nested_block_keeps_a_property_backed_and_field_only_in_a_lambda_is
         lambda.diagnostics(),
         [
             "3:45 compile error: `field` cannot be used in a lambda: PHP would call the accessor again instead of reading the storage.",
-            "3:59 compile error: Could not infer a precise return type for property hook `Report::$b::get`. Saw type `mixed`."
+            "3:59 compile error: Could not infer a precise return type for property hook `Report.b.get`. Saw type `Any?`."
         ]
     );
     assert_eq!(lambda.nodes().len(), 0);
@@ -4522,10 +4522,7 @@ fn a_static_member_only_a_magic_method_serves_is_refused() {
         &[MAGIC_ORDER],
     );
 
-    assert_eq!(
-        lowered.diagnostics(),
-        ["9:29 compile error: Static property `$where` does not exist on class `Lib\\Order`."]
-    );
+    assert_eq!(lowered.diagnostics(), ["9:29 compile error: `Order.where` does not exist."]);
 }
 
 /// A constant expression reads only constants and enum cases, as PHP's does, so a parameter default of a static
