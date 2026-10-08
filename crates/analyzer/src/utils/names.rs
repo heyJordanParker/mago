@@ -45,9 +45,10 @@ where
     context.codebase.get_function(name.as_bytes()).map_or(name, |m| m.original_name)
 }
 
-/// Returns the name a `.sharp` file gives the class-like `name`: the name it imports the class under with `as`, as spec
-/// section 23 renames an import, and otherwise the class's short name.
-fn sharp_class_like_name<A>(context: &Context<'_, '_, A>, name: Word) -> String
+/// Returns the class-like `name` as the analyzed `.sharp` file names it once imported: the name the file imports it
+/// under with `as`, as spec section 23 renames an import, as in `Rx`, and otherwise its short name, as in `Date`.
+#[must_use]
+pub(crate) fn display_sharp_class<A>(context: &Context<'_, '_, A>, name: Word) -> String
 where
     A: Arena,
 {
@@ -59,7 +60,7 @@ where
     String::from_utf8_lossy(name.rsplit(|byte| *byte == b'\\').next().unwrap_or(name)).into_owned()
 }
 
-/// Returns a method as PHP# calls it on its class, as in `Date.format`: the class as [`sharp_class_like_name`] names it,
+/// Returns a method as PHP# calls it on its class, as in `Date.format`: the class as [`display_sharp_class`] names it,
 /// and the method's name.
 #[must_use]
 pub(crate) fn display_sharp_method<A>(
@@ -70,7 +71,7 @@ pub(crate) fn display_sharp_method<A>(
 where
     A: Arena,
 {
-    format!("{}.{}", sharp_class_like_name(context, class.original_name), method.original_name)
+    format!("{}.{}", display_sharp_class(context, class.original_name), method.original_name)
 }
 
 /// Returns the PHP# collection type, as in `Map<string, int>`, that `object` stands for when it is `Sharp\ListMethods`
@@ -89,7 +90,7 @@ where
 }
 
 /// Returns `union` as PHP# writes the type: `List<int>`, `Map<string, int>`, `int?`, `(int|string)?`, `Any?`, and a
-/// class as [`sharp_class_like_name`] names it.
+/// class as [`display_sharp_class`] names it.
 #[must_use]
 pub(crate) fn display_sharp_type<A>(context: &Context<'_, '_, A>, union: &TUnion) -> String
 where
@@ -132,7 +133,7 @@ where
             let Some(name) = object.get_name() else {
                 return atomic.get_id().to_string();
             };
-            let name = sharp_class_like_name(context, name);
+            let name = display_sharp_class(context, name);
             match object.get_type_parameters() {
                 Some(parameters) if !parameters.is_empty() => {
                     let parameters: Vec<String> =

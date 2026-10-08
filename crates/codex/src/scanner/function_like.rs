@@ -1,5 +1,5 @@
 use mago_allocator::Arena;
-use mago_names::binding::php_method_name;
+use mago_names::binding::MethodParts;
 use mago_names::kind::NameKind;
 use mago_names::scope::NamespaceScope;
 use mago_phpdoc_syntax::cst::AssertPattern;
@@ -19,7 +19,6 @@ use mago_syntax::cst::ForBody;
 use mago_syntax::cst::ForeachBody;
 use mago_syntax::cst::Function;
 use mago_syntax::cst::IfBody;
-use mago_syntax::cst::Method;
 use mago_syntax::cst::MethodBody;
 use mago_syntax::cst::Modifier;
 use mago_syntax::cst::ModifierSequenceExt;
@@ -69,10 +68,11 @@ use crate::ttype::template::GenericTemplate;
 use crate::ttype::union::TUnion;
 use crate::visibility::Visibility;
 
+/// Scans a method, or a PHP# operator as the static method it runs as.
 #[inline]
 pub fn scan_method<'arena, A>(
     functionlike_id: (Word, Word),
-    method: &'arena Method<'arena>,
+    method: &MethodParts<'arena, 'arena>,
     class_like_metadata: &ClassLikeMetadata,
     context: &Context<'_, 'arena, A>,
     scope: &mut NamespaceScope,
@@ -81,27 +81,27 @@ pub fn scan_method<'arena, A>(
 where
     A: Arena,
 {
-    let span = method.span();
+    let span = method.span;
 
     let mut flags = MetadataFlags::origin_flags(context.file.file_type);
 
-    if method.ampersand.is_some() {
+    if method.returns_by_reference {
         flags |= MetadataFlags::BY_REFERENCE;
     }
 
-    let verdict = evaluate_version_attributes(&method.attribute_lists, context, context.php_version);
+    let verdict = evaluate_version_attributes(method.attribute_lists, context, context.php_version);
 
-    let method_name_str = php_method_name(method);
+    let method_name_str = method.name;
     let lookup_name = ascii_lowercase_word(method_name_str);
     let display_name = word(method_name_str);
 
     let mut metadata = FunctionLikeMetadata::new(FunctionLikeKind::Method, lookup_name, display_name, span, flags);
     metadata.version_constraint = verdict.constraint;
     metadata.attributes =
-        scan_attribute_lists(&method.attribute_lists, context, scope, Some(class_like_metadata.original_name));
+        scan_attribute_lists(method.attribute_lists, context, scope, Some(class_like_metadata.original_name));
     metadata.type_resolution_context = type_resolution_context.filter(|c| !c.is_empty());
 
-    metadata.name_span = Some(method.name.span);
+    metadata.name_span = Some(method.name_span);
     metadata.parameters = method
         .parameter_list
         .parameters
@@ -109,7 +109,7 @@ where
         .filter_map(|p| scan_function_like_parameter(p, Some(class_like_metadata.original_name), context, scope))
         .collect();
 
-    if let Some(return_hint) = method.return_type_hint.as_ref() {
+    if let Some(return_hint) = method.return_type_hint {
         metadata.set_return_type_declaration_metadata(Some(get_type_metadata_from_hint(
             &return_hint.hint,
             Some(class_like_metadata.original_name),
@@ -130,7 +130,7 @@ where
         where_constraints: WordMap::default(),
     };
 
-    match &method.body {
+    match method.body {
         MethodBody::Concrete(block) => {
             if utils::block_has_yield(block) {
                 metadata.flags |= MetadataFlags::HAS_YIELD;
@@ -181,9 +181,9 @@ where
         scope,
     );
 
-    match &method.body {
+    match method.body {
         MethodBody::Concrete(block) => infer_assertions_from_block_body(block, &mut metadata, context.resolved_names),
-        MethodBody::Expression(body) if method.returns_value() => {
+        MethodBody::Expression(body) if method.returns_value => {
             infer_assertions_from_expression_body(body.expression, &mut metadata, context.resolved_names);
         }
         MethodBody::Expression(_) | MethodBody::Abstract(_) => {}
@@ -194,7 +194,7 @@ where
     }
 
     // Automatically mark known fiber-suspending methods.
-    if method.name.value.eq_ignore_ascii_case(b"suspend")
+    if method.name.eq_ignore_ascii_case(b"suspend")
         && class_like_metadata.name.as_bytes().eq_ignore_ascii_case(b"revolt\\eventloop\\suspension")
     {
         metadata.flags |= MetadataFlags::SUSPENDS_FIBER;

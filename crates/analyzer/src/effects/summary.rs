@@ -19,6 +19,7 @@ use mago_syntax::cst::Argument;
 use mago_syntax::cst::ArgumentList;
 use mago_syntax::cst::ArrowFunction;
 use mago_syntax::cst::Assignment;
+use mago_syntax::cst::Binary;
 use mago_syntax::cst::Call as CallExpression;
 use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::Closure;
@@ -471,6 +472,25 @@ where
         }
     }
 
+    /// Records a PHP# operator on instances at `span`: it runs the static method its class declares, which takes
+    /// `operands` as its arguments.
+    fn operator(&mut self, span: Span, operands: &[&Expression<'arena>]) {
+        let artifacts = self.artifacts;
+        let Some(targets) = artifacts.call_targets.get(&(span.start.offset, span.end.offset)) else {
+            return;
+        };
+
+        for CallTarget { callee, .. } in targets {
+            let FunctionLikeIdentifier::Method(class, method) = callee else {
+                continue;
+            };
+
+            let callee = Body::Method(ascii_lowercase_word(class.as_bytes()), ascii_lowercase_word(method.as_bytes()));
+            let arguments = operands.iter().map(|operand| self.roots(operand)).collect();
+            self.summary.calls.push(Call { callee, span, receiver: Roots::new(), arguments });
+        }
+    }
+
     fn method_call(
         &mut self,
         declaring_class: Word,
@@ -682,6 +702,7 @@ where
     fn walk_anonymous_class(&self, _: &'ast AnonymousClass<'arena>, _: &mut Recorder<'_, '_, 'ast, 'arena, A>) {}
 
     fn walk_assignment(&self, assignment: &'ast Assignment<'arena>, recorder: &mut Recorder<'_, '_, 'ast, 'arena, A>) {
+        recorder.operator(assignment.span(), &[assignment.lhs, assignment.rhs]);
         recorder.assign(assignment);
         self.walk_place(assignment.lhs, recorder);
         self.walk_expression(assignment.rhs, recorder);
@@ -774,7 +795,12 @@ where
         recorder.read_member(name);
     }
 
+    fn walk_in_binary(&self, binary: &'ast Binary<'arena>, recorder: &mut Recorder<'_, '_, 'ast, 'arena, A>) {
+        recorder.operator(binary.span(), &[binary.lhs, binary.rhs]);
+    }
+
     fn walk_in_unary_prefix(&self, unary: &'ast UnaryPrefix<'arena>, recorder: &mut Recorder<'_, '_, 'ast, 'arena, A>) {
+        recorder.operator(unary.span(), &[unary.operand]);
         if unary.operator.is_increment_or_decrement() {
             recorder.write(unary.operand, unary.span(), None);
         }

@@ -5,7 +5,6 @@ use mago_span::Span;
 
 use crate::cst::cst::expression::Expression;
 use crate::cst::cst::keyword::Keyword;
-use crate::cst::cst::literal::Literal;
 use crate::token::GetPrecedence;
 use crate::token::Precedence;
 
@@ -316,18 +315,6 @@ impl HasSpan for BinaryOperator<'_> {
             Self::LowOr(keyword) => keyword.span(),
             Self::LowXor(keyword) => keyword.span(),
         }
-    }
-}
-
-impl Binary<'_> {
-    /// Whether this is `==` or `!=` with `null` on one side. PHP# runs it as `===` or `!==`, so it tests for null
-    /// alone and `0 == null` is false.
-    #[must_use]
-    pub fn is_equality_with_null(&self) -> bool {
-        let is_null = |operand: &Expression<'_>| matches!(operand, Expression::Literal(Literal::Null(_)));
-
-        matches!(self.operator, BinaryOperator::Equal(_) | BinaryOperator::NotEqual(_))
-            && (is_null(self.lhs) || is_null(self.rhs))
     }
 }
 

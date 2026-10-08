@@ -330,6 +330,24 @@ impl<'analysis> Types<'analysis> {
             .unwrap_or_else(|| unreachable!("`{root}` declares the property"))
     }
 
+    /// The class declaring the static method `name` a PHP# operator on `operands` runs as, as the checker chose it: the
+    /// one the left operand's class declares or inherits, else the right one's, as `App\Money` for `op_Addition` on
+    /// two `Order`s that inherit it. Operands with no instance of one class, enums aside, run none.
+    pub(crate) fn operator_class(&self, name: &[u8], operands: &[&Expression]) -> Option<Word> {
+        operands.iter().find_map(|operand| {
+            let classes = receiver_classes(self.expression_type(operand))?;
+            let [class] = classes.as_slice() else {
+                return None;
+            };
+            if matches!(self.class_declaration(class).kind, DeclarationKind::Enum { .. }) {
+                return None;
+            }
+            let method = self.method_declaration(class, name)?;
+
+            (method.kind == DeclarationKind::StaticMethod).then(|| self.class_declaration(method.class.as_bytes()).name)
+        })
+    }
+
     /// The method `class` declares or inherits by the name `method`, if any.
     fn method_declaration(&self, class: &[u8], method: &[u8]) -> Option<Declaration> {
         let metadata = self.codebase.get_declaring_method(class, method)?.method_metadata.as_ref()?;

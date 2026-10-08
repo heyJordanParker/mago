@@ -6,7 +6,6 @@ use mago_word::WordSet;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
 use mago_codex::reference::SymbolReferences;
-use mago_codex::ttype::TType;
 use mago_codex::ttype::resolution::TypeResolutionContext;
 use mago_codex::ttype::union::TUnion;
 use mago_collector::Collector;
@@ -32,6 +31,7 @@ use crate::artifacts::AnalysisArtifacts;
 use crate::code::IssueCode;
 use crate::context::assertion::AssertionContext;
 use crate::context::block::BlockContext;
+use crate::expression::binary::utils::display_operand;
 use crate::external::ExternalAnalysisSession;
 use crate::plugin::PluginRegistry;
 use crate::settings::Settings;
@@ -179,9 +179,10 @@ where
             return;
         }
 
+        let condition_type = display_operand(self, condition_type);
         self.collector.report_with_code(
             IssueCode::InvalidOperand,
-            Issue::error(format!("`{construct}` takes a `bool`, but this is `{}`.", condition_type.get_id()))
+            Issue::error(format!("`{construct}` takes a `bool`, but this is `{condition_type}`."))
                 .with_annotation(Annotation::primary(condition.span()).with_message("This is not `bool`."))
                 .with_note("Spec section 21 makes every PHP# condition a `bool`, so PHP's truthiness never applies.")
                 .with_help("Compare the value, as in `count > 0` or `name != \"\"`."),
@@ -266,6 +267,7 @@ where
             this_class_name,
             trust_existence_checks: self.settings.trust_existence_checks,
             temporaries: self.temporaries,
+            dialect: self.dialect,
         }
     }
 
