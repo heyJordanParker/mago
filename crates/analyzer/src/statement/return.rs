@@ -19,6 +19,7 @@ use mago_codex::ttype::get_null;
 use mago_codex::ttype::get_void;
 use mago_codex::ttype::union::TUnion;
 use mago_names::ResolvedNames;
+use mago_names::display_sharp_member;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -43,8 +44,13 @@ use crate::utils::expression::get_direct_variable_id;
 use crate::utils::expression::is_referenceable;
 use crate::utils::get_type_diff;
 use crate::utils::misc::unwrap_expression;
+use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_function_like_identifier;
-use crate::utils::names::display_sharp_method;
+use crate::utils::names::display_member;
+use crate::utils::names::display_nullable_type;
+use crate::utils::names::display_sharp_accessor;
+use crate::utils::names::display_type;
+use crate::utils::names::display_value_type;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for Return<'arena> {
     fn analyze<'ctx, A>(
@@ -210,6 +216,12 @@ pub fn handle_return_value<'ctx, A>(
     }
 
     let function_name = display_function_like_identifier(context, &function_like_identifier);
+    let (kind, capitalized_kind) =
+        if context.dialect.is_sharp() && matches!(function_like_identifier, FunctionLikeIdentifier::Method(..)) {
+            ("method", "Method")
+        } else {
+            ("function", "Function")
+        };
 
     if let Some(return_value) = return_value
         && function_like_metadata.flags.is_by_reference()
@@ -221,7 +233,7 @@ pub fn handle_return_value<'ctx, A>(
             context.collector.report_with_code(
                 IssueCode::InvalidReturnStatement,
                 Issue::error(format!(
-                    "Cannot return a non-referenceable value from function `{function_name}`.",
+                    "Cannot return a non-referenceable value from {kind} `{function_name}`.",
                 ))
                 .with_annotation(Annotation::primary(return_value.span()).with_message(
                     "This value cannot be returned by reference.",
@@ -280,8 +292,9 @@ pub fn handle_return_value<'ctx, A>(
     if function_like_metadata.flags.has_yield() {
         if let Some((return_type, is_from_generator)) = get_generator_return_type(context, &expected_return_type) {
             if !is_from_generator && function_like_metadata.return_type_metadata.is_some() {
-                let inferred_return_type_str = inferred_return_type.get_id();
-                let expected_return_type_str = expected_return_type.get_id();
+                let inferred_return_type_str =
+                    display_value_type(context, &inferred_return_type, &expected_return_type);
+                let expected_return_type_str = display_type(context, &expected_return_type);
 
                 let type_declaration_span = function_like_metadata
                     .return_type_metadata
@@ -292,7 +305,7 @@ pub fn handle_return_value<'ctx, A>(
                     context.collector.report_with_code(
                         IssueCode::HiddenGeneratorReturn,
                         Issue::warning(format!(
-                            "The value returned by generator function `{function_name}` may be inaccessible to callers.",
+                            "The value returned by generator {kind} `{function_name}` may be inaccessible to callers.",
                         ))
                         .with_annotation(
                             Annotation::primary(return_value.span()).with_message(format!(
@@ -301,7 +314,7 @@ pub fn handle_return_value<'ctx, A>(
                         )
                         .with_annotation(
                             Annotation::secondary(type_declaration_span).with_message(format!(
-                                "Function is declared to return `{expected_return_type_str}`, which hides `Generator::getReturn()`."
+                                "{capitalized_kind} is declared to return `{expected_return_type_str}`, which hides `Generator::getReturn()`."
                             ))
                         )
                         .with_note("Generators can provide a final value via `Generator::getReturn()`.")
@@ -331,21 +344,21 @@ pub fn handle_return_value<'ctx, A>(
             context.collector.report_with_code(
                 IssueCode::InvalidReturnStatement,
                 Issue::error(format!(
-                    "Function `{function_name}` is declared to return 'void' but returns a value."
+                    "{capitalized_kind} `{function_name}` is declared to return 'void' but returns a value."
                 ))
                 .with_annotation(
                     Annotation::primary(return_value.span())
                         .with_message("Value returned here.")
                 )
-                .with_note(
-                    "A 'void' return type means the function should not return any value."
-                )
-                .with_note(
-                    "Use 'return;' without a value, or omit the return statement if it's at the end of the function."
-                )
-                .with_help(
-                    "Remove the return value (e.g., change 'return $value;' to 'return;') or change the function's declared return type if it's intended to return a value."
-                ),
+                .with_note(format!(
+                    "A 'void' return type means the {kind} should not return any value."
+                ))
+                .with_note(format!(
+                    "Use 'return;' without a value, or omit the return statement if it's at the end of the {kind}."
+                ))
+                .with_help(format!(
+                    "Remove the return value (e.g., change 'return $value;' to 'return;') or change the {kind}'s declared return type if it's intended to return a value."
+                )),
             );
 
             return;
@@ -354,23 +367,24 @@ pub fn handle_return_value<'ctx, A>(
         if inferred_return_type.is_mixed()
             && !returns_declared_parameter_variable(return_value, &expected_return_type, context.resolved_names)
         {
+            let inferred_return_type_str = display_type(context, &inferred_return_type);
+            let mixed_str = if context.dialect.is_sharp() { &inferred_return_type_str } else { "mixed" };
+            let mixed = display_type(context, &get_mixed());
             context.collector.report_with_code(
                 IssueCode::MixedReturnStatement,
                 Issue::error(format!(
-                    "Could not infer a precise return type for function `{}`. Saw type `{}`.",
-                    function_name,
-                    inferred_return_type.get_id()
+                    "Could not infer a precise return type for {kind} `{function_name}`. Saw type `{inferred_return_type_str}`."
                 ))
                 .with_annotation(
                     Annotation::primary(return_value.span())
-                        .with_message("Type inferred as `mixed` here.")
+                        .with_message(format!("Type inferred as `{mixed_str}` here."))
                 )
-                .with_note(
-                    "The analysis could not determine a specific type for the value returned here, resulting in `mixed`. This can happen with complex code paths or unannotated data.".to_string()
-                )
-                .with_help(
-                    "Add specific type hints to variables, parameters, or properties involved in calculating the return value. Consider adding a specific return type declaration to the function signature to catch potential mismatches earlier."
-                ),
+                .with_note(format!(
+                    "The analysis could not determine a specific type for the value returned here, resulting in `{mixed}`. This can happen with complex code paths or unannotated data."
+                ))
+                .with_help(format!(
+                    "Add specific type hints to variables, parameters, or properties involved in calculating the return value. Consider adding a specific return type declaration to the {kind} signature to catch potential mismatches earlier."
+                )),
             );
 
             return;
@@ -390,25 +404,21 @@ pub fn handle_return_value<'ctx, A>(
             return;
         }
 
-        let expected_return_type_str = expected_return_type.get_id();
-        let inferred_return_type_str = inferred_return_type.get_id();
+        let expected_return_type_str = display_type(context, &expected_return_type);
+        let inferred_return_type_str = display_value_type(context, &inferred_return_type, &expected_return_type);
 
         if inferred_return_type.is_nullable()
             && !inferred_return_type.ignore_nullable_issues()
             && !expected_return_type.is_nullable()
             && !expected_return_type.has_template()
         {
-            // PHP# writes a nullable type with `?` after it.
-            let nullable_return_type_str = if context.dialect.is_sharp() {
-                format!("{expected_return_type_str}?")
-            } else {
-                format!("?{expected_return_type_str}")
-            };
+            let nullable_return_type_str =
+                display_nullable_type(context, &expected_return_type, format!("?{expected_return_type_str}"));
 
             context.collector.report_with_code(
                 IssueCode::NullableReturnStatement,
                 Issue::error(format!(
-                    "Function `{function_name}` is declared to return `{expected_return_type_str}` but possibly returns a nullable value (inferred as `{inferred_return_type_str}`).",
+                    "{capitalized_kind} `{function_name}` is declared to return `{expected_return_type_str}` but possibly returns a nullable value (inferred as `{inferred_return_type_str}`).",
                 ))
                 .with_annotation(
                     Annotation::primary(return_value.span()).with_message("Nullable value returned here.")
@@ -422,7 +432,7 @@ pub fn handle_return_value<'ctx, A>(
                 )
                 .with_help(
                     format!(
-                        "You can either change the return type declaration of `{function_name}` to be nullable (e.g., '{nullable_return_type_str}'), or ensure that this function path always returns a non-null value."
+                        "You can either change the return type declaration of `{function_name}` to be nullable (e.g., '{nullable_return_type_str}'), or ensure that this {kind} path always returns a non-null value."
                     )
                 ),
             );
@@ -436,7 +446,7 @@ pub fn handle_return_value<'ctx, A>(
             context.collector.report_with_code(
                 IssueCode::FalsableReturnStatement,
                 Issue::error(format!(
-                    "Function `{function_name}` is declared to return `{expected_return_type_str}` but possibly returns 'false' (inferred as `{inferred_return_type_str}`).",
+                    "{capitalized_kind} `{function_name}` is declared to return `{expected_return_type_str}` but possibly returns 'false' (inferred as `{inferred_return_type_str}`).",
                 ))
                 .with_annotation(
                     Annotation::primary(return_value.span())
@@ -450,7 +460,7 @@ pub fn handle_return_value<'ctx, A>(
                 )
                 .with_help(
                     format!(
-                        "You can either change the return type declaration of `{function_name}` to include 'false' (e.g., '{expected_return_type_str}|false'), or ensure that this function path never returns 'false'.",
+                        "You can either change the return type declaration of `{function_name}` to include 'false' (e.g., '{expected_return_type_str}|false'), or ensure that this {kind} path never returns 'false'.",
                     )
                 ),
             );
@@ -462,16 +472,17 @@ pub fn handle_return_value<'ctx, A>(
             }
 
             if union_comparison_result.type_coerced_from_nested_mixed.unwrap_or(false) {
+                let mixed = display_type(context, &get_mixed());
                 let mut issue = Issue::error(format!(
-                    "Returned type `{inferred_return_type_str}` is less specific than the declared return type `{expected_return_type_str}` for function `{function_name}` due to nested 'mixed'."
+                    "Returned type `{inferred_return_type_str}` is less specific than the declared return type `{expected_return_type_str}` for {kind} `{function_name}` due to nested '{mixed}'."
                 ))
                 .with_annotation(
                     Annotation::primary(return_value.span())
-                        .with_message("Returned value's type is too general here due to nested mixed")
+                        .with_message(format!("Returned value's type is too general here due to nested {mixed}"))
                 )
-                .with_note(
-                    "The analysis detected 'mixed' within the structure of the returned value, making the overall type less specific than what the function declared."
-                )
+                .with_note(format!(
+                    "The analysis detected '{mixed}' within the structure of the returned value, making the overall type less specific than what the {kind} declared."
+                ))
                 .with_help(
                     format!(
                         "Ensure the structure returned by `{function_name}` strictly adheres to the types specified in the `{expected_return_type_str}` return type declaration."
@@ -485,7 +496,7 @@ pub fn handle_return_value<'ctx, A>(
                 context.collector.report_with_code(IssueCode::LessSpecificNestedReturnStatement, issue);
             } else {
                 let mut issue = Issue::error(format!(
-                    "Returned type `{inferred_return_type_str}` is less specific than the declared return type `{expected_return_type_str}` for function `{function_name}`."
+                    "Returned type `{inferred_return_type_str}` is less specific than the declared return type `{expected_return_type_str}` for {kind} `{function_name}`."
                 ))
                 .with_annotation(
                     Annotation::primary(return_value.span())
@@ -498,7 +509,7 @@ pub fn handle_return_value<'ctx, A>(
                 )
                 .with_help(
                     format!(
-                        "Consider returning a value that more precisely matches the declared `{expected_return_type_str}` type, or adjust the function's return type declaration if the broader type is intended."
+                        "Consider returning a value that more precisely matches the declared `{expected_return_type_str}` type, or adjust the {kind}'s return type declaration if the broader type is intended."
                     )
                );
 
@@ -514,14 +525,14 @@ pub fn handle_return_value<'ctx, A>(
             let (kind, function_name, help) = match block_context.scope.get_class_like() {
                 Some(class) if class.laws.values().any(|law| std::ptr::eq(law, function_like_metadata)) => (
                     "law",
-                    display_sharp_method(class, function_like_metadata),
+                    display_member(context, class.original_name, function_like_metadata.original_name),
                     "A law states a fact, so its body is a `bool`.".to_owned(),
                 ),
                 _ => (
-                    "function",
+                    kind,
                     function_name,
                     format!(
-                        "Change the return value to match `{expected_return_type_str}`, or update the function's return type declaration."
+                        "Change the return value to match `{expected_return_type_str}`, or update the {kind}'s return type declaration."
                     ),
                 ),
             };
@@ -553,12 +564,12 @@ pub fn handle_return_value<'ctx, A>(
             if name.as_bytes().eq_ignore_ascii_case(b"__construct")
         )
     {
-        let expected_return_type_str = expected_return_type.get_id();
+        let expected_return_type_str = display_type(context, &expected_return_type);
 
         context.collector.report_with_code(
             IssueCode::InvalidReturnStatement,
             Issue::error(format!(
-                "Function `{function_name}` is declared to return `{expected_return_type_str}` but no return value was specified.",
+                "{capitalized_kind} `{function_name}` is declared to return `{expected_return_type_str}` but no return value was specified.",
             ))
             .with_annotation(Annotation::primary(return_span).with_message("No return value specified here."))
             .with_annotation(
@@ -566,11 +577,11 @@ pub fn handle_return_value<'ctx, A>(
                     .with_message(format!("Return type declared as `{expected_return_type_str}` here."))
             )
             .with_note(
-                "The declared return type does not permit 'void', but the analysis indicates that this function path does not return a value.".to_string()
+                format!("The declared return type does not permit 'void', but the analysis indicates that this {kind} path does not return a value.")
             )
             .with_help(
                 format!(
-                    "You can either change the return type declaration of `{function_name}` to be 'void', or ensure that this function path always returns a value."
+                    "You can either change the return type declaration of `{function_name}` to be 'void', or ensure that this {kind} path always returns a value."
                 )
             ),
         );
@@ -643,16 +654,23 @@ fn handle_property_hook_return<'ctx, A>(
         return;
     }
 
-    let hook_name = concat_word!(class_like.original_name, "::", property_name, "::get");
+    let hook_name = if context.dialect.is_sharp() {
+        display_sharp_accessor(context, class_like.original_name, property_name, hook_metadata.name)
+    } else {
+        concat_word!(class_like.original_name, "::", property_name, "::get").to_string()
+    };
 
     if inferred_return_type.is_mixed() {
+        let inferred_str = display_type(context, &inferred_return_type);
+        let mixed_str = if context.dialect.is_sharp() { &inferred_str } else { "mixed" };
         context.collector.report_with_code(
             IssueCode::MixedReturnStatement,
             Issue::error(format!(
-                "Could not infer a precise return type for property hook `{hook_name}`. Saw type `{}`.",
-                inferred_return_type.get_id()
+                "Could not infer a precise return type for property hook `{hook_name}`. Saw type `{inferred_str}`."
             ))
-            .with_annotation(Annotation::primary(return_value.span()).with_message("Type inferred as `mixed` here."))
+            .with_annotation(
+                Annotation::primary(return_value.span()).with_message(format!("Type inferred as `{mixed_str}` here.")),
+            )
             .with_note("The analysis could not determine a specific type for the value returned here.")
             .with_help("Add specific type hints to variables or properties involved in calculating the return value."),
         );
@@ -672,14 +690,15 @@ fn handle_property_hook_return<'ctx, A>(
         return;
     }
 
-    let expected_str = expected_return_type.get_id();
-    let inferred_str = inferred_return_type.get_id();
+    let expected_str = display_type(context, &expected_return_type);
+    let inferred_str = display_value_type(context, &inferred_return_type, &expected_return_type);
 
     if inferred_return_type.is_nullable()
         && !inferred_return_type.ignore_nullable_issues()
         && !expected_return_type.is_nullable()
         && !expected_return_type.has_template()
     {
+        let nullable_str = display_nullable_type(context, &expected_return_type, format!("?{expected_str}"));
         context.collector.report_with_code(
             IssueCode::NullableReturnStatement,
             Issue::error(format!(
@@ -688,7 +707,7 @@ fn handle_property_hook_return<'ctx, A>(
             .with_annotation(Annotation::primary(return_value.span()).with_message("Nullable value returned here."))
             .with_note("The property type does not permit null, but this expression could return null.")
             .with_help(format!(
-                "Ensure the hook always returns a non-null value, or change the property type to `?{expected_str}`."
+                "Ensure the hook always returns a non-null value, or change the property type to `{nullable_str}`."
             )),
         );
         return;
@@ -767,9 +786,14 @@ fn check_constructor_early_return<'ctx, A>(
         }
 
         // Property not initialized - report error
+        let prop_name = if context.dialect.is_sharp() {
+            display_sharp_member(display_class_like_name(context, declaring_meta.original_name), prop_name)
+        } else {
+            prop_name.to_string()
+        };
         let mut issue = Issue::error(format!(
             "Property `{prop_name}` may not be initialized when returning from constructor of class `{}`.",
-            class_like_metadata.original_name
+            display_class_like_name(context, class_like_metadata.original_name)
         ))
         .with_annotation(
             Annotation::primary(return_span).with_message(format!("Returning without initializing `{prop_name}`")),

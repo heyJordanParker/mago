@@ -34,7 +34,7 @@ use crate::context::Context;
 use crate::effects::summary::CallTarget;
 use crate::invocation::InvocationTarget;
 use crate::invocation::arguments::verify_argument_type;
-use crate::utils::names::display_sharp_class;
+use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_sharp_type;
 use crate::utils::php_emulation::numeric_string_equals_int;
 
@@ -183,11 +183,11 @@ fn report_refused_operator<A>(
 {
     let codebase = context.codebase;
     let op = BytesDisplay(symbol.as_bytes());
-    let names: Vec<String> = operands.iter().map(|(_, operand_type)| display_operand(operand_type, codebase)).collect();
+    let names: Vec<String> = operands.iter().map(|(_, operand_type)| display_operand(context, operand_type)).collect();
 
     let issue = match (names.as_slice(), declared) {
         ([operand], None) => {
-            let class = display_operand(&operands[instance].1.to_non_nullable(), codebase);
+            let class = display_operand(context, &operands[instance].1.to_non_nullable());
 
             Issue::error(format!("Unary `{op}` cannot apply to `{operand}`: `{class}` declares no unary `operator {op}`."))
                 .with_note(format!(
@@ -196,7 +196,7 @@ fn report_refused_operator<A>(
                 .with_help("Apply it to a value the instance holds, such as a property.")
         }
         ([lhs, rhs, ..], None) => {
-            let class = display_operand(&operands[instance].1.to_non_nullable(), codebase);
+            let class = display_operand(context, &operands[instance].1.to_non_nullable());
 
             Issue::error(format!("`{op}` cannot apply to `{lhs}` and `{rhs}`: `{class}` declares no `operator {op}`."))
                 .with_note(format!(
@@ -205,15 +205,13 @@ fn report_refused_operator<A>(
                 .with_help("Apply it to values the instances hold, such as their properties.")
         }
         (names, Some((method, metadata))) => {
-            let class = codebase
-                .get_class_like(method.get_class_name().as_bytes())
-                .map_or_else(|| method.get_class_name().to_string(), |class| display_sharp_class(class).into_owned());
+            let class = display_class_like_name(context, method.get_class_name());
             let taken: Vec<String> = metadata
                 .parameters
                 .iter()
                 .filter_map(|parameter| parameter.get_type_metadata())
                 .map(|parameter_type| {
-                    display_operand(&expand_in_class(codebase, &method, &parameter_type.type_union), codebase)
+                    display_operand(context, &expand_in_class(codebase, &method, &parameter_type.type_union))
                 })
                 .collect();
             let (names, taken) = (names.join("` and `"), taken.join("` and `"));
@@ -254,7 +252,6 @@ pub(crate) fn refuse_non_int_operands<A>(
 where
     A: Arena,
 {
-    let codebase = context.codebase;
     let written = String::from_utf8_lossy(&context.source_file.contents[operator.to_range_usize()]).into_owned();
     let note = "Spec section 19 gives `|`, `&`, `^`, `~`, `<<`, `>>` and their compound forms to `int` only.";
 
@@ -288,7 +285,7 @@ where
             continue;
         }
 
-        let name = display_operand(operand_type, codebase);
+        let name = display_operand(context, operand_type);
         let help = if operand_type.is_nullable() && operand_type.to_non_nullable().is_int() {
             "Test it with `!= null` first."
         } else {
@@ -309,11 +306,14 @@ where
 }
 
 /// An operand's type as PHP# writes it, so a literal or a narrowed scalar shows as its scalar type.
-pub(crate) fn display_operand(operand_type: &TUnion, codebase: &CodebaseMetadata) -> String {
+pub(crate) fn display_operand<A>(context: &Context<'_, '_, A>, operand_type: &TUnion) -> String
+where
+    A: Arena,
+{
     let mut shown = operand_type.clone();
     shown.widen_scalars();
 
-    display_sharp_type(&shown, codebase)
+    display_sharp_type(context, &shown)
 }
 
 #[inline]

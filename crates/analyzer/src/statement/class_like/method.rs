@@ -13,6 +13,7 @@ use mago_codex::ttype::add_optional_union_type;
 use mago_codex::ttype::union::TUnion;
 
 use mago_names::binding::MethodParts;
+use mago_names::display_sharp_member;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -42,8 +43,7 @@ use crate::statement::function_like::check_unused_function_template_parameters;
 use crate::statement::function_like::rejected_nullable_parameter;
 use crate::statement::function_like::unused_parameter;
 use crate::utils::missing_type_hints;
-use crate::utils::names::display_sharp_class;
-use crate::utils::names::display_sharp_method;
+use crate::utils::names::display_class_like_name;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
     fn analyze<'ctx, A>(
@@ -287,7 +287,7 @@ where
         return;
     }
 
-    let class_name = display_sharp_class(class);
+    let class_name = display_class_like_name(context, class.name);
     context.collector.report_with_code(
         IssueCode::UnimplementedAbstractMethod,
         Issue::error(format!(
@@ -407,7 +407,7 @@ fn check_replaced_functions<A>(
             IssueCode::DuplicateDefinition,
             Issue::error(format!(
                 "`{}` names `{function}` twice: name each function once.",
-                display_sharp_method(class, method)
+                display_sharp_member(display_class_like_name(context, class.original_name), method.original_name)
             ))
             .with_annotation(Annotation::primary(span).with_message("Named again here."))
             .with_annotation(Annotation::secondary(first).with_message("First named here.")),

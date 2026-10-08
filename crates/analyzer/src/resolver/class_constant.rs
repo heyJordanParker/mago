@@ -35,6 +35,7 @@ use crate::resolver::class_name::resolve_classnames_from_expression;
 use crate::resolver::selector::ResolvedSelector;
 use crate::resolver::selector::resolve_constant_selector;
 use crate::utils::names::display_class_like_name;
+use crate::utils::names::display_member;
 
 /// Represents a successfully resolved class constant or enum case.
 #[derive(Debug)]
@@ -299,9 +300,10 @@ where
     A: Arena,
 {
     if metadata.kind.is_trait() && !is_valid_trait_constant_access(resolution_origin, inside_class_like_attribute) {
-        let trait_name = metadata.original_name;
+        let constant = display_member(context, metadata.original_name, const_name);
+        let trait_name = display_class_like_name(context, metadata.original_name);
 
-        let mut issue = Issue::error(format!("Cannot access trait constant `{trait_name}::{const_name}` directly."))
+        let mut issue = Issue::error(format!("Cannot access trait constant `{constant}` directly."))
             .with_annotation(Annotation::primary(class_span).with_message(format!("`{trait_name}` is a trait")))
             .with_annotation(Annotation::secondary(const_span).with_message("Constant accessed here"));
 
@@ -313,6 +315,11 @@ where
                 .with_help(format!(
                     "Spell out a class that uses `{trait_name}`, or inline the value of `{const_name}`."
                 ))
+        } else if context.dialect.is_sharp() {
+            // PHP# writes no `self`, `static` or `$this`, so a class that uses the trait is the one way left.
+            issue
+                .with_note("Trait constants can only be accessed through classes that use the trait.")
+                .with_help(format!("Access this constant through a class that uses `{trait_name}`."))
         } else {
             issue
                 .with_note("Trait constants can only be accessed through classes that use the trait, or via self, static, or $this within the trait.")
@@ -324,7 +331,7 @@ where
 
     // Check for a defined constant
     if let Some(constant_metadata) = metadata.constants.get(&const_name) {
-        let display = format!("{}::{}", metadata.original_name, const_name);
+        let display = display_member(context, metadata.original_name, const_name);
         crate::utils::availability::check_class_constant_availability(context, constant_metadata, &display, const_span);
 
         // Prefer the docblock type (@var) when it exists, as it reflects the user's
@@ -361,7 +368,7 @@ where
     if metadata.kind.is_enum()
         && let Some(enum_case_metadata) = metadata.enum_cases.get(&const_name)
     {
-        let display = format!("{}::{}", metadata.original_name, const_name);
+        let display = display_member(context, metadata.original_name, const_name);
         crate::utils::availability::check_enum_case_availability(context, enum_case_metadata, &display, const_span);
 
         let const_type =
@@ -452,7 +459,7 @@ fn report_non_existent_constant<'ctx, A>(
     A: Arena,
 {
     let class_kind_str = metadata.kind.as_str();
-    let class_str = &metadata.original_name;
+    let class_str = display_class_like_name(context, metadata.original_name);
 
     let (main_message, primary_annotation_message) = if metadata.kind.is_enum() {
         (

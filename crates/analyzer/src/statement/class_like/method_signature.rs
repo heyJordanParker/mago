@@ -6,20 +6,21 @@ use mago_codex::ttype::comparator::union_comparator;
 use mago_codex::ttype::expander::StaticClassType;
 use mago_codex::ttype::expander::TypeExpansionOptions;
 use mago_codex::ttype::expander::expand_union;
+use mago_codex::ttype::union::TUnion;
 use mago_codex::visibility::Visibility;
 use mago_syntax::dialect::Dialect;
 use mago_word::Word;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SignatureCompatibilityIssue {
     FinalMethodOverride,
     StaticModifierMismatch { child_is_static: bool, parent_is_static: bool },
     VisibilityNarrowed { child_visibility: Visibility, parent_visibility: Visibility },
     ParameterCountMismatch { child_required_count: usize, parent_required_count: usize },
     MissingVariadicParameter { parameter_index: usize },
-    IncompatibleParameterType { parameter_index: usize, child_type: Word, parent_type: Word },
-    IncompatibleReturnType { child_type: Word, parent_type: Word },
-    MissingReturnTypeDeclaration { parent_type: Word },
+    IncompatibleParameterType { parameter_index: usize, child_type: TUnion, parent_type: TUnion },
+    IncompatibleReturnType { child_type: TUnion, parent_type: TUnion },
+    MissingReturnTypeDeclaration { parent_type: TUnion },
     ParameterNameMismatch { parameter_index: usize, child_name: Word, parent_name: Word },
 }
 
@@ -196,8 +197,8 @@ pub fn validate_method_signature_compatibility(
         if !is_compatible {
             issues.push(SignatureCompatibilityIssue::IncompatibleParameterType {
                 parameter_index: index,
-                child_type: expanded_child_param_type.get_id(),
-                parent_type: expanded_parent_param_type.get_id(),
+                child_type: expanded_child_param_type,
+                parent_type: expanded_parent_param_type,
             });
 
             return issues;
@@ -236,7 +237,7 @@ pub fn validate_method_signature_compatibility(
         }
 
         issues.push(SignatureCompatibilityIssue::MissingReturnTypeDeclaration {
-            parent_type: expanded_parent_return_type.get_id(),
+            parent_type: expanded_parent_return_type,
         });
         return issues;
     }
@@ -274,8 +275,8 @@ pub fn validate_method_signature_compatibility(
 
         if !is_compatible {
             issues.push(SignatureCompatibilityIssue::IncompatibleReturnType {
-                child_type: expanded_child_return_type.get_id(),
-                parent_type: expanded_parent_return_type.get_id(),
+                child_type: expanded_child_return_type,
+                parent_type: expanded_parent_return_type,
             });
             return issues;
         }
@@ -314,8 +315,8 @@ pub fn validate_method_signature_compatibility(
 
             if !is_compatible {
                 issues.push(SignatureCompatibilityIssue::IncompatibleReturnType {
-                    child_type: expanded_child_return_type.get_id(),
-                    parent_type: expanded_parent_return_type.get_id(),
+                    child_type: expanded_child_return_type,
+                    parent_type: expanded_parent_return_type,
                 });
                 return issues;
             }

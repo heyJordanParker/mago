@@ -1,5 +1,4 @@
 use mago_allocator::Arena;
-use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::atomic::scalar::string::TString;
@@ -27,6 +26,7 @@ use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::expression::unary::cast_type_to_string;
 use crate::utils::expression::get_block_expression_id;
+use crate::utils::names::display_type;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for CompositeString<'arena> {
     fn analyze<'ctx, A>(
@@ -92,15 +92,16 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for CompositeString<'arena> {
             };
 
             if context.dialect.is_sharp() && part_type.is_mixed() {
+                let part_type_str = display_type(context, &part_type);
+
                 context.collector.report_with_code(
                     IssueCode::MixedOperand,
-                    Issue::error(format!(
-                        "A template shows only a checked value, but this is `{}`.",
-                        part_type.get_id()
-                    ))
-                    .with_annotation(Annotation::primary(part.span()).with_message("This has type `mixed`"))
-                    .with_note("Spec section 24 refuses each use of an `Any` or `Any?` until it is checked.")
-                    .with_help("Check what the value is with `is`, `as` or `match` before the template shows it."),
+                    Issue::error(format!("A template shows only a checked value, but this is `{part_type_str}`."))
+                        .with_annotation(
+                            Annotation::primary(part.span()).with_message(format!("This has type `{part_type_str}`")),
+                        )
+                        .with_note("Spec section 24 refuses each use of an `Any` or `Any?` until it is checked.")
+                        .with_help("Check what the value is with `is`, `as` or `match` before the template shows it."),
                 );
             }
 
