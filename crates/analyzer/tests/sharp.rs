@@ -4868,3 +4868,42 @@ fn a_recursive_pair_of_methods_solves_without_looping() {
         Some("reaches `Tree.odd`, which calls `now` with the effect `Clock`")
     );
 }
+
+/// An operator on an instance runs the operator its class declares (spec section 19), so a getter that applies one
+/// reaches that operator's body, as a getter that calls a method reaches the method's.
+#[test]
+fn a_getter_applying_an_operator_whose_body_has_an_effect_is_refused() {
+    let money = (
+        "app/Shop/Money.sharp",
+        "namespace App.Shop;\n\npublic class Money\n{\n    public Money(public int cents) { }\n\n    public int hash() => this.cents;\n\n    public static Money operator +(Money a, Money b) => new Money(a.cents + b.cents + now());\n\n    public static Money operator -(Money a) => new Money(now() - a.cents);\n\n    public static bool operator ==(Money a, Money b) => a.cents == b.cents + now();\n\n    public static int operator <=>(Money a, Money b) => a.cents - b.cents + now();\n}\n",
+    );
+    let cart = (
+        "app/Shop/Cart.sharp",
+        "namespace App.Shop;\n\npublic class Cart\n{\n    public Cart(private Money price, private Money tax) { }\n\n    public Money total => this.price + this.tax;\n\n    public Money refund => -this.price;\n\n    public bool even => this.price == this.tax;\n\n    public bool cheaper => this.price < this.tax;\n\n    public Money doubled\n    {\n        get\n        {\n            let sum = this.price;\n            sum += this.price;\n            return sum;\n        }\n    }\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[cart, money, CLOCK_STUB, NOW]),
+        [
+            "app/Shop/Cart.sharp:7:27 impure-getter: Getter `total` reaches `Money.operator +`, which calls `now` with the effect `Clock`. Getters must be pure (section 29).",
+            "app/Shop/Cart.sharp:9:28 impure-getter: Getter `refund` reaches `Money.operator -`, which calls `now` with the effect `Clock`. Getters must be pure (section 29).",
+            "app/Shop/Cart.sharp:11:25 impure-getter: Getter `even` reaches `Money.operator ==`, which calls `now` with the effect `Clock`. Getters must be pure (section 29).",
+            "app/Shop/Cart.sharp:13:28 impure-getter: Getter `cheaper` reaches `Money.operator <=>`, which calls `now` with the effect `Clock`. Getters must be pure (section 29).",
+            "app/Shop/Cart.sharp:20:13 impure-getter: Getter `doubled` reaches `Money.operator +`, which calls `now` with the effect `Clock`. Getters must be pure (section 29).",
+        ]
+    );
+}
+
+#[test]
+fn a_getter_applying_a_pure_operator_passes() {
+    let money = (
+        "app/Shop/Money.sharp",
+        "namespace App.Shop;\n\npublic class Money\n{\n    public Money(public int cents) { }\n\n    public static Money operator +(Money a, Money b) => new Money(a.cents + b.cents);\n}\n",
+    );
+    let cart = (
+        "app/Shop/Cart.sharp",
+        "namespace App.Shop;\n\npublic class Cart\n{\n    public Cart(private Money price, private Money tax) { }\n\n    public Money total => this.price + this.tax;\n}\n",
+    );
+
+    assert_eq!(effect_issues(&[cart, money]), Vec::<String>::new());
+}

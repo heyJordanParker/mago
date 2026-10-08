@@ -133,6 +133,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for UnaryPrefix<'arena> {
             && let Some(operand_type) = &operand_type
             && let Some(resulting_type) = analyze_instance_operator(
                 context,
+                artifacts,
                 &BinaryOperator::Subtraction(operator),
                 &[(self.operand, operand_type.as_ref())],
                 self.span(),

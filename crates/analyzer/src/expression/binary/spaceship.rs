@@ -48,8 +48,8 @@ where
     binary.rhs.analyze(context, block_context, artifacts)?;
 
     let fallback_type = Rc::new(get_mixed());
-    let lhs_type = artifacts.get_rc_expression_type(&binary.lhs).unwrap_or(&fallback_type);
-    let rhs_type = artifacts.get_rc_expression_type(&binary.rhs).unwrap_or(&fallback_type);
+    let lhs_type = &Rc::clone(artifacts.get_rc_expression_type(&binary.lhs).unwrap_or(&fallback_type));
+    let rhs_type = &Rc::clone(artifacts.get_rc_expression_type(&binary.rhs).unwrap_or(&fallback_type));
 
     // PHP# `<=>` refuses what `<` refuses, and on instances runs the `operator <=>` their class declares.
     if context.dialect.is_sharp() {
@@ -59,7 +59,7 @@ where
 
                 Some(get_signum_result())
             }
-            None => analyze_declared_comparison(context, binary, lhs_type, rhs_type),
+            None => analyze_declared_comparison(context, artifacts, binary, lhs_type, rhs_type),
         };
 
         if let Some(result_type) = result_type {

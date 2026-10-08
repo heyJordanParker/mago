@@ -76,8 +76,8 @@ where
     block_context.flags.set_inside_general_use(was_inside_general_use);
 
     let fallback_type = Rc::new(get_mixed());
-    let lhs_type = artifacts.get_rc_expression_type(&binary.lhs).unwrap_or(&fallback_type);
-    let rhs_type = artifacts.get_rc_expression_type(&binary.rhs).unwrap_or(&fallback_type);
+    let lhs_type = &Rc::clone(artifacts.get_rc_expression_type(&binary.lhs).unwrap_or(&fallback_type));
+    let rhs_type = &Rc::clone(artifacts.get_rc_expression_type(&binary.rhs).unwrap_or(&fallback_type));
 
     // PHP# `==` and `!=` run as `===` and `!==`, so only an `Any?` operand keeps a check of its own.
     let refusal = if context.dialect.is_sharp() {
@@ -93,7 +93,7 @@ where
     // A PHP# comparison of instances runs the operator their class declares, which returns the `bool` it decides.
     if !refused
         && context.dialect.is_sharp()
-        && analyze_declared_comparison(context, binary, lhs_type, rhs_type).is_some()
+        && analyze_declared_comparison(context, artifacts, binary, lhs_type, rhs_type).is_some()
     {
         artifacts.expression_types.insert(get_expression_range(binary), Rc::new(get_bool()));
 
@@ -831,6 +831,7 @@ pub(crate) fn get_comparison_method<'ctx>(
 /// returns. `==` lifts a nullable side itself.
 pub(crate) fn analyze_declared_comparison<'arena, A>(
     context: &mut Context<'_, 'arena, A>,
+    artifacts: &mut AnalysisArtifacts,
     binary: &Binary<'arena>,
     lhs_type: &TUnion,
     rhs_type: &TUnion,
@@ -845,7 +846,9 @@ where
         (lhs_type.clone(), rhs_type.clone())
     };
 
-    Some(analyze_operator_call(context, method, &[(binary.lhs, &lhs_type), (binary.rhs, &rhs_type)], binary.span()))
+    let operands = [(binary.lhs, &lhs_type), (binary.rhs, &rhs_type)];
+
+    Some(analyze_operator_call(context, artifacts, method, &operands, binary.span()))
 }
 
 /// Reports `refusal` on `binary`, naming both types and the comparison to write instead.

@@ -28,8 +28,10 @@ use mago_syntax::cst::Expression;
 use mago_word::Word;
 use mago_word::word;
 
+use crate::artifacts::AnalysisArtifacts;
 use crate::code::IssueCode;
 use crate::context::Context;
+use crate::effects::summary::CallTarget;
 use crate::invocation::InvocationTarget;
 use crate::invocation::arguments::verify_argument_type;
 use crate::utils::names::display_sharp_class;
@@ -75,6 +77,7 @@ pub(crate) fn can_take_operands(
 /// gave that instance. Operands with no instance run none.
 pub(crate) fn analyze_instance_operator<'arena, A>(
     context: &mut Context<'_, 'arena, A>,
+    artifacts: &mut AnalysisArtifacts,
     symbol: &BinaryOperator<'_>,
     operands: &[(&Expression<'arena>, &TUnion)],
     span: Span,
@@ -90,7 +93,7 @@ where
 
     Some(match get_operator_method(codebase, name, &operand_types) {
         Some(method) if can_take_operands(codebase, method, &operand_types) => {
-            analyze_operator_call(context, method, operands, span)
+            analyze_operator_call(context, artifacts, method, operands, span)
         }
         method => {
             report_refused_operator(context, symbol, operands, instance, method);
@@ -125,9 +128,11 @@ fn get_instance_class(operand_type: &TUnion, codebase: &CodebaseMetadata) -> Opt
 }
 
 /// Checks the operands of a PHP# operator as the arguments of the static call `method` it runs as, at `span`, and
-/// returns what the call returns.
+/// returns what the call returns. The call is recorded at `span`, so the effects of a body that applies the operator
+/// include the operator's.
 pub(crate) fn analyze_operator_call<'arena, A>(
     context: &mut Context<'_, 'arena, A>,
+    artifacts: &mut AnalysisArtifacts,
     (method, metadata): (MethodIdentifier, &FunctionLikeMetadata),
     operands: &[(&Expression<'arena>, &TUnion)],
     span: Span,
@@ -138,8 +143,15 @@ where
     let codebase = context.codebase;
     let expand = |union: &TUnion| expand_in_class(codebase, &method, union);
 
+    let identifier = FunctionLikeIdentifier::Method(method.get_class_name(), method.get_method_name());
+    let call_target = CallTarget { callee: identifier, class: None };
+    let recorded = artifacts.call_targets.entry((span.start.offset, span.end.offset)).or_default();
+    if !recorded.contains(&call_target) {
+        recorded.push(call_target);
+    }
+
     let target = InvocationTarget::FunctionLike {
-        identifier: FunctionLikeIdentifier::Method(method.get_class_name(), method.get_method_name()),
+        identifier,
         metadata,
         inferred_return_type: None,
         effective_signature: None,
