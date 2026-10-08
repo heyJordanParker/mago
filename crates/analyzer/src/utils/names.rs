@@ -1,5 +1,7 @@
 //! Helpers for rendering symbol names in user-facing diagnostics.
 
+use std::borrow::Cow;
+
 use mago_allocator::Arena;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
@@ -45,12 +47,16 @@ where
     context.codebase.get_function(name.as_bytes()).map_or(name, |m| m.original_name)
 }
 
+/// Returns a class as PHP# names it once imported, as in `Date`: its short name.
+#[must_use]
+pub(crate) fn display_sharp_class(class: &ClassLikeMetadata) -> Cow<'_, str> {
+    String::from_utf8_lossy(class.original_name.as_bytes().rsplit(|byte| *byte == b'\\').next().unwrap_or_default())
+}
+
 /// Returns a method as PHP# calls it on its class, as in `Date.format`: the class's short name and the method's name.
 #[must_use]
 pub(crate) fn display_sharp_method(class: &ClassLikeMetadata, method: &FunctionLikeMetadata) -> String {
-    let class_name = class.original_name.as_bytes().rsplit(|byte| *byte == b'\\').next().unwrap_or_default();
-
-    format!("{}.{}", String::from_utf8_lossy(class_name), method.original_name)
+    format!("{}.{}", display_sharp_class(class), method.original_name)
 }
 
 /// Returns the PHP# collection type, as in `Map<string, int>`, that `object` stands for when it is `Sharp\ListMethods`

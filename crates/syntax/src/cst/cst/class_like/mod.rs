@@ -19,6 +19,7 @@ pub mod inheritance;
 pub mod law;
 pub mod member;
 pub mod method;
+pub mod operator;
 pub mod property;
 pub mod trait_use;
 

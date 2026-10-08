@@ -740,8 +740,8 @@ pub fn check_interface<'ast, 'arena>(interface: &'ast Interface<'arena>, context
                     context,
                 );
             }
-            // `check_slice` refuses a law in an interface, and only a PHP# file has laws.
-            ClassLikeMember::Law(_) => {}
+            // Only a PHP# file declares an operator or a law, and `check_slice` refuses either in an interface.
+            ClassLikeMember::Operator(_) | ClassLikeMember::Law(_) => {}
         }
     }
 }

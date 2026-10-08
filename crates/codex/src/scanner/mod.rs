@@ -3,7 +3,7 @@ use mago_allocator::Arena;
 use mago_database::file::File;
 use mago_names::ResolvedNames;
 use mago_names::binding::Binding;
-use mago_names::binding::php_method_name;
+use mago_names::binding::MethodParts;
 use mago_names::scope::NamespaceScope;
 use mago_names::scope::php_name;
 use mago_php_version::PHPVersion;
@@ -13,6 +13,7 @@ use mago_span::HasSpan;
 use mago_syntax::comments::docblock::get_docblock_before_position;
 use mago_syntax::cst::AnonymousClass;
 use mago_syntax::cst::ArrowFunction;
+use mago_syntax::cst::BinaryOperator;
 use mago_syntax::cst::Call;
 use mago_syntax::cst::Class;
 use mago_syntax::cst::Closure;
@@ -28,6 +29,7 @@ use mago_syntax::cst::Interface;
 use mago_syntax::cst::Method;
 use mago_syntax::cst::Modifier;
 use mago_syntax::cst::Namespace;
+use mago_syntax::cst::Operator;
 use mago_syntax::cst::Program;
 use mago_syntax::cst::Return;
 use mago_syntax::cst::Trait;
@@ -259,6 +261,139 @@ impl Scanner {
         if let Some(metadata) = self.codebase.class_likes.get_mut(&id) {
             metadata.flags |= MetadataFlags::POLYFILL;
         }
+    }
+
+    /// Registers a method, or a PHP# operator as the static method it runs as, on the class-like being scanned, and
+    /// pushes its template constraints, which the matching walk out pops.
+    #[allow(clippy::expect_used)]
+    fn register_method<'arena, A>(&mut self, method: &MethodParts<'arena, 'arena>, context: &Context<'_, 'arena, A>)
+    where
+        A: Arena,
+    {
+        let current_class = self.stack.last().copied().expect("Expected class-like stack to be non-empty");
+        let mut class_like_metadata =
+            self.codebase.class_likes.remove(&current_class).expect("Expected class-like metadata to be present");
+
+        let name = ascii_lowercase_word(method.name);
+
+        if class_like_metadata.methods.contains(&name) {
+            if class_like_metadata.pseudo_methods.contains(&name)
+                && let Some(existing_method) = self.codebase.function_likes.get_mut(&(class_like_metadata.name, name))
+            {
+                class_like_metadata.pseudo_methods.remove(&name);
+                existing_method.flags.remove(MetadataFlags::MAGIC_METHOD);
+            }
+
+            self.codebase.class_likes.insert(current_class, class_like_metadata);
+            self.template_constraints.push(vec![]);
+
+            return;
+        }
+
+        let method_id = (class_like_metadata.name, name);
+        let type_resolution_context = {
+            let mut context = self.get_current_type_resolution_context();
+
+            for alias_name in class_like_metadata.type_aliases.keys() {
+                context = context.with_type_alias(*alias_name);
+            }
+
+            for (alias_name, (source_class, original_name, _span)) in &class_like_metadata.imported_type_aliases {
+                context = context.with_imported_type_alias(*alias_name, *source_class, *original_name);
+            }
+
+            context
+        };
+
+        let Some(mut function_like_metadata) = scan_method(
+            method_id,
+            method,
+            &class_like_metadata,
+            context,
+            &mut self.scope,
+            Some(type_resolution_context),
+        ) else {
+            // Restore the class-like metadata we removed above so the next method on
+            // this class can still find it, and push an empty template-constraints
+            // frame so the matching walk out pop balances.
+            self.codebase.class_likes.insert(current_class, class_like_metadata);
+            self.template_constraints.push(vec![]);
+            return;
+        };
+
+        #[allow(clippy::unreachable)]
+        let Some(method_metadata) = &function_like_metadata.method_metadata else {
+            unreachable!("Method info should be present for method.",);
+        };
+
+        let mut is_constructor = false;
+        let mut is_clone = false;
+        if method_metadata.is_constructor {
+            is_constructor = true;
+            self.has_constructor = true;
+
+            let type_context = self.get_current_type_resolution_context();
+            for (index, param) in method.parameter_list.parameters.iter().enumerate() {
+                if !param.is_promoted_property() {
+                    continue;
+                }
+
+                let Some(parameter_metadata) = function_like_metadata.parameters.get_mut(index) else {
+                    continue;
+                };
+
+                let property_metadata = scan_promoted_property(
+                    param,
+                    parameter_metadata,
+                    &mut class_like_metadata,
+                    current_class,
+                    &type_context,
+                    context,
+                    &self.scope,
+                );
+
+                class_like_metadata.add_property_metadata(property_metadata);
+            }
+        } else {
+            is_clone = name == word("__clone");
+        }
+
+        class_like_metadata.methods.insert(name);
+        let method_identifier = MethodIdentifier::new(class_like_metadata.name, name);
+        class_like_metadata.add_declaring_method_id(name, method_identifier);
+        if !method_metadata.visibility.is_private() || is_constructor || is_clone || class_like_metadata.kind.is_trait()
+        {
+            class_like_metadata.inheritable_method_ids.insert(name, method_identifier);
+        }
+
+        // PHP#'s `required` constructor is one every subclass keeps, so `new Self(…)` can call it, spec section 25.
+        let is_required = method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Required(_)));
+        if (method_metadata.is_final || is_required) && is_constructor {
+            class_like_metadata.flags |= MetadataFlags::CONSISTENT_CONSTRUCTOR;
+        }
+
+        if context.file.is_standard_library {
+            let file = word(context.file.name.as_ref());
+            for (function, _) in function_like_metadata.replaced_functions() {
+                let wrapper = (file, function_like_metadata.span, method_identifier);
+                let wrappers =
+                    self.codebase.wrapped_functions.entry(ascii_lowercase_word(function.as_bytes())).or_default();
+                if !wrappers.contains(&wrapper) {
+                    wrappers.push(wrapper);
+                }
+            }
+        }
+
+        self.template_constraints.push(
+            function_like_metadata
+                .template_types
+                .iter()
+                .map(|(name, constraints)| (*name, constraints.clone()))
+                .collect(),
+        );
+
+        self.codebase.class_likes.entry(current_class).or_insert(class_like_metadata);
+        self.codebase.function_likes.entry(method_id).or_insert(function_like_metadata);
     }
 }
 
@@ -646,134 +781,40 @@ where
 
     #[inline]
     fn walk_in_method(&mut self, method: &'arena Method<'arena>, context: &mut Context<'ctx, 'arena, A>) {
-        let current_class = self.stack.last().copied().expect("Expected class-like stack to be non-empty");
-        let mut class_like_metadata =
-            self.codebase.class_likes.remove(&current_class).expect("Expected class-like metadata to be present");
-
-        let name = ascii_lowercase_word(php_method_name(method));
-
-        if class_like_metadata.methods.contains(&name) {
-            if class_like_metadata.pseudo_methods.contains(&name)
-                && let Some(existing_method) = self.codebase.function_likes.get_mut(&(class_like_metadata.name, name))
-            {
-                class_like_metadata.pseudo_methods.remove(&name);
-                existing_method.flags.remove(MetadataFlags::MAGIC_METHOD);
-            }
-
-            self.codebase.class_likes.insert(current_class, class_like_metadata);
-            self.template_constraints.push(vec![]);
-
-            return;
-        }
-
-        let method_id = (class_like_metadata.name, name);
-        let type_resolution_context = {
-            let mut context = self.get_current_type_resolution_context();
-
-            for alias_name in class_like_metadata.type_aliases.keys() {
-                context = context.with_type_alias(*alias_name);
-            }
-
-            for (alias_name, (source_class, original_name, _span)) in &class_like_metadata.imported_type_aliases {
-                context = context.with_imported_type_alias(*alias_name, *source_class, *original_name);
-            }
-
-            context
-        };
-
-        let Some(mut function_like_metadata) = scan_method(
-            method_id,
-            method,
-            &class_like_metadata,
-            context,
-            &mut self.scope,
-            Some(type_resolution_context),
-        ) else {
-            // Restore the class-like metadata we removed above so the next method on
-            // this class can still find it, and push an empty template-constraints
-            // frame so the matching `walk_out_method` pop balances.
-            self.codebase.class_likes.insert(current_class, class_like_metadata);
-            self.template_constraints.push(vec![]);
-            return;
-        };
-
-        #[allow(clippy::unreachable)]
-        let Some(method_metadata) = &function_like_metadata.method_metadata else {
-            unreachable!("Method info should be present for method.",);
-        };
-
-        let mut is_constructor = false;
-        let mut is_clone = false;
-        if method_metadata.is_constructor {
-            is_constructor = true;
-            self.has_constructor = true;
-
-            let type_context = self.get_current_type_resolution_context();
-            for (index, param) in method.parameter_list.parameters.iter().enumerate() {
-                if !param.is_promoted_property() {
-                    continue;
-                }
-
-                let Some(parameter_metadata) = function_like_metadata.parameters.get_mut(index) else {
-                    continue;
-                };
-
-                let property_metadata = scan_promoted_property(
-                    param,
-                    parameter_metadata,
-                    &mut class_like_metadata,
-                    current_class,
-                    &type_context,
-                    context,
-                    &self.scope,
-                );
-
-                class_like_metadata.add_property_metadata(property_metadata);
-            }
-        } else {
-            is_clone = name == word("__clone");
-        }
-
-        class_like_metadata.methods.insert(name);
-        let method_identifier = MethodIdentifier::new(class_like_metadata.name, name);
-        class_like_metadata.add_declaring_method_id(name, method_identifier);
-        if !method_metadata.visibility.is_private() || is_constructor || is_clone || class_like_metadata.kind.is_trait()
-        {
-            class_like_metadata.inheritable_method_ids.insert(name, method_identifier);
-        }
-
-        // PHP#'s `required` constructor is one every subclass keeps, so `new Self(…)` can call it, spec section 25.
-        let is_required = method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Required(_)));
-        if (method_metadata.is_final || is_required) && is_constructor {
-            class_like_metadata.flags |= MetadataFlags::CONSISTENT_CONSTRUCTOR;
-        }
-
-        if context.file.is_standard_library {
-            let file = word(context.file.name.as_ref());
-            for (function, _) in function_like_metadata.replaced_functions() {
-                let wrapper = (file, function_like_metadata.span, method_identifier);
-                let wrappers =
-                    self.codebase.wrapped_functions.entry(ascii_lowercase_word(function.as_bytes())).or_default();
-                if !wrappers.contains(&wrapper) {
-                    wrappers.push(wrapper);
-                }
-            }
-        }
-
-        self.template_constraints.push(
-            function_like_metadata
-                .template_types
-                .iter()
-                .map(|(name, constraints)| (*name, constraints.clone()))
-                .collect(),
-        );
-
-        self.codebase.class_likes.entry(current_class).or_insert(class_like_metadata);
-        self.codebase.function_likes.entry(method_id).or_insert(function_like_metadata);
+        self.register_method(&MethodParts::of_method(method), context);
     }
 
     #[inline]
     fn walk_out_method(&mut self, _method: &'arena Method<'arena>, _context: &mut Context<'ctx, 'arena, A>) {
+        self.template_constraints.pop().expect("Expected template stack to be non-empty");
+    }
+
+    /// A PHP# operator registers as the static method it runs as, such as `op_Addition`, so a subclass inherits it.
+    /// An operator a class cannot declare, which semantics refuses, registers as none.
+    #[inline]
+    fn walk_in_operator(&mut self, operator: &'arena Operator<'arena>, context: &mut Context<'ctx, 'arena, A>) {
+        let Some(parts) = MethodParts::of_operator(operator) else {
+            self.template_constraints.push(vec![]);
+            return;
+        };
+        self.register_method(&parts, context);
+
+        // `operator ==` runs as `op_Equality(?Money $a, ?Money $b)`, which lifts `null` itself, so the PHP method
+        // takes `null`. Its body and PHP# callers keep the types the operator declares.
+        if matches!(operator.symbol, BinaryOperator::Equal(_))
+            && let Some(class) = self.stack.last().and_then(|class| self.codebase.class_likes.get(class))
+            && let Some(method) = self.codebase.function_likes.get_mut(&(class.name, ascii_lowercase_word(parts.name)))
+        {
+            for parameter in &mut method.parameters {
+                if let Some(declaration) = &mut parameter.type_declaration_metadata {
+                    declaration.type_union = declaration.type_union.clone().as_nullable();
+                }
+            }
+        }
+    }
+
+    #[inline]
+    fn walk_out_operator(&mut self, _operator: &'arena Operator<'arena>, _context: &mut Context<'ctx, 'arena, A>) {
         self.template_constraints.pop().expect("Expected template stack to be non-empty");
     }
 

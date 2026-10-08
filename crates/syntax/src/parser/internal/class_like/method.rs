@@ -1,5 +1,6 @@
 use crate::T;
 use crate::cst::cst::AttributeList;
+use crate::cst::cst::BinaryOperator;
 use crate::cst::cst::ClassLikeMember;
 use crate::cst::cst::FunctionLikeReturnTypeHint;
 use crate::cst::cst::Hint;
@@ -9,11 +10,13 @@ use crate::cst::cst::MethodAbstractBody;
 use crate::cst::cst::MethodBody;
 use crate::cst::cst::MethodExpressionBody;
 use crate::cst::cst::Modifier;
+use crate::cst::cst::Operator;
 use crate::cst::sequence::Sequence;
 use crate::error::ParseError;
 use crate::parser::Parser;
 use mago_allocator::prelude::*;
 use mago_span::HasSpan;
+use mago_span::Span;
 
 impl<'arena, A> Parser<'_, 'arena, A>
 where
@@ -104,6 +107,17 @@ where
         if let Some(required) = modifiers.iter().find(|modifier| matches!(modifier, Modifier::Required(_))) {
             self.errors.push(ParseError::NotSupportedYetInSharp("`required`", required.span()));
         }
+        if self.is_at_operator_keyword()? {
+            return Ok(ClassLikeMember::Operator(Operator {
+                attribute_lists: attributes,
+                modifiers,
+                return_type_hint: FunctionLikeReturnTypeHint { colon: None, hint },
+                operator: self.expect_any_keyword()?,
+                symbol: self.parse_operator_symbol()?,
+                parameter_list: self.parse_function_like_parameter_list()?,
+                body: self.parse_method_body_with_code()?,
+            }));
+        }
         // A bare name before `=` or `;` is a field written without its type: it is the name.
         if let Hint::Identifier(Identifier::Local(name)) = hint
             && matches!(self.stream.peek_kind(0)?, Some(T!["="] | T![";"]))
@@ -135,14 +149,74 @@ where
 
     /// Parses a method's body. A PHP# method may also have an expression body, `=> expr;`, as spec section 7 writes it.
     fn parse_method_body(&mut self) -> Result<MethodBody<'arena>, ParseError> {
-        Ok(match self.stream.peek_kind(0)? {
-            Some(T![";" | "?>"]) => MethodBody::Abstract(MethodAbstractBody { terminator: self.parse_terminator()? }),
-            Some(T!["=>"]) if self.dialect.is_sharp() => MethodBody::Expression(MethodExpressionBody {
+        if matches!(self.stream.peek_kind(0)?, Some(T![";" | "?>"])) {
+            return Ok(MethodBody::Abstract(MethodAbstractBody { terminator: self.parse_terminator()? }));
+        }
+
+        self.parse_method_body_with_code()
+    }
+
+    /// Parses a body that holds code: a block, or in PHP# an expression body, `=> expr;`. An operator's body is
+    /// always one, as spec section 19 writes it.
+    fn parse_method_body_with_code(&mut self) -> Result<MethodBody<'arena>, ParseError> {
+        Ok(if self.dialect.is_sharp() && self.stream.is_at(T!["=>"])? {
+            MethodBody::Expression(MethodExpressionBody {
                 arrow: self.stream.eat_span(T!["=>"])?,
                 expression: self.parse_expression()?,
                 semicolon: self.stream.eat_span(T![";"])?,
-            }),
-            _ => MethodBody::Concrete(self.parse_block()?),
+            })
+        } else {
+            MethodBody::Concrete(self.parse_block()?)
         })
+    }
+
+    /// Whether `operator` starts the member after its return type, as in `public static bool operator ==(…)`. A name
+    /// followed by what follows a member's name, such as `(`, `;` or `=`, is a method or a field named `operator`.
+    fn is_at_operator_keyword(&mut self) -> Result<bool, ParseError> {
+        Ok(self.stream.lookahead(0)?.is_some_and(|token| token.kind == T![Identifier] && token.value == b"operator")
+            && !matches!(self.stream.peek_kind(1)?, None | Some(T!["(" | ";" | "=" | "," | "{" | "=>"])))
+    }
+
+    /// Parses the operator's symbol after `operator`, which is one of the binary operators. Semantics decides which of
+    /// them a class declares. Any other token, such as `!`, is an error that names the operators a class declares: the
+    /// operator parses whole and is left out of the class, which parses on, as a named constructor is.
+    fn parse_operator_symbol(&mut self) -> Result<BinaryOperator<'arena>, ParseError> {
+        let token = self.stream.lookahead(0)?.ok_or_else(|| self.stream.unexpected(None, &[]))?;
+        let symbol: fn(Span) -> BinaryOperator<'arena> = match token.kind {
+            T!["+"] => BinaryOperator::Addition,
+            T!["-"] => BinaryOperator::Subtraction,
+            T!["*"] => BinaryOperator::Multiplication,
+            T!["/"] => BinaryOperator::Division,
+            T!["%"] => BinaryOperator::Modulo,
+            T!["**"] => BinaryOperator::Exponentiation,
+            T!["&"] => BinaryOperator::BitwiseAnd,
+            T!["|"] => BinaryOperator::BitwiseOr,
+            T!["^"] => BinaryOperator::BitwiseXor,
+            T!["<<"] => BinaryOperator::LeftShift,
+            T![">>"] => BinaryOperator::RightShift,
+            T!["??"] => BinaryOperator::NullCoalesce,
+            T!["=="] => BinaryOperator::Equal,
+            T!["!="] => BinaryOperator::NotEqual,
+            T!["==="] => BinaryOperator::Identical,
+            T!["!=="] => BinaryOperator::NotIdentical,
+            T!["<>"] => BinaryOperator::AngledNotEqual,
+            T!["<"] => BinaryOperator::LessThan,
+            T!["<="] => BinaryOperator::LessThanOrEqual,
+            T![">"] => BinaryOperator::GreaterThan,
+            T![">="] => BinaryOperator::GreaterThanOrEqual,
+            T!["<=>"] => BinaryOperator::Spaceship,
+            T!["."] => BinaryOperator::StringConcat,
+            T!["&&"] => BinaryOperator::And,
+            T!["||"] => BinaryOperator::Or,
+            _ => {
+                let span = self.stream.consume_span()?;
+                self.parse_function_like_parameter_list()?;
+                self.parse_method_body_with_code()?;
+
+                return Err(ParseError::UndeclarableOperatorInSharp(String::from_utf8_lossy(token.value).into(), span));
+            }
+        };
+
+        Ok(symbol(self.stream.consume_span()?))
     }
 }

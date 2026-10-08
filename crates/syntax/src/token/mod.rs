@@ -6,6 +6,7 @@ use mago_span::Position;
 use mago_span::Span;
 
 use crate::T;
+use crate::dialect::Dialect;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord, Display)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
@@ -40,6 +41,8 @@ pub enum Precedence {
     NullCoalesce,
     Or,
     And,
+    SharpEquality,
+    SharpComparison,
     BitwiseOr,
     BitwiseXor,
     BitwiseAnd,
@@ -366,9 +369,21 @@ impl Precedence {
             | Self::ElvisOrConditional
             | Self::ObjectAccess => Associativity::Left,
             Self::Pow | Self::NullCoalesce | Self::Assignment | Self::Unary | Self::New => Associativity::Right,
-            Self::Equality | Self::Comparison | Self::Instanceof => Associativity::NonAssociative,
+            Self::Equality | Self::Comparison | Self::SharpEquality | Self::SharpComparison | Self::Instanceof => {
+                Associativity::NonAssociative
+            }
             _ => return None,
         })
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn in_dialect(self, dialect: Dialect) -> Precedence {
+        match (dialect, self) {
+            (Dialect::Sharp, Self::Equality) => Self::SharpEquality,
+            (Dialect::Sharp, Self::Comparison) => Self::SharpComparison,
+            _ => self,
+        }
     }
 
     #[inline]

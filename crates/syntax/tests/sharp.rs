@@ -1090,6 +1090,35 @@ fn a_spaced_question_mark_after_a_name_is_not_a_typed_local() {
 }
 
 #[test]
+fn a_statement_starting_with_a_name_and_a_bar_is_a_typed_local_only_when_a_name_follows_the_type() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        flags | MASK;\n        a | b == c;\n        (flags | 1);\n        int|string key = 1;\n        Calc|List<int>|Report? found = null;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let statements: Vec<String> = method_body(program)
+        .iter()
+        .map(|statement| match statement {
+            Statement::LocalDeclaration(local) => {
+                format!("local {}", source(CODE, local.hint.as_ref().expect("a type")))
+            }
+            Statement::Expression(statement) => format!("expression {}", grouping(CODE, statement.expression)),
+            _ => panic!("expected a local or an expression statement, got {statement:#?}"),
+        })
+        .collect();
+    assert_eq!(
+        statements,
+        [
+            "expression (flags | MASK)",
+            "expression ((a | b) == c)",
+            "expression (flags | 1)",
+            "local int|string",
+            "local Calc|List<int>|Report?",
+        ]
+    );
+}
+
+#[test]
 fn a_for_loop_declares_its_counter_with_let_or_const() {
     const CODE: &str = "class Report\n{\n    void run()\n    {\n        for (let i = 0; i < 3; i++) {\n        }\n        for (const j = 0; ; ) {\n        }\n    }\n}\n";
     let arena = LocalArena::new();
@@ -2528,6 +2557,105 @@ fn dot_keeps_concatenating_in_php() {
     assert!(matches!(statement.expression, Expression::Binary(binary) if binary.operator.is_concatenation()));
 }
 
+/// The expression's source with every binary operation, `is` and `as` wrapped in parentheses, and the value of a
+/// comparison or value pattern grouped the same way, showing how the parser grouped it.
+fn grouping(code: &str, expression: &Expression) -> String {
+    match expression {
+        Expression::Binary(binary) => format!(
+            "({} {} {})",
+            grouping(code, binary.lhs),
+            source(code, &binary.operator),
+            grouping(code, binary.rhs)
+        ),
+        Expression::Is(is) => {
+            let pattern = match is.pattern {
+                Pattern::Comparison(comparison) => {
+                    format!("{} {}", source(code, &comparison.operator), grouping(code, comparison.value))
+                }
+                Pattern::Value(value) => grouping(code, value),
+                pattern => source(code, pattern).to_owned(),
+            };
+
+            format!("({} is {pattern})", grouping(code, is.value))
+        }
+        Expression::As(r#as) => format!("({} as {})", grouping(code, r#as.value), source(code, r#as.hint)),
+        _ => source(code, expression).to_owned(),
+    }
+}
+
+#[test]
+fn bitwise_operators_bind_tighter_than_comparisons() {
+    const CODE: &str = "class Report\n{\n    bool run()\n    {\n        return permissions & WRITE != 0;\n        return a | b == c ^ d;\n        return a & b < c | d;\n        return a == b & c;\n        return a << 1 & b;\n        return a | b ^ c & d;\n        return a < b == c;\n        return a && b | c;\n        return a + b << c;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let groupings: Vec<String> =
+        method_body(program).iter().map(|statement| grouping(CODE, expression(statement))).collect();
+    assert_eq!(
+        groupings,
+        [
+            "((permissions & WRITE) != 0)",
+            "((a | b) == (c ^ d))",
+            "((a & b) < (c | d))",
+            "(a == (b & c))",
+            "((a << 1) & b)",
+            "(a | (b ^ (c & d)))",
+            "((a < b) == c)",
+            "(a && (b | c))",
+            "((a + b) << c)",
+        ]
+    );
+}
+
+#[test]
+fn php_keeps_bitwise_operators_looser_than_comparisons() {
+    const CODE: &str = "<?php\n$permissions & $WRITE != 0;\n$a | $b == $c ^ $d;\n$a & $b < $c | $d;\n$a == $b & $c;\n$a << 1 & $b;\n$a | $b ^ $c & $d;\n$a < $b == $c;\n$a && $b | $c;\n$a + $b << $c;\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.php", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let groupings: Vec<String> =
+        program.statements.iter().skip(1).map(|statement| grouping(CODE, expression(statement))).collect();
+    assert_eq!(
+        groupings,
+        [
+            "($permissions & ($WRITE != 0))",
+            "($a | (($b == $c) ^ $d))",
+            "(($a & ($b < $c)) | $d)",
+            "(($a == $b) & $c)",
+            "(($a << 1) & $b)",
+            "($a | ($b ^ ($c & $d)))",
+            "(($a < $b) == $c)",
+            "($a && ($b | $c))",
+            "(($a + $b) << $c)",
+        ]
+    );
+}
+
+#[test]
+fn is_and_as_bind_with_the_comparisons_below_the_bitwise_operators() {
+    const CODE: &str = "class Report\n{\n    bool run()\n    {\n        return flags is > 1 | 2;\n        return flags is 1 | 2;\n        return a & b is int;\n        return a | b as Calc;\n        return a == b is Calc;\n        return a < b is Calc;\n        return a is Calc is Report;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let groupings: Vec<String> =
+        method_body(program).iter().map(|statement| grouping(CODE, expression(statement))).collect();
+    assert_eq!(
+        groupings,
+        [
+            "(flags is > (1 | 2))",
+            "(flags is (1 | 2))",
+            "((a & b) is int)",
+            "((a | b) as Calc)",
+            "(a == (b is Calc))",
+            "((a < b) is Calc)",
+            "((a is Calc) is Report)",
+        ]
+    );
+}
+
 #[test]
 fn php_file_starts_in_inline_text() {
     let arena = LocalArena::new();
@@ -2999,4 +3127,150 @@ fn php_keeps_its_match_of_conditions() {
         panic!("expected an expression statement, got {:#?}", program.statements);
     };
     assert!(matches!(statement.expression, Expression::Match(_)), "{statement:#?}");
+}
+
+#[test]
+fn an_operator_is_its_return_type_operator_its_symbol_its_parameters_and_its_body() {
+    const CODE: &str = "class Money\n{\n    public static bool operator ==(Money a, Money b) => a.cents == b.cents;\n\n    public static int operator <=>(Money a, Money b)\n    {\n        return a.cents - b.cents;\n    }\n\n    public static Money operator +(Money a, Money b) => a;\n\n    public static Money operator -(Money a, Money b) => a;\n\n    public static Money operator *(Money a, int b) => a;\n\n    public static Money operator /(Money a, int b) => a;\n\n    public static Money operator %(Money a, int b) => a;\n\n    public static Money operator **(Money a, int b) => a;\n\n    public static Money operator -(Money a) => a;\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Money.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let operators: Vec<_> = class_members(program)
+        .iter()
+        .map(|member| {
+            let ClassLikeMember::Operator(operator) = member else {
+                panic!("expected an operator, got {member:#?}");
+            };
+            assert!(operator.return_type_hint.colon.is_none());
+            assert_eq!(operator.operator.value, b"operator");
+
+            (
+                source(CODE, &operator.return_type_hint),
+                source(CODE, &operator.symbol),
+                operator.parameter_list.parameters.len(),
+                matches!(operator.body, MethodBody::Expression(_)),
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        operators,
+        [
+            ("bool", "==", 2, true),
+            ("int", "<=>", 2, false),
+            ("Money", "+", 2, true),
+            ("Money", "-", 2, true),
+            ("Money", "*", 2, true),
+            ("Money", "/", 2, true),
+            ("Money", "%", 2, true),
+            ("Money", "**", 2, true),
+            ("Money", "-", 1, true),
+        ]
+    );
+    let Some(ClassLikeMember::Operator(equality)) = class_members(program).first() else {
+        panic!("expected an operator, got {:#?}", class_members(program));
+    };
+    assert!(matches!(equality.symbol, BinaryOperator::Equal(_)), "{:#?}", equality.symbol);
+    assert_eq!(source(CODE, equality), "public static bool operator ==(Money a, Money b) => a.cents == b.cents;");
+}
+
+#[test]
+fn an_operator_starts_at_its_attributes() {
+    const CODE: &str = "class Money\n{\n    [Pure] public static Money operator +(Money a, Money b) => a;\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Money.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(ClassLikeMember::Operator(operator)) = class_members(program).first() else {
+        panic!("expected an operator, got {:#?}", class_members(program));
+    };
+    assert_eq!(source(CODE, operator), "[Pure] public static Money operator +(Money a, Money b) => a;");
+}
+
+#[test]
+fn a_binary_operator_a_class_cannot_declare_parses_for_semantics_to_refuse() {
+    const CODE: &str = "class Money\n{\n    public static bool operator !=(Money a, Money b) => false;\n\n    public static bool operator <(Money a, Money b) => false;\n\n    public static bool operator &&(Money a, Money b) => false;\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Money.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let symbols: Vec<_> = class_members(program)
+        .iter()
+        .map(|member| {
+            let ClassLikeMember::Operator(operator) = member else {
+                panic!("expected an operator, got {member:#?}");
+            };
+
+            source(CODE, &operator.symbol)
+        })
+        .collect();
+    assert_eq!(symbols, ["!=", "<", "&&"]);
+}
+
+#[test]
+fn a_symbol_that_is_no_binary_operator_is_a_parse_error_that_names_the_declared_operators() {
+    const CODE: &str =
+        "class Money\n{\n    public static bool operator !(Money a) => false;\n\n    public int cents() => 1;\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Money.sharp", CODE);
+
+    let errors: Vec<_> = program.errors.iter().map(|error| (error.to_string(), source(CODE, error))).collect();
+    assert_eq!(
+        errors,
+        [("`operator !` cannot be declared: only `+ - * / % **`, unary `-`, `==` and `<=>` can.".to_owned(), "!")]
+    );
+    let [ClassLikeMember::Method(cents)] = class_members(program).as_slice() else {
+        panic!("expected the method after the operator, got {:#?}", class_members(program));
+    };
+    assert_eq!(cents.name.value, b"cents");
+}
+
+#[test]
+fn an_operator_without_a_body_is_a_parse_error() {
+    let arena = LocalArena::new();
+    let program =
+        parse(&arena, "src/Money.sharp", "class Money\n{\n    public static bool operator ==(Money a, Money b);\n}\n");
+
+    assert_eq!(
+        program.errors.first().map(ToString::to_string).as_deref(),
+        Some("Expected one of `LeftBrace`, found `Semicolon`")
+    );
+}
+
+#[test]
+fn a_member_named_operator_is_a_method_or_a_field() {
+    const CODE: &str = "class Calc\n{\n    public int operator() => 1;\n\n    private int operator = 1;\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Calc.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [ClassLikeMember::Method(method), ClassLikeMember::Property(field)] = class_members(program).as_slice() else {
+        panic!("expected a method and a field, got {:#?}", class_members(program));
+    };
+    assert_eq!(method.name.value, b"operator");
+    assert_eq!(field.first_variable().name, b"operator");
+}
+
+#[test]
+fn php_keeps_reading_operator_as_a_name() {
+    let arena = LocalArena::new();
+    let program = parse(
+        &arena,
+        "src/Calc.php",
+        "<?php class Calc { public function operator() {} public operator $value; const operator = 1; }",
+    );
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(Statement::Class(class)) = program.statements.get(1) else {
+        panic!("expected a class, got {:#?}", program.statements);
+    };
+    let [ClassLikeMember::Method(method), ClassLikeMember::Property(property), ClassLikeMember::Constant(constant)] =
+        class.members.as_slice()
+    else {
+        panic!("expected a method, a property and a constant, got {:#?}", class.members);
+    };
+    assert_eq!(method.name.value, b"operator");
+    assert!(matches!(property.hint(), Some(Hint::Identifier(name)) if name.value() == b"operator"), "{property:#?}");
+    assert_eq!(constant.first_item().name.value, b"operator");
 }
