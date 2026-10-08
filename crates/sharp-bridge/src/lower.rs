@@ -1320,6 +1320,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                     }
                     _ => Operands::Other,
                 };
+                if matches!(operands, Operands::Numbers) {
+                    return self.float_equality(binary, line);
+                }
+
                 let lhs = self.expression(binary.lhs);
                 let rhs = self.expression(binary.rhs);
 
@@ -1329,7 +1333,6 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                     }
                     (BinaryOperator::Division(_), Operands::Ints) => self.intdiv(line, lhs, rhs),
                     (_, Operands::Strings) => self.ordinal(binary, line, lhs, rhs),
-                    (_, Operands::Numbers) => self.float_equality(binary, line, lhs, rhs),
                     _ => {
                         let (kind, attr) = binary_kind(binary);
 
@@ -1649,13 +1652,16 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// numbers by value. A side that may hold an int is cast. When a side may be null, both sides go into hidden
     /// `$operand#N`s, each running once, and null equals only null:
     /// `(($operand#1 = lhs) === null) === (($operand#2 = rhs) === null) && ($operand#1 === null || (float) $operand#1
-    /// === $operand#2)`, so `(float) null`, which is `0.0`, never compares. `!=` is its `!`.
-    fn float_equality(&mut self, binary: &Binary, line: u32, lhs: u32, rhs: u32) -> u32 {
+    /// === $operand#2)`, so `(float) null`, which is `0.0`, never compares. `!=` is its `!`. The names are taken
+    /// before the operands are lowered, so an equality inside an operand takes the next ones.
+    fn float_equality(&mut self, binary: &Binary, line: u32) -> u32 {
         let types = self.types;
         let (lhs_type, rhs_type) = (types.expression_type(binary.lhs), types.expression_type(binary.rhs));
         let [cast_lhs, cast_rhs] = [lhs_type, rhs_type].map(|r#type| number_kinds(r#type).is_some_and(|[int, _]| int));
         if !lhs_type.is_nullable() && !rhs_type.is_nullable() {
+            let lhs = self.expression(binary.lhs);
             let lhs = self.float(line, lhs, cast_lhs);
+            let rhs = self.expression(binary.rhs);
             let rhs = self.float(line, rhs, cast_rhs);
             let (kind, attr) = binary_kind(binary);
 
@@ -1665,6 +1671,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.temporaries += 2;
         let lhs_name = format!("operand#{}", self.temporaries - 1).into_bytes();
         let rhs_name = format!("operand#{}", self.temporaries).into_bytes();
+        let lhs = self.expression(binary.lhs);
+        let rhs = self.expression(binary.rhs);
 
         let lhs_variable = self.variable(binary.lhs.span(), &lhs_name);
         let lhs_stored = self.node(SHARP_AST_ASSIGN, 0, line, &[lhs_variable, lhs]);
