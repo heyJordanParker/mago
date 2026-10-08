@@ -174,6 +174,9 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for UnaryPrefix<'arena> {
 
                 artifacts.set_rc_expression_type(self, Rc::new(referenced_type));
             }
+            UnaryPrefixOperator::BitwiseNot(_) if operand_type.as_ref().is_some_and(|t| t.is_int()) => {
+                artifacts.set_expression_type(self, get_int());
+            }
             UnaryPrefixOperator::ErrorControl(_) | UnaryPrefixOperator::BitwiseNot(_) => {
                 if let Some(operand_type) = operand_type {
                     artifacts.set_rc_expression_type(self, operand_type);

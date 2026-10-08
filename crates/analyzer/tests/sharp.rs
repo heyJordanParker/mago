@@ -1702,6 +1702,17 @@ fn a_bitwise_and_as_a_condition_is_an_int_that_is_not_bool() {
     assert_eq!(issues(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
 }
 
+/// `~` on an `int` gives an `int`, so `~0`, which is `-1`, never reads as `0`. PHP's analysis kept the operand's own
+/// type, which made `~0 == 0` look always true in both dialects.
+#[test]
+fn bitwise_not_of_an_int_is_an_int_in_both_dialects() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int all()\n    {\n        const bits = ~0;\n        if (bits == 0) {\n            return 1;\n        }\n        return bits;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function all(): int\n    {\n        $bits = ~0;\n        if ($bits === 0) {\n            return 1;\n        }\n        return $bits;\n    }\n}\n";
+
+    assert_eq!(messages(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
+    assert_eq!(messages(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
+}
+
 /// A condition that always holds names its PHP# type, as the condition error beside it does. PHP names its own type.
 #[test]
 fn a_condition_that_always_holds_names_its_php_sharp_type() {
