@@ -72,7 +72,9 @@ use crate::formula::negate_or_synthesize;
 use crate::reconciler::reconcile_keyed_types;
 use crate::statement::r#loop::assignment_map_visitor::get_assignment_map;
 use crate::statement::r#loop::cleaner::clean_nodes;
+use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_member;
+use crate::utils::names::display_type;
 
 mod assignment_map_visitor;
 mod cleaner;
@@ -1597,8 +1599,13 @@ where
                         if let Some((k, v)) = get_iterable_parameters(iterator_atomic, context.codebase) {
                             (k, v)
                         } else {
-                            let class_name = atomic_object.name;
-                            let iterator_atomic_str = iterator_atomic.get_id();
+                            let class_name = if context.dialect.is_sharp() {
+                                display_class_like_name(context, atomic_object.name)
+                            } else {
+                                atomic_object.name
+                            };
+                            let iterator_atomic_str =
+                                display_type(context, &TUnion::from_atomic(iterator_atomic.clone()));
 
                             context.collector.report_with_code(
                                 IssueCode::NonIterableObjectIteration,
@@ -1618,7 +1625,11 @@ where
                         }
                     }
                     TObject::Enum(enum_instance) => {
-                        let enum_name = enum_instance.get_name();
+                        let enum_name = if context.dialect.is_sharp() {
+                            display_class_like_name(context, enum_instance.get_name())
+                        } else {
+                            enum_instance.get_name()
+                        };
                         let enum_backing_type = context
                             .codebase
                             .get_enum(enum_instance.get_name().as_bytes())

@@ -65,6 +65,8 @@ use crate::expression::assignment::PropertyWriteKind;
 use crate::expression::assignment::assign_to_expression;
 use crate::expression::call::method_call::analyze_implicit_method_call;
 use crate::utils::expression::get_block_expression_id;
+use crate::utils::names::display_class_like_name;
+use crate::utils::names::display_type;
 use crate::utils::php_emulation::str_increment_bytes;
 use crate::utils::php_emulation::str_is_numeric_bytes;
 use crate::utils::php_emulation::string_to_int;
@@ -1863,14 +1865,16 @@ where
                 };
 
                 let Some(class_metadata) = context.codebase.get_class_like(class_like_name.as_bytes()) else {
+                    let missing_class = display_class_like_name(context, class_like_name);
+
                     context.collector.report_with_code(
                         IssueCode::InvalidTypeCast,
                         Issue::error(format!(
-                            "Cannot cast object of type `{class_like_name}` to `string` because the class does not exist.",
+                            "Cannot cast object of type `{missing_class}` to `string` because the class does not exist.",
                         ))
                         .with_annotation(
                             Annotation::primary(expression_span.span())
-                                .with_message(format!("Class `{class_like_name}` does not exist."))
+                                .with_message(format!("Class `{missing_class}` does not exist."))
                         )
                         .with_note("Casting an object to `string` requires the class to exist and implement `Stringable` or have a `__toString()` method.")
                         .with_help("Ensure the class exists or avoid casting this object type to `string`."),
@@ -1881,15 +1885,21 @@ where
                 };
 
                 if class_metadata.kind.is_enum() {
+                    let enum_name = if context.dialect.is_sharp() {
+                        display_class_like_name(context, class_like_name)
+                    } else {
+                        class_like_name
+                    };
+
                     context.collector.report_with_code(
                         IssueCode::InvalidTypeCast,
                         Issue::error(format!(
                             "Cannot cast enum instance of type `{}` to `string`.",
-                            object.get_id(),
+                            display_type(context, &TUnion::from_atomic(t.clone())),
                         ))
                         .with_annotation(
                             Annotation::primary(expression_span.span())
-                                .with_message(format!("Enum `{class_like_name}` cannot be cast to `string`."))
+                                .with_message(format!("Enum `{enum_name}` cannot be cast to `string`."))
                         )
                         .with_note("Casting an enum instance to `string` is not allowed and will throw a fatal error at runtime.")
                         .with_help("Use the enum's name or value instead, or avoid casting the enum instance to `string`."),
@@ -1924,7 +1934,7 @@ where
 
                     possibilities.extend(result.types.into_owned());
                 } else {
-                    let class_name_str = class_metadata.original_name;
+                    let class_name_str = display_class_like_name(context, class_metadata.original_name);
 
                     context.collector.report_with_code(
                         IssueCode::InvalidTypeCast,

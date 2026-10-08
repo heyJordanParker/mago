@@ -16,6 +16,7 @@ use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::statement::attributes::AttributeTarget;
 use crate::statement::attributes::analyze_attributes;
+use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_member;
 use crate::utils::names::display_value_type;
 
@@ -75,7 +76,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for EnumCaseBackedItem<'arena> {
             ));
         };
 
-        let enum_name = current_enum.original_name;
+        let enum_name = display_class_like_name(context, current_enum.original_name);
         let case_name = mago_bytes::BytesDisplay(self.name.value);
         let qualified_case = display_member(context, enum_name, case_name);
         // PHP names the case alone where its enum follows in the message, and PHP# names a case only as `Enum.case`.

@@ -9,6 +9,7 @@ use mago_codex::ttype::comparator::union_comparator;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_never;
 use mago_codex::ttype::union::TUnion;
+use mago_names::display_sharp_member;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -23,7 +24,6 @@ use crate::resolver::static_property::StaticProperty;
 use crate::resolver::static_property::resolve_static_properties;
 use crate::utils::get_type_diff;
 use crate::utils::names::display_class_like_name;
-use crate::utils::names::display_sharp_member;
 use crate::utils::names::display_type;
 use crate::utils::names::display_value_type;
 

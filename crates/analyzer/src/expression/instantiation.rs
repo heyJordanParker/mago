@@ -21,6 +21,7 @@ use mago_codex::ttype::template::bounds::get_most_specific_type_from_bounds;
 use mago_codex::ttype::template::variance::Variance;
 use mago_codex::ttype::union::TUnion;
 use mago_codex::ttype::wrap_atomic;
+use mago_names::short_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -47,8 +48,8 @@ use crate::invocation::post_process::post_invocation_process;
 use crate::resolver::class_name::ResolutionOrigin;
 use crate::resolver::class_name::ResolvedClassname;
 use crate::resolver::class_name::resolve_classnames_from_expression;
+use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_member;
-use crate::utils::names::short_name;
 use crate::utils::template::get_generic_parameter_for_offset;
 use crate::visibility::check_method_visibility;
 
@@ -166,12 +167,14 @@ where
     };
 
     let Some(metadata) = context.codebase.get_class_like(fq_classname.as_bytes()) else {
+        let missing_class = display_class_like_name(context, fq_classname);
+
         context.collector.report_with_code(
             IssueCode::NonExistentClass,
-            Issue::error(format!("Class `{fq_classname}` not found."))
+            Issue::error(format!("Class `{missing_class}` not found."))
             .with_annotation(
                 Annotation::primary(class_expression_span)
-                    .with_message(format!("`{fq_classname}` is not defined or cannot be autoloaded")),
+                    .with_message(format!("`{missing_class}` is not defined or cannot be autoloaded")),
             )
             .with_help(
                 "Ensure the name is correct, including its namespace, and that it's properly defined and autoloadable.",
@@ -183,9 +186,9 @@ where
         return Ok(get_never());
     };
 
-    let classname_str = &metadata.original_name;
+    let classname_str = display_class_like_name(context, metadata.original_name);
 
-    crate::utils::availability::check_class_like_availability(context, metadata, classname_str, class_expression_span);
+    crate::utils::availability::check_class_like_availability(context, metadata, &classname_str, class_expression_span);
 
     if metadata.kind.is_interface() && !classname.is_from_class_string() {
         context.collector.report_with_code(
@@ -219,8 +222,8 @@ where
 
         return Ok(get_never());
     } else if metadata.kind.is_enum() {
-        let case = display_member(context, *classname_str, "CASE_NAME");
-        let cases = display_member(context, *classname_str, "cases()");
+        let case = display_member(context, classname_str, "CASE_NAME");
+        let cases = display_member(context, classname_str, "cases()");
         context.collector.report_with_code(
             IssueCode::EnumInstantiation,
             Issue::error(format!("Enum `{classname_str}` cannot be instantiated with `new`."))
@@ -324,7 +327,7 @@ where
 
     let mut template_result = TemplateResult::new(IndexMap::with_hasher(RandomState::default()), HashMap::default());
 
-    let is_spl_object_storage = classname_str.as_bytes().eq_ignore_ascii_case(b"splobjectstorage");
+    let is_spl_object_storage = metadata.original_name.as_bytes().eq_ignore_ascii_case(b"splobjectstorage");
 
     if let Some(constructor) = context.codebase.get_method_by_id(&constructor_declraing_id) {
         has_inconsistent_constructor =

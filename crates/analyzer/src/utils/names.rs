@@ -12,18 +12,33 @@ use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::atomic::scalar::class_like_string::TClassLikeString;
 use mago_codex::ttype::get_array_parameters;
 use mago_codex::ttype::union::TUnion;
+use mago_names::display_sharp_member;
+use mago_names::short_name;
 use mago_word::Word;
+use mago_word::word;
 
 use crate::context::Context;
 
-/// Returns the case-preserved name of a class-like for user-facing diagnostics,
-/// falling back to the input if no metadata is available.
+/// Returns the case-preserved name of a class-like as the analyzed file writes it: its short name in a `.sharp` file,
+/// and its full name in PHP. Falls back to the input if no metadata is available.
 #[inline]
 pub(crate) fn display_class_like_name<A>(context: &Context<'_, '_, A>, name: Word) -> Word
 where
     A: Arena,
 {
-    context.codebase.get_class_like(name.as_bytes()).map(|m| m.original_name).unwrap_or(name)
+    let name = context.codebase.get_class_like(name.as_bytes()).map_or(name, |m| m.original_name);
+
+    if context.dialect.is_sharp() { word(short_name(name)) } else { name }
+}
+
+/// Returns the property `name`, which the codebase keys with its `$`, as the analyzed file names it in prose: `total`
+/// in a `.sharp` file, and `$total` in PHP.
+#[inline]
+pub(crate) fn display_property_name<A>(context: &Context<'_, '_, A>, name: Word) -> Word
+where
+    A: Arena,
+{
+    if context.dialect.is_sharp() { word(mago_bytes::trim_start_byte(name.as_bytes(), b'$')) } else { name }
 }
 
 /// Returns the case-preserved method name on the given class-like for
@@ -219,19 +234,6 @@ fn display_sharp_atomic(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String
             .join(" & "),
         _ => written,
     }
-}
-
-/// The last segment of the full name `name`, as a PHP# import writes it.
-#[must_use]
-pub(crate) fn short_name(name: Word) -> String {
-    name.as_str_lossy().rsplit('\\').next().unwrap_or_default().to_owned()
-}
-
-/// The member `member_name` of the class `class_name` as PHP# names it, `Box.put`, as C# names a member in its messages.
-/// A method, a property, a constant and an enum case read alike, so a property's `$` is dropped: `Box.total`.
-#[must_use]
-pub(crate) fn display_sharp_member(class_name: Word, member_name: impl std::fmt::Display) -> String {
-    format!("{}.{}", short_name(class_name), member_name.to_string().trim_start_matches('$'))
 }
 
 /// The accessor `hook_name` of the property `property_name` of the class `class_name` as PHP# names it, `Box.total.get`,

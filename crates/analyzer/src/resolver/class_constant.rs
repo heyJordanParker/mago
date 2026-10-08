@@ -17,6 +17,7 @@ use mago_codex::ttype::get_class_string;
 use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::union::TUnion;
 use mago_codex::ttype::wrap_atomic;
+use mago_names::short_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -36,7 +37,6 @@ use crate::resolver::selector::ResolvedSelector;
 use crate::resolver::selector::resolve_constant_selector;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_member;
-use crate::utils::names::short_name;
 
 /// Represents a successfully resolved class constant or enum case.
 #[derive(Debug)]
@@ -464,7 +464,7 @@ fn report_non_existent_constant<'ctx, A>(
     A: Arena,
 {
     let class_kind_str = metadata.kind.as_str();
-    let class_str = &metadata.original_name;
+    let class_str = display_class_like_name(context, metadata.original_name);
 
     let (main_message, primary_annotation_message) = if metadata.kind.is_enum() {
         (

@@ -1,7 +1,12 @@
 use std::collections::HashSet;
+use std::fmt;
+use std::fmt::Display;
 
+use mago_bytes::BytesDisplay;
 use mago_database::file::File;
 use mago_names::ResolvedNames;
+use mago_names::display_sharp_member;
+use mago_names::short_name;
 use mago_php_version::PHPVersion;
 use mago_reporting::Issue;
 use mago_reporting::IssueCollection;
@@ -66,6 +71,34 @@ impl<'ctx, 'ast, 'arena> Context<'ctx, 'ast, 'arena> {
     #[inline]
     pub fn get_name(&self, position: Position) -> &'arena [u8] {
         self.names.get(&position)
+    }
+
+    /// The class-like `full_name` as the checked file writes it: its short name in a `.sharp` file, and its full name in
+    /// PHP. It is formatted only when a message prints it.
+    pub fn display_class_like_name<'name>(&self, full_name: &'name [u8]) -> impl Display + use<'name> {
+        let is_sharp = self.program.dialect.is_sharp();
+
+        fmt::from_fn(move |formatter| {
+            if is_sharp { formatter.write_str(&short_name(full_name)) } else { BytesDisplay(full_name).fmt(formatter) }
+        })
+    }
+
+    /// The member `member_name` of the class-like `class_like_name` as the checked file names it: `Order.total` in a
+    /// `.sharp` file, and `Order::total` in PHP, where a property keeps its `$`: `Order::$total`. It is formatted only
+    /// when a message prints it.
+    pub fn display_member<'name, M>(&self, class_like_name: &'name [u8], member_name: M) -> impl Display + use<'name, M>
+    where
+        M: Display,
+    {
+        let is_sharp = self.program.dialect.is_sharp();
+
+        fmt::from_fn(move |formatter| {
+            if is_sharp {
+                formatter.write_str(&display_sharp_member(class_like_name, &member_name))
+            } else {
+                write!(formatter, "{}::{member_name}", BytesDisplay(class_like_name))
+            }
+        })
     }
 
     #[inline]

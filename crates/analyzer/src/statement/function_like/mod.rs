@@ -48,6 +48,7 @@ use mago_codex::ttype::union::TUnion;
 use mago_codex::ttype::wrap_atomic;
 use mago_codex::visibility::Visibility;
 use mago_names::binding::php_variable_name;
+use mago_names::display_sharp_member;
 use mago_php_version::feature::Feature;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -76,8 +77,8 @@ use crate::statement::class_like::property::analyze_property_hook;
 use crate::statement::r#return::handle_return_value;
 use crate::statement::r#static::infer_static_local_types;
 use crate::utils::expression::get_variable_id;
+use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_nullable_type;
-use crate::utils::names::display_sharp_member;
 use crate::utils::names::display_sharp_type;
 use crate::utils::names::display_type;
 use crate::utils::names::display_value_type;
@@ -1762,7 +1763,7 @@ where
             continue;
         };
 
-        let class_name = class.original_name;
+        let class_name = display_class_like_name(context, class.original_name);
         let expected = class.template_types.len();
         let required = class.template_types.values().take_while(|template| template.default.is_none()).count();
         if arguments.len() < required || arguments.len() > expected {
@@ -1823,8 +1824,8 @@ where
                 continue;
             }
 
-            let argument_id = expanded_argument.get_id();
-            let constraint_id = constraint.get_id();
+            let argument_id = display_type(context, &expanded_argument);
+            let constraint_id = display_type(context, &constraint);
             context.collector.report_with_code(
                 IssueCode::TemplateConstraintViolation,
                 Issue::error(format!(

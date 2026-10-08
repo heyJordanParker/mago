@@ -13,6 +13,7 @@ use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_named_object;
 use mago_codex::ttype::get_never;
 use mago_codex::ttype::union::TUnion;
+use mago_names::display_sharp_member;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_reporting::Level;
@@ -55,7 +56,6 @@ use crate::statement::class_like::analyze_class_like;
 use crate::statement::class_like::override_attribute;
 use crate::utils::misc::check_for_paradox;
 use crate::utils::names::display_member;
-use crate::utils::names::display_sharp_member;
 
 pub mod access;
 pub mod argument_list;

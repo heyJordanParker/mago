@@ -1,5 +1,6 @@
 use mago_allocator::Arena;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
+use mago_names::short_name;
 use mago_php_version::feature::Feature;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -17,7 +18,6 @@ use crate::expression::assignment::PropertyWriteKind;
 use crate::statement::class_like::initialization::compute_class_initializer_initializations;
 use crate::statement::class_like::initialization::compute_transitive_initializations;
 use crate::utils::names::display_member;
-use crate::utils::names::short_name;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LocalInitializationState {

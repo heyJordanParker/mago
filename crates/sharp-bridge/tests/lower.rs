@@ -255,7 +255,7 @@ fn a_method_without_a_body_returns_the_checker_error() {
     assert_eq!(
         lowered.diagnostics(),
         [
-            "3:21 compile error: Non-Abstract method `Report::run` must have a concrete body.",
+            "3:21 compile error: Non-Abstract method `Report.run` must have a concrete body.",
             "1:7 compile error: Class `Report` does not implement the abstract method `run`."
         ]
     );

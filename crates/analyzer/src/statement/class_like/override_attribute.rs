@@ -4,6 +4,7 @@ use mago_codex::metadata::class_like::ClassLikeMetadata;
 use mago_codex::metadata::property::PropertyMetadata;
 use mago_names::binding::php_method_name;
 use mago_names::binding::php_variable_name;
+use mago_names::display_sharp_member;
 use mago_php_version::PHPVersion;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -20,7 +21,6 @@ use mago_word::ascii_lowercase_word;
 use crate::code::IssueCode;
 use crate::context::Context;
 use crate::utils::names::display_member;
-use crate::utils::names::display_sharp_member;
 
 /// Checks the `#[Override]` attribute when the `check-missing-override` setting is on, and PHP#'s `override`
 /// modifier always: spec section 22 requires `override` to replace a parent class's method.

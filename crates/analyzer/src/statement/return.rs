@@ -19,6 +19,7 @@ use mago_codex::ttype::get_null;
 use mago_codex::ttype::get_void;
 use mago_codex::ttype::union::TUnion;
 use mago_names::ResolvedNames;
+use mago_names::display_sharp_member;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -43,10 +44,10 @@ use crate::utils::expression::get_direct_variable_id;
 use crate::utils::expression::is_referenceable;
 use crate::utils::get_type_diff;
 use crate::utils::misc::unwrap_expression;
+use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_function_like_identifier;
 use crate::utils::names::display_nullable_type;
 use crate::utils::names::display_sharp_accessor;
-use crate::utils::names::display_sharp_member;
 use crate::utils::names::display_type;
 use crate::utils::names::display_value_type;
 
@@ -779,7 +780,7 @@ fn check_constructor_early_return<'ctx, A>(
         };
         let mut issue = Issue::error(format!(
             "Property `{prop_name}` may not be initialized when returning from constructor of class `{}`.",
-            class_like_metadata.original_name
+            display_class_like_name(context, class_like_metadata.original_name)
         ))
         .with_annotation(
             Annotation::primary(return_span).with_message(format!("Returning without initializing `{prop_name}`")),

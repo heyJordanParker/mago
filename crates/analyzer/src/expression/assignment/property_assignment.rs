@@ -10,6 +10,7 @@ use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_never;
 use mago_codex::ttype::intersect_union_types;
 use mago_codex::ttype::union::TUnion;
+use mago_names::display_sharp_member;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -28,7 +29,6 @@ use crate::utils::expression::get_property_access_expression_id;
 use crate::utils::expression::is_this;
 use crate::utils::get_type_diff;
 use crate::utils::names::display_class_like_name;
-use crate::utils::names::display_sharp_member;
 use crate::utils::names::display_type;
 use crate::utils::names::display_value_type;
 

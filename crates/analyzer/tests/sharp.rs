@@ -1316,7 +1316,13 @@ fn super_in_a_class_without_a_base_class_is_an_error_as_in_php() {
 
     let invalid = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Tag.sharp", sharp), &[]).remove(0);
     assert_eq!(invalid.level, Level::Error);
-    assert_eq!(invalid.message, "Cannot use `super` as the current type (`Demo\\Tag`) does not have a parent class.");
+    assert_eq!(invalid.message, "Cannot use `super` as the current type (`Tag`) does not have a parent class.");
+
+    let php_invalid = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Tag.php", php), &[]).remove(0);
+    assert_eq!(
+        php_invalid.message,
+        "Cannot use `parent` as the current type (`Demo\\Tag`) does not have a parent class."
+    );
 }
 
 /// The checker refuses a member of `typeof(X)` once, so the analyzer adds no issue on the refused read, its chain, or
@@ -1844,8 +1850,8 @@ fn the_environment_arguments_and_current_directory_are_read_only() {
     assert_eq!(
         messages(("src/Demo/Deploy.sharp", sharp), &[])[1..],
         [
-            "Cannot initialize readonly property `Environment.arguments` from within `Demo\\Deploy`.",
-            "Cannot initialize readonly property `Environment.currentDirectory` from within `Demo\\Deploy`.",
+            "Cannot initialize readonly property `Environment.arguments` from within `Deploy`.",
+            "Cannot initialize readonly property `Environment.currentDirectory` from within `Deploy`.",
         ]
     );
 }
@@ -2976,7 +2982,16 @@ fn messages(analyzed: (&'static str, &'static str), others: &[(&'static str, &'s
 /// The issues of `analyzed` as `line:column code message`, each followed by every annotation, note and help it
 /// carries, so a test sees each type the issue prints.
 fn worded(analyzed: (&'static str, &'static str), others: &[(&'static str, &'static str)]) -> Vec<String> {
-    analyze(&PLUGIN_REGISTRY, settings(), analyzed, others)
+    worded_with(settings(), analyzed, others)
+}
+
+/// The issues of `analyzed` under `settings`, worded as `worded` words them.
+fn worded_with(
+    settings: Settings,
+    analyzed: (&'static str, &'static str),
+    others: &[(&'static str, &'static str)],
+) -> Vec<String> {
+    analyze(&PLUGIN_REGISTRY, settings, analyzed, others)
         .iter()
         .map(|issue| {
             let annotations = issue.annotations.iter().filter_map(|annotation| annotation.message.as_deref());
@@ -4091,9 +4106,9 @@ fn an_override_names_its_members_and_types_as_sharp_writes_them() {
     assert_eq!(
         worded(("src/Demo/Base.sharp", sharp), &[]),
         [
-            "26:26 incompatible-parameter-type Parameter `item` of `OrderBase.put` expects type `Line` but parent `Base.put` expects type `Order` | Parameter `item` expects type `Line` but parent expects `Order` | Parent method `Base.put` parameter defined here | In class `Demo\\OrderBase` | Parameter types must be contravariant: child must accept equal or wider types than parent. | Change the parameter type to be compatible with the parent method.",
-            "30:26 incompatible-return-type Return type `Line` of `OrderBase.get` is incompatible with parent return type `Order` of `Base.get` | Returns type `Line` but parent expects `Order` | Parent method `Base.get` return type defined here | In class `Demo\\OrderBase` | Return types must be covariant: child must return equal or narrower types than parent. | Change the return type to be compatible with the parent method.",
-            "24:21 incompatible-property-type Property `OrderBase.item` has an incompatible type declaration. | This type `Line?` is incompatible with the parent's type. | The parent property is defined with type `Order?` here. | PHP requires property types to be invariant, meaning the type declaration in a child class must be exactly the same as in the parent class. | Change the type of `$item` to `Order?` to match the parent property.",
+            "26:26 incompatible-parameter-type Parameter `item` of `OrderBase.put` expects type `Line` but parent `Base.put` expects type `Order` | Parameter `item` expects type `Line` but parent expects `Order` | Parent method `Base.put` parameter defined here | In class `OrderBase` | Parameter types must be contravariant: child must accept equal or wider types than parent. | Change the parameter type to be compatible with the parent method.",
+            "30:26 incompatible-return-type Return type `Line` of `OrderBase.get` is incompatible with parent return type `Order` of `Base.get` | Returns type `Line` but parent expects `Order` | Parent method `Base.get` return type defined here | In class `OrderBase` | Return types must be covariant: child must return equal or narrower types than parent. | Change the return type to be compatible with the parent method.",
+            "24:21 incompatible-property-type Property `OrderBase.item` has an incompatible type declaration. | This type `Line?` is incompatible with the parent's type. | The parent property is defined with type `Order?` here. | PHP requires property types to be invariant, meaning the type declaration in a child class must be exactly the same as in the parent class. | Change the type of `item` to `Order?` to match the parent property.",
         ]
     );
 }
@@ -4146,9 +4161,9 @@ fn a_message_names_an_inherited_accessor_as_sharp_writes_it() {
     assert_eq!(
         worded(("src/Demo/Order.sharp", sharp), &others),
         [
-            "7:14 unimplemented-abstract-property-hook Class `Demo\\Order` does not implement the abstract property hook `Priced.total.get`. | `Demo\\Order` is not abstract and must implement this hook | `Priced.total.get` is defined as abstract here | When a concrete class extends an abstract class or implements an interface, it must provide an implementation for all inherited abstract property hooks. | You can either implement the `get` hook for property `$total` in `Demo\\Order`, or declare `Demo\\Order` as an abstract class.",
+            "7:14 unimplemented-abstract-property-hook Class `Order` does not implement the abstract property hook `Priced.total.get`. | `Order` is not abstract and must implement this hook | `Priced.total.get` is defined as abstract here | When a concrete class extends an abstract class or implements an interface, it must provide an implementation for all inherited abstract property hooks. | You can either implement the `get` hook for property `total` in `Order`, or declare `Order` as an abstract class.",
             "13:33 override-final-property-hook Cannot override final property hook `Counter.count.get`. | Attempting to override final hook here | Hook `Counter.count.get` is declared as final | Final property hooks cannot be overridden in child classes. | Remove the `get` hook from `Tally.count`, or remove the final modifier from the parent hook.",
-            "18:30 incompatible-property-hook-signature Declaration of `Bag.items.get` must be compatible with `& Shared.items.get`. | This hook does not return by reference | Interface `Lib\\Shared` requires this hook to return by reference | When an interface declares a by-reference hook (`&get`), the implementing class must also return by reference. | Add `&` to the `get` hook declaration: `&get => ...`",
+            "18:30 incompatible-property-hook-signature Declaration of `Bag.items.get` must be compatible with `& Shared.items.get`. | This hook does not return by reference | Interface `Shared` requires this hook to return by reference | When an interface declares a by-reference hook (`&get`), the implementing class must also return by reference. | Add `&` to the `get` hook declaration: `&get => ...`",
         ]
     );
 }
@@ -4169,7 +4184,7 @@ fn an_override_names_its_parameter_as_sharp_writes_it() {
     assert_eq!(
         worded(("src/Demo/Base.sharp", sharp), &[]),
         [
-            "20:26 incompatible-parameter-type Parameter `item` of `Child.put` expects type `Line` but parent `Base.put` expects type `Order` | Parameter `item` expects type `Line` but parent expects `Order` | Parent method `Base.put` parameter defined here | In class `Demo\\Child` | Parameter types must be contravariant: child must accept equal or wider types than parent. | Change the parameter type to be compatible with the parent method.",
+            "20:26 incompatible-parameter-type Parameter `item` of `Child.put` expects type `Line` but parent `Base.put` expects type `Order` | Parameter `item` expects type `Line` but parent expects `Order` | Parent method `Base.put` parameter defined here | In class `Child` | Parameter types must be contravariant: child must accept equal or wider types than parent. | Change the parameter type to be compatible with the parent method.",
         ]
     );
 }
@@ -4306,11 +4321,11 @@ fn a_constant_and_an_enum_case_are_named_as_sharp_writes_them() {
     assert_eq!(
         worded(("src/Demo/Status.sharp", sharp), &[]),
         [
-            "5:19 invalid-enum-case-value Invalid case value for `Status.Active`. Expected `string`, but got `int`. | This value has the type `int` | Enum `Demo\\Status` is defined here with a `string` backing type | Ensure the case value is a literal string or a constant expression that resolves to a string.",
+            "5:19 invalid-enum-case-value Invalid case value for `Status.Active`. Expected `string`, but got `int`. | This value has the type `int` | Enum `Status` is defined here with a `string` backing type | Ensure the case value is a literal string or a constant expression that resolves to a string.",
             "10:30 invalid-constant-value Value for constant `Order.LIMIT` is not assignable to its declared type. | This value has type `string` | Constant is declared with type `int` | A class constant's value must be assignable to its declared type. | Change the value to match the declared type, or update the declared type to accept the value.",
-            "12:44 non-existent-property `Status.Missing` does not exist. | This names no constant, case or static property | The enum `Demo\\Status` has no constant, case or static property named `Missing`",
+            "12:44 non-existent-property `Status.Missing` does not exist. | This names no constant, case or static property | The enum `Status` has no constant, case or static property named `Missing`",
             "12:37 invalid-return-statement Invalid return type for method `Order.first`: expected `Status`, but found `null`. | This has type `null` | The type `null` returned here is not compatible with the declared return type `Status`. | Change the return value to match `Status`, or update the method's return type declaration.",
-            "14:40 non-existent-property `Order.NOPE` does not exist. | This names no constant, case or static property | The class `Demo\\Order` has no constant, case or static property named `NOPE`",
+            "14:40 non-existent-property `Order.NOPE` does not exist. | This names no constant, case or static property | The class `Order` has no constant, case or static property named `NOPE`",
             "14:34 invalid-return-statement Invalid return type for method `Order.limit`: expected `int`, but found `null`. | This has type `null` | The type `null` returned here is not compatible with the declared return type `int`. | Change the return value to match `int`, or update the method's return type declaration.",
         ]
     );
@@ -4358,7 +4373,7 @@ fn an_undefined_method_and_property_are_named_as_sharp_writes_them() {
         [
             "10:49 non-existent-method Method `Order.missing` does not exist. | This method selection is invalid | This expression has type `Order` | Ensure the method `Order.missing` is defined.",
             "10:43 mixed-return-statement Could not infer a precise return type for method `Report.run`. Saw type `Any?`. | Type inferred as `Any?` here. | The analysis could not determine a specific type for the value returned here, resulting in `Any?`. This can happen with complex code paths or unannotated data. | Add specific type hints to variables, parameters, or properties involved in calculating the return value. Consider adding a specific return type declaration to the method signature to catch potential mismatches earlier.",
-            "12:50 non-existent-property Property `Order.gone` does not exist. | Property not found here | On instance of `Order` | The class `Demo\\Order` does not define the property `gone`. | Define the property in the class or check for its existence before accessing it.",
+            "12:50 non-existent-property Property `Order.gone` does not exist. | Property not found here | On instance of `Order` | The class `Order` does not define the property `gone`. | Define the property in the class or check for its existence before accessing it.",
         ]
     );
 }
@@ -4469,10 +4484,71 @@ fn a_member_access_refusal_names_the_member_as_sharp_writes_it() {
         refusals(("src/Demo/Run.sharp", sharp)),
         [
             "14:14 invalid-property-write Cannot modify a readonly property after initialization. | This readonly property is already initialized | Write to `Order.count` occurs here | Property is defined as `readonly` here | Readonly properties may be initialized only once. Every later assignment throws an `Error` at runtime. | Remove this assignment or move the property's one-time initialization to this location.",
-            "22:15 invalid-property-write Cannot write to private property `Order.total`. | This member is private and cannot be accessed here | Invalid access occurs here, from within `demo\\run` | Member is defined as `private` here | Make the property `Order.total` writable (e.g., `public` or `public(set)`), or add a public setter method.",
-            "24:22 invalid-method-access Cannot access private method `Order.secret`. | This member is private and cannot be accessed here | Invalid access occurs here, from within `demo\\run` | Member is defined as `private` here | Change the visibility of method `secret` to `public`, or call it from an allowed scope.",
-            "24:39 invalid-method-access Cannot access private method `Order.secret`. | This member is private and cannot be accessed here | Invalid access occurs here, from within `demo\\run` | Member is defined as `private` here | Change the visibility of method `secret` to `public`, or call it from an allowed scope.",
+            "22:15 invalid-property-write Cannot write to private property `Order.total`. | This member is private and cannot be accessed here | Invalid access occurs here, from within `Run` | Member is defined as `private` here | Make the property `Order.total` writable (e.g., `public` or `public(set)`), or add a public setter method.",
+            "24:22 invalid-method-access Cannot access private method `Order.secret`. | This member is private and cannot be accessed here | Invalid access occurs here, from within `Run` | Member is defined as `private` here | Change the visibility of method `secret` to `public`, or call it from an allowed scope.",
+            "24:39 invalid-method-access Cannot access private method `Order.secret`. | This member is private and cannot be accessed here | Invalid access occurs here, from within `Run` | Member is defined as `private` here | Change the visibility of method `secret` to `public`, or call it from an allowed scope.",
             "24:39 invalid-static-method-access Cannot call non-static method `Order.secret` statically. | This is a non-static method | To call this method, you must first create an instance of the class (e.g., `const obj = new MyClass(); obj.method();`).",
+        ]
+    );
+}
+
+/// A property no constructor initializes is named as PHP# writes it, `total`, in its class `Order`. The PHP twin keeps
+/// upstream's wording.
+#[test]
+fn an_uninitialized_property_and_its_class_are_named_as_sharp_writes_them() {
+    let sharp = "namespace Demo;\n\nclass Ledger\n{\n    private int count;\n}\n\nclass Order\n{\n    private int total;\n\n    public Order()\n    {\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Ledger\n{\n    private int $count;\n}\n\nclass Order\n{\n    private int $total;\n\n    public function __construct()\n    {\n    }\n}\n";
+
+    let uninitialized = |analyzed| -> Vec<String> {
+        worded_with(Settings { check_property_initialization: true, ..settings() }, analyzed, &[])
+            .into_iter()
+            .filter(|line| line.contains(" missing-constructor") || line.contains(" uninitialized-property"))
+            .collect()
+    };
+
+    assert_eq!(
+        uninitialized(("src/Demo/Order.php", php)),
+        [
+            "5:7 missing-constructor Class `Demo\\Ledger` has typed properties without default values but no constructor to initialize them. | This class needs a constructor | This property needs initialization | Properties requiring initialization: $count | Add a constructor that initializes all typed properties, or provide default values.",
+            "12:17 uninitialized-property Property `$total` is not initialized in the constructor of class `Demo\\Order`. | This property is not initialized | In class `Demo\\Order` | Typed properties without default values must be initialized in the constructor. | Initialize `$total` in the constructor, provide a default value, or make the type nullable.",
+        ]
+    );
+    assert_eq!(
+        uninitialized(("src/Demo/Order.sharp", sharp)),
+        [
+            "3:7 missing-constructor Class `Ledger` has typed properties without default values but no constructor to initialize them. | This class needs a constructor | This property needs initialization | Properties requiring initialization: count | Add a constructor that initializes all typed properties, or provide default values.",
+            "10:17 uninitialized-property Property `total` is not initialized in the constructor of class `Order`. | This property is not initialized | In class `Order` | Typed properties without default values must be initialized in the constructor. | Initialize `total` in the constructor, provide a default value, or make the type nullable.",
+        ]
+    );
+}
+
+/// A misplaced or repeated attribute is named as PHP# writes it, `[Field]`. The attribute class keeps its PHP
+/// `#[Attribute]` declaration in its own file, and the PHP twin keeps upstream's wording.
+#[test]
+fn a_misplaced_or_repeated_attribute_is_named_as_sharp_writes_it() {
+    let field = "<?php\n\nnamespace Lib;\n\n#[\\Attribute(\\Attribute::TARGET_PROPERTY)]\nfinal class Field\n{\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Field;\n\n[Field]\nclass Report\n{\n    [Field]\n    [Field]\n    private int count = 0;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Field;\n\n#[Field]\nclass Report\n{\n    #[Field]\n    #[Field]\n    private int $count = 0;\n}\n";
+
+    let attribute_issues = |analyzed| -> Vec<String> {
+        worded(analyzed, &[("src/Lib/Field.php", field)])
+            .into_iter()
+            .filter(|line| line.contains(" invalid-attribute-target") || line.contains(" attribute-not-repeatable"))
+            .collect()
+    };
+
+    assert_eq!(
+        attribute_issues(("src/Demo/Report.php", php)),
+        [
+            "7:3 invalid-attribute-target Attribute `Lib\\Field` cannot be used on a class, interface, enum, or trait. | This attribute is not allowed here | `Lib\\Field` defined here | The definition of `Lib\\Field` restricts its use to the following targets: properties. | Remove the `#[Field]` attribute from this location, or update the `#[Attribute]` declaration on the `Lib\\Field` class to include `a class, interface, enum, or trait` as a valid target.",
+            "11:7 attribute-not-repeatable Attribute `Lib\\Field` is not declared as repeatable and has already been used. | Duplicate use of non-repeatable attribute `Lib\\Field` | Attribute `Lib\\Field` was first used here | The attribute `Lib\\Field` is not declared with `Attribute::IS_REPEATABLE` in its `#[Attribute]` flags. Non-repeatable attributes can only be applied once to a given target (e.g., a class, method, property). | Remove this duplicate `Lib\\Field` attribute, or if multiple instances are intended and valid, modify the attribute class `Lib\\Field` to include `Attribute::IS_REPEATABLE` in its `#[Attribute]` declaration (e.g., `#[Attribute(Attribute::TARGET_ALL | Attribute::IS_REPEATABLE)]`).",
+        ]
+    );
+    assert_eq!(
+        attribute_issues(("src/Demo/Report.sharp", sharp)),
+        [
+            "5:2 invalid-attribute-target Attribute `Field` cannot be used on a class, interface, enum, or trait. | This attribute is not allowed here | `Field` defined here | The definition of `Field` restricts its use to the following targets: properties. | Remove the `[Field]` attribute from this location, or update the `#[Attribute]` declaration on the `Field` class to include `a class, interface, enum, or trait` as a valid target.",
+            "9:6 attribute-not-repeatable Attribute `Field` is not declared as repeatable and has already been used. | Duplicate use of non-repeatable attribute `Field` | Attribute `Field` was first used here | The attribute `Field` is not declared with `Attribute::IS_REPEATABLE` in its `#[Attribute]` flags. Non-repeatable attributes can only be applied once to a given target (e.g., a class, method, property). | Remove this duplicate `Field` attribute, or if multiple instances are intended and valid, modify the attribute class `Field` to include `Attribute::IS_REPEATABLE` in its `#[Attribute]` declaration (e.g., `#[Attribute(Attribute::TARGET_ALL | Attribute::IS_REPEATABLE)]`).",
         ]
     );
 }

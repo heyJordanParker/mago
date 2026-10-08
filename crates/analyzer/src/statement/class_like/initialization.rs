@@ -16,6 +16,8 @@ use crate::artifacts::AnalysisArtifacts;
 use crate::code::IssueCode;
 use crate::context::Context;
 use crate::error::AnalysisError;
+use crate::utils::names::display_class_like_name;
+use crate::utils::names::display_property_name;
 
 /// Check property initialization for a class-like.
 pub fn check_property_initialization<'ctx, A>(
@@ -660,9 +662,8 @@ fn report_missing_constructor<A>(
 ) where
     A: Arena,
 {
-    let class_name = &class_like_metadata.original_name;
-    let prop_names: Vec<_> = uninitialized_properties.iter().map(|(name, _)| name.to_string()).collect();
-    let prop_list = prop_names.join(", ");
+    let class_name = display_class_like_name(context, class_like_metadata.original_name);
+    let prop_list = uninitialized_properties.iter().map(|(name, _)| display_property_name(context, *name)).join(", ");
 
     let mut issue = Issue::error(format!(
         "Class `{class_name}` has typed properties without default values but no constructor to initialize them."
@@ -695,7 +696,8 @@ fn report_uninitialized_property<A>(
 ) where
     A: Arena,
 {
-    let class_name = &class_like_metadata.original_name;
+    let class_name = display_class_like_name(context, class_like_metadata.original_name);
+    let prop_name = display_property_name(context, prop_name);
 
     let mut issue =
         Issue::error(format!("Property `{prop_name}` is not initialized in the constructor of class `{class_name}`."));
@@ -707,7 +709,7 @@ fn report_uninitialized_property<A>(
             && let Some(decl_class) = declaring_class
             && let Some(decl_meta) = context.codebase.get_class_like(decl_class.as_bytes())
         {
-            format!("Property declared in `{}`", decl_meta.original_name)
+            format!("Property declared in `{}`", display_class_like_name(context, decl_meta.original_name))
         } else {
             "This property is not initialized".to_string()
         };
@@ -719,8 +721,11 @@ fn report_uninitialized_property<A>(
     issue = issue.with_note("Typed properties without default values must be initialized in the constructor.");
 
     let help = if is_inherited {
+        // PHP# calls the base class's constructor as `: super(…)`, spec section 9.
+        let parent_call = if context.dialect.is_sharp() { "`super(…)`" } else { "`parent::__construct()`" };
+
         format!(
-            "Initialize `{prop_name}` in the constructor, call `parent::__construct()` if parent handles initialization, or provide a default value."
+            "Initialize `{prop_name}` in the constructor, call {parent_call} if parent handles initialization, or provide a default value."
         )
     } else {
         format!("Initialize `{prop_name}` in the constructor, provide a default value, or make the type nullable.")

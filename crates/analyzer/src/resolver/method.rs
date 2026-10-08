@@ -28,6 +28,8 @@ use mago_codex::ttype::template::TemplateResult;
 use mago_codex::ttype::union::TUnion;
 use mago_names::binding::Binding;
 use mago_names::binding::php_variable_name;
+use mago_names::display_sharp_member;
+use mago_names::short_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -58,9 +60,7 @@ use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_member;
 use crate::utils::names::display_method_name;
 use crate::utils::names::display_sharp_collection;
-use crate::utils::names::display_sharp_member;
 use crate::utils::names::display_type;
-use crate::utils::names::short_name;
 use crate::visibility::check_method_visibility;
 use crate::visibility::is_method_visible;
 use crate::visibility::is_visible_from_scope;
@@ -1108,8 +1108,8 @@ where
             continue;
         }
 
-        let required_constraint_str = constraint.type_union.get_id();
-        let actual_template_type_str = actual_template_type.get_id();
+        let required_constraint_str = display_type(context, &constraint.type_union);
+        let actual_template_type_str = display_type(context, &actual_template_type);
 
         context.collector.report_with_code(
             IssueCode::WhereConstraintViolation,
@@ -1268,8 +1268,8 @@ pub(crate) fn report_non_existent_method<A>(
 ) where
     A: Arena,
 {
-    let classname = display_class_like_name(context, classname);
     let method_name = display_method_name(context, classname, method_name);
+    let classname = display_class_like_name(context, classname);
     let issue = if context.dialect.is_sharp() {
         let method = display_sharp_member(classname, method_name);
 
@@ -1331,8 +1331,8 @@ pub(crate) fn report_non_documented_method<A>(
 ) where
     A: Arena,
 {
-    let classname = display_class_like_name(context, classname);
     let method_name = display_method_name(context, classname, method_name);
+    let classname = display_class_like_name(context, classname);
     context.collector.report_with_code(
         IssueCode::NonDocumentedMethod,
         Issue::warning(format!(
@@ -1437,8 +1437,8 @@ pub(super) fn report_possibly_missing_magic_call<A>(
     A: Arena,
 {
     let magic_method_name = if is_static { "__callStatic" } else { "__call" };
-    let classname = display_class_like_name(context, classname);
     let method_name = display_method_name(context, classname, method_name);
+    let classname = display_class_like_name(context, classname);
 
     context.collector.report_with_code(
         IssueCode::PossiblyNonExistentMethod,
@@ -1472,8 +1472,8 @@ pub(super) fn report_magic_call_without_call_method<A>(
     A: Arena,
 {
     let magic_method_name = if is_static { "__callStatic" } else { "__call" };
-    let classname = display_class_like_name(context, classname);
     let method_name = display_method_name(context, classname, method_name);
+    let classname = display_class_like_name(context, classname);
 
     context.collector.report_with_code(
         IssueCode::MissingMagicMethod,
@@ -1506,8 +1506,8 @@ pub(super) fn report_dynamic_static_method_call<A>(
 ) where
     A: Arena,
 {
-    let classname = display_class_like_name(context, classname);
     let method_name = display_method_name(context, classname, method_name);
+    let classname = display_class_like_name(context, classname);
     let method = display_member(context, classname, method_name);
     let mut issue = Issue::error(format!("Cannot call magic static method `{method}` on an instance."))
         .with_annotation(

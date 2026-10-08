@@ -13,6 +13,7 @@ use mago_codex::ttype::add_optional_union_type;
 use mago_codex::ttype::union::TUnion;
 
 use mago_names::binding::php_method_name;
+use mago_names::display_sharp_member;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -35,7 +36,6 @@ use crate::statement::function_like::check_unused_function_template_parameters;
 use crate::statement::function_like::rejected_nullable_parameter;
 use crate::statement::function_like::unused_parameter;
 use crate::utils::missing_type_hints;
-use crate::utils::names::display_sharp_member;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
     fn analyze<'ctx, A>(

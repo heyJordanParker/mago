@@ -36,7 +36,9 @@ use mago_codex::ttype::template::inferred_type_replacer;
 use mago_codex::ttype::union::TUnion;
 use mago_codex::visibility::Visibility;
 use mago_names::binding::php_variable_name;
+use mago_names::display_sharp_member;
 use mago_names::kind::NameKind;
+use mago_names::short_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_reporting::Level;
@@ -71,9 +73,10 @@ use crate::statement::class_like::method_signature::SignatureCompatibilityIssue;
 use crate::statement::function_like::report_invalid_template_arguments;
 use crate::statement::function_like::report_undefined_type_references;
 use crate::utils::missing_type_hints;
+use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_member;
+use crate::utils::names::display_property_name;
 use crate::utils::names::display_sharp_accessor;
-use crate::utils::names::display_sharp_member;
 use crate::utils::names::display_type;
 
 pub mod constant;
@@ -328,7 +331,7 @@ fn check_unused_template_parameters<'ctx, A>(
     }
 
     let class_name = class_like_metadata.name;
-    let class_original_name = class_like_metadata.original_name;
+    let class_original_name = display_class_like_name(context, class_like_metadata.original_name);
     let class_kind_str = class_like_metadata.kind.as_str();
     let class_name_span = class_like_metadata.name_span.unwrap_or(class_like_metadata.span);
 
@@ -456,7 +459,10 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Class<'arena> {
         {
             context.collector.report_with_code(
                 IssueCode::ClassMustBeFinal,
-                Issue::warning(format!("Class `{}` should be declared `final`.", class_like_metadata.original_name))
+                Issue::warning(format!(
+                    "Class `{}` should be declared `final`.",
+                    display_class_like_name(context, class_like_metadata.original_name)
+                ))
                     .with_annotation(
                         Annotation::primary(self.name.span)
                             .with_message("This class is not `final`, `abstract`, or marked with `@api`."),
@@ -476,7 +482,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Class<'arena> {
                 IssueCode::MissingApiOrInternal,
                 Issue::warning(format!(
                     "Abstract class `{}` is missing an `@api` or `@internal` annotation.",
-                    class_like_metadata.original_name,
+                    display_class_like_name(context, class_like_metadata.original_name),
                 ))
                 .with_annotation(
                     Annotation::primary(self.name.span)
@@ -598,7 +604,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Interface<'arena> {
                 IssueCode::MissingApiOrInternal,
                 Issue::warning(format!(
                     "Interface `{}` is missing an `@api` or `@internal` annotation.",
-                    class_like_metadata.original_name,
+                    display_class_like_name(context, class_like_metadata.original_name),
                 ))
                 .with_annotation(
                     Annotation::primary(self.name.span)
@@ -792,7 +798,6 @@ fn check_duplicate_enum_case_values<'arena, A>(
 ) where
     A: Arena,
 {
-    let enum_name = BytesDisplay(enum_name);
     let mut seen: Vec<(Word, &[u8], Span)> = Vec::new();
 
     for member in &r#enum.members {
@@ -828,6 +833,11 @@ fn check_duplicate_enum_case_values<'arena, A>(
         let value_span = item.value.span();
 
         if let Some((_, prev_case_name, prev_span)) = seen.iter().find(|(id, _, _)| *id == value_id) {
+            let enum_name = if context.dialect.is_sharp() {
+                short_name(enum_name)
+            } else {
+                String::from_utf8_lossy(enum_name).into_owned()
+            };
             let case_name_disp = BytesDisplay(case_name);
             let prev_case_name_disp = BytesDisplay(prev_case_name);
             context.collector.report_with_code(
@@ -886,7 +896,7 @@ where
 
     context.prepare_class_initializers(class_like_metadata)?;
 
-    let name = &class_like_metadata.original_name;
+    let name = display_class_like_name(context, class_like_metadata.original_name);
 
     let mut checked_signatures: HashSet<(Word, Word)> = HashSet::default();
 
@@ -1047,6 +1057,7 @@ where
                                 format!("{fqcn}::{property_name}::{hook_name}()"),
                             )
                         };
+                        let property = display_property_name(context, *property_name);
 
                         context.collector.report_with_code(
                             IssueCode::UnimplementedAbstractPropertyHook,
@@ -1063,7 +1074,7 @@ where
                             )
                             .with_note("When a concrete class extends an abstract class or implements an interface, it must provide an implementation for all inherited abstract property hooks.".to_string())
                             .with_help(format!(
-                                "You can either implement the `{hook_name}` hook for property `{property_name}` in `{name}`, or declare `{name}` as an abstract class.",
+                                "You can either implement the `{hook_name}` hook for property `{property}` in `{name}`, or declare `{name}` as an abstract class.",
                             )),
                         );
                     }
@@ -1247,7 +1258,7 @@ fn check_class_like_extends<'ctx, 'arena, A>(
     let using_kind_str = class_like_metadata.kind.as_str();
     let using_kind_capitalized =
         format!("{}{}", using_kind_str.chars().next().unwrap().to_uppercase(), &using_kind_str[1..]);
-    let using_name = class_like_metadata.original_name;
+    let using_name = display_class_like_name(context, class_like_metadata.original_name);
     let using_class_span = class_like_metadata.name_span.unwrap_or(class_like_metadata.span);
 
     for &extended_type in extended_types {
@@ -1268,7 +1279,7 @@ fn check_class_like_extends<'ctx, 'arena, A>(
             continue;
         };
 
-        let extended_name = extended_class_metadata.original_name;
+        let extended_name = display_class_like_name(context, extended_class_metadata.original_name);
         let extended_kind_str = extended_class_metadata.kind.as_str();
         let extended_kind_prefix =
             if extended_class_metadata.kind.is_class() || extended_class_metadata.kind.is_trait() { "a" } else { "an" };
@@ -1451,7 +1462,7 @@ fn check_class_like_implements<'ctx, 'arena, A>(
     let using_kind_str = class_like_metadata.kind.as_str();
     let using_kind_capitalized =
         format!("{}{}", using_kind_str.chars().next().unwrap().to_uppercase(), &using_kind_str[1..]);
-    let using_name = class_like_metadata.original_name;
+    let using_name = display_class_like_name(context, class_like_metadata.original_name);
     let using_class_span = class_like_metadata.name_span.unwrap_or(class_like_metadata.span);
 
     for &implemented_type in implemented_types {
@@ -1459,7 +1470,7 @@ fn check_class_like_implements<'ctx, 'arena, A>(
         let implemented_interface_metadata = context.codebase.get_class_like(implemented_type_str);
 
         if let Some(implemented_metadata) = implemented_interface_metadata {
-            let implemented_name = implemented_metadata.original_name;
+            let implemented_name = display_class_like_name(context, implemented_metadata.original_name);
             let implemented_kind_str = implemented_metadata.kind.as_str();
             let implemented_class_span = implemented_metadata.name_span.unwrap_or(implemented_metadata.span);
             let implemented_kind_prefix =
@@ -1560,7 +1571,7 @@ fn check_class_like_use<'ctx, 'arena, A>(
     let using_kind_str = class_like_metadata.kind.as_str();
     let using_kind_capitalized =
         format!("{}{}", using_kind_str.chars().next().unwrap().to_uppercase(), &using_kind_str[1..]);
-    let using_name = class_like_metadata.original_name;
+    let using_name = display_class_like_name(context, class_like_metadata.original_name);
     let using_class_span = class_like_metadata.name_span.unwrap_or(class_like_metadata.span);
 
     for used_type in &trait_use.trait_names {
@@ -1581,7 +1592,7 @@ fn check_class_like_use<'ctx, 'arena, A>(
             continue;
         };
 
-        let used_name = used_trait_metadata.original_name;
+        let used_name = display_class_like_name(context, used_trait_metadata.original_name);
         let used_kind_str = used_trait_metadata.kind.as_str();
         let used_kind_prefix =
             if used_trait_metadata.kind.is_class() || used_trait_metadata.kind.is_trait() { "a" } else { "an" };
@@ -1727,9 +1738,9 @@ fn check_template_parameters<'ctx, A>(
     let min_required_parameters_count =
         parent_metadata.template_types.values().take_while(|t| t.default.is_none()).count();
 
-    let class_name = class_like_metadata.original_name;
+    let class_name = display_class_like_name(context, class_like_metadata.original_name);
     let class_kind_str = class_like_metadata.kind.as_str();
-    let parent_name = parent_metadata.original_name;
+    let parent_name = display_class_like_name(context, parent_metadata.original_name);
     let class_name_span = class_like_metadata.name_span.unwrap_or(class_like_metadata.span);
     let parent_definition_span = parent_metadata.name_span.unwrap_or(parent_metadata.span);
     let primary_annotation_span = inheritance.span();
@@ -2026,7 +2037,7 @@ fn check_template_variance_positions<'ctx, A>(
         return;
     }
 
-    let class_name = class_like_metadata.original_name;
+    let class_name = display_class_like_name(context, class_like_metadata.original_name);
     let own_entity = GenericParent::ClassLike(class_like_metadata.name);
 
     for method_name in &class_like_metadata.methods {
@@ -2116,7 +2127,7 @@ fn check_uninhabitable_diamonds<'ctx, A>(
         return;
     }
 
-    let class_name = class_like_metadata.original_name;
+    let class_name = display_class_like_name(context, class_like_metadata.original_name);
     let class_span = class_like_metadata.name_span.unwrap_or(class_like_metadata.span);
 
     let mut findings: Vec<(Word, Word, usize)> = Vec::new();
@@ -2128,7 +2139,7 @@ fn check_uninhabitable_diamonds<'ctx, A>(
         let Some(ancestor_metadata) = context.codebase.get_class_like(ancestor_name.as_bytes()) else {
             continue;
         };
-        let ancestor_display = ancestor_metadata.original_name;
+        let ancestor_display = display_class_like_name(context, ancestor_metadata.original_name);
 
         for method_name in &ancestor_metadata.methods {
             let method_name = *method_name;
@@ -2904,7 +2915,7 @@ fn report_signature_compatibility_issue<'ctx, A>(
 ) where
     A: Arena,
 {
-    let child_name = child_class.original_name;
+    let child_name = display_class_like_name(context, child_class.original_name);
     let parent_name = parent_class.original_name;
     let child_class_span = child_class.name_span.unwrap_or(child_class.span);
     let parent_class_span = parent_class.name_span.unwrap_or(parent_class.span);
@@ -3386,10 +3397,11 @@ fn check_class_like_properties<'ctx, A>(
 
             let property_span = property_metadata.name_span.unwrap_or(class_like_metadata.span);
             let parent_property_span = parent_property.name_span.unwrap_or(parent_metadata.span);
-            let declaring_class_name = class_like_metadata.original_name;
+            let declaring_class_name = display_class_like_name(context, class_like_metadata.original_name);
             let parent_class_name = parent_metadata.original_name;
             let child_display = display_member(context, declaring_class_name, property_name);
             let parent_display = display_member(context, parent_class_name, property_name);
+            let property = display_property_name(context, *property_name);
 
             // PHP makes a property whose `set` is private final, so the engine refuses a PHP# override of one.
             if parent_property.flags.is_final()
@@ -3408,7 +3420,7 @@ fn check_class_like_properties<'ctx, A>(
                     )
                     .with_note("Final properties cannot be overridden in child classes.")
                     .with_help(format!(
-                        "Remove the property `{property_name}` from `{declaring_class_name}`, or remove the final modifier from the parent property.",
+                        "Remove the property `{property}` from `{declaring_class_name}`, or remove the final modifier from the parent property.",
                     )),
                 );
             }
@@ -3645,7 +3657,7 @@ fn check_class_like_properties<'ctx, A>(
                                         .with_message(format!("The parent property is defined with type `{parent_type_id}` here.")),
                                 )
                                 .with_note("PHP requires property types to be invariant, meaning the type declaration in a child class must be exactly the same as in the parent class.")
-                                .with_help(format!("Change the type of `{property_name}` to `{parent_type_id}` to match the parent property."))
+                                .with_help(format!("Change the type of `{property}` to `{parent_type_id}` to match the parent property."))
                             );
                     }
                 }
@@ -3776,7 +3788,7 @@ fn check_class_like_properties<'ctx, A>(
                                 .with_message(format!("The parent property is defined with type `{parent_type_id}` here.")),
                         )
                         .with_note("PHP requires property types to be invariant, meaning the type declaration in a child class must be exactly the same as in the parent class.")
-                        .with_help(format!("Change the type of `{property_name}` to `{parent_type_id}` to match the parent property.")),
+                        .with_help(format!("Change the type of `{property}` to `{parent_type_id}` to match the parent property.")),
                     );
             }
         }
@@ -3829,7 +3841,10 @@ fn check_class_like_properties<'ctx, A>(
                     )
                     .with_annotation(
                         Annotation::secondary(interface_hook.span)
-                            .with_message(format!("Interface `{interface_name}` requires this hook to return by reference")),
+                            .with_message(format!(
+                                "Interface `{}` requires this hook to return by reference",
+                                display_class_like_name(context, interface_name)
+                            )),
                     )
                     .with_note("When an interface declares a by-reference hook (`&get`), the implementing class must also return by reference.")
                     .with_help(format!("Add `&` to the `{hook_name}` hook declaration: `&{hook_name} => ...`")),
@@ -3949,8 +3964,8 @@ fn check_class_like_constants<'ctx, 'arena, A>(
                 if parent_constant.flags.is_final() {
                     let child_span = item.name.span();
                     let parent_span = parent_constant.span;
-                    let class_name = class_like_metadata.original_name;
-                    let parent_class_name = parent_metadata.original_name;
+                    let class_name = display_class_like_name(context, class_like_metadata.original_name);
+                    let parent_class_name = display_class_like_name(context, parent_metadata.original_name);
 
                     context.collector.report_with_code(
                         IssueCode::OverrideFinalConstant,
@@ -3974,7 +3989,7 @@ fn check_class_like_constants<'ctx, 'arena, A>(
                     let child_span = item.name.span();
                     let parent_span = parent_constant.span;
                     let constant = display_member(context, class_like_metadata.original_name, constant_name);
-                    let parent_class_name = parent_metadata.original_name;
+                    let parent_class_name = display_class_like_name(context, parent_metadata.original_name);
                     let child_visibility = child_constant.visibility;
                     let parent_visibility = parent_constant.visibility;
 
@@ -4003,10 +4018,10 @@ fn check_class_like_constants<'ctx, 'arena, A>(
                 if is_type_compatible(context.codebase, &child_type.type_union, &parent_type.type_union) {
                     continue;
                 }
-                let child_type_id = child_type.type_union.get_id();
-                let parent_type_id = parent_type.type_union.get_id();
+                let child_type_id = display_type(context, &child_type.type_union);
+                let parent_type_id = display_type(context, &parent_type.type_union);
                 let constant = display_member(context, class_like_metadata.original_name, constant_name);
-                let parent_class_name = parent_metadata.original_name;
+                let parent_class_name = display_class_like_name(context, parent_metadata.original_name);
 
                 context.collector.report_with_code(
                     IssueCode::IncompatibleConstantType,
@@ -4052,7 +4067,7 @@ fn check_class_like_constants<'ctx, 'arena, A>(
                     let child_span = item.name.span();
                     let interface_span = interface_constant.span;
                     let constant = display_member(context, class_like_metadata.original_name, constant_name);
-                    let interface_name = interface_metadata.original_name;
+                    let interface_name = display_class_like_name(context, interface_metadata.original_name);
                     let child_visibility = child_constant.visibility;
 
                     context.collector.report_with_code(
@@ -4077,10 +4092,10 @@ fn check_class_like_constants<'ctx, 'arena, A>(
                     (&child_constant.type_declaration, &interface_constant.type_declaration)
                     && !is_type_compatible(context.codebase, &child_type.type_union, &interface_type.type_union)
                 {
-                    let child_type_id = child_type.type_union.get_id();
-                    let interface_type_id = interface_type.type_union.get_id();
+                    let child_type_id = display_type(context, &child_type.type_union);
+                    let interface_type_id = display_type(context, &interface_type.type_union);
                     let constant = display_member(context, class_like_metadata.original_name, constant_name);
-                    let interface_name = interface_metadata.original_name;
+                    let interface_name = display_class_like_name(context, interface_metadata.original_name);
 
                     context.collector.report_with_code(
                             IssueCode::IncompatibleConstantType,

@@ -6,6 +6,7 @@ use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
 use mago_codex::metadata::property::PropertyMetadata;
 use mago_codex::visibility::Visibility;
+use mago_names::display_sharp_member;
 use mago_php_version::PHPVersion;
 use mago_php_version::feature::Feature;
 use mago_reporting::Annotation;
@@ -18,8 +19,8 @@ use crate::context::block::BlockContext;
 use crate::resolver::property::DeclaredProperty;
 use crate::resolver::property::DeclaredPropertyKind;
 use crate::resolver::property::resolve_declared_property;
+use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_member;
-use crate::utils::names::display_sharp_member;
 use mago_bytes::BytesDisplay;
 
 /// Checks if a method is visible from the current scope and reports a detailed
@@ -405,7 +406,7 @@ fn report_readonly_write_scope_issue<A>(
 ) where
     A: Arena,
 {
-    let class_name = &declaring_class.original_name;
+    let class_name = display_class_like_name(context, declaring_class.original_name);
     let property_name = property.name.0;
 
     let allowed_scope = if visibility == Visibility::Private {
@@ -415,18 +416,11 @@ fn report_readonly_write_scope_issue<A>(
     };
 
     let current_scope = match calling_class {
-        Some(current_class) => {
-            let current_class_name = context
-                .codebase
-                .get_class_like(current_class.as_bytes())
-                .map_or(current_class, |metadata| metadata.original_name);
-
-            format!("from within `{current_class_name}`")
-        }
+        Some(current_class) => format!("from within `{}`", display_class_like_name(context, current_class)),
         None => "from the global scope".to_string(),
     };
 
-    let property_display = display_member(context, *class_name, property_name);
+    let property_display = display_member(context, class_name, property_name);
     let mut issue = Issue::error(format!("Cannot initialize readonly property `{property_display}` {current_scope}."))
         .with_annotation(
             Annotation::primary(member_span.unwrap_or(access_span))
@@ -552,6 +546,10 @@ fn report_visibility_issue<A>(
     A: Arena,
 {
     let current_scope_str = if let Some(current_class) = calling_class {
+        // PHP keeps the lowercase name Mago looks the class up by, and PHP# names the class as it is declared.
+        let current_class =
+            if context.dialect.is_sharp() { display_class_like_name(context, current_class) } else { current_class };
+
         format!("from within `{current_class}`")
     } else {
         "from the global scope".to_string()
