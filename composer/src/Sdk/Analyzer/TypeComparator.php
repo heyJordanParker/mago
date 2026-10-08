@@ -6,6 +6,7 @@ namespace Mago\Sdk\Analyzer;
 
 use Mago\Sdk\CancellationTokenInterface;
 use Mago\Sdk\Exception\InvalidArgumentException;
+use Mago\Sdk\Internal\Analyzer\CodebaseReads;
 use Mago\Sdk\Internal\Analyzer\MetadataCache;
 use Mago\Sdk\Internal\Analyzer\Protocol;
 use Mago\Sdk\Internal\HostClient;
@@ -13,23 +14,24 @@ use Mago\Sdk\Internal\HostClient;
 use function array_fill;
 use function array_values;
 use function count;
-use function pack;
 
 /**
  * Performs codebase-aware type comparisons using Mago's native type system.
  *
  * @api
  * @mago-expect lint:cyclomatic-complexity
- * @mago-expect lint:no-isset
  */
 final class TypeComparator
 {
     private const MAXIMUM_COMPARISONS = 65_536;
 
-    /** @var array<string, bool> */
-    private array $results = [];
+    /** @var array<string, array{bool, list<string>}> */
+    private array $answers = [];
 
     /**
+     * `$reads` records a class-level read of every class-like a comparison names, cached or not, when the comparator
+     * serves one file's hooks or providers.
+     *
      * @param positive-int $requestId
      * @internal
      */
@@ -38,21 +40,22 @@ final class TypeComparator
         private readonly int $requestId,
         private readonly CancellationTokenInterface $cancellation,
         private readonly ?MetadataCache $cache = null,
+        private readonly ?CodebaseReads $reads = null,
     ) {}
 
     public function equals(Type $left, Type $right): bool
     {
-        return $this->compare(Protocol::TYPE_COMPARISON_EQUAL, $left, $right);
+        return $this->compareMultiple([TypeComparison::equal($left, $right)])[0];
     }
 
     public function isContainedBy(Type $input, Type $container): bool
     {
-        return $this->compare(Protocol::TYPE_COMPARISON_CONTAINED_BY, $input, $container);
+        return $this->compareMultiple([TypeComparison::containedBy($input, $container)])[0];
     }
 
     public function canBeIdentical(Type $left, Type $right): bool
     {
-        return $this->compare(Protocol::TYPE_COMPARISON_CAN_BE_IDENTICAL, $left, $right);
+        return $this->compareMultiple([TypeComparison::canBeIdentical($left, $right)])[0];
     }
 
     /**
@@ -87,7 +90,8 @@ final class TypeComparator
             $key = $comparison->cacheKey();
             $cached = $this->cached($comparison, $key);
             if ($cached !== null) {
-                $results[$position++] = $cached;
+                $this->recordClassLikes($cached[1]);
+                $results[$position++] = $cached[0];
                 continue;
             }
 
@@ -112,50 +116,24 @@ final class TypeComparator
             : Protocol::writeTypeComparisonBatchRequest($requests);
         $response = $this->host->request($this->requestId, $payload);
         $this->cancellation->throwIfCancelled();
-        $resolved = $requestCount === 1
+        $answers = $requestCount === 1
             ? [Protocol::readTypeComparisonResponse($response)]
             : Protocol::readTypeComparisonBatchResponse($response, $requestCount);
         $index = 0;
         foreach ($pending as $key => $comparison) {
-            $result = $resolved[$index++];
-            $this->remember($comparison, $key, $result);
+            $answer = $answers[$index++];
+            $this->remember($comparison, $key, $answer);
+            $this->recordClassLikes($answer[1]);
             foreach ($positions[$key] as $resultPosition) {
-                $results[$resultPosition] = $result;
+                $results[$resultPosition] = $answer[0];
             }
         }
 
         return $results;
     }
 
-    private function compare(int $operation, Type $left, Type $right): bool
-    {
-        $leftEncoding = $left->encode();
-        $rightEncoding = $right->encode();
-        $key = pack('C', $operation) . $leftEncoding . $rightEncoding;
-        $results =
-            !$left->isRequestReference() && !$right->isRequestReference() && $this->cache !== null
-                ? $this->cache->typeComparisons
-                : $this->results;
-        if (isset($results[$key])) {
-            return $results[$key];
-        }
-
-        $this->cancellation->throwIfCancelled();
-        $response = $this->host->request(
-            $this->requestId,
-            Protocol::writeTypeComparisonRequest($operation, $leftEncoding, $rightEncoding),
-        );
-        $this->cancellation->throwIfCancelled();
-
-        $result = Protocol::readTypeComparisonResponse($response);
-        if (!$left->isRequestReference() && !$right->isRequestReference() && $this->cache !== null) {
-            return $this->cache->typeComparisons[$key] = $result;
-        }
-
-        return $this->results[$key] = $result;
-    }
-
-    private function cached(TypeComparison $comparison, string $key): ?bool
+    /** @return array{bool, list<string>}|null */
+    private function cached(TypeComparison $comparison, string $key): ?array
     {
         if (
             !$comparison->left->isRequestReference()
@@ -165,20 +143,29 @@ final class TypeComparator
             return $this->cache->typeComparisons[$key] ?? null;
         }
 
-        return $this->results[$key] ?? null;
+        return $this->answers[$key] ?? null;
     }
 
-    private function remember(TypeComparison $comparison, string $key, bool $result): void
+    /** @param array{bool, list<string>} $answer */
+    private function remember(TypeComparison $comparison, string $key, array $answer): void
     {
         if (
             !$comparison->left->isRequestReference()
             && !$comparison->right->isRequestReference()
             && $this->cache !== null
         ) {
-            $this->cache->typeComparisons[$key] = $result;
+            $this->cache->typeComparisons[$key] = $answer;
             return;
         }
 
-        $this->results[$key] = $result;
+        $this->answers[$key] = $answer;
+    }
+
+    /** @param list<string> $classLikes the class-likes one answered comparison named */
+    private function recordClassLikes(array $classLikes): void
+    {
+        foreach ($classLikes as $classLike) {
+            $this->reads?->record(Protocol::GET_CLASS_LIKES, 0, $classLike);
+        }
     }
 }

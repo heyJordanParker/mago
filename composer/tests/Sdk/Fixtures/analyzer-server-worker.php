@@ -128,10 +128,12 @@ final class ServerProofPlugin implements Plugin, BeforeAnalysisHook, NodeAnalysi
 
 /**
  * An after-file hook that reads the codebase: in a file marked `reads: Class::method` it reports
- * the method's visibility, and in a file marked `lists: classes` every class name. Each report
- * counts the hook's runs in this worker, so a test sees whether Mago ran it again.
+ * the method's visibility, in a file marked `lists: classes` every class name, and in a file
+ * marked `compares: Class` whether the class is a `Base`. Each report counts the hook's runs in
+ * this worker, so a test sees whether Mago ran it again.
  *
  * @mago-expect lint:single-class-per-file
+ * @mago-expect lint:cyclomatic-complexity
  */
 final class ServerReadsPlugin implements Plugin, AfterFileAnalysisHook
 {
@@ -157,7 +159,8 @@ final class ServerReadsPlugin implements Plugin, AfterFileAnalysisHook
         $contents = $context->analysis->getSourceFile()->contents;
         $read = strpos($contents, 'reads: ');
         $listing = strpos($contents, 'lists: classes');
-        if ($read === false && $listing === false) {
+        $comparison = strpos($contents, 'compares: ');
+        if ($read === false && $listing === false && $comparison === false) {
             return;
         }
 
@@ -192,13 +195,31 @@ final class ServerReadsPlugin implements Plugin, AfterFileAnalysisHook
                 ),
             );
         }
+
+        if ($comparison !== false) {
+            $start = $comparison + strlen('compares: ');
+            $end = $start + strcspn($contents, " \t\n\v\f\r", $start);
+            $class = substr($contents, $start, $end - $start);
+            $relation = $context->types->isContainedBy(Type::namedObject($class), Type::namedObject('Base'))
+                ? 'is'
+                : 'is not';
+            $context->report(
+                Level::Warning,
+                'comparison',
+                Issue::at(
+                    "Run {$this->runs}: `{$class}` {$relation} a `Base`.",
+                    new SourceLocation($context->analysis->file, new Span($start, $end)),
+                ),
+            );
+        }
     }
 }
 
 /**
  * A return-type provider that answers `App\Models\Query::total()` with the return type
- * `App\Models\Order::total()` declares, read from the codebase, and `App\Models\Query::models()`
- * with `int` once it listed every class.
+ * `App\Models\Order::total()` declares, read from the codebase, `App\Models\Query::models()`
+ * with `int` once it listed every class, and `App\Models\Query::billable()` with `int` when
+ * `App\Models\Order` is an `App\Models\Model` and `0` otherwise.
  *
  * @mago-expect lint:single-class-per-file
  */
@@ -219,6 +240,7 @@ final class ServerModelPlugin implements Plugin, MethodReturnTypeProvider
         return [
             MethodTarget::exact('App\\Models\\Query', 'total'),
             MethodTarget::exact('App\\Models\\Query', 'models'),
+            MethodTarget::exact('App\\Models\\Query', 'billable'),
         ];
     }
 
@@ -226,6 +248,15 @@ final class ServerModelPlugin implements Plugin, MethodReturnTypeProvider
     {
         if ($context->invocation->name === 'models') {
             return $context->codebase->getClassNames() === [] ? null : Type::int();
+        }
+
+        if ($context->invocation->name === 'billable') {
+            return $context->types->isContainedBy(
+                Type::namedObject('App\\Models\\Order'),
+                Type::namedObject('App\\Models\\Model'),
+            )
+                ? Type::int()
+                : Type::literalInt(0);
         }
 
         return $context->codebase->getMethod('App\\Models\\Order', 'total')?->returnType?->type;
