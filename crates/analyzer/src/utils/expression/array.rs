@@ -660,9 +660,7 @@ where
         context.collector.report_with_code(
             IssueCode::MismatchedArrayIndex,
             Issue::error(format!("`{list_type}` is indexed by `int`, but this index is `{index_type}`."))
-                .with_annotation(
-                    Annotation::primary(span).with_message("This read throws when the index is not an `int`."),
-                )
+                .with_annotation(Annotation::primary(span).with_message("This index may not be an `int`."))
                 .with_help("Check the index with `is int` first, as in `if (key is int index) { … }`."),
         );
     } else {
