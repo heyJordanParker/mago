@@ -656,6 +656,31 @@ fn the_kind_generator_requires_zend_language_parser_h() {
     assert!(printed.contains("Pass the path to php-sharp's `Zend/zend_language_parser.h`."), "{printed}");
 }
 
+/// The generator reads two headers, so a third argument is an error.
+#[test]
+fn the_kind_generator_takes_only_zend_ast_h_and_zend_language_parser_h() {
+    if !php_is_available("the_kind_generator_takes_only_zend_ast_h_and_zend_language_parser_h") {
+        return;
+    }
+
+    let (root, mut command) = generator(ZEND_AST_H, None);
+    fs::write(root.path().join("zend_language_parser.h"), ZEND_LANGUAGE_PARSER_H).unwrap();
+    let output = command
+        .arg(root.path().join("zend_language_parser.h"))
+        .arg(root.path().join("zend_language_parser.h"))
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "a third argument is an error");
+    let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(
+        printed.contains(
+            "Pass only the paths to php-src's `Zend/zend_ast.h` and php-sharp's `Zend/zend_language_parser.h`."
+        ),
+        "{printed}"
+    );
+}
+
 #[test]
 fn the_kind_generator_refuses_a_parser_header_without_a_token_the_lowering_writes() {
     if !php_is_available("the_kind_generator_refuses_a_parser_header_without_a_token_the_lowering_writes") {

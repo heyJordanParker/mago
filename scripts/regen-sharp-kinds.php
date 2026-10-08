@@ -21,6 +21,12 @@ if ($header === false) {
 $parserPath = $argv[2] ?? throw new InvalidArgumentException(
     'Pass the path to php-sharp\'s `Zend/zend_language_parser.h`.',
 );
+if (count($argv) > 3) {
+    throw new InvalidArgumentException(
+        'Pass only the paths to php-src\'s `Zend/zend_ast.h` and php-sharp\'s `Zend/zend_language_parser.h`.',
+    );
+}
+
 $parserHeader = file_get_contents($parserPath);
 if ($parserHeader === false) {
     throw new RuntimeException("Unable to read {$parserPath}.");
