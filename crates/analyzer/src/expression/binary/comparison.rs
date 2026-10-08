@@ -714,7 +714,7 @@ pub(crate) enum Refusal {
     Instance,
     /// `<=>` or an ordering with a side that may be `null`, an instance or any other value, which only `==` and `!=`
     /// lift.
-    NullableInstance,
+    NullableOperand,
     /// `==` or `!=` on two values of types that never match, a string ordered against another type, or an instance
     /// compared with a value its class's operator never takes, as `money < 5`.
     DifferentTypes,
@@ -804,7 +804,7 @@ pub(crate) fn sharp_refusal(
             if different_types {
                 Some(Refusal::DifferentTypes)
             } else if !has(Comparand::Any) && (lhs_type.can_be_null() || rhs_type.can_be_null()) {
-                Some(Refusal::NullableInstance)
+                Some(Refusal::NullableOperand)
             } else {
                 None
             }
@@ -926,7 +926,7 @@ pub(crate) fn report_sharp_refusal<A>(
 
             (IssueCode::InvalidOperand, issue)
         }
-        Refusal::NullableInstance => (
+        Refusal::NullableOperand => (
             IssueCode::InvalidOperand,
             Issue::error(format!("{pair}: only `==` and `!=` take `null`, so test the value for `null` first."))
                 .with_note("Spec section 19 lifts `==` and `!=` over `null`, and no other operator.")
