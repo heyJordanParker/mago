@@ -69,6 +69,7 @@ use crate::context::block::BlockContext;
 use crate::context::block::ReferenceConstraint;
 use crate::context::block::ReferenceConstraintSource;
 use crate::error::AnalysisError;
+use crate::expression::instantiation::report_missing_type_arguments;
 use crate::resolver::property::localize_property_type;
 use crate::resolver::property::resolve_declared_property;
 use crate::statement::analyze_statements;
@@ -1736,7 +1737,8 @@ where
 }
 
 /// Reports generic classes a declared type applies with the wrong number of arguments, or with an
-/// argument outside its type parameter's bound.
+/// argument outside its type parameter's bound, and a generic PHP# class a `.sharp` type writes
+/// without type arguments. `Self` names its class's own type parameters, so it needs none.
 ///
 /// A declaration is checked where it is written, so the mistake is reported at the declaration
 /// rather than at whichever call first happens to reach it.
@@ -1755,19 +1757,24 @@ where
         let TypeRef::Atomic(TAtomic::Object(TObject::Named(named))) = type_ref else {
             continue;
         };
-        let (Some(arguments), Some(class)) = (&named.type_parameters, codebase.get_class_like(named.name.as_bytes()))
-        else {
+        let Some(class) = codebase.get_class_like(named.name.as_bytes()) else {
             continue;
         };
 
-        check_template_arguments(
-            context,
-            class.original_name,
-            class.name_span.unwrap_or(class.span),
-            &class.template_types,
-            arguments,
-            type_metadata.span,
-        );
+        match &named.type_parameters {
+            Some(arguments) => {
+                check_template_arguments(
+                    context,
+                    class.original_name,
+                    class.name_span.unwrap_or(class.span),
+                    &class.template_types,
+                    arguments,
+                    type_metadata.span,
+                );
+            }
+            None if !named.is_static => report_missing_type_arguments(context, class, type_metadata.span),
+            None => {}
+        }
     }
 }
 

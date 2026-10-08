@@ -80,6 +80,7 @@ use crate::utils::names::and_list;
 use crate::utils::names::display_sharp_accessor;
 use crate::utils::names::display_type;
 use crate::utils::names::short_name;
+use crate::utils::template::find_broken_marker;
 use crate::utils::template::find_template_uses;
 
 pub mod constant;
@@ -2145,14 +2146,10 @@ fn check_sharp_template_variance<A>(
         })
         .collect();
     for template_use in find_template_uses(context.codebase, class_like_metadata, &header_spans) {
-        let Some(index) = class_like_metadata.template_types.get_index_of(&template_use.template) else {
+        let Some(marker) = find_broken_marker(class_like_metadata, template_use.template, template_use.position) else {
             continue;
         };
-        let (marker, refused) = match (class_like_metadata.template_variance.get(index), template_use.position) {
-            (Some(Variance::Covariant), Variance::Contravariant | Variance::Invariant) => ("out", "take it in"),
-            (Some(Variance::Contravariant), Variance::Covariant | Variance::Invariant) => ("in", "hand it out"),
-            _ => continue,
-        };
+        let refused = if marker == "out" { "take it in" } else { "hand it out" };
 
         let template_name = template_use.template;
         context.collector.report_with_code(
@@ -3152,6 +3149,34 @@ fn report_signature_compatibility_issue<'ctx, A>(
                 )))
                 .with_note("PHP# erases type parameters when it compiles, and PHP refuses a parameter narrower than the one it overrides when it links the class.")
                 .with_help(method_signature::erased_type_help(param_name, parent_type, bound)),
+            );
+        }
+        SignatureCompatibilityIssue::ChangedTemplateBound { template, child_method, parent_method, bound } => {
+            let child_method = format!("{}.{child_method}", short_name(child_name));
+            let parent_method = format!("{}.{parent_method}", short_name(parent_name));
+            let (message, help) = match bound.map(|bound| display_type(context, &bound)) {
+                Some(bound) => (
+                    format!("`{child_method}` must keep the bound `{bound}` of `{parent_method}`."),
+                    format!("Bound `{template}` by `{bound}`, as `{parent_method}` does."),
+                ),
+                None => (
+                    format!("`{child_method}` must keep `{template}` of `{parent_method}` without a bound."),
+                    format!("Remove the bound of `{template}`, as `{parent_method}` has none."),
+                ),
+            };
+
+            context.collector.report_with_code(
+                IssueCode::IncompatibleParameterType,
+                Issue::error(message)
+                    .with_annotation(
+                        Annotation::primary(primary_span).with_message(format!("Changes the bound of `{template}`")),
+                    )
+                    .with_annotation(
+                        Annotation::secondary(parent_class_span)
+                            .with_message(format!("`{parent_method}` declares the bound here")),
+                    )
+                    .with_note("An override keeps the bound of each type parameter it overrides, as in C#.")
+                    .with_help(help),
             );
         }
         SignatureCompatibilityIssue::IncompatibleReturnType { child_type, parent_type } => {

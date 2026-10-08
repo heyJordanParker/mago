@@ -3979,7 +3979,8 @@ fn the_type_arguments_of_new_fix_the_type_parameters_of_the_class() {
     );
 }
 
-/// `new` of a PHP# generic class without type arguments names the ones to write, spec section 11.
+/// `new` of a PHP# generic class without type arguments names the ones to write, spec section 11, as a type without
+/// them does.
 #[test]
 fn new_of_a_generic_class_without_type_arguments_names_them() {
     let sharp = "namespace Demo;\n\npublic class Pair<TKey, TValue>\n{\n    public TKey? key { get; set; }\n    public TValue? value { get; set; }\n}\n\npublic class Report\n{\n    public static Any listed(List<Order> orders) => new PaginatedList(orders);\n\n    public static Any paired() => new Pair();\n}\n";
@@ -3987,8 +3988,8 @@ fn new_of_a_generic_class_without_type_arguments_names_them() {
     assert_eq!(
         explained(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]),
         [
-            "11:57 missing-template-parameter `new PaginatedList` names its type arguments: write `new PaginatedList<…>(…)` with a type for `TItem`.",
-            "13:39 missing-template-parameter `new Pair` names its type arguments: write `new Pair<…>(…)` with a type for `TKey` and `TValue`.",
+            "11:57 missing-template-parameter `PaginatedList` needs its type argument, as in `PaginatedList<TItem>`.",
+            "13:39 missing-template-parameter `Pair` needs its type arguments, as in `Pair<TKey, TValue>`.",
         ]
     );
 }
@@ -4152,6 +4153,86 @@ fn out_and_in_are_checked_on_a_class_type() {
         [
             "5:27 invalid-template-parameter `TItem` is declared `out`, so `make` cannot take it in.",
             "10:34 invalid-template-parameter `TItem` is declared `in`, so `kind` cannot hand it out.",
+        ]
+    );
+}
+
+/// Spec section 11.1 lets a private member break the marker, as Scala's object-private members do, and reaches it only
+/// through `this`: another instance's field, written or read, another instance's method, called or read as a value, and
+/// the private `set` of another instance's property are refused where they are reached, for `out` and `in` alike. The
+/// public `get` of that property stays reachable. The plain PHP twin keeps Mago's issues.
+#[test]
+fn a_variance_breaking_private_member_is_reachable_only_through_this() {
+    let sharp = "namespace Demo;\n\npublic class Order\n{\n}\n\npublic class Cell<out TItem>\n{\n    private TItem? value = null;\n\n    public TItem? get() => this.value;\n\n    public void poison(Cell<Any?> target)\n    {\n        target.value = 1;\n    }\n\n    public Any? peek(Cell<Any?> other) => other.value;\n}\n\npublic class Stack<out TItem>\n{\n    private void push(TItem item)\n    {\n    }\n\n    public void fill(Stack<Any?> other)\n    {\n        other.push(1);\n    }\n\n    public Any? grab(Stack<Any?> other) => other.push;\n}\n\npublic class Sink<in TItem>\n{\n    private TItem? last = null;\n\n    public void take(TItem item)\n    {\n        this.last = item;\n    }\n\n    public Any? leak(Sink<Order> other) => other.last;\n}\n\npublic class Slot<out TItem>\n{\n    public TItem? held { get; private set; } = null;\n\n    public void swap(Slot<Any?> other)\n    {\n        other.held = 1;\n    }\n\n    public Any? read(Slot<Any?> other) => other.held;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\n/** @template-covariant TItem */\nclass Cell\n{\n    /** @var TItem|null */\n    private mixed $value = null;\n\n    /** @return TItem|null */\n    public function get(): mixed\n    {\n        return $this->value;\n    }\n\n    /** @param Cell<mixed> $target */\n    public function poison(Cell $target): void\n    {\n        $target->value = 1;\n    }\n}\n";
+
+    assert_eq!(explained(("src/Demo/Cell.php", php), &[]), Vec::<String>::new());
+    assert_eq!(
+        explained(("src/Demo/Cell.sharp", sharp), &[]),
+        [
+            "15:16 invalid-template-parameter `value` breaks `out TItem`, so it is reachable only through `this`.",
+            "18:49 invalid-template-parameter `value` breaks `out TItem`, so it is reachable only through `this`.",
+            "29:15 invalid-template-parameter `push` breaks `out TItem`, so it is reachable only through `this`.",
+            "32:50 invalid-template-parameter `push` breaks `out TItem`, so it is reachable only through `this`.",
+            "44:50 invalid-template-parameter `last` breaks `in TItem`, so it is reachable only through `this`.",
+            "53:15 invalid-template-parameter `held` breaks `out TItem`, so it is reachable only through `this`.",
+        ]
+    );
+}
+
+/// `is`, `as` and a `match` arm of a type with type arguments, which `check_slice` refuses because G1 erases type
+/// arguments, add no analyzer issue on the refused line: not the `is` test, the variable it declares nor its use. The
+/// plain PHP twin keeps Mago's issues.
+#[test]
+fn a_type_test_with_type_arguments_adds_no_issue() {
+    let sharp = "namespace Demo;\n\npublic class Report\n{\n    public static int counted(Any? item) => item is List<int> numbers ? count(numbers) : 0;\n\n    public static Any? kept(Any? item) => item as List<int>;\n\n    public static int matched(Any? item) => match (item) { List<int> numbers => count(numbers), default => 0 };\n\n    public static Any? paged(Any? item) => item is PaginatedList<Order> page ? page.first() : null;\n\n    public static Any? cast(Any? item) => item as PaginatedList<Order>;\n\n    public static Any? pageMatched(Any? item) => match (item) { PaginatedList<Order> page => page.first(), default => null };\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function counted(mixed $item): int\n    {\n        return is_array($item) && array_is_list($item) ? count($item) : 0;\n    }\n\n    public static function paged(mixed $item): mixed\n    {\n        return $item instanceof PaginatedList ? $item->first() : null;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[("src/Demo/Paging.sharp", PAGING)]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]), Vec::<String>::new());
+}
+
+/// An override keeps the bounds of the type parameters it overrides, as C# keeps them, so one that changes a bound
+/// names the bound to keep, with the code of a parameter type PHP refuses: one that drops the bound and one that adds a
+/// bound the overridden type parameter has not. The plain PHP twin keeps Mago's issues.
+#[test]
+fn an_override_that_changes_a_bound_names_the_bound() {
+    let sharp = "namespace Demo;\n\npublic abstract class DatabaseEntity\n{\n}\n\npublic interface Picker\n{\n    T pick<T : DatabaseEntity>(T item);\n}\n\npublic class AnyPicker : Picker\n{\n    public T pick<T>(T item) => item;\n}\n\npublic interface Taker\n{\n    T take<T>(T item);\n}\n\npublic class EntityTaker : Taker\n{\n    public T take<T : DatabaseEntity>(T item) => item;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nabstract class DatabaseEntity\n{\n}\n\ninterface Picker\n{\n    /**\n     * @template T of DatabaseEntity\n     * @param T $item\n     * @return T\n     */\n    public function pick(mixed $item): mixed;\n}\n\nclass AnyPicker implements Picker\n{\n    /**\n     * @template T\n     * @param T $item\n     * @return T\n     */\n    public function pick(mixed $item): mixed\n    {\n        return $item;\n    }\n}\n\ninterface Taker\n{\n    /**\n     * @template T\n     * @param T $item\n     * @return T\n     */\n    public function take(mixed $item): mixed;\n}\n\nclass EntityTaker implements Taker\n{\n    /**\n     * @template T of DatabaseEntity\n     * @param T $item\n     * @return T\n     */\n    public function take(mixed $item): mixed\n    {\n        return $item;\n    }\n}\n";
+
+    assert_eq!(
+        explained(("src/Demo/Picker.php", php), &[]),
+        [
+            "49:21 incompatible-parameter-type Parameter `$item` of `Demo\\EntityTaker::take()` expects type `('T.demo\\entitytaker::take() extends Demo\\DatabaseEntity)` but parent `Demo\\Taker::take()` expects type `('T.demo\\taker::take() extends mixed)` Change the parameter type to be compatible with the parent method."
+        ]
+    );
+    assert_eq!(
+        explained(("src/Demo/Picker.sharp", sharp), &[]),
+        [
+            "14:14 incompatible-parameter-type `AnyPicker.pick<T>` must keep the bound `DatabaseEntity` of `Picker.pick<T>`. Bound `T` by `DatabaseEntity`, as `Picker.pick<T>` does.",
+            "24:14 incompatible-parameter-type `EntityTaker.take<T>` must keep `T` of `Taker.take<T>` without a bound. Remove the bound of `T`, as `Taker.take<T>` has none.",
+        ]
+    );
+}
+
+/// A generic type written without type arguments names them, as C# refuses it (CS0305): a property's, a parameter's, a
+/// return type and a typed local's, with every type parameter in the example. `Self` names its class's own type
+/// parameters, and a class without type parameters takes none. The plain PHP twin keeps Mago's issues.
+#[test]
+fn a_generic_type_without_type_arguments_names_them() {
+    let sharp = "namespace Demo;\n\npublic class Pair<TFirst, TSecond>\n{\n    public Self same(TFirst first, TSecond second) => this;\n}\n\npublic class Report\n{\n    public PaginatedList? shelf { get; set; }\n\n    public static void f(PaginatedList page)\n    {\n    }\n\n    public static Pair paired(Order order) => new Pair<Order, Order>();\n\n    public static Any local(PaginatedList<Order> given)\n    {\n        PaginatedList page = given;\n        return page;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\n/** @template TItem */\nclass PaginatedList\n{\n    /** @return TItem|null */\n    public function first(): mixed\n    {\n        return null;\n    }\n}\n\nclass Report\n{\n    public ?PaginatedList $shelf = null;\n\n    public static function f(PaginatedList $page): void\n    {\n    }\n}\n";
+    let one = "`PaginatedList` needs its type argument, as in `PaginatedList<TItem>`.";
+
+    assert_eq!(explained(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
+    assert_eq!(
+        explained(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]),
+        [
+            format!("10:12 missing-template-parameter {one}"),
+            format!("12:26 missing-template-parameter {one}"),
+            "16:19 missing-template-parameter `Pair` needs its type arguments, as in `Pair<TFirst, TSecond>`."
+                .to_string(),
+            format!("20:9 missing-template-parameter {one}"),
         ]
     );
 }

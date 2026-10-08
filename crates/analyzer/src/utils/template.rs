@@ -3,9 +3,12 @@ use foldhash::fast::RandomState;
 use indexmap::IndexMap;
 use mago_allocator::Arena;
 
+use mago_codex::identifier::method::MethodIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
 use mago_codex::metadata::class_like::TemplateTypes;
+use mago_codex::metadata::function_like::FunctionLikeMetadata;
+use mago_codex::metadata::property::PropertyMetadata;
 use mago_codex::misc::GenericParent;
 use mago_codex::ttype::TType;
 use mago_codex::ttype::TypeRef;
@@ -28,13 +31,17 @@ use mago_codex::ttype::template::variance::Variance;
 use mago_codex::ttype::union::TUnion;
 use mago_codex::ttype::wrap_atomic;
 use mago_codex::visibility::Visibility;
+use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::Span;
+use mago_syntax::cst::Expression;
 use mago_word::Word;
 use mago_word::WordMap;
 use mago_word::word;
 
+use crate::code::IssueCode;
 use crate::context::Context;
+use crate::utils::expression::is_this;
 use crate::utils::names::display_sharp_type;
 use crate::utils::names::short_name;
 
@@ -251,8 +258,10 @@ pub(crate) struct TemplateUse {
 /// Every use of a type parameter of `class` by a member it declares or by its header, one per member and type
 /// parameter. A method's parameters take their types in and its return type hands its type out, a property hands its
 /// type out and takes it in when another class can write it, and the header hands its type arguments out, as C# and
-/// Kotlin check a base type's. Private members and the constructor are exempt, as in Kotlin. A header entry stands at
-/// its span in `header_spans`, by its parent's lowercase name, or at the class's name without one.
+/// Kotlin check a base type's. Private members and the constructor are exempt, as in Kotlin, and a private member that
+/// breaks a marker is reachable only through `this`, which `check_private_method_reach` and
+/// `check_private_property_reach` check where it is reached. A header entry stands at its span in `header_spans`, by
+/// its parent's lowercase name, or at the class's name without one.
 pub(crate) fn find_template_uses(
     codebase: &CodebaseMetadata,
     class: &ClassLikeMetadata,
@@ -288,28 +297,12 @@ pub(crate) fn find_template_uses(
         let Some(method) = codebase.get_method(class.name.as_bytes(), method_name.as_bytes()) else {
             continue;
         };
-        if method
-            .method_metadata
-            .as_ref()
-            .is_some_and(|metadata| metadata.is_constructor || matches!(metadata.visibility, Visibility::Private))
+        if method.method_metadata.as_ref().is_some_and(|metadata| metadata.is_constructor) || is_private_method(method)
         {
             continue;
         }
 
-        let mut positions = Vec::new();
-        for parameter_type in method.parameters.iter().filter_map(|parameter| parameter.type_metadata.as_ref()) {
-            find_template_positions(
-                codebase,
-                &parameter_type.type_union,
-                &owner,
-                Variance::Contravariant,
-                &mut positions,
-            );
-        }
-        if let Some(return_type) = &method.return_type_metadata {
-            find_template_positions(codebase, &return_type.type_union, &owner, Variance::Covariant, &mut positions);
-        }
-
+        let positions = find_method_positions(codebase, method, &owner);
         let member = format!("`{}`", method.original_name);
         add_template_uses(&mut template_uses, positions, &member, method.name_span.unwrap_or(method.span));
     }
@@ -322,19 +315,158 @@ pub(crate) fn find_template_uses(
             continue;
         }
 
-        let takes_in = !property.flags.is_readonly()
-            && !matches!(property.write_visibility, Visibility::Private)
-            && (!property.flags.is_virtual_property() || property.hooks.contains_key(&word("set")));
+        let takes_in = is_writable(property) && !matches!(property.write_visibility, Visibility::Private);
         let position = if takes_in { Variance::Invariant } else { Variance::Covariant };
 
         let mut positions = Vec::new();
         find_template_positions(codebase, &property_type.type_union, &owner, position, &mut positions);
 
-        let member = format!("the property `{}`", property.name.0.as_str_lossy().trim_start_matches('$'));
+        let member = format!("the property `{}`", property_name(property));
         add_template_uses(&mut template_uses, positions, &member, span);
     }
 
     template_uses
+}
+
+/// The marker, `out` or `in`, of the type parameter `template` of `class` that a use at `position` breaks, spec
+/// section 11.1: an `out` type parameter is only handed out, and an `in` type parameter is only taken in.
+pub(crate) fn find_broken_marker(
+    class: &ClassLikeMetadata,
+    template: Word,
+    position: Variance,
+) -> Option<&'static str> {
+    let index = class.template_types.get_index_of(&template)?;
+
+    match (class.template_variance.get(index)?, position) {
+        (Variance::Covariant, Variance::Contravariant | Variance::Invariant) => Some("out"),
+        (Variance::Contravariant, Variance::Covariant | Variance::Invariant) => Some("in"),
+        _ => None,
+    }
+}
+
+/// Reports a call or read of the method `method` through `object` when the method is private, `object` is not `this`,
+/// and the method's use of a type parameter of its PHP# class breaks the parameter's marker, spec section 11.1. Such a
+/// method is reachable only through `this`, as Scala's `private[this]`, so no instance with other type arguments
+/// passes it a value.
+pub(crate) fn check_private_method_reach<A>(
+    context: &mut Context<'_, '_, A>,
+    object: &Expression<'_>,
+    method: &MethodIdentifier,
+    span: Span,
+) where
+    A: Arena,
+{
+    let codebase = context.codebase;
+    let method = codebase.get_declaring_method_identifier(method);
+    let (Some(class), Some(metadata)) =
+        (codebase.get_class_like(method.get_class_name().as_bytes()), codebase.get_method_by_id(&method))
+    else {
+        return;
+    };
+    if !is_private_method(metadata) {
+        return;
+    }
+
+    let positions = find_method_positions(codebase, metadata, &GenericParent::ClassLike(class.name));
+    report_private_reach(context, object, class, &metadata.original_name.to_string(), positions, span);
+}
+
+/// Reports a read of `property` through `object` when its read is private, or a write when its `set` is private, when
+/// `object` is not `this`, and the property's use of a type parameter of `class`, its PHP# class, breaks the
+/// parameter's marker, spec section 11.1. A property another instance writes takes its type in, and one it reads hands
+/// its type out.
+pub(crate) fn check_private_property_reach<A>(
+    context: &mut Context<'_, '_, A>,
+    object: &Expression<'_>,
+    class: &ClassLikeMetadata,
+    property: &PropertyMetadata,
+    is_write: bool,
+    span: Span,
+) where
+    A: Arena,
+{
+    let visibility = if is_write { property.write_visibility } else { property.read_visibility };
+    if !matches!(visibility, Visibility::Private) {
+        return;
+    }
+    let Some(property_type) = &property.type_metadata else {
+        return;
+    };
+
+    let position = if is_writable(property) { Variance::Invariant } else { Variance::Covariant };
+    let mut positions = Vec::new();
+    find_template_positions(
+        context.codebase,
+        &property_type.type_union,
+        &GenericParent::ClassLike(class.name),
+        position,
+        &mut positions,
+    );
+    report_private_reach(context, object, class, &property_name(property), positions, span);
+}
+
+fn report_private_reach<A>(
+    context: &mut Context<'_, '_, A>,
+    object: &Expression<'_>,
+    class: &ClassLikeMetadata,
+    member: &str,
+    positions: Vec<(Word, Variance)>,
+    span: Span,
+) where
+    A: Arena,
+{
+    if !class.flags.is_sharp() || is_this(object, context.resolved_names) {
+        return;
+    }
+    let Some((template, marker)) = positions
+        .into_iter()
+        .find_map(|(template, position)| Some((template, find_broken_marker(class, template, position)?)))
+    else {
+        return;
+    };
+
+    context.collector.report_with_code(
+        IssueCode::InvalidTemplateParameter,
+        Issue::error(format!("`{member}` breaks `{marker} {template}`, so it is reachable only through `this`."))
+            .with_annotation(
+                Annotation::primary(span).with_message(format!("`{member}` is reached here through another value")),
+            )
+            .with_note(
+                "Spec section 11.1: a private member may break the marker, and is then reachable only through `this`.",
+            ),
+    );
+}
+
+/// The positions `method` uses a type parameter of `owner` at: each parameter takes its type in, and the return type
+/// hands its type out.
+fn find_method_positions(
+    codebase: &CodebaseMetadata,
+    method: &FunctionLikeMetadata,
+    owner: &GenericParent,
+) -> Vec<(Word, Variance)> {
+    let mut positions = Vec::new();
+    for parameter_type in method.parameters.iter().filter_map(|parameter| parameter.type_metadata.as_ref()) {
+        find_template_positions(codebase, &parameter_type.type_union, owner, Variance::Contravariant, &mut positions);
+    }
+    if let Some(return_type) = &method.return_type_metadata {
+        find_template_positions(codebase, &return_type.type_union, owner, Variance::Covariant, &mut positions);
+    }
+
+    positions
+}
+
+fn is_private_method(method: &FunctionLikeMetadata) -> bool {
+    method.method_metadata.as_ref().is_some_and(|metadata| matches!(metadata.visibility, Visibility::Private))
+}
+
+/// Whether a write changes `property` after it is built: it is not `readonly`, and it keeps a value or has a `set`.
+fn is_writable(property: &PropertyMetadata) -> bool {
+    !property.flags.is_readonly()
+        && (!property.flags.is_virtual_property() || property.hooks.contains_key(&word("set")))
+}
+
+fn property_name(property: &PropertyMetadata) -> String {
+    property.name.0.as_str_lossy().trim_start_matches('$').to_owned()
 }
 
 /// Adds one use per type parameter in `positions`, which a member uses at each of them.

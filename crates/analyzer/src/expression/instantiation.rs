@@ -50,7 +50,6 @@ use crate::resolver::class_name::ResolutionOrigin;
 use crate::resolver::class_name::ResolvedClassname;
 use crate::resolver::class_name::resolve_classnames_from_expression;
 use crate::statement::function_like::get_this_type;
-use crate::utils::names::and_list;
 use crate::utils::names::short_name;
 use crate::utils::template::get_generic_parameter_for_offset;
 use crate::visibility::check_method_visibility;
@@ -340,9 +339,7 @@ where
             own_type_parameters
         }
         None => {
-            if context.dialect.is_sharp() && metadata.flags.is_sharp() && !metadata.template_types.is_empty() {
-                report_missing_type_arguments(context, metadata, class_expression_span);
-            }
+            report_missing_type_arguments(context, metadata, class_expression_span);
 
             None
         }
@@ -584,21 +581,28 @@ where
     Ok(wrap_atomic(result_atomic))
 }
 
-/// Reports a PHP# `new` of the generic class `metadata` that names no type arguments, which spec section 11 requires.
-fn report_missing_type_arguments<A>(context: &mut Context<'_, '_, A>, metadata: &ClassLikeMetadata, span: Span)
+/// Reports `class` written at `span` in a PHP# file without type arguments, as a type or after `new`, when it is a
+/// generic PHP# class, which spec section 11 refuses, as C# does (CS0305).
+pub(crate) fn report_missing_type_arguments<A>(context: &mut Context<'_, '_, A>, class: &ClassLikeMetadata, span: Span)
 where
     A: Arena,
 {
-    let class_name = short_name(metadata.original_name);
-    let template_names = and_list(&metadata.template_types.keys().copied().collect::<Vec<_>>());
+    if !context.dialect.is_sharp() || !class.flags.is_sharp() || class.template_types.is_empty() {
+        return;
+    }
+
+    let class_name = short_name(class.original_name);
+    let template_names: Vec<String> = class.template_types.keys().map(ToString::to_string).collect();
+    let arguments = if template_names.len() == 1 { "argument" } else { "arguments" };
 
     context.collector.report_with_code(
         IssueCode::MissingTemplateParameter,
         Issue::error(format!(
-            "`new {class_name}` names its type arguments: write `new {class_name}<…>(…)` with a type for {template_names}."
+            "`{class_name}` needs its type {arguments}, as in `{class_name}<{}>`.",
+            template_names.join(", ")
         ))
         .with_annotation(Annotation::primary(span).with_message(format!("`{class_name}` has type parameters")))
-        .with_note("Spec section 11: `new` always names the type arguments of a generic class."),
+        .with_note("Spec section 11: a type and `new` name the type arguments of a generic class."),
     );
 }
 

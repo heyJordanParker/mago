@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use indexmap::IndexMap;
 
 use mago_algebra::clause::Clause;
@@ -15,6 +17,7 @@ use mago_codex::ttype::get_never;
 use mago_codex::ttype::union::TUnion;
 use mago_names::ResolvedNames;
 use mago_names::binding::Binding;
+use mago_names::binding::php_variable_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_reporting::Level;
@@ -32,6 +35,7 @@ use mago_syntax::cst::PatternMatch;
 use mago_syntax::cst::PatternMatchArm;
 use mago_syntax::cst::PropertiesPattern;
 use mago_syntax::cst::Statement;
+use mago_syntax::cst::TypePattern;
 use mago_syntax::utils::pattern::PhpShape;
 use mago_syntax::walker::Walker;
 use mago_syntax_core::stack::ensure_sufficient_stack;
@@ -55,6 +59,7 @@ use crate::reconciler::reconcile_keyed_types;
 use crate::statement::attributes::analyze_class_like_attributes;
 use crate::statement::class_like::analyze_class_like;
 use crate::statement::class_like::override_attribute;
+use crate::statement::get_type_from_hint;
 use crate::utils::misc::check_for_paradox;
 use crate::utils::names::short_name;
 
@@ -208,6 +213,17 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
                 | Expression::PatternMatch(_)
                     if is_refused(self, context.resolved_names) =>
                 {
+                    if let Expression::Is(is) = self {
+                        for (hint, variable) in Node::Pattern(is.pattern).filter_map(|node| match node {
+                            Node::TypePattern(TypePattern { hint, variable: Some(variable) }) => Some((hint, variable)),
+                            _ => None,
+                        }) {
+                            let variable_id = php_variable_name(variable.value);
+                            let variable_type = Rc::new(get_type_from_hint(context, block_context, artifacts, hint));
+                            block_context.local_types.insert(variable_id, (Rc::clone(&variable_type), hint.span()));
+                            block_context.locals.insert(variable_id, variable_type);
+                        }
+                    }
                     artifacts.set_expression_type(&self, get_never());
 
                     Ok(())
@@ -611,7 +627,8 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Parenthesized<'arena> {
 /// Whether an error already refuses `expression`, which `check_slice` refuses: it failed to parse, it is `typeof` or
 /// `new` of a type parameter, it tests or converts a value to a type with an [erased part](ResolvedNames::erased_type)
 /// in `is`, `as` or a `match` arm, or it reads or calls a member of a type parameter or of `typeof` of one through any
-/// chain of property reads. Its type is `never`, and it adds no issue.
+/// chain of property reads. Its type is `never`, a variable its `is` pattern names holds the type written beside it, and
+/// it adds no issue.
 pub(crate) fn is_refused(expression: &Expression<'_>, resolved_names: &ResolvedNames<'_>) -> bool {
     let is_type_parameter =
         |name: &Identifier<'_>| matches!(resolved_names.binding(name), Some(Binding::TypeParameter { .. }));

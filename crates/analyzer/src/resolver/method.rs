@@ -59,6 +59,7 @@ use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_method_name;
 use crate::utils::names::display_sharp_collection;
 use crate::utils::names::display_sharp_type;
+use crate::utils::template::check_private_method_reach;
 use crate::visibility::check_method_visibility;
 use crate::visibility::is_method_visible;
 use crate::visibility::is_visible_from_scope;
@@ -438,6 +439,9 @@ where
                     }
                 }
 
+                for resolved_method in &resolved_methods {
+                    check_private_method_reach(context, object, &resolved_method.method_identifier, selector.span());
+                }
                 result.resolved_methods.extend(resolved_methods);
             }
         }

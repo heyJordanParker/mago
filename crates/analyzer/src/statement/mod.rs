@@ -351,10 +351,10 @@ where
         return None;
     };
 
-    let local_type = TypeMetadata::new(get_type_from_hint(context, block_context, artifacts, hint), hint.span());
-    report_invalid_template_arguments(context, &local_type);
+    let written_type = get_written_type_from_hint(context, block_context, artifacts, hint);
+    report_invalid_template_arguments(context, &TypeMetadata::new(written_type, hint.span()));
 
-    let local_type = (Rc::new(local_type.type_union), local_type.span);
+    let local_type = (Rc::new(get_type_from_hint(context, block_context, artifacts, hint)), hint.span());
     block_context.local_types.insert(variable_id, local_type.clone());
 
     Some(local_type)
@@ -363,6 +363,27 @@ where
 /// The type a PHP# `hint` writes inside the scope of `block_context`, where it may name the type parameters of the
 /// enclosing method and class.
 pub(crate) fn get_type_from_hint<A>(
+    context: &Context<'_, '_, A>,
+    block_context: &BlockContext<'_>,
+    artifacts: &mut AnalysisArtifacts,
+    hint: &Hint<'_>,
+) -> TUnion
+where
+    A: Arena,
+{
+    let mut hint_type = get_written_type_from_hint(context, block_context, artifacts, hint);
+    expander::expand_union(
+        context.codebase,
+        &mut hint_type,
+        &TypeExpansionOptions { self_class: block_context.scope.get_class_like_name(), ..Default::default() },
+    );
+
+    hint_type
+}
+
+/// The type a PHP# `hint` writes, before expansion fills the type arguments it leaves out, as the scanner keeps the
+/// type of a parameter or a property.
+fn get_written_type_from_hint<A>(
     context: &Context<'_, '_, A>,
     block_context: &BlockContext<'_>,
     artifacts: &mut AnalysisArtifacts,
@@ -383,11 +404,6 @@ where
         block_context.scope.get_reference_source().as_ref(),
         &mut artifacts.symbol_references,
         true,
-    );
-    expander::expand_union(
-        context.codebase,
-        &mut hint_type,
-        &TypeExpansionOptions { self_class: block_context.scope.get_class_like_name(), ..Default::default() },
     );
 
     hint_type

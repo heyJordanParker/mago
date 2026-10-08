@@ -55,6 +55,8 @@ use crate::utils::expression::is_this;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_sharp_type;
 use crate::utils::names::display_type;
+use crate::utils::template::check_private_method_reach;
+use crate::utils::template::check_private_property_reach;
 use crate::utils::template::get_template_types_for_class_member;
 use crate::visibility::check_method_visibility;
 use crate::visibility::check_resolved_property_read_visibility;
@@ -825,16 +827,18 @@ where
 
     let Some(resolution) = resolution else {
         // A PHP# read of a declared method is its closure, ahead of anything the class serves through `__get`.
+        let method_name = word(trim_start_byte(prop_name.as_bytes(), b'$'));
         if !for_assignment
-            && let Some(method_type) = resolve_method_value(
-                context,
-                block_context,
-                artifacts,
-                class_id,
-                word(trim_start_byte(prop_name.as_bytes(), b'$')),
-                access_span,
-            )
+            && let Some(method_type) =
+                resolve_method_value(context, block_context, artifacts, class_id, method_name, access_span)
         {
+            check_private_method_reach(
+                context,
+                object_expr,
+                &MethodIdentifier::new(class_id, method_name),
+                selector.span(),
+            );
+
             return Some(ResolvedProperty {
                 property_span: None,
                 property_name: prop_name,
@@ -1106,6 +1110,15 @@ where
 
         return None;
     }
+
+    check_private_property_reach(
+        context,
+        object_expr,
+        declaring_class_metadata,
+        property_metadata,
+        for_assignment,
+        selector.span(),
+    );
 
     Some(ResolvedProperty {
         property_span: property_metadata.name_span.or(property_metadata.span),

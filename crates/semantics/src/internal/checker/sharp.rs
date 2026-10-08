@@ -122,8 +122,10 @@ const ANY: &[u8] = b"Any";
 ///   `out` on a method's type parameter are errors, because only a class or an interface declares variance, spec
 ///   section 11.1. A bound is a class or an interface, a generic class type, as in `Comparable<TItem>`, or several of
 ///   them joined with `&`, and any other bound is an error. A type parameter is in scope in its class's or interface's
-///   whole declaration, its header included, and in its method's signature and body, as the binder decides. The
-///   analyzer checks variance, bounds and inference. A type parameter in a static member has no rule yet.
+///   whole declaration, its header included, and in its method's signature and body, as the binder decides. A static
+///   member uses none of its class's type parameters, because G1 erases them and every `Box<…>` shares the member: not
+///   a static field's or property's type, nor a static method's signature or body. A static method's own type
+///   parameters are its own. The analyzer checks variance, bounds and inference.
 /// - An enum: attributes, an optional `public`, a name, an optional `: string, Interface` header, constants, cases and
 ///   methods, with no other modifiers or `implements`. A leading `int` or `string` in the header is the backing type,
 ///   and every class name is an interface. A constant follows a class constant's rules. A case has attributes as a
@@ -272,9 +274,8 @@ const ANY: &[u8] = b"Any";
 ///   yet.
 /// - What needs a type argument while the code runs, which G1 erases, is not supported yet: a type parameter in a
 ///   pattern, a `match` arm, `as` or a catch clause, `typeof` and `new` of a type parameter, a static member reached
-///   through a type parameter, as in `TItem.make()` and `TItem.LIMIT`, a generic class type or `Class<T>` in a pattern
-///   or `as`, and a `List` or `Map` in a pattern or `as` whose type arguments hold a type parameter, as in
-///   `value as List<TItem>`.
+///   through a type parameter, as in `TItem.make()` and `TItem.LIMIT`, and any type with type arguments in a pattern or
+///   `as`, as in `value is List<int>`, `value as PaginatedList<Order>` and `value is Class<Order>`.
 /// - Casts: `(int)`, `(float)` and `(string)` in a method body, as spec section 24 writes them. PHP's other casts and
 ///   its cast aliases, such as `(bool)` and `(integer)`, are errors.
 /// - A bare `Int`, `Float`, `Position`, `Environment` or `List` names the class `Sharp\<Name>` of the engine's standard
@@ -442,6 +443,18 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             );
 
             Some(File)
+        }
+        (Node::Hint(Hint::Identifier(name)), _) if let Some(class) = static_member_class(name, context) => {
+            context.report(
+                Issue::error(format!(
+                    "A static member can't use `{}`, because every `{}<…>` shares it.",
+                    BytesDisplay(name.value()),
+                    BytesDisplay(class.name.value)
+                ))
+                .with_annotation(Annotation::primary(name.span()).with_message("Used in a static member.")),
+            );
+
+            None
         }
         (Node::Keyword(_) | Node::LocalIdentifier(_) | Node::Identifier(Identifier::Local(_)), _) => Some(place),
         (Node::Terminator(Terminator::Semicolon(_)), _) => Some(place),
@@ -2089,6 +2102,29 @@ fn built_in_generic_arity(name: &[u8]) -> Option<usize> {
 /// Whether the binder bound a type name to a type parameter.
 fn is_type_parameter(name: &impl HasPosition, context: &Context<'_, '_, '_>) -> bool {
     matches!(context.names.binding(name), Some(Binding::TypeParameter { .. }))
+}
+
+/// The class whose static field, property or method names `name`, a type parameter the class declares. `None` for any
+/// other name, a static method's own type parameter included, because the method declares it.
+fn static_member_class<'ast, 'arena>(
+    name: &Identifier<'_>,
+    context: &Context<'_, 'ast, 'arena>,
+) -> Option<ClassLike<'ast, 'arena>> {
+    let Some(Binding::TypeParameter { declaration }) = context.names.binding(name) else {
+        return None;
+    };
+    let class = enclosing_class(context.program, name.span())?;
+    let names_it = class.members.iter().any(|member| {
+        let (span, is_static) = match member {
+            ClassLikeMember::Method(method) => (method.span(), method.modifiers.contains_static()),
+            ClassLikeMember::Property(property) => (property.span(), property.modifiers().contains_static()),
+            _ => return false,
+        };
+
+        is_static && span.contains(&name.span().start) && !span.contains(&declaration.start)
+    });
+
+    names_it.then_some(class)
 }
 
 /// Reports each type parameter of a list whose name is not `T`, or `T` and an uppercase letter, as C# names them, a

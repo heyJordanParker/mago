@@ -48,6 +48,7 @@ pub enum SignatureCompatibilityIssue {
     MissingReturnTypeDeclaration { parent_type: TUnion },
     ParameterNameMismatch { parameter_index: usize, child_name: Word, parent_name: Word },
     ErasedParameterNarrowed { parameter_index: usize, child_type: Word, parent_type: Word, bound: Option<Word> },
+    ChangedTemplateBound { template: Word, child_method: String, parent_method: String, bound: Option<TUnion> },
 }
 
 /// Validates that a child method signature is compatible with a parent method signature.
@@ -87,11 +88,15 @@ pub fn validate_method_signature_compatibility(
         return Vec::new();
     }
 
-    let child_method = &if dialect.is_sharp() {
-        with_parent_type_parameters(codebase, child_method, parent_method)
+    let (child_method, changed_bound) = if dialect.is_sharp() {
+        match with_parent_type_parameters(codebase, child_method, parent_method) {
+            Ok(child_method) => (child_method, None),
+            Err(index) => (Cow::Borrowed(child_method), Some(index)),
+        }
     } else {
-        Cow::Borrowed(child_method)
+        (Cow::Borrowed(child_method), None)
     };
+    let child_method = &child_method;
 
     let mut issues = Vec::new();
 
@@ -180,6 +185,19 @@ pub fn validate_method_signature_compatibility(
         && !child_method.parameters.iter().any(|p| p.flags.is_variadic())
     {
         issues.push(SignatureCompatibilityIssue::MissingVariadicParameter { parameter_index });
+
+        return issues;
+    }
+
+    if let Some((template, (_, parent_template))) = changed_bound.and_then(|index| {
+        Some((child_method.template_types.get_index(index)?.0, parent_method.template_types.get_index(index)?))
+    }) {
+        issues.push(SignatureCompatibilityIssue::ChangedTemplateBound {
+            template: *template,
+            child_method: generic_method_name(child_method),
+            parent_method: generic_method_name(parent_method),
+            bound: (!parent_template.constraint.is_mixed()).then(|| parent_template.constraint.clone()),
+        });
 
         return issues;
     }
@@ -361,15 +379,16 @@ pub fn validate_method_signature_compatibility(
 /// `child_method` with each of its own type parameters replaced by the type parameter `parent_method` declares at the
 /// same position, as C# matches a generic method's type parameters, so `T pick<T>(T item)` overriding
 /// `T pick<T>(T item)` returns the parent's `T`. C# lets no override write its own bound, so the type parameters
-/// match only when each pair has the same bound. Otherwise `child_method` keeps its own, which take no other type.
+/// match only when each pair has the same bound. Otherwise returns the index of the first type parameter whose bound
+/// differs.
 fn with_parent_type_parameters<'method>(
     codebase: &CodebaseMetadata,
     child_method: &'method FunctionLikeMetadata,
     parent_method: &FunctionLikeMetadata,
-) -> Cow<'method, FunctionLikeMetadata> {
+) -> Result<Cow<'method, FunctionLikeMetadata>, usize> {
     if child_method.template_types.is_empty() || child_method.template_types.len() != parent_method.template_types.len()
     {
-        return Cow::Borrowed(child_method);
+        return Ok(Cow::Borrowed(child_method));
     }
 
     let pairs = || child_method.template_types.iter().zip(&parent_method.template_types);
@@ -402,13 +421,20 @@ fn with_parent_type_parameters<'method>(
 
         contains(&child_bound, parent_bound) && contains(parent_bound, &child_bound)
     };
-    if !pairs().all(|((_, child_template), (_, parent_template))| {
-        is_same_bound(&child_template.constraint, &parent_template.constraint)
+    if let Some(index) = pairs().position(|((_, child_template), (_, parent_template))| {
+        !is_same_bound(&child_template.constraint, &parent_template.constraint)
     }) {
-        return Cow::Borrowed(child_method);
+        return Err(index);
     }
 
-    Cow::Owned(super::apply_template_substitution_to_method(child_method, &template_result, codebase))
+    Ok(Cow::Owned(super::apply_template_substitution_to_method(child_method, &template_result, codebase)))
+}
+
+/// `method` as a PHP# message names it with its type parameters, as in `pick<T>`.
+fn generic_method_name(method: &FunctionLikeMetadata) -> String {
+    let templates: Vec<String> = method.template_types.keys().map(ToString::to_string).collect();
+
+    format!("{}<{}>", method.original_name, templates.join(", "))
 }
 
 /// Adds to `issues` the parameter of a PHP# method that no longer links against the method it overrides or implements

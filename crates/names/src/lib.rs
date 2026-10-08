@@ -212,34 +212,21 @@ impl<'arena> ResolvedNames<'arena> {
     }
 
     /// Returns the span of the part of a PHP# type that needs a type argument while the code runs, which G1 erases: a
-    /// type parameter, a generic class type or `Class<…>`, or a type parameter in a `List`'s or a `Map`'s type
-    /// arguments. Returns `None` for a type that needs none, and for every type in a PHP file.
+    /// type parameter, or a type with type arguments, as in `List<int>`, `PaginatedList<Order>` or `Class<Order>`.
+    /// Returns `None` for a type that needs none, and for every type in a PHP file.
     ///
     /// The checker refuses such a type in a pattern, `as` or a catch clause, and the analyzer reads this to skip what
     /// the checker refused, so they never disagree on an erased type.
     #[must_use]
     pub fn erased_type(&self, hint: &Hint<'_>) -> Option<Span> {
-        self.erased_part(hint, true)
-    }
-
-    /// [`Self::erased_type`]'s walk. Inside a `List`'s or a `Map`'s type arguments, which the running program does not
-    /// check, only a type parameter needs its type argument, so `generic_needs_arguments` is `false` there.
-    fn erased_part(&self, hint: &Hint<'_>, generic_needs_arguments: bool) -> Option<Span> {
         match hint {
             Hint::Identifier(name) if matches!(self.binding(name), Some(Binding::TypeParameter { .. })) => {
                 Some(name.span())
             }
-            Hint::Generic(generic) if generic_needs_arguments && !matches!(generic.name.value, b"List" | b"Map") => {
-                Some(generic.span())
-            }
-            Hint::Generic(generic) => {
-                generic.type_arguments.arguments.iter().find_map(|argument| self.erased_part(argument, false))
-            }
-            Hint::Nullable(nullable) => self.erased_part(nullable.hint, generic_needs_arguments),
-            Hint::Parenthesized(parenthesized) => self.erased_part(parenthesized.hint, generic_needs_arguments),
-            Hint::Union(union) => self
-                .erased_part(union.left, generic_needs_arguments)
-                .or_else(|| self.erased_part(union.right, generic_needs_arguments)),
+            Hint::Generic(generic) => Some(generic.span()),
+            Hint::Nullable(nullable) => self.erased_type(nullable.hint),
+            Hint::Parenthesized(parenthesized) => self.erased_type(parenthesized.hint),
+            Hint::Union(union) => self.erased_type(union.left).or_else(|| self.erased_type(union.right)),
             _ => None,
         }
     }
