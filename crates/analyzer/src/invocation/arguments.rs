@@ -39,8 +39,10 @@ use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::invocation::InvocationTarget;
 use crate::statement::function_like::closure_parameter_types;
+use crate::statement::function_like::rejected_nullable_parameter::writes_null;
 use crate::utils::expression::is_referenceable;
 use crate::utils::get_type_diff;
+use crate::utils::names::display_nullable_type;
 use crate::utils::names::display_type;
 use crate::utils::template::explain_blocked_substitution;
 
@@ -237,15 +239,14 @@ pub fn verify_argument_type<'arena, A>(
         return;
     }
 
-    if !parameter_type.accepts_null() {
+    let takes_null =
+        if context.dialect.is_sharp() { writes_null(parameter_type) } else { parameter_type.accepts_null() };
+    if !takes_null {
         if input_type.is_null() {
             let target_name_str = invocation_target.guess_name(context);
             let parameter_type_str = display_type(context, parameter_type);
-            let nullable_parameter_type_str = if context.dialect.is_sharp() {
-                display_type(context, &parameter_type.clone().as_nullable())
-            } else {
-                format!("{parameter_type_str}|null")
-            };
+            let nullable_parameter_type_str =
+                display_nullable_type(context, parameter_type, format!("{parameter_type_str}|null"));
             let call_site = Annotation::secondary(invocation_target.span())
                 .with_message(format!("Arguments to this {target_kind_str} are incorrect"));
             context.collector.report_with_code(

@@ -1724,57 +1724,42 @@ fn check_template_parameters<'ctx, A>(
     // A PHP# class writes its type arguments in its header, `: PaginatedList<…>`, where PHP writes a docblock tag.
     let sharp_parent = context.dialect.is_sharp().then(|| short_name(parent_name));
     let type_parameters = and_list(&parent_metadata.template_types.keys().copied().collect::<Vec<_>>());
-    if min_required_parameters_count > actual_parameters_count {
-        let (message, label, parent_label, help) = match &sharp_parent {
-            Some(parent) => (
-                format!(
-                    "Too few type arguments for `{parent}`: expected at least {min_required_parameters_count}, but found {actual_parameters_count}."
-                ),
-                "Too few type arguments here".to_owned(),
-                format!("`{parent}` declares {expected_parameters_count} type parameters"),
-                format!("Write a type for {type_parameters} in the header, as in `: {parent}<…>`."),
-            ),
-            None => (
-                format!(
-                    "Too few template arguments for `{parent_name}`: expected at least {min_required_parameters_count}, but found {actual_parameters_count}."
-                ),
-                format!(
-                    "Too few template arguments provided here when `{class_name}` {inheritance_keyword} `{parent_name}`"
-                ),
-                format!("`{parent_name}` is defined with {expected_parameters_count} template parameters"),
-                format!(
-                    "Provide all {expected_parameters_count} required template arguments in the `{inheritance_tag}` docblock tag for `{class_name}`."
-                ),
-            ),
-        };
-        let issue = Issue::error(message)
-            .with_annotation(Annotation::primary(primary_annotation_span).with_message(label))
-            .with_annotation(
-                Annotation::secondary(class_name_span).with_message(format!("Declaration of `{class_name}` is here")),
-            )
-            .with_annotation(Annotation::secondary(parent_definition_span).with_message(parent_label))
-            .with_help(help);
-
-        context.collector.report_with_code(IssueCode::MissingTemplateParameter, issue);
+    let arity = if min_required_parameters_count > actual_parameters_count {
+        Some((IssueCode::MissingTemplateParameter, "few", format!("at least {min_required_parameters_count}")))
     } else if expected_parameters_count < actual_parameters_count {
+        Some((IssueCode::ExcessTemplateParameter, "many", expected_parameters_count.to_string()))
+    } else {
+        None
+    };
+    if let Some((code, amount, expected)) = arity {
+        let is_missing = matches!(code, IssueCode::MissingTemplateParameter);
         let (message, label, parent_label, help) = match &sharp_parent {
             Some(parent) => (
                 format!(
-                    "Too many type arguments for `{parent}`: expected {expected_parameters_count}, but found {actual_parameters_count}."
+                    "Too {amount} type arguments for `{parent}`: expected {expected}, but found {actual_parameters_count}."
                 ),
-                "Too many type arguments here".to_owned(),
+                format!("Too {amount} type arguments here"),
                 format!("`{parent}` declares {expected_parameters_count} type parameters"),
-                format!("Write only a type for {type_parameters} in the header, as in `: {parent}<…>`."),
+                format!(
+                    "Write {}a type for {type_parameters} in the header, as in `: {parent}<…>`.",
+                    if is_missing { "" } else { "only " }
+                ),
             ),
             None => (
                 format!(
-                    "Too many template arguments for `{parent_name}`: expected {expected_parameters_count}, but found {actual_parameters_count}."
+                    "Too {amount} template arguments for `{parent_name}`: expected {expected}, but found {actual_parameters_count}."
                 ),
                 format!(
-                    "Too many template arguments provided here when `{class_name}` {inheritance_keyword} `{parent_name}`"
+                    "Too {amount} template arguments provided here when `{class_name}` {inheritance_keyword} `{parent_name}`"
                 ),
                 format!("`{parent_name}` is defined with {expected_parameters_count} template parameters"),
-                format!("Remove the extra arguments from the `{inheritance_tag}` tag for `{class_name}`."),
+                if is_missing {
+                    format!(
+                        "Provide all {expected_parameters_count} required template arguments in the `{inheritance_tag}` docblock tag for `{class_name}`."
+                    )
+                } else {
+                    format!("Remove the extra arguments from the `{inheritance_tag}` tag for `{class_name}`.")
+                },
             ),
         };
         let issue = Issue::error(message)
@@ -1785,7 +1770,7 @@ fn check_template_parameters<'ctx, A>(
             .with_annotation(Annotation::secondary(parent_definition_span).with_message(parent_label))
             .with_help(help);
 
-        context.collector.report_with_code(IssueCode::ExcessTemplateParameter, issue);
+        context.collector.report_with_code(code, issue);
     }
 
     let own_template_parameters_len = class_like_metadata.template_types.len();
@@ -2862,6 +2847,10 @@ fn apply_template_substitution_to_method(
     codebase: &CodebaseMetadata,
 ) -> FunctionLikeMetadata {
     let mut substituted_method = method.clone();
+
+    for template in substituted_method.template_types.values_mut() {
+        template.constraint = inferred_type_replacer::replace(&template.constraint, template_result, codebase);
+    }
 
     for param in &mut substituted_method.parameters {
         if let Some(type_metadata) = &mut param.type_metadata {

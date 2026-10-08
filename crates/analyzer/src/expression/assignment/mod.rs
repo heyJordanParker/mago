@@ -1367,10 +1367,7 @@ where
     }
 
     let property_name = php_variable_name(property.value);
-    block_context.locals.get(&Word::from("$this"))?.types.iter().find_map(|atomic| match atomic {
-        TAtomic::Object(object) => get_localized_property_type(context, object, property_name).map(Rc::new),
-        _ => None,
-    })
+    get_localized_property_type(context, block_context.locals.get(&Word::from("$this"))?, property_name).map(Rc::new)
 }
 
 fn is_closure_expression<'arena>(expression: &'arena Expression<'arena>) -> bool {

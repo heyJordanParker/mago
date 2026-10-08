@@ -162,13 +162,9 @@ pub fn is_contained_by(
     if container_type_part.is_mixed() || container_type_part.is_templated_as_mixed() {
         if matches!(container_type_part, TAtomic::Mixed(mixed) if mixed.is_non_null())
             && (matches!(input_type_part, TAtomic::Null)
-                || matches!(input_type_part, TAtomic::Mixed(mixed) if !mixed.is_non_null()))
-        {
-            return false;
-        }
-
-        if container_refuses_null
-            && matches!(input_type_part, TAtomic::GenericParameter(parameter) if parameter.constraint.accepts_null())
+                || matches!(input_type_part, TAtomic::Mixed(mixed) if !mixed.is_non_null())
+                || (atomic_comparison_result.sharp_rules
+                    && matches!(input_type_part, TAtomic::GenericParameter(parameter) if parameter.constraint.accepts_null())))
         {
             return false;
         }

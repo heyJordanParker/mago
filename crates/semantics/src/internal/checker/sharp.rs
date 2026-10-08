@@ -2104,8 +2104,8 @@ fn is_type_parameter(name: &impl HasPosition, context: &Context<'_, '_, '_>) -> 
     matches!(context.names.binding(name), Some(Binding::TypeParameter { .. }))
 }
 
-/// The class whose static field, property or method names `name`, a type parameter the class declares. `None` for any
-/// other name, a static method's own type parameter included, because the method declares it.
+/// The class whose constant or static field, property or method names `name`, a type parameter the class declares.
+/// `None` for any other name, a static method's own type parameter included, because the method declares it.
 fn static_member_class<'ast, 'arena>(
     name: &Identifier<'_>,
     context: &Context<'_, 'ast, 'arena>,
@@ -2118,6 +2118,7 @@ fn static_member_class<'ast, 'arena>(
         let (span, is_static) = match member {
             ClassLikeMember::Method(method) => (method.span(), method.modifiers.contains_static()),
             ClassLikeMember::Property(property) => (property.span(), property.modifiers().contains_static()),
+            ClassLikeMember::Constant(constant) => (constant.span(), true),
             _ => return false,
         };
 

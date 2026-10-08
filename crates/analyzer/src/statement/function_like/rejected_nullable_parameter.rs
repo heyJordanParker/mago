@@ -1,7 +1,6 @@
 use mago_allocator::Arena;
 use mago_bytes::BytesDisplay;
 use mago_codex::metadata::function_like::FunctionLikeMetadata;
-use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::union::TUnion;
 use mago_names::ResolvedNames;
 use mago_names::binding::Binding;
@@ -90,14 +89,10 @@ pub fn check_rejected_nullable_parameters<'ctx, 'arena, A>(
     }
 }
 
-/// Whether `parameter_type` lets null in through a type of its own, as `string?` or `Any?` do. A type parameter does
-/// not: an unbounded `TItem` holds null only when its type argument does, and the caller picks that type argument.
-fn writes_null(parameter_type: &TUnion) -> bool {
-    parameter_type.types.iter().any(|atomic| match atomic {
-        TAtomic::Null | TAtomic::Void => true,
-        TAtomic::Mixed(mixed) => !mixed.is_non_null(),
-        _ => false,
-    })
+/// Whether `written` lets null in through a type of its own, as `string?` or `Any?` do. A type parameter does not: an
+/// unbounded `TItem` holds null only when its type argument does, and the caller picks that type argument.
+pub(crate) fn writes_null(written: &TUnion) -> bool {
+    written.has_null() || written.has_nullable_mixed() || written.is_void()
 }
 
 fn report_rejected_nullable_parameter<'arena, A>(

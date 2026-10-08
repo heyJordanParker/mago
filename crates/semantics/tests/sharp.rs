@@ -2942,10 +2942,10 @@ fn the_type_arguments_of_new_and_of_a_method_call_are_checked_as_types() {
 
 /// G1 erases type arguments, so whatever needs one while the code runs is not supported yet: a type parameter in a
 /// pattern, `as` or a catch clause, `typeof` of one, `new` of one, and any type with type arguments in a pattern or
-/// `as`, a generic class type, `Class<T>`, a `List` and a `Map` alike.
+/// `as`, `Class<T>`, a `List` and a `Map` alike.
 #[test]
 fn what_needs_a_type_argument_while_the_code_runs_is_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public bool run<TItem>(Any value, List<TItem> items)\n    {\n        const a = value is TItem;\n        const b = value is TItem item;\n        const c = value as TItem;\n        const d = value is PaginatedList<Order>;\n        const e = value as PaginatedList<Order>;\n        const f = value as List<TItem>;\n        const g = value as Map<string, List<TItem>>;\n        const h = value is List<TItem>;\n        const i = match (value) { TItem => 1, default => 0 };\n        const j = typeof(TItem);\n        const k = new TItem(value);\n        try {\n        } catch (TItem failure) {\n        }\n        const l = value as List<Order>;\n        const m = value is Class<Order>;\n        return a;\n    }\n}\n";
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public bool run<TItem>(Any value, List<TItem> items)\n    {\n        const a = value is TItem;\n        const b = value is TItem item;\n        const c = value as TItem;\n        const f = value as List<TItem>;\n        const g = value as Map<string, List<TItem>>;\n        const h = value is List<TItem>;\n        const i = match (value) { TItem => 1, default => 0 };\n        const j = typeof(TItem);\n        const k = new TItem(value);\n        try {\n        } catch (TItem failure) {\n        }\n        const m = value is Class<Order>;\n        return a;\n    }\n}\n";
 
     assert_eq!(
         issues(code),
@@ -2956,14 +2956,11 @@ fn what_needs_a_type_argument_while_the_code_runs_is_not_supported_yet() {
             "10:28 This type is not supported yet in PHP#.",
             "11:28 This type is not supported yet in PHP#.",
             "12:28 This type is not supported yet in PHP#.",
-            "13:28 This type is not supported yet in PHP#.",
-            "14:28 This type is not supported yet in PHP#.",
-            "15:35 This type is not supported yet in PHP#.",
-            "16:19 This `typeof` of a type parameter is not supported yet in PHP#.",
-            "17:19 This `new` of a type parameter is not supported yet in PHP#.",
-            "19:18 This type is not supported yet in PHP#.",
-            "21:28 This type is not supported yet in PHP#.",
-            "22:28 This type is not supported yet in PHP#.",
+            "13:35 This type is not supported yet in PHP#.",
+            "14:19 This `typeof` of a type parameter is not supported yet in PHP#.",
+            "15:19 This `new` of a type parameter is not supported yet in PHP#.",
+            "17:18 This type is not supported yet in PHP#.",
+            "19:28 This type is not supported yet in PHP#.",
         ]
     );
 }
@@ -3007,6 +3004,17 @@ fn a_static_member_cannot_use_its_class_type_parameters() {
     );
 }
 
+/// A class constant is a static member too, so its type uses none of its class's type parameters. The plain PHP twin,
+/// whose `@var` may name a `@template`, has no PHP# rule.
+#[test]
+fn a_class_constant_cannot_use_its_class_type_parameters() {
+    let code = "namespace App.Tenant;\n\npublic class Box<TItem>\n{\n    public const TItem EMPTY = 1;\n\n    public const int SIZE = 1;\n}\n";
+    let php = "<?php\n\n/** @template TItem */\nclass Box\n{\n    /** @var TItem */\n    public const EMPTY = 1;\n\n    public const int SIZE = 1;\n}\n";
+
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
+    assert_eq!(issues(code), ["5:18 A static member can't use `TItem`, because every `Box<…>` shares it."]);
+}
+
 /// A static method's own type parameters are its own, so it uses them as any method does.
 #[test]
 fn a_static_method_uses_its_own_type_parameters() {
@@ -3037,6 +3045,20 @@ fn a_type_test_with_type_arguments_is_not_supported_yet() {
             format!("12:34 {refusal}"),
         ]
     );
+}
+
+/// A function type runs as a `Closure` of any signature, so `is`, `as` and a `match` arm cannot test its signature,
+/// and each is refused at its type with the note of every erased type. The plain PHP twin has no PHP# rule.
+#[test]
+fn a_type_test_of_a_function_type_is_not_supported_yet() {
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int run(Any? value)\n    {\n        const a = value is Function<int(int)> f ? f(1) : 0;\n        const b = value as Function<int(int)>;\n        const c = match (value) { Function<int(int)> f => f(1), default => 0 };\n        return a;\n    }\n}\n";
+    let php = "<?php\n\nclass Report\n{\n    public function run(mixed $value): int\n    {\n        return $value instanceof \\Closure ? $value(1) : 0;\n    }\n}\n";
+    let refusal = "This type is not supported yet in PHP#.";
+
+    assert_eq!(issues_in("src/Report.php", php), Vec::<String>::new());
+    assert_eq!(issues(code), [format!("7:28 {refusal}"), format!("8:28 {refusal}"), format!("9:35 {refusal}")]);
+    assert!(check("src/Report.sharp", code).iter().all(|issue| issue.notes
+        == ["Type arguments do not reach the running program yet, so it cannot tell which type a type parameter or a generic type names."]));
 }
 
 /// A generic member of a union gets the checks it gets outside a union, inside its type arguments too. Each union

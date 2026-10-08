@@ -68,6 +68,16 @@ where
     if context.dialect.is_sharp() { display_sharp_type(union, context.codebase) } else { union.get_id().to_string() }
 }
 
+/// Returns `union` with null added as the analyzed file writes types: as PHP# writes the nullable type in a `.sharp`
+/// file, and `php` in PHP.
+#[must_use]
+pub(crate) fn display_nullable_type<A>(context: &Context<'_, '_, A>, union: &TUnion, php: String) -> String
+where
+    A: Arena,
+{
+    if context.dialect.is_sharp() { display_sharp_type(&union.clone().as_nullable(), context.codebase) } else { php }
+}
+
 /// Returns `union` as PHP# writes the type: `List<int>`, `Map<string, int>`, `int?`, `(int|string)?`, `Any?`, a class
 /// by its short name, a type parameter by its name, an intersection as `A & B`, a function type as
 /// `Function<void(int)>`, `Class<Order>`, `Object`, and a literal as `1` or `"text"`. A refinement that PHP# cannot

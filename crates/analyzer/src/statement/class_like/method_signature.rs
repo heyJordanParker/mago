@@ -91,7 +91,7 @@ pub fn validate_method_signature_compatibility(
     let (child_method, changed_bound) = if dialect.is_sharp() {
         match with_parent_type_parameters(codebase, child_method, parent_method) {
             Ok(child_method) => (child_method, None),
-            Err(index) => (Cow::Borrowed(child_method), Some(index)),
+            Err(changed_bound) => (Cow::Borrowed(child_method), Some(changed_bound)),
         }
     } else {
         (Cow::Borrowed(child_method), None)
@@ -189,15 +189,8 @@ pub fn validate_method_signature_compatibility(
         return issues;
     }
 
-    if let Some((template, (_, parent_template))) = changed_bound.and_then(|index| {
-        Some((child_method.template_types.get_index(index)?.0, parent_method.template_types.get_index(index)?))
-    }) {
-        issues.push(SignatureCompatibilityIssue::ChangedTemplateBound {
-            template: *template,
-            child_method: generic_method_name(child_method),
-            parent_method: generic_method_name(parent_method),
-            bound: (!parent_template.constraint.is_mixed()).then(|| parent_template.constraint.clone()),
-        });
+    if let Some(changed_bound) = changed_bound {
+        issues.push(changed_bound);
 
         return issues;
     }
@@ -379,13 +372,13 @@ pub fn validate_method_signature_compatibility(
 /// `child_method` with each of its own type parameters replaced by the type parameter `parent_method` declares at the
 /// same position, as C# matches a generic method's type parameters, so `T pick<T>(T item)` overriding
 /// `T pick<T>(T item)` returns the parent's `T`. C# lets no override write its own bound, so the type parameters
-/// match only when each pair has the same bound. Otherwise returns the index of the first type parameter whose bound
+/// match only when each pair has the same bound. Otherwise returns the issue of the first type parameter whose bound
 /// differs.
 fn with_parent_type_parameters<'method>(
     codebase: &CodebaseMetadata,
     child_method: &'method FunctionLikeMetadata,
     parent_method: &FunctionLikeMetadata,
-) -> Result<Cow<'method, FunctionLikeMetadata>, usize> {
+) -> Result<Cow<'method, FunctionLikeMetadata>, SignatureCompatibilityIssue> {
     if child_method.template_types.is_empty() || child_method.template_types.len() != parent_method.template_types.len()
     {
         return Ok(Cow::Borrowed(child_method));
@@ -421,10 +414,15 @@ fn with_parent_type_parameters<'method>(
 
         contains(&child_bound, parent_bound) && contains(parent_bound, &child_bound)
     };
-    if let Some(index) = pairs().position(|((_, child_template), (_, parent_template))| {
+    if let Some(((template, _), (_, parent_template))) = pairs().find(|((_, child_template), (_, parent_template))| {
         !is_same_bound(&child_template.constraint, &parent_template.constraint)
     }) {
-        return Err(index);
+        return Err(SignatureCompatibilityIssue::ChangedTemplateBound {
+            template: *template,
+            child_method: generic_method_name(child_method),
+            parent_method: generic_method_name(parent_method),
+            bound: (!parent_template.constraint.is_mixed()).then(|| parent_template.constraint.clone()),
+        });
     }
 
     Ok(Cow::Owned(super::apply_template_substitution_to_method(child_method, &template_result, codebase)))

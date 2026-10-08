@@ -1198,10 +1198,7 @@ where
                 artifacts.get_expression_type(access.object)?
             };
 
-            receiver.types.iter().find_map(|atomic| match atomic {
-                TAtomic::Object(object) => get_localized_property_type(context, object, property_name),
-                _ => None,
-            })?
+            get_localized_property_type(context, receiver, property_name)?
         }
         _ => return None,
     };

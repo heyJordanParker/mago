@@ -212,8 +212,9 @@ impl<'arena> ResolvedNames<'arena> {
     }
 
     /// Returns the span of the part of a PHP# type that needs a type argument while the code runs, which G1 erases: a
-    /// type parameter, or a type with type arguments, as in `List<int>`, `PaginatedList<Order>` or `Class<Order>`.
-    /// Returns `None` for a type that needs none, and for every type in a PHP file.
+    /// type parameter, a type with type arguments, as in `List<int>`, `PaginatedList<Order>` or `Class<Order>`, or a
+    /// function type, which runs as a `Closure` of any signature. Returns `None` for a type that needs none, and for
+    /// every type in a PHP file.
     ///
     /// The checker refuses such a type in a pattern, `as` or a catch clause, and the analyzer reads this to skip what
     /// the checker refused, so they never disagree on an erased type.
@@ -224,6 +225,7 @@ impl<'arena> ResolvedNames<'arena> {
                 Some(name.span())
             }
             Hint::Generic(generic) => Some(generic.span()),
+            Hint::Function(function) => Some(function.span()),
             Hint::Nullable(nullable) => self.erased_type(nullable.hint),
             Hint::Parenthesized(parenthesized) => self.erased_type(parenthesized.hint),
             Hint::Union(union) => self.erased_type(union.left).or_else(|| self.erased_type(union.right)),

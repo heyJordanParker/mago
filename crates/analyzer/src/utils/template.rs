@@ -368,13 +368,13 @@ pub(crate) fn check_private_method_reach<A>(
     }
 
     let positions = find_method_positions(codebase, metadata, &GenericParent::ClassLike(class.name));
-    report_private_reach(context, object, class, &metadata.original_name.to_string(), positions, span);
+    report_private_reach(context, object, class, &metadata.original_name.to_string(), positions, "reachable", span);
 }
 
 /// Reports a read of `property` through `object` when its read is private, or a write when its `set` is private, when
 /// `object` is not `this`, and the property's use of a type parameter of `class`, its PHP# class, breaks the
 /// parameter's marker, spec section 11.1. A property another instance writes takes its type in, and one it reads hands
-/// its type out.
+/// its type out. A property whose `get` is public is written only through `this`.
 pub(crate) fn check_private_property_reach<A>(
     context: &mut Context<'_, '_, A>,
     object: &Expression<'_>,
@@ -402,7 +402,8 @@ pub(crate) fn check_private_property_reach<A>(
         position,
         &mut positions,
     );
-    report_private_reach(context, object, class, &property_name(property), positions, span);
+    let reach = if matches!(property.read_visibility, Visibility::Private) { "reachable" } else { "written" };
+    report_private_reach(context, object, class, &property_name(property), positions, reach, span);
 }
 
 fn report_private_reach<A>(
@@ -411,6 +412,7 @@ fn report_private_reach<A>(
     class: &ClassLikeMetadata,
     member: &str,
     positions: Vec<(Word, Variance)>,
+    reach: &str,
     span: Span,
 ) where
     A: Arena,
@@ -427,7 +429,7 @@ fn report_private_reach<A>(
 
     context.collector.report_with_code(
         IssueCode::InvalidTemplateParameter,
-        Issue::error(format!("`{member}` breaks `{marker} {template}`, so it is reachable only through `this`."))
+        Issue::error(format!("`{member}` breaks `{marker} {template}`, so it is {reach} only through `this`."))
             .with_annotation(
                 Annotation::primary(span).with_message(format!("`{member}` is reached here through another value")),
             )
@@ -560,8 +562,9 @@ fn find_atomic_template_positions(
 /// Rewrites `issue`, which reports `input` where `expected` is required, when only a missing `out` or `in` blocks the
 /// substitution in a PHP# file: `C<A>` given where `C<B>` is expected, `C` a PHP# class, and the one type argument that
 /// differs belongs to an invariant type parameter whose `out` (`A` within `B`) or `in` (`B` within `A`) would accept
-/// it. The message is spec section 11.1's, and the help names the marker by where `C` uses the type parameter. The
-/// issue keeps its code.
+/// it. The message is spec section 11.1's, and the help names the marker by where `C` uses the type parameter, unless
+/// that marker allows only the opposite substitution, as `out` lets `C<B>` take a `C<A>` but never the other way, where
+/// the issue keeps its help. The issue keeps its code.
 pub(crate) fn explain_blocked_substitution<A>(
     context: &Context<'_, '_, A>,
     input: &TUnion,
@@ -648,19 +651,20 @@ where
         display_sharp_type(input, codebase),
         display_sharp_type(&wrap_atomic(wanted.clone()), codebase)
     );
-    issue.help = Some(match position {
-        Some(Variance::Covariant) => {
-            format!("{template} is only returned by {class_name}, so declare it `out {template}`.")
+    issue.help = match position {
+        Some(Variance::Covariant) if widens => {
+            Some(format!("{template} is only returned by {class_name}, so declare it `out {template}`."))
         }
-        Some(Variance::Contravariant) => {
-            format!("{template} is only taken in by {class_name}, so declare it `in {template}`.")
+        Some(Variance::Contravariant) if !widens => {
+            Some(format!("{template} is only taken in by {class_name}, so declare it `in {template}`."))
         }
-        Some(_) => format!("{template} is both taken in and returned by {class_name}, so neither marker fits."),
-        None => format!(
+        Some(Variance::Covariant | Variance::Contravariant) => issue.help,
+        Some(_) => Some(format!("{template} is both taken in and returned by {class_name}, so neither marker fits.")),
+        None => Some(format!(
             "{template} is neither taken in nor returned by {class_name}, so declare it `{} {template}`.",
             if widens { "out" } else { "in" }
-        ),
-    });
+        )),
+    };
 
     issue
 }

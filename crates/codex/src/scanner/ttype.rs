@@ -91,7 +91,10 @@ pub fn get_type_metadata_from_type(
 /// The templates a PHP# type parameter list declares, in order, spec section 11: each is the template a `@template`
 /// tag declares for `defining_entity`, its bound the tag's `of`, or `mixed` without one. Every name of the list is a
 /// template while the bounds are read, so a bound names a type parameter of its own list, its own or a later one, as in
-/// `<TItem : Comparable<TItem>>`. `type_context` holds the templates once the list is read.
+/// `<TItem : Comparable<TItem>>`. The bounds are read once per type parameter, each time with the templates of the read
+/// before, so a bound sees the bound of every type parameter it names, directly or through another bound, as
+/// `<TKey : DatabaseEntity, TItem : Holder<TKey>>` sees `TKey`'s. `type_context` holds the templates once the list is
+/// read.
 pub fn scan_type_parameters<'arena, A>(
     type_parameters: &'arena TypeParameterList<'arena>,
     defining_entity: GenericParent,
@@ -110,20 +113,29 @@ where
             .insert(word(parameter.name.value), vec![GenericTemplate::new(defining_entity, get_mixed())]);
     }
 
-    let templates: Vec<(Word, GenericTemplate)> = type_parameters
-        .parameters
-        .iter()
-        .map(|parameter| {
-            let constraint = parameter.bound.as_ref().map_or_else(get_mixed, |bound| {
-                get_type_metadata_from_hint(&bound.hint, Some(classname), type_context, context).type_union
-            });
+    let read_bounds = |type_context: &mut TypeResolutionContext| {
+        let templates: Vec<(Word, GenericTemplate)> = type_parameters
+            .parameters
+            .iter()
+            .map(|parameter| {
+                let constraint = parameter.bound.as_ref().map_or_else(get_mixed, |bound| {
+                    get_type_metadata_from_hint(&bound.hint, Some(classname), &*type_context, context).type_union
+                });
 
-            (word(parameter.name.value), GenericTemplate::new(defining_entity, constraint))
-        })
-        .collect();
+                (word(parameter.name.value), GenericTemplate::new(defining_entity, constraint))
+            })
+            .collect();
 
-    for (name, definition) in &templates {
-        type_context.get_template_definitions_mut().insert(*name, vec![definition.clone()]);
+        for (name, definition) in &templates {
+            type_context.get_template_definitions_mut().insert(*name, vec![definition.clone()]);
+        }
+
+        templates
+    };
+
+    let mut templates = Vec::new();
+    for _ in &type_parameters.parameters {
+        templates = read_bounds(type_context);
     }
 
     templates

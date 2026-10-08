@@ -1277,33 +1277,38 @@ where
     )
 }
 
-/// The declared type of the property `property_name` read through `object`, as `find_property_in_class` localizes a
-/// read: the declaring class's type parameters become `object`'s type arguments, or the ones `object`'s class names in
-/// its header.
+/// The declared type of the property `property_name` read through `receiver`, from its first object that declares it,
+/// as `find_property_in_class` localizes a read: the declaring class's type parameters become that object's type
+/// arguments, or the ones the object's class names in its header.
 pub(crate) fn get_localized_property_type<A>(
     context: &Context<'_, '_, A>,
-    object: &TObject,
+    receiver: &TUnion,
     property_name: Word,
 ) -> Option<TUnion>
 where
     A: Arena,
 {
-    let class_name = object.get_name()?;
-    let property_type = context.codebase.get_property_type(class_name.as_bytes(), property_name.as_bytes())?;
-    let declaring_class_name =
-        context.codebase.get_declaring_property_class(class_name.as_bytes(), property_name.as_bytes())?;
-    let declaring_class = context.codebase.get_class_like(declaring_class_name.as_bytes())?;
-    if declaring_class.template_types.is_empty() {
-        return Some(property_type.clone());
-    }
+    receiver.types.iter().find_map(|atomic| {
+        let TAtomic::Object(object) = atomic else {
+            return None;
+        };
+        let class_name = object.get_name()?;
+        let property_type = context.codebase.get_property_type(class_name.as_bytes(), property_name.as_bytes())?;
+        let declaring_class_name =
+            context.codebase.get_declaring_property_class(class_name.as_bytes(), property_name.as_bytes())?;
+        let declaring_class = context.codebase.get_class_like(declaring_class_name.as_bytes())?;
+        if declaring_class.template_types.is_empty() {
+            return Some(property_type.clone());
+        }
 
-    Some(localize_property_type(
-        context,
-        property_type,
-        object.get_type_parameters().unwrap_or_default(),
-        context.codebase.get_class_like(class_name.as_bytes())?,
-        declaring_class,
-    ))
+        Some(localize_property_type(
+            context,
+            property_type,
+            object.get_type_parameters().unwrap_or_default(),
+            context.codebase.get_class_like(class_name.as_bytes())?,
+            declaring_class,
+        ))
+    })
 }
 
 fn update_template_types<A>(

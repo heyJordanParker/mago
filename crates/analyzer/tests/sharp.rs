@@ -3624,20 +3624,15 @@ fn a_generic_method_returns_a_generic_class_of_its_inferred_type_argument() {
     assert!(messages(analyzed, &others)[0].contains("`PaginatedList<Order>`"), "{:?}", messages(analyzed, &others));
 }
 
-/// A type argument outside its type parameter's bound, or one too many, is reported where it is written, and an
-/// inferred one where the call passes it. Several bounds joined with `&` each hold.
+/// A type argument outside its type parameter's bound is reported where it is written, and an inferred one where the
+/// call passes it. Several bounds joined with `&` each hold.
 #[test]
 fn a_type_argument_outside_its_bound_or_beyond_the_type_parameters_is_reported() {
-    let sharp = "namespace Demo;\n\npublic class Report\n{\n    public static Any numbers(PaginatedList<int> page) => page;\n\n    public static Any pairs(PaginatedList<Order, Order> page) => page;\n\n    public static Any lines(Repository repository, Query<Line> query) => repository.list(query);\n\n    public static Any shared(Shelf<SharedOrder> shelf) => shelf;\n\n    public static Any plain(Shelf<Order> shelf) => shelf;\n}\n";
+    let sharp = "namespace Demo;\n\npublic class Report\n{\n    public static Any lines(Repository repository, Query<Line> query) => repository.list(query);\n\n    public static Any shared(Shelf<SharedOrder> shelf) => shelf;\n\n    public static Any plain(Shelf<Order> shelf) => shelf;\n}\n";
 
     assert_eq!(
         issues(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]),
-        [
-            "5:31 template-constraint-violation",
-            "7:29 excess-template-parameter",
-            "9:90 template-constraint-violation",
-            "13:29 template-constraint-violation",
-        ]
+        ["5:90 template-constraint-violation", "9:29 template-constraint-violation"]
     );
 }
 
@@ -3787,15 +3782,6 @@ fn a_pattern_or_as_of_a_type_parameter_adds_no_issue() {
     let sharp = "namespace Demo;\n\npublic abstract class Maker\n{\n}\n\npublic abstract class Builder<TItem : Maker>\n{\n    public bool holds(Any? value) => value is TItem;\n\n    public bool lacks(Any? value) => value is not TItem;\n\n    public Any? kept(Any? value) => value as TItem;\n\n    public int ranked(Any? value) => match (value) { TItem item => 1, default => 0 };\n\n    public void sort(Any? value)\n    {\n        match (value) {\n            TItem item => this.made(),\n            default => this.made(),\n        }\n    }\n\n    public abstract TItem made();\n}\n";
 
     assert_eq!(issues(("src/Demo/Builder.sharp", sharp), &[]), Vec::<String>::new());
-}
-
-/// `value is PaginatedList<Order>` and `value as PaginatedList<Order>`, which `check_slice` refuses because a generic
-/// class type needs its type argument while the code runs, add no analyzer issue on the refused line.
-#[test]
-fn a_pattern_or_as_of_a_generic_class_type_adds_no_issue() {
-    let sharp = "namespace Demo;\n\npublic class Report\n{\n    public static bool holds(Any? value) => value is PaginatedList<Order>;\n\n    public static Any? kept(Any? value) => value as PaginatedList<Order>;\n}\n";
-
-    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)]), Vec::<String>::new());
 }
 
 /// Generics are erased when PHP# compiles, so `Validator<in TItem>` takes `mixed`, and PHP refuses a parameter
@@ -4159,8 +4145,9 @@ fn out_and_in_are_checked_on_a_class_type() {
 
 /// Spec section 11.1 lets a private member break the marker, as Scala's object-private members do, and reaches it only
 /// through `this`: another instance's field, written or read, another instance's method, called or read as a value, and
-/// the private `set` of another instance's property are refused where they are reached, for `out` and `in` alike. The
-/// public `get` of that property stays reachable. The plain PHP twin keeps Mago's issues.
+/// the private `set` of another instance's property are refused where they are reached, for `out` and `in` alike, and a
+/// property whose `get` is public is written only through `this`, as its `get` stays reachable. The plain PHP twin keeps
+/// Mago's issues.
 #[test]
 fn a_variance_breaking_private_member_is_reachable_only_through_this() {
     let sharp = "namespace Demo;\n\npublic class Order\n{\n}\n\npublic class Cell<out TItem>\n{\n    private TItem? value = null;\n\n    public TItem? get() => this.value;\n\n    public void poison(Cell<Any?> target)\n    {\n        target.value = 1;\n    }\n\n    public Any? peek(Cell<Any?> other) => other.value;\n}\n\npublic class Stack<out TItem>\n{\n    private void push(TItem item)\n    {\n    }\n\n    public void fill(Stack<Any?> other)\n    {\n        other.push(1);\n    }\n\n    public Any? grab(Stack<Any?> other) => other.push;\n}\n\npublic class Sink<in TItem>\n{\n    private TItem? last = null;\n\n    public void take(TItem item)\n    {\n        this.last = item;\n    }\n\n    public Any? leak(Sink<Order> other) => other.last;\n}\n\npublic class Slot<out TItem>\n{\n    public TItem? held { get; private set; } = null;\n\n    public void swap(Slot<Any?> other)\n    {\n        other.held = 1;\n    }\n\n    public Any? read(Slot<Any?> other) => other.held;\n}\n";
@@ -4175,7 +4162,7 @@ fn a_variance_breaking_private_member_is_reachable_only_through_this() {
             "29:15 invalid-template-parameter `push` breaks `out TItem`, so it is reachable only through `this`.",
             "32:50 invalid-template-parameter `push` breaks `out TItem`, so it is reachable only through `this`.",
             "44:50 invalid-template-parameter `last` breaks `in TItem`, so it is reachable only through `this`.",
-            "53:15 invalid-template-parameter `held` breaks `out TItem`, so it is reachable only through `this`.",
+            "53:15 invalid-template-parameter `held` breaks `out TItem`, so it is written only through `this`.",
         ]
     );
 }
@@ -4475,33 +4462,6 @@ fn a_default_of_another_type_is_refused_where_a_type_parameter_is_required() {
         [
             "5:25 invalid-property-default-value Default value for property `Demo\\Box::item` is not assignable to its declared type. | This default value has type `1` | Property is declared with type `TItem` | A property's default value must be assignable to the property's declared type. | Change the default value to match the declared type, or update the property type to accept the default.",
             "11:34 invalid-parameter-default-value Default value for parameter `$item` is not assignable to its declared type. | This default value has type `1` | Parameter `$item` is declared with type `TItem` | A parameter's default value must be assignable to the parameter's declared type. | Change the default value to match the declared type, or widen the parameter type to accept the default.",
-        ]
-    );
-}
-
-/// A type parameter is opaque as an input too: a `TItem` passes neither as an `int` argument, an `int` return value,
-/// an `int` property nor an `int` local, and each is the invalid value alone, never a value too general for its
-/// place. A type parameter passes as its bound's class. The PHP twin keeps Mago's issues.
-#[test]
-fn a_type_parameter_passes_only_as_itself_or_its_bound() {
-    let sharp = "namespace Demo;\n\npublic class Order\n{\n}\n\npublic class Counter\n{\n    public static int keep(int number) => number;\n\n    public static Order kept(Order order) => order;\n}\n\npublic class Box<TItem>\n{\n    public int count = 0;\n\n    public int passed(TItem item) => Counter.keep(item);\n\n    public int returned(TItem item) => item;\n\n    public int written(TItem item)\n    {\n        this.count = item;\n        int local = item;\n        return local;\n    }\n\n    public Order bounded<TOrder : Order>(TOrder order) => Counter.kept(order);\n}\n";
-    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n}\n\nclass Counter\n{\n    public static function keep(int $number): int\n    {\n        return $number;\n    }\n\n    public static function kept(Order $order): Order\n    {\n        return $order;\n    }\n}\n\n/** @template TItem */\nclass Box\n{\n    public int $count = 0;\n\n    /** @param TItem $item */\n    public function passed(mixed $item): int\n    {\n        return Counter::keep($item);\n    }\n\n    /** @param TItem $item */\n    public function returned(mixed $item): int\n    {\n        return $item;\n    }\n\n    /** @param TItem $item */\n    public function written(mixed $item): int\n    {\n        $this->count = $item;\n        /** @var int $local */\n        $local = $item;\n        return $local;\n    }\n\n    /**\n     * @template TOrder of Order\n     * @param TOrder $order\n     */\n    public function bounded(Order $order): Order\n    {\n        return Counter::kept($order);\n    }\n}\n";
-
-    assert_eq!(
-        issues(("src/Demo/Box.php", php), &[]),
-        [
-            "30:30 less-specific-nested-argument-type",
-            "36:16 less-specific-nested-return-statement",
-            "42:24 mixed-property-type-coercion",
-        ]
-    );
-    assert_eq!(
-        issues(("src/Demo/Box.sharp", sharp), &[]),
-        [
-            "18:51 invalid-argument",
-            "20:40 invalid-return-statement",
-            "24:22 invalid-property-assignment-value",
-            "25:21 invalid-local-assignment-value",
         ]
     );
 }
@@ -4983,6 +4943,99 @@ fn a_spread_of_a_type_parameter_names_it_and_the_list_to_spread() {
         worded(("src/Demo/Box.sharp", sharp), &[]),
         [
             "10:52 invalid-argument Cannot spread a value of type `TItem`: PHP# spreads only a list. | Type `TItem` is not a list | Spec section 7 spreads an existing list into a call, as in `Money.sum(...prices)`. | Spread a list, such as a variadic parameter or a `List<int>` from plain PHP."
+        ]
+    );
+}
+
+/// `null` passes only where the parameter's own type writes it, `TItem?` or `Any?`: an unbounded `TItem` holds null
+/// only when its type argument does, so `null` and a `TItem?` are refused where `TItem` is required, in a class or a
+/// method, and a call that infers its type parameter from `null` takes it. The PHP twin keeps Mago's issues.
+#[test]
+fn null_passes_only_where_the_parameter_type_writes_it() {
+    let sharp = "namespace Demo;\n\npublic class Box<TItem>\n{\n    public void add(TItem item)\n    {\n    }\n\n    public void maybe(TItem? item)\n    {\n    }\n\n    public void any(Any? item)\n    {\n    }\n\n    public void poison(TItem? item)\n    {\n        this.add(null);\n        this.add(item);\n        this.maybe(null);\n        this.any(null);\n    }\n}\n\npublic class Lists\n{\n    public static List<T> padded<T>(List<T> items)\n    {\n        items.add(null);\n        return items;\n    }\n\n    public static T kept<T>(T item) => item;\n\n    public static Any? keptNull() => Lists.kept(null);\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\n/** @template TItem */\nclass Box\n{\n    /** @param TItem $item */\n    public function add(mixed $item): void\n    {\n    }\n\n    /** @param TItem|null $item */\n    public function maybe(mixed $item): void\n    {\n    }\n\n    public function any(mixed $item): void\n    {\n    }\n\n    /** @param TItem|null $item */\n    public function poison(mixed $item): void\n    {\n        $this->add(null);\n        $this->add($item);\n        $this->maybe(null);\n        $this->any(null);\n    }\n}\n\nclass Lists\n{\n    /**\n     * @template T\n     * @param list<T> $items\n     * @return list<T>\n     */\n    public static function padded(array $items): array\n    {\n        $items[] = null;\n        return $items;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Box.php", php), &[]), Vec::<String>::new());
+    assert_eq!(
+        issues(("src/Demo/Box.sharp", sharp), &[]),
+        ["19:18 null-argument", "20:18 possibly-null-argument", "30:19 null-argument"]
+    );
+}
+
+/// An override keeps the bound of each type parameter it overrides with the class header's type arguments in place of
+/// the parent's type parameters, so `count<TQuery : Query<Order>>` overrides `Repository<Order>`'s
+/// `count<TQuery : Query<TEntity>>`, and a `Query<Line>` bound names `Query<Order>` as the bound to keep. The PHP twin
+/// keeps Mago's issues.
+#[test]
+fn an_override_keeps_a_bound_that_names_the_parents_type_parameter() {
+    let sharp = "namespace Demo;\n\npublic abstract class DatabaseEntity\n{\n}\n\npublic class Order : DatabaseEntity\n{\n}\n\npublic class Line\n{\n}\n\npublic interface Query<TItem>\n{\n    List<TItem> rows();\n}\n\npublic abstract class Repository<TEntity : DatabaseEntity>\n{\n    public abstract int count<TQuery : Query<TEntity>>(TQuery query);\n}\n\npublic class OrderRepository : Repository<Order>\n{\n    public override int count<TQuery : Query<Order>>(TQuery query) => 0;\n}\n\npublic class LineRepository : Repository<Order>\n{\n    public override int count<TQuery : Query<Line>>(TQuery query) => 0;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nabstract class DatabaseEntity\n{\n}\n\nclass Order extends DatabaseEntity\n{\n}\n\nclass Line\n{\n}\n\n/** @template TItem */\ninterface Query\n{\n    /** @return list<TItem> */\n    public function rows(): array;\n}\n\n/** @template TEntity of DatabaseEntity */\nabstract class Repository\n{\n    /**\n     * @template TQuery of Query<TEntity>\n     * @param TQuery $query\n     */\n    abstract public function count(Query $query): int;\n}\n\n/** @extends Repository<Order> */\nclass OrderRepository extends Repository\n{\n    /**\n     * @template TQuery of Query<Order>\n     * @param TQuery $query\n     */\n    public function count(Query $query): int\n    {\n        return 0;\n    }\n}\n";
+
+    assert_eq!(
+        explained(("src/Demo/Repository.php", php), &[]),
+        [
+            "41:21 incompatible-parameter-type Parameter `$query` of `Demo\\OrderRepository::count()` expects type `('TQuery.demo\\orderrepository::count() extends Demo\\Query<Demo\\Order>)` but parent `Demo\\Repository::count()` expects type `('TQuery.demo\\repository::count() extends Demo\\Query<('TEntity.demo\\repository extends Demo\\DatabaseEntity)>)` Change the parameter type to be compatible with the parent method."
+        ]
+    );
+    assert_eq!(
+        explained(("src/Demo/Repository.sharp", sharp), &[]),
+        [
+            "32:25 incompatible-parameter-type `LineRepository.count<TQuery>` must keep the bound `Query<Order>` of `Repository.count<TQuery>`. Bound `TQuery` by `Query<Order>`, as `Repository.count<TQuery>` does."
+        ]
+    );
+}
+
+/// A substitution that the missing marker would not let through keeps the help of its issue: `Shelf<TItem>` only
+/// returns `TItem`, so `out TItem` lets a `Shelf<Order>` pass as a `Shelf<DatabaseEntity>` and never the other way,
+/// and `Sink<TItem>` only takes `TItem` in, so `in TItem` never lets a `Sink<Order>` pass as a `Sink<DatabaseEntity>`.
+/// The PHP twin keeps Mago's issues.
+#[test]
+fn a_substitution_the_missing_marker_would_still_block_keeps_its_help() {
+    let sharp = "namespace Demo;\n\npublic abstract class DatabaseEntity\n{\n}\n\npublic class Order : DatabaseEntity\n{\n}\n\npublic abstract class Shelf<TItem>\n{\n    public abstract TItem top();\n}\n\npublic abstract class Sink<TItem>\n{\n    public abstract void put(TItem item);\n}\n\npublic class Report\n{\n    public static Shelf<Order> narrowed(Shelf<DatabaseEntity> shelf)\n    {\n        Shelf<Order> orders = shelf;\n        return orders;\n    }\n\n    public static Sink<DatabaseEntity> widened(Sink<Order> sink)\n    {\n        Sink<DatabaseEntity> entities = sink;\n        return entities;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nabstract class DatabaseEntity\n{\n}\n\nclass Order extends DatabaseEntity\n{\n}\n\n/** @template TItem */\nabstract class Shelf\n{\n    /** @return TItem */\n    abstract public function top(): mixed;\n}\n\n/** @template TItem */\nabstract class Sink\n{\n    /** @param TItem $item */\n    abstract public function put(mixed $item): void;\n}\n\nclass Report\n{\n    /**\n     * @param Shelf<DatabaseEntity> $shelf\n     * @return Shelf<Order>\n     */\n    public static function narrowed(Shelf $shelf): Shelf\n    {\n        return $shelf;\n    }\n\n    /**\n     * @param Sink<Order> $sink\n     * @return Sink<DatabaseEntity>\n     */\n    public static function widened(Sink $sink): Sink\n    {\n        return $sink;\n    }\n}\n";
+
+    assert_eq!(
+        explained(("src/Demo/Report.php", php), &[]),
+        [
+            "35:16 less-specific-return-statement Returned type `Demo\\Shelf<Demo\\DatabaseEntity>` is less specific than the declared return type `Demo\\Shelf<Demo\\Order>` for function `Demo\\Report::narrowed`. Consider returning a value that more precisely matches the declared `Demo\\Shelf<Demo\\Order>` type, or adjust the function's return type declaration if the broader type is intended.",
+            "44:16 less-specific-return-statement Returned type `Demo\\Sink<Demo\\Order>` is less specific than the declared return type `Demo\\Sink<Demo\\DatabaseEntity>` for function `Demo\\Report::widened`. Consider returning a value that more precisely matches the declared `Demo\\Sink<Demo\\DatabaseEntity>` type, or adjust the function's return type declaration if the broader type is intended.",
+        ]
+    );
+    assert_eq!(
+        explained(("src/Demo/Report.sharp", sharp), &[]),
+        [
+            "25:31 invalid-local-assignment-value Shelf<DatabaseEntity> cannot be used as Shelf<Order>. Assign a `Shelf<Order>` value, or change the type `orders` is declared with.",
+            "31:41 invalid-local-assignment-value Sink<Order> cannot be used as Sink<DatabaseEntity>. Assign a `Sink<DatabaseEntity>` value, or change the type `entities` is declared with.",
+        ]
+    );
+}
+
+/// A bound sees the bound of a type parameter it names, so `TItem : Holder<TKey>` holds a `TKey : DatabaseEntity`, and
+/// the `value` an item holds is a `DatabaseEntity?`. It sees it through another bound too, whichever order the list
+/// declares them in. The PHP twin keeps Mago's issues.
+#[test]
+fn a_bound_sees_the_bound_of_a_type_parameter_it_names() {
+    let sharp = "namespace Demo;\n\npublic abstract class DatabaseEntity\n{\n}\n\npublic class Holder<TValue>\n{\n    public TValue? value { get; set; } = null;\n}\n\npublic class Pair<TKey : DatabaseEntity, TItem : Holder<TKey>>\n{\n    public DatabaseEntity? keyOf(TItem item) => item.value;\n}\n\npublic class Triple<TA : DatabaseEntity, TB : Holder<TA>, TC : Holder<TB>>\n{\n    public DatabaseEntity? deep(TC c) => c.value?.value;\n}\n\npublic class Reversed<TC : Holder<TB>, TB : Holder<TA>, TA : DatabaseEntity>\n{\n    public DatabaseEntity? deep(TC c) => c.value?.value;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nabstract class DatabaseEntity\n{\n}\n\n/** @template TValue */\nclass Holder\n{\n    /** @var TValue|null */\n    public mixed $value = null;\n}\n\n/**\n * @template TKey of DatabaseEntity\n * @template TItem of Holder<TKey>\n */\nclass Pair\n{\n    /** @param TItem $item */\n    public function keyOf(Holder $item): ?DatabaseEntity\n    {\n        return $item->value;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Pair.php", php), &[]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Pair.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// Type arguments written on a method call are checked against the method's bounds with the receiver's type arguments
+/// in place, as an inferred call's are: `count<Query<Order>>` fits a `Repository<Order>`'s
+/// `count<TQuery : Query<TEntity>>`, and `count<Query<Line>>` names `Query<Order>` as the bound. The PHP twin, which
+/// cannot write type arguments on a call, keeps Mago's issues for the inferred call.
+#[test]
+fn type_arguments_written_on_a_method_call_see_the_receivers_type_arguments() {
+    let sharp = "namespace Demo;\n\npublic abstract class DatabaseEntity\n{\n}\n\npublic class Order : DatabaseEntity\n{\n}\n\npublic class Line\n{\n}\n\npublic interface Query<TItem>\n{\n    List<TItem> rows();\n}\n\npublic class Repository<TEntity : DatabaseEntity>\n{\n    public int count<TQuery : Query<TEntity>>(TQuery query) => 0;\n}\n\npublic class Report\n{\n    public static int written(Repository<Order> repository, Query<Order> query) => repository.count<Query<Order>>(query);\n\n    public static int inferred(Repository<Order> repository, Query<Order> query) => repository.count(query);\n\n    public static int lined(Repository<Order> repository, Query<Line> query) => repository.count<Query<Line>>(query);\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nabstract class DatabaseEntity\n{\n}\n\nclass Order extends DatabaseEntity\n{\n}\n\n/** @template TItem */\ninterface Query\n{\n    /** @return list<TItem> */\n    public function rows(): array;\n}\n\n/** @template TEntity of DatabaseEntity */\nclass Repository\n{\n    /**\n     * @template TQuery of Query<TEntity>\n     * @param TQuery $query\n     */\n    public function count(Query $query): int\n    {\n        return 0;\n    }\n}\n\nclass Report\n{\n    /**\n     * @param Repository<Order> $repository\n     * @param Query<Order> $query\n     */\n    public static function inferred(Repository $repository, Query $query): int\n    {\n        return $repository->count($query);\n    }\n}\n";
+
+    assert_eq!(explained(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
+    assert_eq!(
+        explained(("src/Demo/Report.sharp", sharp), &[]),
+        [
+            "31:97 template-constraint-violation Type argument `Query<Line>` does not satisfy `Repository::count`'s `TQuery`. Supply a type contained by `Query<Order>`."
         ]
     );
 }

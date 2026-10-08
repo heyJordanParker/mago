@@ -276,7 +276,15 @@ where
         .map(|argument| get_type_from_hint(context, block_context, artifacts, argument))
         .collect();
 
-    if !check_template_arguments(context, owner, owner_span, templates, &arguments, type_arguments.span()) {
+    if !check_template_arguments(
+        context,
+        owner,
+        owner_span,
+        templates,
+        &arguments,
+        type_arguments.span(),
+        template_result,
+    ) {
         return None;
     }
 

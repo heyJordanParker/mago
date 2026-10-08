@@ -44,6 +44,7 @@ use crate::utils::expression::is_referenceable;
 use crate::utils::get_type_diff;
 use crate::utils::misc::unwrap_expression;
 use crate::utils::names::display_function_like_identifier;
+use crate::utils::names::display_nullable_type;
 use crate::utils::names::display_sharp_accessor;
 use crate::utils::names::display_type;
 use crate::utils::template::explain_blocked_substitution;
@@ -401,11 +402,8 @@ pub fn handle_return_value<'ctx, A>(
             && !expected_return_type.is_nullable()
             && !expected_return_type.has_template()
         {
-            let nullable_return_type_str = if context.dialect.is_sharp() {
-                display_type(context, &expected_return_type.clone().as_nullable())
-            } else {
-                format!("?{expected_return_type_str}")
-            };
+            let nullable_return_type_str =
+                display_nullable_type(context, &expected_return_type, format!("?{expected_return_type_str}"));
 
             context.collector.report_with_code(
                 IssueCode::NullableReturnStatement,
@@ -672,11 +670,7 @@ fn handle_property_hook_return<'ctx, A>(
         && !expected_return_type.is_nullable()
         && !expected_return_type.has_template()
     {
-        let nullable_str = if context.dialect.is_sharp() {
-            display_type(context, &expected_return_type.clone().as_nullable())
-        } else {
-            format!("?{expected_str}")
-        };
+        let nullable_str = display_nullable_type(context, &expected_return_type, format!("?{expected_str}"));
         context.collector.report_with_code(
             IssueCode::NullableReturnStatement,
             Issue::error(format!(

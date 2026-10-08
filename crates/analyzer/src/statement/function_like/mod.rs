@@ -79,6 +79,7 @@ use crate::statement::class_like::property::analyze_property_hook;
 use crate::statement::r#return::handle_return_value;
 use crate::statement::r#static::infer_static_local_types;
 use crate::utils::expression::get_variable_id;
+use crate::utils::names::display_nullable_type;
 use crate::utils::names::display_sharp_type;
 use crate::utils::names::display_type;
 use crate::utils::names::short_name;
@@ -744,11 +745,8 @@ pub(crate) fn report_missing_return<A>(
     let help_message = if expected_type.is_nullable() {
         "Ensure all code paths end with a `return` statement. You may need to add `return null;` to the paths that currently don't return a value.".to_string()
     } else {
-        let nullable_return_type_id = if context.dialect.is_sharp() {
-            display_type(context, &expected_type.clone().as_nullable())
-        } else {
-            format!("{expected_return_type_id}|null")
-        };
+        let nullable_return_type_id =
+            display_nullable_type(context, expected_type, format!("{expected_return_type_id}|null"));
 
         format!(
             "Add a `return` statement that provides a value of type '{expected_return_type_id}' to all paths, or change the {kind}'s return type to '{nullable_return_type_id}' and return `null` explicitly."
@@ -1770,6 +1768,7 @@ where
                     &class.template_types,
                     arguments,
                     type_metadata.span,
+                    &TemplateResult::default(),
                 );
             }
             None if !named.is_static => report_missing_type_arguments(context, class, type_metadata.span),
@@ -1779,8 +1778,9 @@ where
 }
 
 /// Reports `arguments`, applied at `span` to the templates `owner` declares at `owner_span`, when their number differs
-/// from the templates' or an argument falls outside its template's bound. Returns whether their number fits. In a
-/// `.sharp` file the report speaks of type arguments and names classes by their short names, as PHP# writes them.
+/// from the templates' or an argument falls outside its template's bound. A bound reads the other templates it names
+/// from `bounds`, such as a call's receiver type arguments, and from `arguments`. Returns whether their number fits. In
+/// a `.sharp` file the report speaks of type arguments and names classes by their short names, as PHP# writes them.
 pub fn check_template_arguments<A>(
     context: &mut Context<'_, '_, A>,
     owner: impl std::fmt::Display,
@@ -1788,6 +1788,7 @@ pub fn check_template_arguments<A>(
     templates: &TemplateTypes,
     arguments: &[TUnion],
     span: Span,
+    bounds: &TemplateResult,
 ) -> bool
 where
     A: Arena,
@@ -1830,7 +1831,7 @@ where
 
     // A PHP# bound may name the owner's type parameters, as `TItem : Comparable<TItem>` does, so each holds its argument
     // there. Upstream Mago leaves such a bound unchecked in PHP.
-    let mut template_result = TemplateResult::default();
+    let mut template_result = bounds.clone();
     for (argument, (template_name, template)) in arguments.iter().zip(templates.iter()) {
         template_result.add_lower_bound(*template_name, template.defining_entity, argument.clone());
     }
