@@ -24,6 +24,7 @@ use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Enum;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::Extends;
+use mago_syntax::cst::Extern;
 use mago_syntax::cst::For;
 use mago_syntax::cst::ForOf;
 use mago_syntax::cst::Function;
@@ -70,6 +71,7 @@ use mago_syntax::cst::UnaryPrefix;
 use mago_syntax::cst::UnaryPrefixOperator;
 use mago_syntax::cst::Use;
 use mago_syntax::cst::UseItems;
+use mago_syntax::cst::Uses;
 use mago_syntax::cst::While;
 use mago_syntax::cst::WhileBody;
 use mago_syntax::utils::pattern::called_function;
@@ -290,6 +292,15 @@ impl<'arena> NameWalker<'arena> {
             b"Bool" => b"Sharp\\Bool",
             b"Position" => b"Sharp\\Position",
             b"Environment" => b"Sharp\\Environment",
+            b"Database" => b"Sharp\\Database",
+            b"Http" => b"Sharp\\Http",
+            b"Files" => b"Sharp\\Files",
+            b"Console" => b"Sharp\\Console",
+            b"Process" => b"Sharp\\Process",
+            b"Clock" => b"Sharp\\Clock",
+            b"Random" => b"Sharp\\Random",
+            b"Cache" => b"Sharp\\Cache",
+            b"Mail" => b"Sharp\\Mail",
             b"List" => b"Sharp\\List",
             b"Replaces" => b"Sharp\\Replaces",
             _ => return (fqn, imported),
@@ -491,6 +502,33 @@ where
                     self.resolved_names.insert_at(mixed.item.name.span(), fqn, true);
                 }
             }
+        }
+    }
+
+    /// An `extern` target is a class when it is `Class.member` or the file imports or declares it, and a global
+    /// function otherwise, since PHP# declares no functions. `Class.member` resolves its class and keeps the member as
+    /// written.
+    fn walk_in_extern(&mut self, r#extern: &'ast Extern<'arena>, context: &mut NameResolutionContext<'arena, A>) {
+        let target = &r#extern.target;
+        let written = target.value();
+        let class = written.split(|byte| *byte == b'.').next().unwrap_or(written);
+        let (fqn, imported) = self.resolve_class(context, class);
+        if !target.is_dotted() && !imported && !self.declared_classes.contains(&IgnoringCase(class)) {
+            self.resolved_names.insert_at(target.span(), written, false);
+
+            return;
+        }
+
+        self.resolved_names.insert_at(target.span(), fqn, imported);
+        self.resolved_names.bind(target.span(), Binding::Class);
+    }
+
+    fn walk_in_uses(&mut self, uses: &'ast Uses<'arena>, context: &mut NameResolutionContext<'arena, A>) {
+        for name in &uses.names {
+            let (fqn, imported) = self.resolve_class(context, name.value);
+
+            self.resolved_names.insert_at(name.span, fqn, imported);
+            self.resolved_names.bind(name.span, Binding::Class);
         }
     }
 

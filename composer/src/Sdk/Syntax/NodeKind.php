@@ -217,6 +217,8 @@ enum NodeKind: string
     case UseItemSequence = 'UseItemSequence';
     case UseItems = 'UseItems';
     case UseType = 'UseType';
+    case Extern = 'Extern';
+    case Uses = 'Uses';
     case Yield = 'Yield';
     case YieldFrom = 'YieldFrom';
     case YieldPair = 'YieldPair';

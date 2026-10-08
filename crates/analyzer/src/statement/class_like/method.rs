@@ -26,6 +26,9 @@ use crate::artifacts::AnalysisArtifacts;
 use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
+use crate::effects;
+use crate::effects::Body;
+use crate::effects::short_name;
 use crate::error::AnalysisError;
 use crate::statement::attributes::AttributeTarget;
 use crate::statement::attributes::analyze_attributes;
@@ -140,6 +143,17 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Method<'arena> {
             )?;
 
             let method_key = (class_like_metadata.name, lowercase_method_name);
+
+            if context.dialect.is_sharp() {
+                effects::summary::record(
+                    context,
+                    artifacts,
+                    Body::Method(class_like_metadata.name, lowercase_method_name),
+                    concat_word!(short_name(class_like_metadata.original_name), ".", self.name.value),
+                    self.parameter_list.parameters.iter().map(|parameter| parameter.variable.span).collect(),
+                    body,
+                );
+            }
 
             if method_metadata.return_from_body.is_some() {
                 let mut returned: Option<TUnion> = None;
