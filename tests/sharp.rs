@@ -433,10 +433,31 @@ fn suppressed_workspace(name: &str, contents: &str, analyzer: &str) -> tempfile:
     directory
 }
 
+/// A workspace holding [`broken_sharp`] and `src/Demo/Twin.php`, a PHP class with the same error.
+fn broken_twins_workspace(analyzer: &str) -> tempfile::TempDir {
+    let directory = suppressed_workspace("Broken.sharp", &broken_sharp(""), analyzer);
+    std::fs::write(directory.path().join("src/Demo/Twin.php"), broken_php("").replace("class Broken", "class Twin"))
+        .unwrap();
+    directory
+}
+
 /// Writes a baseline of every issue `mago analyze` reports in `workspace` to `baseline.toml`.
 fn generate_baseline(workspace: &Path) {
     let generated = run(workspace, "analyze", &["--generate-baseline", "--baseline", "baseline.toml"]);
     assert!(workspace.join("baseline.toml").is_file(), "{}", String::from_utf8_lossy(&generated.stderr));
+}
+
+/// A strict baseline entry for the error in [`broken_sharp`]. Mago never writes one, so a test writes it by hand.
+const SHARP_ERROR_ENTRY: &str =
+    "[[entries.\"src/Demo/Broken.sharp\".issues]]\ncode = \"invalid-return-statement\"\nstart_line = 7\nend_line = 7\n";
+
+/// A strict baseline entry for the error in the `Twin.php` of [`broken_twins_workspace`].
+const TWIN_ERROR_ENTRY: &str =
+    "[[entries.\"src/Demo/Twin.php\".issues]]\ncode = \"invalid-return-statement\"\nstart_line = 9\nend_line = 9\n";
+
+/// Writes a strict baseline holding `entries` to `baseline.toml` in `workspace`.
+fn write_strict_baseline(workspace: &Path, entries: &[&str]) {
+    std::fs::write(workspace.join("baseline.toml"), format!("variant = \"strict\"\n\n{}", entries.join("\n"))).unwrap();
 }
 
 /// Three workspaces holding `src/Demo/{name}`, each hiding the issues `code` names with one suppression: an
@@ -496,32 +517,46 @@ fn analyze_reports_a_sharp_error_an_ignore_entry_targets_and_points_at_the_error
 
 #[test]
 fn analyze_reports_a_sharp_error_a_baseline_entry_targets_and_points_at_the_error() {
+    let directory = broken_twins_workspace("");
+    write_strict_baseline(directory.path(), &[SHARP_ERROR_ENTRY, TWIN_ERROR_ENTRY]);
+
+    let output = run(directory.path(), "analyze", &["--baseline", "baseline.toml", "--reporting-format", "emacs"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let rich = run(directory.path(), "analyze", &["--baseline", "baseline.toml", "--reporting-format", "rich"]);
+    let rich = String::from_utf8_lossy(&rich.stdout);
+
+    assert!(!output.status.success(), "{stdout}");
+    assert!(stdout.contains("src/Demo/Broken.sharp:8:16:error - invalid-return-statement:"), "{stdout}");
+    assert!(
+        stdout.contains(
+            "src/Demo/Broken.sharp:8:16:warning - unsuppressible-error: An error can't be suppressed in PHP#."
+        ),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("src/Demo/Twin.php"), "{stdout}");
+    assert!(rich.contains("A baseline entry matches this error."), "{rich}");
+    assert!(stderr.contains("Filtered out 1 issues based on the baseline file."), "{stderr}");
+}
+
+#[test]
+fn a_generated_baseline_leaves_out_a_sharp_error_and_keeps_a_php_error() {
     for variant in ["loose", "strict"] {
-        let directory =
-            suppressed_workspace("Broken.sharp", &broken_sharp(""), &format!("baseline-variant = \"{variant}\""));
-        std::fs::write(
-            directory.path().join("src/Demo/Twin.php"),
-            broken_php("").replace("class Broken", "class Twin"),
-        )
-        .unwrap();
+        let directory = broken_twins_workspace(&format!("baseline-variant = \"{variant}\""));
         generate_baseline(directory.path());
+        let baseline = std::fs::read_to_string(directory.path().join("baseline.toml")).unwrap();
 
         let output = run(directory.path(), "analyze", &["--baseline", "baseline.toml", "--reporting-format", "emacs"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let rich = run(directory.path(), "analyze", &["--baseline", "baseline.toml", "--reporting-format", "rich"]);
-        let rich = String::from_utf8_lossy(&rich.stdout);
 
+        assert!(baseline.contains("src/Demo/Twin.php"), "{variant}: {baseline}");
+        assert!(!baseline.contains("src/Demo/Broken.sharp"), "{variant}: {baseline}");
         assert!(!output.status.success(), "{variant}: {stdout}");
         assert!(stdout.contains("src/Demo/Broken.sharp:8:16:error - invalid-return-statement:"), "{variant}: {stdout}");
-        assert!(
-            stdout.contains(
-                "src/Demo/Broken.sharp:8:16:warning - unsuppressible-error: An error can't be suppressed in PHP#."
-            ),
-            "{variant}: {stdout}"
-        );
+        assert!(!stdout.contains("unsuppressible-error"), "{variant}: {stdout}");
         assert!(!stdout.contains("src/Demo/Twin.php"), "{variant}: {stdout}");
-        assert!(rich.contains("A baseline entry matches this error."), "{variant}: {rich}");
+        assert!(!stderr.contains("Your baseline file contains"), "{variant}: {stderr}");
         assert!(stderr.contains("Filtered out 1 issues based on the baseline file."), "{variant}: {stderr}");
     }
 }
@@ -558,7 +593,14 @@ fn a_pragma_an_ignore_entry_and_a_baseline_entry_still_hide_a_sharp_warning() {
 
 #[test]
 fn compile_refuses_a_sharp_file_whose_error_a_pragma_an_ignore_entry_or_a_baseline_entry_targets() {
-    for (suppression, directory) in suppressed_workspaces("Broken.sharp", broken_sharp, "invalid-return-statement") {
+    let baselined = suppressed_workspace("Broken.sharp", &broken_sharp(""), "baseline = \"baseline.toml\"");
+    write_strict_baseline(baselined.path(), &[SHARP_ERROR_ENTRY]);
+
+    for (suppression, directory) in [
+        ("a pragma", suppressed_workspace("Broken.sharp", &broken_sharp(EXPECT_PRAGMA), "")),
+        ("an ignore entry", suppressed_workspace("Broken.sharp", &broken_sharp(""), IGNORE_ENTRY)),
+        ("a baseline entry", baselined),
+    ] {
         let output = run(directory.path(), "compile", &[]);
         let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
 
