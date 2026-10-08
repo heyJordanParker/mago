@@ -8878,3 +8878,76 @@ fn equality_of_a_subclass_calls_the_operator_its_parent_declares() {
         "#}
     );
 }
+
+/// ```php
+/// return \App\Money::op_Comparison(\App\Money::op_Addition(\App\Money::op_UnaryNegation($order), $order), $money) < 0
+///     && \App\Money::op_Equality($maybe, $money)
+///     && !\App\Money::op_Equality($maybe, $other)
+///     && \App\Money::op_Comparison($money, $order) <= 0;
+/// ```
+///
+/// The bridge calls the class the checker chose for every operand shape it accepts: an operator `Order` inherits, unary
+/// and binary, a `Money` against an `Order`, a nullable left side of `==`, and two nullable sides of `!=`.
+#[test]
+fn every_operand_shape_the_checker_accepts_calls_the_class_that_declares_the_operator() {
+    assert_eq!(
+        ledger_body(
+            "bool run(Order order, Money money, Order? maybe, Money? other)",
+            "        return (-order + order) < money && maybe == money && maybe != other && money <= order;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                AND
+                  AND
+                    AND
+                      BINARY_OP [20]
+                        STATIC_CALL
+                          ZVAL "App\\Money"
+                          ZVAL "op_Comparison"
+                          ARG_LIST
+                            STATIC_CALL
+                              ZVAL "App\\Money"
+                              ZVAL "op_Addition"
+                              ARG_LIST
+                                STATIC_CALL
+                                  ZVAL "App\\Money"
+                                  ZVAL "op_UnaryNegation"
+                                  ARG_LIST
+                                    VAR
+                                      ZVAL "order"
+                                VAR
+                                  ZVAL "order"
+                            VAR
+                              ZVAL "money"
+                        ZVAL 0
+                      STATIC_CALL
+                        ZVAL "App\\Money"
+                        ZVAL "op_Equality"
+                        ARG_LIST
+                          VAR
+                            ZVAL "maybe"
+                          VAR
+                            ZVAL "money"
+                    UNARY_OP [14]
+                      STATIC_CALL
+                        ZVAL "App\\Money"
+                        ZVAL "op_Equality"
+                        ARG_LIST
+                          VAR
+                            ZVAL "maybe"
+                          VAR
+                            ZVAL "other"
+                  BINARY_OP [21]
+                    STATIC_CALL
+                      ZVAL "App\\Money"
+                      ZVAL "op_Comparison"
+                      ARG_LIST
+                        VAR
+                          ZVAL "money"
+                        VAR
+                          ZVAL "order"
+                    ZVAL 0
+        "#}
+    );
+}

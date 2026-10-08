@@ -4579,6 +4579,14 @@ fn a_php_caller_passes_null_to_op_equality_and_a_sharp_caller_does_not() {
     );
 }
 
+/// Both parameters of the lowered `op_Equality` take `null`, so a plain PHP caller may pass it on the left too.
+#[test]
+fn a_php_caller_passes_null_as_the_left_operand_of_op_equality() {
+    let php = "<?php\n\nnamespace App;\n\nfinal class Check\n{\n    public static function missing(Money $money): bool\n    {\n        return Money::op_Equality(null, $money);\n    }\n}\n";
+
+    assert_eq!(issues(("src/App/Check.php", php), &[MONEY_OPERATORS]), Vec::<String>::new());
+}
+
 /// A PHP caller checks its arguments against the PHP method a PHP# method runs as, whose `List<int>` and
 /// `Map<string, int>` parameters keep their element types, so a wrongly typed list or map is still reported.
 #[test]
