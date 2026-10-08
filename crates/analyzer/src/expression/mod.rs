@@ -717,13 +717,7 @@ pub fn find_expression_logic_issues<'ctx, 'arena, A>(
     let expression_span = expression.span();
 
     // this will see whether any of the clauses in set A conflict with the clauses in set B
-    check_for_paradox(
-        &mut context.collector,
-        &block_context.clauses,
-        &expression_clauses,
-        expression_span,
-        &context.settings.algebra_thresholds(),
-    );
+    check_for_paradox(context, &block_context.clauses, &expression_clauses, expression_span);
 
     expression_clauses.extend(block_context.clauses.iter().map(|v| (**v).clone()));
 
