@@ -690,11 +690,55 @@ fn analyze_reports_a_library_method_that_names_a_function_twice() {
     let mut issues = issues_in(&stdout, "library/Sharp/Time/Date.sharp");
     issues.sort();
 
-    assert_eq!(issues, ["5:33 duplicate-definition", "9:15 duplicate-definition"], "{stdout}");
+    assert_eq!(
+        issues,
+        ["5:33 duplicate-definition", "9:15 duplicate-definition", "9:6 attribute-not-repeatable"],
+        "{stdout}"
+    );
     assert!(
         stdout.contains(
             "library/Sharp/Time/Date.sharp:5:33:error - duplicate-definition: `Date.format` names `date` twice: name each function once."
         ),
+        "{stdout}"
+    );
+}
+
+/// A PHP# attribute class keeps the targets its `[Attribute(Attribute.TARGET_METHOD)]` reads, so `[Replaces]` on a
+/// class is refused as PHP refuses it.
+#[test]
+fn analyze_reports_replaces_on_a_class() {
+    let directory = tempfile::tempdir().unwrap();
+    write(directory.path(), "mago.toml", "php-version = \"8.4\"\n\n[source]\npaths = [\"library\"]\n");
+    write_library(directory.path());
+    write(
+        directory.path(),
+        "library/Sharp/Time/Date.sharp",
+        "namespace Sharp.Time;\n\n[Replaces(\"date\")]\npublic static class Date\n{\n    public static string format(int timestamp, string pattern) => date(pattern, timestamp);\n}\n",
+    );
+
+    let output = run(directory.path(), "analyze", &["--reporting-format", "emacs"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert_eq!(issues_in(&stdout, "library/Sharp/Time/Date.sharp"), ["3:2 invalid-attribute-target"], "{stdout}");
+}
+
+/// PHP's attribute classes keep the targets and the repeat flag `Attribute::TARGET_METHOD` gives them.
+#[test]
+fn analyze_reports_a_php_attribute_on_a_target_or_a_repeat_its_flags_leave_out() {
+    let directory = tempfile::tempdir().unwrap();
+    write(directory.path(), "mago.toml", "php-version = \"8.4\"\n\n[source]\npaths = [\"src\"]\n");
+    write(
+        directory.path(),
+        "src/App/Clock.php",
+        "<?php\n\ndeclare(strict_types=1);\n\nnamespace App;\n\nuse Attribute;\n\n#[Attribute(Attribute::TARGET_METHOD)]\nfinal class Wraps\n{\n}\n\n#[Wraps]\nfinal class Clock\n{\n    #[Wraps]\n    #[Wraps]\n    public function year(): string\n    {\n        return '2026';\n    }\n}\n",
+    );
+
+    let output = run(directory.path(), "analyze", &["--reporting-format", "emacs"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert_eq!(
+        issues_in(&stdout, "src/App/Clock.php"),
+        ["14:3 invalid-attribute-target", "18:7 attribute-not-repeatable"],
         "{stdout}"
     );
 }
