@@ -401,23 +401,47 @@ pub(crate) fn agreed_kind(mut kinds: impl Iterator<Item = DeclarationKind>) -> D
 
 /// `r#type` in the one PHP# spelling the engine parses, task 090's type text: a class by its full dotted name as it is
 /// declared, the built-in types, `List<T>`, `Map<K, V>`, `Iterable<T>`, `Class<T>`, `Function<R(P1, P2)>`, a type
-/// parameter by its name, `T?` and `(A|B)?`, union members sorted by text, and a space only after a comma.
+/// parameter by its name, `T?`, `(A|B)?`, `A & B`, and an intersection in parentheses inside a union or a nullable
+/// type, `(A & B)|C` and `(A & B)?`. Union and intersection members are sorted by their text, and a space comes only
+/// after a comma and around `&`.
 pub(crate) fn type_text(r#type: &TUnion, codebase: &CodebaseMetadata) -> String {
     if let Some(TAtomic::Mixed(mixed)) = r#type.types.iter().find(|atomic| atomic.is_mixed()) {
         return if mixed.is_non_null() { "Any" } else { "Any?" }.to_owned();
     }
 
+    let mut members: Vec<(String, bool)> = r#type
+        .types
+        .iter()
+        .filter(|atomic| !atomic.is_null())
+        .map(|atomic| intersection_text(atomic, codebase))
+        .collect();
+    members.sort_unstable();
+    members.dedup();
+    let grouped =
+        |(text, intersection): &(String, bool)| if *intersection { format!("({text})") } else { text.clone() };
+    let union = || members.iter().map(grouped).collect::<Vec<_>>().join("|");
+
+    match (r#type.has_null(), members.as_slice()) {
+        (false, [(member, _)]) => member.clone(),
+        (false, _) => union(),
+        (true, []) => "null".to_owned(),
+        (true, [member]) => format!("{}?", grouped(member)),
+        (true, _) => format!("({})?", union()),
+    }
+}
+
+/// `atomic` and each type it intersects, `A & B` with its members sorted by their text, and whether it intersects any.
+fn intersection_text(atomic: &TAtomic, codebase: &CodebaseMetadata) -> (String, bool) {
+    let Some(intersected) = atomic.get_intersection_types().filter(|intersected| !intersected.is_empty()) else {
+        return (atomic_text(atomic, codebase), false);
+    };
+
     let mut members: Vec<String> =
-        r#type.types.iter().filter(|atomic| !atomic.is_null()).map(|atomic| atomic_text(atomic, codebase)).collect();
+        std::iter::once(atomic).chain(intersected).map(|member| atomic_text(member, codebase)).collect();
     members.sort_unstable();
     members.dedup();
 
-    match (r#type.has_null(), members.as_slice()) {
-        (false, _) => members.join("|"),
-        (true, []) => "null".to_owned(),
-        (true, [member]) => format!("{member}?"),
-        (true, _) => format!("({})?", members.join("|")),
-    }
+    (members.join(" & "), true)
 }
 
 fn atomic_text(atomic: &TAtomic, codebase: &CodebaseMetadata) -> String {
@@ -485,6 +509,7 @@ mod tests {
 
     use mago_codex::metadata::CodebaseMetadata;
     use mago_codex::misc::GenericParent;
+    use mago_codex::ttype::TType;
     use mago_codex::ttype::atomic::TAtomic;
     use mago_codex::ttype::atomic::callable::TCallable;
     use mago_codex::ttype::atomic::callable::TCallableSignature;
@@ -575,6 +600,23 @@ mod tests {
         let union = union(&[get_string(), class("App\\Zone", vec![]), get_int(), class("App\\Area", vec![])]);
 
         assert_eq!(text(&union), "App.Area|App.Zone|int|string");
+    }
+
+    #[test]
+    fn an_intersection_joins_its_members_sorted_and_stands_in_parentheses_in_a_union_or_a_nullable_type() {
+        let mut shared = TAtomic::Object(TObject::Named(TNamedObject::new(word("App\\Shareable"))));
+        shared.add_intersection_type(TAtomic::Object(TObject::Named(TNamedObject::new(word("App\\DatabaseEntity")))));
+        let shared = wrap_atomic(shared);
+
+        assert_eq!(text(&shared), "App.DatabaseEntity & App.Shareable");
+        assert_eq!(text(&get_list(shared.clone())), "List<App.DatabaseEntity & App.Shareable>");
+        assert_eq!(text(&union(&[get_int(), shared.clone()])), "(App.DatabaseEntity & App.Shareable)|int");
+        assert_eq!(
+            text(&union(&[class("App\\Zone", vec![]), shared.clone()])),
+            "(App.DatabaseEntity & App.Shareable)|App.Zone"
+        );
+        assert_eq!(text(&shared.clone().as_nullable()), "(App.DatabaseEntity & App.Shareable)?");
+        assert_eq!(text(&union(&[get_int(), shared]).as_nullable()), "((App.DatabaseEntity & App.Shareable)|int)?");
     }
 
     #[test]
