@@ -583,7 +583,7 @@ where
         IssueCode::InvalidArgument,
         Issue::error(format!("Cannot spread a value of type `{type_str}`: PHP# spreads only a list."))
             .with_annotation(Annotation::primary(span).with_message(format!("Type `{type_str}` is not a list")))
-            .with_note("Spec section 7 spreads an existing list into a call, as in `Money.sum(...prices)`.")
+            .with_note("PHP# spreads an existing list into a call, as in `Money.sum(...prices)`.")
             .with_help("Spread a list, such as a variadic parameter or a `list<int>` from plain PHP."),
     );
 }

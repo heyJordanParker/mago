@@ -5012,7 +5012,7 @@ fn an_arithmetic_message_names_its_operand_type_as_sharp_writes_it() {
     assert_eq!(
         worded(("src/Demo/Order.sharp", sharp), &[]),
         [
-            "5:38 invalid-operand `*` cannot apply to `Order` and `int`: `Order` declares no `operator *`. | This is `Order`. | This is `int`. | Spec section 19: `*` on a class instance exists only where its class declares `operator *`. | Apply it to values the instances hold, such as their properties.",
+            "5:38 invalid-operand `*` cannot apply to `Order` and `int`: `Order` declares no `operator *`. | This is `Order`. | This is `int`. | `*` on a class instance exists only where its class declares `operator *`. | Apply it to values the instances hold, such as their properties.",
             "5:38 invalid-return-statement Invalid return type for method `Order.twice`: expected `int`, but found `Order`. | This has type `Order` | The type `Order` returned here is not compatible with the declared return type `int`. | Change the return value to match `int`, or update the method's return type declaration.",
             "7:36 possibly-null-operand Left operand in arithmetic operation might be `null` (type `int?`). | This might be `null`. | Performing arithmetic operations on `null` typically results in `0`. | Ensure the left operand is non-null before the operation, potentially using checks or assertions.",
         ]
@@ -5035,7 +5035,7 @@ fn a_comparison_message_names_its_operand_type_as_sharp_writes_it() {
     assert_eq!(
         worded(("src/Demo/Order.sharp", sharp), &[]),
         [
-            "5:40 invalid-operand `<` cannot compare `Order?` with `int`: `Order` declares no `operator <=>`. | This is `Order?`. | This is `int`. | Spec section 19: `<` on a class instance exists only where its class declares `operator <=>`. | Compare values the instances hold, such as their properties.",
+            "5:40 invalid-operand `<` cannot compare `Order?` with `int`: `Order` declares no `operator <=>`. | This is `Order?`. | This is `int`. | `<` on a class instance exists only where its class declares `operator <=>`. | Compare values the instances hold, such as their properties.",
         ]
     );
 }

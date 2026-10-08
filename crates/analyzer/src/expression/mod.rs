@@ -422,7 +422,7 @@ where
             IssueCode::ImpossibleTypeComparison,
             Issue::error("This pattern never matches the value it tests.")
                 .with_annotation(Annotation::primary(pattern).with_message("Never matches."))
-                .with_note("Spec section 21 makes a pattern that can never match an error, as C# does (CS8121).")
+                .with_note("PHP# makes a pattern that can never match an error, as C# does (CS8121).")
                 .with_help("Remove the pattern, or test a value that can match it."),
         );
     }
@@ -490,9 +490,7 @@ fn report_unhandled<'ctx, 'arena, A>(
             .with_annotation(
                 Annotation::primary(pattern_match.r#match.span).with_message("This `match` has no `default`."),
             )
-            .with_note(
-                "Spec section 21: only a `match` on an enum may leave out `default`, when its arms cover every case.",
-            )
+            .with_note("Only a `match` on an enum may leave out `default`, when its arms cover every case.")
             .with_help("Add an arm for each value it misses, or add `default => …` as the last arm."),
     );
 }
