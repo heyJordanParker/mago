@@ -279,6 +279,7 @@ fn get_definitely_evaluated_expression_inside_if<'ast, 'arena>(
     condition
 }
 
+/// Reports a condition whose type makes it always false or always true. A PHP# file names the type as PHP# writes it.
 pub fn handle_paradoxical_condition<T, A>(context: &mut Context<'_, '_, A>, expression: &T, expression_type: &TUnion)
 where
     T: HasSpan,
