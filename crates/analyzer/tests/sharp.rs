@@ -2173,6 +2173,20 @@ fn list_wrap_of_a_value_of_any_type_is_refused() {
     );
 }
 
+/// An editor shows the docblocks of the PHP# stub on hover. A PHP# user reads them, not the spec's numbering, so each
+/// states its reason in words and cites no spec section.
+#[test]
+fn the_php_sharp_stub_states_its_reasons_without_a_spec_section() {
+    let stub = PRELUDE
+        .database
+        .files()
+        .find(|file| file.name.ends_with(b"extensions/sharp.php"))
+        .expect("the prelude holds the PHP# stub");
+    let contents = String::from_utf8_lossy(&stub.contents);
+
+    assert_eq!(contents.lines().filter(|line| line.contains("section")).collect::<Vec<_>>(), Vec::<&str>::new());
+}
+
 /// A `Map` runs as a PHP array too, so `wrap` would return it as the list it was asked to build.
 #[test]
 fn list_wrap_of_a_map_or_a_list_of_lists_is_refused() {
