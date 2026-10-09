@@ -2445,7 +2445,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     fn call_arguments(&mut self, list: &ArgumentList, call: &Expression, keys: &[usize]) -> u32 {
         let mut arguments = self.argument_nodes(list, keys);
         let line = self.line(list);
-        if let Some(type_arguments) = self.types.call_type_arguments(call, self.class) {
+        if let Some(type_arguments) = self.types.call_type_arguments(call) {
             let text = self.string(0, line, type_arguments.as_bytes());
             arguments.push(self.node(SHARP_AST_SHARP_TYPE_ARGS, 0, line, &[NULL, text]));
         }

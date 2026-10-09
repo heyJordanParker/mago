@@ -176,9 +176,9 @@ impl<'analysis> Types<'analysis> {
 
     /// The type arguments the generic method call at `span` gives the method, as [`Self::type_arguments`] writes those
     /// of a `new`. None when the method declares no type parameter, or PHP declares it, writing its type parameters in
-    /// docblocks the engine never reads.
-    /// `class` is the class the call is written in, whose method `Self.m()` and whose parent's `super.m()` call.
-    pub(crate) fn call_type_arguments(&self, call: &Expression, class: &[u8]) -> Option<String> {
+    /// docblocks the engine never reads. The class that declares the method decides, so `super.m()` carries them
+    /// through a plain PHP parent that inherits a PHP# `m`.
+    pub(crate) fn call_type_arguments(&self, call: &Expression) -> Option<String> {
         let span = call.span();
         let arguments = self.artifacts.inferred_type_arguments.get(&(span.start.offset, span.end.offset))?;
         let (object, names_class) = match call {
@@ -187,12 +187,7 @@ impl<'analysis> Types<'analysis> {
             _ => unreachable!("only a method call takes type arguments, not {span:?}"),
         };
         let callee = match object {
-            Expression::Self_(_) => word(class),
-            Expression::Parent(_) => self
-                .codebase
-                .get_class_like(class)
-                .and_then(|class| class.direct_parent_class)
-                .unwrap_or_else(|| unreachable!("the checker refuses `super` in a class without a parent")),
+            Expression::Self_(_) | Expression::Parent(_) => self.call_target(call).class,
             // A list or a map runs its methods in the engine's `Sharp\Collection`, which PHP declares.
             _ if !names_class
                 && receiver_classes(self.expression_type(object)).is_none()

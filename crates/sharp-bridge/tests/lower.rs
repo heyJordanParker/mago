@@ -4502,6 +4502,51 @@ fn super_calls_are_static_calls_on_parent() {
 }
 
 /// ```php
+/// return parent::pick($order);
+/// ```
+///
+/// A generic `super` call carries its type arguments when PHP# declares the method, though the parent between is a plain
+/// PHP class that inherits it.
+#[test]
+fn a_generic_super_call_through_a_plain_php_parent_carries_its_type_arguments() {
+    let lowered = Lowered::with(
+        indoc! {"
+        namespace App;
+
+        public class Report : Plain
+        {
+            public Order run(Order order) => super.pick<Order>(order);
+        }
+    "},
+        &[
+            (
+                "src/App/Base.sharp",
+                "namespace App;\n\npublic class Base\n{\n    public T pick<T>(T item) => item;\n}\n",
+            ),
+            ("src/App/Plain.php", "<?php namespace App; class Plain extends Base {}"),
+            ("src/App/Order.php", "<?php namespace App; final class Order {}"),
+        ],
+    );
+
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                STATIC_CALL
+                  ZVAL [1] "parent"
+                  ZVAL "pick"
+                  ARG_LIST
+                    VAR
+                      ZVAL "order"
+                    SHARP_TYPE_ARGS
+                      null
+                      ZVAL "App.Order"
+        "#}
+    );
+}
+
+/// ```php
 /// public function __construct(\Lib\Row $row) {}
 /// public static function fromSchema(\Lib\Row $row): static { return new static($row); }
 /// public static function find(\Lib\Row $row): ?static { return $row->saved ? static::fromSchema($row) : null; }
