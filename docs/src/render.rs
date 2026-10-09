@@ -146,7 +146,6 @@ pub fn build_site(root: &Path) -> Result<()> {
             ("nav_faq", t(ui, "nav_faq", "FAQ")),
             ("nav_sponsor", t(ui, "nav_sponsor", "Sponsor")),
             ("nav_github", t(ui, "nav_github", "GitHub repository")),
-            ("nav_discord", t(ui, "nav_discord", "Discord community")),
         ]);
         context.insert("ui", &ui_strings);
 

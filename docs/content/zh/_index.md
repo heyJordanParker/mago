@@ -8,7 +8,7 @@ nav_section = ""
 
 <div class="home-hero__main">
 
-<div class="home-hero__plate"><span>Mago</span><span class="home-hero__plate-divider">/</span><span>PHP 工具链</span><span class="home-hero__plate-divider">/</span><span>Carthage Software</span></div>
+<div class="home-hero__plate"><span>Mago</span><span class="home-hero__plate-divider">/</span><span>PHP 工具链</span><span class="home-hero__plate-divider">/</span><span>mago-sharp</span></div>
 
 <h1 class="home-hero__title">一款<em>氧化</em>的 PHP 工具链。</h1>
 

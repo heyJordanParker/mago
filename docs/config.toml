@@ -1,5 +1,5 @@
 site-name = "Mago"
-site-description = "The oxidized PHP toolchain"
+site-description = "PHP#'s checker and toolchain: checks PHP and PHP# code, compiles PHP#, and lints and formats PHP."
 default-language = "en"
 accent-color = "#3c8d58"
 base-url = "https://github.com/heyJordanParker/mago-sharp/tree/master/docs"

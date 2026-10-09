@@ -13,7 +13,6 @@ nav_guide = "Guide"
 nav_faq = "FAQ"
 nav_sponsor = "Sponsor"
 nav_github = "GitHub repository"
-nav_discord = "Discord community"
 
 # Linter rules reference page (generated from `mago lint --list-rules`).
 rules_page_title = "Rules"

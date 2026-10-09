@@ -13,7 +13,6 @@ nav_guide = "指南"
 nav_faq = "常见问题"
 nav_sponsor = "赞助"
 nav_github = "GitHub 仓库"
-nav_discord = "Discord 社区"
 
 # Linter 规则参考页(由 `mago lint --list-rules` 生成)。
 rules_page_title = "规则"

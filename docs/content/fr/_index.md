@@ -8,7 +8,7 @@ nav_section = ""
 
 <div class="home-hero__main">
 
-<div class="home-hero__plate"><span>Mago</span><span class="home-hero__plate-divider">/</span><span>Chaîne d'outils PHP</span><span class="home-hero__plate-divider">/</span><span>Carthage Software</span></div>
+<div class="home-hero__plate"><span>Mago</span><span class="home-hero__plate-divider">/</span><span>Chaîne d'outils PHP</span><span class="home-hero__plate-divider">/</span><span>mago-sharp</span></div>
 
 <h1 class="home-hero__title">Une chaîne d'outils PHP, <em>oxydée</em>.</h1>
 
