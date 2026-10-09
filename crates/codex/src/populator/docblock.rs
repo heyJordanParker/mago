@@ -376,6 +376,9 @@ fn apply_inheritance_work(codebase: &mut CodebaseMetadata, mut inheritance_work:
             let Some(child_method) = codebase.function_likes.get(&child_method_id) else {
                 continue;
             };
+            if child_method.flags.is_sharp() {
+                continue;
+            }
 
             let has_explicit_inherit_doc = child_method.flags.contains(MetadataFlags::INHERITS_DOCS);
 

@@ -941,7 +941,7 @@ impl CodebaseMetadata {
             return function_like.thrown_types.as_slice();
         }
 
-        if !function_like.kind.is_method() {
+        if !function_like.kind.is_method() || function_like.flags.is_sharp() {
             return &[];
         }
 
