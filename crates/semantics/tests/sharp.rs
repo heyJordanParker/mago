@@ -1105,6 +1105,64 @@ fn a_clashing_import_is_helped_with_the_import_renamed() {
     );
 }
 
+/// Spec section 24 capitalizes every type but the built-in ones, and the parser reads a capitalized name before `<` as
+/// a type with type arguments. So a class, an interface and an enum start with a capital letter.
+#[test]
+fn a_class_interface_or_enum_name_starts_with_a_capital_letter() {
+    let lowercase =
+        "namespace App.Tenant;\n\nclass box\n{\n}\n\ninterface priced\n{\n}\n\nenum status\n{\n    case Open;\n}\n";
+    let capitalized =
+        "namespace App.Tenant;\n\nclass Box\n{\n}\n\ninterface Priced\n{\n}\n\nenum Status\n{\n    case Open;\n}\n";
+    let rule = "must start with a capital letter: PHP# capitalizes every type except the built-in ones.";
+
+    assert_eq!(
+        issues(lowercase),
+        [format!("3:7 `box` {rule}"), format!("7:11 `priced` {rule}"), format!("11:6 `status` {rule}")]
+    );
+    assert_eq!(issues(capitalized), Vec::<String>::new());
+}
+
+/// A name that starts with `_` is not capitalized. A `__Something__` name keeps its own error.
+#[test]
+fn a_type_name_that_starts_with_an_underscore_is_an_error() {
+    let code = "namespace App.Tenant;\n\nclass _Box\n{\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["3:7 `_Box` must start with a capital letter: PHP# capitalizes every type except the built-in ones."]
+    );
+}
+
+/// An import's new name is a type name of the file, so it starts with a capital letter as a declared one does.
+#[test]
+fn an_import_alias_starts_with_a_capital_letter() {
+    let lowercase = "namespace App.Tenant;\n\nimport Lib.Box as box;\n\nclass Report\n{\n}\n";
+    let capitalized = "namespace App.Tenant;\n\nimport Lib.Box as Crate;\n\nclass Report\n{\n}\n";
+
+    assert_eq!(
+        issues(lowercase),
+        ["3:19 `box` must start with a capital letter: PHP# capitalizes every type except the built-in ones."]
+    );
+    assert_eq!(issues(capitalized), Vec::<String>::new());
+}
+
+/// Plain PHP keeps its own names, so a lowercase class, interface, enum or `use` alias there reports nothing.
+#[test]
+fn a_php_file_keeps_its_lowercase_type_names_and_use_aliases() {
+    let types = "<?php\n\nclass box\n{\n}\n\ninterface priced\n{\n}\n\nenum status\n{\n    case Open;\n}\n";
+
+    assert_eq!(issues_in("src/Report.php", types), Vec::<String>::new());
+    assert_eq!(issues_in("src/Report.php", "<?php\n\nuse Lib\\Box as box;\n"), Vec::<String>::new());
+}
+
+/// An interface's name is checked as a class's is, so a reserved one is an error, as the engine refuses it.
+#[test]
+fn an_interface_named_like_a_reserved_class_name_is_an_error() {
+    let code = "namespace App.Tenant;\n\ninterface Mixed\n{\n}\n";
+
+    assert_eq!(issues(code), ["3:11 Cannot use `Mixed` as a class name: it is reserved."]);
+}
+
 #[test]
 fn a_local_or_parameter_named_after_a_superglobal_is_an_error() {
     let code = leak(method("        let _GET = 1;\n        return _GET;\n").replace("int extra", "int GLOBALS"));
