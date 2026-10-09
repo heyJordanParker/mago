@@ -4440,6 +4440,166 @@ fn a_declared_member_wins_over_a_magic_one() {
 }
 
 /// ```php
+/// return \strlen(\gettype($bag->handler())) + \strlen(\gettype($bag->untagged()));
+/// ```
+///
+/// A call `__call` serves is a method call of its name, as the analysis checked it, even beside a private property of
+/// that name, which the call cannot read.
+#[test]
+fn a_call_only_call_serves_is_a_method_call_beside_a_private_property_of_its_name() {
+    let lowered = Lowered::with(
+        "namespace App.Tenant;\n\nimport Lib.Bag;\n\nclass Report\n{\n    public int run(Bag bag)\n    {\n        return strlen(gettype(bag.handler())) + strlen(gettype(bag.untagged()));\n    }\n}\n",
+        &[(
+            "src/Lib/Bag.php",
+            "<?php namespace Lib; final class Bag { private \\Closure $handler; public function __construct() { $this->handler = fn (): int => 1; } public function __call(string $name, array $arguments): mixed { return 1; } }",
+        )],
+    );
+
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                BINARY_OP [1]
+                  CALL
+                    ZVAL "strlen"
+                    ARG_LIST
+                      CALL
+                        ZVAL "gettype"
+                        ARG_LIST
+                          METHOD_CALL
+                            VAR
+                              ZVAL "bag"
+                            ZVAL "handler"
+                            ARG_LIST
+                  CALL
+                    ZVAL "strlen"
+                    ARG_LIST
+                      CALL
+                        ZVAL "gettype"
+                        ARG_LIST
+                          METHOD_CALL
+                            VAR
+                              ZVAL "bag"
+                            ZVAL "untagged"
+                            ARG_LIST
+        "#}
+    );
+}
+
+/// ```php
+/// \Lib\Calc::remember($extra);
+/// \Lib\Order::where($extra);
+/// ```
+///
+/// A static call `__callStatic` serves is a static call of its name, as the analysis checked it, whether the class
+/// declares `__callStatic` or a `@method static` tag names the method a subclass's `__callStatic` serves.
+#[test]
+fn a_static_call_call_static_serves_is_a_static_call_of_its_name() {
+    let lowered = Lowered::with(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\nimport Lib.Order;\n\nclass Report\n{\n    public void run(int extra)\n    {\n        Calc.remember(extra);\n        Order.where(extra);\n    }\n}\n",
+        &[(
+            "src/Lib/Calc.php",
+            "<?php namespace Lib; final class Calc { public static function __callStatic(string $name, array $arguments): mixed { return null; } } /** @method static int where(int $id) */ class Order {}",
+        )],
+    );
+
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              STATIC_CALL
+                ZVAL "Lib\\Calc"
+                ZVAL "remember"
+                ARG_LIST
+                  VAR
+                    ZVAL "extra"
+              STATIC_CALL
+                ZVAL "Lib\\Order"
+                ZVAL "where"
+                ARG_LIST
+                  VAR
+                    ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
+/// return ($holder->handler)($extra) + ($this->scale)($extra);
+/// ```
+///
+/// A call of a property holding a function calls the function the property holds, as the analysis checked it, whether
+/// the property is a PHP `\Closure` an interface declares or a PHP# `Function` the class declares.
+#[test]
+fn a_call_of_a_property_holding_a_function_calls_the_function() {
+    let lowered = Lowered::with(
+        "namespace App.Tenant;\n\nimport Lib.HasHandler;\n\nclass Report\n{\n    private Function<int(int)> scale;\n\n    public Report()\n    {\n        this.scale = n => n;\n    }\n\n    public int run(HasHandler holder, int extra)\n    {\n        return holder.handler(extra) + this.scale(extra);\n    }\n}\n",
+        &[(
+            "src/Lib/HasHandler.php",
+            "<?php namespace Lib; interface HasHandler { /** @var \\Closure(int): int */ public \\Closure $handler { get; } }",
+        )],
+    );
+
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                BINARY_OP [1]
+                  CALL
+                    PROP
+                      VAR
+                        ZVAL "holder"
+                      ZVAL "handler"
+                    ARG_LIST
+                      VAR
+                        ZVAL "extra"
+                  CALL
+                    PROP
+                      VAR
+                        ZVAL "this"
+                      ZVAL "scale"
+                    ARG_LIST
+                      VAR
+                        ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
+/// return ($this->format)($amount);
+/// ```
+///
+/// A property holding an object whose class declares `__invoke` is called as that property, though the analysis also
+/// records the `__invoke` it runs.
+#[test]
+fn a_call_of_a_property_holding_an_invokable_object_calls_the_property() {
+    let lowered = Lowered::with(
+        "namespace App.Tenant;\n\nimport Lib.Formatter;\n\nclass Report\n{\n    private Formatter format;\n\n    public Report(Formatter format)\n    {\n        this.format = format;\n    }\n\n    public int run(int amount)\n    {\n        return this.format(amount);\n    }\n}\n",
+        &[(
+            "src/Lib/Formatter.php",
+            "<?php namespace Lib; final class Formatter { public function __invoke(int $amount): int { return $amount; } }",
+        )],
+    );
+
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CALL
+                  PROP
+                    VAR
+                      ZVAL "this"
+                    ZVAL "format"
+                  ARG_LIST
+                    VAR
+                      ZVAL "amount"
+        "#}
+    );
+}
+
+/// ```php
 /// $total = $doc->total(...);
 /// return $total() + $doc->count();
 /// ```

@@ -25,6 +25,7 @@ pub(crate) fn getters_must_be_pure(effects: &Effects) -> IssueCollection {
             impure(
                 IssueCode::ImpureGetter,
                 format!("Getter `{}` {impurity}. Getters must be pure.", member(name)),
+                "getter",
                 &impurity,
             )
         })
@@ -43,6 +44,7 @@ pub(crate) fn laws_must_be_pure(effects: &Effects, codebase: &CodebaseMetadata) 
             impure(
                 IssueCode::ImpureLaw,
                 format!("Law `{}` {impurity}. Laws hold only over pure code.", member(name)),
+                "law",
                 &impurity,
             )
         })
@@ -56,15 +58,23 @@ fn member(name: Word) -> String {
     String::from_utf8_lossy(bytes.rsplit(|byte| *byte == b'.').next().unwrap_or(bytes)).into_owned()
 }
 
-/// The error on the call or write `impurity` names, with the `extern` to write when the callee has none.
-fn impure(code: IssueCode, message: String, impurity: &Impurity) -> Issue {
+/// The error on the call or write `impurity` names in the `body` it refuses, a getter or a law, with the `extern` to
+/// write when the callee has none, or how to call a plain PHP property's code from outside `body`.
+fn impure(code: IssueCode, message: String, body: &str, impurity: &Impurity) -> Issue {
     let issue = Issue::error(message).with_code(code.as_str()).with_annotation(Annotation::primary(impurity.span));
 
     match impurity.effect {
-        Some(Effect::Unknown(_)) => issue.with_help(format!(
-            "Declare it in a .sharp file: `extern {};` when it has no effect, or name its effects after `uses`.",
-            impurity.cause
+        Some(Effect::Unknown(Some(target))) => issue.with_help(format!(
+            "Declare it in a .sharp file: `extern {target};` when it has no effect, or name its effects after `uses`."
         )),
+        Some(Effect::Unknown(None)) => {
+            let property = impurity.cause.as_str_lossy();
+            let class = property.rsplit_once('.').map_or(&*property, |(class, _)| class);
+
+            issue.with_help(format!(
+                "Property `{property}` holds plain PHP code, which no `extern` can declare. Call it outside the {body}, or through a method of `{class}` that an `extern` declares."
+            ))
+        }
         _ => issue,
     }
 }

@@ -1,4 +1,5 @@
 use mago_analyzer::artifacts::AnalysisArtifacts;
+use mago_analyzer::artifacts::CallTarget;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::identifier::method::MethodIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
@@ -15,7 +16,6 @@ use mago_names::ResolvedNames;
 use mago_span::HasSpan;
 use mago_syntax::cst::Argument;
 use mago_syntax::cst::Call;
-use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Expression;
 use mago_word::Word;
@@ -140,43 +140,29 @@ impl<'analysis> Types<'analysis> {
         }
     }
 
-    /// The declaration the method call `call`, null-safe or not, runs, as PHP finds it. `Class.m()` and a class value's
-    /// `type.m()` run the class's method, or else a static method its `__callStatic` serves. `object.m()` runs the
-    /// receiver's method, or else its property holding a function, as spec section 14 calls one, or else a method its
-    /// `__call` serves. Every class the receiver can be has the same kind of member, and `class` is the first's.
-    /// `Self.m()` and `super.m()` lower to `static::` and `parent::`, and no caller asks their target.
+    /// The declaration the method call `call`, null-safe or not, runs, as the analysis resolved it when it checked the
+    /// call: a method, a method the class's `__call` or `__callStatic` serves, or a property holding a function, as spec
+    /// section 14 calls one. Every class the receiver can be has the same kind of member, and the declaration is the
+    /// first the analysis recorded. A call of a property also records what the function it holds runs, such as an
+    /// object's `__invoke`, for the effects check, and lowers as the property alone.
     #[must_use]
     pub fn call_target(&self, call: &Expression) -> Declaration {
-        let (object, method, class) = match call {
-            Expression::Call(Call::Method(call)) => (call.object, &call.method, self.names.static_call_class(call)),
-            Expression::Call(Call::NullSafeMethod(call)) => (call.object, &call.method, None),
-            _ => unreachable!("only a method call has a typed call target yet"),
-        };
-        let ClassLikeMemberSelector::Identifier(method) = method else {
-            unreachable!("check_slice refuses the method name `{method}`");
-        };
-        if let Some(class) = class {
-            return self.static_call_declaration(self.names.get(&class.name), method.value);
-        }
-        if matches!(object, Expression::Self_(_) | Expression::Parent(_)) {
+        let targets: Vec<&CallTarget> = self.artifacts.get_callees(call).collect();
+        let calls_property = targets.iter().any(|target| matches!(target, CallTarget::Property { .. }));
+        let declarations: Vec<Declaration> = targets
+            .into_iter()
+            .filter(|target| !calls_property || matches!(target, CallTarget::Property { .. }))
+            .map(|target| self.target_declaration(target))
+            .collect();
+        let Some(&declaration) = declarations.first() else {
             unreachable!(
-                "`Self.m()` and `super.m()` lower to `static::` and `parent::`, and no caller asks their target"
+                "the analysis records what each call of a file the checker accepted runs, not {:?}",
+                call.span()
             );
-        }
-
-        let r#type = self.expression_type(object);
-        let declarations: Vec<Declaration> = if let Some(classes) = class_value_classes(r#type) {
-            classes.iter().map(|class| self.static_call_declaration(class, method.value)).collect()
-        } else {
-            receiver_classes(r#type)
-                .unwrap_or_else(|| unreachable!("the lowering asks only for a receiver whose type names classes"))
-                .iter()
-                .map(|class| self.call_declaration(class, method.value))
-                .collect()
         };
         agreed_kind(declarations.iter().map(|declaration| declaration.kind));
 
-        declarations[0]
+        declaration
     }
 
     /// The full name of the constant the read `constant` reaches, as the analysis found it: the constant of that name
@@ -198,46 +184,35 @@ impl<'analysis> Types<'analysis> {
         self.inline_forms.get(&key(declaration.class.as_bytes(), declaration.name.as_bytes()))
     }
 
-    /// What a static call of `class`'s `method` runs: its method, or else a static method its `__callStatic` serves.
-    fn static_call_declaration(&self, class: &[u8], method: &[u8]) -> Declaration {
-        let served = || Declaration {
-            kind: DeclarationKind::StaticMethod,
-            class: word(class),
-            name: word(method),
-            public: true,
+    /// The declaration of what the analysis recorded a method call runs. A method `__call` or `__callStatic` serves is
+    /// public and, as any subclass may declare it, overridable.
+    fn target_declaration(&self, target: &CallTarget) -> Declaration {
+        let method = |class: Word, method: Word| {
+            self.method_declaration(class.as_bytes(), method.as_bytes())
+                .unwrap_or_else(|| unreachable!("the analysis resolved `{class}.{method}()` from the codebase"))
         };
 
-        self.method_declaration(class, method)
-            .or_else(|| self.codebase.method_exists(class, b"__callStatic").then(served))
-            .unwrap_or_else(|| {
-                unreachable!(
-                    "the checker refuses `{}.{}()`, which names no method",
-                    String::from_utf8_lossy(class),
-                    String::from_utf8_lossy(method)
-                )
-            })
-    }
+        match *target {
+            CallTarget::FunctionLike { callee: FunctionLikeIdentifier::Method(class, name), .. } => method(class, name),
+            CallTarget::MagicMethod {
+                callee: FunctionLikeIdentifier::Method(magic_class, magic),
+                class,
+                method: name,
+            } => {
+                let kind = match method(magic_class, magic).kind {
+                    DeclarationKind::StaticMethod => DeclarationKind::StaticMethod,
+                    _ => DeclarationKind::Method { overridable: true },
+                };
 
-    /// What `class`'s call of `method` runs: its method, its property holding a function, or else a method its
-    /// `__call` serves.
-    fn call_declaration(&self, class: &[u8], method: &[u8]) -> Declaration {
-        let called = || Declaration {
-            kind: DeclarationKind::Method { overridable: true },
-            class: word(class),
-            name: word(method),
-            public: true,
-        };
-
-        self.method_declaration(class, method)
-            .or_else(|| self.property_declaration(class, method))
-            .or_else(|| self.codebase.method_exists(class, b"__call").then(called))
-            .unwrap_or_else(|| {
-                unreachable!(
-                    "the checker refuses `{}.{}()`, which names no method or property",
-                    String::from_utf8_lossy(class),
-                    String::from_utf8_lossy(method)
-                )
-            })
+                Declaration { kind, class, name, public: true }
+            }
+            CallTarget::Property { class, property } => property
+                .as_bytes()
+                .strip_prefix(b"$")
+                .and_then(|property| self.property_declaration(class.as_bytes(), property))
+                .unwrap_or_else(|| unreachable!("the analysis resolved the property `{class}.{property}`")),
+            target => unreachable!("a method call runs a method or a property's function, not {target:?}"),
+        }
     }
 
     /// The type of the keys a value of `r#type` holds, or none when part of it is no `Map` or `List`.
@@ -266,7 +241,9 @@ impl<'analysis> Types<'analysis> {
             _ => unreachable!("only a method call has arguments a receiver takes as its key"),
         };
         let mut callees = self.artifacts.get_callees(call);
-        let (Some(FunctionLikeIdentifier::Method(class, method)), None) = (callees.next(), callees.next()) else {
+        let (Some(CallTarget::FunctionLike { callee: FunctionLikeIdentifier::Method(class, method), .. }), None) =
+            (callees.next(), callees.next())
+        else {
             return Vec::new();
         };
         if !class.as_bytes().eq_ignore_ascii_case(b"Sharp\\MapMethods") {

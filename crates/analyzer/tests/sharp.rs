@@ -4577,6 +4577,65 @@ fn a_member_whose_kind_differs_across_the_receivers_classes_is_an_error() {
     );
 }
 
+/// What the analysis recorded that each call of `calls` in the analyzed file runs, with `others` beside it.
+fn recorded_callees(
+    analyzed: (&'static str, &'static str),
+    others: &[(&'static str, &'static str)],
+    calls: &[&str],
+) -> Vec<Vec<String>> {
+    let (_, artifacts) = analyze_with_artifacts(&PLUGIN_REGISTRY, settings(), analyzed, others);
+
+    calls
+        .iter()
+        .map(|call| {
+            let start = analyzed.1.find(call).unwrap() as u32;
+            let call = Span::dummy(start, start + call.len() as u32);
+
+            artifacts.get_callees(&call).map(|callee| format!("{callee:?}")).collect()
+        })
+        .collect()
+}
+
+/// A call a PHP class's `__call` or `__callStatic` serves records that magic method, the class the call names, and the
+/// name the call wrote, so the lowering reads the method the analysis checked the call against.
+#[test]
+fn a_call_a_magic_method_serves_records_the_magic_method_and_the_called_name() {
+    let sharp = "namespace Demo;\n\nimport Lib.Bag;\nimport Lib.Calc;\n\nclass Report\n{\n    public int run(Bag bag, int extra)\n    {\n        Calc.remember(extra);\n        return strlen(gettype(bag.untagged()));\n    }\n}\n";
+    let library = "<?php namespace Lib; final class Bag { public function __call(string $name, array $arguments): mixed { return 1; } } final class Calc { public static function __callStatic(string $name, array $arguments): mixed { return null; } }";
+
+    assert_eq!(
+        recorded_callees(
+            ("src/Demo/Report.sharp", sharp),
+            &[("src/Lib/Bag.php", library)],
+            &["bag.untagged()", "Calc.remember(extra)"]
+        ),
+        [
+            [r#"MagicMethod { callee: Method("Lib\\Bag", "__call"), class: "Lib\\Bag", method: "untagged" }"#],
+            [r#"MagicMethod { callee: Method("lib\\calc", "__callstatic"), class: "Lib\\Calc", method: "remember" }"#],
+        ]
+    );
+}
+
+/// A call of a property holding a function records the property, whether its type is a PHP# `Function` or a PHP
+/// `\Closure`, so the lowering calls the function the property holds.
+#[test]
+fn a_call_of_a_property_holding_a_function_records_the_property() {
+    let sharp = "namespace Demo;\n\nimport Lib.Order;\n\nclass Report\n{\n    private Function<int(int)> scale;\n\n    public Report()\n    {\n        this.scale = n => n * 2;\n    }\n\n    public int run(Order order, int extra)\n    {\n        return this.scale(extra) + order.handler(extra);\n    }\n}\n";
+    let library = "<?php namespace Lib; final class Order { /** @var \\Closure(int): int */ public \\Closure $handler; public function __construct() { $this->handler = fn (int $n): int => $n; } }";
+
+    assert_eq!(
+        recorded_callees(
+            ("src/Demo/Report.sharp", sharp),
+            &[("src/Lib/Order.php", library)],
+            &["this.scale(extra)", "order.handler(extra)"]
+        ),
+        [
+            [r#"Property { class: "demo\\report", property: "$scale" }"#],
+            [r#"Property { class: "lib\\order", property: "$handler" }"#]
+        ]
+    );
+}
+
 /// The type arguments of the call in the analyzed file, with `library` beside it.
 fn recorded_type_arguments(analyzed: (&'static str, &'static str), library: &'static str, call: &str) -> Vec<String> {
     let start = analyzed.1.find(call).unwrap() as u32;
@@ -6295,6 +6354,100 @@ fn a_getter_calling_a_function_with_no_extern_is_refused_and_names_the_missing_d
         effect_issues(&[LABEL]),
         [
             "app/Shop/Label.sharp:7:27 impure-getter: Getter `text` calls `trim`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern trim;` when it has no effect, or name its effects after `uses`."
+        ]
+    );
+}
+
+const MAGIC: (&str, &str) = (
+    "src/Lib/Magic.php",
+    "<?php\n\nnamespace Lib;\n\nfinal class Bag\n{\n    /** @param list<mixed> $arguments */\n    public function __call(string $name, array $arguments): int\n    {\n        return 0;\n    }\n}\n\nfinal class Codes\n{\n    /** @param list<mixed> $arguments */\n    public static function __callStatic(string $name, array $arguments): int\n    {\n        return 0;\n    }\n}\n",
+);
+
+const SHELF: (&str, &str) = (
+    "app/Shop/Shelf.sharp",
+    "namespace App.Shop;\n\nimport Lib.Bag;\nimport Lib.Codes;\n\npublic class Shelf\n{\n    public Shelf(private Bag bag) { }\n\n    public int count => this.bag.size();\n\n    public int code => Codes.next();\n}\n",
+);
+
+/// A method no class declares runs the class's `__call` or `__callStatic`, so its call has the effects the `extern` on
+/// that magic method declares, and an unknown effect without one, as any call of a plain PHP method does.
+#[test]
+fn a_getter_calling_a_method_a_magic_method_serves_has_the_effects_of_the_magic_method() {
+    let pure = (
+        "app/Stubs/Magic.sharp",
+        "namespace App.Stubs;\n\nimport Lib.Bag;\nimport Lib.Codes;\n\nextern Bag.__call;\nextern Codes.__callStatic;\n",
+    );
+    let timed = (
+        "app/Stubs/Magic.sharp",
+        "namespace App.Stubs;\n\nimport Lib.Bag;\nimport Lib.Codes;\n\nextern Bag.__call uses Clock;\nextern Codes.__callStatic;\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[SHELF, MAGIC]),
+        [
+            "app/Shop/Shelf.sharp:10:25 impure-getter: Getter `count` calls `Bag.__call`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Bag.__call;` when it has no effect, or name its effects after `uses`.",
+            "app/Shop/Shelf.sharp:12:24 impure-getter: Getter `code` calls `Codes.__callStatic`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Codes.__callStatic;` when it has no effect, or name its effects after `uses`.",
+        ]
+    );
+    assert_eq!(issues(pure, &[MAGIC]), Vec::<String>::new());
+    assert_eq!(effect_issues(&[SHELF, MAGIC, pure]), Vec::<String>::new());
+    assert_eq!(
+        effect_issues(&[SHELF, MAGIC, timed]),
+        [
+            "app/Shop/Shelf.sharp:10:25 impure-getter: Getter `count` calls `Bag.__call`, which has the effect `Clock`. Getters must be pure."
+        ]
+    );
+}
+
+/// Spec section 29: code without a body is pure unless it says `uses`, function types included, so calling a property
+/// a PHP# class declares with a `Function` type has no effect.
+#[test]
+fn a_getter_calling_a_property_holding_a_function_type_passes() {
+    let pricing = (
+        "app/Shop/Pricing.sharp",
+        "namespace App.Shop;\n\npublic class Pricing\n{\n    public Pricing(private Function<int(int)> rate) { }\n\n    public int price => this.rate(2);\n}\n",
+    );
+
+    assert_eq!(effect_issues(&[pricing]), Vec::<String>::new());
+}
+
+const HOLDER: (&str, &str) = (
+    "src/Lib/Holder.php",
+    "<?php\n\nnamespace Lib;\n\nfinal class Formatter\n{\n    public function __invoke(int $amount): int\n    {\n        return $amount;\n    }\n}\n\nfinal class Holder\n{\n    /** @var \\Closure(int): int */\n    public \\Closure $closure;\n\n    /** @var callable(int): int */\n    public $callback;\n\n    public Formatter $format;\n}\n",
+);
+
+/// A plain PHP property holding a closure or a callable declares no effect, and an `extern` on its class declares the
+/// class's own members, not the code the property holds, so calling it always has an unknown effect. An object with
+/// `__invoke` has the effects of its `__invoke`.
+#[test]
+fn a_getter_calling_a_plain_php_property_holding_a_function_has_an_unknown_effect() {
+    let holder = HOLDER;
+    let till = (
+        "app/Shop/Till.sharp",
+        "namespace App.Shop;\n\nimport Lib.Holder;\n\npublic class Till\n{\n    public Till(private Holder holder) { }\n\n    public int closed => this.holder.closure(2);\n\n    public int called => this.holder.callback(2);\n\n    public int formatted => this.holder.format(2);\n}\n",
+    );
+    let class_extern = ("app/Stubs/Holder.sharp", "namespace App.Stubs;\n\nimport Lib.Holder;\n\nextern Holder;\n");
+    let refused = [
+        "app/Shop/Till.sharp:9:26 impure-getter: Getter `closed` calls `Holder.closure`, which has no `extern` declaration. Getters must be pure. Help: Property `Holder.closure` holds plain PHP code, which no `extern` can declare. Call it outside the getter, or through a method of `Holder` that an `extern` declares.",
+        "app/Shop/Till.sharp:11:26 impure-getter: Getter `called` calls `Holder.callback`, which has no `extern` declaration. Getters must be pure. Help: Property `Holder.callback` holds plain PHP code, which no `extern` can declare. Call it outside the getter, or through a method of `Holder` that an `extern` declares.",
+        "app/Shop/Till.sharp:13:29 impure-getter: Getter `formatted` calls `Formatter.__invoke`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Formatter.__invoke;` when it has no effect, or name its effects after `uses`.",
+    ];
+
+    assert_eq!(effect_issues(&[till, holder]), refused);
+    assert_eq!(effect_issues(&[till, holder, class_extern]), refused);
+}
+
+/// A law calling a plain PHP property that holds a closure is refused as a getter is, and its help names the law.
+#[test]
+fn a_law_calling_a_plain_php_property_holding_a_closure_has_an_unknown_effect() {
+    let rule = (
+        "app/Shop/Rule.sharp",
+        "namespace App.Shop;\n\nimport Lib.Holder;\n\npublic class Rule\n{\n    law positive(Holder holder) => holder.closure(2) > 0;\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[rule, HOLDER]),
+        [
+            "app/Shop/Rule.sharp:7:36 impure-law: Law `positive` calls `Holder.closure`, which has no `extern` declaration. Laws hold only over pure code. Help: Property `Holder.closure` holds plain PHP code, which no `extern` can declare. Call it outside the law, or through a method of `Holder` that an `extern` declares."
         ]
     );
 }
