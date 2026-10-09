@@ -7161,7 +7161,7 @@ fn a_getter_calling_a_plain_php_property_holding_a_function_has_an_unknown_effec
     let refused = [
         "app/Shop/Till.sharp:9:26 impure-getter: Getter `closed` calls `Holder.closure`, which has no `extern` declaration. Getters must be pure. Help: Property `Holder.closure` holds plain PHP code, which no `extern` can declare. Call it outside the getter, or through a method of `Holder` that an `extern` declares.",
         "app/Shop/Till.sharp:11:26 impure-getter: Getter `called` calls `Holder.callback`, which has no `extern` declaration. Getters must be pure. Help: Property `Holder.callback` holds plain PHP code, which no `extern` can declare. Call it outside the getter, or through a method of `Holder` that an `extern` declares.",
-        "app/Shop/Till.sharp:13:29 impure-getter: Getter `formatted` calls `Formatter.__invoke`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Formatter.__invoke;` when it has no effect, or name its effects after `uses`.",
+        "app/Shop/Till.sharp:13:29 impure-getter: Getter `formatted` calls `Formatter.__invoke`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Formatter.__invoke;` when it has no effect, or name its effects after `uses`. Add `import Lib.Formatter;` to the file.",
     ];
 
     assert_eq!(effect_issues(&[till, holder]), refused);
@@ -7229,7 +7229,7 @@ fn a_getter_building_and_changing_a_new_object_passes() {
     let (codebase, summaries) = summarized(&[page, builder]);
     let add = FunctionLikeIdentifier::Method(ascii_lowercase_word(b"App\\Shop\\Builder"), ascii_lowercase_word(b"add"));
     assert_eq!(
-        Effects::solve(&codebase, &summaries).impurity(&add).map(|impurity| impurity.to_string()).as_deref(),
+        Effects::solve(&codebase, &summaries).impurity(&codebase, &add).as_deref(),
         Some("changes `this.text`"),
         "the getter calls a method that changes its object, and the object is the getter's own"
     );
@@ -7306,7 +7306,7 @@ fn a_recursive_pair_of_methods_solves_without_looping() {
     let effects = Effects::solve(&codebase, &summaries);
     let even = FunctionLikeIdentifier::Method(ascii_lowercase_word(b"App\\Shop\\Tree"), ascii_lowercase_word(b"even"));
     assert_eq!(
-        effects.impurity(&even).map(|impurity| impurity.to_string()).as_deref(),
+        effects.impurity(&codebase, &even).as_deref(),
         Some("reaches `Tree.odd`, which calls `now` with the effect `Clock`")
     );
 }
@@ -7427,6 +7427,159 @@ fn a_law_calling_plain_php_with_no_extern_names_the_missing_declaration() {
         effect_issues(&[refund, GATEWAY]),
         [
             "app/Shop/Refund.sharp:7:38 impure-law: Law `refundAllowed` calls `Gateway.charge`, which has no `extern` declaration. Laws hold only over pure code. Help: Declare it in a .sharp file: `extern Gateway.charge;` when it has no effect, or name its effects after `uses`."
+        ]
+    );
+}
+
+const APP_CLOCK: (&str, &str) = (
+    "src/App/Clock.php",
+    "<?php\n\nnamespace App;\n\nfinal class Clock\n{\n    public function now(): int\n    {\n        return 0;\n    }\n}\n",
+);
+
+const VENDOR_CLOCK: (&str, &str) = (
+    "src/Vendor/Clock.php",
+    "<?php\n\nnamespace Vendor;\n\nfinal class Clock\n{\n    /** @var \\Closure(int): int */\n    public \\Closure $tick;\n\n    public function now(): int\n    {\n        return time();\n    }\n}\n",
+);
+
+/// A PHP# class that hands out a `Vendor\Clock`, so a getter in its namespace reaches the clock with no import.
+const CLOCK_SOURCE: (&str, &str) = (
+    "app/Shop/Source.sharp",
+    "namespace App.Shop;\n\nimport Vendor.Clock;\n\npublic class Source\n{\n    public Source(private Clock time) { }\n\n    public Clock clock() => this.time;\n}\n",
+);
+
+/// An effects message names a class as every other message does: by its full name when another class shares its short
+/// name.
+#[test]
+fn a_getter_calling_a_method_of_a_class_that_shares_its_short_name_names_the_class_in_full() {
+    let timer = (
+        "app/Shop/Timer.sharp",
+        "namespace App.Shop;\n\npublic class Timer\n{\n    public Timer(private Source source) { }\n\n    public int started => this.source.clock().now();\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[timer, CLOCK_SOURCE, VENDOR_CLOCK, APP_CLOCK]),
+        [
+            "app/Shop/Timer.sharp:7:27 impure-getter: Getter `started` calls `Vendor.Clock.now`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Clock.now;` when it has no effect, or name its effects after `uses`. Add `import Vendor.Clock;` to the file."
+        ]
+    );
+}
+
+/// The help for a plain PHP property names its class by the same rule as the message.
+#[test]
+fn a_getter_calling_a_plain_php_property_of_a_class_that_shares_its_short_name_names_the_class_in_full() {
+    let timer = (
+        "app/Shop/Timer.sharp",
+        "namespace App.Shop;\n\npublic class Timer\n{\n    public Timer(private Source source) { }\n\n    public int ticked => this.source.clock().tick(2);\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[timer, CLOCK_SOURCE, VENDOR_CLOCK, APP_CLOCK]),
+        [
+            "app/Shop/Timer.sharp:7:26 impure-getter: Getter `ticked` calls `Vendor.Clock.tick`, which has no `extern` declaration. Getters must be pure. Help: Property `Vendor.Clock.tick` holds plain PHP code, which no `extern` can declare. Call it outside the getter, or through a method of `Vendor.Clock` that an `extern` declares."
+        ]
+    );
+}
+
+/// An effects message names a class the file imports by the name its import gives it.
+#[test]
+fn a_getter_calling_a_method_of_a_class_imported_under_another_name_names_the_class_by_that_name() {
+    let timer = (
+        "app/Shop/Timer.sharp",
+        "namespace App.Shop;\n\nimport Vendor.Clock as VendorClock;\n\npublic class Timer\n{\n    public Timer(private VendorClock clock) { }\n\n    public int started => this.clock.now();\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[timer, VENDOR_CLOCK, APP_CLOCK]),
+        [
+            "app/Shop/Timer.sharp:9:27 impure-getter: Getter `started` calls `VendorClock.now`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern VendorClock.now;` when it has no effect, or name its effects after `uses`."
+        ]
+    );
+}
+
+/// The PHP# method a getter reaches is named by the same rule as a plain PHP class.
+#[test]
+fn a_getter_reaching_a_method_of_a_php_sharp_class_that_shares_its_short_name_names_the_class_in_full() {
+    let shop_order = ("app/Shop/Order.sharp", "namespace App.Shop;\n\npublic class Order\n{\n}\n");
+    let billing_order = (
+        "app/Billing/Order.sharp",
+        "namespace App.Billing;\n\npublic class Order\n{\n    public int price() => now();\n}\n",
+    );
+    let cart = (
+        "app/Billing/Cart.sharp",
+        "namespace App.Billing;\n\npublic class Cart\n{\n    public Cart(private Order order) { }\n\n    public int total => this.order.price();\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[cart, billing_order, shop_order, CLOCK_STUB, NOW]),
+        [
+            "app/Billing/Cart.sharp:7:25 impure-getter: Getter `total` reaches `App.Billing.Order.price`, which calls `now` with the effect `Clock`. Getters must be pure."
+        ]
+    );
+}
+
+/// The message is the getter's, so it names a class as the getter's file does, whatever the file of the method that
+/// makes the call imports.
+#[test]
+fn a_getter_reaching_a_call_in_another_file_names_the_class_as_the_getter_file_does() {
+    let order = (
+        "app/Shop/Order.sharp",
+        "namespace App.Shop;\n\nimport Vendor.Clock as VendorClock;\n\npublic class Order\n{\n    public Order(private VendorClock clock) { }\n\n    public int stamp() => this.clock.now();\n}\n",
+    );
+    let cart = (
+        "app/Shop/Cart.sharp",
+        "namespace App.Shop;\n\npublic class Cart\n{\n    public Cart(private Order order) { }\n\n    public int stamped => this.order.stamp();\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[cart, order, VENDOR_CLOCK, APP_CLOCK]),
+        [
+            "app/Shop/Cart.sharp:7:27 impure-getter: Getter `stamped` reaches `Order.stamp`, which calls `Vendor.Clock.now` with no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Clock.now;` when it has no effect, or name its effects after `uses`. Add `import Vendor.Clock;` to the file."
+        ]
+    );
+}
+
+const METER: (&str, &str) = (
+    "src/Lib/Meter.php",
+    "<?php\n\nnamespace Lib;\n\nfinal class Meter\n{\n    public function read(): int\n    {\n        return 0;\n    }\n}\n",
+);
+
+/// The `extern` the help writes compiles only where its class is bound, so the help names the import a class from
+/// another namespace needs, even when no other class shares its short name.
+#[test]
+fn a_getter_calling_a_class_its_file_does_not_import_names_the_import_the_extern_needs() {
+    let gauge = (
+        "app/Shop/Gauge.sharp",
+        "namespace App.Shop;\n\nimport Lib.Meter;\n\npublic class Gauge\n{\n    public Gauge(private Meter source) { }\n\n    public Meter meter() => this.source;\n}\n",
+    );
+    let panel = (
+        "app/Shop/Panel.sharp",
+        "namespace App.Shop;\n\npublic class Panel\n{\n    public Panel(private Gauge gauge) { }\n\n    public int level => this.gauge.meter().read();\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[panel, gauge, METER]),
+        [
+            "app/Shop/Panel.sharp:7:25 impure-getter: Getter `level` calls `Meter.read`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Meter.read;` when it has no effect, or name its effects after `uses`. Add `import Lib.Meter;` to the file."
+        ]
+    );
+}
+
+/// A class of the file's own namespace is bound without an import, so the help names none.
+#[test]
+fn a_getter_calling_a_class_of_its_own_namespace_names_no_import() {
+    let printer = (
+        "src/App/Shop/Printer.php",
+        "<?php\n\nnamespace App\\Shop;\n\nfinal class Printer\n{\n    public function print(): int\n    {\n        return 0;\n    }\n}\n",
+    );
+    let kiosk = (
+        "app/Shop/Kiosk.sharp",
+        "namespace App.Shop;\n\npublic class Kiosk\n{\n    public Kiosk(private Printer printer) { }\n\n    public int printed => this.printer.print();\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[kiosk, printer]),
+        [
+            "app/Shop/Kiosk.sharp:7:27 impure-getter: Getter `printed` calls `Printer.print`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Printer.print;` when it has no effect, or name its effects after `uses`."
         ]
     );
 }

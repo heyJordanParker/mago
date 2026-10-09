@@ -1,8 +1,8 @@
 use std::cell::OnceCell;
+use std::sync::Arc;
 
 use foldhash::HashMap;
 use mago_allocator::Arena;
-use mago_names::short_name;
 use mago_word::Word;
 use mago_word::WordMap;
 use mago_word::WordSet;
@@ -64,10 +64,12 @@ where
     pub(super) type_resolution_context: TypeResolutionContext,
     pub(super) comments: &'arena [Trivia<'arena>],
     pub(super) settings: &'ctx Settings,
-    pub(super) scope: NamespaceScope,
+    /// The file's namespace and imports. It is shared with the effect summaries of the file's bodies, which name classes
+    /// as the file does, so a change after a body copies it once.
+    pub(super) scope: Arc<NamespaceScope>,
     /// The name each import of a `.sharp` file gives its class, as the file writes it: the name after `as`, or else the
-    /// last segment of the class name. Keyed by the lowercase full name of the class.
-    pub(super) imported_names: WordMap<Word>,
+    /// last segment of the class name. Keyed by the lowercase full name of the class. Shared as `scope` is.
+    pub(super) imported_names: Arc<WordMap<Word>>,
     pub(super) collector: Collector<'ctx, 'arena, A>,
     pub(super) statement_span: Span,
     pub(super) plugin_registry: &'ctx PluginRegistry,
@@ -80,7 +82,7 @@ where
     pub(super) patterns: Vec<(Option<Keyword<'arena>>, &'arena Pattern<'arena>)>,
     class_initializers: WordMap<WordSet>,
     /// How many class-likes of the codebase have each lowercase short name, counted the first time a message asks.
-    short_name_counts: OnceCell<HashMap<String, u32>>,
+    pub(super) short_name_counts: OnceCell<HashMap<String, u32>>,
 }
 
 impl<'ctx, 'arena, A> Context<'ctx, 'arena, A>
@@ -110,8 +112,8 @@ where
             type_resolution_context: TypeResolutionContext::new(),
             comments,
             settings,
-            scope: NamespaceScope::default(),
-            imported_names: WordMap::default(),
+            scope: Arc::default(),
+            imported_names: Arc::default(),
             statement_span,
             collector,
             plugin_registry,
@@ -122,27 +124,6 @@ where
             class_initializers: WordMap::default(),
             short_name_counts: OnceCell::new(),
         }
-    }
-
-    /// Whether another class-like of the project or its vendors has the short name of the class-like `name`, compared
-    /// without case as PHP compares class names. PHP's built-in class-likes don't count: a `.sharp` file reaches one,
-    /// like `Dom\Text`, only through an import, and one file can't import two classes of one short name without an
-    /// alias. The prelude's `Sharp\` class-likes do count, as a `.sharp` file reaches them with no import.
-    pub(crate) fn shares_short_name(&self, name: Word) -> bool {
-        let counts = self.short_name_counts.get_or_init(|| {
-            let mut counts = HashMap::default();
-            for (class_like, metadata) in &self.codebase.class_likes {
-                // php-sharp#60: the prelude's `Sharp\` class-likes are built-in, yet a `.sharp` file reaches them with no
-                // import.
-                if !metadata.flags.is_built_in() || class_like.as_bytes().starts_with(b"sharp\\") {
-                    *counts.entry(short_name(class_like).to_ascii_lowercase()).or_insert(0) += 1;
-                }
-            }
-
-            counts
-        });
-
-        counts.get(&short_name(name).to_ascii_lowercase()).is_some_and(|count| *count > 1)
     }
 
     pub(crate) fn prepare_class_initializers(

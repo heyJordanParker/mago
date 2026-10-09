@@ -33,7 +33,6 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::effects;
 use crate::effects::Body;
-use crate::effects::short_name;
 use crate::error::AnalysisError;
 use crate::statement::attributes::AttributeTarget;
 use crate::statement::attributes::analyze_attributes;
@@ -187,7 +186,7 @@ where
                 context,
                 artifacts,
                 Body::Method(class_like_metadata.name, lowercase_method_name),
-                concat_word!(short_name(class_like_metadata.original_name), ".", member),
+                member,
                 method.parameter_list.parameters.iter().map(|parameter| parameter.variable.span).collect(),
                 body,
             );
@@ -355,7 +354,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Law<'arena> {
             context,
             artifacts,
             Body::Method(class_like_metadata.name, lowercase_law_name),
-            concat_word!(short_name(class_like_metadata.original_name), ".", self.name.value),
+            word(self.name.value),
             self.parameter_list.parameters.iter().map(|parameter| parameter.variable.span).collect(),
             body,
         );
