@@ -5054,6 +5054,191 @@ fn a_literal_of_the_declared_collection_in_a_coalesce_ternary_or_match_is_accept
     assert_eq!(issues(("src/Demo/Clean.sharp", sharp), &[("src/Demo/Kind.sharp", kind)]), Vec::<String>::new());
 }
 
+const STORE: (&str, &str) = (
+    "src/Lib/Store.php",
+    "<?php\n\nnamespace Lib;\n\ntrait Keeps\n{\n    public array $kept = [];\n\n    public function keepAll(array $rows): int\n    {\n        return count($rows);\n    }\n}\n\ninterface Sink\n{\n    public function sink(array $rows): int;\n}\n\n/**\n * @method int magic(array $rows)\n */\nclass Store\n{\n    use Keeps;\n\n    public static array $shared = [];\n\n    public array $items = [];\n\n    public function __construct(array $seed = [])\n    {\n        $this->items = $seed;\n    }\n\n    public function keep(array $rows): int\n    {\n        return count($rows);\n    }\n\n    public function pair(array $left, array $right): int\n    {\n        return count($left) + count($right);\n    }\n\n    public static function make(array $rows): int\n    {\n        return count($rows);\n    }\n\n    /** @param list<mixed> $arguments */\n    public function __call(string $name, array $arguments): int\n    {\n        return count($arguments);\n    }\n}\n",
+);
+
+const ROWS: (&str, &str) =
+    ("src/Demo/Rows.sharp", "namespace Demo;\n\nimport Lib.Store;\n\npublic class Rows : Store\n{\n}\n");
+
+/// A plain PHP parent's method keeps its PHP `array` parameter when a PHP# class inherits it, so a call through the
+/// PHP# class takes either literal, as a call through the PHP class does.
+#[test]
+fn a_php_parents_method_called_on_a_sharp_class_takes_either_literal() {
+    let sharp =
+        "namespace Demo;\n\nclass Report\n{\n    public int run(Rows rows) => rows.keep([]) + rows.keep([:]);\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Report\n{\n    public function run(Rows $rows): int\n    {\n        return $rows->keep([]) + $rows->keep([]);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[STORE, ROWS]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[STORE, ROWS]), Vec::<String>::new());
+}
+
+/// A plain PHP parent's static method called through a PHP# class takes either literal.
+#[test]
+fn a_php_parents_static_method_called_on_a_sharp_class_takes_either_literal() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public int run() => Rows.make([]) + Rows.make([:]);\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Report\n{\n    public function run(): int\n    {\n        return Rows::make([]) + Rows::make([]);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[STORE, ROWS]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[STORE, ROWS]), Vec::<String>::new());
+}
+
+/// A plain PHP parent's method partially applied through a PHP# class takes either literal for the arguments it fixes.
+#[test]
+fn a_php_parents_method_partially_applied_on_a_sharp_class_takes_either_literal() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public int run(Rows rows)\n    {\n        const keep = rows.pair(?, [:]);\n        return keep([]);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Report\n{\n    public function run(Rows $rows): int\n    {\n        $keep = $rows->pair(?, []);\n        return $keep([]);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[STORE, ROWS]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[STORE, ROWS]), Vec::<String>::new());
+}
+
+/// A plain PHP trait's method that a PHP# class inherits keeps its PHP `array` parameter, so it takes either literal.
+#[test]
+fn a_php_traits_method_called_on_a_sharp_class_takes_either_literal() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public int run(Rows rows) => rows.keepAll([]) + rows.keepAll([:]);\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Report\n{\n    public function run(Rows $rows): int\n    {\n        return $rows->keepAll([]) + $rows->keepAll([]);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[STORE, ROWS]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[STORE, ROWS]), Vec::<String>::new());
+}
+
+/// A plain PHP interface's method that an abstract PHP# class does not declare again keeps its PHP `array` parameter,
+/// so a call through the PHP# class takes either literal.
+#[test]
+fn a_php_interfaces_method_called_on_an_abstract_sharp_class_takes_either_literal() {
+    let sharp = "namespace Demo;\n\nimport Lib.Sink;\n\npublic abstract class Drain : Sink\n{\n}\n\nclass Report\n{\n    public int run(Drain drain) => drain.sink([]) + drain.sink([:]);\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Sink;\n\nabstract class Drain implements Sink\n{\n}\n\nfinal class Report\n{\n    public function run(Drain $drain): int\n    {\n        return $drain->sink([]) + $drain->sink([]);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[STORE]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[STORE]), Vec::<String>::new());
+}
+
+/// A PHP# class without a constructor of its own is created through its plain PHP parent's constructor, whose PHP
+/// `array` parameter takes either literal.
+#[test]
+fn a_php_parents_constructor_called_by_new_of_a_sharp_class_takes_either_literal() {
+    let sharp =
+        "namespace Demo;\n\nclass Report\n{\n    public List<Rows> run() => [new Rows([]), new Rows([:])];\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Report\n{\n    /** @return list<Rows> */\n    public function run(): array\n    {\n        return [new Rows([]), new Rows([])];\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[STORE, ROWS]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[STORE, ROWS]), Vec::<String>::new());
+}
+
+/// A method a plain PHP parent's `__call` serves, as its `@method` tag writes it, takes either literal for its PHP
+/// `array` parameter when called through a PHP# class.
+#[test]
+fn a_php_parents_magic_method_called_on_a_sharp_class_takes_either_literal() {
+    let sharp =
+        "namespace Demo;\n\nclass Report\n{\n    public int run(Rows rows) => rows.magic([]) + rows.magic([:]);\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Report\n{\n    public function run(Rows $rows): int\n    {\n        return $rows->magic([]) + $rows->magic([]);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[STORE, ROWS]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[STORE, ROWS]), Vec::<String>::new());
+}
+
+/// A PHP# method keeps the collections its parameters declare when a plain PHP subclass inherits it, so a call
+/// through the PHP subclass refuses a literal of the other collection.
+#[test]
+fn a_sharp_parents_method_called_on_a_php_subclass_keeps_its_parameter_collections() {
+    let base = (
+        "src/Demo/Base.sharp",
+        "namespace Demo;\n\npublic class Base\n{\n    public int keep(List<int> rows) => count(rows);\n}\n",
+    );
+    let child = ("src/Demo/Child.php", "<?php\n\nnamespace Demo;\n\nclass Child extends Base\n{\n}\n");
+    let sharp =
+        "namespace Demo;\n\nclass Report\n{\n    public int run(Child child) => child.keep([]) + child.keep([:]);\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Report\n{\n    public function run(Child $child): int\n    {\n        return $child->keep([]) + $child->keep([]);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[base, child]), Vec::<String>::new());
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[base, child])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        ["5:64 invalid-array-element `[:]` is an empty Map. An empty List is written `[]`."]
+    );
+}
+
+/// A plain PHP class's `array` property names neither a `List` nor a `Map`, so PHP# assigns it either literal, as an
+/// instance property and as a static one.
+#[test]
+fn a_php_classes_array_property_takes_either_literal() {
+    let sharp = "namespace Demo;\n\nimport Lib.Store;\n\nclass Report\n{\n    public void run(Store store)\n    {\n        store.items = [];\n        store.items = [:];\n        Store.shared = [];\n        Store.shared = [:];\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Store;\n\nfinal class Report\n{\n    public function run(Store $store): void\n    {\n        $store->items = [];\n        $store->items = [];\n        Store::$shared = [];\n        Store::$shared = [];\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[STORE]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Report.sharp", sharp), &[STORE]), Vec::<String>::new());
+}
+
+/// A plain PHP parent's `array` property stays PHP's when a PHP# class inherits it, so the PHP# class assigns it
+/// either literal, through `this` and through another object.
+#[test]
+fn a_php_parents_array_property_a_sharp_class_inherits_takes_either_literal() {
+    let sharp = "namespace Demo;\n\nimport Lib.Store;\n\npublic class Rows : Store\n{\n    public void clear(Rows other)\n    {\n        this.items = [];\n        this.items = [:];\n        other.items = [:];\n        other.items = [];\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Store;\n\nclass Rows extends Store\n{\n    public function clear(Rows $other): void\n    {\n        $this->items = [];\n        $this->items = [];\n        $other->items = [];\n        $other->items = [];\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Rows.php", php), &[STORE]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Rows.sharp", sharp), &[STORE]), Vec::<String>::new());
+}
+
+/// A plain PHP trait's `array` property stays PHP's in every class that uses the trait, so a PHP# class below one
+/// assigns it either literal.
+#[test]
+fn a_php_traits_array_property_takes_either_literal() {
+    let sharp = "namespace Demo;\n\nimport Lib.Store;\n\npublic class Rows : Store\n{\n    public void clear()\n    {\n        this.kept = [];\n        this.kept = [:];\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Store;\n\nclass Rows extends Store\n{\n    public function clear(): void\n    {\n        $this->kept = [];\n        $this->kept = [];\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Rows.php", php), &[STORE]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Rows.sharp", sharp), &[STORE]), Vec::<String>::new());
+}
+
+/// A PHP# property declared as a `List` refuses a `Map` literal in the class that declares it, through a promoted
+/// parameter, and in a PHP# class that inherits it.
+#[test]
+fn a_sharp_list_property_refuses_a_map_literal_where_it_is_declared_and_inherited() {
+    let sharp = "namespace Demo;\n\npublic class Sizes\n{\n    public List<int> all = [];\n\n    public Sizes(public List<int> seed { get; set; })\n    {\n    }\n\n    public void clear()\n    {\n        this.all = [:];\n    }\n}\n\npublic class Counts : Sizes\n{\n    public void reset()\n    {\n        this.all = [:];\n        this.seed = [:];\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Sizes\n{\n    /** @var list<int> */\n    public array $all = [];\n\n    /** @param list<int> $seed */\n    public function __construct(public array $seed)\n    {\n    }\n\n    public function clear(): void\n    {\n        $this->all = [];\n    }\n}\n\nclass Counts extends Sizes\n{\n    public function reset(): void\n    {\n        $this->all = [];\n        $this->seed = [];\n    }\n}\n";
+
+    let message = "invalid-array-element `[:]` is an empty Map. An empty List is written `[]`.";
+    assert_eq!(issues(("src/Demo/Sizes.php", php), &[]), Vec::<String>::new());
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Sizes.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        [format!("13:20 {message}"), format!("21:20 {message}"), format!("22:21 {message}")]
+    );
+}
+
+/// A PHP# local copied from a plain PHP `array` property is PHP#'s own place, and PHP# reads a PHP `array` as a `Map`,
+/// so the local refuses a `List` literal.
+#[test]
+fn a_local_copied_from_a_php_array_property_refuses_a_list_literal() {
+    let sharp = "namespace Demo;\n\nimport Lib.Store;\n\nclass Report\n{\n    public int run(Store store)\n    {\n        let items = store.items;\n        items = [];\n        return count(items);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Store;\n\nfinal class Report\n{\n    public function run(Store $store): int\n    {\n        $items = $store->items;\n        $items = [];\n        return count($items);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[STORE]), Vec::<String>::new());
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[STORE])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        ["10:17 invalid-array-element `[]` is an empty List. An empty Map is written `[:]`."]
+    );
+}
+
+/// A plain PHP `array` property a PHP# class empties is typed by the value it holds, as in PHP, and PHP# still reads it
+/// as a `Map`: its `Map` methods and its `[k, v]` loop check clean, and a bare index read is refused.
+#[test]
+fn an_emptied_php_array_property_keeps_the_map_rules() {
+    let sharp = "namespace Demo;\n\nimport Lib.Store;\n\npublic class Rows : Store\n{\n    public int total()\n    {\n        this.items = [];\n        this.items.delete(\"a\");\n        let total = 0;\n        for (const [key, value] of this.items) {\n            total += 1;\n        }\n        this.items = [:];\n        const first = this.items.get(\"a\");\n        return total + count(this.items) + (first == null ? 0 : 1);\n    }\n\n    public Any? read() => this.items[\"b\"];\n}\n";
+
+    assert_eq!(issues(("src/Demo/Rows.sharp", sharp), &[STORE]), ["20:27 possibly-undefined-array-index"]);
+}
+
 /// A `List` has `add`, `set`, `get` and `entries()`, and a `Map` has `delete` and `get`, each typed by the elements of
 /// the collection it is called on, as spec section 12 decides.
 #[test]
@@ -5542,7 +5727,7 @@ fn a_bound_names_a_type_parameter_of_its_own_list() {
 fn a_type_argument_report_names_type_arguments_and_short_class_names() {
     let sharp = "namespace Demo;\n\npublic class Report\n{\n    public static Any numbers(PaginatedList<int> page) => page;\n\n    public static Any pairs(PaginatedList<Order, Order> page) => page;\n\n    public static int counted(Store store) => store.count<int>();\n}\n";
     let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    /** @param PaginatedList<int> $page */\n    public static function numbers(PaginatedList $page): mixed\n    {\n        return $page;\n    }\n\n    /** @param PaginatedList<Order, Order> $page */\n    public static function pairs(PaginatedList $page): mixed\n    {\n        return $page;\n    }\n}\n";
-    let others = [("src/Demo/Paging.sharp", PAGING), ("src/Demo/Store.sharp", STORE)];
+    let others = [("src/Demo/Paging.sharp", PAGING), ("src/Demo/Store.sharp", GENERIC_STORE)];
 
     assert_eq!(
         worded(("src/Demo/Report.php", php), &others),
@@ -6036,7 +6221,7 @@ fn a_type_parameter_passes_as_the_bound_that_names_it() {
 }
 
 /// A class, a static method and a method of `Store` with type parameters of their own.
-const STORE: &str = "namespace Demo;\n\npublic class WebhookPayload\n{\n}\n\npublic class Json\n{\n    public static T decode<T>(string body) => null;\n}\n\npublic class Store\n{\n    public TItem first<TItem : DatabaseEntity>(List<TItem> items) => items[0];\n\n    public int count() => 0;\n}\n";
+const GENERIC_STORE: &str = "namespace Demo;\n\npublic class WebhookPayload\n{\n}\n\npublic class Json\n{\n    public static T decode<T>(string body) => null;\n}\n\npublic class Store\n{\n    public TItem first<TItem : DatabaseEntity>(List<TItem> items) => items[0];\n\n    public int count() => 0;\n}\n";
 
 /// The type arguments of a method call fix the method's own type parameters, whether the call is static, on an
 /// object or null-safe, and they may be the caller's own type parameter. A method without type parameters takes none.
@@ -6045,7 +6230,7 @@ fn the_type_arguments_of_a_method_call_fix_its_type_parameters() {
     let sharp = "namespace Demo;\n\npublic class Report\n{\n    public static WebhookPayload keepPayload(WebhookPayload payload) => payload;\n\n    public static int keepInt(int number) => number;\n\n    public static WebhookPayload payload(string body) => Report.keepPayload(Json.decode<WebhookPayload>(body));\n\n    public static int number(string body) => Report.keepInt(Json.decode<WebhookPayload>(body));\n\n    public static Any lined(Store store, List<Line> lines) => store.first<Order>(lines);\n\n    public static Order ordered(Store store, List<Order> orders) => store.first<Order>(orders);\n\n    public static Order? maybe(Store? store, List<Order> orders) => store?.first<Order>(orders);\n\n    public static int counted(Store store) => store.count<int>();\n\n    public static TItem forwarded<TItem : DatabaseEntity>(Store store, List<TItem> items) => store.first<TItem>(items);\n}\n";
 
     assert_eq!(
-        issues(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING), ("src/Demo/Store.sharp", STORE)]),
+        issues(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING), ("src/Demo/Store.sharp", GENERIC_STORE)]),
         ["11:61 invalid-argument", "13:82 invalid-argument", "19:58 excess-template-parameter"]
     );
 }

@@ -1150,6 +1150,8 @@ where
 /// storage of the property whose accessor is running. A PHP# collection is the `List` or `Map` its place declares, so
 /// its methods, its index reads and its `[k, v]` loops follow that type. A value the analyzer saw assigned last, such
 /// as a list of one implementation, or a `List` literal in a `Map<int, V>`, narrows neither its kind nor its elements.
+/// Only a property a PHP# class declares names a collection: a plain PHP `array` property, on a PHP class or reached
+/// through a PHP# one, is typed by the value it holds, as in PHP.
 pub(crate) fn get_declared_collection<'arena, A>(
     context: &Context<'_, 'arena, A>,
     block_context: &BlockContext<'_>,
@@ -1188,13 +1190,22 @@ where
                 return None;
             };
             let property_name = concat_word!(b"$", property.value);
-
-            // `Class.name` is a static property of the class it names. `this` keeps no expression type: it is the
-            // `$this` local, the scope's class with its type parameters.
-            if let Some(class) = context.resolved_names.static_property_class(access) {
+            let is_declared_in_sharp = |class: &[u8]| {
                 context
                     .codebase
-                    .get_property_type(context.resolved_names.get(&class.name), property_name.as_bytes())?
+                    .get_declaring_property_class(class, property_name.as_bytes())
+                    .and_then(|declaring_class| context.codebase.get_class_like(declaring_class.as_bytes()))
+                    .is_some_and(|metadata| metadata.flags.is_sharp())
+            };
+
+            // `Class.name` is a static property of the class it names. `this` keeps no expression type: it is the
+            // `$this` local, the scope's class with its type parameters. A property plain PHP declares keeps PHP's
+            // array, which takes either collection literal.
+            if let Some(class) = context.resolved_names.static_property_class(access) {
+                let class = context.resolved_names.get(&class.name);
+
+                is_declared_in_sharp(class)
+                    .then(|| context.codebase.get_property_type(class, property_name.as_bytes()))??
                     .clone()
             } else {
                 let receiver = if is_this(access.object, context.resolved_names) {
@@ -1202,8 +1213,12 @@ where
                 } else {
                     artifacts.get_expression_type(access.object)?
                 };
+                let is_sharp_receiver = receiver.types.iter().any(|atomic| match atomic {
+                    TAtomic::Object(object) => object.get_name().is_some_and(|name| is_declared_in_sharp(name.as_bytes())),
+                    _ => false,
+                });
 
-                get_localized_property_type(context, receiver, property_name)?
+                is_sharp_receiver.then(|| get_localized_property_type(context, receiver, property_name))??
             }
         }
         _ => return None,
