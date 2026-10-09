@@ -384,6 +384,40 @@ fn an_imported_name_is_the_imported_class_and_not_the_standard_library_one() {
     }
 }
 
+/// Spec section 23: `import X.Y as Z;` names the class `Z` in this file. A rename shadows the standard library class
+/// of its new name, as any import does, and leaves the standard library class of the old short name in place.
+#[test]
+fn a_renamed_import_names_the_imported_class_by_its_new_name() {
+    const CODE: &str = "namespace App;\n\nimport Sharp.Text.Regex as Rx;\nimport Lib.Store as Position;\nimport Lib.Cache as LibCache;\nimport Stripe.StripeClient as Client;\n\nextern Client uses Http;\n\nclass Report\n{\n    public bool run(string text, Position here, Cache store, LibCache other)\n    {\n        return Rx.matches(\"/a/\", text);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "Rx.matches", 0), Some(Binding::Class));
+    assert_eq!(binding(&names, CODE, "Client uses", 0), Some(Binding::Class));
+    for (needle, class) in [
+        ("Rx.matches", "Sharp\\Text\\Regex"),
+        ("Position here", "Lib\\Store"),
+        ("Cache store", "Sharp\\Cache"),
+        ("LibCache other", "Lib\\Cache"),
+        ("Client uses", "Stripe\\StripeClient"),
+    ] {
+        assert_eq!(String::from_utf8_lossy(resolved(&names, CODE, needle, 0)), class, "`{needle}`");
+    }
+}
+
+#[test]
+fn a_php_use_renamed_with_as_names_the_imported_class_by_its_new_name() {
+    const CODE: &str = "<?php namespace App; use Sharp\\Text\\Regex as Rx; use Lib\\Cache as LibCache; Rx::matches('/a/', 'a'); new Cache(); new LibCache();";
+    let arena = LocalArena::new();
+    let file = File::ephemeral(Cow::Borrowed(b"src/Store.php"), Cow::Borrowed(CODE.as_bytes()));
+    let program = parse_file(&arena, &file);
+    let names = NameResolver::new(&arena).resolve(program);
+
+    for (needle, class) in [("Rx::", "Sharp\\Text\\Regex"), ("LibCache()", "Lib\\Cache"), ("Cache()", "App\\Cache")] {
+        assert_eq!(String::from_utf8_lossy(resolved(&names, CODE, needle, 0)), class, "`{needle}`");
+    }
+}
+
 #[test]
 fn a_class_the_file_declares_after_its_use_is_the_class_and_not_the_standard_library_one() {
     const CODE: &str = "namespace App.Tenant.Store;\n\nclass Report\n{\n    public void run(Position here)\n    {\n        Position.current();\n    }\n}\n\nclass Position\n{\n}\n";
