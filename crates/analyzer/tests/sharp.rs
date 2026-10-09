@@ -5274,6 +5274,54 @@ fn a_sharp_list_property_refuses_a_map_literal_where_it_is_declared_and_inherite
     );
 }
 
+/// A PHP# property declared as a `List` refuses a `Map` literal written through a parameter of its class.
+#[test]
+fn a_sharp_list_property_refuses_a_map_literal_through_a_parameter() {
+    let sharp = "namespace Demo;\n\npublic class Sizes\n{\n    public List<int> all { get; set; } = [];\n\n    public void clear(Sizes other)\n    {\n        other.all = [:];\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Sizes\n{\n    /** @var list<int> */\n    public array $all = [];\n\n    public function clear(Sizes $other): void\n    {\n        $other->all = [];\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Sizes.php", php), &[]), Vec::<String>::new());
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Sizes.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        ["9:21 invalid-array-element `[:]` is an empty Map. An empty List is written `[]`."]
+    );
+}
+
+/// A PHP# property declared as a `List` refuses a `Map` literal written through a local that holds its object, and
+/// through a property of `this` that holds it.
+#[test]
+fn a_sharp_list_property_refuses_a_map_literal_through_a_local_and_a_property_of_this() {
+    let sharp = "namespace Demo;\n\npublic class Sizes\n{\n    public List<int> all { get; set; } = [];\n\n    public Sizes(public Sizes peer { get; })\n    {\n    }\n\n    public void clear()\n    {\n        let copy = this.peer;\n        copy.all = [:];\n        this.peer.all = [:];\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Sizes\n{\n    /** @var list<int> */\n    public array $all = [];\n\n    public function __construct(public Sizes $peer)\n    {\n    }\n\n    public function clear(): void\n    {\n        $copy = $this->peer;\n        $copy->all = [];\n        $this->peer->all = [];\n    }\n}\n";
+
+    let message = "invalid-array-element `[:]` is an empty Map. An empty List is written `[]`.";
+    assert_eq!(issues(("src/Demo/Sizes.php", php), &[]), Vec::<String>::new());
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Sizes.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        [format!("14:20 {message}"), format!("15:25 {message}")]
+    );
+}
+
+/// `other.all = []` empties a PHP# `List<int>` property through a parameter and leaves it the `List<int>` it is
+/// declared, so its index reads an `int`. PHP narrows the emptied `list<int>` property to an empty array.
+#[test]
+fn a_sharp_list_property_emptied_through_a_parameter_stays_a_list() {
+    let sharp = "namespace Demo;\n\npublic class Sizes\n{\n    public List<int> all { get; set; } = [];\n\n    public int clear(Sizes other)\n    {\n        other.all = [];\n        return other.all[0];\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Sizes\n{\n    /** @var list<int> */\n    public array $all = [];\n\n    public function clear(Sizes $other): int\n    {\n        $other->all = [];\n\n        return $other->all[0];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Sizes.php", php), &[]),
+        ["14:28 mismatched-array-index", "14:16 invalid-return-statement"]
+    );
+    assert_eq!(issues(("src/Demo/Sizes.sharp", sharp), &[]), Vec::<String>::new());
+}
+
 /// A PHP# local copied from a plain PHP `array` property is PHP#'s own place, and PHP# reads a PHP `array` as a `Map`,
 /// so the local refuses a `List` literal.
 #[test]
