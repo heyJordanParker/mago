@@ -16,7 +16,6 @@ nav_section = ""
 
 <div class="home-hero__cta">
 <a class="button button--solid" href="/guide/getting-started/"><span>快速开始</span><span class="button__arrow">→</span></a>
-<a class="button" href="/playground/"><span>打开 Playground</span></a>
 </div>
 
 </div>
@@ -133,15 +132,5 @@ nav_section = ""
 <p>想支持 Mago 的开发?</p>
 <a class="button button--solid" href="https://github.com/sponsors/azjezz" target="_blank" rel="noopener"><span>成为赞助者</span><span class="button__arrow">→</span></a>
 </div>
-
-</section>
-
-<section class="home-coda">
-
-<h2 class="home-coda__title">无需安装即可试用</h2>
-
-<p class="home-coda__body">Playground 通过 WebAssembly 在浏览器里运行完整的 Mago 分析器。粘贴任意 PHP 代码,通过 URL 分享结果。</p>
-
-<a class="button button--solid" href="/playground/"><span>打开 Playground</span><span class="button__arrow">→</span></a>
 
 </section>

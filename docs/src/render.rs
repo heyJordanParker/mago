@@ -63,7 +63,7 @@ pub fn build_site(root: &Path) -> Result<()> {
     let version_root = dist_root.join(&current_version);
     fs::create_dir_all(&version_root).with_context(|| format!("failed to create {}", version_root.display()))?;
 
-    copy_static_assets(&static_root, &version_root, &language_codes)?;
+    copy_static_assets(&static_root, &version_root)?;
 
     let sponsors_source = root.join("sponsors.json");
     if sponsors_source.exists() {
@@ -139,7 +139,6 @@ pub fn build_site(root: &Path) -> Result<()> {
         let rewritten_html = apply_benchmark_tokens(&rewritten_html, &benchmark_tokens);
         context.insert("content", &rewritten_html);
         context.insert("is_homepage", &page.logical_path.is_empty());
-        context.insert("is_playground", &(page.logical_path == "playground"));
         context.insert("has_diagrams", &page.html.contains("language-mermaid"));
         context.insert("base_url", &config.base_url);
 
@@ -153,85 +152,15 @@ pub fn build_site(root: &Path) -> Result<()> {
             ("translation_stale", t(ui, "translation_stale", "This translation may be outdated.")),
             ("untranslated_banner", t(ui, "untranslated_banner", "This page is not translated yet.")),
             ("edit_page", t(ui, "edit_page", "Edit this page")),
-            ("playground_title", t(ui, "playground_title", "Playground")),
-            ("playground_run", t(ui, "playground_run", "Analyze")),
-            ("playground_format", t(ui, "playground_format", "Format")),
-            ("playground_share", t(ui, "playground_share", "Share")),
             ("nav_guide", t(ui, "nav_guide", "Guide")),
             ("nav_faq", t(ui, "nav_faq", "FAQ")),
             ("nav_sponsor", t(ui, "nav_sponsor", "Sponsor")),
             ("nav_github", t(ui, "nav_github", "GitHub repository")),
             ("nav_discord", t(ui, "nav_discord", "Discord community")),
-            // Playground chrome (rendered into HTML via Tera).
-            ("pg_settings", t(ui, "pg_settings", "Settings")),
-            ("pg_settings_close", t(ui, "pg_settings_close", "Close settings")),
-            ("pg_pane_issues", t(ui, "pg_pane_issues", "issues")),
-            ("pg_pane_settings", t(ui, "pg_pane_settings", "settings")),
-            ("pg_section_analyzer", t(ui, "pg_section_analyzer", "Analyzer")),
-            ("pg_section_linter", t(ui, "pg_section_linter", "Linter")),
-            ("pg_section_plugins", t(ui, "pg_section_plugins", "Plugins")),
-            ("pg_section_exceptions", t(ui, "pg_section_exceptions", "Exception filters")),
-            ("pg_section_initializers", t(ui, "pg_section_initializers", "Class initializers")),
-            ("pg_section_rules", t(ui, "pg_section_rules", "Linter rules")),
-            ("pg_section_integrations", t(ui, "pg_section_integrations", "Integrations")),
-            (
-                "pg_hint_integrations",
-                t(ui, "pg_hint_integrations", "Enable a library or framework to surface its dedicated linter rules."),
-            ),
-            (
-                "pg_hint_rules",
-                t(
-                    ui,
-                    "pg_hint_rules",
-                    "Toggle individual rules. Rules tied to an integration only fire when their integration is enabled below.",
-                ),
-            ),
-            ("pg_hint_analyzer", t(ui, "pg_hint_analyzer", "Toggle individual checks.")),
-            ("pg_hint_plugins", t(ui, "pg_hint_plugins", "Type providers for built-in PHP and popular libraries.")),
-            ("pg_hint_exceptions", t(ui, "pg_hint_exceptions", "Active because <code>checkThrows</code> is on.")),
-            (
-                "pg_hint_initializers",
-                t(
-                    ui,
-                    "pg_hint_initializers",
-                    "Methods treated as initializers, alongside <code>__construct</code>. Comma-separated.",
-                ),
-            ),
-            ("pg_label_unchecked", t(ui, "pg_label_unchecked", "Unchecked exceptions")),
-            ("pg_hint_unchecked", t(ui, "pg_hint_unchecked", "Class plus subclasses, comma-separated.")),
-            ("pg_label_unchecked_classes", t(ui, "pg_label_unchecked_classes", "Unchecked exception classes")),
-            ("pg_hint_unchecked_classes", t(ui, "pg_hint_unchecked_classes", "Exact match only, no subclasses.")),
-            ("pg_search_rules", t(ui, "pg_search_rules", "Search rules.")),
-            ("pg_enable_all", t(ui, "pg_enable_all", "Enable all")),
-            ("pg_disable_all", t(ui, "pg_disable_all", "Disable all")),
-            ("pg_rules_load", t(ui, "pg_rules_load", "Rules load with the analyzer.")),
-            ("pg_loading_title", t(ui, "pg_loading_title", "Loading the analyzer.")),
-            ("pg_loading_sub", t(ui, "pg_loading_sub", "First load fetches the WebAssembly module (~15 MB).")),
-            // Playground dynamic strings (emitted as a JSON block; consumed by playground.js).
-            ("pg_status_loading", t(ui, "pg_status_loading", "Loading the analyzer (~15 MB).")),
-            ("pg_status_formatting", t(ui, "pg_status_formatting", "Formatting.")),
-            ("pg_status_formatted", t(ui, "pg_status_formatted", "Formatted.")),
-            ("pg_status_sharing", t(ui, "pg_status_sharing", "Sharing.")),
-            ("pg_status_copied", t(ui, "pg_status_copied", "Link copied to clipboard.")),
-            ("pg_status_share_url", t(ui, "pg_status_share_url", "Share URL:")),
-            ("pg_err_share", t(ui, "pg_err_share", "Share failed:")),
-            ("pg_err_format", t(ui, "pg_err_format", "Format error:")),
-            ("pg_err_analysis", t(ui, "pg_err_analysis", "Analysis error:")),
-            ("pg_err_load", t(ui, "pg_err_load", "Failed to load analyzer:")),
-            ("pg_no_issues_title", t(ui, "pg_no_issues_title", "No issues found.")),
-            ("pg_no_issues_sub", t(ui, "pg_no_issues_sub", "The analyzer ran clean against your code.")),
-            ("pg_filtered_title", t(ui, "pg_filtered_title", "All matching issues are filtered out.")),
-            ("pg_filtered_sub", t(ui, "pg_filtered_sub", "Re-enable a filter chip above to see them.")),
         ]);
         context.insert("ui", &ui_strings);
 
-        let template_name = if page.logical_path == "playground" {
-            "playground.html"
-        } else if page.logical_path.is_empty() {
-            "home.html"
-        } else {
-            "page.html"
-        };
+        let template_name = if page.logical_path.is_empty() { "home.html" } else { "page.html" };
         let rendered = tera
             .render(template_name, &context)
             .with_context(|| format!("failed to render {} template", template_name))?;
@@ -253,7 +182,7 @@ pub fn build_site(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn copy_static_assets(static_root: &Path, dist_root: &Path, language_codes: &[String]) -> Result<()> {
+fn copy_static_assets(static_root: &Path, dist_root: &Path) -> Result<()> {
     let assets_root = dist_root.join("_assets");
     fs::create_dir_all(&assets_root)
         .with_context(|| format!("failed to create assets directory {}", assets_root.display()))?;
@@ -267,17 +196,6 @@ fn copy_static_assets(static_root: &Path, dist_root: &Path, language_codes: &[St
             .path()
             .strip_prefix(static_root)
             .with_context(|| format!("failed to strip static prefix from {}", entry.path().display()))?;
-
-        if relative_path.starts_with("playground_wasm") {
-            continue;
-        }
-
-        // playground.js is shipped per-language under playground/_assets/
-        // (handled below). Skip it in the global pass to avoid a duplicate
-        // copy under _assets/js/.
-        if relative_path == Path::new("js/playground.js") {
-            continue;
-        }
 
         // Skip the large source SVGs / PNGs that aren't actually referenced.
         // They live under static/img/ purely as project artwork and would
@@ -294,36 +212,6 @@ fn copy_static_assets(static_root: &Path, dist_root: &Path, language_codes: &[St
         }
         fs::copy(entry.path(), &destination).with_context(|| {
             format!("failed to copy static file {} to {}", entry.path().display(), destination.display())
-        })?;
-    }
-
-    let playground_js = static_root.join("js/playground.js");
-    let wasm_source_dir = static_root.join("playground_wasm");
-    let wasm_js = wasm_source_dir.join("mago_wasm.js");
-    let wasm_bg = wasm_source_dir.join("mago_wasm_bg.wasm");
-    if !playground_js.is_file() {
-        anyhow::bail!("playground entry point missing at {}", playground_js.display());
-    }
-    if !wasm_js.is_file() || !wasm_bg.is_file() {
-        anyhow::bail!(
-            "playground WASM bundle missing from {}. Run `wasm-pack build crates/wasm --target web --release --out-dir pkg-web` and copy mago_wasm.js + mago_wasm_bg.wasm there before building the docs.",
-            wasm_source_dir.display(),
-        );
-    }
-
-    for language in language_codes {
-        let playground_assets = dist_root.join(language).join("playground").join("_assets");
-        fs::create_dir_all(&playground_assets)
-            .with_context(|| format!("failed to create playground assets directory {}", playground_assets.display()))?;
-
-        fs::copy(&playground_js, playground_assets.join("playground.js")).with_context(|| {
-            format!("failed to copy playground JS {}", playground_assets.join("playground.js").display())
-        })?;
-        fs::copy(&wasm_js, playground_assets.join("mago_wasm.js")).with_context(|| {
-            format!("failed to copy playground wasm JS {}", playground_assets.join("mago_wasm.js").display())
-        })?;
-        fs::copy(&wasm_bg, playground_assets.join("mago_wasm_bg.wasm")).with_context(|| {
-            format!("failed to copy playground wasm binary {}", playground_assets.join("mago_wasm_bg.wasm").display())
         })?;
     }
 

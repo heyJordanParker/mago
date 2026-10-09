@@ -16,7 +16,6 @@ nav_section = ""
 
 <div class="home-hero__cta">
 <a class="button button--solid" href="/guide/getting-started/"><span>Get started</span><span class="button__arrow">→</span></a>
-<a class="button" href="/playground/"><span>Open the playground</span></a>
 </div>
 
 </div>
@@ -133,15 +132,5 @@ nav_section = ""
 <p>Want to support Mago's development?</p>
 <a class="button button--solid" href="https://github.com/sponsors/azjezz" target="_blank" rel="noopener"><span>Become a sponsor</span><span class="button__arrow">→</span></a>
 </div>
-
-</section>
-
-<section class="home-coda">
-
-<h2 class="home-coda__title">Try it without installing</h2>
-
-<p class="home-coda__body">The playground runs the full Mago analyzer in your browser via WebAssembly. Paste any PHP, share the result by URL.</p>
-
-<a class="button button--solid" href="/playground/"><span>Open the playground</span><span class="button__arrow">→</span></a>
 
 </section>
