@@ -2075,6 +2075,139 @@ fn a_backed_enum_value_goes_into_list_add_as_its_case() {
 }
 
 /// ```php
+/// public array $tags = [] { set { $this->tags = []; $this->tags->add("x"); } }
+/// ```
+///
+/// `field = []` leaves the property a `List<string>`, so the checker checks `field.add` as `List.add`, and the add
+/// lowers as that call.
+#[test]
+fn an_emptied_list_field_takes_add_as_the_list_method() {
+    let lowered = Lowered::new(
+        "class Product\n{\n    public List<string> tags { get; set { field = []; field.add(\"x\"); } } = [];\n}\n",
+    );
+
+    assert_eq!(
+        property_groups(&lowered),
+        [indoc! {r#"
+            PROP_GROUP [1]
+              TYPE [7]
+              PROP_DECL
+                PROP_ELEM
+                  ZVAL "tags"
+                  ARRAY [3]
+                  null
+                  STMT_LIST
+                    PROPERTY_HOOK "set" @3-3
+                      null
+                      null
+                      STMT_LIST
+                        ASSIGN
+                          PROP
+                            VAR
+                              ZVAL "this"
+                            ZVAL "tags"
+                          ARRAY [3]
+                        METHOD_CALL
+                          PROP
+                            VAR
+                              ZVAL "this"
+                            ZVAL "tags"
+                          ZVAL "add"
+                          ARG_LIST
+                            ZVAL "x"
+                      null
+                      null
+              null
+        "#}]
+    );
+}
+
+/// ```php
+/// $standings = [$status];
+/// $standings = [];
+/// $standings->add($status);
+/// ```
+///
+/// `standings = []` leaves the local a `List<Calc>`, whose `add` takes an element, so a case goes in as the case.
+#[test]
+fn a_backed_enum_value_goes_into_an_emptied_list_add_as_its_case() {
+    assert_eq!(
+        body_in(
+            "void run(Calc status)",
+            "        List<Calc> standings = [status];\n        standings = [];\n        standings.add(status);\n",
+            &[("src/Lib/Calc.php", "<?php namespace Lib; enum Calc: string { case Active = 'a'; case Closed = 'c'; }")]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "standings"
+                ARRAY [3]
+                  ARRAY_ELEM
+                    VAR
+                      ZVAL "status"
+                    null
+              ASSIGN
+                VAR
+                  ZVAL "standings"
+                ARRAY [3]
+              METHOD_CALL
+                VAR
+                  ZVAL "standings"
+                ZVAL "add"
+                ARG_LIST
+                  VAR
+                    ZVAL "status"
+        "#}
+    );
+}
+
+/// ```php
+/// $counts = [$status->value => 1];
+/// $counts = [];
+/// return $counts->get($status->value);
+/// ```
+///
+/// `counts = []` leaves the local a `Map<Calc, int>`, whose `get` takes a key, so a case goes in as its `->value`.
+#[test]
+fn a_backed_enum_key_goes_into_an_emptied_map_get_as_its_backing_value() {
+    assert_eq!(
+        body_in(
+            "int? run(Calc status)",
+            "        Map<Calc, int> counts = [status: 1];\n        counts = [];\n        return counts.get(status);\n",
+            &[("src/Lib/Calc.php", "<?php namespace Lib; enum Calc: string { case Active = 'a'; case Closed = 'c'; }")]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "counts"
+                ARRAY [3]
+                  ARRAY_ELEM
+                    ZVAL 1
+                    PROP
+                      VAR
+                        ZVAL "status"
+                      ZVAL "value"
+              ASSIGN
+                VAR
+                  ZVAL "counts"
+                ARRAY [3]
+              RETURN
+                METHOD_CALL
+                  VAR
+                    ZVAL "counts"
+                  ZVAL "get"
+                  ARG_LIST
+                    PROP
+                      VAR
+                        ZVAL "status"
+                      ZVAL "value"
+        "#}
+    );
+}
+
+/// ```php
 /// public function apply(\Closure $step, ?\Closure $other = null): \Closure { return $step; }
 /// ```
 ///
@@ -5344,6 +5477,80 @@ fn equality_of_a_nullable_int_and_a_float_compares_null_before_the_floats() {
                           ZVAL "operand#2"
               RETURN
                 ZVAL 1
+        "#}
+    );
+}
+
+/// ```php
+/// return (($operand#1 = $a) === null) === (($operand#2 = ((($operand#3 = $b) === null) === (($operand#4 = $c) === null)
+///     && ($operand#3 === null || (float) $operand#3 === $operand#4)) ? 1 : 2.5) === null)
+///     && ($operand#1 === null || (float) $operand#1 === (float) $operand#2);
+/// ```
+///
+/// An int/float `==` inside another one's operand takes its own `$operand#N`s, so it never overwrites the outer `a`.
+#[test]
+fn a_nested_nullable_int_and_float_equality_takes_its_own_hidden_variables() {
+    assert_eq!(
+        body_in("bool run(int? a, int? b, float c)", "        return a == (b == c ? 1 : 2.5);\n", &[]),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                AND
+                  BINARY_OP [16]
+                    BINARY_OP [16]
+                      ASSIGN
+                        VAR
+                          ZVAL "operand#1"
+                        VAR
+                          ZVAL "a"
+                      ZVAL null
+                    BINARY_OP [16]
+                      ASSIGN
+                        VAR
+                          ZVAL "operand#2"
+                        CONDITIONAL [1]
+                          AND
+                            BINARY_OP [16]
+                              BINARY_OP [16]
+                                ASSIGN
+                                  VAR
+                                    ZVAL "operand#3"
+                                  VAR
+                                    ZVAL "b"
+                                ZVAL null
+                              BINARY_OP [16]
+                                ASSIGN
+                                  VAR
+                                    ZVAL "operand#4"
+                                  VAR
+                                    ZVAL "c"
+                                ZVAL null
+                            OR
+                              BINARY_OP [16]
+                                VAR
+                                  ZVAL "operand#3"
+                                ZVAL null
+                              BINARY_OP [16]
+                                CAST [5]
+                                  VAR
+                                    ZVAL "operand#3"
+                                VAR
+                                  ZVAL "operand#4"
+                          ZVAL 1
+                          ZVAL 2.5
+                      ZVAL null
+                  OR
+                    BINARY_OP [16]
+                      VAR
+                        ZVAL "operand#1"
+                      ZVAL null
+                    BINARY_OP [16]
+                      CAST [5]
+                        VAR
+                          ZVAL "operand#1"
+                      CAST [5]
+                        VAR
+                          ZVAL "operand#2"
         "#}
     );
 }
@@ -8811,6 +9018,79 @@ fn equality_of_a_subclass_calls_the_operator_its_parent_declares() {
                       ZVAL "order"
                     VAR
                       ZVAL "other"
+        "#}
+    );
+}
+
+/// ```php
+/// return \App\Money::op_Comparison(\App\Money::op_Addition(\App\Money::op_UnaryNegation($order), $order), $money) < 0
+///     && \App\Money::op_Equality($maybe, $money)
+///     && !\App\Money::op_Equality($maybe, $other)
+///     && \App\Money::op_Comparison($money, $order) <= 0;
+/// ```
+///
+/// The bridge calls the class the checker chose for every operand shape it accepts: an operator `Order` inherits, unary
+/// and binary, a `Money` against an `Order`, a nullable left side of `==`, and two nullable sides of `!=`.
+#[test]
+fn every_operand_shape_the_checker_accepts_calls_the_class_that_declares_the_operator() {
+    assert_eq!(
+        ledger_body(
+            "bool run(Order order, Money money, Order? maybe, Money? other)",
+            "        return (-order + order) < money && maybe == money && maybe != other && money <= order;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                AND
+                  AND
+                    AND
+                      BINARY_OP [20]
+                        STATIC_CALL
+                          ZVAL "App\\Money"
+                          ZVAL "op_Comparison"
+                          ARG_LIST
+                            STATIC_CALL
+                              ZVAL "App\\Money"
+                              ZVAL "op_Addition"
+                              ARG_LIST
+                                STATIC_CALL
+                                  ZVAL "App\\Money"
+                                  ZVAL "op_UnaryNegation"
+                                  ARG_LIST
+                                    VAR
+                                      ZVAL "order"
+                                VAR
+                                  ZVAL "order"
+                            VAR
+                              ZVAL "money"
+                        ZVAL 0
+                      STATIC_CALL
+                        ZVAL "App\\Money"
+                        ZVAL "op_Equality"
+                        ARG_LIST
+                          VAR
+                            ZVAL "maybe"
+                          VAR
+                            ZVAL "money"
+                    UNARY_OP [14]
+                      STATIC_CALL
+                        ZVAL "App\\Money"
+                        ZVAL "op_Equality"
+                        ARG_LIST
+                          VAR
+                            ZVAL "maybe"
+                          VAR
+                            ZVAL "other"
+                  BINARY_OP [21]
+                    STATIC_CALL
+                      ZVAL "App\\Money"
+                      ZVAL "op_Comparison"
+                      ARG_LIST
+                        VAR
+                          ZVAL "money"
+                        VAR
+                          ZVAL "order"
+                    ZVAL 0
         "#}
     );
 }

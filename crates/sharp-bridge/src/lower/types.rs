@@ -1,11 +1,11 @@
 use mago_analyzer::artifacts::AnalysisArtifacts;
+use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::identifier::method::MethodIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::parameter::FunctionLikeParameterMetadata;
 use mago_codex::metadata::property::PropertyMetadata;
 use mago_codex::ttype::add_optional_union_type;
 use mago_codex::ttype::atomic::TAtomic;
-use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::object::TObject;
 use mago_codex::ttype::atomic::scalar::TScalar;
 use mago_codex::ttype::atomic::scalar::class_like_string::TClassLikeString;
@@ -256,24 +256,26 @@ impl<'analysis> Types<'analysis> {
 
     /// The positions of the arguments of the method call `call`, null-safe or not, that go in as its receiver's key.
     /// The analyzer checks a call on a `Map` against `Sharp\MapMethods<K, V>`, whose `K` the `Map`'s key type fills
-    /// (spec section 12), so an argument goes in as a key when its parameter is a template parameter bounded by
-    /// `array-key`, as in `get(K $key)`. The caller asks only about a call on a value.
+    /// (spec section 12), so an argument goes in as a key when the call runs a `MapMethods` method and its parameter
+    /// is a template parameter bounded by `array-key`, as in `get(K $key)`. The method is the one the analyzer checked
+    /// the call against, which a `List` emptied by `[]` keeps. The caller asks only about a call on a value.
     pub(crate) fn key_arguments(&self, call: &Expression) -> Vec<usize> {
-        let (object, method, arguments) = match call {
-            Expression::Call(Call::Method(call)) => (call.object, &call.method, &call.argument_list),
-            Expression::Call(Call::NullSafeMethod(call)) => (call.object, &call.method, &call.argument_list),
+        let arguments = match call {
+            Expression::Call(Call::Method(call)) => &call.argument_list,
+            Expression::Call(Call::NullSafeMethod(call)) => &call.argument_list,
             _ => unreachable!("only a method call has arguments a receiver takes as its key"),
         };
-        let mut receivers = self.expression_type(object).types.iter().filter(|atomic| !atomic.is_null()).peekable();
-        if receivers.peek().is_none() || !receivers.all(|atomic| matches!(atomic, TAtomic::Array(TArray::Keyed(_)))) {
+        let mut callees = self.artifacts.get_callees(call);
+        let (Some(FunctionLikeIdentifier::Method(class, method)), None) = (callees.next(), callees.next()) else {
+            return Vec::new();
+        };
+        if !class.as_bytes().eq_ignore_ascii_case(b"Sharp\\MapMethods") {
             return Vec::new();
         }
-        let ClassLikeMemberSelector::Identifier(method) = method else {
-            unreachable!("check_slice refuses the method name `{method}`");
-        };
-        let metadata = self.codebase.get_method(b"Sharp\\MapMethods", method.value).unwrap_or_else(|| {
-            unreachable!("the checker refuses `Map.{}()`, which names no method", String::from_utf8_lossy(method.value))
-        });
+        let metadata = self
+            .codebase
+            .get_method(class.as_bytes(), method.as_bytes())
+            .unwrap_or_else(|| unreachable!("the analyzer resolved `Map.{method}()` from the codebase"));
 
         arguments
             .arguments

@@ -1697,6 +1697,69 @@ fn a_bitwise_and_as_a_condition_is_an_int_that_is_not_bool() {
     assert_eq!(issues(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
 }
 
+/// `~` on an `int` gives an `int`, so `~0`, which is `-1`, never reads as `0`. PHP's analysis kept the operand's own
+/// type, which made `~0 == 0` look always true in both dialects.
+#[test]
+fn bitwise_not_of_an_int_is_an_int_in_both_dialects() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int all()\n    {\n        const bits = ~0;\n        if (bits == 0) {\n            return 1;\n        }\n        return bits;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function all(): int\n    {\n        $bits = ~0;\n        if ($bits === 0) {\n            return 1;\n        }\n        return $bits;\n    }\n}\n";
+
+    assert_eq!(messages(("src/Demo/Report.sharp", sharp), &[]), Vec::<String>::new());
+    assert_eq!(messages(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
+}
+
+/// Spec section 21 narrows no property, because it could change between the test and the use, so `order.total` stays
+/// `Any?` after `is int`. The error says so and names the fix, a name bound by the test. PHP narrows the property, and
+/// its error on an untested `mixed` operand keeps its wording.
+#[test]
+fn an_operand_read_from_a_tested_property_says_properties_are_not_narrowed() {
+    let sharp = "namespace Demo;\n\npublic class Order\n{\n    public Any? total { get; set; }\n\n    public Order(Any? total)\n    {\n        this.total = total;\n    }\n\n    public static int next(Order order)\n    {\n        if (order.total is int) {\n            return order.total + 1;\n        }\n        if (order.total is int t) {\n            return t + 1;\n        }\n        return 0;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Order\n{\n    public function __construct(public mixed $total)\n    {\n    }\n\n    public static function next(Order $order): int\n    {\n        if (is_int($order->total)) {\n            return $order->total + 1;\n        }\n        return 0;\n    }\n}\n";
+
+    assert_eq!(
+        refusals(("src/Demo/Order.sharp", sharp), &[]),
+        [
+            "15:20 mixed-operand `order.total` is `Any?` here: a property is not narrowed, because it could change between the test and the use. | Copy the value into a local first: test it with a name, as in `if (order.total is int t)`, and use `t`.",
+            "15:20 mixed-return-statement Could not infer a precise return type for method `Order.next`. Saw type `Any?`. | Add specific type hints to variables, parameters, or properties involved in calculating the return value. Consider adding a specific return type declaration to the method signature to catch potential mismatches earlier.",
+        ]
+    );
+    assert_eq!(issues(("src/Demo/Order.php", php), &[]), Vec::<String>::new());
+
+    let untested = "<?php\n\nnamespace Demo;\n\nfinal class Order\n{\n    public function __construct(public mixed $total)\n    {\n    }\n\n    public static function next(Order $order): void\n    {\n        echo $order->total + 1;\n        echo 1 + $order->total;\n    }\n}\n";
+    assert_eq!(
+        refusals(("src/Demo/Order.php", untested), &[]),
+        [
+            "13:14 mixed-operand Left operand in binary operation has type `mixed`. | Ensure the left operand has a known type (e.g., `int`, `float`, `string`) using type hints, assertions, or checks.",
+            "13:14 mixed-argument The first value for `echo` is too general. | Add a specific type hint or assertion for this value.",
+            "14:18 mixed-operand Right operand in binary operation has type `mixed`. | Ensure the right operand has a known type (e.g., `int`, `float`, `string`) using type hints, assertions, or checks.",
+            "14:14 mixed-argument The first value for `echo` is too general. | Add a specific type hint or assertion for this value.",
+        ]
+    );
+}
+
+/// A condition that always holds names its PHP# type, as the condition error beside it does. PHP names its own type.
+#[test]
+fn a_condition_that_always_holds_names_its_php_sharp_type() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int can()\n    {\n        const WRITE = 2;\n        if (WRITE) {\n            return 1;\n        }\n        let ready = true;\n        if (ready) {\n            return 2;\n        }\n        return 0;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function can(): int\n    {\n        $WRITE = 2;\n        if ($WRITE) {\n            return 1;\n        }\n        $ready = true;\n        if ($ready) {\n            return 2;\n        }\n        return 0;\n    }\n}\n";
+
+    assert_eq!(
+        messages(("src/Demo/Report.sharp", sharp), &[]),
+        [
+            "This condition (type `2`) will always evaluate to true.",
+            "`if` takes a `bool`, but this is `int`.",
+            "This condition (type `true`) will always evaluate to true.",
+        ]
+    );
+    assert_eq!(
+        messages(("src/Demo/Report.php", php), &[]),
+        [
+            "This condition (type `int(2)`) will always evaluate to true.",
+            "This condition (type `true`) will always evaluate to true.",
+        ]
+    );
+}
+
 /// `|`, `&` and `^` on two `bool`s name the operator that joins them, and the rest of the code reads the `bool` it
 /// meant. A compound form is named as written. PHP turns both `bool`s into ints.
 #[test]
@@ -2234,6 +2297,36 @@ fn ordering_a_string_against_a_number_is_refused() {
         [
             "5:53 invalid-operand `<` cannot compare `string` with `int`. | Convert one side so both sides have the same type.",
             "7:55 invalid-operand `>=` cannot compare `string` with `float`. | Convert one side so both sides have the same type.",
+        ]
+    );
+}
+
+/// Spec section 19 lifts only `==` and `!=` over `null`, so an ordering or `<=>` with a side that may be `null` is refused
+/// for a string, an int and a float, as for an instance. Once the side is tested for `null`, it orders. PHP keeps its
+/// loose `<`, which orders `null` as `""` or `0`.
+#[test]
+fn ordering_a_nullable_value_is_refused_until_it_is_tested_for_null() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static bool a(string? name) => name < \"b\";\n\n    public static bool b(int? count) => count <= 1;\n\n    public static bool c(float? ratio) => ratio > 1.5;\n\n    public static int d(int? count, int total) => count <=> total;\n\n    public static bool e(string? name) => \"b\" >= name;\n\n    public static bool f(string? name) => name != null && name < \"b\";\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function a(?string $name): bool { return $name < \"b\"; }\n\n    public static function b(?int $count): bool { return $count <= 1; }\n\n    public static function c(?float $ratio): bool { return $ratio > 1.5; }\n\n    public static function d(?int $count, int $total): int { return $count <=> $total; }\n\n    public static function e(?string $name): bool { return \"b\" >= $name; }\n\n    public static function f(?string $name): bool { return $name !== null && $name < \"b\"; }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Report.php", php), &[]),
+        [
+            "7:60 possibly-null-operand",
+            "9:58 possibly-null-operand",
+            "11:60 possibly-null-operand",
+            "13:69 possibly-null-operand",
+            "15:67 possibly-null-operand",
+        ]
+    );
+    assert_eq!(
+        refusals(("src/Demo/Report.sharp", sharp), &[]),
+        [
+            "5:43 invalid-operand `<` cannot compare `string?` with `string`: only `==` and `!=` take `null`, so test the value for `null` first. | Test it with `!= null` before the comparison.",
+            "7:41 invalid-operand `<=` cannot compare `int?` with `int`: only `==` and `!=` take `null`, so test the value for `null` first. | Test it with `!= null` before the comparison.",
+            "9:43 invalid-operand `>` cannot compare `float?` with `float`: only `==` and `!=` take `null`, so test the value for `null` first. | Test it with `!= null` before the comparison.",
+            "11:51 invalid-operand `<=>` cannot compare `int?` with `int`: only `==` and `!=` take `null`, so test the value for `null` first. | Test it with `!= null` before the comparison.",
+            "13:43 invalid-operand `>=` cannot compare `string` with `string?`: only `==` and `!=` take `null`, so test the value for `null` first. | Test it with `!= null` before the comparison.",
         ]
     );
 }
@@ -3742,6 +3835,16 @@ fn a_key_and_value_loop_reads_a_map_and_its_keys_as_the_map_types_them() {
     let sharp = "namespace Demo;\n\nclass Loops\n{\n    public int run(List<int> sizes, Map<string, int> counts)\n    {\n        let total = 0;\n        for (const [index, size] of sizes) {\n            total += index + size;\n        }\n        for (const [name, count] of counts) {\n            total += strlen(name) + count;\n        }\n        return total;\n    }\n}\n";
 
     assert_eq!(issues(("src/Demo/Loops.sharp", sharp), &[]), ["8:37 invalid-iterator"]);
+}
+
+/// `tags = []` empties a `List<string>` and leaves it a `List`, as its methods are: its bare index read stays bare,
+/// and `for (const [k, v] of tags)` still reads the keys of a `Map`, which a `List` is not.
+#[test]
+#[ignore = "`[]` narrows a declared List to an empty keyed array, which the Map rules read as a Map, and `add` leaves it empty"]
+fn an_emptied_list_stays_a_list_for_an_index_read_and_a_key_and_value_loop() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public int count()\n    {\n        List<string> tags = [\"a\"];\n        tags = [];\n        tags.add(\"x\");\n        let total = 0;\n        for (const [index, tag] of tags) {\n            total += index + strlen(tag);\n        }\n        return total + strlen(tags[0]);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["11:36 invalid-iterator"]);
 }
 
 /// A `List` has `add`, `set`, `get` and `entries()`, and a `Map` has `delete` and `get`, each typed by the elements of
@@ -5578,16 +5681,18 @@ fn an_operand_the_declared_operator_does_not_take_is_refused_by_its_php_sharp_ty
     );
 }
 
-/// Decision 046 lifts only `==` and `!=` over null, so ordering a nullable instance is refused until it is tested.
+/// Decision 046 lifts only `==` and `!=` over null, so ordering a nullable instance is refused until it is tested. An
+/// operand the operator never takes is named first, as testing for `null` would not let it order.
 #[test]
 fn ordering_a_nullable_instance_is_refused_until_it_is_tested_for_null() {
-    let sharp = "namespace App;\n\npublic class Range\n{\n    public bool below(Money? low, Money high) => low < high;\n\n    public int compare(Money low, Money? high) => low <=> high;\n\n    public bool tested(Money? low, Money high) => low != null && low < high;\n}\n";
+    let sharp = "namespace App;\n\npublic class Range\n{\n    public bool below(Money? low, Money high) => low < high;\n\n    public int compare(Money low, Money? high) => low <=> high;\n\n    public bool tested(Money? low, Money high) => low != null && low < high;\n\n    public bool five(Money? low) => low < 5;\n}\n";
 
     assert_eq!(
         refusals(("src/App/Range.sharp", sharp), &[MONEY_OPERATORS]),
         [
             "5:50 invalid-operand `<` cannot compare `Money?` with `Money`: only `==` and `!=` take `null`, so test the value for `null` first. | Test it with `!= null` before the comparison.",
             "7:51 invalid-operand `<=>` cannot compare `Money` with `Money?`: only `==` and `!=` take `null`, so test the value for `null` first. | Test it with `!= null` before the comparison.",
+            "11:37 invalid-operand `<` cannot compare `Money?` with `int`. | Convert one side so both sides have the same type.",
         ]
     );
 }
@@ -5621,6 +5726,14 @@ fn a_php_caller_passes_null_to_op_equality_and_a_sharp_caller_does_not() {
         issues(("src/App/Check.sharp", sharp), &[MONEY_OPERATORS]),
         ["5:84 null-argument", "5:118 possibly-null-argument"]
     );
+}
+
+/// Both parameters of the lowered `op_Equality` take `null`, so a plain PHP caller may pass it on the left too.
+#[test]
+fn a_php_caller_passes_null_as_the_left_operand_of_op_equality() {
+    let php = "<?php\n\nnamespace App;\n\nfinal class Check\n{\n    public static function missing(Money $money): bool\n    {\n        return Money::op_Equality(null, $money);\n    }\n}\n";
+
+    assert_eq!(issues(("src/App/Check.php", php), &[MONEY_OPERATORS]), Vec::<String>::new());
 }
 
 /// A PHP caller checks its arguments against the PHP method a PHP# method runs as, whose `List<int>` and
