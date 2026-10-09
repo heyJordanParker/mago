@@ -1973,5 +1973,5 @@ pub(crate) fn map_key_error(key_id: &str, span: Span) -> Issue {
         "A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value, and `{key_id}` has none."
     ))
     .with_annotation(Annotation::primary(span).with_message(format!("`{key_id}` keys this `Map`.")))
-    .with_help("Key the `Map` by an `int`, a `string` or a backed enum, such as `enum Status: string`.")
+    .with_help("Key the `Map` by an `int`, a `string` or a backed enum, such as `enum Status : string`.")
 }
