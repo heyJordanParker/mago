@@ -37,7 +37,8 @@ fn is_built(library: &Path) -> bool {
 /// Writes the library's package to `lean/<build id>.staging` in Mago's cache folder, builds it with Lake and renames it
 /// to `lean/<build id>`, once per build ID. Builds take turns under an exclusive lock on `lean/build.lock`, across
 /// threads and processes alike. A build that lost its runner or a package file, as a cache cleaner leaves it, is
-/// deleted and built again. A new build ID deletes every older build.
+/// deleted and built again. A finished build deletes every other folder in `lean/`: older builds and any staging
+/// folder a dead build left.
 pub(crate) fn build() -> io::Result<PathBuf> {
     let builds = cache_root()?.join("lean");
     let library = builds.join(format!("{BUILD_ID:032x}"));
@@ -81,7 +82,7 @@ pub(crate) fn build() -> io::Result<PathBuf> {
 
     for entry in fs::read_dir(&builds)? {
         let old = entry?.path();
-        if old.extension().is_none() && old.is_dir() && old != library {
+        if old.is_dir() && old != library {
             fs::remove_dir_all(old)?;
         }
     }

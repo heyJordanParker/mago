@@ -352,6 +352,21 @@ fn compile_rebuilds_a_library_build_that_lost_its_lakefile_or_its_runner_and_pro
 }
 
 #[test]
+fn compile_deletes_the_staging_folder_a_dead_build_left_and_proves_its_law() {
+    let cache = tempfile::tempdir().unwrap();
+    let stale = cache.path().join("mago/lean/0123456789abcdef0123456789abcdef.staging");
+    std::fs::create_dir_all(&stale).unwrap();
+    let project = lawful_project(&[("app/Shared/Money.sharp", LAWFUL_MONEY)]);
+
+    let output = command(project.path(), "never").env("XDG_CACHE_HOME", cache.path()).output().unwrap();
+
+    assert!(output.status.success(), "{}", printed(&output));
+    assert_eq!(read(project.path(), "app/Shared/Money.lean"), MONEY_PROOF);
+    assert!(!stale.exists(), "the staging folder a dead build left is deleted");
+    assert_eq!(library_builds(cache.path()).len(), 1, "one library build is left");
+}
+
+#[test]
 fn compiles_that_start_together_on_a_library_build_that_lost_its_lakefile_each_prove_their_law_and_leave_one_build() {
     let cache = tempfile::tempdir().unwrap();
     let compile_in_cache =
