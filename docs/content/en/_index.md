@@ -12,7 +12,7 @@ nav_section = ""
 
 <h1 class="home-hero__title">The checker and toolchain for <em>PHP#</em>.</h1>
 
-<p class="home-hero__lede">Mago is a static analyzer, linter, and formatter for PHP, written in Rust. Built for projects that have outgrown the patience of their tooling.</p>
+<p class="home-hero__lede">mago-sharp is PHP#'s checker and toolchain, written in Rust. It checks PHP and PHP# code, compiles PHP# for the PHP# engine, and lints and formats PHP.</p>
 
 <div class="home-hero__cta">
 <a class="button button--solid" href="/guide/getting-started/"><span>Get started</span><span class="button__arrow">→</span></a>
@@ -85,10 +85,5 @@ nav_section = ""
 <p>Mago is free and open source, built and maintained by <a href="https://github.com/azjezz">Seifeddine Gmati</a> with support from these companies and individuals.</p>
 
 <div id="home-sponsors" aria-live="polite"></div>
-
-<div class="sponsors-cta">
-<p>Want to support Mago's development?</p>
-<a class="button button--solid" href="https://github.com/sponsors/azjezz" target="_blank" rel="noopener"><span>Become a sponsor</span><span class="button__arrow">→</span></a>
-</div>
 
 </section>

@@ -12,7 +12,7 @@ nav_section = ""
 
 <h1 class="home-hero__title"><em>PHP#</em> 的检查器与工具链。</h1>
 
-<p class="home-hero__lede">Mago 是一款用 Rust 编写的 PHP 静态分析器、linter 和格式化器。专为那些现有工具链已不堪重负的项目而打造。</p>
+<p class="home-hero__lede">mago-sharp 是用 Rust 编写的 PHP# 检查器与工具链。它检查 PHP 与 PHP# 代码,为 PHP# 引擎编译 PHP#,并对 PHP 代码进行 lint 和格式化。</p>
 
 <div class="home-hero__cta">
 <a class="button button--solid" href="/guide/getting-started/"><span>快速开始</span><span class="button__arrow">→</span></a>
@@ -85,10 +85,5 @@ nav_section = ""
 <p>Mago 是免费的开源项目,由 <a href="https://github.com/azjezz">Seifeddine Gmati</a> 构建并维护,得到下列公司与个人的支持。</p>
 
 <div id="home-sponsors" aria-live="polite"></div>
-
-<div class="sponsors-cta">
-<p>想支持 Mago 的开发?</p>
-<a class="button button--solid" href="https://github.com/sponsors/azjezz" target="_blank" rel="noopener"><span>成为赞助者</span><span class="button__arrow">→</span></a>
-</div>
 
 </section>

@@ -1103,25 +1103,6 @@
     inline-size: 100%;
   }
 
-  .sponsors-cta {
-    margin-block-start: var(--s-7);
-    padding-block: var(--s-6);
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--s-3);
-  }
-
-  .sponsors-cta p {
-    margin: 0;
-    max-inline-size: none;
-    font-family: var(--mono);
-    font-size: 0.84rem;
-    letter-spacing: 0.06em;
-    color: var(--ink-quiet);
-    text-align: center;
-  }
-
   .rule-list {
     margin-block: var(--s-6);
     display: flex;
