@@ -34,6 +34,7 @@ pub(crate) fn getters_must_be_pure(
         .filter(|(body, ..)| matches!(body, Body::Accessor(_, _, accessor) if accessor.as_bytes() == b"get"))
         .map(|(_, member, imports, scope, impurity)| {
             let class_name = |class| sharp_class_like_name(codebase, imports, short_name_counts, class);
+            let code_class_name = |class| sharp_code_class_name(codebase, imports, scope, class);
             let missing_import = |class| sharp_missing_imports(codebase, imports, scope, [class]);
 
             impure(
@@ -42,6 +43,7 @@ pub(crate) fn getters_must_be_pure(
                 "getter",
                 &impurity,
                 &class_name,
+                &code_class_name,
                 &missing_import,
             )
         })
@@ -62,6 +64,7 @@ pub(crate) fn laws_must_be_pure(
         })
         .map(|(_, member, imports, scope, impurity)| {
             let class_name = |class| sharp_class_like_name(codebase, imports, short_name_counts, class);
+            let code_class_name = |class| sharp_code_class_name(codebase, imports, scope, class);
             let missing_import = |class| sharp_missing_imports(codebase, imports, scope, [class]);
 
             impure(
@@ -70,6 +73,7 @@ pub(crate) fn laws_must_be_pure(
                 "law",
                 &impurity,
                 &class_name,
+                &code_class_name,
                 &missing_import,
             )
         })
@@ -78,13 +82,15 @@ pub(crate) fn laws_must_be_pure(
 
 /// The error on the call or write `impurity` names in the `body` it refuses, a getter or a law, with the `extern` to
 /// write when the callee has none, or how to call a plain PHP property's code from outside `body`. `class_name` names
-/// each class, and `missing_import` names the import the `extern` needs when the body's file doesn't bind its class.
+/// each class in prose, `code_class_name` names it in the `extern`, and `missing_import` names the import the `extern`
+/// needs when the body's file doesn't bind its class.
 fn impure(
     code: IssueCode,
     message: String,
     body: &str,
     impurity: &Impurity,
     class_name: &dyn Fn(Word) -> String,
+    code_class_name: &dyn Fn(Word) -> String,
     missing_import: &dyn Fn(Word) -> Option<String>,
 ) -> Issue {
     let issue = Issue::error(message).with_code(code.as_str()).with_annotation(Annotation::primary(impurity.span));
@@ -94,9 +100,8 @@ fn impure(
             let (target, import) = if class.is_empty() {
                 (member.to_string(), None)
             } else {
-                let name = class_name(class);
-                let name = sharp_code_class_name(&name);
-                let target = if member.is_empty() { name.to_owned() } else { display_sharp_member(name, member) };
+                let name = code_class_name(class);
+                let target = if member.is_empty() { name } else { display_sharp_member(&name, member) };
 
                 (target, missing_import(class))
             };
