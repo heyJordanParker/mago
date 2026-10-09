@@ -249,7 +249,7 @@ fn check_override_modifier_on_fields<'ctx, 'arena, A>(
                         .with_annotation(
                             Annotation::primary(override_modifier.span()).with_message("Not supported yet."),
                         )
-                        .with_note("A PHP# parent's property is overridden as a property, as spec section 6.1 says.")
+                        .with_note("A PHP# parent's property is overridden as a property.")
                         .with_note("PHP keeps the parent's accessors on a field that overrides it."),
                 );
             }

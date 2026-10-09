@@ -1760,6 +1760,61 @@ fn a_condition_that_always_holds_names_its_php_sharp_type() {
     );
 }
 
+/// A loop condition that never holds names its PHP# type, in the loop's report and in the report on the variable it
+/// tests. PHP names its own type.
+#[test]
+fn a_loop_condition_that_never_holds_names_its_php_sharp_type() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int count()\n    {\n        const n = 0;\n        while (n) {\n            return 1;\n        }\n        return 0;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function count(): int\n    {\n        $n = 0;\n        while ($n) {\n            return 1;\n        }\n        return 0;\n    }\n}\n";
+    let impossible = |analyzed| -> Vec<String> {
+        worded(analyzed, &[]).into_iter().filter(|line| line.contains(" impossible-condition ")).collect()
+    };
+
+    assert_eq!(
+        impossible(("src/Demo/Report.sharp", sharp)),
+        [
+            "8:16 impossible-condition Impossible condition: variable `n` (type `0`) will always evaluate to false. | This condition always evaluates to false | Variable `n` (type `0`) is always falsy and can never satisfy a truthiness check. | Review the logic or type of the variable; this condition will never pass.",
+            "8:16 impossible-condition This loop condition (type `0`) will always evaluate to false. | This condition is always false, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
+        ]
+    );
+    assert_eq!(
+        impossible(("src/Demo/Report.php", php)),
+        [
+            "10:16 impossible-condition Impossible condition: variable `$n` (type `int(0)`) will always evaluate to false. | This condition always evaluates to false | Variable `$n` (type `int(0)`) is always falsy and can never satisfy a truthiness check. | Review the logic or type of the variable; this condition will never pass.",
+            "10:16 impossible-condition This loop condition (type `int(0)`) will always evaluate to false. | This condition is always false, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
+        ]
+    );
+}
+
+/// A condition that contradicts or repeats an earlier one names its variables and types as PHP# writes them. The
+/// earlier condition reads as the `||` it is. PHP keeps its own wording.
+#[test]
+fn a_paradoxical_or_repeated_condition_names_its_php_sharp_types() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int pick(int? count, bool done)\n    {\n        if (count == 2 || done) {\n            if (count != 2 && !done) {\n                return 1;\n            }\n        }\n        if (done) {\n            return 2;\n        } else if (done) {\n            return 3;\n        }\n        if (!done && done) {\n            return 4;\n        }\n        return 0;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function pick(?int $count, bool $done): int\n    {\n        if ($count === 2 || $done) {\n            if ($count !== 2 && !$done) {\n                return 1;\n            }\n        }\n        if ($done) {\n            return 2;\n        } else if ($done) {\n            return 3;\n        }\n        if (!$done && $done) {\n            return 4;\n        }\n        return 0;\n    }\n}\n";
+    let conditions = |analyzed| -> Vec<String> {
+        worded(analyzed, &[])
+            .into_iter()
+            .filter(|line| line.contains(" paradoxical-condition ") || line.contains(" redundant-condition Redundant "))
+            .collect()
+    };
+
+    assert_eq!(
+        conditions(("src/Demo/Report.sharp", sharp)),
+        [
+            "8:17 paradoxical-condition Paradoxical condition | This condition (`!done && count is not 2`) can never be true here | Because of this preceding condition... | ...the analyzer knows that `count is 2 || done` must be true for this code path to be taken. | Therefore, this new condition (`!done && count is not 2`) directly contradicts that established fact. | As a result, the code this condition guards is unreachable. | Remove the unreachable code or refactor the conditional logic.",
+            "17:13 redundant-condition Redundant condition | This condition (`!done`) is always true here | This was already established as true by a previous condition here | The analyzer determined this condition is guaranteed to be true based on preceding logic, making this check unnecessary. | Consider removing this redundant conditional check to simplify the code.",
+        ]
+    );
+    assert_eq!(
+        conditions(("src/Demo/Report.php", php)),
+        [
+            "10:17 paradoxical-condition Paradoxical condition | This condition (`!$done && $count is not int(2)`) can never be true here | Because of this preceding condition... | ...the analyzer knows that `$count is int(2) && $done` must be true for this code path to be taken. | Therefore, this new condition (`!$done && $count is not int(2)`) directly contradicts that established fact. | As a result, the code this condition guards is unreachable. | Remove the unreachable code or refactor the conditional logic.",
+            "19:13 redundant-condition Redundant condition | This condition (`!$done`) is always true here | This was already established as true by a previous condition here | The analyzer determined this condition is guaranteed to be true based on preceding logic, making this check unnecessary. | Consider removing this redundant conditional check to simplify the code.",
+        ]
+    );
+}
+
 /// `|`, `&` and `^` on two `bool`s name the operator that joins them, and the rest of the code reads the `bool` it
 /// meant. A compound form is named as written. PHP turns both `bool`s into ints.
 #[test]
@@ -3840,11 +3895,80 @@ fn a_key_and_value_loop_reads_a_map_and_its_keys_as_the_map_types_them() {
 /// `tags = []` empties a `List<string>` and leaves it a `List`, as its methods are: its bare index read stays bare,
 /// and `for (const [k, v] of tags)` still reads the keys of a `Map`, which a `List` is not.
 #[test]
-#[ignore = "`[]` narrows a declared List to an empty keyed array, which the Map rules read as a Map, and `add` leaves it empty"]
 fn an_emptied_list_stays_a_list_for_an_index_read_and_a_key_and_value_loop() {
     let sharp = "namespace Demo;\n\nclass Tags\n{\n    public int count()\n    {\n        List<string> tags = [\"a\"];\n        tags = [];\n        tags.add(\"x\");\n        let total = 0;\n        for (const [index, tag] of tags) {\n            total += index + strlen(tag);\n        }\n        return total + strlen(tags[0]);\n    }\n}\n";
 
     assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["11:36 invalid-iterator"]);
+}
+
+/// A parameter and a property emptied by `[]` stay the `List`s they are declared, before any method fills them.
+#[test]
+fn an_emptied_list_parameter_or_property_stays_a_list() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public List<string> names = [\"a\"];\n\n    public int count(List<string> tags)\n    {\n        tags = [];\n        this.names = [];\n        let total = 0;\n        for (const [index, tag] of tags) {\n            total += index + strlen(tag);\n        }\n        for (const [index, name] of this.names) {\n            total += index + strlen(name);\n        }\n        return total + strlen(tags[0]) + strlen(this.names[0]);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["12:36 invalid-iterator", "15:37 invalid-iterator"]);
+}
+
+/// A static property emptied by `[]` stays the `List` it is declared, as an instance property does.
+#[test]
+fn an_emptied_static_list_property_stays_a_list() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public static List<string> names = [\"a\"];\n\n    public int count()\n    {\n        Tags.names = [];\n        let total = 0;\n        for (const [i, n] of Tags.names) {\n            total += i + strlen(n);\n        }\n        return total + strlen(Tags.names[0]);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["11:30 invalid-iterator"]);
+}
+
+/// A parameter's default `[]` and a returned `[]` narrow nothing: the parameter and the call are the `List`s they are
+/// declared.
+#[test]
+fn an_empty_list_default_or_return_stays_a_list() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public int count(List<string> tags = [])\n    {\n        let total = 0;\n        for (const [index, tag] of tags) {\n            total += index + strlen(tag);\n        }\n        for (const [index, tag] of this.none()) {\n            total += index + strlen(tag);\n        }\n        return total + strlen(tags[0]) + strlen(this.none()[0]);\n    }\n\n    private List<string> none()\n    {\n        return [];\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["8:36 invalid-iterator", "11:36 invalid-iterator"]);
+}
+
+/// `field = []` in an accessor empties the property's storage, which stays the `List` the property is declared.
+#[test]
+fn an_emptied_list_field_stays_a_list() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public List<string> names {\n        get;\n        set {\n            field = [];\n            for (const name of value) {\n                field.add(name + field[0]);\n            }\n        }\n    } = [];\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// `counts = []` empties a `Map<string, int>` and leaves it a `Map` of those types: `for (const [k, v] of counts)`
+/// reads its keys and values, and a bare `counts[k]` read is refused, as on any `Map`.
+#[test]
+fn an_emptied_map_keeps_the_map_rules() {
+    let sharp = "namespace Demo;\n\nclass Counts\n{\n    public int total()\n    {\n        Map<string, int> counts = [\"a\": 1];\n        counts = [:];\n        let total = 0;\n        for (const [name, count] of counts) {\n            total += strlen(name) + count;\n        }\n        counts.delete(\"a\");\n        return total + counts[\"b\"];\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Counts.sharp", sharp), &[]), ["14:24 possibly-undefined-array-index"]);
+}
+
+/// A `List` literal assigned to a `Map<int, string>` fills a `Map`: its keys are read by `[k, v]`, and a bare read is
+/// refused.
+#[test]
+fn a_list_literal_assigned_to_a_map_keeps_the_map_rules() {
+    let sharp = "namespace Demo;\n\nclass Names\n{\n    public int total(Map<int, string> names)\n    {\n        names = [\"a\"];\n        let total = 0;\n        for (const [id, name] of names) {\n            total += id + strlen(name);\n        }\n        return total + strlen(names[0]);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Names.sharp", sharp), &[]), ["12:31 possibly-undefined-array-index"]);
+}
+
+/// A method that changes a `List` leaves it the `List` it is declared, so an index past the literal it held reads it.
+#[test]
+fn a_changed_list_reads_past_the_literal_it_held() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public int count(List<string> tags, Map<string, int> counts)\n    {\n        tags = [\"a\"];\n        tags.add(\"b\");\n        counts = [\"a\": 1];\n        counts.delete(\"a\");\n        return strlen(tags[1]) + (counts[\"a\"] ?? 0);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// PHP has no `List`: `$tags = []` narrows a `list<string>` parameter to an empty array, whose read gives no `string`.
+#[test]
+fn an_emptied_php_array_narrows_to_an_empty_array() {
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /** @param list<string> $tags */\n    public function first(array $tags): string\n    {\n        $tags = [];\n\n        return $tags[0];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tags.php", php), &[]),
+        ["12:22 mismatched-array-index", "12:16 invalid-return-statement"]
+    );
 }
 
 /// A `List` has `add`, `set`, `get` and `entries()`, and a `Map` has `delete` and `get`, each typed by the elements of
@@ -5026,7 +5150,7 @@ fn an_arithmetic_message_names_its_operand_type_as_sharp_writes_it() {
     assert_eq!(
         worded(("src/Demo/Order.sharp", sharp), &[]),
         [
-            "5:38 invalid-operand `*` cannot apply to `Order` and `int`: `Order` declares no `operator *`. | This is `Order`. | This is `int`. | Spec section 19: `*` on a class instance exists only where its class declares `operator *`. | Apply it to values the instances hold, such as their properties.",
+            "5:38 invalid-operand `*` cannot apply to `Order` and `int`: `Order` declares no `operator *`. | This is `Order`. | This is `int`. | `*` on a class instance exists only where its class declares `operator *`. | Apply it to values the instances hold, such as their properties.",
             "5:38 invalid-return-statement Invalid return type for method `Order.twice`: expected `int`, but found `Order`. | This has type `Order` | The type `Order` returned here is not compatible with the declared return type `int`. | Change the return value to match `int`, or update the method's return type declaration.",
             "7:36 possibly-null-operand Left operand in arithmetic operation might be `null` (type `int?`). | This might be `null`. | Performing arithmetic operations on `null` typically results in `0`. | Ensure the left operand is non-null before the operation, potentially using checks or assertions.",
         ]
@@ -5049,7 +5173,7 @@ fn a_comparison_message_names_its_operand_type_as_sharp_writes_it() {
     assert_eq!(
         worded(("src/Demo/Order.sharp", sharp), &[]),
         [
-            "5:40 invalid-operand `<` cannot compare `Order?` with `int`: `Order` declares no `operator <=>`. | This is `Order?`. | This is `int`. | Spec section 19: `<` on a class instance exists only where its class declares `operator <=>`. | Compare values the instances hold, such as their properties.",
+            "5:40 invalid-operand `<` cannot compare `Order?` with `int`: `Order` declares no `operator <=>`. | This is `Order?`. | This is `int`. | `<` on a class instance exists only where its class declares `operator <=>`. | Compare values the instances hold, such as their properties.",
         ]
     );
 }
