@@ -65,12 +65,6 @@ pub fn build_site(root: &Path) -> Result<()> {
 
     copy_static_assets(&static_root, &version_root)?;
 
-    let sponsors_source = root.join("sponsors.json");
-    if sponsors_source.exists() {
-        fs::copy(&sponsors_source, dist_root.join("sponsors.json"))
-            .with_context(|| format!("failed to copy sponsors.json from {}", sponsors_source.display()))?;
-    }
-
     let templates_glob = templates_glob.to_string_lossy().to_string();
     let tera = Tera::new(&templates_glob).context("failed to load templates")?;
 
@@ -418,7 +412,7 @@ fn build_pagefind_index(root: &Path, current_version: &str) -> Result<()> {
     let site = format!("dist/{current_version}");
     // Exclude code blocks from search results so "variable" doesn't surface
     // every snippet that mentions it.
-    let exclude = "pre, .sponsors";
+    let exclude = "pre";
 
     let status = Command::new("npm")
         .args(["exec", "--", "pagefind", "--site", &site, "--root-selector", "main", "--exclude-selectors", exclude])

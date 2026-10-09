@@ -77,13 +77,3 @@ nav_section = ""
 </ol>
 
 </section>
-
-<section class="home-section">
-
-<header class="home-section__head"><span class="home-section__num">§ 04</span><h2 class="home-section__title">Sponsors</h2></header>
-
-<p>Mago is free and open source, built and maintained by <a href="https://github.com/azjezz">Seifeddine Gmati</a> with support from these companies and individuals.</p>
-
-<div id="home-sponsors" aria-live="polite"></div>
-
-</section>

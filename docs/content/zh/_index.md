@@ -77,13 +77,3 @@ nav_section = ""
 </ol>
 
 </section>
-
-<section class="home-section">
-
-<header class="home-section__head"><span class="home-section__num">§ 04</span><h2 class="home-section__title">赞助商</h2></header>
-
-<p>Mago 是免费的开源项目,由 <a href="https://github.com/azjezz">Seifeddine Gmati</a> 构建并维护,得到下列公司与个人的支持。</p>
-
-<div id="home-sponsors" aria-live="polite"></div>
-
-</section>

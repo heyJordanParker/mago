@@ -1014,95 +1014,6 @@
     font-weight: 600;
   }
 
-  .sponsors {
-    display: flex;
-    flex-direction: column;
-    border: var(--rule-thick);
-  }
-
-  .sponsors__tier + .sponsors__tier {
-    border-block-start: var(--hair);
-  }
-
-  .sponsors__grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 0;
-  }
-
-  .sponsors__grid--dense {
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  }
-
-  .sponsor {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: flex-start;
-    gap: var(--s-2);
-    padding: var(--s-5);
-    padding-block-end: var(--s-4);
-    text-decoration: none;
-    color: var(--ink-soft);
-    font-family: var(--sans);
-    font-size: 0.84rem;
-    line-height: 1.3;
-    text-align: center;
-    border-block-end: var(--hair);
-    border-inline-end: var(--hair);
-    transition: background var(--t-snap), color var(--t-snap);
-  }
-
-  .sponsor:hover {
-    background: var(--bg-soft);
-    color: var(--accent-text);
-    text-decoration: none;
-  }
-
-  .sponsor img {
-    inline-size: 64px;
-    block-size: 64px;
-    object-fit: cover;
-    transition: filter var(--t-snap);
-  }
-
-  .sponsor--large img,
-  .sponsor--medium img {
-    filter: none;
-  }
-
-  .sponsor--large img { inline-size: 88px; block-size: 88px; }
-  .sponsor--medium img { inline-size: 72px; block-size: 72px; }
-
-  .sponsor--small img,
-  .sponsor--supporter img {
-    filter: grayscale(100%);
-  }
-
-  .sponsor--small:hover img,
-  .sponsor--supporter:hover img {
-    filter: grayscale(0%);
-  }
-
-  .sponsor--small img { inline-size: 56px; block-size: 56px; }
-
-  .sponsor--supporter {
-    padding: var(--s-5);
-    font-size: 0.74rem;
-  }
-
-  .sponsor--supporter img {
-    inline-size: 40px;
-    block-size: 40px;
-  }
-
-  .sponsor--supporter span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    inline-size: 100%;
-  }
-
   .rule-list {
     margin-block: var(--s-6);
     display: flex;
@@ -1433,14 +1344,6 @@
       inset-inline-start: var(--s-5);
       inset-block-start: var(--s-3);
       font-size: 1.1rem;
-    }
-
-    .sponsors__grid {
-      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    }
-
-    .sponsors__grid--dense {
-      grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
     }
 
     .home-section__head {
