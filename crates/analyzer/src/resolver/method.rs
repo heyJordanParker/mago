@@ -1192,15 +1192,17 @@ where
                 return None;
             };
             let property_name = concat_word!(b"$", property.value);
-            let property_type =
-                |class: Word| context.codebase.get_property_type(class.as_bytes(), property_name.as_bytes());
+            let property_type = |class: &[u8]| context.codebase.get_property_type(class, property_name.as_bytes());
 
-            // `this` keeps no expression type: its class is the scope's.
-            if is_this(access.object, context.resolved_names) {
-                property_type(block_context.scope.get_class_like_name()?)?.clone()
+            // `Class.name` is a static property of the class it names, and `this` keeps no expression type: its
+            // class is the scope's.
+            if let Some(class) = context.resolved_names.static_property_class(access) {
+                property_type(context.resolved_names.get(&class.name))?.clone()
+            } else if is_this(access.object, context.resolved_names) {
+                property_type(block_context.scope.get_class_like_name()?.as_bytes())?.clone()
             } else {
                 artifacts.get_expression_type(access.object)?.types.iter().find_map(|atomic| match atomic {
-                    TAtomic::Object(object) => property_type(object.get_name()?).cloned(),
+                    TAtomic::Object(object) => property_type(object.get_name()?.as_bytes()).cloned(),
                     _ => None,
                 })?
             }

@@ -3854,6 +3854,14 @@ fn an_emptied_list_parameter_or_property_stays_a_list() {
     assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["12:36 invalid-iterator", "15:37 invalid-iterator"]);
 }
 
+/// A static property emptied by `[]` stays the `List` it is declared, as an instance property does.
+#[test]
+fn an_emptied_static_list_property_stays_a_list() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public static List<string> names = [\"a\"];\n\n    public int count()\n    {\n        Tags.names = [];\n        let total = 0;\n        for (const [i, n] of Tags.names) {\n            total += i + strlen(n);\n        }\n        return total + strlen(Tags.names[0]);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["11:30 invalid-iterator"]);
+}
+
 /// A parameter's default `[]` and a returned `[]` narrow nothing: the parameter and the call are the `List`s they are
 /// declared.
 #[test]
