@@ -10,7 +10,6 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::UNIX_EPOCH;
 
 use clap::ColorChoice;
 use clap::Parser;
@@ -26,8 +25,9 @@ use mago_reporting::color::ColorChoice as ReportingColorChoice;
 use mago_reporting::reporter::Reporter;
 use mago_reporting::reporter::ReporterConfig;
 use mago_server::Server;
-use mago_sharp_bridge::unit::Input;
-use mago_sharp_bridge::unit::source_hash;
+use mago_sharp_bridge::unit;
+use mago_sharp_lean::Lean;
+use mago_sharp_lean::PACKAGE_FOLDER;
 use mago_syntax::dialect::Dialect;
 
 use crate::commands::analyze::analyze_the_whole_workspace_without_paths;
@@ -40,12 +40,6 @@ use crate::consts::PRELUDE_BYTES;
 use crate::error::Error;
 use crate::extensions::start_external_analyzer;
 use crate::utils::create_orchestrator;
-
-/// The folder at the workspace root that holds every compiled file.
-const COMPILED_FOLDER: &str = ".sharp";
-
-/// The extension of a compiled file.
-const COMPILED_EXTENSION: &str = "sharpc";
 
 /// The folder Composer installs packages into.
 const VENDOR: &[u8] = b"vendor/";
@@ -95,7 +89,8 @@ impl CompileCommand {
 
         let mut server = Server::new(database.into_static(), decode_prelude, server_settings(&orchestrator));
         server.analyze()?;
-        let compilations = server.compile(|path| stamp(&root, path))?;
+        let lean = Lean::new(&root);
+        let compilations = server.compile(|path| unit::stamp(&root, path), |translations| lean.prove(translations))?;
         let database = server.database();
 
         let mut written = BTreeSet::new();
@@ -107,11 +102,10 @@ impl CompileCommand {
             let file = database.get_ref(&file_id)?;
             let name = String::from_utf8_lossy(&file.name);
             let source = file.path.clone().unwrap_or_else(|| root.join(name.as_ref()));
-            let real = source.canonicalize().map_err(DatabaseError::from)?;
-            let Ok(relative) = real.strip_prefix(&root) else {
+            let Some(compiled) = unit::compiled_path(&root, &source).map_err(DatabaseError::from)? else {
                 tracing::error!(
                     "{name} is a link to {}, outside the project, so it was not compiled. Install the package as a copy instead of a link.",
-                    real.display()
+                    source.canonicalize().map_err(DatabaseError::from)?.display()
                 );
                 failed = true;
                 continue;
@@ -119,7 +113,6 @@ impl CompileCommand {
 
             match compilation {
                 Compilation::Accepted(bytes) => {
-                    let compiled = root.join(COMPILED_FOLDER).join(relative).with_extension(COMPILED_EXTENSION);
                     write_by_rename(&compiled, &bytes).map_err(DatabaseError::from)?;
                     written.insert(compiled);
                 }
@@ -135,9 +128,10 @@ impl CompileCommand {
             }
         }
 
-        let compiled_folder = root.join(COMPILED_FOLDER);
+        let compiled_folder = root.join(unit::COMPILED_FOLDER);
         if compiled_folder.is_dir() {
-            delete_all_but(&compiled_folder, &written).map_err(DatabaseError::from)?;
+            delete_all_but(&compiled_folder, &written, &compiled_folder.join(PACKAGE_FOLDER))
+                .map_err(DatabaseError::from)?;
         }
 
         for folder in package_compiled_folders(&root, database) {
@@ -190,22 +184,6 @@ fn files(count: usize) -> String {
     if count == 1 { "1 PHP# file".to_string() } else { format!("{count} PHP# files") }
 }
 
-/// The size, modification time and hash of the file at the workspace-relative `path`, or none when no file is there.
-fn stamp(root: &Path, path: &[u8]) -> std::io::Result<Option<Input>> {
-    let full = root.join(String::from_utf8_lossy(path).as_ref());
-    let contents = match std::fs::read(&full) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    let mtime_ns = match std::fs::metadata(&full)?.modified()?.duration_since(UNIX_EPOCH) {
-        Ok(after) => i64::try_from(after.as_nanos()).unwrap_or(i64::MAX),
-        Err(before) => i64::try_from(before.duration().as_nanos()).map_or(i64::MIN, |nanos| -nanos),
-    };
-
-    Ok(Some(Input { path: path.to_vec(), size: contents.len() as u64, mtime_ns, hash: source_hash(&contents) }))
-}
-
 /// Writes `bytes` to a new file beside `path` and renames it over `path`, so a reader sees the old file or the new
 /// one, never part of one.
 fn write_by_rename(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -224,14 +202,17 @@ fn write_by_rename(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     })
 }
 
-/// Deletes every file under `folder` that is not in `kept`, then every folder left empty, `folder` included.
-fn delete_all_but(folder: &Path, kept: &BTreeSet<PathBuf>) -> std::io::Result<bool> {
+/// Deletes every file under `folder` that is not in `kept` and not under the folder `owned`, which the Lean step owns,
+/// then every folder left empty, `folder` included.
+fn delete_all_but(folder: &Path, kept: &BTreeSet<PathBuf>, owned: &Path) -> std::io::Result<bool> {
     let mut empty = true;
     for entry in std::fs::read_dir(folder)? {
         let entry = entry?;
         let path = entry.path();
-        if entry.file_type()?.is_dir() {
-            empty &= delete_all_but(&path, kept)?;
+        if path == owned {
+            empty = false;
+        } else if entry.file_type()?.is_dir() {
+            empty &= delete_all_but(&path, kept, owned)?;
         } else if kept.contains(&path) {
             empty = false;
         } else {
@@ -261,7 +242,7 @@ fn package_compiled_folders(root: &Path, database: &impl DatabaseReader) -> BTre
         let name = String::from_utf8_lossy(&file.name);
         let mut folder = name.as_ref();
         while let Some((parent, _)) = folder.rsplit_once('/') {
-            let compiled = format!("{parent}/{COMPILED_FOLDER}");
+            let compiled = format!("{parent}/{}", unit::COMPILED_FOLDER);
             if root.join(&compiled).is_dir() {
                 folders.insert(compiled);
             }

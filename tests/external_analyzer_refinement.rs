@@ -315,10 +315,13 @@ fn compiled_consumer(
 
     let mut inputs = Vec::new();
     let compiled = incremental
-        .compile(|path| {
-            inputs.push(String::from_utf8_lossy(path).into_owned());
-            Ok(None)
-        })
+        .compile(
+            |path| {
+                inputs.push(String::from_utf8_lossy(path).into_owned());
+                Ok(None)
+            },
+            |_| Ok(Default::default()),
+        )
         .expect("the compile runs");
     let [(_, Compilation::Accepted(bytes))] = compiled.as_slice() else {
         panic!("src/SharpConsumer.sharp is not accepted: {compiled:?}");

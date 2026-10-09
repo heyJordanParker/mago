@@ -1866,8 +1866,8 @@ fn a_loop_condition_that_never_holds_names_its_php_sharp_type() {
 /// truthiness. PHP keeps its truthy and falsy wording.
 #[test]
 fn a_condition_that_always_or_never_holds_speaks_of_its_bool() {
-    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int never() { const off = false; if (off) { return 1; } return 0; }\n    public static int notNever() { const on = true; if (!on) { return 1; } return 0; }\n    public static int always() { const on = true; if (on) { return 1; } return 0; }\n    public static int notAlways() { const off = false; if (!off) { return 1; } return 0; }\n    public static int ternary() { const on = true; const off = false; return (on ? 1 : 2) + (off ? 1 : 2); }\n    public static bool logical(bool flag) { const on = true; const off = false; return (off && flag) || (on || flag); }\n    public static int loops() { const on = true; const off = false; while (off) { return 1; } while (!on) { return 2; } while (on) { return 3; } return 0; }\n    public static int negatedLoop() { const off = false; while (!off) { return 4; } return 0; }\n}\n";
-    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function never(): int { $off = false; if ($off) { return 1; } return 0; }\n    public static function notNever(): int { $on = true; if (!$on) { return 1; } return 0; }\n    public static function always(): int { $on = true; if ($on) { return 1; } return 0; }\n    public static function notAlways(): int { $off = false; if (!$off) { return 1; } return 0; }\n    public static function ternary(): int { $on = true; $off = false; return ($on ? 1 : 2) + ($off ? 1 : 2); }\n    public static function logical(bool $flag): bool { $on = true; $off = false; return ($off && $flag) || ($on || $flag); }\n    public static function loops(): int { $on = true; $off = false; while ($off) { return 1; } while (!$on) { return 2; } while ($on) { return 3; } return 0; }\n    public static function negatedLoop(): int { $off = false; while (!$off) { return 4; } return 0; }\n}\n";
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int never() { const off = false; if (off) { return 1; } return 0; }\n    public static int notNever() { const on = true; if (!on) { return 1; } return 0; }\n    public static int always() { const on = true; if (on) { return 1; } return 0; }\n    public static int notAlways() { const off = false; if (!off) { return 1; } return 0; }\n    public static int ternary() { const on = true; const off = false; return (on ? 1 : 2) + (off ? 1 : 2); }\n    public static bool logical(bool flag) { const on = true; const off = false; return (off && flag) || (on || flag); }\n    public static int loops() { const on = true; const off = false; while (off) { return 1; } while (!on) { return 2; } while (on) { return 3; } return 0; }\n    public static int negatedLoop() { const off = false; while (!off) { return 4; } return 0; }\n    public static bool otherwise(bool flag) { const off = false; return off || flag; }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function never(): int { $off = false; if ($off) { return 1; } return 0; }\n    public static function notNever(): int { $on = true; if (!$on) { return 1; } return 0; }\n    public static function always(): int { $on = true; if ($on) { return 1; } return 0; }\n    public static function notAlways(): int { $off = false; if (!$off) { return 1; } return 0; }\n    public static function ternary(): int { $on = true; $off = false; return ($on ? 1 : 2) + ($off ? 1 : 2); }\n    public static function logical(bool $flag): bool { $on = true; $off = false; return ($off && $flag) || ($on || $flag); }\n    public static function loops(): int { $on = true; $off = false; while ($off) { return 1; } while (!$on) { return 2; } while ($on) { return 3; } return 0; }\n    public static function negatedLoop(): int { $off = false; while (!$off) { return 4; } return 0; }\n    public static function otherwise(bool $flag): bool { $off = false; return $off || $flag; }\n}\n";
 
     assert_eq!(
         worded(("src/Demo/Report.php", php), &[]),
@@ -1887,6 +1887,8 @@ fn a_condition_that_always_or_never_holds_speaks_of_its_bool() {
             "13:103 impossible-condition This loop condition (type `false`) will always evaluate to false. | This condition is always false, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
             "13:130 redundant-condition Redundant condition: variable `$on` (type `true`) will always evaluate to true. | This condition always evaluates to true | Variable `$on` (type `true`) is always truthy. This condition is redundant and the code block will always execute if reached. | Simplify or remove the redundant condition if the guarded code should always run.",
             "14:70 redundant-condition Redundant condition: variable `$off` (type `false`) will always evaluate to true. | This condition always evaluates to true | Variable `$off` (type `false`) is always falsy, so asserting it's falsy is always true and redundant. | Simplify or remove the redundant condition if the guarded code should always run.",
+            "15:79 redundant-condition Redundant condition: variable `$off` (type `false`) will always evaluate to true. | This condition always evaluates to true | Variable `$off` (type `false`) is always falsy, so asserting it's falsy is always true and redundant. | Simplify or remove the redundant condition if the guarded code should always run.",
+            "15:79 redundant-logical-operation Redundant `||` operation: left operand is always false and right operand is evaluated. | Left operand is always false | Right operand is evaluated | The `||` operator will always return the boolean value of the right-hand side in this case. | Consider simplifying this expression to just the right operand.",
         ]
     );
     assert_eq!(
@@ -1899,7 +1901,7 @@ fn a_condition_that_always_or_never_holds_speaks_of_its_bool() {
             "9:79 redundant-condition Redundant ternary operator: condition is always `true`. | This condition (type `true`) is always `true` | This `then` branch is always evaluated, making it the result of the expression | This `else` branch will never be evaluated | The ternary operator `? :` evaluates the `else` branch only when the condition is `false`. | Consider replacing the entire expression with just this `then` branch.",
             "9:94 impossible-condition Redundant ternary operator: condition is always `false`. | This condition (type `false`) is always `false` | This `then` branch will never be evaluated | This `else` branch is always evaluated, making it the result of the expression | The ternary operator `? :` evaluates the `then` branch only when the condition is `true`. | Consider replacing the entire expression with just this `else` branch.",
             "10:89 redundant-logical-operation Redundant `&&` operation: left operand is always `false` and right operand is not evaluated. | Left operand is always `false` | Right operand is not evaluated | The `&&` operator will always return `false` in this case. | Consider simplifying this expression to `false`.",
-            "10:106 redundant-logical-operation Redundant `||` operation: left operand is always true and right operand is not evaluated. | Left operand is always true | Right operand is not evaluated | The `||` operator will always return `true` in this case. | Consider simplifying this expression to `true`.",
+            "10:106 redundant-logical-operation Redundant `||` operation: left operand is always `true` and right operand is not evaluated. | Left operand is always `true` | Right operand is not evaluated | The `||` operator will always return `true` in this case. | Consider simplifying this expression to `true`.",
             "10:88 redundant-logical-operation Redundant `||` operation: left operand is always `false` and right operand is always `true`. | Left operand is always `false` | Right operand is always `true` | The `||` operator will always return `true` in this case. | Consider simplifying this expression to `true`.",
             "11:76 impossible-condition Impossible condition: variable `off` (type `false`) will always evaluate to false. | This condition always evaluates to false | Variable `off` (type `false`) is never `true`, so this condition is always `false`. | Review the logic or type of the variable; this condition will never pass.",
             "11:76 impossible-condition This loop condition (type `false`) will always evaluate to false. | This condition is always false, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
@@ -1907,6 +1909,94 @@ fn a_condition_that_always_or_never_holds_speaks_of_its_bool() {
             "11:102 impossible-condition This loop condition (type `false`) will always evaluate to false. | This condition is always false, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
             "11:128 redundant-condition Redundant condition: variable `on` (type `true`) will always evaluate to true. | This condition always evaluates to true | Variable `on` (type `true`) is never `false`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
             "12:65 redundant-condition Redundant condition: variable `off` (type `false`) will always evaluate to true. | This condition always evaluates to true | Variable `off` (type `false`) is never `true`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
+            "13:73 redundant-condition Redundant condition: variable `off` (type `false`) will always evaluate to true. | This condition always evaluates to true | Variable `off` (type `false`) is never `true`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
+            "13:73 redundant-logical-operation Redundant `||` operation: left operand is always `false` and right operand is evaluated. | Left operand is always `false` | Right operand is evaluated | The `||` operator will always return the boolean value of the right-hand side in this case. | Consider simplifying this expression to just the right operand.",
+        ]
+    );
+}
+
+/// An operand that may be `false`, from a PHP method, asks for a check of `false`. PHP# has no falsiness, and keeps
+/// `(int)` between numbers, so no cast turns `false` into one. PHP keeps its own wording.
+#[test]
+fn an_operand_that_may_be_false_asks_for_a_check_of_false() {
+    let store = (
+        "src/Lib/Store.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Store\n{\n    public static function count(): int|false { return 1; }\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Store;\n\nclass Report\n{\n    public static int add() { return Store.count() + 1; }\n    public static int addRight() { return 1 + Store.count(); }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Store;\n\nclass Report\n{\n    public static function add(): int { return Store::count() + 1; }\n    public static function addRight(): int { return 1 + Store::count(); }\n}\n";
+    let possibly_false = |analyzed| -> Vec<String> {
+        worded(analyzed, &[store]).into_iter().filter(|line| line.contains(" possibly-false-operand ")).collect()
+    };
+
+    assert_eq!(
+        possibly_false(("src/Demo/Report.sharp", sharp)),
+        [
+            "7:38 possibly-false-operand Left operand in arithmetic operation might be `false` (type `false|int`). | This might be `false`. | Performing arithmetic operations on `false` typically results in `0`. | Ensure the left operand is not `false` before the operation.",
+            "8:47 possibly-false-operand Right operand in arithmetic operation might be `false` (type `false|int`). | This might be `false`. | Performing arithmetic operations on `false` typically results in `0`. | Ensure the right operand is not `false` before the operation.",
+        ]
+    );
+    assert_eq!(
+        possibly_false(("src/Demo/Report.php", php)),
+        [
+            "9:48 possibly-false-operand Left operand in arithmetic operation might be `false` (type `false|int`). | This might be `false`. | Performing arithmetic operations on `false` typically results in `0`. | Ensure the left operand is non-falsy before the operation, or explicitly cast if coercion is intended.",
+            "10:57 possibly-false-operand Right operand in arithmetic operation might be `false` (type `false|int`). | This might be `false`. | Performing arithmetic operations on `false` typically results in `0`. | Ensure the right operand is non-falsy before the operation, or explicitly cast if coercion is intended.",
+        ]
+    );
+}
+
+/// A loop over a value that may be `false`, from a PHP method, asks for a check of `false` before the loop. PHP# has
+/// no truthiness. PHP keeps its own wording.
+#[test]
+fn a_loop_over_a_value_that_may_be_false_asks_for_a_check_of_false() {
+    let store = (
+        "src/Lib/Store.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Store\n{\n    /** @return list<int>|false */\n    public static function ids(): array|false { return [1]; }\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Store;\n\nclass Report\n{\n    public static int total() { let sum = 0; for (const id of Store.ids()) { sum += id; } return sum; }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Store;\n\nclass Report\n{\n    public static function total(): int { $sum = 0; foreach (Store::ids() as $id) { $sum += $id; } return $sum; }\n}\n";
+    let possibly_false = |analyzed| -> Vec<String> {
+        worded(analyzed, &[store]).into_iter().filter(|line| line.contains(" possibly-false-iterator ")).collect()
+    };
+
+    assert_eq!(
+        possibly_false(("src/Demo/Report.sharp", sharp)),
+        [
+            "7:63 possibly-false-iterator Expression being iterated (type `false|List<int>`) might be `false` at runtime. | This might be `false` | This loop might not be executed | If this expression is `false`, it will be treated as an empty list, and the loop body will not execute. | Consider checking for `false` before the loop if this is not intended.",
+        ]
+    );
+    assert_eq!(
+        possibly_false(("src/Demo/Report.php", php)),
+        [
+            "9:62 possibly-false-iterator Expression being iterated (type `false|list<int>`) might be `false` at runtime. | This might be `false` | This `foreach` might not be executed | If this expression is `false`, it will be treated as an empty array, and the loop body will not execute. | Consider checking for `false` or truthiness before the loop if this is not intended.",
+        ]
+    );
+}
+
+/// A PHP method's `@psalm-assert non-empty-mixed` is named by the type its docblock writes. PHP# has no name for it,
+/// and `Any` would drop the non-empty that makes the assertion hold. PHP keeps Mago's `truthy-mixed`.
+#[test]
+fn an_assertion_of_non_empty_mixed_names_the_type_its_docblock_writes() {
+    let check = (
+        "src/Lib/Check.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Check\n{\n    /**\n     * @psalm-pure\n     *\n     * @psalm-assert non-empty-mixed $value\n     */\n    public static function filled(mixed $value): void {}\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Check;\n\nclass Report\n{\n    public static void run() { const one = 1; Check.filled(one); }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Check;\n\nclass Report\n{\n    public static function run(): void { $one = 1; Check::filled($one); }\n}\n";
+    let redundant = |analyzed| -> Vec<String> {
+        worded(analyzed, &[check]).into_iter().filter(|line| line.contains(" redundant-type-comparison ")).collect()
+    };
+
+    assert_eq!(
+        redundant(("src/Demo/Report.sharp", sharp)),
+        [
+            "7:47 redundant-type-comparison Redundant type assertion: `one` is already `1`. | Argument `one` already has type `1` | The assertion against `non-empty-mixed` always holds because `one` is `1`. | Consider removing this assertion or replacing it with `default` if used in a `match` arm.",
+        ]
+    );
+    assert_eq!(
+        redundant(("src/Demo/Report.php", php)),
+        [
+            "9:52 redundant-type-comparison Redundant type assertion: `$one` is already `int(1)`. | Argument `$one` already has type `int(1)` | The assertion against `truthy-mixed` always holds because `$one` is `int(1)`. | Consider removing this assertion or replacing it with `default` if used in a `match` arm.",
         ]
     );
 }
@@ -2405,6 +2495,40 @@ fn a_redundant_null_check_names_the_test_it_is_written_with() {
             sharp_report("9:19", "`==` comparison"),
             sharp_report("10:19", "`!=` comparison"),
             sharp_report("11:34", "`null` check"),
+        ]
+    );
+}
+
+/// A redundant null check names its pattern by the words the pattern is written with, so a comment between them stays
+/// out of the message. The `is` and each `not` lead the check only when they are written right before it. PHP names its
+/// own operator.
+#[test]
+fn a_redundant_null_check_names_its_pattern_without_its_comments() {
+    let sharp = "namespace Demo;\n\nclass Billing\n{\n    public void renew(Customer report)\n    {\n        const a = report is /* c */ null;\n        const b = report is /* c */ not /* d */ null;\n        const c = report is (/* e */ null) or not null;\n        const d = report is { name: /* f */ null };\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Billing\n{\n    public function renew(Customer $report): void\n    {\n        $a = $report === /* c */ null;\n        $b = $report !== /* c */ null;\n    }\n}\n";
+    let redundant = |analyzed| -> Vec<String> {
+        worded(analyzed, &[("src/Demo/Customer.sharp", CUSTOMER)])
+            .into_iter()
+            .filter(|line| line.contains(" redundant-comparison "))
+            .map(|line| line.split(" | ").next().unwrap_or_default().to_owned())
+            .collect()
+    };
+
+    assert_eq!(
+        redundant(("src/Demo/Billing.php", php)),
+        [
+            "9:14 redundant-comparison Redundant `===` comparison: left-hand side is never identical to right-hand side.",
+            "10:14 redundant-comparison Redundant `!==` comparison: left-hand side is always not identical to right-hand side.",
+        ]
+    );
+    assert_eq!(
+        redundant(("src/Demo/Billing.sharp", sharp)),
+        [
+            "7:19 redundant-comparison Redundant `is null` check: `Customer` is never `null`.",
+            "8:19 redundant-comparison Redundant `is not null` check: `Customer` is never `null`.",
+            "9:19 redundant-comparison Redundant `null` check: `Customer` is never `null`.",
+            "9:47 redundant-comparison Redundant `not null` check: `Customer` is never `null`.",
+            "10:31 redundant-comparison Redundant `null` check: `string` is never `null`.",
         ]
     );
 }
@@ -4577,6 +4701,65 @@ fn a_member_whose_kind_differs_across_the_receivers_classes_is_an_error() {
     );
 }
 
+/// What the analysis recorded that each call of `calls` in the analyzed file runs, with `others` beside it.
+fn recorded_callees(
+    analyzed: (&'static str, &'static str),
+    others: &[(&'static str, &'static str)],
+    calls: &[&str],
+) -> Vec<Vec<String>> {
+    let (_, artifacts) = analyze_with_artifacts(&PLUGIN_REGISTRY, settings(), analyzed, others);
+
+    calls
+        .iter()
+        .map(|call| {
+            let start = analyzed.1.find(call).unwrap() as u32;
+            let call = Span::dummy(start, start + call.len() as u32);
+
+            artifacts.get_callees(&call).map(|callee| format!("{callee:?}")).collect()
+        })
+        .collect()
+}
+
+/// A call a PHP class's `__call` or `__callStatic` serves records that magic method, the class the call names, and the
+/// name the call wrote, so the lowering reads the method the analysis checked the call against.
+#[test]
+fn a_call_a_magic_method_serves_records_the_magic_method_and_the_called_name() {
+    let sharp = "namespace Demo;\n\nimport Lib.Bag;\nimport Lib.Calc;\n\nclass Report\n{\n    public int run(Bag bag, int extra)\n    {\n        Calc.remember(extra);\n        return strlen(gettype(bag.untagged()));\n    }\n}\n";
+    let library = "<?php namespace Lib; final class Bag { public function __call(string $name, array $arguments): mixed { return 1; } } final class Calc { public static function __callStatic(string $name, array $arguments): mixed { return null; } }";
+
+    assert_eq!(
+        recorded_callees(
+            ("src/Demo/Report.sharp", sharp),
+            &[("src/Lib/Bag.php", library)],
+            &["bag.untagged()", "Calc.remember(extra)"]
+        ),
+        [
+            [r#"MagicMethod { callee: Method("Lib\\Bag", "__call"), class: "Lib\\Bag", method: "untagged" }"#],
+            [r#"MagicMethod { callee: Method("lib\\calc", "__callstatic"), class: "Lib\\Calc", method: "remember" }"#],
+        ]
+    );
+}
+
+/// A call of a property holding a function records the property, whether its type is a PHP# `Function` or a PHP
+/// `\Closure`, so the lowering calls the function the property holds.
+#[test]
+fn a_call_of_a_property_holding_a_function_records_the_property() {
+    let sharp = "namespace Demo;\n\nimport Lib.Order;\n\nclass Report\n{\n    private Function<int(int)> scale;\n\n    public Report()\n    {\n        this.scale = n => n * 2;\n    }\n\n    public int run(Order order, int extra)\n    {\n        return this.scale(extra) + order.handler(extra);\n    }\n}\n";
+    let library = "<?php namespace Lib; final class Order { /** @var \\Closure(int): int */ public \\Closure $handler; public function __construct() { $this->handler = fn (int $n): int => $n; } }";
+
+    assert_eq!(
+        recorded_callees(
+            ("src/Demo/Report.sharp", sharp),
+            &[("src/Lib/Order.php", library)],
+            &["this.scale(extra)", "order.handler(extra)"]
+        ),
+        [
+            [r#"Property { class: "demo\\report", property: "$scale" }"#],
+            [r#"Property { class: "lib\\order", property: "$handler" }"#]
+        ]
+    );
+}
+
 /// The type arguments of the call in the analyzed file, with `library` beside it.
 fn recorded_type_arguments(analyzed: (&'static str, &'static str), library: &'static str, call: &str) -> Vec<String> {
     let start = analyzed.1.find(call).unwrap() as u32;
@@ -6295,6 +6478,100 @@ fn a_getter_calling_a_function_with_no_extern_is_refused_and_names_the_missing_d
         effect_issues(&[LABEL]),
         [
             "app/Shop/Label.sharp:7:27 impure-getter: Getter `text` calls `trim`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern trim;` when it has no effect, or name its effects after `uses`."
+        ]
+    );
+}
+
+const MAGIC: (&str, &str) = (
+    "src/Lib/Magic.php",
+    "<?php\n\nnamespace Lib;\n\nfinal class Bag\n{\n    /** @param list<mixed> $arguments */\n    public function __call(string $name, array $arguments): int\n    {\n        return 0;\n    }\n}\n\nfinal class Codes\n{\n    /** @param list<mixed> $arguments */\n    public static function __callStatic(string $name, array $arguments): int\n    {\n        return 0;\n    }\n}\n",
+);
+
+const SHELF: (&str, &str) = (
+    "app/Shop/Shelf.sharp",
+    "namespace App.Shop;\n\nimport Lib.Bag;\nimport Lib.Codes;\n\npublic class Shelf\n{\n    public Shelf(private Bag bag) { }\n\n    public int count => this.bag.size();\n\n    public int code => Codes.next();\n}\n",
+);
+
+/// A method no class declares runs the class's `__call` or `__callStatic`, so its call has the effects the `extern` on
+/// that magic method declares, and an unknown effect without one, as any call of a plain PHP method does.
+#[test]
+fn a_getter_calling_a_method_a_magic_method_serves_has_the_effects_of_the_magic_method() {
+    let pure = (
+        "app/Stubs/Magic.sharp",
+        "namespace App.Stubs;\n\nimport Lib.Bag;\nimport Lib.Codes;\n\nextern Bag.__call;\nextern Codes.__callStatic;\n",
+    );
+    let timed = (
+        "app/Stubs/Magic.sharp",
+        "namespace App.Stubs;\n\nimport Lib.Bag;\nimport Lib.Codes;\n\nextern Bag.__call uses Clock;\nextern Codes.__callStatic;\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[SHELF, MAGIC]),
+        [
+            "app/Shop/Shelf.sharp:10:25 impure-getter: Getter `count` calls `Bag.__call`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Bag.__call;` when it has no effect, or name its effects after `uses`.",
+            "app/Shop/Shelf.sharp:12:24 impure-getter: Getter `code` calls `Codes.__callStatic`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Codes.__callStatic;` when it has no effect, or name its effects after `uses`.",
+        ]
+    );
+    assert_eq!(issues(pure, &[MAGIC]), Vec::<String>::new());
+    assert_eq!(effect_issues(&[SHELF, MAGIC, pure]), Vec::<String>::new());
+    assert_eq!(
+        effect_issues(&[SHELF, MAGIC, timed]),
+        [
+            "app/Shop/Shelf.sharp:10:25 impure-getter: Getter `count` calls `Bag.__call`, which has the effect `Clock`. Getters must be pure."
+        ]
+    );
+}
+
+/// Spec section 29: code without a body is pure unless it says `uses`, function types included, so calling a property
+/// a PHP# class declares with a `Function` type has no effect.
+#[test]
+fn a_getter_calling_a_property_holding_a_function_type_passes() {
+    let pricing = (
+        "app/Shop/Pricing.sharp",
+        "namespace App.Shop;\n\npublic class Pricing\n{\n    public Pricing(private Function<int(int)> rate) { }\n\n    public int price => this.rate(2);\n}\n",
+    );
+
+    assert_eq!(effect_issues(&[pricing]), Vec::<String>::new());
+}
+
+const HOLDER: (&str, &str) = (
+    "src/Lib/Holder.php",
+    "<?php\n\nnamespace Lib;\n\nfinal class Formatter\n{\n    public function __invoke(int $amount): int\n    {\n        return $amount;\n    }\n}\n\nfinal class Holder\n{\n    /** @var \\Closure(int): int */\n    public \\Closure $closure;\n\n    /** @var callable(int): int */\n    public $callback;\n\n    public Formatter $format;\n}\n",
+);
+
+/// A plain PHP property holding a closure or a callable declares no effect, and an `extern` on its class declares the
+/// class's own members, not the code the property holds, so calling it always has an unknown effect. An object with
+/// `__invoke` has the effects of its `__invoke`.
+#[test]
+fn a_getter_calling_a_plain_php_property_holding_a_function_has_an_unknown_effect() {
+    let holder = HOLDER;
+    let till = (
+        "app/Shop/Till.sharp",
+        "namespace App.Shop;\n\nimport Lib.Holder;\n\npublic class Till\n{\n    public Till(private Holder holder) { }\n\n    public int closed => this.holder.closure(2);\n\n    public int called => this.holder.callback(2);\n\n    public int formatted => this.holder.format(2);\n}\n",
+    );
+    let class_extern = ("app/Stubs/Holder.sharp", "namespace App.Stubs;\n\nimport Lib.Holder;\n\nextern Holder;\n");
+    let refused = [
+        "app/Shop/Till.sharp:9:26 impure-getter: Getter `closed` calls `Holder.closure`, which has no `extern` declaration. Getters must be pure. Help: Property `Holder.closure` holds plain PHP code, which no `extern` can declare. Call it outside the getter, or through a method of `Holder` that an `extern` declares.",
+        "app/Shop/Till.sharp:11:26 impure-getter: Getter `called` calls `Holder.callback`, which has no `extern` declaration. Getters must be pure. Help: Property `Holder.callback` holds plain PHP code, which no `extern` can declare. Call it outside the getter, or through a method of `Holder` that an `extern` declares.",
+        "app/Shop/Till.sharp:13:29 impure-getter: Getter `formatted` calls `Formatter.__invoke`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Formatter.__invoke;` when it has no effect, or name its effects after `uses`.",
+    ];
+
+    assert_eq!(effect_issues(&[till, holder]), refused);
+    assert_eq!(effect_issues(&[till, holder, class_extern]), refused);
+}
+
+/// A law calling a plain PHP property that holds a closure is refused as a getter is, and its help names the law.
+#[test]
+fn a_law_calling_a_plain_php_property_holding_a_closure_has_an_unknown_effect() {
+    let rule = (
+        "app/Shop/Rule.sharp",
+        "namespace App.Shop;\n\nimport Lib.Holder;\n\npublic class Rule\n{\n    law positive(Holder holder) => holder.closure(2) > 0;\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[rule, HOLDER]),
+        [
+            "app/Shop/Rule.sharp:7:36 impure-law: Law `positive` calls `Holder.closure`, which has no `extern` declaration. Laws hold only over pure code. Help: Property `Holder.closure` holds plain PHP code, which no `extern` can declare. Call it outside the law, or through a method of `Holder` that an `extern` declares."
         ]
     );
 }

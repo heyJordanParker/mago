@@ -23,6 +23,9 @@ pub use lower::inline::InlineForm;
 pub use lower::inline::InlineForms;
 pub use lower::inline::inline_forms;
 pub use lower::lower;
+pub use lower::types::Declaration;
+pub use lower::types::DeclarationKind;
+pub use lower::types::Types;
 
 /// `len` bytes of UTF-8 at `offset` in the unit's texts, not NUL-terminated.
 #[repr(C)]

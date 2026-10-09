@@ -32,5 +32,9 @@ extend-ignore-re = [
 "writeable" = "writeable"
 "caf" = "caf"
 
+[default.extend-identifiers]
+# Lean's name for the constant that holds a theorem.
+"thmInfo" = "thmInfo"
+
 [type.rust.extend-identifiers]
 "thr" = "thr"

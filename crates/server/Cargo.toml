@@ -19,5 +19,6 @@ mago-database = { workspace = true, features = ["loader"] }
 mago-orchestrator = { workspace = true }
 mago-reporting = { workspace = true }
 mago-sharp-bridge = { workspace = true }
+mago-sharp-lean = { workspace = true }
 mago-syntax = { workspace = true }
 foldhash = { workspace = true }

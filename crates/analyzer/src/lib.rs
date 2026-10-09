@@ -41,6 +41,7 @@ pub mod code;
 pub mod effects;
 pub mod error;
 pub mod external;
+pub mod graph;
 pub mod plugin;
 pub mod settings;
 #[cfg(not(target_arch = "wasm32"))]
