@@ -159,31 +159,40 @@ where
         root_array_type
     };
 
-    // A PHP# local, parameter or `field` is the collection it is declared as, so an element written into it must fit
-    // that type's elements, as one written into a property must, and the place keeps its type. Its key is the index
-    // checks' to report.
+    // A PHP# local, parameter or `field` is the collections it is declared as, so an element written into it must fit
+    // the elements of each of them, as one written into a property must, and the place keeps its type. Its key is the
+    // index checks' to report.
     if context.dialect.is_sharp()
         && let Expression::ConstantAccess(access) = root_array_expression.unparenthesized()
         && let Some(declared) = get_declared_collection(context, block_context, artifacts, root_array_expression)
     {
-        let (_, declared_element) = get_array_parameters(&declared, context.codebase);
+        let declared_elements: Vec<TUnion> = declared
+            .types
+            .iter()
+            .filter_map(|atomic| match atomic {
+                TAtomic::Array(collection) => Some(get_array_parameters(collection, context.codebase).1),
+                _ => None,
+            })
+            .collect();
         let fits = root_array_type.types.iter().all(|atomic| {
             let TAtomic::Array(written) = atomic else {
                 return true;
             };
+            let written_element = get_array_parameters(written, context.codebase).1;
 
-            union_comparator::is_contained_by(
-                context.codebase,
-                &get_array_parameters(written, context.codebase).1,
-                &declared_element,
-                false,
-                false,
-                false,
-                &mut ComparisonResult::with_strict_nonnull(true),
-            )
+            declared_elements.iter().all(|declared_element| {
+                union_comparator::is_contained_by(
+                    context.codebase,
+                    &written_element,
+                    declared_element,
+                    false,
+                    false,
+                    false,
+                    &mut ComparisonResult::with_strict_nonnull(true),
+                )
+            })
         });
         if !fits {
-            let declared = TUnion::from_atomic(TAtomic::Array(declared));
             let name = String::from_utf8_lossy(access.name.value());
             let declared_str = display_type(context, &declared);
             let written_str = display_value_type(context, &root_array_type, &declared);

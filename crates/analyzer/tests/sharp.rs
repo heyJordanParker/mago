@@ -4889,6 +4889,92 @@ fn a_local_that_may_be_a_map_or_a_set_takes_either_literal_and_keeps_its_kind() 
     assert_eq!(issues(("src/Demo/Tags.php", php), &[]), Vec::<String>::new());
 }
 
+/// Pin: a local that may be a `Set` or a `Map` takes a method both have, called on each with its own elements.
+#[test]
+fn a_method_every_collection_of_a_union_has_is_called_on_each() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public int run(bool ready, Set<int> ids, Map<string, int> counts)\n    {\n        let tags = ready ? ids : counts;\n        return tags.any(n => n > 0) ? tags.sumOf(n => n) : 0;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// A local that may be a `Set` or a `Map` takes only a method both have. A method one of them lacks is refused once,
+/// naming the collection that lacks it: a `Map` has no `add` and no `contains`, and a `Set` has no `get` and no
+/// `delete`.
+#[test]
+fn a_method_one_collection_of_a_union_lacks_is_refused_once_naming_it() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public int run(bool ready, Set<int> ids, Map<string, int> counts)\n    {\n        let tags = ready ? ids : counts;\n        tags.add(1);\n        tags.contains(1);\n        tags.get(\"a\");\n        return 0;\n    }\n}\n";
+
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Tags.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        [
+            "8:14 non-existent-method Method `add` does not exist on `Map<string, int>`.",
+            "9:14 non-existent-method Method `contains` does not exist on `Map<string, int>`.",
+            "10:14 non-existent-method Method `get` does not exist on `Set<int>`.",
+        ]
+    );
+}
+
+/// A method that changes a local that may be a `Set` or a `Map` leaves it either, as it was declared, so a `Map` local
+/// still refuses it.
+#[test]
+fn a_changed_local_that_may_be_a_set_or_a_map_stays_either() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public int run(bool ready, Set<int> ids, Map<string, int> counts)\n    {\n        let tags = ready ? ids : counts;\n        tags.delete(\"a\");\n        Map<string, int> named = tags;\n        return count(named);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tags.sharp", sharp), &[]),
+        ["8:14 non-existent-method", "9:34 invalid-local-assignment-value"]
+    );
+}
+
+/// A loop over a local that may be a `Set` or a `Map` reads its elements, as a loop over either does. A `Set` has no
+/// keys, so `[k, v]` is refused, naming the `Set`. PHP reads the keys of either array.
+#[test]
+fn a_key_and_value_loop_over_a_local_that_may_be_a_set_or_a_map_is_refused_by_the_set() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public int run(bool ready, Set<int> ids, Map<string, int> counts)\n    {\n        let tags = ready ? ids : counts;\n        let total = 0;\n        for (const n of tags) {\n            total += n;\n        }\n        for (const [key, n] of tags) {\n            total += n;\n        }\n        return total;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /**\n     * @param array<int, int> $ids\n     * @param array<string, int> $counts\n     */\n    public function run(bool $ready, array $ids, array $counts): int\n    {\n        $tags = $ready ? $ids : $counts;\n        $total = 0;\n        foreach ($tags as $n) {\n            $total += $n;\n        }\n        foreach ($tags as $key => $n) {\n            $total += is_int($key) ? $n : 0;\n        }\n        return $total;\n    }\n}\n";
+
+    assert_eq!(
+        refusals(("src/Demo/Tags.sharp", sharp), &[]),
+        [
+            "12:32 invalid-iterator `for (const [k, v] of x)` reads the keys of a `Map`, and this is a `Set`. | Loop over the elements alone, as in `for (const x of set)`."
+        ]
+    );
+    assert_eq!(issues(("src/Demo/Tags.php", php), &[]), Vec::<String>::new());
+}
+
+/// Pin: a local that may be a `Set` or a `Map` is not written by index, which a `Set` does not have, and not read by a
+/// bare index, which a `Map` read must handle and a `Set` does not have. Both rules refuse the read. PHP writes and
+/// reads an index of either array.
+#[test]
+fn an_index_of_a_local_that_may_be_a_set_or_a_map_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public int run(bool ready, Set<int> ids, Map<string, int> counts)\n    {\n        let tags = ready ? ids : counts;\n        tags[\"a\"] = 1;\n        return tags[\"a\"];\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /**\n     * @param array<int, int> $ids\n     * @param array<string, int> $counts\n     */\n    public function run(bool $ready, array $ids, array $counts): int\n    {\n        $tags = $ready ? $ids : $counts;\n        $tags['a'] = 1;\n        return $tags['a'];\n    }\n}\n";
+
+    assert_eq!(
+        refusals(("src/Demo/Tags.sharp", sharp), &[]),
+        [
+            "8:9 invalid-array-access A `Set<int>` has no index. | Test an element with `set.contains(x)`, add one with `set.add(x)`, or read each one with `for (const x of set)`.",
+            "9:16 invalid-array-access A `Set<int>` has no index. | Test an element with `set.contains(x)`, add one with `set.add(x)`, or read each one with `for (const x of set)`.",
+            "9:16 possibly-undefined-array-index A `Map` is not read by a bare index, because its key may be missing. | Read it with `??`, as in `map[key] ?? fallback`, or with `map.get(key)`, which gives null for a missing key. `+=`, `++` and `--` read first, so write `m[k] = (m[k] ?? 0) + 1`.",
+        ]
+    );
+    assert_eq!(issues(("src/Demo/Tags.php", php), &[]), Vec::<String>::new());
+}
+
+/// Pin: a local that may be either of two `Map`s takes every `Map` method, loop and handled read, as one `Map` does.
+/// PHP reads either array the same way.
+#[test]
+fn a_local_that_may_be_either_of_two_maps_is_a_map() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public int run(bool ready, Map<string, int> sizes, Map<string, string> names)\n    {\n        let tags = ready ? sizes : names;\n        tags.delete(\"a\");\n        let total = tags.get(\"b\") is int size ? size : 0;\n        for (const [key, value] of tags) {\n            total += strlen(key);\n        }\n        let last = tags[\"c\"] ?? 0;\n        return total + (last is int n ? n : 0);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /**\n     * @param array<string, int> $sizes\n     * @param array<string, string> $names\n     */\n    public function run(bool $ready, array $sizes, array $names): int\n    {\n        $tags = $ready ? $sizes : $names;\n        unset($tags['a']);\n        $total = 0;\n        foreach ($tags as $key => $value) {\n            $total += strlen($key);\n        }\n        return $total + (is_int($tags['c'] ?? null) ? $tags['c'] : 0);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Tags.php", php), &[]), Vec::<String>::new());
+}
+
 /// PHP has one empty array, so a typed PHP place takes `[]` wherever a `list<string>` is declared.
 #[test]
 fn an_empty_php_array_where_a_list_is_declared_is_accepted() {
