@@ -1945,6 +1945,45 @@ fn a_null_or_type_check_that_always_or_never_holds_speaks_of_its_bool() {
     );
 }
 
+/// A comparison that always or never holds, and an ordering of `false`, write `true` and `false` as PHP# writes them.
+/// PHP# refuses `false == 0`, so the ordering names the rule it keeps. PHP keeps its own wording.
+#[test]
+fn a_comparison_that_always_or_never_holds_speaks_of_its_bool() {
+    let store = (
+        "src/Lib/Store.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Store\n{\n    public static function off(): false { return false; }\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Store;\n\nclass Report\n{\n    public static bool same() { const a = 1; return a != 1; }\n    public static bool other() { const a = 1; return a != 2; }\n    public static bool less() { return Store.off() < 1; }\n    public static int order() { return Store.off() <=> 1; }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Store;\n\nclass Report\n{\n    public static function same(): bool { $a = 1; return $a != 1; }\n    public static function other(): bool { $a = 1; return $a != 2; }\n    public static function less(): bool { return Store::off() < 1; }\n    public static function order(): int { return Store::off() <=> 1; }\n}\n";
+    let comparisons = |analyzed| -> Vec<String> {
+        worded(analyzed, &[store])
+            .into_iter()
+            .filter(|line| line.contains(" redundant-comparison ") || line.contains(" false-operand "))
+            .collect()
+    };
+
+    assert_eq!(
+        comparisons(("src/Demo/Report.php", php)),
+        [
+            "9:58 redundant-comparison Redundant `!=` comparison: left-hand side is never equal to (always false for !=) right-hand side. | Left operand is `int(1)` | Right operand is `int(1)` | The `!=` operator will always return `false` in this case. | Consider simplifying or removing this comparison as it always evaluates to `false`.",
+            "10:59 redundant-comparison Redundant `!=` comparison: left-hand side is always not equal to (always true for !=) right-hand side. | Left operand is `int(1)` | Right operand is `int(2)` | The `!=` operator will always return `true` in this case. | Consider simplifying or removing this comparison as it always evaluates to `true`.",
+            "11:50 false-operand Left operand in `<` comparison is `false`. | This is `false` | PHP compares `false` with other types according to specific rules (e.g., `false == 0` is true using `<`). This can hide bugs. | Ensure this operand is not `false` or explicitly handle the `false` case if it represents a distinct state (e.g., an error from a function).",
+            "11:50 redundant-comparison Redundant `<` comparison: left-hand side is always less than right-hand side. | Left operand is `false` | Right operand is `int(1)` | The `<` operator will always return `true` in this case. | Consider simplifying or removing this comparison as it always evaluates to `true`.",
+            "12:50 false-operand Left operand in spaceship comparison (`<=>`) is `false`. | This is `false` | PHP compares `false` with other types according to specific rules (e.g., `false == 0` is true, `false < 1` is true). | Ensure this comparison with `false` is intended, or provide a non-false operand.",
+        ]
+    );
+    assert_eq!(
+        comparisons(("src/Demo/Report.sharp", sharp)),
+        [
+            "7:53 redundant-comparison Redundant `!=` comparison: left-hand side is never equal to (always `false` for !=) right-hand side. | Left operand is `1` | Right operand is `1` | The `!=` operator will always return `false` in this case. | Consider simplifying or removing this comparison as it always evaluates to `false`.",
+            "8:54 redundant-comparison Redundant `!=` comparison: left-hand side is always not equal to (always `true` for !=) right-hand side. | Left operand is `1` | Right operand is `2` | The `!=` operator will always return `true` in this case. | Consider simplifying or removing this comparison as it always evaluates to `true`.",
+            "9:40 false-operand Left operand in `<` comparison is `false`. | This is `false` | PHP compares `false` with other types according to specific rules (e.g., `false < 1` is `true`). This can hide bugs. | Ensure this operand is not `false` or explicitly handle the `false` case if it represents a distinct state (e.g., an error from a function).",
+            "9:40 redundant-comparison Redundant `<` comparison: left-hand side is always less than right-hand side. | Left operand is `false` | Right operand is `1` | The `<` operator will always return `true` in this case. | Consider simplifying or removing this comparison as it always evaluates to `true`.",
+            "10:40 false-operand Left operand in spaceship comparison (`<=>`) is `false`. | This is `false` | PHP compares `false` with other types according to specific rules (e.g., `false < 1` is `true`). | Ensure this comparison with `false` is intended, or provide a non-false operand.",
+        ]
+    );
+}
+
 /// An operand that may be `false`, from a PHP method, asks for a check of `false`. PHP# has no falsiness, and keeps
 /// `(int)` between numbers, so no cast turns `false` into one. PHP keeps its own wording.
 #[test]

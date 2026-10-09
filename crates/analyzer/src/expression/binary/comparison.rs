@@ -48,6 +48,7 @@ use crate::expression::binary::utils::is_always_less_than;
 use crate::expression::binary::utils::is_always_less_than_or_equal;
 use crate::utils::expression::get_literal_array_key;
 use crate::utils::misc::unwrap_expression;
+use crate::utils::names::display_bool;
 use crate::utils::names::display_type;
 
 /// Analyzes standard comparison operations (e.g., `==`, `===`, `<`, `<=`, `>`, `>=`).
@@ -382,13 +383,8 @@ where
                     || are_definitely_loosely_equal(context.settings.version, lhs_type, rhs_type)
                 {
                     if !block_context.flags.inside_loop_expressions() {
-                        report_redundant_comparison(
-                            context,
-                            artifacts,
-                            binary,
-                            "never equal to (always false for !=)",
-                            "`false`",
-                        );
+                        let description = format!("never equal to (always {} for !=)", display_bool(context, false));
+                        report_redundant_comparison(context, artifacts, binary, &description, "`false`");
                     }
 
                     get_false()
@@ -399,13 +395,8 @@ where
                     rhs_type,
                 ) {
                     if !block_context.flags.inside_loop_expressions() {
-                        report_redundant_comparison(
-                            context,
-                            artifacts,
-                            binary,
-                            "always not equal to (always true for !=)",
-                            "`true`",
-                        );
+                        let description = format!("always not equal to (always {} for !=)", display_bool(context, true));
+                        report_redundant_comparison(context, artifacts, binary, &description, "`true`");
                     }
 
                     get_true()
@@ -625,13 +616,18 @@ fn check_comparison_operand<'ast, 'arena, A>(
                 .with_help("Ensure this operand has a known, comparable type before using this comparison operator."),
         );
     } else if operand_type.is_false() {
+        let rules = if context.dialect.is_sharp() {
+            "PHP compares `false` with other types according to specific rules (e.g., `false < 1` is `true`). This can hide bugs.".to_owned()
+        } else {
+            format!("PHP compares `false` with other types according to specific rules (e.g., `false == 0` is true using `{op_str}`). This can hide bugs.")
+        };
         context.collector.report_with_code(
             IssueCode::FalseOperand,
             Issue::error(format!(
                "{side} operand in `{op_str}` comparison is `false`."
             ))
             .with_annotation(Annotation::primary(operand.span()).with_message("This is `false`"))
-            .with_note(format!("PHP compares `false` with other types according to specific rules (e.g., `false == 0` is true using `{op_str}`). This can hide bugs."))
+            .with_note(rules)
             .with_help("Ensure this operand is not `false` or explicitly handle the `false` case if it represents a distinct state (e.g., an error from a function)."),
         );
     } else if operand_type.is_falsable() && !operand_type.ignore_falsable_issues() {
