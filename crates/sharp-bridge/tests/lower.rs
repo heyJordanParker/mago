@@ -3712,6 +3712,54 @@ fn a_generic_call_carries_its_type_arguments_and_a_generic_method_its_metadata()
     assert!(!lowered.parameters_of("__construct").contains("SHARP_TYPE_ARGS"));
 }
 
+/// A value of a type parameter is a value of its bound, so a generic method called on it carries its type arguments as
+/// a call on the bound does.
+#[test]
+fn a_generic_call_on_a_value_of_a_type_parameter_carries_its_type_arguments() {
+    let lowered = Lowered::with(
+        indoc! {"
+        namespace App;
+
+        public class Box<TValue>
+        {
+            public Box() { }
+        }
+
+        public class Shelf
+        {
+            public Shelf() { }
+
+            public Box<T> make<T>() => new Box<T>();
+        }
+
+        public class Store
+        {
+            public Box<Order> stock<TShelf : Shelf>(TShelf shelf) => shelf.make<Order>();
+        }
+    "},
+        &[(
+            "src/App/Entities.php",
+            "<?php namespace App; abstract class DatabaseEntity {} final class Order extends DatabaseEntity {}",
+        )],
+    );
+
+    assert_eq!(
+        lowered.body_of("stock"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                METHOD_CALL
+                  VAR
+                    ZVAL "shelf"
+                  ZVAL "make"
+                  ARG_LIST
+                    SHARP_TYPE_ARGS
+                      null
+                      ZVAL "App.Order"
+        "#}
+    );
+}
+
 /// A list runs its methods in the engine's `Sharp\Collection`, which PHP declares, so a call of a generic one such as
 /// `map` carries no type arguments, as a call of any method PHP declares does.
 #[test]
