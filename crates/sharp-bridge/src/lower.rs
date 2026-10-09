@@ -2142,7 +2142,9 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     /// The value a template's `${…}` shows. Spec section 18 shows a `bool` as `true` or `false`, where PHP's string
-    /// conversion gives `1` or nothing, so a `bool` is `value ? "true" : "false"`. Any other value is itself.
+    /// conversion gives `1` or nothing, so a `bool` is `["false", "true"][value]`: PHP indexes by `false` as 0 and
+    /// `true` as 1, and the optimizer keeps the read as one `FETCH_DIM_R` of a constant array, where a conditional takes
+    /// four instructions. Any other value is itself.
     fn template_value(&mut self, expression: &Expression) -> u32 {
         let value = self.expression(expression);
         if !self.types.expression_type(expression).is_bool() {
@@ -2150,10 +2152,14 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         }
 
         let line = self.line(expression);
-        let true_text = self.string(0, line, b"true");
-        let false_text = self.string(0, line, b"false");
+        let texts = [b"false".as_slice(), b"true"].map(|text| {
+            let text = self.string(0, line, text);
 
-        self.node(SHARP_AST_CONDITIONAL, 0, line, &[value, true_text, false_text])
+            self.node(SHARP_AST_ARRAY_ELEM, 0, line, &[text, NULL])
+        });
+        let texts = self.node(SHARP_AST_ARRAY, ZEND_ARRAY_SYNTAX_SHORT, line, &texts);
+
+        self.node(SHARP_AST_DIM, 0, line, &[texts, value])
     }
 
     /// What an assignment, a compound assignment, `++` or `--` writes: a local or parameter, `object.name`,

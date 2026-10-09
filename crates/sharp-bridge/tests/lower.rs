@@ -7061,33 +7061,52 @@ fn a_template_is_an_encaps_list_of_its_text_and_interpolations() {
 }
 
 /// ```php
-/// return "Paid: " . ($paid ? "true" : "false") . " of {$extra} " . (true ? "true" : "false");
+/// return "Paid: {["false", "true"][$paid]} of {$extra} for {$name} {["false", "true"][true]}";
 /// ```
 ///
 /// Spec section 18 shows a `bool` in a template as `true` or `false`, where PHP's string conversion gives `1` or
-/// nothing, so a `bool` part is the conditional that picks its text. Every other part lowers as before.
+/// nothing, so a `bool` part reads its text from `["false", "true"]`, where PHP reads `false` as the index 0 and
+/// `true` as the index 1. The optimizer keeps the read as one `FETCH_DIM_R` of a constant array, where
+/// `$paid ? "true" : "false"` takes four instructions. An `int` and a `string` part lower as before.
 #[test]
-fn a_bool_in_a_template_is_the_choice_of_true_or_false() {
+fn a_bool_in_a_template_is_its_text_read_by_the_bool() {
     assert_eq!(
-        body_in("string run(bool paid, int extra)", "        return `Paid: ${paid} of ${extra} ${true}`;\n", &[]),
+        body_in(
+            "string run(bool paid, int extra, string name)",
+            "        return `Paid: ${paid} of ${extra} for ${name} ${true}`;\n",
+            &[]
+        ),
         indoc! {r#"
             STMT_LIST
               RETURN
                 ENCAPS_LIST
                   ZVAL "Paid: "
-                  CONDITIONAL
+                  DIM
+                    ARRAY [3]
+                      ARRAY_ELEM
+                        ZVAL "false"
+                        null
+                      ARRAY_ELEM
+                        ZVAL "true"
+                        null
                     VAR
                       ZVAL "paid"
-                    ZVAL "true"
-                    ZVAL "false"
                   ZVAL " of "
                   VAR
                     ZVAL "extra"
+                  ZVAL " for "
+                  VAR
+                    ZVAL "name"
                   ZVAL " "
-                  CONDITIONAL
+                  DIM
+                    ARRAY [3]
+                      ARRAY_ELEM
+                        ZVAL "false"
+                        null
+                      ARRAY_ELEM
+                        ZVAL "true"
+                        null
                     ZVAL true
-                    ZVAL "true"
-                    ZVAL "false"
         "#}
     );
 }

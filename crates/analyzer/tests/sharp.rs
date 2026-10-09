@@ -4382,8 +4382,8 @@ fn coalescing_an_unchecked_any_gives_a_value_that_is_never_null() {
 /// that may be null until it is checked. The PHP twin keeps PHP's own interpolation.
 #[test]
 fn a_template_refuses_every_type_but_int_float_string_and_bool() {
-    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Order\n{\n}\n\nclass Receipt\n{\n    public string status(Status status) => `Status: ${status}`;\n\n    public string items(List<int> items) => `Items: ${items}`;\n\n    public string order(Order order) => `Order: ${order}`;\n\n    public string count(int? count) => `Count: ${count}`;\n\n    public string value(Any value) => `Value: ${value}`;\n\n    public string maybe(Any? value) => `Maybe: ${value}`;\n}\n";
-    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Status;\n\nclass Order\n{\n}\n\nclass Receipt\n{\n    public function status(Status $status): string { return \"Status: {$status}\"; }\n\n    /** @param list<int> $items */\n    public function items(array $items): string { return \"Items: {$items}\"; }\n\n    public function order(Order $order): string { return \"Order: {$order}\"; }\n\n    public function count(?int $count): string { return \"Count: {$count}\"; }\n\n    public function value(mixed $value): string { return \"Value: {$value}\"; }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Order\n{\n}\n\nclass Receipt\n{\n    public string status(Status status) => `Status: ${status}`;\n\n    public string items(List<int> items) => `Items: ${items}`;\n\n    public string order(Order order) => `Order: ${order}`;\n\n    public string count(int? count) => `Count: ${count}`;\n\n    public string value(Any value) => `Value: ${value}`;\n\n    public string maybe(Any? value) => `Maybe: ${value}`;\n\n    public string step(Function<int(int)> step) => `Step: ${step}`;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Status;\n\nclass Order\n{\n}\n\nclass Receipt\n{\n    public function status(Status $status): string { return \"Status: {$status}\"; }\n\n    /** @param list<int> $items */\n    public function items(array $items): string { return \"Items: {$items}\"; }\n\n    public function order(Order $order): string { return \"Order: {$order}\"; }\n\n    public function count(?int $count): string { return \"Count: {$count}\"; }\n\n    public function value(mixed $value): string { return \"Value: {$value}\"; }\n\n    public function step(\\Closure $step): string { return \"Step: {$step}\"; }\n}\n";
     let others = [("src/Lib/Status.php", STATUS)];
 
     assert_eq!(
@@ -4395,11 +4395,12 @@ fn a_template_refuses_every_type_but_int_float_string_and_bool() {
             "17:48 invalid-operand A template shows `int`, `float`, `string` or `bool`, and `int?` is none of them. | This is `int?`. | Test it with `!= null` first.",
             "19:47 invalid-operand A template shows `int`, `float`, `string` or `bool`, and `Any` is none of them. | This is `Any`. | Check what the value is with `is`, `as` or `match` first.",
             "21:48 invalid-operand A template shows `int`, `float`, `string` or `bool`, and `Any?` is none of them. | This is `Any?`. | Check what the value is with `is`, `as` or `match` first.",
+            "23:59 invalid-operand A template shows `int`, `float`, `string` or `bool`, and `Function<int(int)>` is none of them. | This is `Function<int(int)>`. | Show a value taken from it instead, such as a property or the result of a method.",
         ]
     );
     assert_eq!(
         codes(&issues(("src/Demo/Receipt.php", php), &others)),
-        ["invalid-type-cast", "array-to-string-conversion", "invalid-type-cast"]
+        ["invalid-type-cast", "array-to-string-conversion", "invalid-type-cast", "invalid-type-cast"]
     );
 }
 
