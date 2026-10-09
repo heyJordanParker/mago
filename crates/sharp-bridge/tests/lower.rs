@@ -5707,6 +5707,39 @@ fn a_member_of_a_union_receiver_is_the_kind_every_class_declares() {
 }
 
 /// ```php
+/// $share = $item->share(...);
+/// ```
+///
+/// A value of a type parameter bounded by an intersection reads a member any class of the intersection declares, as
+/// the checker finds it.
+#[test]
+fn a_method_value_through_an_intersection_bound_is_the_method_one_of_its_classes_declares() {
+    let lowered = Lowered::with(
+        "namespace App.Tenant;\n\nimport Lib.Entity;\nimport Lib.Shareable;\n\nclass Report\n{\n    public Function<string()> run<TItem : Entity & Shareable>(TItem item)\n    {\n        return item.share;\n    }\n}\n",
+        &[
+            (
+                "src/Lib/Entity.php",
+                "<?php namespace Lib; abstract class Entity { public function id(): int { return 1; } }",
+            ),
+            ("src/Lib/Shareable.php", "<?php namespace Lib; interface Shareable { public function share(): string; }"),
+        ],
+    );
+
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                METHOD_CALL
+                  VAR
+                    ZVAL "item"
+                  ZVAL "share"
+                  CALLABLE_CONVERT
+        "#}
+    );
+}
+
+/// ```php
 /// $type = \Lib\Calc::class;
 /// return \Lib\Calc::MAX + $type::MAX + $type::$count + \strlen($type::defaultTag());
 /// ```

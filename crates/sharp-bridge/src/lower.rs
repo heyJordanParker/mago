@@ -200,6 +200,7 @@ use types::Types;
 use types::agreed_kind;
 use types::class_value_classes;
 use types::receiver_classes;
+use types::receiver_intersections;
 
 /// The values php-src gives the attrs the lowering emits, from `zend_compile.h` and `zend_vm_opcodes.h`. The tokens
 /// it emits are generated in `kind.rs`.
@@ -1713,14 +1714,21 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     /// Whether `object.member` reads a method, which the read takes as a first-class callable. The member is the same
-    /// kind on every class the receiver can be.
+    /// kind on every class the receiver can be. A class intersected with others takes the member the first of them
+    /// declares, as the checker's `resolve_method_value` does.
     fn is_method_value(&self, object: &Expression, member: &ClassLikeMemberSelector) -> bool {
-        let (Some(classes), ClassLikeMemberSelector::Identifier(name)) =
-            (receiver_classes(self.types.expression_type(object)), member)
+        let (Some(receivers), ClassLikeMemberSelector::Identifier(name)) =
+            (receiver_intersections(self.types.expression_type(object)), member)
         else {
             return false;
         };
-        let kind = agreed_kind(classes.into_iter().map(|class| self.types.member_declaration(class, name.value).kind));
+        let kind = agreed_kind(receivers.into_iter().map(|classes| {
+            classes
+                .iter()
+                .find_map(|class| self.types.declared_member(class, name.value))
+                .unwrap_or_else(|| self.types.member_declaration(classes[0], name.value))
+                .kind
+        }));
 
         matches!(kind, DeclarationKind::Method { .. } | DeclarationKind::StaticMethod)
     }

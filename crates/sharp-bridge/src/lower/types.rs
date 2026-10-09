@@ -279,24 +279,35 @@ impl<'analysis> Types<'analysis> {
     /// declares none of them is it a property its `__get` serves. A call is [`Self::call_target`]'s.
     #[must_use]
     pub fn member_declaration(&self, class: &[u8], member: &[u8]) -> Declaration {
+        self.declared_member(class, member).unwrap_or_else(|| {
+            if !self.codebase.method_exists(class, b"__get") {
+                unreachable!(
+                    "the checker refuses `{}.{}`, which names no member",
+                    String::from_utf8_lossy(class),
+                    String::from_utf8_lossy(member)
+                )
+            }
+
+            Declaration {
+                kind: DeclarationKind::Property { typed: false },
+                class: word(class),
+                name: word(member),
+                public: true,
+            }
+        })
+    }
+
+    /// The member `member` of the fully qualified class name `class` declares or inherits, as
+    /// [`Self::member_declaration`] resolves it, leaving out a property its `__get` serves.
+    pub(crate) fn declared_member(&self, class: &[u8], member: &[u8]) -> Option<Declaration> {
         let declared = |kind, public| Declaration { kind, class: word(class), name: word(member), public };
 
         if self.codebase.get_enum_case(class, member).is_some() {
-            declared(DeclarationKind::EnumCase, true)
+            Some(declared(DeclarationKind::EnumCase, true))
         } else if let Some(constant) = self.codebase.get_class_constant(class, member) {
-            declared(DeclarationKind::Constant, constant.visibility.is_public())
-        } else if let Some(declaration) = self.property_declaration(class, member) {
-            declaration
-        } else if let Some(declaration) = self.method_declaration(class, member) {
-            declaration
-        } else if self.codebase.method_exists(class, b"__get") {
-            declared(DeclarationKind::Property { typed: false }, true)
+            Some(declared(DeclarationKind::Constant, constant.visibility.is_public()))
         } else {
-            unreachable!(
-                "the checker refuses `{}.{}`, which names no member",
-                String::from_utf8_lossy(class),
-                String::from_utf8_lossy(member)
-            )
+            self.property_declaration(class, member).or_else(|| self.method_declaration(class, member))
         }
     }
 
@@ -515,17 +526,36 @@ impl<'analysis> Types<'analysis> {
 /// The fully qualified names of the classes a value of `r#type` can be, leaving out `null`, or none when part of the
 /// type is no class, such as a collection. A value of a type parameter can be the classes of its bound.
 pub(crate) fn receiver_classes(r#type: &TUnion) -> Option<Vec<&[u8]>> {
-    let mut classes = Vec::new();
+    Some(receiver_intersections(r#type)?.into_iter().map(|classes| classes[0]).collect())
+}
+
+/// The classes a value of `r#type` can be, as [`receiver_classes`] gives them, each followed by the classes it is
+/// intersected with, as a type parameter bounded by `Entity & Shareable` is.
+pub(crate) fn receiver_intersections(r#type: &TUnion) -> Option<Vec<Vec<&[u8]>>> {
+    fn class(object: &TObject) -> Option<&[u8]> {
+        match object {
+            TObject::Named(object) => Some(object.name.as_bytes()),
+            TObject::Enum(object) => Some(object.name.as_bytes()),
+            _ => None,
+        }
+    }
+
+    let mut receivers = Vec::new();
     for atomic in r#type.types.iter().filter(|atomic| !atomic.is_null()) {
         match atomic {
-            TAtomic::Object(TObject::Named(object)) => classes.push(object.name.as_bytes()),
-            TAtomic::Object(TObject::Enum(object)) => classes.push(object.name.as_bytes()),
-            TAtomic::GenericParameter(parameter) => classes.extend(receiver_classes(&parameter.constraint)?),
+            TAtomic::Object(object) if class(object).is_some() => {
+                let parts = object.get_intersection_types().unwrap_or_default().iter().filter_map(|part| match part {
+                    TAtomic::Object(part) => class(part),
+                    _ => None,
+                });
+                receivers.push(class(object).into_iter().chain(parts).collect());
+            }
+            TAtomic::GenericParameter(parameter) => receivers.extend(receiver_intersections(&parameter.constraint)?),
             _ => return None,
         }
     }
 
-    (!classes.is_empty()).then_some(classes)
+    (!receivers.is_empty()).then_some(receivers)
 }
 
 /// The fully qualified names of the classes a class value of `r#type` holds, leaving out `null`, or none when part of
