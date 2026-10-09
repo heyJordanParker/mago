@@ -3892,6 +3892,16 @@ fn a_key_and_value_loop_reads_a_map_and_its_keys_as_the_map_types_them() {
     assert_eq!(issues(("src/Demo/Loops.sharp", sharp), &[]), ["8:37 invalid-iterator"]);
 }
 
+/// `tags = []` empties a `List<string>` and leaves it a `List`, as its methods are: its bare index read stays bare,
+/// and `for (const [k, v] of tags)` still reads the keys of a `Map`, which a `List` is not.
+#[test]
+#[ignore = "`[]` narrows a declared List to an empty keyed array, which the Map rules read as a Map, and `add` leaves it empty"]
+fn an_emptied_list_stays_a_list_for_an_index_read_and_a_key_and_value_loop() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public int count()\n    {\n        List<string> tags = [\"a\"];\n        tags = [];\n        tags.add(\"x\");\n        let total = 0;\n        for (const [index, tag] of tags) {\n            total += index + strlen(tag);\n        }\n        return total + strlen(tags[0]);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["11:36 invalid-iterator"]);
+}
+
 /// A `List` has `add`, `set`, `get` and `entries()`, and a `Map` has `delete` and `get`, each typed by the elements of
 /// the collection it is called on, as spec section 12 decides.
 #[test]
