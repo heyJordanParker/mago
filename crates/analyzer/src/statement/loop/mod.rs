@@ -69,6 +69,7 @@ use crate::error::AnalysisError;
 use crate::formula::get_formula;
 use crate::formula::negate_or_synthesize;
 use crate::reconciler::reconcile_keyed_types;
+use crate::resolver::method::get_declared_collection;
 use crate::statement::r#loop::assignment_map_visitor::get_assignment_map;
 use crate::statement::r#loop::cleaner::clean_nodes;
 use crate::utils::names::display_atomic;
@@ -1563,10 +1564,14 @@ where
 
                 let (k, v) = get_array_parameters(array, context.codebase);
 
-                // Spec section 12 reads a PHP# `List`'s indexes from `entries()`, so `[k, v]` reads a `Map`. A `Map`'s
-                // key reads back as its key type: the lowering casts a `string` key PHP stored as an `int`.
+                // Spec section 12 reads a PHP# `List`'s indexes from `entries()`, so `[k, v]` reads a `Map`, which a place
+                // is when it is declared one, whatever literal it holds. A `Map`'s key reads back as its key type: the
+                // lowering casts a `string` key PHP stored as an `int`.
                 if context.dialect.is_sharp()
-                    && let TArray::List(_) = array
+                    && get_declared_collection(context, block_context, artifacts, iterator)
+                        .as_ref()
+                        .unwrap_or(array)
+                        .is_list()
                     && let Some(key) = foreach.target.key()
                 {
                     context.collector.report_with_code(

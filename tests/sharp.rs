@@ -687,6 +687,45 @@ fn analyze_names_no_import_for_a_wrapping_class_the_file_imports() {
     );
 }
 
+/// Spec section 23: the code a message names to write uses the name the file imports the class as.
+#[test]
+fn analyze_names_the_methods_that_replace_a_function_by_the_name_the_file_imports_their_class_as() {
+    assert_eq!(
+        page_errors(
+            "namespace App;\n\nimport Sharp.Text.Regex as Rx;\n\npublic class Page\n{\n    public bool found() => preg_match(\"/a/\", \"a\") is int;\n}\n"
+        ),
+        [
+            "src/App/Page.sharp:7:28:error - wrapped-function: `preg_match` is wrapped by the standard library: write `Rx.matches(…)` or `Rx.match(…)`."
+        ]
+    );
+}
+
+/// Spec section 23's example, with a class for its struct and the project's own `Key` attribute for the standard one:
+/// the renamed import leaves the bare `Key` to name another class.
+#[test]
+fn compile_accepts_a_class_that_renames_an_import_to_keep_the_short_name_free() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    write(root, "mago.toml", "php-version = \"8.4\"\n\n[source]\npaths = [\"src\"]\n");
+    write(root, "src/Cache/Key.php", "<?php\n\nnamespace Cache;\n\nfinal class Key\n{\n}\n");
+    write(
+        root,
+        "src/App/Key.php",
+        "<?php\n\nnamespace App;\n\n#[\\Attribute]\nfinal class Key\n{\n    public function __construct(public string $name)\n    {\n    }\n}\n",
+    );
+    write(
+        root,
+        "src/App/Entry.sharp",
+        "namespace App;\n\nimport Cache.Key as CacheKey;\n\npublic class Entry\n{\n    public Entry(\n        [Key(\"cache_key\")] public CacheKey key { get; },\n    ) { }\n}\n",
+    );
+
+    let output = run(root, "compile", &[]);
+    let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+
+    assert!(output.status.success(), "{printed}");
+    assert!(root.join(".sharp/src/App/Entry.sharpc").is_file(), "{printed}");
+}
+
 /// The replacements come in the order the library declares them: the path order of its files, then source order.
 #[test]
 fn analyze_names_four_methods_that_replace_a_function_in_the_order_the_library_declares_them() {

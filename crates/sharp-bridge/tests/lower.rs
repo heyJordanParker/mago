@@ -463,6 +463,55 @@ fn a_class_or_an_enum_with_a_law_lowers_to_the_nodes_it_lowers_to_without_it() {
 /// ```php
 /// <?php
 /// declare(strict_types=1);
+/// namespace App\Tenant;
+/// use Sharp\Text\Regex as Rx;
+/// class Report
+/// {
+///     public function run(string $text): bool
+///     {
+///         return Rx::matches("/a/", $text);
+///     }
+/// }
+/// ```
+///
+/// php-src parses the `use` into `USE [ZEND_SYMBOL_CLASS]` holding `USE_ELEM`, `ZVAL "Sharp\Text\Regex"` and
+/// `ZVAL "Rx"`, and compiles `Rx` to the class it names. The `use` is not lowered: the call names
+/// `Sharp\Text\Regex` in full, as `Regex.matches(…)` under a plain import does.
+#[test]
+fn a_call_through_a_renamed_import_lowers_to_the_call_through_the_plain_import() {
+    let library = [(
+        "src/Sharp/Text/Regex.php",
+        "<?php namespace Sharp\\Text; final class Regex { public static function matches(string $pattern, string $text): bool { return true; } }",
+    )];
+    let renamed = Lowered::with(
+        "namespace App.Tenant;\n\nimport Sharp.Text.Regex as Rx;\n\nclass Report\n{\n    public bool run(string text)\n    {\n        return Rx.matches(\"/a/\", text);\n    }\n}\n",
+        &library,
+    );
+    let plain = Lowered::with(
+        "namespace App.Tenant;\n\nimport Sharp.Text.Regex;\n\nclass Report\n{\n    public bool run(string text)\n    {\n        return Regex.matches(\"/a/\", text);\n    }\n}\n",
+        &library,
+    );
+
+    assert_eq!(
+        renamed.body(),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                STATIC_CALL
+                  ZVAL "Sharp\\Text\\Regex"
+                  ZVAL "matches"
+                  ARG_LIST
+                    ZVAL "/a/"
+                    VAR
+                      ZVAL "text"
+        "#}
+    );
+    assert_eq!(renamed.tree(), plain.tree());
+}
+
+/// ```php
+/// <?php
+/// declare(strict_types=1);
 /// class Report {}
 /// ```
 #[test]
@@ -2205,6 +2254,81 @@ fn a_backed_enum_key_goes_into_an_emptied_map_get_as_its_backing_value() {
                       ZVAL "value"
         "#}
     );
+}
+
+/// ```php
+/// $statuses = [];
+/// foreach ($statuses as $status => $n) {
+///     $status = \Lib\Calc::from($status);
+///     {
+///         $extra += $n;
+///     }
+/// }
+/// return $extra;
+/// ```
+///
+/// `statuses = [:]` leaves the parameter a `Map<Calc, int>`, so the loop reads each key back as its case.
+#[test]
+fn an_emptied_map_loop_reads_each_key_back_as_its_case() {
+    assert_eq!(
+        body_in(
+            "int run(int extra, Map<Calc, int> statuses)",
+            "        statuses = [:];\n        for (const [status, n] of statuses) {\n            extra += n;\n        }\n        return extra;\n",
+            &[("src/Lib/Calc.php", "<?php namespace Lib; enum Calc: string { case Active = 'a'; case Closed = 'c'; }")]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "statuses"
+                ARRAY [3]
+              FOREACH
+                VAR
+                  ZVAL "statuses"
+                VAR
+                  ZVAL "n"
+                VAR
+                  ZVAL "status"
+                STMT_LIST
+                  ASSIGN
+                    VAR
+                      ZVAL "status"
+                    STATIC_CALL
+                      ZVAL "Lib\\Calc"
+                      ZVAL "from"
+                      ARG_LIST
+                        VAR
+                          ZVAL "status"
+                  STMT_LIST
+                    ASSIGN_OP [1]
+                      VAR
+                        ZVAL "extra"
+                      VAR
+                        ZVAL "n"
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
+/// `sizes = []` leaves the parameter a `List<int>`, whose indexes come from `entries()`, so `[k, v]` is refused before
+/// the lowering reads a key type.
+#[test]
+fn an_emptied_list_loop_by_key_and_value_is_refused_before_lowering() {
+    let lowered = Lowered::with(
+        &method_with(
+            "int run(int extra, List<int> sizes)",
+            "        sizes = [];\n        for (const [index, size] of sizes) {\n            extra += index + size;\n        }\n        return extra;\n",
+        ),
+        &[],
+    );
+
+    assert_eq!(
+        lowered.diagnostics(),
+        ["10:37 compile error: `for (const [k, v] of x)` reads the keys of a `Map`, and this is a `List`."]
+    );
+    assert_eq!(lowered.nodes().len(), 0);
 }
 
 /// ```php

@@ -666,6 +666,82 @@ fn a_sharp_import_passes_the_use_statement_and_casing_checks_as_in_php() {
     assert_eq!(codes(&sharp_issues), codes(&php_issues));
 }
 
+/// `Sharp\Text\Regex`, a plain PHP class with a static method.
+const REGEX: (&str, &str) = (
+    "src/Sharp/Text/Regex.php",
+    "<?php\n\nnamespace Sharp\\Text;\n\nfinal class Regex\n{\n    public static function matches(string $pattern, string $text): bool\n    {\n        return preg_match($pattern, $text) === 1;\n    }\n}\n",
+);
+
+/// The issues of the PHP twin of a `.sharp` file that calls `Sharp\Text\Regex` through `import … as Rx`.
+fn renamed_regex_call_issues() -> Vec<String> {
+    let php = "<?php\n\ndeclare(strict_types=1);\n\nnamespace Demo;\n\nuse Sharp\\Text\\Regex as Rx;\n\nclass Report\n{\n    public static function run(string $text): bool\n    {\n        return Rx::matches('/a/', $text) && Rx::matches(1, $text);\n    }\n}\n";
+
+    issues(("src/Demo/Report.php", php), &[REGEX])
+}
+
+#[test]
+fn a_php_call_through_a_use_renamed_with_as_is_checked_as_the_imported_class() {
+    assert_eq!(codes(&renamed_regex_call_issues()), ["invalid-argument"]);
+}
+
+/// Spec section 23: `Rx.matches(…)` calls `Sharp\Text\Regex::matches` when the file imports the class as `Rx`, so its
+/// arguments are checked against that method, as in PHP.
+#[test]
+fn a_call_through_a_renamed_import_is_checked_as_the_imported_class_as_in_php() {
+    let sharp = "namespace Demo;\n\nimport Sharp.Text.Regex as Rx;\n\nclass Report\n{\n    public static bool run(string text) => Rx.matches(\"/a/\", text) && Rx.matches(1, text);\n}\n";
+
+    let sharp_issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[REGEX]);
+    let located_issues: Vec<String> = sharp_issues.iter().map(|issue| located(sharp, issue)).collect();
+
+    assert_eq!(located_issues, ["7:82 invalid-argument"]);
+    assert_eq!(codes(&located_issues), codes(&renamed_regex_call_issues()));
+    assert!(sharp_issues[0].message.contains("`Rx.matches`"), "{}", sharp_issues[0].message);
+}
+
+/// A message names a class the file renames by the name the file imports it as.
+#[test]
+fn a_type_in_a_message_names_a_renamed_class_by_its_new_name() {
+    let sharp = "namespace Demo;\n\nimport Lib.Calc as Tool;\n\nclass Report\n{\n    public static Tool pick(List<Tool> tools, int|string key) => tools[key];\n}\n";
+
+    let issues = analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Calc.php", CALC)]);
+
+    assert_eq!(issues.iter().map(|issue| issue.code.as_deref()).collect::<Vec<_>>(), [Some("mismatched-array-index")]);
+    assert!(issues[0].message.contains("`List<Tool>`"), "{}", issues[0].message);
+}
+
+/// Spec section 23: a renamed import of a class that does not exist reports what the plain import of it reports.
+#[test]
+fn an_unknown_class_imported_under_another_name_is_reported_as_its_plain_import_is() {
+    let settings = || Settings { check_use_statements: true, ..settings() };
+    let reported = |code: &'static str| -> Vec<String> {
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", code), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(code, issue), issue.message))
+            .collect()
+    };
+
+    let plain = reported("namespace Demo;\n\nimport Nope.Thing;\n\nclass Report\n{\n}\n");
+    let renamed = reported("namespace Demo;\n\nimport Nope.Thing as T;\n\nclass Report\n{\n}\n");
+
+    assert_eq!(
+        plain,
+        ["3:8 non-existent-use-import Imported class, interface, trait, or enum `Nope\\Thing` does not exist."]
+    );
+    assert_eq!(renamed, plain);
+}
+
+#[test]
+fn a_php_use_of_an_unknown_class_renamed_with_as_is_reported_as_its_plain_use_is() {
+    let settings = || Settings { check_use_statements: true, ..settings() };
+
+    let plain = issues_with(settings(), ("src/Demo/Report.php", "<?php\n\nnamespace Demo;\n\nuse Nope\\Thing;\n"), &[]);
+    let renamed =
+        issues_with(settings(), ("src/Demo/Report.php", "<?php\n\nnamespace Demo;\n\nuse Nope\\Thing as T;\n"), &[]);
+
+    assert_eq!(plain, ["5:5 non-existent-use-import"]);
+    assert_eq!(renamed, plain);
+}
+
 #[test]
 fn a_field_is_the_php_property_of_the_same_name() {
     let sharp = "namespace Demo;\n\nclass Report\n{\n    private int count = 0;\n    protected string label = \"one\";\n\n    public int total(int extra)\n    {\n        this.count += extra;\n        this.label = 2;\n        return this.count;\n    }\n}\n";
@@ -1773,7 +1849,7 @@ fn a_loop_condition_that_never_holds_names_its_php_sharp_type() {
     assert_eq!(
         impossible(("src/Demo/Report.sharp", sharp)),
         [
-            "8:16 impossible-condition Impossible condition: variable `n` (type `0`) will always evaluate to false. | This condition always evaluates to false | Variable `n` (type `0`) is always falsy and can never satisfy a truthiness check. | Review the logic or type of the variable; this condition will never pass.",
+            "8:16 impossible-condition Impossible condition: variable `n` (type `0`) will always evaluate to false. | This condition always evaluates to false | Variable `n` (type `0`) is never `true`, so this condition is always `false`. | Review the logic or type of the variable; this condition will never pass.",
             "8:16 impossible-condition This loop condition (type `0`) will always evaluate to false. | This condition is always false, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
         ]
     );
@@ -1782,6 +1858,55 @@ fn a_loop_condition_that_never_holds_names_its_php_sharp_type() {
         [
             "10:16 impossible-condition Impossible condition: variable `$n` (type `int(0)`) will always evaluate to false. | This condition always evaluates to false | Variable `$n` (type `int(0)`) is always falsy and can never satisfy a truthiness check. | Review the logic or type of the variable; this condition will never pass.",
             "10:16 impossible-condition This loop condition (type `int(0)`) will always evaluate to false. | This condition is always false, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
+        ]
+    );
+}
+
+/// A condition that always or never holds speaks of the `bool` it is: always `true` or always `false`. PHP# has no
+/// truthiness. PHP keeps its truthy and falsy wording.
+#[test]
+fn a_condition_that_always_or_never_holds_speaks_of_its_bool() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int never() { const off = false; if (off) { return 1; } return 0; }\n    public static int notNever() { const on = true; if (!on) { return 1; } return 0; }\n    public static int always() { const on = true; if (on) { return 1; } return 0; }\n    public static int notAlways() { const off = false; if (!off) { return 1; } return 0; }\n    public static int ternary() { const on = true; const off = false; return (on ? 1 : 2) + (off ? 1 : 2); }\n    public static bool logical(bool flag) { const on = true; const off = false; return (off && flag) || (on || flag); }\n    public static int loops() { const on = true; const off = false; while (off) { return 1; } while (!on) { return 2; } while (on) { return 3; } return 0; }\n    public static int negatedLoop() { const off = false; while (!off) { return 4; } return 0; }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function never(): int { $off = false; if ($off) { return 1; } return 0; }\n    public static function notNever(): int { $on = true; if (!$on) { return 1; } return 0; }\n    public static function always(): int { $on = true; if ($on) { return 1; } return 0; }\n    public static function notAlways(): int { $off = false; if (!$off) { return 1; } return 0; }\n    public static function ternary(): int { $on = true; $off = false; return ($on ? 1 : 2) + ($off ? 1 : 2); }\n    public static function logical(bool $flag): bool { $on = true; $off = false; return ($off && $flag) || ($on || $flag); }\n    public static function loops(): int { $on = true; $off = false; while ($off) { return 1; } while (!$on) { return 2; } while ($on) { return 3; } return 0; }\n    public static function negatedLoop(): int { $off = false; while (!$off) { return 4; } return 0; }\n}\n";
+
+    assert_eq!(
+        worded(("src/Demo/Report.php", php), &[]),
+        [
+            "7:61 impossible-condition This condition (type `false`) will always evaluate to false. | Expression of type `false` is always falsy | Because this condition is always false, the code block it controls will never be executed. | Check the logic of this expression. If the code block is intended to be unreachable, consider removing it. Otherwise, revise the condition.",
+            "8:62 impossible-condition This condition (type `false`) will always evaluate to false. | Expression of type `false` is always falsy | Because this condition is always false, the code block it controls will never be executed. | Check the logic of this expression. If the code block is intended to be unreachable, consider removing it. Otherwise, revise the condition.",
+            "9:60 redundant-condition This condition (type `true`) will always evaluate to true. | Expression of type `true` is always truthy | Because this condition is always true, the code block it controls will always execute if this part of the code is reached. | The explicit condition might be redundant. | Consider simplifying or removing the conditional check if the guarded code should always execute, or verify the expression's logic if a conditional check is truly needed.",
+            "10:65 redundant-condition This condition (type `true`) will always evaluate to true. | Expression of type `true` is always truthy | Because this condition is always true, the code block it controls will always execute if this part of the code is reached. | The explicit condition might be redundant. | Consider simplifying or removing the conditional check if the guarded code should always execute, or verify the expression's logic if a conditional check is truly needed.",
+            "11:79 redundant-condition Redundant ternary operator: condition is always truthy. | This condition (type `true`) is always truthy | This `then` branch is always evaluated, making it the result of the expression | This `else` branch will never be evaluated | The ternary operator `? :` evaluates the `else` branch only when the condition is falsy. | Consider replacing the entire expression with just this `then` branch.",
+            "11:95 impossible-condition Redundant ternary operator: condition is always falsy. | This condition (type `false`) is always falsy | This `then` branch will never be evaluated | This `else` branch is always evaluated, making it the result of the expression | The ternary operator `? :` evaluates the `then` branch only when the condition is truthy. | Consider replacing the entire expression with just this `else` branch.",
+            "12:90 redundant-logical-operation Redundant `&&` operation: left operand is always falsy and right operand is not evaluated. | Left operand is always falsy | Right operand is not evaluated | The `&&` operator will always return `false` in this case. | Consider simplifying this expression to `false`.",
+            "12:109 redundant-logical-operation Redundant `||` operation: left operand is always true and right operand is not evaluated. | Left operand is always true | Right operand is not evaluated | The `||` operator will always return `true` in this case. | Consider simplifying this expression to `true`.",
+            "12:89 redundant-logical-operation Redundant `||` operation: left operand is always falsy and right operand is always truthy. | Left operand is always falsy | Right operand is always truthy | The `||` operator will always return `true` in this case. | Consider simplifying this expression to `true`.",
+            "13:76 impossible-condition Impossible condition: variable `$off` (type `false`) will always evaluate to false. | This condition always evaluates to false | Variable `$off` (type `false`) is always falsy and can never satisfy a truthiness check. | Review the logic or type of the variable; this condition will never pass.",
+            "13:76 impossible-condition This loop condition (type `false`) will always evaluate to false. | This condition is always false, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
+            "13:103 impossible-condition Impossible condition: variable `$on` (type `true`) will always evaluate to false. | This condition always evaluates to false | Variable `$on` (type `true`) is always truthy, so asserting it is falsy will always be false. | Review the logic or type of the variable; this condition will never pass.",
+            "13:103 impossible-condition This loop condition (type `false`) will always evaluate to false. | This condition is always false, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
+            "13:130 redundant-condition Redundant condition: variable `$on` (type `true`) will always evaluate to true. | This condition always evaluates to true | Variable `$on` (type `true`) is always truthy. This condition is redundant and the code block will always execute if reached. | Simplify or remove the redundant condition if the guarded code should always run.",
+            "14:70 redundant-condition Redundant condition: variable `$off` (type `false`) will always evaluate to true. | This condition always evaluates to true | Variable `$off` (type `false`) is always falsy, so asserting it's falsy is always true and redundant. | Simplify or remove the redundant condition if the guarded code should always run.",
+        ]
+    );
+    assert_eq!(
+        worded(("src/Demo/Report.sharp", sharp), &[]),
+        [
+            "5:56 impossible-condition This condition (type `false`) will always evaluate to false. | Expression of type `false` is always `false` | Because this condition is always false, the code block it controls will never be executed. | Check the logic of this expression. If the code block is intended to be unreachable, consider removing it. Otherwise, revise the condition.",
+            "6:57 impossible-condition This condition (type `false`) will always evaluate to false. | Expression of type `false` is always `false` | Because this condition is always false, the code block it controls will never be executed. | Check the logic of this expression. If the code block is intended to be unreachable, consider removing it. Otherwise, revise the condition.",
+            "7:55 redundant-condition This condition (type `true`) will always evaluate to true. | Expression of type `true` is always `true` | Because this condition is always true, the code block it controls will always execute if this part of the code is reached. | The explicit condition might be redundant. | Consider simplifying or removing the conditional check if the guarded code should always execute, or verify the expression's logic if a conditional check is truly needed.",
+            "8:60 redundant-condition This condition (type `true`) will always evaluate to true. | Expression of type `true` is always `true` | Because this condition is always true, the code block it controls will always execute if this part of the code is reached. | The explicit condition might be redundant. | Consider simplifying or removing the conditional check if the guarded code should always execute, or verify the expression's logic if a conditional check is truly needed.",
+            "9:79 redundant-condition Redundant ternary operator: condition is always `true`. | This condition (type `true`) is always `true` | This `then` branch is always evaluated, making it the result of the expression | This `else` branch will never be evaluated | The ternary operator `? :` evaluates the `else` branch only when the condition is `false`. | Consider replacing the entire expression with just this `then` branch.",
+            "9:94 impossible-condition Redundant ternary operator: condition is always `false`. | This condition (type `false`) is always `false` | This `then` branch will never be evaluated | This `else` branch is always evaluated, making it the result of the expression | The ternary operator `? :` evaluates the `then` branch only when the condition is `true`. | Consider replacing the entire expression with just this `else` branch.",
+            "10:89 redundant-logical-operation Redundant `&&` operation: left operand is always `false` and right operand is not evaluated. | Left operand is always `false` | Right operand is not evaluated | The `&&` operator will always return `false` in this case. | Consider simplifying this expression to `false`.",
+            "10:106 redundant-logical-operation Redundant `||` operation: left operand is always true and right operand is not evaluated. | Left operand is always true | Right operand is not evaluated | The `||` operator will always return `true` in this case. | Consider simplifying this expression to `true`.",
+            "10:88 redundant-logical-operation Redundant `||` operation: left operand is always `false` and right operand is always `true`. | Left operand is always `false` | Right operand is always `true` | The `||` operator will always return `true` in this case. | Consider simplifying this expression to `true`.",
+            "11:76 impossible-condition Impossible condition: variable `off` (type `false`) will always evaluate to false. | This condition always evaluates to false | Variable `off` (type `false`) is never `true`, so this condition is always `false`. | Review the logic or type of the variable; this condition will never pass.",
+            "11:76 impossible-condition This loop condition (type `false`) will always evaluate to false. | This condition is always false, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
+            "11:102 impossible-condition Impossible condition: variable `on` (type `true`) will always evaluate to false. | This condition always evaluates to false | Variable `on` (type `true`) is never `false`, so this condition is always `false`. | Review the logic or type of the variable; this condition will never pass.",
+            "11:102 impossible-condition This loop condition (type `false`) will always evaluate to false. | This condition is always false, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
+            "11:128 redundant-condition Redundant condition: variable `on` (type `true`) will always evaluate to true. | This condition always evaluates to true | Variable `on` (type `true`) is never `false`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
+            "12:65 redundant-condition Redundant condition: variable `off` (type `false`) will always evaluate to true. | This condition always evaluates to true | Variable `off` (type `false`) is never `true`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
         ]
     );
 }
@@ -2124,6 +2249,20 @@ fn list_wrap_of_a_value_of_any_type_is_refused() {
     );
 }
 
+/// An editor shows the docblocks of the PHP# stub on hover. A PHP# user reads them, not the spec's numbering, so each
+/// states its reason in words and cites no spec section.
+#[test]
+fn the_php_sharp_stub_states_its_reasons_without_a_spec_section() {
+    let stub = PRELUDE
+        .database
+        .files()
+        .find(|file| file.name.ends_with(b"extensions/sharp.php"))
+        .expect("the prelude holds the PHP# stub");
+    let contents = String::from_utf8_lossy(&stub.contents);
+
+    assert_eq!(contents.lines().filter(|line| line.contains("section")).collect::<Vec<_>>(), Vec::<&str>::new());
+}
+
 /// A `Map` runs as a PHP array too, so `wrap` would return it as the list it was asked to build.
 #[test]
 fn list_wrap_of_a_map_or_a_list_of_lists_is_refused() {
@@ -2228,6 +2367,44 @@ fn a_null_check_on_a_value_that_is_never_null_keeps_its_php_report() {
             "13:18 redundant-null-coalesce Help",
             "15:9 redundant-null-coalesce Help",
             "16:26 redundant-nullsafe-operator Help",
+        ]
+    );
+}
+
+/// A null check that cannot matter names the test as the developer wrote it: `is null` and `is not null` run as
+/// PHP's `===`, which the developer never wrote. PHP names its own operator.
+#[test]
+fn a_redundant_null_check_names_the_test_it_is_written_with() {
+    let sharp = "namespace Demo;\n\nclass Billing\n{\n    public void renew(Customer report)\n    {\n        const a = report is null;\n        const b = report is not null;\n        const c = report == null;\n        const d = report != null;\n        const e = match (report) {\n            null => 0,\n            default => 1,\n        };\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Billing\n{\n    public function renew(Customer $report): void\n    {\n        $a = $report === null;\n        $b = $report !== null;\n    }\n}\n";
+    let redundant = |analyzed| -> Vec<String> {
+        worded(analyzed, &[("src/Demo/Customer.sharp", CUSTOMER)])
+            .into_iter()
+            .filter(|line| line.contains(" redundant-comparison "))
+            .collect()
+    };
+
+    let sharp_report = |at: &str, check: &str| {
+        format!(
+            "{at} redundant-comparison Redundant {check}: `Customer` is never `null`. | This is `Customer`, which is never `null` | This null check cannot matter | In PHP# a type holds null only when written with `?`, so a `?` or a null check that cannot matter is an error. | Remove the null check."
+        )
+    };
+
+    assert_eq!(
+        redundant(("src/Demo/Billing.php", php)),
+        [
+            "9:14 redundant-comparison Redundant `===` comparison: left-hand side is never identical to right-hand side. | Left operand is `Demo\\Customer` | Right operand is `null` | The `===` operator will always return `false` in this case. | Consider simplifying or removing this comparison as it always evaluates to `false`.",
+            "10:14 redundant-comparison Redundant `!==` comparison: left-hand side is always not identical to right-hand side. | Left operand is `Demo\\Customer` | Right operand is `null` | The `!==` operator will always return `true` in this case. | Consider simplifying or removing this comparison as it always evaluates to `true`.",
+        ]
+    );
+    assert_eq!(
+        redundant(("src/Demo/Billing.sharp", sharp)),
+        [
+            sharp_report("7:19", "`is null` check"),
+            sharp_report("8:19", "`is not null` check"),
+            sharp_report("9:19", "`==` comparison"),
+            sharp_report("10:19", "`!=` comparison"),
+            sharp_report("11:34", "`null` check"),
         ]
     );
 }
@@ -3895,11 +4072,80 @@ fn a_key_and_value_loop_reads_a_map_and_its_keys_as_the_map_types_them() {
 /// `tags = []` empties a `List<string>` and leaves it a `List`, as its methods are: its bare index read stays bare,
 /// and `for (const [k, v] of tags)` still reads the keys of a `Map`, which a `List` is not.
 #[test]
-#[ignore = "`[]` narrows a declared List to an empty keyed array, which the Map rules read as a Map, and `add` leaves it empty"]
 fn an_emptied_list_stays_a_list_for_an_index_read_and_a_key_and_value_loop() {
     let sharp = "namespace Demo;\n\nclass Tags\n{\n    public int count()\n    {\n        List<string> tags = [\"a\"];\n        tags = [];\n        tags.add(\"x\");\n        let total = 0;\n        for (const [index, tag] of tags) {\n            total += index + strlen(tag);\n        }\n        return total + strlen(tags[0]);\n    }\n}\n";
 
     assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["11:36 invalid-iterator"]);
+}
+
+/// A parameter and a property emptied by `[]` stay the `List`s they are declared, before any method fills them.
+#[test]
+fn an_emptied_list_parameter_or_property_stays_a_list() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public List<string> names = [\"a\"];\n\n    public int count(List<string> tags)\n    {\n        tags = [];\n        this.names = [];\n        let total = 0;\n        for (const [index, tag] of tags) {\n            total += index + strlen(tag);\n        }\n        for (const [index, name] of this.names) {\n            total += index + strlen(name);\n        }\n        return total + strlen(tags[0]) + strlen(this.names[0]);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["12:36 invalid-iterator", "15:37 invalid-iterator"]);
+}
+
+/// A static property emptied by `[]` stays the `List` it is declared, as an instance property does.
+#[test]
+fn an_emptied_static_list_property_stays_a_list() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public static List<string> names = [\"a\"];\n\n    public int count()\n    {\n        Tags.names = [];\n        let total = 0;\n        for (const [i, n] of Tags.names) {\n            total += i + strlen(n);\n        }\n        return total + strlen(Tags.names[0]);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["11:30 invalid-iterator"]);
+}
+
+/// A parameter's default `[]` and a returned `[]` narrow nothing: the parameter and the call are the `List`s they are
+/// declared.
+#[test]
+fn an_empty_list_default_or_return_stays_a_list() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public int count(List<string> tags = [])\n    {\n        let total = 0;\n        for (const [index, tag] of tags) {\n            total += index + strlen(tag);\n        }\n        for (const [index, tag] of this.none()) {\n            total += index + strlen(tag);\n        }\n        return total + strlen(tags[0]) + strlen(this.none()[0]);\n    }\n\n    private List<string> none()\n    {\n        return [];\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["8:36 invalid-iterator", "11:36 invalid-iterator"]);
+}
+
+/// `field = []` in an accessor empties the property's storage, which stays the `List` the property is declared.
+#[test]
+fn an_emptied_list_field_stays_a_list() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public List<string> names {\n        get;\n        set {\n            field = [];\n            for (const name of value) {\n                field.add(name + field[0]);\n            }\n        }\n    } = [];\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// `counts = []` empties a `Map<string, int>` and leaves it a `Map` of those types: `for (const [k, v] of counts)`
+/// reads its keys and values, and a bare `counts[k]` read is refused, as on any `Map`.
+#[test]
+fn an_emptied_map_keeps_the_map_rules() {
+    let sharp = "namespace Demo;\n\nclass Counts\n{\n    public int total()\n    {\n        Map<string, int> counts = [\"a\": 1];\n        counts = [:];\n        let total = 0;\n        for (const [name, count] of counts) {\n            total += strlen(name) + count;\n        }\n        counts.delete(\"a\");\n        return total + counts[\"b\"];\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Counts.sharp", sharp), &[]), ["14:24 possibly-undefined-array-index"]);
+}
+
+/// A `List` literal assigned to a `Map<int, string>` fills a `Map`: its keys are read by `[k, v]`, and a bare read is
+/// refused.
+#[test]
+fn a_list_literal_assigned_to_a_map_keeps_the_map_rules() {
+    let sharp = "namespace Demo;\n\nclass Names\n{\n    public int total(Map<int, string> names)\n    {\n        names = [\"a\"];\n        let total = 0;\n        for (const [id, name] of names) {\n            total += id + strlen(name);\n        }\n        return total + strlen(names[0]);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Names.sharp", sharp), &[]), ["12:31 possibly-undefined-array-index"]);
+}
+
+/// A method that changes a `List` leaves it the `List` it is declared, so an index past the literal it held reads it.
+#[test]
+fn a_changed_list_reads_past_the_literal_it_held() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public int count(List<string> tags, Map<string, int> counts)\n    {\n        tags = [\"a\"];\n        tags.add(\"b\");\n        counts = [\"a\": 1];\n        counts.delete(\"a\");\n        return strlen(tags[1]) + (counts[\"a\"] ?? 0);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// PHP has no `List`: `$tags = []` narrows a `list<string>` parameter to an empty array, whose read gives no `string`.
+#[test]
+fn an_emptied_php_array_narrows_to_an_empty_array() {
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /** @param list<string> $tags */\n    public function first(array $tags): string\n    {\n        $tags = [];\n\n        return $tags[0];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tags.php", php), &[]),
+        ["12:22 mismatched-array-index", "12:16 invalid-return-statement"]
+    );
 }
 
 /// A `List` has `add`, `set`, `get` and `entries()`, and a `Map` has `delete` and `get`, each typed by the elements of
@@ -5358,6 +5604,38 @@ fn classes_that_share_a_short_name_are_named_by_their_full_name() {
     );
 }
 
+/// A class the file imports is named by the name its import gives it, the alias or the last segment as written, even
+/// when another class shares its short name: `Order` and `BillingOrder`, never the `App.Orders.Order` the file never
+/// wrote. The PHP twin keeps upstream's full names.
+#[test]
+fn a_class_the_file_imports_is_named_by_the_name_its_import_gives_it() {
+    let app_order = ("src/App/Orders/Order.php", "<?php\n\nnamespace App\\Orders;\n\nclass Order\n{\n}\n");
+    let billing_order = ("src/Billing/Order.php", "<?php\n\nnamespace Billing;\n\nclass Order\n{\n}\n");
+    let ledger = (
+        "src/Billing/Ledger.php",
+        "<?php\n\nnamespace Billing;\n\nclass Ledger\n{\n    public function last(): Order\n    {\n        return new Order();\n    }\n}\n",
+    );
+    let sharp = "namespace App.Shop;\n\nimport App.Orders.Order;\nimport Billing.Order as BillingOrder;\nimport Billing.Ledger;\n\nclass Shop\n{\n    public Order last(Ledger ledger) => ledger.last();\n}\n";
+    let php = "<?php\n\nnamespace App\\Shop;\n\nuse App\\Orders\\Order;\nuse Billing\\Order as BillingOrder;\nuse Billing\\Ledger;\n\nclass Shop\n{\n    public function last(Ledger $ledger): Order\n    {\n        return $ledger->last();\n    }\n}\n";
+    let others = [app_order, billing_order, ledger];
+    let returned = |analyzed| -> Vec<String> {
+        worded(analyzed, &others).into_iter().filter(|line| line.contains(" invalid-return-statement ")).collect()
+    };
+
+    assert_eq!(
+        returned(("src/App/Shop/Shop.php", php)),
+        [
+            "13:16 invalid-return-statement Invalid return type for function `App\\Shop\\Shop::last`: expected `App\\Orders\\Order`, but found `Billing\\Order`. | This has type `Billing\\Order` | The type `Billing\\Order` returned here is not compatible with the declared return type `App\\Orders\\Order`. | Change the return value to match `App\\Orders\\Order`, or update the function's return type declaration."
+        ]
+    );
+    assert_eq!(
+        returned(("src/App/Shop/Shop.sharp", sharp)),
+        [
+            "9:41 invalid-return-statement Invalid return type for method `Shop.last`: expected `Order`, but found `BillingOrder`. | This has type `BillingOrder` | The type `BillingOrder` returned here is not compatible with the declared return type `Order`. | Change the return value to match `Order`, or update the method's return type declaration."
+        ]
+    );
+}
+
 /// PHP's built-in class-likes don't count toward a shared short name: a `.sharp` file reaches `Dom\Node` only through
 /// an import, so the project's own `Node` keeps its short name. The PHP twin keeps upstream's full names.
 #[test]
@@ -5384,11 +5662,12 @@ fn a_class_that_shares_its_short_name_only_with_a_built_in_class_keeps_its_short
     );
 }
 
-/// A `.sharp` file reaches the standard library's `Sharp.Environment` with no import, so the project's own
-/// `App.Ops.Environment` shares its short name, and a message names both by their full dotted names. The PHP twin
-/// keeps upstream's full names.
+/// A `.sharp` file reaches the standard library's `Sharp.Environment` with no import, so it shares its short name with
+/// the project's own `App.Ops.Environment` and a message names it by its full dotted name. The file imports
+/// `App.Ops.Environment`, so a message names that class `Environment`, as the import does. The PHP twin keeps
+/// upstream's full names.
 #[test]
-fn a_class_that_shares_its_short_name_with_a_sharp_prelude_class_is_named_by_its_full_name() {
+fn a_sharp_prelude_class_that_shares_its_short_name_is_named_by_its_full_name() {
     let environment = ("src/App/Ops/Environment.php", "<?php\n\nnamespace App\\Ops;\n\nclass Environment\n{\n}\n");
     let shell = (
         "src/Lib/Shell.php",
@@ -5412,7 +5691,7 @@ fn a_class_that_shares_its_short_name_with_a_sharp_prelude_class_is_named_by_its
     assert_eq!(
         returned(("src/App/Jobs/Job.sharp", sharp)),
         [
-            "8:48 invalid-return-statement Invalid return type for method `Job.current`: expected `App.Ops.Environment`, but found `Sharp.Environment`. | This has type `Sharp.Environment` | The type `Sharp.Environment` returned here is not compatible with the declared return type `App.Ops.Environment`. | Change the return value to match `App.Ops.Environment`, or update the method's return type declaration."
+            "8:48 invalid-return-statement Invalid return type for method `Job.current`: expected `Environment`, but found `Sharp.Environment`. | This has type `Sharp.Environment` | The type `Sharp.Environment` returned here is not compatible with the declared return type `Environment`. | Change the return value to match `Environment`, or update the method's return type declaration."
         ]
     );
 }
@@ -5486,6 +5765,23 @@ fn a_match_that_misses_cases_of_an_unimported_enum_names_the_import() {
         written_errors(sharp, &issues),
         [
             "match match-not-exhaustive This `match` misses `Status.Open`, `Status.Closed` and `Status.Archived`. Add `import Lib.Status;` to the file.",
+            "match (ticket.status()) {\n    } empty-match-expression Match expression cannot be empty.",
+        ]
+    );
+}
+
+/// An import under another name binds its enum, so the missing arms are written with that name and need no import.
+#[test]
+fn a_match_that_misses_cases_of_an_enum_imported_under_another_name_writes_them_with_that_name() {
+    let sharp = "namespace Demo;\n\nimport Lib.Ticket;\nimport Lib.Status as State;\n\nclass Report\n{\n    public static string state(Ticket ticket) => match (ticket.status()) {\n    };\n}\n";
+
+    let issues =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Lib/Status.php", TICKETS)]);
+
+    assert_eq!(
+        written_errors(sharp, &issues),
+        [
+            "match match-not-exhaustive This `match` misses `State.Open`, `State.Closed` and `State.Archived`.",
             "match (ticket.status()) {\n    } empty-match-expression Match expression cannot be empty.",
         ]
     );
@@ -5928,6 +6224,25 @@ fn a_second_extern_of_a_target_in_another_file_is_refused_on_the_second() {
             "5:1 duplicate-extern `StripeClient` already has an `extern` declaration. [\"{first_offset} First declared here.\"]"
         )]
     );
+}
+
+/// Spec section 23: a rename changes the name, not what is imported, so an `extern` written with the new name declares
+/// the same class and section 29's one-declaration rule counts it once.
+#[test]
+fn an_extern_written_with_a_renamed_import_declares_the_same_target() {
+    let first = (
+        "app/Stubs/Payments.sharp",
+        "namespace App.Stubs;\n\nimport Stripe.StripeClient;\n\nextern StripeClient uses Http;\n",
+    );
+    let second =
+        ("app/Stubs/Stripe.sharp", "namespace App.Stubs;\n\nimport Stripe.StripeClient as Client;\n\nextern Client;\n");
+
+    let refused: Vec<String> = analyze(&PLUGIN_REGISTRY, settings(), second, &[first, STRIPE])
+        .iter()
+        .map(|issue| format!("{} {}", located(second.1, issue), issue.message))
+        .collect();
+
+    assert_eq!(refused, ["5:1 duplicate-extern `Client` already has an `extern` declaration."]);
 }
 
 /// An `extern` target that names no class, method or function is reported with the code a call of it would get.
