@@ -1214,7 +1214,9 @@ where
                     artifacts.get_expression_type(access.object)?
                 };
                 let is_sharp_receiver = receiver.types.iter().any(|atomic| match atomic {
-                    TAtomic::Object(object) => object.get_name().is_some_and(|name| is_declared_in_sharp(name.as_bytes())),
+                    TAtomic::Object(object) => {
+                        object.get_name().is_some_and(|name| is_declared_in_sharp(name.as_bytes()))
+                    }
                     _ => false,
                 });
 

@@ -6230,7 +6230,10 @@ fn the_type_arguments_of_a_method_call_fix_its_type_parameters() {
     let sharp = "namespace Demo;\n\npublic class Report\n{\n    public static WebhookPayload keepPayload(WebhookPayload payload) => payload;\n\n    public static int keepInt(int number) => number;\n\n    public static WebhookPayload payload(string body) => Report.keepPayload(Json.decode<WebhookPayload>(body));\n\n    public static int number(string body) => Report.keepInt(Json.decode<WebhookPayload>(body));\n\n    public static Any lined(Store store, List<Line> lines) => store.first<Order>(lines);\n\n    public static Order ordered(Store store, List<Order> orders) => store.first<Order>(orders);\n\n    public static Order? maybe(Store? store, List<Order> orders) => store?.first<Order>(orders);\n\n    public static int counted(Store store) => store.count<int>();\n\n    public static TItem forwarded<TItem : DatabaseEntity>(Store store, List<TItem> items) => store.first<TItem>(items);\n}\n";
 
     assert_eq!(
-        issues(("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING), ("src/Demo/Store.sharp", GENERIC_STORE)]),
+        issues(
+            ("src/Demo/Report.sharp", sharp),
+            &[("src/Demo/Paging.sharp", PAGING), ("src/Demo/Store.sharp", GENERIC_STORE)]
+        ),
         ["11:61 invalid-argument", "13:82 invalid-argument", "19:58 excess-template-parameter"]
     );
 }
