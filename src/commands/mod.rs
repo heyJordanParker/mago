@@ -315,11 +315,11 @@ pub enum MagoCommand {
     version,
     author,
     styles = CLAP_STYLING,
-    about = "Mago: The powerful PHP toolchain. Lint, format, and analyze your code with ease.",
+    about = "PHP#'s checker and toolchain: checks PHP and PHP# code, compiles PHP#, and lints and formats PHP.",
     long_about = r#"
-Welcome to Mago!
+mago-sharp is PHP#'s checker and toolchain.
 
-Mago is a powerful and versatile toolchain for PHP developers, designed to help you write better code, faster.
+It checks PHP and PHP# (`.sharp`) code, compiles PHP# for the PHP# engine, and lints and formats PHP code.
 
 Features:
 

@@ -94,7 +94,7 @@ These flags toggle individual analyses. Defaults are tuned for everyday use; fli
 | :--- | :--- | :--- |
 | `find-unused-expressions` | `true` | Report expressions whose result is discarded, like `$a + $b;`. |
 | `find-unused-definitions` | `true` | Report private definitions that are never referenced. |
-| `find-overly-wide-return-types` | `false` | Warn when a declared return type contains a branch the body never produces, like `: string\|false` on a function that always returns a string. Available since 1.20.0. |
+| `find-overly-wide-return-types` | `false` | Warn when a declared return type contains a branch the body never produces, like `: string\|false` on a function that always returns a string. |
 | `analyze-dead-code` | `false` | Analyse code that appears unreachable. |
 | `memoize-properties` | `true` | Track literal property values for sharper inference, at the cost of some memory. |
 | `allow-possibly-undefined-array-keys` | `true` | **Deprecated.** Allow accessing keys that may be missing without flagging it. Setting this to `false` warns on `array<K, V>` reads with a single literal key but does not widen the type to `T\|null`. Use `strict-array-index-existence` instead. |
@@ -116,7 +116,7 @@ These flags toggle individual analyses. Defaults are tuned for everyday use; fli
 | `check-name-casing` | `false` | Report incorrect casing when referencing classes, functions, etc. Helps prevent autoload failures on case-sensitive filesystems. |
 | `enforce-class-finality` | `false` | Report classes that are not `final`, `abstract`, or annotated `@api` and have no children. |
 | `require-api-or-internal` | `false` | Require abstract classes, interfaces, and traits to be annotated `@api` or `@internal`. |
-| `check-experimental` | `false` | Report use of `@experimental` symbols from non-experimental contexts. Available since 1.19.0. |
+| `check-experimental` | `false` | Report use of `@experimental` symbols from non-experimental contexts. |
 | `allow-side-effects-in-conditions` | `true` | When `false`, report calls to impure functions inside `if`, `while`, `for`, ternary, or `match` conditions. |
 
 ## Property initialization

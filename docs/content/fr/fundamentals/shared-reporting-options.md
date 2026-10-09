@@ -70,8 +70,6 @@ Si `--reporting-format` n'est pas défini, Mago en choisit un selon l'environnem
 
 Les pipelines CI obtiennent donc des annotations natives et les agents IA un format économe en jetons sans configuration. Passez `--reporting-format` explicitement pour surcharger.
 
-> La détection automatique est disponible depuis Mago 1.18. Sur 1.17 et antérieur, définissez `--reporting-format=github` ou `--reporting-format=gitlab` explicitement.
-
 ## Baseline
 
 Drapeaux pour la gestion des fichiers baseline. Le guide complet se trouve sur la [page baseline](/fundamentals/baseline/).

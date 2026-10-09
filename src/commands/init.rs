@@ -57,6 +57,7 @@ use crate::consts::DEFAULT_PHP_VERSION;
 use crate::consts::REPO_NAME;
 use crate::consts::REPO_OWNER;
 use crate::consts::VERSION;
+use crate::consts::version_pin;
 use crate::error::Error;
 use crate::utils::version::extract_minimum_php_version;
 
@@ -210,7 +211,7 @@ impl AnalyzerStrictnessPreset {
 /// - Formatter style settings (PER-CS compatible by default)
 /// - Linter rules and integrations
 /// - Analyzer features and options
-const CONFIGURATION_TEMPLATE: &str = r#"# Welcome to Mago!
+const CONFIGURATION_TEMPLATE: &str = r#"# mago-sharp configuration.
 # For full documentation, see {documentation_url}
 version = "{version_pin}"
 php-version = "{php_version}"
@@ -941,7 +942,7 @@ fn generate_config_content(
 ) -> String {
     let content = CONFIGURATION_TEMPLATE
         .replace("{documentation_url}", &documentation_url())
-        .replace("{version_pin}", &version_pin(env!("CARGO_PKG_VERSION_MAJOR"), env!("CARGO_PKG_VERSION_MINOR")))
+        .replace("{version_pin}", &version_pin())
         .replace("{php_version}", &project.php_version)
         .replace("{paths}", &quote_format_strings(&project.paths))
         .replace("{includes}", &quote_format_strings(&project.includes))
@@ -963,12 +964,6 @@ fn generate_config_content(
     } else {
         content
     }
-}
-
-/// The `version` pin `mago init` writes. Below 1.0 a minor release may break the
-/// configuration, as in Cargo's caret rule, so the pin names the minor there.
-fn version_pin(major: &str, minor: &str) -> String {
-    if major == "0" { format!("{major}.{minor}") } else { major.to_owned() }
 }
 
 fn documentation_url() -> String {
@@ -1263,17 +1258,5 @@ mod tests {
         let pin = VersionPin::parse(configuration.version.as_deref().expect("Generated config should pin a version"))
             .expect("Generated version pin should parse");
         assert_eq!(pin.check(VERSION), Ok(VersionCheck::Match));
-    }
-
-    #[test]
-    fn test_version_pin_names_the_minor_below_one() {
-        assert_eq!(version_pin("0", "2"), "0.2");
-        assert_eq!(version_pin("0", "13"), "0.13");
-    }
-
-    #[test]
-    fn test_version_pin_names_only_the_major_from_one() {
-        assert_eq!(version_pin("1", "0"), "1");
-        assert_eq!(version_pin("2", "5"), "2");
     }
 }

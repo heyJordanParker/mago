@@ -155,7 +155,7 @@ public function bar(
 | `break-promoted-properties-list` | 布尔值 | `true` | 始终对包含构造器属性提升的形参列表进行换行。 |
 | `parameter-attribute-on-new-line` | 布尔值 | `true` | 形参列表换行时,把形参 attribute 放到独立的一行(PER-CS 12.2)。 |
 | `line-before-binary-operator` | 布尔值 | `true` | 二元表达式换行时,把运算符放到下一行。 |
-| `indent-binary-expression-continuation` | 布尔值 | `false` | 在赋值语句中缩进二元表达式的续行。自 1.19 起可用。 |
+| `indent-binary-expression-continuation` | 布尔值 | `false` | 在赋值语句中缩进二元表达式的续行。 |
 | `omit-redundant-arithmetic-binary-expression-parentheses` | 布尔值 | `false` | 当比较或空合并已能保留语义时,去除算术运算外多余的括号。 |
 | `omit-redundant-bitwise-binary-expression-parentheses` | 布尔值 | `false` | 当优先级已能保留语义时,去除位运算子表达式外多余的括号。 |
 | `preserve-redundant-logical-binary-expression-parentheses` | 布尔值 | `false` | 当父表达式也是逻辑表达式时,保留作者在逻辑子表达式外书写的括号。 |

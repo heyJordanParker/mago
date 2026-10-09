@@ -29,4 +29,3 @@ mago analyze        # vérifie les types et détecte les bugs de logique
 - [Installation](/guide/installation/) parcourt toutes les méthodes d'installation prises en charge.
 - [Initialisation](/guide/initialization/) couvre la configuration interactive `mago init`.
 - [Configuration](/guide/configuration/) est la référence de chaque option de `mago.toml`.
-- [Le playground](/playground/) exécute l'analyseur Mago complet dans votre navigateur si vous voulez l'essayer sans installer.
