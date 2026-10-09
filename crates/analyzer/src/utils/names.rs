@@ -240,6 +240,21 @@ where
     if context.dialect.is_sharp() { display_sharp_type(context, &union.clone().as_nullable()) } else { php }
 }
 
+/// Returns what a condition is when it holds, or when it does not, as the analyzed file says it. A PHP# condition is a
+/// `bool`, so it is `true` or `false`. PHP tests truthiness, so it is truthy or falsy.
+#[must_use]
+pub(crate) const fn display_truth<A>(context: &Context<'_, '_, A>, holds: bool) -> &'static str
+where
+    A: Arena,
+{
+    match (context.dialect.is_sharp(), holds) {
+        (true, true) => "`true`",
+        (true, false) => "`false`",
+        (false, true) => "truthy",
+        (false, false) => "falsy",
+    }
+}
+
 /// Returns `union`, the type of a value a message checks against `expected`, the type it must have, as the analyzed
 /// file writes types. In a `.sharp` file a literal is its general type, `string` for `"text"`, as PHP# writes no
 /// literal type, unless `expected` holds literals of its kind: `"up"` stays `"up"` against `"asc"|"desc"`, as the

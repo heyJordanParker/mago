@@ -38,6 +38,7 @@ use crate::formula::negate_or_synthesize;
 use crate::reconciler;
 use crate::utils::conditional;
 use crate::utils::expression::expression_has_observable_side_effect;
+use crate::utils::names::display_truth;
 use crate::utils::symbol_existence::extract_function_constant_existence;
 
 /// Merges variables assigned by a short-circuiting right-hand side back into the
@@ -200,7 +201,8 @@ where
     let result_type: TUnion;
     if lhs_type.is_always_falsy() {
         if !block_context.flags.inside_loop_expressions() {
-            report_redundant_logical_operation(context, binary, "always falsy", "not evaluated", "`false`", None);
+            let left = format!("always {}", display_truth(context, false));
+            report_redundant_logical_operation(context, binary, &left, "not evaluated", "`false`", None);
         }
 
         result_type = get_false();
@@ -221,10 +223,11 @@ where
         let left_is_truthy = lhs_type.is_always_truthy();
         if left_is_truthy && !block_context.flags.inside_loop_expressions() {
             // true && x → x (remove left, keep right)
+            let left = format!("always {}", display_truth(context, true));
             report_redundant_logical_operation(
                 context,
                 binary,
-                "always truthy",
+                &left,
                 "evaluated",
                 "the boolean value of the right-hand side",
                 Some(false), // remove left
@@ -234,18 +237,20 @@ where
         if rhs_type.is_always_falsy() {
             // x && false → false (no fix)
             if !block_context.flags.inside_loop_expressions() {
-                report_redundant_logical_operation(context, binary, "evaluated", "always falsy", "`false`", None);
+                let right = format!("always {}", display_truth(context, false));
+                report_redundant_logical_operation(context, binary, "evaluated", &right, "`false`", None);
             }
 
             result_type = get_false();
         } else if rhs_type.is_always_truthy() {
             // x && true → x (remove right, keep left)
             if !block_context.flags.inside_loop_expressions() {
+                let right = format!("always {}", display_truth(context, true));
                 report_redundant_logical_operation(
                     context,
                     binary,
                     "evaluated",
-                    "always truthy",
+                    &right,
                     "the boolean value of the left-hand side",
                     Some(true), // remove right
                 );
@@ -500,11 +505,14 @@ where
         if lhs_type.is_always_falsy() {
             if rhs_type.is_always_falsy() {
                 // false || false → false (no fix)
-                report_redundant_logical_operation(context, binary, "always falsy", "always falsy", "`false`", None);
+                let both = format!("always {}", display_truth(context, false));
+                report_redundant_logical_operation(context, binary, &both, &both, "`false`", None);
                 result_type = get_false();
             } else if rhs_type.is_always_truthy() {
                 // false || true → true (no fix)
-                report_redundant_logical_operation(context, binary, "always falsy", "always truthy", "`true`", None);
+                let left = format!("always {}", display_truth(context, false));
+                let right = format!("always {}", display_truth(context, true));
+                report_redundant_logical_operation(context, binary, &left, &right, "`true`", None);
                 result_type = get_true();
             } else {
                 // false || x → x (remove left, keep right)
@@ -521,11 +529,12 @@ where
             }
         } else if rhs_type.is_always_falsy() {
             // x || false → x (remove right, keep left)
+            let right = format!("always {}", display_truth(context, false));
             report_redundant_logical_operation(
                 context,
                 binary,
                 "evaluated",
-                "always falsy",
+                &right,
                 "the boolean value of the left-hand side",
                 Some(true), // remove right
             );
@@ -533,7 +542,8 @@ where
             result_type = get_bool();
         } else if rhs_type.is_always_truthy() {
             // x || true → true (no fix)
-            report_redundant_logical_operation(context, binary, "evaluated", "always truthy", "`true`", None);
+            let right = format!("always {}", display_truth(context, true));
+            report_redundant_logical_operation(context, binary, "evaluated", &right, "`true`", None);
 
             result_type = get_true();
         } else {
