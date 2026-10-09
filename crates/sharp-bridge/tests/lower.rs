@@ -7865,7 +7865,7 @@ fn a_loop_key_bounded_by_a_backed_enum_and_an_interface_reads_back_through_the_e
 
 /// ```php
 /// throw new \App\Tenant\Failure($extra);
-/// return $extra ?? throw new \App\Tenant\Failure(0);
+/// return \App\Tenant\Failure::last() ?? throw new \App\Tenant\Failure(0);
 /// ```
 ///
 /// `throw` is an expression, and a `throw` statement is that expression alone.
@@ -7874,10 +7874,10 @@ fn throw_is_a_throw_expression() {
     assert_eq!(
         body_in(
             RUN,
-            "        throw new Failure(extra);\n        return extra ?? throw new Failure(0);\n",
+            "        throw new Failure(extra);\n        return Failure.last() ?? throw new Failure(0);\n",
             &[(
                 "src/App/Tenant/Failure.php",
-                "<?php namespace App\\Tenant; final class Failure extends \\Exception { public function __construct(int $code) { parent::__construct('', $code); } }",
+                "<?php namespace App\\Tenant; final class Failure extends \\Exception { public function __construct(int $code) { parent::__construct('', $code); } public static function last(): ?int { return null; } }",
             )]
         ),
         indoc! {r#"
@@ -7890,8 +7890,10 @@ fn throw_is_a_throw_expression() {
                       ZVAL "extra"
               RETURN
                 COALESCE
-                  VAR
-                    ZVAL "extra"
+                  STATIC_CALL
+                    ZVAL "App\\Tenant\\Failure"
+                    ZVAL "last"
+                    ARG_LIST
                   THROW
                     NEW
                       ZVAL "App\\Tenant\\Failure"

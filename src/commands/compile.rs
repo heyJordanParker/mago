@@ -57,9 +57,6 @@ impl CompileCommand {
     /// `vendor/` holds a `.sharp` folder of its own. Every accepted file is written either way.
     pub fn execute(self, configuration: Configuration, color_choice: ColorChoice) -> Result<CommandOutcome, Error> {
         let mut orchestrator = create_orchestrator(&configuration, color_choice, false, true, false);
-        // The bridge lowers every statement, those after a `throw` or a `return` too, and asks the analysis for the
-        // type of each expression it lowers, so the analysis types dead code whatever the configuration says.
-        orchestrator.config.analyzer_settings.analyze_dead_code = true;
         analyze_the_whole_workspace_without_paths(&mut orchestrator);
         orchestrator.add_exclude_patterns(configuration.analyzer.excludes.iter());
         if let Some(external_analyzer) = start_external_analyzer(

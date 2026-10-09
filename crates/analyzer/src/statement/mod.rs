@@ -596,7 +596,7 @@ where
                 }
             }
 
-            if !is_declaration && !context.settings.analyze_dead_code {
+            if !is_declaration && !context.analyze_dead_code() {
                 continue;
             }
         }
