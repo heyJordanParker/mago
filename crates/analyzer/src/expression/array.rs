@@ -55,6 +55,7 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::statement::function_like::map_key_error;
 use crate::utils::expression::get_block_expression_id;
 use crate::utils::misc::unwrap_expression;
 use crate::utils::names::display_atomic;
@@ -192,20 +193,22 @@ where
                             item_key_type.clone()
                         } else if !item_key_type.is_always_array_key(true) {
                             let item_key_type_id = display_type(context, item_key_type);
+                            let key_span = key_value_array_element.key.span();
 
-                            context.collector.report_with_code(
-                                IssueCode::InvalidArrayElementKey,
+                            // PHP# casts only between numbers, so its literal names the rule a `Map` type keeps.
+                            let issue = if context.dialect.is_sharp() {
+                                map_key_error(&item_key_type_id, key_span)
+                            } else {
                                 Issue::error("Invalid array key type.")
-                                    .with_annotation(
-                                        Annotation::primary(key_value_array_element.key.span()).with_message(format!(
-                                            "This has type `{item_key_type_id}`, which cannot be cast to a string or integer.",
-                                        )),
-                                    )
+                                    .with_annotation(Annotation::primary(key_span).with_message(format!(
+                                        "This has type `{item_key_type_id}`, which cannot be cast to a string or integer.",
+                                    )))
                                     .with_note(format!(
                                         "In PHP, array keys must be strings or integers. While types like `bool` or `float` are automatically cast, a value of type `{item_key_type_id}` cannot be.",
                                     ))
-                                    .with_help("Ensure the array key is either a string or an integer."),
-                            );
+                                    .with_help("Ensure the array key is either a string or an integer.")
+                            };
+                            context.collector.report_with_code(IssueCode::InvalidArrayElementKey, issue);
 
                             get_arraykey()
                         } else {

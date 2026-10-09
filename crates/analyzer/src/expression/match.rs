@@ -52,6 +52,7 @@ use crate::reconciler::reconcile_keyed_types;
 use crate::utils::expression::get_expression_id;
 use crate::utils::expression::get_literal_array_key;
 use crate::utils::misc::unwrap_expression;
+use crate::utils::names::display_bool;
 use crate::utils::names::display_type;
 use crate::utils::symbol_existence::extract_function_constant_existence;
 
@@ -503,7 +504,8 @@ where
                 }
                 ArmExecutionStatus::Always
             } else if condition_type.is_always_falsy() {
-                self.report_unreachable_arm(expression_arm, "The condition is always false in this context.");
+                let note = format!("The condition is always {} in this context.", display_bool(self.context, false));
+                self.report_unreachable_arm(expression_arm, &note);
                 ArmExecutionStatus::Never
             } else {
                 ArmExecutionStatus::Conditional
@@ -788,9 +790,10 @@ where
     }
 
     fn report_always_matching_arm(&mut self, arm: &MatchExpressionArm) {
+        let holds = display_bool(self.context, true);
         self.context.collector.report_with_code(
             IssueCode::MatchArmAlwaysTrue,
-            Issue::warning("This match arm is always true, making subsequent arms unreachable.")
+            Issue::warning(format!("This match arm is always {holds}, making subsequent arms unreachable."))
                 .with_annotation(
                     Annotation::primary(arm.span()).with_message("This arm covers all remaining cases for the subject"),
                 )
