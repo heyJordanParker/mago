@@ -28,11 +28,12 @@ where
         })
     }
 
-    /// Parses a PHP# `import`, which brings one class into scope by its dotted name.
+    /// Parses a PHP# `import`, which brings one class into scope by its dotted name, under the name after `as` when it
+    /// has one, as PHP's `use` does.
     pub(crate) fn parse_import(&mut self) -> Result<Use<'arena>, ParseError> {
         let import = self.expect_any_keyword()?;
         let start = self.stream.lookahead(0)?.ok_or_else(|| self.stream.unexpected(None, &[]))?.start;
-        let item = UseItem { name: self.parse_dotted_identifier()?, alias: None };
+        let item = UseItem { name: self.parse_dotted_identifier()?, alias: self.parse_optional_use_item_alias()? };
 
         Ok(Use {
             r#use: import,

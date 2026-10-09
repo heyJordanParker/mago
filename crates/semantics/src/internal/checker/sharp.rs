@@ -484,7 +484,8 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             | Node::Uses(_)
             | Node::UseItems(UseItems::Sequence(_))
             | Node::UseItemSequence(_)
-            | Node::UseItem(_),
+            | Node::UseItem(_)
+            | Node::UseItemAlias(_),
             File,
         ) => Some(File),
         (Node::Class(class), File) => {
@@ -3167,54 +3168,69 @@ pub fn check_declarations(program: &Program, context: &mut Context<'_, '_, '_>) 
     let namespace = first_namespace(program).and_then(|namespace| namespace.name.as_ref()).map(php_name);
 
     for (index, import) in imports.iter().enumerate() {
-        let short_name = import.name.last_segment();
+        let imported_name = imported_name(import);
         let full_name = BytesDisplay(import.name.value());
+        let rename = format!(
+            "Rename the import with `as`, as in `import {full_name} as Other{};`.",
+            BytesDisplay(import.name.last_segment())
+        );
 
-        if is_reserved_class_name(short_name) && !is_sharp_type_class(&php_name(&import.name)) {
-            let short_name = BytesDisplay(short_name);
+        // A standard library type class imported under its own name is the type the name already gives.
+        if is_reserved_class_name(imported_name)
+            && !(imported_name.eq_ignore_ascii_case(import.name.last_segment())
+                && is_sharp_type_class(&php_name(&import.name)))
+        {
+            let imported_name = BytesDisplay(imported_name);
 
             context.report(
                 Issue::error(format!(
-                    "Cannot import `{full_name}` as `{short_name}`: PHP# reserves `{short_name}` for a type."
+                    "Cannot import `{full_name}` as `{imported_name}`: PHP# reserves `{imported_name}` for a type."
                 ))
-                .with_annotation(Annotation::primary(import.name.span()).with_message("Imported here."))
-                .with_help("Import a class with another name."),
+                .with_annotation(Annotation::primary(import.span()).with_message("Imported here."))
+                .with_help(rename.clone()),
             );
         }
 
         if let Some(earlier) =
-            imports[..index].iter().find(|earlier| earlier.name.last_segment().eq_ignore_ascii_case(short_name))
+            imports[..index].iter().find(|earlier| self::imported_name(earlier).eq_ignore_ascii_case(imported_name))
         {
             let earlier_full_name = BytesDisplay(earlier.name.value());
 
             context.report(
                 Issue::error(format!(
                     "Cannot import `{full_name}` as `{}`: `{earlier_full_name}` is already imported as `{}`.",
-                    BytesDisplay(short_name),
-                    BytesDisplay(earlier.name.last_segment()),
+                    BytesDisplay(imported_name),
+                    BytesDisplay(self::imported_name(earlier)),
                 ))
-                .with_annotation(Annotation::primary(import.name.span()).with_message("Imported again here."))
-                .with_annotation(Annotation::secondary(earlier.name.span()).with_message("First imported here."))
-                .with_note("Class names are case-insensitive."),
+                .with_annotation(Annotation::primary(import.span()).with_message("Imported again here."))
+                .with_annotation(Annotation::secondary(earlier.span()).with_message("First imported here."))
+                .with_note("Class names are case-insensitive.")
+                .with_help(rename.clone()),
             );
         }
 
         // Importing the class the file declares names that class, which the engine accepts.
-        if let Some(class) = classes.iter().find(|class| class.name.value.eq_ignore_ascii_case(short_name))
+        if let Some(class) = classes.iter().find(|class| class.name.value.eq_ignore_ascii_case(imported_name))
             && !names_class(&php_name(&import.name), namespace.as_deref(), class.name.value)
         {
-            let short_name = BytesDisplay(short_name);
+            let imported_name = BytesDisplay(imported_name);
             let class_name = BytesDisplay(class.name.value);
 
             context.report(
                 Issue::error(format!(
-                    "Cannot import `{full_name}` as `{short_name}`: this file declares a class named `{class_name}`."
+                    "Cannot import `{full_name}` as `{imported_name}`: this file declares a class named `{class_name}`."
                 ))
-                .with_annotation(Annotation::primary(import.name.span()).with_message("Imported here."))
-                .with_annotation(Annotation::secondary(class.name.span).with_message("Class declared here.")),
+                .with_annotation(Annotation::primary(import.span()).with_message("Imported here."))
+                .with_annotation(Annotation::secondary(class.name.span).with_message("Class declared here."))
+                .with_help(rename),
             );
         }
     }
+}
+
+/// The name an import gives its class in the file: the name after `as`, or else the last segment of the class name.
+fn imported_name<'arena>(import: &UseItem<'arena>) -> &'arena [u8] {
+    import.alias.as_ref().map_or_else(|| import.name.last_segment(), |alias| alias.identifier.value)
 }
 
 #[inline]
