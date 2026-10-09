@@ -211,7 +211,7 @@ impl AnalyzerStrictnessPreset {
 /// - Formatter style settings (PER-CS compatible by default)
 /// - Linter rules and integrations
 /// - Analyzer features and options
-const CONFIGURATION_TEMPLATE: &str = r#"# Welcome to Mago!
+const CONFIGURATION_TEMPLATE: &str = r#"# mago-sharp configuration.
 # For full documentation, see {documentation_url}
 version = "{version_pin}"
 php-version = "{php_version}"

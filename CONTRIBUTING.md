@@ -1,6 +1,6 @@
 # Contributing to Mago
 
-Thank you for your interest in contributing to Mago, the Oxidized PHP Toolchain! Whether you're fixing bugs, improving documentation, or proposing new features, your help is invaluable.
+Thank you for your interest in contributing to Mago, PHP#'s checker and toolchain! Whether you're fixing bugs, improving documentation, or proposing new features, your help is invaluable.
 
 ## Code of Conduct
 
