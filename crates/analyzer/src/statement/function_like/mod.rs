@@ -68,6 +68,7 @@ use crate::context::block::BlockContext;
 use crate::context::block::ReferenceConstraint;
 use crate::context::block::ReferenceConstraintSource;
 use crate::error::AnalysisError;
+use crate::expression::array::check_sharp_literal_kind;
 use crate::resolver::property::localize_property_type;
 use crate::resolver::property::resolve_declared_property;
 use crate::statement::analyze_statements;
@@ -415,6 +416,9 @@ where
                     value,
                     return_type.map(|return_type| &return_type.type_union),
                 );
+                if let Some(return_type) = return_type {
+                    check_sharp_literal_kind(context, value, &return_type.type_union);
+                }
 
                 block_context.flags.set_inside_return(true);
                 value.analyze(context, block_context, &mut artifacts)?;
@@ -1649,6 +1653,8 @@ fn check_parameter_default_value<'ctx, 'arena, A>(
 ) where
     A: Arena,
 {
+    check_sharp_literal_kind(context, default_expression, declared_type);
+
     // A PHP# type holds null only when it is written with `?`, so its `Any` is checked and it has no implicitly
     // nullable parameter.
     let is_sharp = context.dialect.is_sharp();
@@ -1869,13 +1875,16 @@ where
         }
 
         let key_id = display_sharp_type(context, key_type);
-        context.collector.report_with_code(
-            IssueCode::TemplateConstraintViolation,
-            Issue::error(format!(
-                "A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value, and `{key_id}` has none."
-            ))
-            .with_annotation(Annotation::primary(span).with_message(format!("`{key_id}` keys this `Map`.")))
-            .with_help("Key the `Map` by an `int`, a `string` or a backed enum, such as `enum Status: string`."),
-        );
+        context.collector.report_with_code(IssueCode::TemplateConstraintViolation, map_key_error(&key_id, span));
     }
+}
+
+/// The error for a PHP# `Map` keyed by `key_id`, a type that is not `int`, not `string` and has no `int` or `string`
+/// backing value, written at `span`. A `Map` type and a `Map` literal state the rule in these words.
+pub(crate) fn map_key_error(key_id: &str, span: Span) -> Issue {
+    Issue::error(format!(
+        "A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value, and `{key_id}` has none."
+    ))
+    .with_annotation(Annotation::primary(span).with_message(format!("`{key_id}` keys this `Map`.")))
+    .with_help("Key the `Map` by an `int`, a `string` or a backed enum, such as `enum Status: string`.")
 }

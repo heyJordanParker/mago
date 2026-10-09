@@ -37,6 +37,7 @@ use crate::context::block::BlockContext;
 use crate::effects;
 use crate::effects::Body;
 use crate::error::AnalysisError;
+use crate::expression::array::check_sharp_literal_kind;
 use crate::statement::analyze_statements;
 use crate::statement::attributes::AttributeTarget;
 use crate::statement::attributes::analyze_attributes;
@@ -152,53 +153,57 @@ where
     if let Some(class_metadata) = block_context.scope.get_class_like()
         && let Some(property_metadata) = class_metadata.properties.get(&php_variable_name(variable_name))
         && let Some(declared_type_metadata) = property_metadata.type_metadata.as_ref()
-        && (is_sharp || !declared_type_metadata.type_union.is_mixed())
-        && !declared_type_metadata.type_union.has_template_types()
-        && !declared_type_metadata.type_union.is_generic_parameter()
-        && let Some(value_type) = artifacts.get_expression_type(value)
-        && !value_type.is_never()
     {
-        let mut declared_type = declared_type_metadata.type_union.clone();
-        expand_union(
-            context.codebase,
-            &mut declared_type,
-            &TypeExpansionOptions {
-                self_class: Some(class_metadata.original_name),
-                static_class_type: StaticClassType::Name(class_metadata.original_name),
-                ..Default::default()
-            },
-        );
+        check_sharp_literal_kind(context, value, &declared_type_metadata.type_union);
 
-        let mut comparison_result = ComparisonResult::with_strict_nonnull(is_sharp);
-        if !union_comparator::is_contained_by(
-            context.codebase,
-            value_type,
-            &declared_type,
-            !is_sharp,
-            !is_sharp,
-            false,
-            &mut comparison_result,
-        ) {
-            let value_type_str = display_value_type(context, value_type, &declared_type);
-            let declared_type_str = display_type(context, &declared_type);
-            let property =
-                display_member(context, class_metadata.original_name, mago_bytes::BytesDisplay(variable_name));
+        if (is_sharp || !declared_type_metadata.type_union.is_mixed())
+            && !declared_type_metadata.type_union.has_template_types()
+            && !declared_type_metadata.type_union.is_generic_parameter()
+            && let Some(value_type) = artifacts.get_expression_type(value)
+            && !value_type.is_never()
+        {
+            let mut declared_type = declared_type_metadata.type_union.clone();
+            expand_union(
+                context.codebase,
+                &mut declared_type,
+                &TypeExpansionOptions {
+                    self_class: Some(class_metadata.original_name),
+                    static_class_type: StaticClassType::Name(class_metadata.original_name),
+                    ..Default::default()
+                },
+            );
 
-            let issue = Issue::error(format!(
-                    "Default value for property `{property}` is not assignable to its declared type."
-                ))
-                .with_annotation(
-                    Annotation::primary(value.span())
-                        .with_message(format!("This default value has type `{value_type_str}`")),
-                )
-                .with_annotation(
-                    Annotation::secondary(declared_type_metadata.span)
-                        .with_message(format!("Property is declared with type `{declared_type_str}`")),
-                )
-                .with_note("A property's default value must be assignable to the property's declared type.")
-                .with_help("Change the default value to match the declared type, or update the property type to accept the default.");
+            let mut comparison_result = ComparisonResult::with_strict_nonnull(is_sharp);
+            if !union_comparator::is_contained_by(
+                context.codebase,
+                value_type,
+                &declared_type,
+                !is_sharp,
+                !is_sharp,
+                false,
+                &mut comparison_result,
+            ) {
+                let value_type_str = display_value_type(context, value_type, &declared_type);
+                let declared_type_str = display_type(context, &declared_type);
+                let property =
+                    display_member(context, class_metadata.original_name, mago_bytes::BytesDisplay(variable_name));
 
-            context.collector.report_with_code(IssueCode::InvalidPropertyDefaultValue, issue);
+                let issue = Issue::error(format!(
+                        "Default value for property `{property}` is not assignable to its declared type."
+                    ))
+                    .with_annotation(
+                        Annotation::primary(value.span())
+                            .with_message(format!("This default value has type `{value_type_str}`")),
+                    )
+                    .with_annotation(
+                        Annotation::secondary(declared_type_metadata.span)
+                            .with_message(format!("Property is declared with type `{declared_type_str}`")),
+                    )
+                    .with_note("A property's default value must be assignable to the property's declared type.")
+                    .with_help("Change the default value to match the declared type, or update the property type to accept the default.");
+
+                context.collector.report_with_code(IssueCode::InvalidPropertyDefaultValue, issue);
+            }
         }
     }
 

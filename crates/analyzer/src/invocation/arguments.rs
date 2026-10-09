@@ -268,6 +268,14 @@ pub fn verify_argument_type<'arena, A>(
             let parameter_type_str = display_type(context, parameter_type);
             let call_site = Annotation::secondary(invocation_target.span())
                 .with_message(format!("Arguments to this {target_kind_str} are incorrect"));
+            // PHP# cannot write `int|false`, so its help asks only for another value.
+            let help = if context.dialect.is_sharp() {
+                "Provide a different value.".to_owned()
+            } else {
+                format!(
+                    "Provide a different value, or update the parameter type to accept false (e.g., `{parameter_type_str}|false`)."
+                )
+            };
             context.collector.report_with_code(
                 IssueCode::FalseArgument,
                 Issue::error(format!(
@@ -275,9 +283,7 @@ pub fn verify_argument_type<'arena, A>(
                 ))
                 .with_annotation(Annotation::primary(input_expression.span()).with_message("This argument is `false`"))
                 .with_annotation(call_site)
-                .with_help(format!(
-                    "Provide a different value, or update the parameter type to accept false (e.g., `{parameter_type_str}|false`)."
-                )),
+                .with_help(help),
             );
 
             return;

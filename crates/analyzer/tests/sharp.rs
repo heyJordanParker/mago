@@ -250,14 +250,15 @@ fn a_later_value_of_an_untyped_null_start_adds_no_issue() {
 
 /// A `let`'s first value fixes its general type: a literal widens to its scalar type, and a list or map literal to a
 /// `List<T>` or `Map<TKey, TValue>` of any length, so the local takes any value of that type and a collection method
-/// checks its arguments against it.
+/// checks its arguments against it. A `List` literal assigned to the `Map` is refused as a literal of the other
+/// collection too.
 #[test]
 fn a_let_local_takes_any_value_of_its_first_values_general_type() {
     let sharp = "namespace Demo;\n\nclass Tally\n{\n    public int run()\n    {\n        let total = 0;\n        total = 5;\n        let sizes = [5];\n        sizes = [];\n        sizes.add(6);\n        sizes.add(\"six\");\n        let rows = [[1]];\n        rows = [[2, 3], []];\n        let prices = [\"a\": 1];\n        prices = [\"b\": 2, \"c\": 3];\n        prices = [1.5];\n        return total + count(sizes) + count(rows) + count(prices);\n    }\n}\n";
 
     assert_eq!(
         issues(("src/Demo/Tally.sharp", sharp), &[]),
-        ["12:19 invalid-argument", "17:18 invalid-local-assignment-value"]
+        ["12:19 invalid-argument", "17:18 invalid-array-element", "17:18 invalid-local-assignment-value"]
     );
 }
 
@@ -1822,9 +1823,9 @@ fn a_condition_that_always_holds_names_its_php_sharp_type() {
     assert_eq!(
         messages(("src/Demo/Report.sharp", sharp), &[]),
         [
-            "This condition (type `2`) will always evaluate to true.",
+            "This condition (type `2`) will always evaluate to `true`.",
             "`if` takes a `bool`, but this is `int`.",
-            "This condition (type `true`) will always evaluate to true.",
+            "This condition (type `true`) will always evaluate to `true`.",
         ]
     );
     assert_eq!(
@@ -1849,8 +1850,8 @@ fn a_loop_condition_that_never_holds_names_its_php_sharp_type() {
     assert_eq!(
         impossible(("src/Demo/Report.sharp", sharp)),
         [
-            "8:16 impossible-condition Impossible condition: variable `n` (type `0`) will always evaluate to false. | This condition always evaluates to false | Variable `n` (type `0`) is never `true`, so this condition is always `false`. | Review the logic or type of the variable; this condition will never pass.",
-            "8:16 impossible-condition This loop condition (type `0`) will always evaluate to false. | This condition is always false, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
+            "8:16 impossible-condition Impossible condition: variable `n` (type `0`) will always evaluate to `false`. | This condition always evaluates to `false` | Variable `n` (type `0`) is never `true`, so this condition is always `false`. | Review the logic or type of the variable; this condition will never pass.",
+            "8:16 impossible-condition This loop condition (type `0`) will always evaluate to `false`. | This condition is always `false`, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
         ]
     );
     assert_eq!(
@@ -1894,23 +1895,235 @@ fn a_condition_that_always_or_never_holds_speaks_of_its_bool() {
     assert_eq!(
         worded(("src/Demo/Report.sharp", sharp), &[]),
         [
-            "5:56 impossible-condition This condition (type `false`) will always evaluate to false. | Expression of type `false` is always `false` | Because this condition is always false, the code block it controls will never be executed. | Check the logic of this expression. If the code block is intended to be unreachable, consider removing it. Otherwise, revise the condition.",
-            "6:57 impossible-condition This condition (type `false`) will always evaluate to false. | Expression of type `false` is always `false` | Because this condition is always false, the code block it controls will never be executed. | Check the logic of this expression. If the code block is intended to be unreachable, consider removing it. Otherwise, revise the condition.",
-            "7:55 redundant-condition This condition (type `true`) will always evaluate to true. | Expression of type `true` is always `true` | Because this condition is always true, the code block it controls will always execute if this part of the code is reached. | The explicit condition might be redundant. | Consider simplifying or removing the conditional check if the guarded code should always execute, or verify the expression's logic if a conditional check is truly needed.",
-            "8:60 redundant-condition This condition (type `true`) will always evaluate to true. | Expression of type `true` is always `true` | Because this condition is always true, the code block it controls will always execute if this part of the code is reached. | The explicit condition might be redundant. | Consider simplifying or removing the conditional check if the guarded code should always execute, or verify the expression's logic if a conditional check is truly needed.",
+            "5:56 impossible-condition This condition (type `false`) will always evaluate to `false`. | Expression of type `false` is always `false` | Because this condition is always `false`, the code block it controls will never be executed. | Check the logic of this expression. If the code block is intended to be unreachable, consider removing it. Otherwise, revise the condition.",
+            "6:57 impossible-condition This condition (type `false`) will always evaluate to `false`. | Expression of type `false` is always `false` | Because this condition is always `false`, the code block it controls will never be executed. | Check the logic of this expression. If the code block is intended to be unreachable, consider removing it. Otherwise, revise the condition.",
+            "7:55 redundant-condition This condition (type `true`) will always evaluate to `true`. | Expression of type `true` is always `true` | Because this condition is always `true`, the code block it controls will always execute if this part of the code is reached. | The explicit condition might be redundant. | Consider simplifying or removing the conditional check if the guarded code should always execute, or verify the expression's logic if a conditional check is truly needed.",
+            "8:60 redundant-condition This condition (type `true`) will always evaluate to `true`. | Expression of type `true` is always `true` | Because this condition is always `true`, the code block it controls will always execute if this part of the code is reached. | The explicit condition might be redundant. | Consider simplifying or removing the conditional check if the guarded code should always execute, or verify the expression's logic if a conditional check is truly needed.",
             "9:79 redundant-condition Redundant ternary operator: condition is always `true`. | This condition (type `true`) is always `true` | This `then` branch is always evaluated, making it the result of the expression | This `else` branch will never be evaluated | The ternary operator `? :` evaluates the `else` branch only when the condition is `false`. | Consider replacing the entire expression with just this `then` branch.",
             "9:94 impossible-condition Redundant ternary operator: condition is always `false`. | This condition (type `false`) is always `false` | This `then` branch will never be evaluated | This `else` branch is always evaluated, making it the result of the expression | The ternary operator `? :` evaluates the `then` branch only when the condition is `true`. | Consider replacing the entire expression with just this `else` branch.",
             "10:89 redundant-logical-operation Redundant `&&` operation: left operand is always `false` and right operand is not evaluated. | Left operand is always `false` | Right operand is not evaluated | The `&&` operator will always return `false` in this case. | Consider simplifying this expression to `false`.",
             "10:106 redundant-logical-operation Redundant `||` operation: left operand is always `true` and right operand is not evaluated. | Left operand is always `true` | Right operand is not evaluated | The `||` operator will always return `true` in this case. | Consider simplifying this expression to `true`.",
             "10:88 redundant-logical-operation Redundant `||` operation: left operand is always `false` and right operand is always `true`. | Left operand is always `false` | Right operand is always `true` | The `||` operator will always return `true` in this case. | Consider simplifying this expression to `true`.",
-            "11:76 impossible-condition Impossible condition: variable `off` (type `false`) will always evaluate to false. | This condition always evaluates to false | Variable `off` (type `false`) is never `true`, so this condition is always `false`. | Review the logic or type of the variable; this condition will never pass.",
-            "11:76 impossible-condition This loop condition (type `false`) will always evaluate to false. | This condition is always false, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
-            "11:102 impossible-condition Impossible condition: variable `on` (type `true`) will always evaluate to false. | This condition always evaluates to false | Variable `on` (type `true`) is never `false`, so this condition is always `false`. | Review the logic or type of the variable; this condition will never pass.",
-            "11:102 impossible-condition This loop condition (type `false`) will always evaluate to false. | This condition is always false, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
-            "11:128 redundant-condition Redundant condition: variable `on` (type `true`) will always evaluate to true. | This condition always evaluates to true | Variable `on` (type `true`) is never `false`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
-            "12:65 redundant-condition Redundant condition: variable `off` (type `false`) will always evaluate to true. | This condition always evaluates to true | Variable `off` (type `false`) is never `true`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
-            "13:73 redundant-condition Redundant condition: variable `off` (type `false`) will always evaluate to true. | This condition always evaluates to true | Variable `off` (type `false`) is never `true`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
+            "11:76 impossible-condition Impossible condition: variable `off` (type `false`) will always evaluate to `false`. | This condition always evaluates to `false` | Variable `off` (type `false`) is never `true`, so this condition is always `false`. | Review the logic or type of the variable; this condition will never pass.",
+            "11:76 impossible-condition This loop condition (type `false`) will always evaluate to `false`. | This condition is always `false`, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
+            "11:102 impossible-condition Impossible condition: variable `on` (type `true`) will always evaluate to `false`. | This condition always evaluates to `false` | Variable `on` (type `true`) is never `false`, so this condition is always `false`. | Review the logic or type of the variable; this condition will never pass.",
+            "11:102 impossible-condition This loop condition (type `false`) will always evaluate to `false`. | This condition is always `false`, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
+            "11:128 redundant-condition Redundant condition: variable `on` (type `true`) will always evaluate to `true`. | This condition always evaluates to `true` | Variable `on` (type `true`) is never `false`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
+            "12:65 redundant-condition Redundant condition: variable `off` (type `false`) will always evaluate to `true`. | This condition always evaluates to `true` | Variable `off` (type `false`) is never `true`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
+            "13:73 redundant-condition Redundant condition: variable `off` (type `false`) will always evaluate to `true`. | This condition always evaluates to `true` | Variable `off` (type `false`) is never `true`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
             "13:73 redundant-logical-operation Redundant `||` operation: left operand is always `false` and right operand is evaluated. | Left operand is always `false` | Right operand is evaluated | The `||` operator will always return the boolean value of the right-hand side in this case. | Consider simplifying this expression to just the right operand.",
+        ]
+    );
+}
+
+/// A null check or a type check that always or never holds speaks of the `bool` it is: always `true` or always
+/// `false`. PHP keeps its own wording.
+#[test]
+fn a_null_or_type_check_that_always_or_never_holds_speaks_of_its_bool() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int isNull(int x) { while (x == null) { return 1; } return 0; }\n    public static int notNull(int x) { while (x != null) { return 1; } return 0; }\n    public static int known(int? x) { if (x == null) { while (x != null) { return 1; } } return 0; }\n    public static int other() { const on = true; while (on == false) { return 1; } return 0; }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function isNull(int $x): int { while ($x === null) { return 1; } return 0; }\n    public static function notNull(int $x): int { while ($x !== null) { return 1; } return 0; }\n    public static function known(?int $x): int { if ($x === null) { while ($x !== null) { return 1; } } return 0; }\n    public static function other(): int { $on = true; while ($on === false) { return 1; } return 0; }\n}\n";
+    let checks = |analyzed| -> Vec<String> {
+        worded(analyzed, &[]).into_iter().filter(|line| line.contains("-type-comparison ")).collect()
+    };
+
+    assert_eq!(
+        checks(("src/Demo/Report.php", php)),
+        [
+            "7:57 impossible-null-type-comparison Impossible condition: variable `$x` (type `int`) can never be `null`. | This condition always evaluates to false | Variable `$x` (type `int`) does not include `null`. | The condition checking if `$x` is `null` will always be false. Remove or refactor the condition.",
+            "8:58 impossible-null-type-comparison Impossible condition: variable `$x` (type `int`) will always be `null`. | This condition always evaluates to false | Variable `$x` (type `int`) is already known to be `null`, so asserting it's not `null` is impossible. | The condition checking if `$x` is not `null` will always be false. Review the variable's state or condition.",
+            "9:76 redundant-type-comparison Redundant condition: variable `$x` (type `null`) is already known to be `null`. | This condition always evaluates to true | The type of variable `$x` (type `null`) already satisfies the condition that it is `null`. This check is redundant. | This condition is always true and the associated code block will always execute if reached. Consider simplifying.",
+            "10:62 impossible-type-comparison Impossible condition: variable `$on` (type `true`) can never be `false`. | This condition always evaluates to false | The type of variable `$on` (type `true`) is incompatible with the assertion that it is `false`. | This condition is impossible and the associated code block will never execute. Review the types and condition logic.",
+        ]
+    );
+    assert_eq!(
+        checks(("src/Demo/Report.sharp", sharp)),
+        [
+            "5:46 impossible-null-type-comparison Impossible condition: variable `x` (type `int`) can never be `null`. | This condition always evaluates to `false` | Variable `x` (type `int`) does not include `null`. | The condition checking if `x` is `null` will always be `false`. Remove or refactor the condition.",
+            "6:47 impossible-null-type-comparison Impossible condition: variable `x` (type `int`) will always be `null`. | This condition always evaluates to `false` | Variable `x` (type `int`) is already known to be `null`, so asserting it's not `null` is impossible. | The condition checking if `x` is not `null` will always be `false`. Review the variable's state or condition.",
+            "7:63 redundant-type-comparison Redundant condition: variable `x` (type `null`) is already known to be `null`. | This condition always evaluates to `true` | The type of variable `x` (type `null`) already satisfies the condition that it is `null`. This check is redundant. | This condition is always `true` and the associated code block will always execute if reached. Consider simplifying.",
+            "8:57 impossible-type-comparison Impossible condition: variable `on` (type `true`) can never be `false`. | This condition always evaluates to `false` | The type of variable `on` (type `true`) is incompatible with the assertion that it is `false`. | This condition is impossible and the associated code block will never execute. Review the types and condition logic.",
+        ]
+    );
+}
+
+/// A comparison that always or never holds, and an ordering of `false`, write `true` and `false` as PHP# writes them.
+/// PHP# refuses `false == 0`, so the ordering names the rule it keeps. PHP keeps its own wording.
+#[test]
+fn a_comparison_that_always_or_never_holds_speaks_of_its_bool() {
+    let store = (
+        "src/Lib/Store.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Store\n{\n    public static function off(): false { return false; }\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Store;\n\nclass Report\n{\n    public static bool same() { const a = 1; return a != 1; }\n    public static bool other() { const a = 1; return a != 2; }\n    public static bool less() { return Store.off() < 1; }\n    public static int order() { return Store.off() <=> 1; }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Store;\n\nclass Report\n{\n    public static function same(): bool { $a = 1; return $a != 1; }\n    public static function other(): bool { $a = 1; return $a != 2; }\n    public static function less(): bool { return Store::off() < 1; }\n    public static function order(): int { return Store::off() <=> 1; }\n}\n";
+    let comparisons = |analyzed| -> Vec<String> {
+        worded(analyzed, &[store])
+            .into_iter()
+            .filter(|line| line.contains(" redundant-comparison ") || line.contains(" false-operand "))
+            .collect()
+    };
+
+    assert_eq!(
+        comparisons(("src/Demo/Report.php", php)),
+        [
+            "9:58 redundant-comparison Redundant `!=` comparison: left-hand side is never equal to (always false for !=) right-hand side. | Left operand is `int(1)` | Right operand is `int(1)` | The `!=` operator will always return `false` in this case. | Consider simplifying or removing this comparison as it always evaluates to `false`.",
+            "10:59 redundant-comparison Redundant `!=` comparison: left-hand side is always not equal to (always true for !=) right-hand side. | Left operand is `int(1)` | Right operand is `int(2)` | The `!=` operator will always return `true` in this case. | Consider simplifying or removing this comparison as it always evaluates to `true`.",
+            "11:50 false-operand Left operand in `<` comparison is `false`. | This is `false` | PHP compares `false` with other types according to specific rules (e.g., `false == 0` is true using `<`). This can hide bugs. | Ensure this operand is not `false` or explicitly handle the `false` case if it represents a distinct state (e.g., an error from a function).",
+            "11:50 redundant-comparison Redundant `<` comparison: left-hand side is always less than right-hand side. | Left operand is `false` | Right operand is `int(1)` | The `<` operator will always return `true` in this case. | Consider simplifying or removing this comparison as it always evaluates to `true`.",
+            "12:50 false-operand Left operand in spaceship comparison (`<=>`) is `false`. | This is `false` | PHP compares `false` with other types according to specific rules (e.g., `false == 0` is true, `false < 1` is true). | Ensure this comparison with `false` is intended, or provide a non-false operand.",
+        ]
+    );
+    assert_eq!(
+        comparisons(("src/Demo/Report.sharp", sharp)),
+        [
+            "7:53 redundant-comparison Redundant `!=` comparison: left-hand side is never equal to (always `false` for !=) right-hand side. | Left operand is `1` | Right operand is `1` | The `!=` operator will always return `false` in this case. | Consider simplifying or removing this comparison as it always evaluates to `false`.",
+            "8:54 redundant-comparison Redundant `!=` comparison: left-hand side is always not equal to (always `true` for !=) right-hand side. | Left operand is `1` | Right operand is `2` | The `!=` operator will always return `true` in this case. | Consider simplifying or removing this comparison as it always evaluates to `true`.",
+            "9:40 false-operand Left operand in `<` comparison is `false`. | This is `false` | PHP compares `false` with other types according to specific rules (e.g., `false < 1` is `true`). This can hide bugs. | Ensure this operand is not `false` or explicitly handle the `false` case if it represents a distinct state (e.g., an error from a function).",
+            "9:40 redundant-comparison Redundant `<` comparison: left-hand side is always less than right-hand side. | Left operand is `false` | Right operand is `1` | The `<` operator will always return `true` in this case. | Consider simplifying or removing this comparison as it always evaluates to `true`.",
+            "10:40 false-operand Left operand in spaceship comparison (`<=>`) is `false`. | This is `false` | PHP compares `false` with other types according to specific rules (e.g., `false < 1` is `true`). | Ensure this comparison with `false` is intended, or provide a non-false operand.",
+        ]
+    );
+}
+
+/// A `match` arm that never or always matches writes the `bool` of its condition as PHP# writes it. PHP keeps its own
+/// wording.
+#[test]
+fn a_match_arm_that_never_or_always_matches_speaks_of_its_bool() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static string twice(int x) => match (x) { 1 => \"one\", 1 => \"again\", default => \"other\" };\n    public static string always() => match (true) { true => \"yes\", default => \"no\" };\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function twice(int $x): string { return match ($x) { 1 => 'one', 1 => 'again', default => 'other' }; }\n    public static function always(): string { return match (true) { true => 'yes', default => 'no' }; }\n}\n";
+    let arms = |analyzed| -> Vec<String> {
+        worded(analyzed, &[])
+            .into_iter()
+            .filter(|line| line.contains(" unreachable-match-arm ") || line.contains(" match-arm-always-true "))
+            .collect()
+    };
+
+    assert_eq!(
+        arms(("src/Demo/Report.php", php)),
+        [
+            "7:84 unreachable-match-arm This match arm is unreachable. | This arm can never be reached | In this match expression | The condition is always false in this context.",
+            "8:69 match-arm-always-true This match arm is always true, making subsequent arms unreachable. | This arm covers all remaining cases for the subject | In this match expression | Any arms after this one can never be reached.",
+        ]
+    );
+    assert_eq!(
+        arms(("src/Demo/Report.sharp", sharp)),
+        [
+            "5:66 unreachable-match-arm This match arm is unreachable. | This arm can never be reached | In this match expression | The condition is always `false` in this context.",
+            "6:53 match-arm-always-true This match arm is always `true`, making subsequent arms unreachable. | This arm covers all remaining cases for the subject | In this match expression | Any arms after this one can never be reached.",
+        ]
+    );
+}
+
+/// A `??` on a key the shape never holds writes the `bool` of the check as PHP# writes it. PHP keeps its own wording.
+#[test]
+fn a_fallback_on_a_missing_key_speaks_of_its_bool() {
+    let store = (
+        "src/Lib/Store.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Store\n{\n    /** @return array{a: int} */\n    public static function shape(): array { return ['a' => 1]; }\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Store;\n\nclass Report\n{\n    public static int missing() { const m = Store.shape(); return m[\"b\"] ?? 0; }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Store;\n\nclass Report\n{\n    public static function missing(): int { $m = Store::shape(); return $m['b'] ?? 0; }\n}\n";
+    let checks = |analyzed| -> Vec<String> {
+        worded(analyzed, &[store])
+            .into_iter()
+            .filter(|line| line.contains(" impossible-nonnull-entry-check "))
+            .collect()
+    };
+
+    assert_eq!(
+        checks(("src/Demo/Report.php", php)),
+        [
+            "9:76 impossible-nonnull-entry-check Impossible `isset` check on key `'b'` accessed on `array{'a': int}`. | `isset` on key `'b'` will always be false here. | The analysis determined that the key `'b'` definitely does not exist in this array, so checking `isset` is unnecessary. | Remove the redundant `isset` check.",
+        ]
+    );
+    assert_eq!(
+        checks(("src/Demo/Report.sharp", sharp)),
+        [
+            "7:69 impossible-nonnull-entry-check Impossible `isset` check on key `'b'` accessed on `Map<\"a\", int>`. | `isset` on key `'b'` will always be `false` here. | The analysis determined that the key `'b'` definitely does not exist in this array, so checking `isset` is unnecessary. | Remove the redundant `isset` check.",
+        ]
+    );
+}
+
+/// A method that may return `false` from a PHP function writes `false` as PHP# writes it, and asks for no `int|false`
+/// return type, which PHP# cannot write. PHP keeps its own wording. `a_message_names_an_accessor_as_sharp_writes_it`
+/// pins the same report on an accessor.
+#[test]
+fn a_return_that_may_be_false_speaks_of_its_bool() {
+    let sharp =
+        "namespace Demo;\n\nclass Report\n{\n    public static int position() { return strpos(\"ab\", \"b\"); }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function position(): int { return strpos('ab', 'b'); }\n}\n";
+    let returns = |analyzed| -> Vec<String> {
+        worded(analyzed, &[]).into_iter().filter(|line| line.contains(" falsable-return-statement ")).collect()
+    };
+
+    assert_eq!(
+        returns(("src/Demo/Report.php", php)),
+        [
+            "7:53 falsable-return-statement Function `Demo\\Report::position` is declared to return `int` but possibly returns 'false' (inferred as `false|non-negative-int`). | Potentially 'false' returned here. | Return type declared as non-falsable `int` here | The declared return type does not permit 'false', but the analysis indicates that 'false' or a falsable type could be returned from this path. | You can either change the return type declaration of `Demo\\Report::position` to include 'false' (e.g., 'int|false'), or ensure that this function path never returns 'false'.",
+        ]
+    );
+    assert_eq!(
+        returns(("src/Demo/Report.sharp", sharp)),
+        [
+            "5:43 falsable-return-statement Method `Report.position` is declared to return `int` but possibly returns `false` (inferred as `bool|int`). | Potentially `false` returned here. | Return type declared as non-falsable `int` here | The declared return type does not permit `false`, but this path could return `false`. | Ensure this method path never returns `false`.",
+        ]
+    );
+}
+
+/// A `null` operand of arithmetic, from a PHP method, asks for a number and names no cast, since PHP# casts only
+/// between numbers. PHP keeps its own wording.
+#[test]
+fn a_null_operand_of_arithmetic_asks_for_a_number() {
+    let store = (
+        "src/Lib/Store.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Store\n{\n    public static function nothing(): null { return null; }\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Store;\n\nclass Report\n{\n    public static int left() => Store.nothing() - 1;\n\n    public static int right() => 1 - Store.nothing();\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Store;\n\nclass Report\n{\n    public static function left(): int { return Store::nothing() - 1; }\n\n    public static function right(): int { return 1 - Store::nothing(); }\n}\n";
+    let operands = |analyzed| -> Vec<String> {
+        worded(analyzed, &[store]).into_iter().filter(|line| line.contains(" null-operand ")).collect()
+    };
+
+    assert_eq!(
+        operands(("src/Demo/Report.php", php)),
+        [
+            "9:49 null-operand Left operand in arithmetic operation cannot be `null`. | This is `null`. | Performing arithmetic operations on `null` typically results in `0`. | Ensure the left operand is a number (int/float) or a type that can be cast to a number.",
+            "11:54 null-operand Right operand in arithmetic operation cannot be `null`. | This is `null`. | Performing arithmetic operations on `null` typically results in `0`. | Ensure the right operand is a number (int/float) or a type that can be cast to a number.",
+        ]
+    );
+    assert_eq!(
+        operands(("src/Demo/Report.sharp", sharp)),
+        [
+            "7:33 null-operand Left operand in arithmetic operation cannot be `null`. | This is `null`. | Performing arithmetic operations on `null` typically results in `0`. | Ensure the left operand is a number (int/float).",
+            "9:38 null-operand Right operand in arithmetic operation cannot be `null`. | This is `null`. | Performing arithmetic operations on `null` typically results in `0`. | Ensure the right operand is a number (int/float).",
+        ]
+    );
+}
+
+/// A literal keyed by a value that cannot key a `Map` names the `Map` key rule, as a `Map` type that breaks it does,
+/// and names no cast, since PHP# casts only between numbers. PHP keeps its own wording.
+#[test]
+fn a_literal_keyed_by_a_value_that_cannot_key_a_map_names_the_map_key_rule() {
+    let store = (
+        "src/Lib/Store.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Store\n{\n    public static function object(): object { return new \\stdClass(); }\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Store;\n\nclass Report\n{\n    public static int count() { const m = [Store.object(): 1]; return m.count(); }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Store;\n\nclass Report\n{\n    public static function count(): int { $m = [Store::object() => 1]; return count($m); }\n}\n";
+    let keys = |analyzed| -> Vec<String> {
+        worded(analyzed, &[store]).into_iter().filter(|line| line.contains(" invalid-array-element-key ")).collect()
+    };
+
+    assert_eq!(
+        keys(("src/Demo/Report.php", php)),
+        [
+            "9:49 invalid-array-element-key Invalid array key type. | This has type `object`, which cannot be cast to a string or integer. | In PHP, array keys must be strings or integers. While types like `bool` or `float` are automatically cast, a value of type `object` cannot be. | Ensure the array key is either a string or an integer.",
+        ]
+    );
+    assert_eq!(
+        keys(("src/Demo/Report.sharp", sharp)),
+        [
+            "7:44 invalid-array-element-key A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value, and `Object` has none. | `Object` keys this `Map`. | Key the `Map` by an `int`, a `string` or a backed enum, such as `enum Status: string`.",
         ]
     );
 }
@@ -2017,8 +2230,8 @@ fn a_paradoxical_or_repeated_condition_names_its_php_sharp_types() {
     assert_eq!(
         conditions(("src/Demo/Report.sharp", sharp)),
         [
-            "8:17 paradoxical-condition Paradoxical condition | This condition (`!done && count is not 2`) can never be true here | Because of this preceding condition... | ...the analyzer knows that `count is 2 || done` must be true for this code path to be taken. | Therefore, this new condition (`!done && count is not 2`) directly contradicts that established fact. | As a result, the code this condition guards is unreachable. | Remove the unreachable code or refactor the conditional logic.",
-            "17:13 redundant-condition Redundant condition | This condition (`!done`) is always true here | This was already established as true by a previous condition here | The analyzer determined this condition is guaranteed to be true based on preceding logic, making this check unnecessary. | Consider removing this redundant conditional check to simplify the code.",
+            "8:17 paradoxical-condition Paradoxical condition | This condition (`!done && count is not 2`) can never be `true` here | Because of this preceding condition... | ...the analyzer knows that `count is 2 || done` must be `true` for this code path to be taken. | Therefore, this new condition (`!done && count is not 2`) directly contradicts that established fact. | As a result, the code this condition guards is unreachable. | Remove the unreachable code or refactor the conditional logic.",
+            "17:13 redundant-condition Redundant condition | This condition (`!done`) is always `true` here | This was already established as `true` by a previous condition here | The analyzer determined this condition is guaranteed to be `true` based on preceding logic, making this check unnecessary. | Consider removing this redundant conditional check to simplify the code.",
         ]
     );
     assert_eq!(
@@ -4244,13 +4457,16 @@ fn an_emptied_map_keeps_the_map_rules() {
     assert_eq!(issues(("src/Demo/Counts.sharp", sharp), &[]), ["14:24 possibly-undefined-array-index"]);
 }
 
-/// A `List` literal assigned to a `Map<int, string>` fills a `Map`: its keys are read by `[k, v]`, and a bare read is
-/// refused.
+/// A `List` literal assigned to a `Map<int, string>` is an error, and the place stays the `Map` it is declared: its
+/// keys are read by `[k, v]`, and a bare read is refused.
 #[test]
-fn a_list_literal_assigned_to_a_map_keeps_the_map_rules() {
+fn a_list_literal_assigned_to_a_map_is_an_error_and_the_map_rules_stay() {
     let sharp = "namespace Demo;\n\nclass Names\n{\n    public int total(Map<int, string> names)\n    {\n        names = [\"a\"];\n        let total = 0;\n        for (const [id, name] of names) {\n            total += id + strlen(name);\n        }\n        return total + strlen(names[0]);\n    }\n}\n";
 
-    assert_eq!(issues(("src/Demo/Names.sharp", sharp), &[]), ["12:31 possibly-undefined-array-index"]);
+    assert_eq!(
+        issues(("src/Demo/Names.sharp", sharp), &[]),
+        ["7:17 invalid-array-element", "12:31 possibly-undefined-array-index"]
+    );
 }
 
 /// A method that changes a `List` leaves it the `List` it is declared, so an index past the literal it held reads it.
@@ -4270,6 +4486,397 @@ fn an_emptied_php_array_narrows_to_an_empty_array() {
         issues(("src/Demo/Tags.php", php), &[]),
         ["12:22 mismatched-array-index", "12:16 invalid-return-statement"]
     );
+}
+
+/// `[]` is an empty `List`, so it is an error wherever a `Map` is declared: a property default, a parameter default,
+/// a declaration, an assignment, an argument and a return.
+#[test]
+fn an_empty_list_literal_where_a_map_is_declared_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Counts\n{\n    public Map<string, int> byName = [];\n\n    public Map<string, int> run(Map<string, int> seed = [])\n    {\n        Map<string, int> counts = [];\n        counts = [];\n        this.keep(counts);\n        this.keep(seed);\n        this.keep(this.none());\n        this.keep([]);\n        return [];\n    }\n\n    private Map<string, int> none() => [];\n\n    private void keep(Map<string, int> counts)\n    {\n        this.byName = counts;\n    }\n}\n";
+
+    let message = "invalid-array-element `[]` is an empty List. An empty Map is written `[:]`.";
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counts.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        [
+            format!("5:38 {message}"),
+            format!("7:57 {message}"),
+            format!("9:35 {message}"),
+            format!("10:18 {message}"),
+            format!("14:19 {message}"),
+            format!("15:16 {message}"),
+            format!("18:40 {message}"),
+        ]
+    );
+}
+
+/// PHP has one empty array, so a typed PHP place takes `[]` wherever an `array<string, int>` is declared.
+#[test]
+fn an_empty_php_array_where_a_string_keyed_array_is_declared_is_accepted() {
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Counts\n{\n    /** @var array<string, int> */\n    public array $byName = [];\n\n    /**\n     * @param array<string, int> $seed\n     *\n     * @return array<string, int>\n     */\n    public function run(array $seed = []): array\n    {\n        /** @var array<string, int> $counts */\n        $counts = [];\n        $counts = [];\n        $this->keep($counts);\n        $this->keep($seed);\n        $this->keep($this->none());\n        $this->keep([]);\n\n        return [];\n    }\n\n    /** @return array<string, int> */\n    private function none(): array\n    {\n        return [];\n    }\n\n    /** @param array<string, int> $counts */\n    private function keep(array $counts): void\n    {\n        $this->byName = $counts;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Counts.php", php), &[]), Vec::<String>::new());
+}
+
+/// `[:]` is an empty `Map`, so it is an error wherever a `List` is declared: a property default, a parameter default,
+/// a declaration, an assignment, an argument and a return.
+#[test]
+fn an_empty_map_literal_where_a_list_is_declared_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public List<string> all = [:];\n\n    public List<string> run(List<string> seed = [:])\n    {\n        List<string> tags = [:];\n        tags = [:];\n        this.keep(tags);\n        this.keep(seed);\n        this.keep(this.none());\n        this.keep([:]);\n        return [:];\n    }\n\n    private List<string> none() => [:];\n\n    private void keep(List<string> tags)\n    {\n        this.all = tags;\n    }\n}\n";
+
+    let message = "invalid-array-element `[:]` is an empty Map. An empty List is written `[]`.";
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Tags.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        [
+            format!("5:31 {message}"),
+            format!("7:49 {message}"),
+            format!("9:29 {message}"),
+            format!("10:16 {message}"),
+            format!("14:19 {message}"),
+            format!("15:16 {message}"),
+            format!("18:36 {message}"),
+        ]
+    );
+}
+
+/// PHP has one empty array, so a typed PHP place takes `[]` wherever a `list<string>` is declared.
+#[test]
+fn an_empty_php_array_where_a_list_is_declared_is_accepted() {
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /** @var list<string> */\n    public array $all = [];\n\n    /**\n     * @param list<string> $seed\n     *\n     * @return list<string>\n     */\n    public function run(array $seed = []): array\n    {\n        /** @var list<string> $tags */\n        $tags = [];\n        $tags = [];\n        $this->keep($tags);\n        $this->keep($seed);\n        $this->keep($this->none());\n        $this->keep([]);\n\n        return [];\n    }\n\n    /** @return list<string> */\n    private function none(): array\n    {\n        return [];\n    }\n\n    /** @param list<string> $tags */\n    private function keep(array $tags): void\n    {\n        $this->all = $tags;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.php", php), &[]), Vec::<String>::new());
+}
+
+/// `["a"]` is a `List` literal, so it is an error wherever a `Map` is declared, even a `Map<int, string>` whose types
+/// it fits: a property default, a parameter default, a declaration, an assignment, an argument and a return.
+#[test]
+fn a_list_literal_where_a_map_is_declared_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Names\n{\n    public Map<int, string> byId = [\"a\"];\n\n    public Map<int, string> run(Map<int, string> seed = [\"a\"])\n    {\n        Map<int, string> names = [\"a\"];\n        names = [\"a\"];\n        this.keep(names);\n        this.keep(seed);\n        this.keep(this.none());\n        this.keep([\"a\"]);\n        return [\"a\"];\n    }\n\n    private Map<int, string> none() => [\"a\"];\n\n    private void keep(Map<int, string> names)\n    {\n        this.byId = names;\n    }\n}\n";
+
+    let message = "invalid-array-element A Map literal is written `[key: value]`.";
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Names.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        [
+            format!("5:36 {message}"),
+            format!("7:57 {message}"),
+            format!("9:34 {message}"),
+            format!("10:17 {message}"),
+            format!("14:19 {message}"),
+            format!("15:16 {message}"),
+            format!("18:40 {message}"),
+        ]
+    );
+}
+
+/// PHP has one array, so a typed PHP place takes `['a']` wherever an `array<int, string>` is declared.
+#[test]
+fn a_php_list_where_an_int_keyed_array_is_declared_is_accepted() {
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Names\n{\n    /** @var array<int, string> */\n    public array $byId = ['a'];\n\n    /**\n     * @param array<int, string> $seed\n     *\n     * @return array<int, string>\n     */\n    public function run(array $seed = ['a']): array\n    {\n        /** @var array<int, string> $names */\n        $names = ['a'];\n        $names = ['a'];\n        $this->keep($names);\n        $this->keep($seed);\n        $this->keep($this->none());\n        $this->keep(['a']);\n\n        return ['a'];\n    }\n\n    /** @return array<int, string> */\n    private function none(): array\n    {\n        return ['a'];\n    }\n\n    /** @param array<int, string> $names */\n    private function keep(array $names): void\n    {\n        $this->byId = $names;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Names.php", php), &[]), Vec::<String>::new());
+}
+
+/// `[0: 1]` is a `Map` literal, so it is an error wherever a `List` is declared, even where its keys run from 0 as a
+/// `List`'s do: a property default, a parameter default, a declaration, an assignment, an argument and a return.
+#[test]
+fn a_map_literal_where_a_list_is_declared_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Sizes\n{\n    public List<int> all = [0: 1];\n\n    public List<int> run(List<int> seed = [0: 1])\n    {\n        List<int> sizes = [0: 1];\n        sizes = [0: 1];\n        this.keep(sizes);\n        this.keep(seed);\n        this.keep(this.none());\n        this.keep([0: 1]);\n        return [0: 1];\n    }\n\n    private List<int> none() => [0: 1];\n\n    private void keep(List<int> sizes)\n    {\n        this.all = sizes;\n    }\n}\n";
+
+    let message = "invalid-array-element A List literal is written `[a, b]`.";
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Sizes.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        [
+            format!("5:28 {message}"),
+            format!("7:43 {message}"),
+            format!("9:27 {message}"),
+            format!("10:17 {message}"),
+            format!("14:19 {message}"),
+            format!("15:16 {message}"),
+            format!("18:33 {message}"),
+        ]
+    );
+}
+
+/// PHP has one array, so a typed PHP place takes `[0 => 1]` wherever a `list<int>` is declared.
+#[test]
+fn a_php_array_with_list_keys_where_a_list_is_declared_is_accepted() {
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Sizes\n{\n    /** @var list<int> */\n    public array $all = [0 => 1];\n\n    /**\n     * @param list<int> $seed\n     *\n     * @return list<int>\n     */\n    public function run(array $seed = [0 => 1]): array\n    {\n        /** @var list<int> $sizes */\n        $sizes = [0 => 1];\n        $sizes = [0 => 1];\n        $this->keep($sizes);\n        $this->keep($seed);\n        $this->keep($this->none());\n        $this->keep([0 => 1]);\n\n        return [0 => 1];\n    }\n\n    /** @return list<int> */\n    private function none(): array\n    {\n        return [0 => 1];\n    }\n\n    /** @param list<int> $sizes */\n    private function keep(array $sizes): void\n    {\n        $this->all = $sizes;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Sizes.php", php), &[]), Vec::<String>::new());
+}
+
+/// A literal of the collection its place declares compiles at every site, as does a literal of spreads, which names
+/// no collection of its own, and a literal passed to a plain PHP function, whose `array` is neither a `List` nor a
+/// `Map`.
+#[test]
+fn a_literal_of_the_declared_collection_is_accepted() {
+    let sharp = "namespace Demo;\n\nclass Clean\n{\n    public List<string> tags = [];\n    public Map<string, int> counts = [:];\n\n    public Map<string, int> run(List<string> seed = [], Map<string, int> more = [\"a\": 1])\n    {\n        List<string> a = [];\n        Map<string, int> m = [:];\n        Map<string, int> n = [\"a\": 1];\n        a = [\"x\"];\n        m = [:];\n        this.keep(a, [], m, [\"b\": 2]);\n        this.keep(seed, [...a, ...seed], more, [...m, \"c\": 3]);\n        this.tags = [\"y\"];\n        this.counts = [\"d\": 4];\n        return n;\n    }\n\n    public List<string> none() => [];\n\n    public Map<string, int> nothing()\n    {\n        return [:];\n    }\n\n    public string joined()\n    {\n        return implode(\",\", [\"a\", \"b\"]) + implode(\",\", []);\n    }\n\n    private void keep(List<string> a, List<string> b, Map<string, int> c, Map<string, int> d)\n    {\n        this.tags = [...a, ...b];\n        this.counts = [...c, ...d];\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Clean.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// A call through a local declared as a `Function` takes only literals of the collections its parameters declare.
+#[test]
+fn a_literal_of_the_other_collection_passed_to_a_function_local_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Counter\n{\n    public int run()\n    {\n        Function<int(List<string>)> size = names => count(names);\n        return size([:]);\n    }\n}\n";
+
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counter.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        ["8:21 invalid-array-element `[:]` is an empty Map. An empty List is written `[]`."]
+    );
+}
+
+/// A call through a `Function` parameter takes only literals of the collections its parameters declare.
+#[test]
+fn a_literal_of_the_other_collection_passed_to_a_function_parameter_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Counter\n{\n    public int run(Function<int(Map<string, int>)> total) => total([]);\n}\n";
+
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counter.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        ["5:68 invalid-array-element `[]` is an empty List. An empty Map is written `[:]`."]
+    );
+}
+
+/// A call through a `Function` property takes only literals of the collections its parameters declare.
+#[test]
+fn a_literal_of_the_other_collection_passed_to_a_function_property_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Counter\n{\n    private Function<int(List<int>)> size;\n\n    public Counter()\n    {\n        this.size = sizes => count(sizes);\n    }\n\n    public int run() => this.size([0: 1]);\n}\n";
+
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counter.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        ["12:35 invalid-array-element A List literal is written `[a, b]`."]
+    );
+}
+
+/// A call through a local, a parameter or a property declared as a `Function` takes the literals its parameters
+/// declare, and a PHP `\Closure` declares no collection, so a call through one takes either literal.
+#[test]
+fn a_literal_of_the_declared_collection_passed_to_a_function_value_is_accepted() {
+    let hooks = "<?php\n\nnamespace Lib;\n\nfinal class Hooks\n{\n    public \\Closure $run;\n\n    public function __construct()\n    {\n        $this->run = fn (mixed ...$values): int => 0;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Hooks;\n\nclass Counter\n{\n    private Function<int(List<int>)> size;\n\n    public Counter()\n    {\n        this.size = sizes => count(sizes);\n    }\n\n    public int run(Function<int(Map<string, int>)> total, Hooks hooks)\n    {\n        Function<int(List<string>)> names = values => count(values);\n        hooks.run([:]);\n        return names([]) + names([\"a\"]) + total([:]) + total([\"a\": 1]) + this.size([]) + this.size([1, 2]);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Counter.sharp", sharp), &[("src/Lib/Hooks.php", hooks)]), Vec::<String>::new());
+}
+
+/// A PHP closure's docblock names PHP types, and a plain PHP `array` names neither a `List` nor a `Map`, so a call
+/// through one takes either literal, as a PHP method's `array` parameter does.
+#[test]
+fn a_php_closure_whose_docblock_names_a_php_array_takes_either_literal() {
+    let hooks = "<?php\n\nnamespace Lib;\n\nfinal class Hooks\n{\n    /** @var \\Closure(array): int */\n    public \\Closure $run;\n\n    public function __construct()\n    {\n        $this->run = fn (array $values): int => count($values);\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Hooks;\n\nclass Counter\n{\n    public int run(Hooks hooks) => hooks.run([]) + hooks.run([:]);\n}\n";
+
+    assert_eq!(issues(("src/Demo/Counter.sharp", sharp), &[("src/Lib/Hooks.php", hooks)]), Vec::<String>::new());
+}
+
+/// A `Function` value and a PHP closure of the same signature are assignable to each other both ways: whether PHP#
+/// wrote a signature decides only which literals a call through it takes.
+#[test]
+fn a_function_value_and_a_php_closure_of_the_same_signature_are_assignable_both_ways() {
+    let tools = "<?php\n\nnamespace Lib;\n\nfinal class Tools\n{\n    /** @param \\Closure(list<string>): int $count */\n    public static function apply(\\Closure $count): int\n    {\n        return $count(['a']);\n    }\n\n    /** @return \\Closure(list<string>): int */\n    public static function make(): \\Closure\n    {\n        return fn (array $names): int => count($names);\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Tools;\n\nclass Counter\n{\n    public int run(Function<int(List<string>)> size)\n    {\n        Function<int(List<string>)> made = Tools.make();\n        return Tools.apply(size) + Counter.take(Tools.make()) + made([\"a\"]);\n    }\n\n    private static int take(Function<int(List<string>)> count) => count([\"b\"]);\n}\n";
+
+    assert_eq!(issues(("src/Demo/Counter.sharp", sharp), &[("src/Lib/Tools.php", tools)]), Vec::<String>::new());
+}
+
+const HOOKS: &str = "<?php\n\nnamespace Lib;\n\nfinal class Hooks\n{\n    /** @var \\Closure(list<string>): int */\n    public \\Closure $names;\n\n    /** @var \\Closure(list<string>): int */\n    public \\Closure $more;\n\n    /** @var \\Closure(list<string>): int<0, max> */\n    public \\Closure $counted;\n\n    public function __construct()\n    {\n        $this->names = fn (array $names): int => count($names);\n        $this->more = fn (array $names): int => count($names) + 1;\n        $this->counted = fn (array $names): int => count($names);\n    }\n}\n";
+
+/// A value that may be a `Function` value or a PHP closure of the same signature names the collections the `Function`
+/// value declares, in either order, after it is combined with another PHP closure and after a null check, so a call
+/// through it refuses `[:]` and takes `[]`.
+#[test]
+fn a_value_that_may_be_a_function_value_or_a_php_closure_of_one_signature_keeps_its_parameter_collections() {
+    let sharp = "namespace Demo;\n\nimport Lib.Hooks;\n\nclass Counter\n{\n    public int sharpFirst(bool pick, Function<int(List<string>)> size, Hooks hooks)\n    {\n        const either = pick ? size : hooks.names;\n        return either([:]) + either([]);\n    }\n\n    public int phpFirst(bool pick, Function<int(List<string>)> size, Hooks hooks)\n    {\n        const either = pick ? hooks.names : size;\n        return either([:]) + either([]);\n    }\n\n    public int third(bool pick, bool other, Function<int(List<string>)> size, Hooks hooks)\n    {\n        const either = pick ? size : hooks.names;\n        const any = other ? either : hooks.more;\n        return any([:]) + any([]);\n    }\n\n    public int narrowed(bool pick, Function<int(List<string>)>? size, Hooks hooks)\n    {\n        const either = pick ? size : hooks.names;\n        if (either != null)\n        {\n            return either([:]) + either([]);\n        }\n\n        return 0;\n    }\n}\n";
+
+    let message = "invalid-array-element `[:]` is an empty Map. An empty List is written `[]`.";
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counter.sharp", sharp), &[("src/Lib/Hooks.php", HOOKS)])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        [
+            format!("10:23 {message}"),
+            format!("16:23 {message}"),
+            format!("23:20 {message}"),
+            format!("31:27 {message}")
+        ]
+    );
+}
+
+/// A method value of a PHP# class is a function PHP# wrote, so a call through it checks literals as a call of the
+/// method does, also when the value may be a PHP closure of the same signature. A method value of a PHP class takes
+/// either literal, as the PHP method does.
+#[test]
+fn a_literal_of_the_other_collection_passed_to_a_method_value_is_an_error() {
+    let adder = "<?php\n\nnamespace Lib;\n\nfinal class Adder\n{\n    public function add(array $names): int\n    {\n        return count($names);\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Adder;\nimport Lib.Hooks;\n\nclass Counter\n{\n    public int run(Adder adder)\n    {\n        const own = this.add;\n        const shared = Counter.size;\n        const plain = adder.add;\n        return own([:]) + shared([:]) + plain([]) + plain([:]);\n    }\n\n    public int either(bool pick, Hooks hooks)\n    {\n        const own = pick ? this.add : hooks.names;\n        const shared = pick ? hooks.names : Counter.size;\n        return own([:]) + shared([:]) + own([]) + shared([]);\n    }\n\n    private int add(List<string> names) => count(names);\n\n    private static int size(List<string> names) => count(names);\n}\n";
+
+    let message = "invalid-array-element `[:]` is an empty Map. An empty List is written `[]`.";
+    assert_eq!(
+        analyze(
+            &PLUGIN_REGISTRY,
+            settings(),
+            ("src/Demo/Counter.sharp", sharp),
+            &[("src/Lib/Adder.php", adder), ("src/Lib/Hooks.php", HOOKS)]
+        )
+        .iter()
+        .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+        .collect::<Vec<_>>(),
+        [
+            format!("13:20 {message}"),
+            format!("13:34 {message}"),
+            format!("20:20 {message}"),
+            format!("20:34 {message}")
+        ]
+    );
+}
+
+/// A lambda's parameters are types PHP# wrote, so a call through a lambda checks literals as a call of a method does,
+/// also when the value may be a PHP closure of the same signature.
+#[test]
+fn a_literal_of_the_other_collection_passed_to_a_lambda_is_an_error() {
+    let sharp = "namespace Demo;\n\nimport Lib.Hooks;\n\nclass Counter\n{\n    public int run(bool pick, Hooks hooks)\n    {\n        const size = (List<string> names) => count(names);\n        const either = pick ? size : hooks.counted;\n        const other = pick ? hooks.counted : size;\n        return size([:]) + either([:]) + other([:]) + size([]) + either([]);\n    }\n}\n";
+
+    let message = "invalid-array-element `[:]` is an empty Map. An empty List is written `[]`.";
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counter.sharp", sharp), &[("src/Lib/Hooks.php", HOOKS)])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        [format!("12:21 {message}"), format!("12:35 {message}"), format!("12:48 {message}")]
+    );
+}
+
+/// Plain PHP names a PHP# `Function` type as PHP names a closure type, so a `.php` message about one reads as it reads
+/// about a PHP closure.
+#[test]
+fn a_php_message_names_a_function_type_as_a_php_closure_type() {
+    let sharp = "namespace Demo;\n\npublic class Counter\n{\n    public int apply(Function<int(List<string>)> size) => size([\"a\"]);\n}\n";
+    let php = "<?php\n\nnamespace Lib;\n\nuse Demo\\Counter;\n\nfunction run(Counter $counter): int\n{\n    return $counter->apply(1);\n}\n";
+
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Lib/run.php", php), &[("src/Demo/Counter.sharp", sharp)])
+            .iter()
+            .map(|issue| format!("{} {}", located(php, issue), issue.message))
+            .collect::<Vec<_>>(),
+        [
+            "9:28 invalid-argument Invalid argument type for argument #1 of `Demo\\Counter::apply`: expected `(closure(list<string>): int)`, but found `int(1)`."
+        ]
+    );
+}
+
+/// A `Function` value keeps the collections its parameters declare when a `let` local copies it, when a template
+/// passes it through, and when a `List` of `Function` values gives it back.
+#[test]
+fn a_function_value_keeps_its_parameter_collections_through_a_copy_a_template_and_a_list() {
+    let pass = "<?php\n\nnamespace Lib;\n\nfinal class Pass\n{\n    /**\n     * @template T\n     * @param T $value\n     * @return T\n     */\n    public static function keep(mixed $value): mixed\n    {\n        return $value;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Pass;\n\nclass Counter\n{\n    public int run(Function<int(List<string>)> size)\n    {\n        let copy = size;\n        const kept = Pass.keep(size);\n        List<Function<int(List<string>)>> all = [size];\n        int total = copy([:]) + kept([:]);\n        for (const each of all) {\n            total += each([:]);\n        }\n        return total;\n    }\n}\n";
+
+    let message = "invalid-array-element `[:]` is an empty Map. An empty List is written `[]`.";
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counter.sharp", sharp), &[("src/Lib/Pass.php", pass)])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        [format!("12:26 {message}"), format!("12:38 {message}"), format!("14:27 {message}")]
+    );
+}
+
+/// The right side of `??` flows into the place its value is assigned to, so its literal is checked as the place's.
+#[test]
+fn a_list_literal_on_the_right_of_null_coalescing_where_a_map_is_declared_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Options\n{\n    public Map<string, int> run(Map<string, int>? given)\n    {\n        Map<string, int> options = given ?? [];\n        return options;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Options\n{\n    public function run(?array $given): array\n    {\n        $options = $given ?? [];\n        return $options;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Options.php", php), &[]), Vec::<String>::new());
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Options.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        ["7:45 invalid-array-element `[]` is an empty List. An empty Map is written `[:]`."]
+    );
+}
+
+/// Both branches of `? :` flow into the place, through any nesting, so each branch's literal is checked as the
+/// place's.
+#[test]
+fn a_list_literal_in_a_ternary_branch_where_a_map_is_declared_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Counts\n{\n    public Map<string, int> run(bool ready, Map<string, int>? given, Map<string, int> seed)\n    {\n        Map<string, int> counts = ready ? [] : seed;\n        Map<string, int> nested = ready ? seed : (given ?? []);\n        return ready ? counts : nested;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Counts\n{\n    public function run(bool $ready, ?array $given, array $seed): array\n    {\n        $counts = $ready ? [] : $seed;\n        $nested = $ready ? $seed : ($given ?? []);\n        return $ready ? $counts : $nested;\n    }\n}\n";
+
+    let message = "invalid-array-element `[]` is an empty List. An empty Map is written `[:]`.";
+    assert_eq!(issues(("src/Demo/Counts.php", php), &[]), Vec::<String>::new());
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counts.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        [format!("7:43 {message}"), format!("8:60 {message}")]
+    );
+}
+
+/// Every arm of a `match` flows into the place, so each arm's literal is checked as the place's.
+#[test]
+fn a_list_literal_in_a_match_arm_where_a_map_is_returned_is_an_error() {
+    let kind_sharp = "namespace Demo;\n\npublic enum Kind\n{\n    case None;\n    case Some;\n}\n";
+    let kind_php = "<?php\n\nnamespace Demo;\n\nenum Kind\n{\n    case None;\n    case Some;\n}\n";
+    let sharp = "namespace Demo;\n\nclass Counts\n{\n    public Map<string, int> run(Kind kind, Map<string, int> seed)\n    {\n        return match (kind) { Kind.None => [], default => seed };\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Counts\n{\n    public function run(Kind $kind, array $seed): array\n    {\n        return match ($kind) { Kind::None => [], default => $seed };\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Counts.php", php), &[("src/Demo/Kind.php", kind_php)]), Vec::<String>::new());
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counts.sharp", sharp), &[("src/Demo/Kind.sharp", kind_sharp)])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        ["7:44 invalid-array-element `[]` is an empty List. An empty Map is written `[:]`."]
+    );
+}
+
+/// `??=` stores its right side unchanged when the place is null, so its literal is checked as the place's.
+#[test]
+fn a_list_literal_assigned_with_null_coalescing_to_a_map_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Counts\n{\n    public Map<string, int> run(Map<string, int>? counts)\n    {\n        counts ??= [];\n        return counts;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Counts\n{\n    public function run(?array $counts): array\n    {\n        $counts ??= [];\n        return $counts;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Counts.php", php), &[]), Vec::<String>::new());
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counts.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        ["7:20 invalid-array-element `[]` is an empty List. An empty Map is written `[:]`."]
+    );
+}
+
+/// A literal of the declared collection compiles on the right of `??` and `??=`, in a `? :` branch and in a `match`
+/// arm.
+#[test]
+fn a_literal_of_the_declared_collection_in_a_coalesce_ternary_or_match_is_accepted() {
+    let kind = "namespace Demo;\n\npublic enum Kind\n{\n    case None;\n    case Some;\n}\n";
+    let sharp = "namespace Demo;\n\nclass Clean\n{\n    public Map<string, int> run(Map<string, int>? given, Map<string, int>? later, bool ready, Kind kind)\n    {\n        later ??= [:];\n        Map<string, int> options = given ?? [:];\n        Map<string, int> counts = ready ? [:] : later;\n        return match (kind) { Kind.None => [:], default => ready ? counts : options };\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Clean.sharp", sharp), &[("src/Demo/Kind.sharp", kind)]), Vec::<String>::new());
 }
 
 /// A `List` has `add`, `set`, `get` and `entries()`, and a `Map` has `delete` and `get`, each typed by the elements of
@@ -4895,7 +5502,8 @@ fn an_extern_method_in_a_project_file_is_an_error_in_any_namespace() {
 }
 
 /// An argument the parameter refuses is named as PHP# writes its type: `Any?`, `List<Any?>`, `int?`, a literal by its
-/// type, and `Class<Dog>`. The PHP twin keeps Mago's text.
+/// type, and `Class<Dog>`. A `false` argument asks for no `int|false` parameter, which PHP# cannot write. The PHP twin
+/// keeps Mago's text.
 #[test]
 fn a_refused_argument_names_its_types_as_sharp_writes_them() {
     let sharp = "namespace Demo;\n\npublic class Animal\n{\n}\n\npublic class Dog : Animal\n{\n}\n\npublic class Report\n{\n    public static int keep(int number) => number;\n\n    public static Dog pet(Dog dog) => dog;\n\n    public static List<int> counts(List<int> numbers) => numbers;\n\n    public static void run(Any? anything, Animal animal, List<Any?> values, int|string key, int? maybe)\n    {\n        Report.keep(anything);\n        Report.pet(animal);\n        Report.counts(values);\n        Report.keep(key);\n        Report.keep(null);\n        Report.keep(maybe);\n        Report.keep(false);\n        Report.keep(\"text\");\n        Report.keep(typeof(Dog));\n    }\n}\n";
@@ -4924,7 +5532,7 @@ fn a_refused_argument_names_its_types_as_sharp_writes_them() {
             "24:21 possibly-invalid-argument Possible argument type mismatch for argument #1 of `Report.keep`: expected `int`, but possibly received `int|string`. | This might not be type `int` | Arguments to this method are incorrect | The provided type `int|string` overlaps with `int` but is not fully contained. | Ensure the argument always has the expected type using checks or assertions.",
             "25:21 null-argument Argument #1 of method `Report.keep` is `null`, but parameter type `int` does not accept it. | This argument is `null` | Arguments to this method are incorrect | Provide a non-null value, or declare the parameter as nullable (e.g., `int?`).",
             "26:21 possibly-null-argument Argument #1 of method `Report.keep` is possibly `null`, but parameter type `int` does not accept it. | This argument of type `int?` might be `null` | Arguments to this method are incorrect | Add a `null` check before this call to ensure the value is not `null`.",
-            "27:21 false-argument Argument #1 of method `Report.keep` is `false`, but parameter type `int` does not accept it. | This argument is `false` | Arguments to this method are incorrect | Provide a different value, or update the parameter type to accept false (e.g., `int|false`).",
+            "27:21 false-argument Argument #1 of method `Report.keep` is `false`, but parameter type `int` does not accept it. | This argument is `false` | Arguments to this method are incorrect | Provide a different value.",
             "28:21 invalid-argument Invalid argument type for argument #1 of `Report.keep`: expected `int`, but found `string`. | This has type `string` | Arguments to this method are incorrect | The provided type `string` is not compatible with the expected type `int`. | Change the argument value to match `int`, or update the parameter's type declaration.",
             "29:21 invalid-argument Invalid argument type for argument #1 of `Report.keep`: expected `int`, but found `Class<Dog>`. | This has type `Class<Dog>` | Arguments to this method are incorrect | The provided type `Class<Dog>` is not compatible with the expected type `int`. | Change the argument value to match `int`, or update the parameter's type declaration.",
         ]
@@ -5016,7 +5624,7 @@ fn a_message_names_an_accessor_as_sharp_writes_it() {
             "7:23 missing-return-statement Missing return statement in property hook `Box.open.get` | This property hook is declared to return 'int'... | ...but this path can exit without returning a value. | A property hook that does not explicitly return a value will implicitly return `null`. | Add a `return` statement that provides a value of type 'int' to all paths, or change the property hook's return type to 'int?' and return `null` explicitly.",
             "9:26 mixed-return-statement Could not infer a precise return type for property hook `Box.amount.get`. Saw type `Any?`. | Type inferred as `Any?` here. | The analysis could not determine a specific type for the value returned here. | Add specific type hints to variables or properties involved in calculating the return value.",
             "11:24 nullable-return-statement Property hook `Box.size.get` returns nullable value `int?` but property type is `int`. | Nullable value returned here. | The property type does not permit null, but this expression could return null. | Ensure the hook always returns a non-null value, or change the property type to `int?`.",
-            "13:28 falsable-return-statement Property hook `Box.position.get` returns falsable value `bool|int` but property type is `int`. | Potentially 'false' returned here. | The property type does not permit false, but this expression could return false. | Ensure the hook never returns false, or change the property type to `int|false`.",
+            "13:28 falsable-return-statement Property hook `Box.position.get` returns falsable value `bool|int` but property type is `int`. | Potentially `false` returned here. | The property type does not permit `false`, but this expression could return `false`. | Ensure the hook never returns `false`.",
         ]
     );
 }
