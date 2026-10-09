@@ -25,6 +25,7 @@ pub(crate) fn getters_must_be_pure(effects: &Effects) -> IssueCollection {
             impure(
                 IssueCode::ImpureGetter,
                 format!("Getter `{}` {impurity}. Getters must be pure.", member(name)),
+                "getter",
                 &impurity,
             )
         })
@@ -43,6 +44,7 @@ pub(crate) fn laws_must_be_pure(effects: &Effects, codebase: &CodebaseMetadata) 
             impure(
                 IssueCode::ImpureLaw,
                 format!("Law `{}` {impurity}. Laws hold only over pure code.", member(name)),
+                "law",
                 &impurity,
             )
         })
@@ -56,13 +58,18 @@ fn member(name: Word) -> String {
     String::from_utf8_lossy(bytes.rsplit(|byte| *byte == b'.').next().unwrap_or(bytes)).into_owned()
 }
 
-/// The error on the call or write `impurity` names, with the `extern` to write when the callee has none.
-fn impure(code: IssueCode, message: String, impurity: &Impurity) -> Issue {
+/// The error on the call or write `impurity` names in the `body` it refuses, a getter or a law, with the `extern` to
+/// write when the callee has none, or how to take a property's plain PHP code out of `body`.
+fn impure(code: IssueCode, message: String, body: &str, impurity: &Impurity) -> Issue {
     let issue = Issue::error(message).with_code(code.as_str()).with_annotation(Annotation::primary(impurity.span));
 
     match impurity.effect {
-        Some(Effect::Unknown(target)) => issue.with_help(format!(
+        Some(Effect::Unknown(Some(target))) => issue.with_help(format!(
             "Declare it in a .sharp file: `extern {target};` when it has no effect, or name its effects after `uses`."
+        )),
+        Some(Effect::Unknown(None)) => issue.with_help(format!(
+            "Property `{}` holds plain PHP code with no declared effect. Type it as a PHP# `Function<…>`, or move the call out of the {body}.",
+            impurity.cause
         )),
         _ => issue,
     }

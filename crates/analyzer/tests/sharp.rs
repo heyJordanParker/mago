@@ -6309,32 +6309,44 @@ fn a_getter_calling_a_property_holding_a_function_type_passes() {
     assert_eq!(effect_issues(&[pricing]), Vec::<String>::new());
 }
 
-/// A plain PHP property holding a closure or a callable declares no effect, so calling it has an unknown effect until
-/// an `extern` on its class declares one. An object with `__invoke` has the effects of its `__invoke`.
+const HOLDER: (&str, &str) = (
+    "src/Lib/Holder.php",
+    "<?php\n\nnamespace Lib;\n\nfinal class Formatter\n{\n    public function __invoke(int $amount): int\n    {\n        return $amount;\n    }\n}\n\nfinal class Holder\n{\n    /** @var \\Closure(int): int */\n    public \\Closure $closure;\n\n    /** @var callable(int): int */\n    public $callback;\n\n    public Formatter $format;\n}\n",
+);
+
+/// A plain PHP property holding a closure or a callable declares no effect, and an `extern` on its class declares the
+/// class's own members, not the code the property holds, so calling it always has an unknown effect. An object with
+/// `__invoke` has the effects of its `__invoke`.
 #[test]
 fn a_getter_calling_a_plain_php_property_holding_a_function_has_an_unknown_effect() {
-    let holder = (
-        "src/Lib/Holder.php",
-        "<?php\n\nnamespace Lib;\n\nfinal class Formatter\n{\n    public function __invoke(int $amount): int\n    {\n        return $amount;\n    }\n}\n\nfinal class Holder\n{\n    /** @var \\Closure(int): int */\n    public \\Closure $closure;\n\n    /** @var callable(int): int */\n    public $callback;\n\n    public Formatter $format;\n}\n",
-    );
+    let holder = HOLDER;
     let till = (
         "app/Shop/Till.sharp",
         "namespace App.Shop;\n\nimport Lib.Holder;\n\npublic class Till\n{\n    public Till(private Holder holder) { }\n\n    public int closed => this.holder.closure(2);\n\n    public int called => this.holder.callback(2);\n\n    public int formatted => this.holder.format(2);\n}\n",
     );
-    let pure = ("app/Stubs/Holder.sharp", "namespace App.Stubs;\n\nimport Lib.Holder;\n\nextern Holder;\n");
+    let class_extern = ("app/Stubs/Holder.sharp", "namespace App.Stubs;\n\nimport Lib.Holder;\n\nextern Holder;\n");
+    let refused = [
+        "app/Shop/Till.sharp:9:26 impure-getter: Getter `closed` calls `Holder.closure`, which has no `extern` declaration. Getters must be pure. Help: Property `Holder.closure` holds plain PHP code with no declared effect. Type it as a PHP# `Function<…>`, or move the call out of the getter.",
+        "app/Shop/Till.sharp:11:26 impure-getter: Getter `called` calls `Holder.callback`, which has no `extern` declaration. Getters must be pure. Help: Property `Holder.callback` holds plain PHP code with no declared effect. Type it as a PHP# `Function<…>`, or move the call out of the getter.",
+        "app/Shop/Till.sharp:13:29 impure-getter: Getter `formatted` calls `Formatter.__invoke`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Formatter.__invoke;` when it has no effect, or name its effects after `uses`.",
+    ];
+
+    assert_eq!(effect_issues(&[till, holder]), refused);
+    assert_eq!(effect_issues(&[till, holder, class_extern]), refused);
+}
+
+/// A law calling a plain PHP property that holds a closure is refused as a getter is, and its help names the law.
+#[test]
+fn a_law_calling_a_plain_php_property_holding_a_closure_has_an_unknown_effect() {
+    let rule = (
+        "app/Shop/Rule.sharp",
+        "namespace App.Shop;\n\nimport Lib.Holder;\n\npublic class Rule\n{\n    law positive(Holder holder) => holder.closure(2) > 0;\n}\n",
+    );
 
     assert_eq!(
-        effect_issues(&[till, holder]),
+        effect_issues(&[rule, HOLDER]),
         [
-            "app/Shop/Till.sharp:9:26 impure-getter: Getter `closed` calls `Holder.closure`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Holder;` when it has no effect, or name its effects after `uses`.",
-            "app/Shop/Till.sharp:11:26 impure-getter: Getter `called` calls `Holder.callback`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Holder;` when it has no effect, or name its effects after `uses`.",
-            "app/Shop/Till.sharp:13:29 impure-getter: Getter `formatted` calls `Formatter.__invoke`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Formatter.__invoke;` when it has no effect, or name its effects after `uses`.",
-        ]
-    );
-    assert_eq!(
-        effect_issues(&[till, holder, pure]),
-        [
-            "app/Shop/Till.sharp:13:29 impure-getter: Getter `formatted` calls `Formatter.__invoke`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Formatter.__invoke;` when it has no effect, or name its effects after `uses`."
+            "app/Shop/Rule.sharp:7:36 impure-law: Law `positive` calls `Holder.closure`, which has no `extern` declaration. Laws hold only over pure code. Help: Property `Holder.closure` holds plain PHP code with no declared effect. Type it as a PHP# `Function<…>`, or move the call out of the law."
         ]
     );
 }

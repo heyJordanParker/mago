@@ -479,8 +479,9 @@ where
     }
 
     /// Records a call of the property `property` of `class` that holds a function. A PHP# class declares it with a
-    /// `Function` type, which is pure without `uses`. A plain PHP closure or callable has the effects the `extern` on
-    /// its class declares, or `Unknown` without one. An object's `__invoke` is recorded as the method it is.
+    /// `Function` type, which is pure without `uses`. A plain PHP closure or callable is `Unknown`, because an `extern`
+    /// declares a class's members, not the code a property holds. An object's `__invoke` is recorded as the method it
+    /// is.
     fn property_call(&mut self, class: Word, property: Word, span: Span) {
         let codebase = self.codebase();
         let Some(class_like) = codebase.get_class_like(class.as_bytes()) else {
@@ -503,13 +504,9 @@ where
             return;
         }
 
-        let class_name = short_name(class_like.original_name);
-        let cause =
-            concat_word!(class_name, ".", word(property.as_bytes().strip_prefix(b"$").unwrap_or(property.as_bytes())));
-        match self.extern_of(class_like.name, empty_word()) {
-            Some(declaration) => self.plain_php(Some(declaration), span, cause),
-            None => self.summary.effects.push((Effect::Unknown(class_name), span, cause)),
-        }
+        let property = property.as_bytes().strip_prefix(b"$").unwrap_or(property.as_bytes());
+        let cause = concat_word!(short_name(class_like.original_name), ".", word(property));
+        self.summary.effects.push((Effect::Unknown(None), span, cause));
     }
 
     /// Records a PHP# operator on instances at `span`: it runs the static method its class declares, which takes
@@ -644,7 +641,7 @@ where
                     self.summary.effects.push((Effect::Foreign(*effect), span, cause));
                 }
             }
-            None => self.summary.effects.push((Effect::Unknown(cause), span, cause)),
+            None => self.summary.effects.push((Effect::Unknown(Some(cause)), span, cause)),
         }
     }
 
