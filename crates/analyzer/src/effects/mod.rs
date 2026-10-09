@@ -17,6 +17,8 @@ use mago_word::ascii_lowercase_word;
 use mago_word::empty_word;
 use mago_word::word;
 
+use crate::graph::strongly_connected_parts;
+
 pub(crate) mod check;
 pub(crate) mod summary;
 
@@ -318,74 +320,6 @@ fn through(item: Item, call: &Call) -> impl Iterator<Item = Item> + '_ {
     };
 
     effect.into_iter().chain(roots.into_iter().map(Item::Changed))
-}
-
-/// The strongly connected parts of a graph, each after every part it reaches (Tarjan, without recursion so a long
-/// chain of calls cannot overflow the stack).
-fn strongly_connected_parts(successors: &[Vec<usize>]) -> Vec<Vec<usize>> {
-    const UNVISITED: usize = usize::MAX;
-
-    let mut order = vec![UNVISITED; successors.len()];
-    let mut low = vec![0; successors.len()];
-    let mut on_stack = vec![false; successors.len()];
-    let mut stack = Vec::new();
-    let mut parts = Vec::new();
-    let mut next = 0;
-
-    for root in 0..successors.len() {
-        if order[root] != UNVISITED {
-            continue;
-        }
-
-        let mut work = vec![(root, 0)];
-        while let Some((node, mut position)) = work.pop() {
-            if position == 0 {
-                order[node] = next;
-                low[node] = next;
-                next += 1;
-                stack.push(node);
-                on_stack[node] = true;
-            }
-
-            let mut descended = false;
-            while let Some(&successor) = successors[node].get(position) {
-                position += 1;
-                if order[successor] == UNVISITED {
-                    work.push((node, position));
-                    work.push((successor, 0));
-                    descended = true;
-                    break;
-                }
-
-                if on_stack[successor] {
-                    low[node] = low[node].min(order[successor]);
-                }
-            }
-
-            if descended {
-                continue;
-            }
-
-            if low[node] == order[node] {
-                let mut part = Vec::new();
-                while let Some(member) = stack.pop() {
-                    on_stack[member] = false;
-                    part.push(member);
-                    if member == node {
-                        break;
-                    }
-                }
-
-                parts.push(part);
-            }
-
-            if let Some(&(parent, _)) = work.last() {
-                low[parent] = low[parent].min(low[node]);
-            }
-        }
-    }
-
-    parts
 }
 
 /// The last segment of a class name: `Clock` for `Sharp\Clock`.

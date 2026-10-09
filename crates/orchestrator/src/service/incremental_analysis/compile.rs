@@ -37,6 +37,10 @@ use mago_sharp_bridge::unit::Reads;
 use mago_sharp_bridge::unit::encode;
 use mago_sharp_bridge::unit::key;
 use mago_sharp_bridge::unit::source_hash;
+use mago_sharp_lean::Reach;
+use mago_sharp_lean::Translation;
+use mago_sharp_lean::proof_file;
+use mago_sharp_lean::translate;
 use mago_syntax::dialect::Dialect;
 use mago_syntax::parser::parse_file_with_settings;
 use mago_word::Word;
@@ -61,8 +65,8 @@ pub enum Compilation {
     Refused(IssueCollection),
 }
 
-/// A `.sharp` file lowered, or the errors that refused it.
-type Lowered = Result<(Unit, Vec<(Vec<u8>, InlineForm)>), IssueCollection>;
+/// A `.sharp` file lowered and translated to Lean, or the errors that refused it.
+type Lowered = Result<(Unit, Vec<(Vec<u8>, InlineForm)>, Translation), IssueCollection>;
 
 impl IncrementalAnalysisService {
     /// Compiles each `.sharp` file of the last analysis, in file name order.
@@ -77,16 +81,23 @@ impl IncrementalAnalysisService {
     /// declares a method whose return it reads from that method's body, along every chain of such returns, with that
     /// file's own inputs.
     ///
+    /// A file that states a law also lists its proof file and every source its laws reach. `prove` gets the Lean
+    /// translation of every accepted file and returns the issues of each file whose law is not proved, which refuse
+    /// that file whatever pragma, ignore entry or baseline the analysis honors. It runs before any input is stamped,
+    /// so a proof file it creates is stamped present.
+    ///
     /// `stamp` gives the size, modification time and hash of the file at a workspace-relative path, or none when no
     /// file is there. It is called once per input. An input no file is at is stored absent: its size, modification
     /// time and hash are all zero. No file has that stamp, because the hash of an empty file is not zero.
     ///
     /// # Errors
     ///
-    /// Returns [`OrchestratorError`] when no analysis ran yet, when re-analyzing a file fails, or when `stamp` fails.
+    /// Returns [`OrchestratorError`] when no analysis ran yet, when re-analyzing a file fails, or when `stamp` or
+    /// `prove` fails.
     pub fn compile(
         &mut self,
         mut stamp: impl FnMut(&[u8]) -> std::io::Result<Option<Input>>,
+        prove: impl FnOnce(Vec<Translation>) -> std::io::Result<HashMap<FileId, IssueCollection>>,
     ) -> Result<Vec<(FileId, Compilation)>, OrchestratorError> {
         if !self.initialized {
             return Err(OrchestratorError::General("analyze() must be called before compile()".to_string()));
@@ -110,20 +121,32 @@ impl IncrementalAnalysisService {
 
         let session = self.plugin_registry.create_external_analysis_session(self.database.files());
         let (library, rest): (Vec<_>, Vec<_>) = files.iter().partition(|file| file.is_standard_library);
+        let reach = Reach::new(&self.codebase, &self.native_symbol_references);
 
-        let lowered_library = self.lower_all(&library, &InlineForms::default(), &errors, session.as_ref())?;
+        let lowered_library = self.lower_all(&library, &InlineForms::default(), &errors, &reach, session.as_ref())?;
         let forms: InlineForms = lowered_library
             .iter()
             .filter_map(|lowered| lowered.as_ref().ok())
-            .flat_map(|(_, forms)| forms.iter().cloned())
+            .flat_map(|(_, forms, _)| forms.iter().cloned())
             .collect();
-        let lowered_rest = self.lower_all(&rest, &forms, &errors, session.as_ref())?;
-        let mut lowered: HashMap<FileId, Lowered> = library
+        let lowered_rest = self.lower_all(&rest, &forms, &errors, &reach, session.as_ref())?;
+        let mut translations = Vec::new();
+        let mut lowered: HashMap<FileId, Result<Unit, IssueCollection>> = library
             .iter()
             .chain(&rest)
             .map(|file| file.id)
             .zip(lowered_library.into_iter().chain(lowered_rest))
+            .map(|(file_id, lowered)| {
+                (
+                    file_id,
+                    lowered.map(|(unit, _, translation)| {
+                        translations.push(translation);
+                        unit
+                    }),
+                )
+            })
             .collect();
+        let mut unproven = prove(translations).map_err(mago_database::error::DatabaseError::from)?;
 
         let mut reads = self.reads();
         let read_by_every_file: HashSet<FileId> = self
@@ -158,13 +181,16 @@ impl IncrementalAnalysisService {
                 sources.extend(dependencies.reached_by(source));
             }
             sources.extend(body_files);
+            sources.extend(reach.files(file.id));
             sources.insert(file.id);
 
+            let proof = (!reach.files(file.id).is_empty() && is_source(file)).then(|| proof_file(&file.name));
             let mut paths: Vec<Vec<u8>> = sources
                 .into_iter()
                 .filter_map(|source| self.database.get(&source).ok())
                 .filter(|source| source.id == file.id || is_source(source))
                 .map(|source| source.name.to_vec())
+                .chain(proof)
                 .chain(std::iter::once(COMPOSER_LOCK.to_vec()))
                 .collect();
             paths.sort_unstable();
@@ -187,8 +213,9 @@ impl IncrementalAnalysisService {
             let Some(lowered) = lowered.remove(&file.id) else {
                 continue;
             };
-            let compilation = match lowered {
-                Ok((unit, _)) => {
+            let compilation = match (lowered, unproven.remove(&file.id)) {
+                (Ok(_), Some(issues)) | (Err(issues), _) => Compilation::Refused(issues),
+                (Ok(unit), None) => {
                     let (mut reads, _) = reads.remove(&file.id).unwrap_or_default();
                     reads.inlined = unit.inlined().to_vec();
                     let key = key(source_hash(&file.contents), &reads);
@@ -212,7 +239,6 @@ impl IncrementalAnalysisService {
 
                     Compilation::Accepted(encode(&unit, &file.contents, key, &inputs, &[]))
                 }
-                Err(errors) => Compilation::Refused(errors),
             };
 
             compiled.push((file.id, compilation));
@@ -326,12 +352,14 @@ impl IncrementalAnalysisService {
         classes.chain(class_like.all_parent_interfaces.iter().copied()).chain(traits).collect()
     }
 
-    /// Lowers each of `files` with `forms` to inline, the files the analysis reported `errors` in refused.
+    /// Lowers each of `files` with `forms` to inline, and translates it to Lean as far as `reach` asks, the files the
+    /// analysis reported `errors` in refused.
     fn lower_all(
         &self,
         files: &[&Arc<File>],
         forms: &InlineForms,
         errors: &HashMap<FileId, IssueCollection>,
+        reach: &Reach,
         session: Option<&ExternalAnalysisSession>,
     ) -> Result<Vec<Lowered>, OrchestratorError> {
         files
@@ -347,7 +375,7 @@ impl IncrementalAnalysisService {
                     .analyze_with_artifacts(program, &mut AnalysisResult::new(SymbolReferences::new()))?;
 
                 Ok(match check(file, program, names, &artifacts, &self.codebase, forms, &issues) {
-                    Ok(checked) => Ok((lower(&checked), inline_forms(&checked))),
+                    Ok(checked) => Ok((lower(&checked), inline_forms(&checked), translate(&checked, reach))),
                     Err(Refusal::Parse(errors)) => Err(errors.iter().map(Issue::from).collect()),
                     Err(Refusal::Compile(errors)) => Err(IssueCollection::from(errors)),
                 })
@@ -643,12 +671,17 @@ mod tests {
         }
     }
 
+    /// Proves every law, as a Lean step that refuses nothing.
+    fn proved(_: Vec<Translation>) -> std::io::Result<HashMap<FileId, IssueCollection>> {
+        Ok(HashMap::default())
+    }
+
     /// Each compiled file of `service` by its name.
     fn compile(
         service: &mut IncrementalAnalysisService,
         stamp: impl FnMut(&[u8]) -> std::io::Result<Option<Input>>,
     ) -> std::collections::BTreeMap<String, Compilation> {
-        let compiled = service.compile(stamp).expect("the compile runs");
+        let compiled = service.compile(stamp, proved).expect("the compile runs");
         let database = service.database();
 
         compiled
@@ -715,7 +748,7 @@ mod tests {
         let database = project(&[("app/Order.sharp", ORDER)]);
         let mut service = analyzed(&database);
 
-        let compiled = service.compile(empty_stamp).expect("the compile runs");
+        let compiled = service.compile(empty_stamp, proved).expect("the compile runs");
 
         assert_eq!(compiled.len(), 1, "{compiled:?}");
         let (file_id, Compilation::Accepted(bytes)) = &compiled[0] else {
@@ -1360,6 +1393,94 @@ mod tests {
                 (count..count * count / 2).contains(&pairs),
                 "{seed:#x}: {pairs} pairs, so edits reach too few files or nearly every file"
             );
+        }
+    }
+
+    /// A law whose `add` calls `Rounding.sum`, which calls `Digits.keep` in a third file, beside a file no law reaches.
+    fn lawful_project() -> Database<'static> {
+        project(&[
+            (
+                "app/Shared/Money.sharp",
+                "namespace App.Shared;\n\npublic class Money\n{\n    public Money(public int amount { get; }, public string currency { get; }) { }\n    public Money add(Money other) => new Money(Rounding.sum(this.amount, other.amount), this.currency);\n\n    law addKeepsCurrency(Money a, Money b) => a.add(b).currency == a.currency;\n}\n",
+            ),
+            (
+                "app/Shared/Rounding.sharp",
+                "namespace App.Shared;\n\npublic class Rounding\n{\n    public static int sum(int a, int b) => Digits.keep(a + b);\n}\n",
+            ),
+            (
+                "app/Shared/Digits.sharp",
+                "namespace App.Shared;\n\npublic class Digits\n{\n    public static int keep(int a) => a;\n}\n",
+            ),
+            ("app/Order.sharp", ORDER),
+        ])
+    }
+
+    #[test]
+    fn a_law_file_lists_its_proof_file_and_every_source_its_law_reaches_as_inputs() {
+        let database = lawful_project();
+        let mut service = analyzed(&database);
+
+        let compiled = compile(&mut service, empty_stamp);
+
+        let money = input_paths(accepted(&compiled, "app/Shared/Money.sharp"));
+        for input in ["app/Shared/Money.lean", "app/Shared/Rounding.sharp", "app/Shared/Digits.sharp"] {
+            assert!(money.iter().any(|path| path == input), "{input} is missing from {money:?}");
+        }
+        let order = input_paths(accepted(&compiled, "app/Order.sharp"));
+        assert!(!order.iter().any(|path| path == "app/Order.lean"), "{order:?}");
+    }
+
+    #[test]
+    fn the_proof_file_the_lean_step_creates_is_stamped_present() {
+        let database = lawful_project();
+        let mut service = analyzed(&database);
+        let created = std::cell::Cell::new(false);
+
+        let compiled = service
+            .compile(
+                |path| {
+                    let present = path != b"app/Shared/Money.lean" || created.get();
+                    Ok(present.then(|| Input { path: path.to_vec(), size: 1, mtime_ns: 0, hash: [1; 16] }))
+                },
+                |translations| {
+                    assert_eq!(translations.len(), 4);
+                    created.set(true);
+                    Ok(HashMap::default())
+                },
+            )
+            .expect("the compile runs");
+
+        let (_, Compilation::Accepted(bytes)) =
+            compiled.iter().find(|(file_id, _)| *file_id == FileId::new(b"app/Shared/Money.sharp")).unwrap()
+        else {
+            panic!("app/Shared/Money.sharp is refused: {compiled:?}");
+        };
+        let proof = inputs(bytes).into_iter().find(|input| input.path == b"app/Shared/Money.lean").unwrap();
+        assert_eq!(proof.size, 1, "the proof file is stamped absent");
+    }
+
+    #[test]
+    fn a_file_the_lean_step_refuses_gets_its_issues_and_no_compiled_file() {
+        let database = lawful_project();
+        let mut service = analyzed(&database);
+        let money = FileId::new(b"app/Shared/Money.sharp");
+
+        let compiled = service
+            .compile(empty_stamp, |_| {
+                let mut issues = IssueCollection::default();
+                issues.push(Issue::error("Law addKeepsCurrency is not proven."));
+                Ok(HashMap::from_iter([(money, issues)]))
+            })
+            .expect("the compile runs");
+
+        for (file_id, compilation) in &compiled {
+            match compilation {
+                Compilation::Refused(issues) if *file_id == money => {
+                    assert_eq!(messages(issues), ["Law addKeepsCurrency is not proven."]);
+                }
+                Compilation::Accepted(_) if *file_id != money => {}
+                other => panic!("{file_id:?}: {other:?}"),
+            }
         }
     }
 }

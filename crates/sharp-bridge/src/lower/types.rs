@@ -37,19 +37,19 @@ pub struct Types<'analysis> {
 
 /// The declaration a class or member name resolves to, as the checker found it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Declaration {
-    pub(crate) kind: DeclarationKind,
+pub struct Declaration {
+    pub kind: DeclarationKind,
     /// The class that declares it: a class itself, or the class an inherited member is declared in.
-    pub(crate) class: Word,
+    pub class: Word,
     /// The member's name, or a class's own name.
-    pub(crate) name: Word,
+    pub name: Word,
     /// Whether code outside the class may use it. A class is public.
-    pub(crate) public: bool,
+    pub public: bool,
 }
 
 /// What a declaration is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DeclarationKind {
+pub enum DeclarationKind {
     Class,
     Interface,
     /// `backed` is whether each case has a backing value, which a `Map` keyed by the enum holds for the case.
@@ -86,7 +86,8 @@ impl<'analysis> Types<'analysis> {
     }
 
     /// The type the analysis gave `expression`.
-    pub(crate) fn expression_type(&self, expression: &Expression) -> &'analysis TUnion {
+    #[must_use]
+    pub fn expression_type(&self, expression: &Expression) -> &'analysis TUnion {
         self.artifacts.get_expression_type(expression).unwrap_or_else(|| {
             unreachable!(
                 "the analysis types every expression of a file the checker accepted, not {:?}",
@@ -96,7 +97,8 @@ impl<'analysis> Types<'analysis> {
     }
 
     /// The declaration the fully qualified class name `class` resolves to.
-    pub(crate) fn class_declaration(&self, class: &[u8]) -> Declaration {
+    #[must_use]
+    pub fn class_declaration(&self, class: &[u8]) -> Declaration {
         let metadata = self.codebase.get_class_like(class).unwrap_or_else(|| {
             unreachable!("the checker refuses the unknown class `{}`", String::from_utf8_lossy(class))
         });
@@ -115,7 +117,8 @@ impl<'analysis> Types<'analysis> {
     /// The declaration `member` of the fully qualified class name `class` resolves to when code reads it: an enum case,
     /// a constant, a property, then a method, which the read takes as a first-class callable. Only when the class
     /// declares none of them is it a property its `__get` serves. A call is [`Self::call_target`]'s.
-    pub(crate) fn member_declaration(&self, class: &[u8], member: &[u8]) -> Declaration {
+    #[must_use]
+    pub fn member_declaration(&self, class: &[u8], member: &[u8]) -> Declaration {
         let declared = |kind, public| Declaration { kind, class: word(class), name: word(member), public };
 
         if self.codebase.get_enum_case(class, member).is_some() {
@@ -142,7 +145,8 @@ impl<'analysis> Types<'analysis> {
     /// receiver's method, or else its property holding a function, as spec section 14 calls one, or else a method its
     /// `__call` serves. Every class the receiver can be has the same kind of member, and `class` is the first's.
     /// `Self.m()` and `super.m()` lower to `static::` and `parent::`, and no caller asks their target.
-    pub(crate) fn call_target(&self, call: &Expression) -> Declaration {
+    #[must_use]
+    pub fn call_target(&self, call: &Expression) -> Declaration {
         let (object, method, class) = match call {
             Expression::Call(Call::Method(call)) => (call.object, &call.method, self.names.static_call_class(call)),
             Expression::Call(Call::NullSafeMethod(call)) => (call.object, &call.method, None),
@@ -177,7 +181,8 @@ impl<'analysis> Types<'analysis> {
 
     /// The full name of the constant the read `constant` reaches, as the analysis found it: the constant of that name
     /// in the file's namespace, or else the global one.
-    pub(crate) fn constant_target(&self, constant: &ConstantAccess) -> Word {
+    #[must_use]
+    pub fn constant_target(&self, constant: &ConstantAccess) -> Word {
         self.codebase
             .get_constant_or_global(self.names.get(constant), constant.name.value())
             .unwrap_or_else(|| unreachable!("the checker refuses the undefined constant `{}`", constant.name))
