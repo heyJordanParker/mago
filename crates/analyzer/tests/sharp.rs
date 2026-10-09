@@ -1866,8 +1866,8 @@ fn a_loop_condition_that_never_holds_names_its_php_sharp_type() {
 /// truthiness. PHP keeps its truthy and falsy wording.
 #[test]
 fn a_condition_that_always_or_never_holds_speaks_of_its_bool() {
-    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int never() { const off = false; if (off) { return 1; } return 0; }\n    public static int notNever() { const on = true; if (!on) { return 1; } return 0; }\n    public static int always() { const on = true; if (on) { return 1; } return 0; }\n    public static int notAlways() { const off = false; if (!off) { return 1; } return 0; }\n    public static int ternary() { const on = true; const off = false; return (on ? 1 : 2) + (off ? 1 : 2); }\n    public static bool logical(bool flag) { const on = true; const off = false; return (off && flag) || (on || flag); }\n    public static int loops() { const on = true; const off = false; while (off) { return 1; } while (!on) { return 2; } while (on) { return 3; } return 0; }\n    public static int negatedLoop() { const off = false; while (!off) { return 4; } return 0; }\n}\n";
-    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function never(): int { $off = false; if ($off) { return 1; } return 0; }\n    public static function notNever(): int { $on = true; if (!$on) { return 1; } return 0; }\n    public static function always(): int { $on = true; if ($on) { return 1; } return 0; }\n    public static function notAlways(): int { $off = false; if (!$off) { return 1; } return 0; }\n    public static function ternary(): int { $on = true; $off = false; return ($on ? 1 : 2) + ($off ? 1 : 2); }\n    public static function logical(bool $flag): bool { $on = true; $off = false; return ($off && $flag) || ($on || $flag); }\n    public static function loops(): int { $on = true; $off = false; while ($off) { return 1; } while (!$on) { return 2; } while ($on) { return 3; } return 0; }\n    public static function negatedLoop(): int { $off = false; while (!$off) { return 4; } return 0; }\n}\n";
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int never() { const off = false; if (off) { return 1; } return 0; }\n    public static int notNever() { const on = true; if (!on) { return 1; } return 0; }\n    public static int always() { const on = true; if (on) { return 1; } return 0; }\n    public static int notAlways() { const off = false; if (!off) { return 1; } return 0; }\n    public static int ternary() { const on = true; const off = false; return (on ? 1 : 2) + (off ? 1 : 2); }\n    public static bool logical(bool flag) { const on = true; const off = false; return (off && flag) || (on || flag); }\n    public static int loops() { const on = true; const off = false; while (off) { return 1; } while (!on) { return 2; } while (on) { return 3; } return 0; }\n    public static int negatedLoop() { const off = false; while (!off) { return 4; } return 0; }\n    public static bool otherwise(bool flag) { const off = false; return off || flag; }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function never(): int { $off = false; if ($off) { return 1; } return 0; }\n    public static function notNever(): int { $on = true; if (!$on) { return 1; } return 0; }\n    public static function always(): int { $on = true; if ($on) { return 1; } return 0; }\n    public static function notAlways(): int { $off = false; if (!$off) { return 1; } return 0; }\n    public static function ternary(): int { $on = true; $off = false; return ($on ? 1 : 2) + ($off ? 1 : 2); }\n    public static function logical(bool $flag): bool { $on = true; $off = false; return ($off && $flag) || ($on || $flag); }\n    public static function loops(): int { $on = true; $off = false; while ($off) { return 1; } while (!$on) { return 2; } while ($on) { return 3; } return 0; }\n    public static function negatedLoop(): int { $off = false; while (!$off) { return 4; } return 0; }\n    public static function otherwise(bool $flag): bool { $off = false; return $off || $flag; }\n}\n";
 
     assert_eq!(
         worded(("src/Demo/Report.php", php), &[]),
@@ -1887,6 +1887,8 @@ fn a_condition_that_always_or_never_holds_speaks_of_its_bool() {
             "13:103 impossible-condition This loop condition (type `false`) will always evaluate to false. | This condition is always false, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
             "13:130 redundant-condition Redundant condition: variable `$on` (type `true`) will always evaluate to true. | This condition always evaluates to true | Variable `$on` (type `true`) is always truthy. This condition is redundant and the code block will always execute if reached. | Simplify or remove the redundant condition if the guarded code should always run.",
             "14:70 redundant-condition Redundant condition: variable `$off` (type `false`) will always evaluate to true. | This condition always evaluates to true | Variable `$off` (type `false`) is always falsy, so asserting it's falsy is always true and redundant. | Simplify or remove the redundant condition if the guarded code should always run.",
+            "15:79 redundant-condition Redundant condition: variable `$off` (type `false`) will always evaluate to true. | This condition always evaluates to true | Variable `$off` (type `false`) is always falsy, so asserting it's falsy is always true and redundant. | Simplify or remove the redundant condition if the guarded code should always run.",
+            "15:79 redundant-logical-operation Redundant `||` operation: left operand is always false and right operand is evaluated. | Left operand is always false | Right operand is evaluated | The `||` operator will always return the boolean value of the right-hand side in this case. | Consider simplifying this expression to just the right operand.",
         ]
     );
     assert_eq!(
@@ -1899,7 +1901,7 @@ fn a_condition_that_always_or_never_holds_speaks_of_its_bool() {
             "9:79 redundant-condition Redundant ternary operator: condition is always `true`. | This condition (type `true`) is always `true` | This `then` branch is always evaluated, making it the result of the expression | This `else` branch will never be evaluated | The ternary operator `? :` evaluates the `else` branch only when the condition is `false`. | Consider replacing the entire expression with just this `then` branch.",
             "9:94 impossible-condition Redundant ternary operator: condition is always `false`. | This condition (type `false`) is always `false` | This `then` branch will never be evaluated | This `else` branch is always evaluated, making it the result of the expression | The ternary operator `? :` evaluates the `then` branch only when the condition is `true`. | Consider replacing the entire expression with just this `else` branch.",
             "10:89 redundant-logical-operation Redundant `&&` operation: left operand is always `false` and right operand is not evaluated. | Left operand is always `false` | Right operand is not evaluated | The `&&` operator will always return `false` in this case. | Consider simplifying this expression to `false`.",
-            "10:106 redundant-logical-operation Redundant `||` operation: left operand is always true and right operand is not evaluated. | Left operand is always true | Right operand is not evaluated | The `||` operator will always return `true` in this case. | Consider simplifying this expression to `true`.",
+            "10:106 redundant-logical-operation Redundant `||` operation: left operand is always `true` and right operand is not evaluated. | Left operand is always `true` | Right operand is not evaluated | The `||` operator will always return `true` in this case. | Consider simplifying this expression to `true`.",
             "10:88 redundant-logical-operation Redundant `||` operation: left operand is always `false` and right operand is always `true`. | Left operand is always `false` | Right operand is always `true` | The `||` operator will always return `true` in this case. | Consider simplifying this expression to `true`.",
             "11:76 impossible-condition Impossible condition: variable `off` (type `false`) will always evaluate to false. | This condition always evaluates to false | Variable `off` (type `false`) is never `true`, so this condition is always `false`. | Review the logic or type of the variable; this condition will never pass.",
             "11:76 impossible-condition This loop condition (type `false`) will always evaluate to false. | This condition is always false, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
@@ -1907,6 +1909,94 @@ fn a_condition_that_always_or_never_holds_speaks_of_its_bool() {
             "11:102 impossible-condition This loop condition (type `false`) will always evaluate to false. | This condition is always false, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
             "11:128 redundant-condition Redundant condition: variable `on` (type `true`) will always evaluate to true. | This condition always evaluates to true | Variable `on` (type `true`) is never `false`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
             "12:65 redundant-condition Redundant condition: variable `off` (type `false`) will always evaluate to true. | This condition always evaluates to true | Variable `off` (type `false`) is never `true`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
+            "13:73 redundant-condition Redundant condition: variable `off` (type `false`) will always evaluate to true. | This condition always evaluates to true | Variable `off` (type `false`) is never `true`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
+            "13:73 redundant-logical-operation Redundant `||` operation: left operand is always `false` and right operand is evaluated. | Left operand is always `false` | Right operand is evaluated | The `||` operator will always return the boolean value of the right-hand side in this case. | Consider simplifying this expression to just the right operand.",
+        ]
+    );
+}
+
+/// An operand that may be `false`, from a PHP method, asks for a check of `false`. PHP# has no falsiness, and keeps
+/// `(int)` between numbers, so no cast turns `false` into one. PHP keeps its own wording.
+#[test]
+fn an_operand_that_may_be_false_asks_for_a_check_of_false() {
+    let store = (
+        "src/Lib/Store.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Store\n{\n    public static function count(): int|false { return 1; }\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Store;\n\nclass Report\n{\n    public static int add() { return Store.count() + 1; }\n    public static int addRight() { return 1 + Store.count(); }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Store;\n\nclass Report\n{\n    public static function add(): int { return Store::count() + 1; }\n    public static function addRight(): int { return 1 + Store::count(); }\n}\n";
+    let possibly_false = |analyzed| -> Vec<String> {
+        worded(analyzed, &[store]).into_iter().filter(|line| line.contains(" possibly-false-operand ")).collect()
+    };
+
+    assert_eq!(
+        possibly_false(("src/Demo/Report.sharp", sharp)),
+        [
+            "7:38 possibly-false-operand Left operand in arithmetic operation might be `false` (type `false|int`). | This might be `false`. | Performing arithmetic operations on `false` typically results in `0`. | Ensure the left operand is not `false` before the operation.",
+            "8:47 possibly-false-operand Right operand in arithmetic operation might be `false` (type `false|int`). | This might be `false`. | Performing arithmetic operations on `false` typically results in `0`. | Ensure the right operand is not `false` before the operation.",
+        ]
+    );
+    assert_eq!(
+        possibly_false(("src/Demo/Report.php", php)),
+        [
+            "9:48 possibly-false-operand Left operand in arithmetic operation might be `false` (type `false|int`). | This might be `false`. | Performing arithmetic operations on `false` typically results in `0`. | Ensure the left operand is non-falsy before the operation, or explicitly cast if coercion is intended.",
+            "10:57 possibly-false-operand Right operand in arithmetic operation might be `false` (type `false|int`). | This might be `false`. | Performing arithmetic operations on `false` typically results in `0`. | Ensure the right operand is non-falsy before the operation, or explicitly cast if coercion is intended.",
+        ]
+    );
+}
+
+/// A loop over a value that may be `false`, from a PHP method, asks for a check of `false` before the loop. PHP# has
+/// no truthiness. PHP keeps its own wording.
+#[test]
+fn a_loop_over_a_value_that_may_be_false_asks_for_a_check_of_false() {
+    let store = (
+        "src/Lib/Store.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Store\n{\n    /** @return list<int>|false */\n    public static function ids(): array|false { return [1]; }\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Store;\n\nclass Report\n{\n    public static int total() { let sum = 0; for (const id of Store.ids()) { sum += id; } return sum; }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Store;\n\nclass Report\n{\n    public static function total(): int { $sum = 0; foreach (Store::ids() as $id) { $sum += $id; } return $sum; }\n}\n";
+    let possibly_false = |analyzed| -> Vec<String> {
+        worded(analyzed, &[store]).into_iter().filter(|line| line.contains(" possibly-false-iterator ")).collect()
+    };
+
+    assert_eq!(
+        possibly_false(("src/Demo/Report.sharp", sharp)),
+        [
+            "7:63 possibly-false-iterator Expression being iterated (type `false|List<int>`) might be `false` at runtime. | This might be `false` | This loop might not be executed | If this expression is `false`, it will be treated as an empty list, and the loop body will not execute. | Consider checking for `false` before the loop if this is not intended.",
+        ]
+    );
+    assert_eq!(
+        possibly_false(("src/Demo/Report.php", php)),
+        [
+            "9:62 possibly-false-iterator Expression being iterated (type `false|list<int>`) might be `false` at runtime. | This might be `false` | This `foreach` might not be executed | If this expression is `false`, it will be treated as an empty array, and the loop body will not execute. | Consider checking for `false` or truthiness before the loop if this is not intended.",
+        ]
+    );
+}
+
+/// A PHP method's `@psalm-assert non-empty-mixed` is named by the type its docblock writes. PHP# has no name for it,
+/// and `Any` would drop the non-empty that makes the assertion hold. PHP keeps Mago's `truthy-mixed`.
+#[test]
+fn an_assertion_of_non_empty_mixed_names_the_type_its_docblock_writes() {
+    let check = (
+        "src/Lib/Check.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Check\n{\n    /**\n     * @psalm-pure\n     *\n     * @psalm-assert non-empty-mixed $value\n     */\n    public static function filled(mixed $value): void {}\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Check;\n\nclass Report\n{\n    public static void run() { const one = 1; Check.filled(one); }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Check;\n\nclass Report\n{\n    public static function run(): void { $one = 1; Check::filled($one); }\n}\n";
+    let redundant = |analyzed| -> Vec<String> {
+        worded(analyzed, &[check]).into_iter().filter(|line| line.contains(" redundant-type-comparison ")).collect()
+    };
+
+    assert_eq!(
+        redundant(("src/Demo/Report.sharp", sharp)),
+        [
+            "7:47 redundant-type-comparison Redundant type assertion: `one` is already `1`. | Argument `one` already has type `1` | The assertion against `non-empty-mixed` always holds because `one` is `1`. | Consider removing this assertion or replacing it with `default` if used in a `match` arm.",
+        ]
+    );
+    assert_eq!(
+        redundant(("src/Demo/Report.php", php)),
+        [
+            "9:52 redundant-type-comparison Redundant type assertion: `$one` is already `int(1)`. | Argument `$one` already has type `int(1)` | The assertion against `truthy-mixed` always holds because `$one` is `int(1)`. | Consider removing this assertion or replacing it with `default` if used in a `match` arm.",
         ]
     );
 }
