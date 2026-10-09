@@ -6,7 +6,7 @@ nav_section = "Guide"
 +++
 # Mettre à jour
 
-`mago self-update` remplace le binaire en cours d'exécution par une release plus récente. À utiliser pour les installations issues du script shell, de Homebrew, de Cargo ou d'un téléchargement manuel.
+`mago self-update` remplace le binaire en cours d'exécution par une release plus récente. À utiliser pour les installations issues du script shell ou d'un téléchargement manuel.
 
 > Les installations Composer sont différentes. Le wrapper Composer épingle un binaire qui correspond à la version du paquet Composer, donc vous mettez Mago à jour avec `composer update` plutôt qu'avec `self-update`.
 
@@ -30,7 +30,7 @@ mago self-update --no-confirm     # skip the prompt
 Épingler une version spécifique :
 
 ```sh
-mago self-update --tag 1.51.0
+mago self-update --tag 0.2.0
 ```
 
 ## Synchroniser avec l'épinglage de version du projet
@@ -41,7 +41,7 @@ Si votre `mago.toml` utilise l'[épinglage de version](/guide/configuration/#ver
 mago self-update --to-project-version
 ```
 
-Pour un épinglage exact (`version = "1.51.0"`), cela résout directement vers ce tag de release. Pour un épinglage majeur ou mineur, Mago parcourt les releases GitHub récentes et installe la plus haute qui satisfait toujours l'épinglage. Ainsi, `version = "1"` avec 2.0 déjà sortie installe quand même la dernière release 1.x. `version = "1.14"` avec du 1.19.x dans la nature redescend vers le dernier 1.14.x.
+Pour un épinglage exact (`version = "0.2.0"`), cela résout directement vers ce tag de release. Pour un épinglage majeur ou mineur, Mago parcourt les releases GitHub récentes et installe la plus haute qui satisfait toujours l'épinglage. Ainsi, `version = "0"` avec 1.0 déjà sortie installe quand même la dernière release 0.x. `version = "0.1"` avec du 0.2.x dans la nature redescend vers le dernier 0.1.x.
 
 La commande échoue uniquement si aucune release publiée ne satisfait l'épinglage.
 

@@ -32,15 +32,12 @@ const VERSIONED_DOCUMENTATION_FILES = [
     'docs/content/en/guide/configuration.md',
     'docs/content/en/guide/installation.md',
     'docs/content/en/guide/upgrading.md',
-    'docs/content/en/recipes/docker.md',
     'docs/content/fr/guide/configuration.md',
     'docs/content/fr/guide/installation.md',
     'docs/content/fr/guide/upgrading.md',
-    'docs/content/fr/recipes/docker.md',
     'docs/content/zh/guide/configuration.md',
     'docs/content/zh/guide/installation.md',
     'docs/content/zh/guide/upgrading.md',
-    'docs/content/zh/recipes/docker.md',
 ];
 
 const MANIFEST_VERSION_DECLARATIONS = [

@@ -103,8 +103,8 @@ nav_section = ""
 
 <div class="install">
 <div class="install__head"><span><strong>[ INSTALL ]</strong></span><span>shell · macOS · Linux · WSL</span></div>
-<pre class="install__body"><code>curl --proto '=https' --tlsv1.2 -sSf https://carthage.software/mago.sh | bash</code></pre>
-<div class="install__alt">Or via <a href="/guide/installation/#composer">Composer</a>, <a href="/guide/installation/#homebrew">Homebrew</a>, <a href="/guide/installation/#cargo">Cargo</a>, or a <a href="/recipes/docker/">prebuilt Docker image</a>.</div>
+<pre class="install__body"><code>curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/heyJordanParker/mago-sharp/master/scripts/install.sh | bash</code></pre>
+<div class="install__alt">Or via <a href="/guide/installation/#composer">Composer</a>.</div>
 </div>
 
 </section>

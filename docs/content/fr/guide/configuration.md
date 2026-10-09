@@ -23,41 +23,39 @@ Dans chaque emplacement, il cherche d'abord `mago.{toml,yaml,yml,json}`, puis `m
 
 ## Schéma pour l'éditeur
 
-Chaque version publie un schéma JSON décrivant l'intégralité de l'arbre de configuration. Les éditeurs qui comprennent ce schéma offrent l'auto-complétion, la documentation au survol et la validation en ligne pour `mago.{toml,yaml,yml,json}`.
+Mago décrit l'intégralité de l'arbre de configuration par un schéma JSON. Les éditeurs qui comprennent ce schéma offrent l'auto-complétion, la documentation au survol et la validation en ligne pour `mago.{toml,yaml,yml,json}`.
 
-Le schéma est hébergé à :
-
-- `https://mago.carthage.software/<version>/schema.json`, épinglé à une release précise comme `1.51.0`.
-- `https://mago.carthage.software/latest/schema.json`, la dernière release stable.
-- `https://mago.carthage.software/main/schema.json`, la build de développement depuis `main`.
-
-Épinglez l'URL à la version de Mago installée pour que le schéma et votre binaire restent synchronisés. `mago init` écrit l'URL épinglée dans le fichier qu'il génère.
+Quand vous installez Mago via Composer (`heyjordanparker/mago-sharp`), un schéma correspondant à la version installée est écrit dans `vendor/heyjordanparker/mago-sharp/schema.json` au premier lancement de `mago`. Référencez-le par un chemin relatif pour qu'il suive toujours la version installée. `mago init` écrit cette référence quand ce fichier existe.
 
 La façon de référencer le schéma dépend du format :
 
 ```toml
-#:schema https://mago.carthage.software/1.51.0/schema.json
-version = "1"
+#:schema vendor/heyjordanparker/mago-sharp/schema.json
+version = "0.2"
 php-version = "8.3"
 ```
 
 ```yaml
-# yaml-language-server: $schema=https://mago.carthage.software/1.51.0/schema.json
-version: "1"
+# yaml-language-server: $schema=vendor/heyjordanparker/mago-sharp/schema.json
+version: "0.2"
 php-version: "8.3"
 ```
 
 ```json
 {
-  "$schema": "https://mago.carthage.software/1.51.0/schema.json",
-  "version": "1",
+  "$schema": "vendor/heyjordanparker/mago-sharp/schema.json",
+  "version": "0.2",
   "php-version": "8.3"
 }
 ```
 
 Pour TOML, le commentaire est lu par le serveur de langage [Taplo](https://taplo.tamasfe.dev/), qui alimente l'extension VS Code « Even Better TOML » et le support TOML de JetBrains. Pour YAML, le commentaire est lu par le [serveur de langage YAML de Red Hat](https://github.com/redhat-developer/yaml-language-server). Pour JSON, tout éditeur moderne lit `$schema` nativement. Mago lui-même ignore la clé `$schema` et les commentaires magiques, ils n'existent que pour l'outillage des éditeurs.
 
-Si vous régénérez le schéma en CI (par exemple, pour valider des fichiers de configuration de manière programmatique), `mago config --schema` l'imprime sur stdout.
+Sans Composer, `mago config --schema` imprime sur stdout le schéma du binaire installé. Enregistrez-le à côté de votre configuration, référencez ce fichier à la place, et régénérez-le après chaque mise à jour pour que le schéma et votre binaire restent synchronisés :
+
+```sh
+mago config --schema > mago.schema.json
+```
 
 ## Partager une configuration avec `extends`
 
@@ -126,7 +124,7 @@ Les cycles sont détectés via le suivi des chemins canoniques et déclenchent u
 Ces clés se trouvent à la racine de `mago.toml`.
 
 ```toml
-version = "1"
+version = "0.2"
 php-version = "8.2"
 threads = 8
 stack-size = 8388608     # 8 MiB
@@ -135,7 +133,7 @@ editor-url = "phpstorm://open?file=%file%&line=%line%&column=%column%"
 
 | Option | Type | Défaut | Description |
 | :--- | :--- | :--- | :--- |
-| `version` | string | aucun | Fixe la version de Mago contre laquelle ce projet est testé. Accepte un majeur (`"1"`), mineur (`"1.51"`) ou exact (`"1.51.0"`). Voir [épinglage de version](#version-pinning). |
+| `version` | string | aucun | Fixe la version de Mago contre laquelle ce projet est testé. Accepte un majeur (`"0"`), mineur (`"0.2"`) ou exact (`"0.2.0"`). Voir [épinglage de version](#version-pinning). |
 | `php-version` | string | dernière stable | La version PHP que Mago doit cibler pour l'analyse syntaxique et l'analyse. `mago init` la détecte automatiquement depuis `composer.json` quand c'est possible. |
 | `allow-unsupported-php-version` | boolean | `false` | Autoriser Mago à s'exécuter sur une version PHP qu'il ne prend pas officiellement en charge. Non recommandé. |
 | `no-version-check` | boolean | `false` | Désactive l'avertissement émis quand le binaire installé diverge de la version épinglée. Une divergence de version majeure est toujours fatale. |
@@ -149,9 +147,9 @@ editor-url = "phpstorm://open?file=%file%&line=%line%&column=%column%"
 
 Trois niveaux d'épinglage :
 
-- **Épinglage majeur** (`version = "1"`) : tout `1.x.y` satisfait l'épinglage. Une montée vers `2.x` est une erreur fatale, car une nouvelle version majeure peut introduire des défauts incompatibles, des changements de schéma ou de comportement de règles. C'est ce que `mago init` écrit par défaut.
-- **Épinglage mineur** (`version = "1.51"`) : tout `1.51.y` satisfait l'épinglage. Une divergence vers un mineur différent émet un avertissement ; une divergence majeure reste fatale.
-- **Épinglage exact** (`version = "1.51.0"`) : toute divergence émet un avertissement ; une divergence majeure reste fatale.
+- **Épinglage majeur** (`version = "0"`) : tout `0.x.y` satisfait l'épinglage. Une montée vers `1.x` est une erreur fatale, car une nouvelle version majeure peut introduire des défauts incompatibles, des changements de schéma ou de comportement de règles. À partir de 1.0, c'est ce que `mago init` écrit par défaut.
+- **Épinglage mineur** (`version = "0.2"`) : tout `0.2.y` satisfait l'épinglage. Une divergence vers un mineur différent émet un avertissement ; une divergence majeure reste fatale. Avant 1.0, une nouvelle version mineure peut casser la configuration, comme dans la règle caret de Cargo, donc c'est ce que `mago init` écrit par défaut.
+- **Épinglage exact** (`version = "0.2.0"`) : toute divergence émet un avertissement ; une divergence majeure reste fatale.
 
 L'avertissement peut être désactivé avec `--no-version-check`, la variable d'environnement `MAGO_NO_VERSION_CHECK`, ou `no-version-check = true` dans la configuration. Aucun de ces moyens n'affecte la divergence de version majeure, qui est tout l'intérêt de l'épinglage.
 
@@ -161,7 +159,7 @@ Pour synchroniser le binaire installé avec l'épinglage du projet :
 mago self-update --to-project-version
 ```
 
-Pour les épinglages exacts, cela résout directement vers ce tag de release. Pour les épinglages majeurs ou mineurs, Mago parcourt les releases GitHub récentes et installe la plus haute qui satisfait l'épinglage. Ainsi, `version = "1"` avec 2.0 déjà sortie installe quand même la dernière release 1.x sans vous tirer en avant.
+Pour les épinglages exacts, cela résout directement vers ce tag de release. Pour les épinglages majeurs ou mineurs, Mago parcourt les releases GitHub récentes et installe la plus haute qui satisfait l'épinglage. Ainsi, `version = "0"` avec 1.0 déjà sortie installe quand même la dernière release 0.x sans vous tirer en avant.
 
 `version` est actuellement optionnel. Une future version de Mago pourrait commencer à émettre un avertissement quand il est absent, afin de préparer les projets à l'éventuelle montée vers la 2.0.
 
