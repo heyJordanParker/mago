@@ -484,7 +484,8 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             | Node::Uses(_)
             | Node::UseItems(UseItems::Sequence(_))
             | Node::UseItemSequence(_)
-            | Node::UseItem(_),
+            | Node::UseItem(_)
+            | Node::UseItemAlias(_),
             File,
         ) => Some(File),
         (Node::Class(class), File) => {
@@ -683,7 +684,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             context.report(
                 Issue::error("PHP# has no `mixed`: write `Any?`, or `Any` for a value that is never null.")
                     .with_annotation(Annotation::primary(mixed.span).with_message("Written here."))
-                    .with_note("Spec section 24 removes PHP's `mixed`: `Any` holds a value of any type but null, and `Any?` also allows null."),
+                    .with_note("PHP# removes PHP's `mixed`: `Any` holds a value of any type but null, and `Any?` also allows null."),
             );
 
             None
@@ -782,7 +783,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
                     "A `public` constructor parameter needs accessors: a public member is a property, as in `public int id { get; }`.",
                 )
                 .with_annotation(Annotation::primary(public.span()).with_message("Declared `public` here."))
-                .with_note("Spec section 9 makes a `public` parameter without accessors an error, as a public field is."),
+                .with_note("A `public` parameter without accessors is an error, as a public field is."),
                 parameter.span(),
                 Parameter,
                 context,
@@ -959,7 +960,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
                 node.span(),
                 form,
                 "write `printf` or `fwrite`.",
-                "Output is a function call in PHP#, as spec section 8 writes it.",
+                "Output is a function call in PHP#.",
                 context,
             );
 
@@ -974,7 +975,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             context.report(
                 Issue::error("PHP# calls `exit` as a function: write `exit(0)`.")
                     .with_annotation(Annotation::primary(exit.exit.span).with_message("Written here."))
-                    .with_note("`exit` is PHP 8.4's built-in function in PHP#, as spec section 8 writes it."),
+                    .with_note("`exit` is PHP 8.4's built-in function in PHP#."),
             );
 
             None
@@ -1026,7 +1027,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
                     "Write `{operand} is not {pattern}`: `!` applies to `{operand}` before `is` tests it."
                 ))
                 .with_annotation(Annotation::primary(is.span()).with_message("`!` takes the value before `is` tests it."))
-                .with_note("Spec section 21: `is` binds with the comparisons, so `!entity is HasDesign` reads as `(!entity) is HasDesign`, and a negative test is written `is not`."),
+                .with_note("`is` binds with the comparisons, so `!entity is HasDesign` reads as `(!entity) is HasDesign`, and a negative test is written `is not`."),
             );
 
             None
@@ -1052,7 +1053,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
                 context.report(
                     Issue::error("`as` converts to a type that is not nullable or `void`.")
                         .with_annotation(Annotation::primary(r#as.hint.span()).with_message("Written here."))
-                        .with_note("`as T` already gives `T?`: the value as a `T`, or null when it is not one, as spec section 21 says."),
+                        .with_note("`as T` already gives `T?`: the value as a `T`, or null when it is not one."),
                 );
 
                 None
@@ -2217,7 +2218,7 @@ fn report_comparison_chain(span: Span, groupings: &[String], context: &mut Conte
     context.report(
         Issue::error(format!("Comparisons do not chain: write {}.", groupings.join(" or ")))
             .with_annotation(Annotation::primary(span).with_message("Chained here."))
-            .with_note("Spec section 19 puts `<`, `<=`, `>`, `>=`, `is` and `as` in one row and `==`, `!=`, `===` and `<=>` in the next, and an operator takes an operand of its own row only in parentheses."),
+            .with_note("PHP#'s precedence table puts `<`, `<=`, `>`, `>=`, `is` and `as` in one row and `==`, `!=`, `===` and `<=>` in the next, and an operator takes an operand of its own row only in parentheses."),
     );
 }
 
@@ -2237,7 +2238,7 @@ fn report_not_beside_or(binary: &BinaryPattern, context: &mut Context<'_, '_, '_
     context.report(
         Issue::error(format!("Write `not ({} {or} {})`, or `{} {or} {}`.", whole[0], whole[1], own[0], own[1]))
             .with_annotation(Annotation::primary(binary.span()).with_message("`not` beside `or`."))
-            .with_note("Spec section 21: in a pattern, `not` beside `or` needs parentheses. C# reads `not Paid or Refunded` as `(not Paid) or Refunded`, where `or Refunded` adds nothing."),
+            .with_note("In a pattern, `not` beside `or` needs parentheses. C# reads `not Paid or Refunded` as `(not Paid) or Refunded`, where `or Refunded` adds nothing."),
     );
 }
 
@@ -2306,8 +2307,10 @@ fn check_pattern_match(pattern_match: &PatternMatch, is_expression: bool, contex
         None if !pattern_match.arms.iter().all(|arm| names_class_values(arm, context)) => {
             context.report(
                 Issue::error("A `match` needs a `default` arm.")
-                    .with_annotation(Annotation::primary(pattern_match.r#match.span).with_message("This `match` has none."))
-                    .with_note("Spec section 21: only a `match` on an enum may leave out `default`, when its arms cover every case.")
+                    .with_annotation(
+                        Annotation::primary(pattern_match.r#match.span).with_message("This `match` has none."),
+                    )
+                    .with_note("Only a `match` on an enum may leave out `default`, when its arms cover every case.")
                     .with_help("Add `default => …` as the last arm."),
             );
 
@@ -2748,7 +2751,7 @@ fn check_cast(unary_prefix: &UnaryPrefix, place: Place, context: &mut Context<'_
         operator.span(),
         cast.as_bytes(),
         instead,
-        "Spec section 24 keeps `(int)`, `(float)` and `(string)` between numbers, and removes PHP's other casts and its cast aliases.",
+        "PHP# keeps `(int)`, `(float)` and `(string)` between numbers, and removes PHP's other casts and its cast aliases.",
         context,
     );
 }
@@ -2865,7 +2868,7 @@ fn report_magic_constant(name: &[u8], span: Span, constant: Option<&MagicConstan
         span,
         name,
         instead,
-        "Spec section 27 removes PHP's magic constants and every other `__Something__` name: `Position` says where code sits in its source.",
+        "PHP# removes PHP's magic constants and every other `__Something__` name: `Position` says where code sits in its source.",
         context,
     );
 }
@@ -3165,54 +3168,69 @@ pub fn check_declarations(program: &Program, context: &mut Context<'_, '_, '_>) 
     let namespace = first_namespace(program).and_then(|namespace| namespace.name.as_ref()).map(php_name);
 
     for (index, import) in imports.iter().enumerate() {
-        let short_name = import.name.last_segment();
+        let imported_name = imported_name(import);
         let full_name = BytesDisplay(import.name.value());
+        let rename = format!(
+            "Rename the import with `as`, as in `import {full_name} as Other{};`.",
+            BytesDisplay(import.name.last_segment())
+        );
 
-        if is_reserved_class_name(short_name) && !is_sharp_type_class(&php_name(&import.name)) {
-            let short_name = BytesDisplay(short_name);
+        // A standard library type class imported under its own name is the type the name already gives.
+        if is_reserved_class_name(imported_name)
+            && !(imported_name.eq_ignore_ascii_case(import.name.last_segment())
+                && is_sharp_type_class(&php_name(&import.name)))
+        {
+            let imported_name = BytesDisplay(imported_name);
 
             context.report(
                 Issue::error(format!(
-                    "Cannot import `{full_name}` as `{short_name}`: PHP# reserves `{short_name}` for a type."
+                    "Cannot import `{full_name}` as `{imported_name}`: PHP# reserves `{imported_name}` for a type."
                 ))
-                .with_annotation(Annotation::primary(import.name.span()).with_message("Imported here."))
-                .with_help("Import a class with another name."),
+                .with_annotation(Annotation::primary(import.span()).with_message("Imported here."))
+                .with_help(rename.clone()),
             );
         }
 
         if let Some(earlier) =
-            imports[..index].iter().find(|earlier| earlier.name.last_segment().eq_ignore_ascii_case(short_name))
+            imports[..index].iter().find(|earlier| self::imported_name(earlier).eq_ignore_ascii_case(imported_name))
         {
             let earlier_full_name = BytesDisplay(earlier.name.value());
 
             context.report(
                 Issue::error(format!(
                     "Cannot import `{full_name}` as `{}`: `{earlier_full_name}` is already imported as `{}`.",
-                    BytesDisplay(short_name),
-                    BytesDisplay(earlier.name.last_segment()),
+                    BytesDisplay(imported_name),
+                    BytesDisplay(self::imported_name(earlier)),
                 ))
-                .with_annotation(Annotation::primary(import.name.span()).with_message("Imported again here."))
-                .with_annotation(Annotation::secondary(earlier.name.span()).with_message("First imported here."))
-                .with_note("Class names are case-insensitive."),
+                .with_annotation(Annotation::primary(import.span()).with_message("Imported again here."))
+                .with_annotation(Annotation::secondary(earlier.span()).with_message("First imported here."))
+                .with_note("Class names are case-insensitive.")
+                .with_help(rename.clone()),
             );
         }
 
         // Importing the class the file declares names that class, which the engine accepts.
-        if let Some(class) = classes.iter().find(|class| class.name.value.eq_ignore_ascii_case(short_name))
+        if let Some(class) = classes.iter().find(|class| class.name.value.eq_ignore_ascii_case(imported_name))
             && !names_class(&php_name(&import.name), namespace.as_deref(), class.name.value)
         {
-            let short_name = BytesDisplay(short_name);
+            let imported_name = BytesDisplay(imported_name);
             let class_name = BytesDisplay(class.name.value);
 
             context.report(
                 Issue::error(format!(
-                    "Cannot import `{full_name}` as `{short_name}`: this file declares a class named `{class_name}`."
+                    "Cannot import `{full_name}` as `{imported_name}`: this file declares a class named `{class_name}`."
                 ))
-                .with_annotation(Annotation::primary(import.name.span()).with_message("Imported here."))
-                .with_annotation(Annotation::secondary(class.name.span).with_message("Class declared here.")),
+                .with_annotation(Annotation::primary(import.span()).with_message("Imported here."))
+                .with_annotation(Annotation::secondary(class.name.span).with_message("Class declared here."))
+                .with_help(rename),
             );
         }
     }
+}
+
+/// The name an import gives its class in the file: the name after `as`, or else the last segment of the class name.
+fn imported_name<'arena>(import: &UseItem<'arena>) -> &'arena [u8] {
+    import.alias.as_ref().map_or_else(|| import.name.last_segment(), |alias| alias.identifier.value)
 }
 
 #[inline]

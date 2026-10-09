@@ -122,10 +122,12 @@ where
         context.collector.report_with_code(
             IssueCode::InvalidOperand,
             Issue::error(format!("`+` cannot join `{left}` and `{right}`: it joins two strings or adds two numbers."))
-            .with_annotation(Annotation::primary(binary.span()).with_message("A string may meet another value here."))
-            .with_annotation(Annotation::secondary(operator).with_message("`+` used here."))
-            .with_note("Spec section 18 makes joining a string with any other value an error, so `\"1\" + 1` cannot produce `\"11\"`.")
-            .with_help("Put the value in a template written between backticks, as in `Total: ${count}`."),
+                .with_annotation(
+                    Annotation::primary(binary.span()).with_message("A string may meet another value here."),
+                )
+                .with_annotation(Annotation::secondary(operator).with_message("`+` used here."))
+                .with_note("PHP# joins a string only with another string, so `\"1\" + 1` cannot produce `\"11\"`.")
+                .with_help("Put the value in a template written between backticks, as in `Total: ${count}`."),
         );
 
         // The code meant to join, so the rest of it is checked as if the join gave a string.
@@ -600,7 +602,7 @@ fn report_mixed_operand<A>(
                 display_operand(context, operand_type)
             ))
             .with_annotation(Annotation::primary(operand.span()).with_message("This property keeps its declared type."))
-            .with_note("Spec section 21 narrows a local or a parameter after `is`, never a property.")
+            .with_note("PHP# narrows a local or a parameter after `is`, never a property.")
             .with_help(format!(
                 "Copy the value into a local first: test it with a name, as in `if ({written} is int t)`, and use `t`."
             )),

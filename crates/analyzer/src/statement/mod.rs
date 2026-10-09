@@ -48,8 +48,11 @@ use mago_syntax::cst::Identifier;
 use mago_syntax::cst::LocalDeclaration;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::Statement;
+use mago_syntax::cst::UseItems;
 use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_word::Word;
+use mago_word::ascii_lowercase_word;
+use mago_word::word;
 
 use crate::Context;
 use crate::analyzable::Analyzable;
@@ -152,6 +155,19 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Statement<'arena> {
                 }
                 Statement::Use(r#use) => {
                     context.scope.populate_from_use(r#use);
+                    if context.dialect.is_sharp()
+                        && let UseItems::Sequence(sequence) = &r#use.items
+                    {
+                        for item in &sequence.items {
+                            let imported_name = item
+                                .alias
+                                .as_ref()
+                                .map_or_else(|| item.name.last_segment(), |alias| alias.identifier.value);
+                            context
+                                .imported_names
+                                .insert(ascii_lowercase_word(&php_name(&item.name)), word(imported_name));
+                        }
+                    }
                     if context.settings.check_use_statements {
                         r#use.analyze(context, block_context, artifacts)?;
                     }

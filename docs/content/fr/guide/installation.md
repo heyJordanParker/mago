@@ -55,7 +55,7 @@ La voie recommandée sur Windows et un bon repli sur tout système sans `bash`.
 Si vous gardez l'archive, vous pouvez la vérifier vous-même avant l'extraction.
 
 ```sh
-VERSION=0.1.0
+VERSION=0.2.0
 TARGET=x86_64-unknown-linux-gnu  # adjust for your platform
 ASSET=mago-${VERSION}-${TARGET}.tar.gz
 
@@ -91,7 +91,7 @@ Ces voies sont pratiques mais dépendent de calendriers de publication externes 
 Pour les projets PHP :
 
 ```sh
-composer require --dev "heyjordanparker/mago-sharp:^0.1.0"
+composer require --dev "heyjordanparker/mago-sharp:^0.2.0"
 ```
 
 Le paquet Composer est un fin wrapper. Le premier appel à `vendor/bin/mago` télécharge le binaire pré-construit correspondant depuis la release GitHub et le met en cache. Les appels suivants réutilisent le cache et ne font aucune requête réseau.

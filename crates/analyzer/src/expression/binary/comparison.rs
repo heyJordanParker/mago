@@ -714,7 +714,7 @@ pub(crate) enum Refusal {
     Instance,
     /// `<=>` or an ordering with a side that may be `null`, an instance or any other value, which only `==` and `!=`
     /// lift.
-    NullableInstance,
+    NullableOperand,
     /// `==` or `!=` on two values of types that never match, a string ordered against another type, or an instance
     /// compared with a value its class's operator never takes, as `money < 5`.
     DifferentTypes,
@@ -804,7 +804,7 @@ pub(crate) fn sharp_refusal(
             if different_types {
                 Some(Refusal::DifferentTypes)
             } else if !has(Comparand::Any) && (lhs_type.can_be_null() || rhs_type.can_be_null()) {
-                Some(Refusal::NullableInstance)
+                Some(Refusal::NullableOperand)
             } else {
                 None
             }
@@ -885,7 +885,7 @@ pub(crate) fn report_sharp_refusal<A>(
             (
                 IssueCode::InvalidOperand,
                 Issue::error(format!("{pair}: it tests whether two class instances are the same object."))
-                    .with_note("Spec section 19: `==` compares every other value strictly.")
+                    .with_note("`==` compares every other value strictly.")
                     .with_help(format!("Use `{equality}` to compare the values.")),
             )
         }
@@ -912,32 +912,28 @@ pub(crate) fn report_sharp_refusal<A>(
                 let identity = if operator.is_negated_equality() { "!==" } else { "===" };
 
                 Issue::error(format!("{pair}: `{class}` declares no `operator ==`."))
-                    .with_note(
-                        "Spec section 19: `==` on a class instance exists only where its class declares `operator ==`.",
-                    )
+                    .with_note("`==` on a class instance exists only where its class declares `operator ==`.")
                     .with_help(format!("Use `{identity}` to test whether both sides are the same object."))
             } else {
                 Issue::error(format!("{pair}: `{class}` declares no `operator <=>`."))
                     .with_note(format!(
-                        "Spec section 19: `{op}` on a class instance exists only where its class declares `operator <=>`."
+                        "`{op}` on a class instance exists only where its class declares `operator <=>`."
                     ))
                     .with_help("Compare values the instances hold, such as their properties.")
             };
 
             (IssueCode::InvalidOperand, issue)
         }
-        Refusal::NullableInstance => (
+        Refusal::NullableOperand => (
             IssueCode::InvalidOperand,
             Issue::error(format!("{pair}: only `==` and `!=` take `null`, so test the value for `null` first."))
-                .with_note("Spec section 19 lifts `==` and `!=` over `null`, and no other operator.")
+                .with_note("PHP# lifts `==` and `!=` over `null`, and no other operator.")
                 .with_help("Test it with `!= null` before the comparison."),
         ),
         Refusal::DifferentTypes => (
             IssueCode::InvalidOperand,
             Issue::error(format!("{pair}."))
-                .with_note(
-                    "Spec section 19: PHP# compares values strictly, so values of two different types never match.",
-                )
+                .with_note("PHP# compares values strictly, so values of two different types never match.")
                 .with_help("Convert one side so both sides have the same type."),
         ),
     };
@@ -995,20 +991,51 @@ fn report_redundant_null_comparison<'arena, A>(
     }
 
     let operand_type_str = display_type(context, operand_type);
+    let check = match written_null_pattern(context, binary) {
+        Some(pattern) => format!("`{pattern}` check"),
+        None => format!("`{}` comparison", BytesDisplay(binary.operator.as_bytes())),
+    };
     let issue = context.as_null_check_error(
-        Issue::help(format!(
-            "Redundant `{}` comparison: `{operand_type_str}` is never `null`.",
-            BytesDisplay(binary.operator.as_bytes())
-        ))
-        .with_annotation(
-            Annotation::primary(operand.span())
-                .with_message(format!("This is `{operand_type_str}`, which is never `null`")),
-        )
-        .with_annotation(Annotation::secondary(operator_span).with_message("This null check cannot matter"))
-        .with_help("Remove the null check."),
+        Issue::help(format!("Redundant {check}: `{operand_type_str}` is never `null`."))
+            .with_annotation(
+                Annotation::primary(operand.span())
+                    .with_message(format!("This is `{operand_type_str}`, which is never `null`")),
+            )
+            .with_annotation(Annotation::secondary(operator_span).with_message("This null check cannot matter"))
+            .with_help("Remove the null check."),
     );
 
     context.collector.report_with_code(IssueCode::RedundantComparison, issue);
+}
+
+/// The PHP# null pattern a check runs, as written: `is null`, `is not null`, or a `match` arm's `null`. The pattern
+/// runs as PHP's `===`, whose operator is empty at the start of `null`, so the words before it are read back from the
+/// source. A written operator gives none.
+fn written_null_pattern<A>(context: &Context<'_, '_, A>, binary: &Binary<'_>) -> Option<String>
+where
+    A: Arena,
+{
+    let operator = binary.operator.span();
+    if operator.length() != 0 {
+        return None;
+    }
+
+    let contents = &context.source_file.contents;
+    let mut start = operator.start.offset as usize;
+    for keyword in [&b"not"[..], b"is"] {
+        if let Some(rest) = contents[..start].trim_ascii_end().strip_suffix(keyword)
+            && rest.last().is_none_or(|byte| !byte.is_ascii_alphanumeric() && *byte != b'_')
+        {
+            start = rest.len();
+        }
+    }
+
+    let words = contents[start..binary.rhs.span().end.offset as usize]
+        .split(u8::is_ascii_whitespace)
+        .filter(|word| !word.is_empty())
+        .map(String::from_utf8_lossy);
+
+    Some(words.collect::<Vec<_>>().join(" "))
 }
 
 /// Helper to report redundant comparison issues.

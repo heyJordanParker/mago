@@ -541,11 +541,10 @@ where
             entry_clauses
         } else if let Some(case_condition) = switch_case.expression() {
             check_for_paradox(
-                &mut self.context.collector,
+                self.context,
                 &entry_clauses.iter().map(|v| Rc::new(v.clone())).collect::<Vec<_>>(),
                 &case_clauses,
                 case_condition.span(),
-                &self.context.settings.algebra_thresholds(),
             );
 
             entry_clauses.extend(case_clauses.clone());

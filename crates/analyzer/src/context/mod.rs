@@ -63,6 +63,9 @@ where
     pub(super) comments: &'arena [Trivia<'arena>],
     pub(super) settings: &'ctx Settings,
     pub(super) scope: NamespaceScope,
+    /// The name each import of a `.sharp` file gives its class, as the file writes it: the name after `as`, or else the
+    /// last segment of the class name. Keyed by the lowercase full name of the class.
+    pub(super) imported_names: WordMap<Word>,
     pub(super) collector: Collector<'ctx, 'arena, A>,
     pub(super) statement_span: Span,
     pub(super) plugin_registry: &'ctx PluginRegistry,
@@ -103,6 +106,7 @@ where
             comments,
             settings,
             scope: NamespaceScope::default(),
+            imported_names: WordMap::default(),
             statement_span,
             collector,
             plugin_registry,
@@ -180,7 +184,7 @@ where
         }
 
         issue.level = Level::Error;
-        issue.with_note("In PHP# a type holds null only when written with `?` (spec section 24), so a `?` or a null check that cannot matter is an error (spec section 14.4).")
+        issue.with_note("In PHP# a type holds null only when written with `?`, so a `?` or a null check that cannot matter is an error.")
     }
 
     /// Reports a PHP# condition, or an operand of `&&`, `||` or `!`, whose type is not `bool`. Spec section 21 makes each
@@ -209,7 +213,7 @@ where
             IssueCode::InvalidOperand,
             Issue::error(format!("`{construct}` takes a `bool`, but this is `{condition_type}`."))
                 .with_annotation(Annotation::primary(condition.span()).with_message("This is not `bool`."))
-                .with_note("Spec section 21 makes every PHP# condition a `bool`, so PHP's truthiness never applies.")
+                .with_note("PHP# conditions are `bool`, so PHP's truthiness never applies.")
                 .with_help("Compare the value, as in `count > 0` or `name != \"\"`."),
         );
     }
