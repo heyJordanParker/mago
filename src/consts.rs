@@ -29,6 +29,16 @@ pub const SUPPORTED_TARGETS: &[&str] = &[
 /// The current version of mago.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// The `version` pin this binary satisfies. Below 1.0 a minor release may break the
+/// configuration, as in Cargo's caret rule, so the pin names the minor there.
+pub fn version_pin() -> String {
+    pin_for(env!("CARGO_PKG_VERSION_MAJOR"), env!("CARGO_PKG_VERSION_MINOR"))
+}
+
+fn pin_for(major: &str, minor: &str) -> String {
+    if major == "0" { format!("{major}.{minor}") } else { major.to_owned() }
+}
+
 /// The target triple for the current build.
 pub const TARGET: &str = env!("TARGET");
 
@@ -110,3 +120,20 @@ pub static CURRENT_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
 });
 
 pub const PRELUDE_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/prelude.bin"));
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_version_pin_names_the_minor_below_one() {
+        assert_eq!(pin_for("0", "2"), "0.2");
+        assert_eq!(pin_for("0", "13"), "0.13");
+    }
+
+    #[test]
+    fn test_version_pin_names_only_the_major_from_one() {
+        assert_eq!(pin_for("1", "0"), "1");
+        assert_eq!(pin_for("2", "5"), "2");
+    }
+}

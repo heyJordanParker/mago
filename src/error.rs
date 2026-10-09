@@ -379,7 +379,8 @@ impl std::fmt::Display for Error {
             Self::LatestReleaseDoesNotSatisfyPin(pinned, latest) => {
                 write!(
                     f,
-                    "No published mago release satisfies the `version` pin `{pinned}` in mago.toml (most recent: `{latest}`)"
+                    "No published mago release satisfies the `version` pin `{pinned}` in mago.toml (most recent: `{latest}`). Set `version = \"{}\"` in mago.toml to use this mago binary.",
+                    crate::consts::version_pin()
                 )
             }
         }
