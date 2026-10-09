@@ -2040,6 +2040,31 @@ fn a_fallback_on_a_missing_key_speaks_of_its_bool() {
     );
 }
 
+/// A method that may return `false` from a PHP function writes `false` as PHP# writes it, and asks for no `int|false`
+/// return type, which PHP# cannot write. PHP keeps its own wording. `a_message_names_an_accessor_as_sharp_writes_it`
+/// pins the same report on an accessor.
+#[test]
+fn a_return_that_may_be_false_speaks_of_its_bool() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int position() { return strpos(\"ab\", \"b\"); }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function position(): int { return strpos('ab', 'b'); }\n}\n";
+    let returns = |analyzed| -> Vec<String> {
+        worded(analyzed, &[]).into_iter().filter(|line| line.contains(" falsable-return-statement ")).collect()
+    };
+
+    assert_eq!(
+        returns(("src/Demo/Report.php", php)),
+        [
+            "7:53 falsable-return-statement Function `Demo\\Report::position` is declared to return `int` but possibly returns 'false' (inferred as `false|non-negative-int`). | Potentially 'false' returned here. | Return type declared as non-falsable `int` here | The declared return type does not permit 'false', but the analysis indicates that 'false' or a falsable type could be returned from this path. | You can either change the return type declaration of `Demo\\Report::position` to include 'false' (e.g., 'int|false'), or ensure that this function path never returns 'false'.",
+        ]
+    );
+    assert_eq!(
+        returns(("src/Demo/Report.sharp", sharp)),
+        [
+            "5:43 falsable-return-statement Method `Report.position` is declared to return `int` but possibly returns `false` (inferred as `bool|int`). | Potentially `false` returned here. | Return type declared as non-falsable `int` here | The declared return type does not permit `false`, but this path could return `false`. | Ensure this method path never returns `false`.",
+        ]
+    );
+}
+
 /// An operand that may be `false`, from a PHP method, asks for a check of `false`. PHP# has no falsiness, and keeps
 /// `(int)` between numbers, so no cast turns `false` into one. PHP keeps its own wording.
 #[test]
@@ -5107,7 +5132,7 @@ fn a_message_names_an_accessor_as_sharp_writes_it() {
             "7:23 missing-return-statement Missing return statement in property hook `Box.open.get` | This property hook is declared to return 'int'... | ...but this path can exit without returning a value. | A property hook that does not explicitly return a value will implicitly return `null`. | Add a `return` statement that provides a value of type 'int' to all paths, or change the property hook's return type to 'int?' and return `null` explicitly.",
             "9:26 mixed-return-statement Could not infer a precise return type for property hook `Box.amount.get`. Saw type `Any?`. | Type inferred as `Any?` here. | The analysis could not determine a specific type for the value returned here. | Add specific type hints to variables or properties involved in calculating the return value.",
             "11:24 nullable-return-statement Property hook `Box.size.get` returns nullable value `int?` but property type is `int`. | Nullable value returned here. | The property type does not permit null, but this expression could return null. | Ensure the hook always returns a non-null value, or change the property type to `int?`.",
-            "13:28 falsable-return-statement Property hook `Box.position.get` returns falsable value `bool|int` but property type is `int`. | Potentially 'false' returned here. | The property type does not permit false, but this expression could return false. | Ensure the hook never returns false, or change the property type to `int|false`.",
+            "13:28 falsable-return-statement Property hook `Box.position.get` returns falsable value `bool|int` but property type is `int`. | Potentially `false` returned here. | The property type does not permit `false`, but this expression could return `false`. | Ensure the hook never returns `false`.",
         ]
     );
 }
