@@ -6,7 +6,7 @@ nav_section = "指南"
 +++
 # 升级
 
-`mago self-update` 会用更新的发行版替换当前正在运行的二进制。适用于通过 shell 脚本、Homebrew、Cargo 或手动下载安装的场景。
+`mago self-update` 会用更新的发行版替换当前正在运行的二进制。适用于通过 shell 脚本或手动下载安装的场景。
 
 > Composer 安装方式不同。Composer 包装会锁定一份与 Composer 包版本匹配的二进制,所以你应使用 `composer update` 而非 `self-update` 来升级 Mago。
 
@@ -30,7 +30,7 @@ mago self-update --no-confirm     # 跳过确认提示
 锁定到指定版本:
 
 ```sh
-mago self-update --tag 1.51.0
+mago self-update --tag 0.2.0
 ```
 
 ## 与项目的版本锁定同步
@@ -41,7 +41,7 @@ mago self-update --tag 1.51.0
 mago self-update --to-project-version
 ```
 
-对于精确锁定(`version = "1.51.0"`),会直接解析到对应的发布 tag。对于主版本或次版本锁定,Mago 会扫描近期的 GitHub 发布,安装仍然满足锁定的最高版本。所以即便 2.0 已发布,`version = "1"` 仍会安装最新的 1.x。`version = "1.14"` 在 1.19.x 已经流行的情况下,会回退到最新的 1.14.x。
+对于精确锁定(`version = "0.2.0"`),会直接解析到对应的发布 tag。对于主版本或次版本锁定,Mago 会扫描近期的 GitHub 发布,安装仍然满足锁定的最高版本。所以即便 1.0 已发布,`version = "0"` 仍会安装最新的 0.x。`version = "0.1"` 在 0.2.x 已经流行的情况下,会回退到最新的 0.1.x。
 
 只有在没有任何已发布版本满足锁定时,命令才会失败。
 

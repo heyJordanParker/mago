@@ -54,6 +54,9 @@ use crate::config::Configuration;
 use crate::consts::COMPOSER_JSON_FILE;
 use crate::consts::CONFIGURATION_FILE_NAME;
 use crate::consts::DEFAULT_PHP_VERSION;
+use crate::consts::REPO_NAME;
+use crate::consts::REPO_OWNER;
+use crate::consts::VERSION;
 use crate::error::Error;
 use crate::utils::version::extract_minimum_php_version;
 
@@ -207,10 +210,9 @@ impl AnalyzerStrictnessPreset {
 /// - Formatter style settings (PER-CS compatible by default)
 /// - Linter rules and integrations
 /// - Analyzer features and options
-const CONFIGURATION_TEMPLATE: &str = r#"#:schema https://mago.carthage.software/{mago_version}/schema.json
-# Welcome to Mago!
-# For full documentation, see https://mago.carthage.software/{mago_version}/en/tools/overview/
-version = "1"
+const CONFIGURATION_TEMPLATE: &str = r#"# Welcome to Mago!
+# For full documentation, see {documentation_url}
+version = "{version_pin}"
 php-version = "{php_version}"
 
 [source]
@@ -333,29 +335,16 @@ impl InitCommand {
             }
         }
 
-        let InitializationProjectSettings { php_version, paths, includes, excludes } = setup_project(&theme)?;
+        let project = setup_project(&theme)?;
 
         let integrations = setup_linter(&theme)?;
         let formatter_config = setup_formatter(&theme)?;
         let analyzer_settings = setup_analyzer(&theme)?;
 
         print_step_header(5, "Review & Confirm");
-        let config_content = CONFIGURATION_TEMPLATE
-            .replace("{mago_version}", env!("CARGO_PKG_VERSION"))
-            .replace("{php_version}", &php_version)
-            .replace("{paths}", &quote_format_strings(&paths))
-            .replace("{includes}", &quote_format_strings(&includes))
-            .replace("{excludes}", &quote_format_strings(&excludes))
-            .replace(
-                "{integrations}",
-                &quote_format_strings(&integrations.iter().map(|i| i.to_string().to_lowercase()).collect::<Vec<_>>()),
-            )
-            .replace("{formatter_config}", &formatter_config)
-            .replace(
-                "{analyzer_plugins}",
-                &quote_format_strings(&analyzer_settings.plugins.iter().map(|p| p.to_string()).collect::<Vec<_>>()),
-            )
-            .replace("{analyzer_settings}", &build_analyzer_settings_string(&analyzer_settings));
+        let project_root = configuration_file.parent().unwrap_or_else(|| Path::new("."));
+        let config_content =
+            generate_config_content(project_root, &project, &integrations, &formatter_config, &analyzer_settings);
 
         if write_configuration_if_confirmed(&theme, &configuration_file, &config_content)? {
             print_final_summary();
@@ -450,7 +439,7 @@ fn print_final_summary() {
     println!("  │");
     println!("  │  {}", "Tip: Use the `--help` flag on any command for more options.".bright_black());
     println!("  │");
-    println!("  ╰─ {}", "For full documentation, visit: https://mago.carthage.software/".underline());
+    println!("  ╰─ {}", format!("For full documentation, visit: {}", documentation_url()).underline());
     println!();
 }
 
@@ -943,6 +932,49 @@ fn prompt_for_analyzer_plugins(theme: &ColorfulTheme) -> Result<Vec<AnalyzerPlug
     Ok(selections.into_iter().map(|i| items[i]).collect())
 }
 
+fn generate_config_content(
+    project_root: &Path,
+    project: &InitializationProjectSettings,
+    integrations: &[Integration],
+    formatter_config: &str,
+    analyzer_settings: &InitializationAnalyzerSettings,
+) -> String {
+    let content = CONFIGURATION_TEMPLATE
+        .replace("{documentation_url}", &documentation_url())
+        .replace("{version_pin}", &version_pin(env!("CARGO_PKG_VERSION_MAJOR"), env!("CARGO_PKG_VERSION_MINOR")))
+        .replace("{php_version}", &project.php_version)
+        .replace("{paths}", &quote_format_strings(&project.paths))
+        .replace("{includes}", &quote_format_strings(&project.includes))
+        .replace("{excludes}", &quote_format_strings(&project.excludes))
+        .replace(
+            "{integrations}",
+            &quote_format_strings(&integrations.iter().map(|i| i.to_string().to_lowercase()).collect::<Vec<_>>()),
+        )
+        .replace("{formatter_config}", formatter_config)
+        .replace(
+            "{analyzer_plugins}",
+            &quote_format_strings(&analyzer_settings.plugins.iter().map(|p| p.to_string()).collect::<Vec<_>>()),
+        )
+        .replace("{analyzer_settings}", &build_analyzer_settings_string(analyzer_settings));
+
+    let composer_schema = "vendor/heyjordanparker/mago-sharp/schema.json";
+    if project_root.join(composer_schema).is_file() {
+        format!("#:schema {composer_schema}\n{content}")
+    } else {
+        content
+    }
+}
+
+/// The `version` pin `mago init` writes. Below 1.0 a minor release may break the
+/// configuration, as in Cargo's caret rule, so the pin names the minor there.
+fn version_pin(major: &str, minor: &str) -> String {
+    if major == "0" { format!("{major}.{minor}") } else { major.to_owned() }
+}
+
+fn documentation_url() -> String {
+    format!("https://github.com/{REPO_OWNER}/{REPO_NAME}/tree/{VERSION}/docs")
+}
+
 fn quote_format_strings(items: &[String]) -> String {
     items.iter().map(|p| format!("\"{}\"", p)).collect::<Vec<_>>().join(", ")
 }
@@ -975,6 +1007,8 @@ mod tests {
     use super::*;
 
     use crate::config::Configuration;
+    use crate::version_check::VersionCheck;
+    use crate::version_check::VersionPin;
 
     fn create_default_analyzer_settings() -> InitializationAnalyzerSettings {
         InitializationAnalyzerSettings {
@@ -996,46 +1030,29 @@ mod tests {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn generate_config_content(
-        php_version: &str,
-        paths: &[String],
-        includes: &[String],
-        excludes: &[String],
-        integrations: &[Integration],
-        formatter_config: &str,
-        analyzer_settings: &InitializationAnalyzerSettings,
-    ) -> String {
-        CONFIGURATION_TEMPLATE
-            .replace("{mago_version}", env!("CARGO_PKG_VERSION"))
-            .replace("{php_version}", php_version)
-            .replace("{paths}", &quote_format_strings(paths))
-            .replace("{includes}", &quote_format_strings(includes))
-            .replace("{excludes}", &quote_format_strings(excludes))
-            .replace(
-                "{integrations}",
-                &quote_format_strings(&integrations.iter().map(|i| i.to_string().to_lowercase()).collect::<Vec<_>>()),
-            )
-            .replace("{formatter_config}", formatter_config)
-            .replace(
-                "{analyzer_plugins}",
-                &quote_format_strings(&analyzer_settings.plugins.iter().map(|p| p.to_string()).collect::<Vec<_>>()),
-            )
-            .replace("{analyzer_settings}", &build_analyzer_settings_string(analyzer_settings))
+    fn create_project_settings(php_version: &str, paths: &[&str], excludes: &[&str]) -> InitializationProjectSettings {
+        InitializationProjectSettings {
+            php_version: php_version.to_string(),
+            paths: paths.iter().map(|path| path.to_string()).collect(),
+            includes: vec!["vendor".to_string()],
+            excludes: excludes.iter().map(|path| path.to_string()).collect(),
+        }
+    }
+
+    fn generate_default_config_content(project_root: &Path) -> String {
+        generate_config_content(
+            project_root,
+            &create_project_settings("8.2", &["src"], &[]),
+            &[],
+            "[formatter]\nprint-width = 120\ntab-width = 4\nuse-tabs = false",
+            &create_default_analyzer_settings(),
+        )
     }
 
     #[test]
     fn test_generated_config_parses_with_defaults() {
-        let formatter_config = format!("[formatter]\nprint-width = {}\ntab-width = {}\nuse-tabs = {}", 120, 4, false);
-        let content = generate_config_content(
-            "8.2",
-            &["src".to_string()],
-            &["vendor".to_string()],
-            &[],
-            &[],
-            &formatter_config,
-            &create_default_analyzer_settings(),
-        );
+        let project_root = tempfile::tempdir().expect("Failed to create temp dir");
+        let content = generate_default_config_content(project_root.path());
 
         let result: Result<Configuration, _> = toml::from_str(&content);
         assert!(result.is_ok(), "Generated config should parse. Error: {:?}\n\nConfig:\n{}", result.err(), content);
@@ -1047,11 +1064,10 @@ mod tests {
             "[formatter]\nprint-width = {}\ntab-width = {}\nuse-tabs = {}\n{}",
             120, 4, false, PRESERVE_ALL_FORMATTER_BLOCK
         );
+        let project_root = tempfile::tempdir().expect("Failed to create temp dir");
         let content = generate_config_content(
-            "8.2",
-            &["src".to_string()],
-            &["vendor".to_string()],
-            &[],
+            project_root.path(),
+            &create_project_settings("8.2", &["src"], &[]),
             &[],
             &formatter_config,
             &create_default_analyzer_settings(),
@@ -1084,11 +1100,10 @@ mod tests {
         };
         let formatter_config = format!("[formatter]\nprint-width = {}\ntab-width = {}\nuse-tabs = {}", 100, 2, true);
 
+        let project_root = tempfile::tempdir().expect("Failed to create temp dir");
         let content = generate_config_content(
-            "8.4",
-            &["src".to_string(), "app".to_string()],
-            &["vendor".to_string()],
-            &["tests".to_string()],
+            project_root.path(),
+            &create_project_settings("8.4", &["src", "app"], &["tests"]),
             &[Integration::Symfony, Integration::PHPUnit],
             &formatter_config,
             &settings,
@@ -1101,11 +1116,10 @@ mod tests {
     #[test]
     fn test_generated_config_parses_with_integrations() {
         let formatter_config = format!("[formatter]\nprint-width = {}\ntab-width = {}\nuse-tabs = {}", 120, 4, false);
+        let project_root = tempfile::tempdir().expect("Failed to create temp dir");
         let content = generate_config_content(
-            "8.3",
-            &["src".to_string()],
-            &["vendor".to_string()],
-            &[],
+            project_root.path(),
+            &create_project_settings("8.3", &["src"], &[]),
             &[Integration::Psl, Integration::Laravel, Integration::PHPUnit, Integration::Symfony],
             &formatter_config,
             &create_default_analyzer_settings(),
@@ -1188,11 +1202,10 @@ mod tests {
         };
         let formatter_config = "[formatter]\nprint-width = 120\ntab-width = 4\nuse-tabs = false";
 
+        let project_root = tempfile::tempdir().expect("Failed to create temp dir");
         let content = generate_config_content(
-            "8.3",
-            &["src".to_string()],
-            &["vendor".to_string()],
-            &[],
+            project_root.path(),
+            &create_project_settings("8.3", &["src"], &[]),
             &[],
             formatter_config,
             &settings,
@@ -1202,5 +1215,65 @@ mod tests {
 
         let result: Result<Configuration, _> = toml::from_str(&content);
         assert!(result.is_ok(), "Generated config should parse. Error: {:?}\n\nConfig:\n{}", result.err(), content);
+    }
+
+    #[test]
+    fn test_generated_config_references_the_composer_schema_when_installed() {
+        let project_root = tempfile::tempdir().expect("Failed to create temp dir");
+        let package_root = project_root.path().join("vendor/heyjordanparker/mago-sharp");
+        std::fs::create_dir_all(&package_root).expect("Failed to create the package directory");
+        std::fs::write(package_root.join("schema.json"), "{}").expect("Failed to write the schema");
+
+        let content = generate_default_config_content(project_root.path());
+
+        assert_eq!(content.lines().next(), Some("#:schema vendor/heyjordanparker/mago-sharp/schema.json"));
+    }
+
+    #[test]
+    fn test_generated_config_has_no_schema_without_the_composer_package() {
+        let project_root = tempfile::tempdir().expect("Failed to create temp dir");
+
+        let content = generate_default_config_content(project_root.path());
+
+        assert!(!content.contains("#:schema"), "Expected no schema line in:\n{content}");
+    }
+
+    #[test]
+    fn test_generated_config_links_the_documentation_of_the_running_version() {
+        let project_root = tempfile::tempdir().expect("Failed to create temp dir");
+
+        let content = generate_default_config_content(project_root.path());
+
+        let documentation_line =
+            format!("# For full documentation, see https://github.com/heyJordanParker/mago-sharp/tree/{VERSION}/docs");
+        assert!(
+            content.lines().any(|line| line == documentation_line),
+            "Expected `{documentation_line}` in:\n{content}"
+        );
+        assert!(!content.contains("carthage"), "Expected no upstream Mago link in:\n{content}");
+    }
+
+    #[test]
+    fn test_generated_config_pins_a_version_the_running_binary_satisfies() {
+        let project_root = tempfile::tempdir().expect("Failed to create temp dir");
+
+        let content = generate_default_config_content(project_root.path());
+
+        let configuration: Configuration = toml::from_str(&content).expect("Generated config should parse");
+        let pin = VersionPin::parse(configuration.version.as_deref().expect("Generated config should pin a version"))
+            .expect("Generated version pin should parse");
+        assert_eq!(pin.check(VERSION), Ok(VersionCheck::Match));
+    }
+
+    #[test]
+    fn test_version_pin_names_the_minor_below_one() {
+        assert_eq!(version_pin("0", "2"), "0.2");
+        assert_eq!(version_pin("0", "13"), "0.13");
+    }
+
+    #[test]
+    fn test_version_pin_names_only_the_major_from_one() {
+        assert_eq!(version_pin("1", "0"), "1");
+        assert_eq!(version_pin("2", "5"), "2");
     }
 }
