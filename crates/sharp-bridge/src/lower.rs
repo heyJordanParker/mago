@@ -312,6 +312,8 @@ struct Lowering<'lowering, 'arena> {
     by_reference: HashSet<u32>,
     /// How many loop bodies hold the statement being lowered, inside the innermost method or lambda.
     loop_depth: u32,
+    /// How many lambdas hold the expression being lowered. A lambda runs without its method's type arguments.
+    lambda_depth: u32,
     /// The name of the property whose accessor body is being lowered, which `field` reads and writes.
     property: Vec<u8>,
     /// Each inline form the lowering copied, with its fingerprint, as often as it copied it.
@@ -341,6 +343,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             tested_links: Vec::new(),
             by_reference: HashSet::default(),
             loop_depth: 0,
+            lambda_depth: 0,
             property: Vec::new(),
             inlined: Vec::new(),
             type_parameters: HashMap::default(),
@@ -629,8 +632,18 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         for parameter in &method.parameter_list.parameters {
             parameters.push(self.parameter(parameter));
         }
+        let line = self.line(&method.parameter_list);
+        // A method that a call gives type arguments, or whose argument a call from plain PHP is checked against, ends
+        // its parameter list with its metadata: its bounds and the type each parameter is checked against.
+        if let (bounds, checks @ Some(_)) | (bounds @ Some(_), checks) =
+            self.types.method_metadata(self.class, php_method_name(method))
+        {
+            let bounds = bounds.map_or(NULL, |bounds| self.string(0, line, bounds.as_bytes()));
+            let checks = checks.map_or(NULL, |checks| self.string(0, line, checks.as_bytes()));
+            parameters.push(self.node(SHARP_AST_SHARP_TYPE_ARGS, 0, line, &[bounds, checks]));
+        }
 
-        let parameters = self.node(SHARP_AST_PARAM_LIST, 0, self.line(&method.parameter_list), &parameters);
+        let parameters = self.node(SHARP_AST_PARAM_LIST, 0, line, &parameters);
         let mut statements = first_statements.to_vec();
         let body = match &method.body {
             MethodBody::Concrete(block) => {
@@ -1393,7 +1406,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 let arguments = self.arguments(arguments);
                 let new = self.node(SHARP_AST_NEW, 0, line, &[class, arguments]);
 
-                match self.types.type_arguments(name, instantiation.span()) {
+                match self.types.type_arguments(name, instantiation.span(), self.lambda_depth == 0) {
                     Some(type_arguments) => {
                         let type_arguments = self.string(0, line, type_arguments.as_bytes());
 
@@ -1449,14 +1462,14 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 let tested = self.tested_links.contains(&expression.span());
                 if tested && let Some((class, _)) = self.class_value(call.object) {
                     let method = self.member(&call.method);
-                    let arguments = self.arguments(&call.argument_list);
+                    let arguments = self.call_arguments(&call.argument_list, expression);
 
                     return self.node(SHARP_AST_STATIC_CALL, 0, line, &[class, method, arguments]);
                 }
 
                 let object = if tested { self.expression(call.object) } else { self.null_safe_object(call.object) };
                 let method = self.member(&call.method);
-                let arguments = self.arguments(&call.argument_list);
+                let arguments = self.call_arguments(&call.argument_list, expression);
 
                 if tested {
                     let property = self.node(SHARP_AST_PROP, 0, line, &[object, method]);
@@ -1812,7 +1825,9 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// Lowers a lambda's body, which runs in a frame of its own, outside any loop of the method around it.
     fn lambda_body(&mut self, lower: impl FnOnce(&mut Self) -> u32) -> u32 {
         let loop_depth = std::mem::replace(&mut self.loop_depth, 0);
+        self.lambda_depth += 1;
         let body = lower(self);
+        self.lambda_depth -= 1;
         self.loop_depth = loop_depth;
 
         body
@@ -2058,7 +2073,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             },
         };
         let method = self.member(&call.method);
-        let arguments = self.arguments(&call.argument_list);
+        let arguments = self.call_arguments(&call.argument_list, expression);
 
         if kind == SHARP_AST_METHOD_CALL && self.is_property_call(expression, call.object) {
             let property = self.node(SHARP_AST_PROP, 0, line, &[object, method]);
@@ -2105,15 +2120,32 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     }
 
     fn arguments(&mut self, list: &ArgumentList) -> u32 {
-        let mut arguments = Vec::new();
-        for argument in &list.arguments {
-            arguments.push(match argument {
-                Argument::Positional(positional) => self.positional_argument(positional),
-                Argument::Named(named) => self.named_argument(named),
-            });
-        }
+        let arguments = self.argument_nodes(list);
 
         self.node(SHARP_AST_ARG_LIST, 0, self.line(list), &arguments)
+    }
+
+    /// The arguments of the method call `call`. A PHP# generic method's call ends them with the type arguments the
+    /// checker found, a `SHARP_TYPE_ARGS` without a `new`, which the engine resolves right before the call.
+    fn call_arguments(&mut self, list: &ArgumentList, call: &Expression) -> u32 {
+        let mut arguments = self.argument_nodes(list);
+        let line = self.line(list);
+        if let Some(type_arguments) = self.types.call_type_arguments(call, self.class, self.lambda_depth == 0) {
+            let text = self.string(0, line, type_arguments.as_bytes());
+            arguments.push(self.node(SHARP_AST_SHARP_TYPE_ARGS, 0, line, &[NULL, text]));
+        }
+
+        self.node(SHARP_AST_ARG_LIST, 0, line, &arguments)
+    }
+
+    fn argument_nodes(&mut self, list: &ArgumentList) -> Vec<u32> {
+        list.arguments
+            .iter()
+            .map(|argument| match argument {
+                Argument::Positional(positional) => self.positional_argument(positional),
+                Argument::Named(named) => self.named_argument(named),
+            })
+            .collect()
     }
 
     /// An attribute's arguments, which the parser reads as a partial argument list without placeholders.

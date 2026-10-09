@@ -153,13 +153,53 @@ impl<'analysis> Types<'analysis> {
     /// The type arguments the `new` at `span` gives the fully qualified class name `class`, as the checker found them,
     /// when it is a PHP# generic class: the type text of each in declaration order, joined by `, `. A type parameter of
     /// the class the `new` is in is written as `$` and its index, which the engine replaces with `this`'s type argument
-    /// at that index. A method's own type parameter has a value only its call knows, so a `new` that names one has none.
-    pub(crate) fn type_arguments(&self, class: &[u8], span: Span) -> Option<String> {
+    /// at that index, and one of the method it is in as `#` and its index, which the engine replaces with the method's
+    /// own type argument. A lambda runs without its method's type arguments, so where `method_arguments` is false a
+    /// `new` that names a method's type parameter has none.
+    pub(crate) fn type_arguments(&self, class: &[u8], span: Span, method_arguments: bool) -> Option<String> {
         self.bounds(class)?;
         let arguments =
             self.artifacts.inferred_type_arguments.get(&(span.start.offset, span.end.offset)).unwrap_or_else(|| {
                 unreachable!("the analysis records the type arguments of every generic `new`, not {span:?}")
             });
+
+        self.argument_texts(arguments, method_arguments)
+    }
+
+    /// The type arguments the generic method call at `span` gives the method, as [`Self::type_arguments`] writes those
+    /// of a `new`. None when the method declares no type parameter, or PHP declares it, writing its type parameters in
+    /// docblocks the engine never reads.
+    /// `class` is the class the call is written in, whose method `Self.m()` and whose parent's `super.m()` call.
+    pub(crate) fn call_type_arguments(
+        &self,
+        call: &Expression,
+        class: &[u8],
+        method_arguments: bool,
+    ) -> Option<String> {
+        let span = call.span();
+        let arguments = self.artifacts.inferred_type_arguments.get(&(span.start.offset, span.end.offset))?;
+        let object = match call {
+            Expression::Call(Call::Method(call)) => call.object,
+            Expression::Call(Call::NullSafeMethod(call)) => call.object,
+            _ => unreachable!("only a method call takes type arguments, not {span:?}"),
+        };
+        let callee = match object {
+            Expression::Self_(_) => word(class),
+            Expression::Parent(_) => self
+                .codebase
+                .get_class_like(class)
+                .and_then(|class| class.direct_parent_class)
+                .unwrap_or_else(|| unreachable!("the checker refuses `super` in a class without a parent")),
+            _ => self.call_target(call).class,
+        };
+        if !self.codebase.get_class_like(callee.as_bytes()).is_some_and(|callee| callee.flags.is_sharp()) {
+            return None;
+        }
+
+        self.argument_texts(arguments, method_arguments)
+    }
+
+    fn argument_texts(&self, arguments: &[TUnion], method_arguments: bool) -> Option<String> {
         let of_a_method = |template: &&TAtomic| {
             !matches!(
                 template,
@@ -170,7 +210,7 @@ impl<'analysis> Types<'analysis> {
                     }))
             )
         };
-        if arguments.iter().any(|argument| argument.get_template_types().iter().any(of_a_method)) {
+        if !method_arguments && arguments.iter().any(|argument| argument.get_template_types().iter().any(of_a_method)) {
             return None;
         }
 
@@ -178,6 +218,55 @@ impl<'analysis> Types<'analysis> {
             arguments.iter().map(|argument| text(argument, self.codebase, Parameter::Index)).collect();
 
         Some(arguments.join(", "))
+    }
+
+    /// The metadata of the method `method` of the fully qualified class name `class` that the engine reads on a call:
+    /// the bounds of its own type parameters, which a call from plain PHP gives it, and a type text list with one entry
+    /// per parameter that a call from plain PHP checks its argument against. An entry is the parameter's type when part
+    /// of it is a class with type arguments or a type parameter, and `Any?` otherwise. Each half is None when the method
+    /// declares no type parameter, or no parameter needs a check.
+    pub(crate) fn method_metadata(&self, class: &[u8], method: &[u8]) -> (Option<String>, Option<String>) {
+        let Some(metadata) = self.codebase.get_method(class, method) else {
+            return (None, None);
+        };
+
+        let bounds: Vec<String> = metadata
+            .template_types
+            .values()
+            .map(|template| text(&template.constraint, self.codebase, Parameter::Bound))
+            .collect();
+        let checked = |r#type: &TUnion| {
+            r#type.types.iter().any(|atomic| match atomic {
+                TAtomic::Object(TObject::Named(object)) => {
+                    object.get_type_parameters().is_some_and(|arguments| !arguments.is_empty())
+                }
+                TAtomic::GenericParameter(_) => true,
+                _ => false,
+            })
+        };
+        let parameters: Vec<Option<String>> = metadata
+            .parameters
+            .iter()
+            .map(|parameter| {
+                parameter
+                    .type_metadata
+                    .as_ref()
+                    .map(|r#type| &r#type.type_union)
+                    .filter(|r#type| checked(r#type))
+                    .map(|r#type| text(r#type, self.codebase, Parameter::Index))
+            })
+            .collect();
+
+        (
+            (!bounds.is_empty()).then(|| bounds.join(", ")),
+            parameters.iter().any(Option::is_some).then(|| {
+                parameters
+                    .into_iter()
+                    .map(|parameter| parameter.unwrap_or_else(|| "Any?".to_owned()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }),
+        )
     }
 
     /// The fully qualified name of the one backed enum every value of `r#type` but `null` is a case of, as
@@ -435,13 +524,16 @@ pub(crate) fn agreed_kind(mut kinds: impl Iterator<Item = DeclarationKind>) -> D
     kind
 }
 
-/// How a type text writes a type parameter of a class.
+/// How a type text writes a type parameter.
 #[derive(Clone, Copy)]
 enum Parameter {
     /// By its name.
     Name,
-    /// As `$` and its index among its class's type parameters, `$0` for the first.
+    /// A class's as `$` and its index among its class's type parameters, `$0` for the first, and a method's as `#` and
+    /// its index among the method's.
     Index,
+    /// A class's as [`Parameter::Index`] writes it, and a method's as its bound, which a call from plain PHP gives it.
+    Bound,
 }
 
 /// `r#type` in the one PHP# spelling the engine parses, task 090's type text: a class by its full dotted name as it is
@@ -497,17 +589,27 @@ fn intersection_text(atomic: &TAtomic, codebase: &CodebaseMetadata, parameter: P
 fn atomic_text(atomic: &TAtomic, codebase: &CodebaseMetadata, parameter: Parameter) -> String {
     let type_text = |r#type: &TUnion| text(r#type, codebase, parameter);
     let list = |types: &mut dyn Iterator<Item = &TUnion>| types.map(type_text).collect::<Vec<_>>().join(", ");
-    let parameter_text = |name: Word, defining_entity: GenericParent| match (parameter, defining_entity) {
-        (Parameter::Index, GenericParent::ClassLike(class)) => {
-            let index = codebase
-                .get_class_like(class.as_bytes())
-                .and_then(|class| class.template_types.get_index_of(&name))
-                .unwrap_or_else(|| unreachable!("a class declares each of its type parameters, not `{name}`"));
+    let parameter_text =
+        |name: Word, defining_entity: GenericParent, bound: &dyn Fn() -> String| match (parameter, defining_entity) {
+            (Parameter::Name, _) => name.to_string(),
+            (Parameter::Index | Parameter::Bound, GenericParent::ClassLike(class)) => {
+                let index = codebase
+                    .get_class_like(class.as_bytes())
+                    .and_then(|class| class.template_types.get_index_of(&name))
+                    .unwrap_or_else(|| unreachable!("a class declares each of its type parameters, not `{name}`"));
 
-            format!("${index}")
-        }
-        _ => name.to_string(),
-    };
+                format!("${index}")
+            }
+            (Parameter::Index, GenericParent::FunctionLike((class, method))) => {
+                let index = codebase
+                    .get_method(class.as_bytes(), method.as_bytes())
+                    .and_then(|method| method.template_types.get_index_of(&name))
+                    .unwrap_or_else(|| unreachable!("a method declares each of its type parameters, not `{name}`"));
+
+                format!("#{index}")
+            }
+            (Parameter::Bound, GenericParent::FunctionLike(_)) => bound(),
+        };
 
     match atomic {
         TAtomic::Scalar(TScalar::Integer(_)) => "int".to_owned(),
@@ -532,13 +634,15 @@ fn atomic_text(atomic: &TAtomic, codebase: &CodebaseMetadata, parameter: Paramet
             format!("Map<{}>", list(&mut [key.as_ref(), value.as_ref()].into_iter()))
         }
         TAtomic::Iterable(iterable) => format!("Iterable<{}>", type_text(iterable.get_value_type())),
-        TAtomic::GenericParameter(generic) => parameter_text(generic.parameter_name, generic.defining_entity),
+        TAtomic::GenericParameter(generic) => {
+            parameter_text(generic.parameter_name, generic.defining_entity, &|| type_text(&generic.constraint))
+        }
         TAtomic::Scalar(TScalar::ClassLikeString(class_value)) => {
             let class = match class_value {
                 TClassLikeString::Literal { value } => class_text(*value, codebase),
                 TClassLikeString::OfType { constraint, .. } => atomic_text(constraint, codebase, parameter),
-                TClassLikeString::Generic { parameter_name, defining_entity, .. } => {
-                    parameter_text(*parameter_name, *defining_entity)
+                TClassLikeString::Generic { parameter_name, defining_entity, constraint, .. } => {
+                    parameter_text(*parameter_name, *defining_entity, &|| atomic_text(constraint, codebase, parameter))
                 }
                 TClassLikeString::Any { .. } => "Object".to_owned(),
             };

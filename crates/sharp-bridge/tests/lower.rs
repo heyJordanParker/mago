@@ -98,6 +98,18 @@ impl Lowered {
         self.render(self.child(method as u32, 2))
     }
 
+    /// The parameter list of the first method the source declares as `name`.
+    fn parameters_of(&self, name: &str) -> String {
+        assert_eq!(self.diagnostics(), Vec::<String>::new(), "the source lowers");
+        let method = self
+            .nodes()
+            .iter()
+            .position(|node| node.kind == sharp_kind::SHARP_AST_METHOD && self.text(node.text) == name)
+            .unwrap_or_else(|| panic!("the source declares `{name}`"));
+
+        self.render(self.child(method as u32, 0))
+    }
+
     fn child(&self, node: u32, index: u32) -> u32 {
         self.children()[(self.nodes()[node as usize].first_child + index) as usize]
     }
@@ -2120,6 +2132,9 @@ fn a_type_parameter_without_a_bound_is_mixed_alone_nullable_or_in_a_union() {
                 null
                 null
                 null
+              SHARP_TYPE_ARGS
+                ZVAL "Any?"
+                null
             ZVAL [1] "mixed"
         "#}
     );
@@ -2127,12 +2142,15 @@ fn a_type_parameter_without_a_bound_is_mixed_alone_nullable_or_in_a_union() {
         signature(1),
         indoc! {r#"
             PARAM_LIST
+              SHARP_TYPE_ARGS
+                ZVAL "Any?"
+                null
             ZVAL [1] "mixed"
         "#}
     );
     assert_eq!(
         signature(2),
-        indoc! {r#"
+        indoc! {r##"
             PARAM_LIST
               PARAM
                 ZVAL [1] "mixed"
@@ -2141,8 +2159,11 @@ fn a_type_parameter_without_a_bound_is_mixed_alone_nullable_or_in_a_union() {
                 null
                 null
                 null
+              SHARP_TYPE_ARGS
+                ZVAL "Any?"
+                ZVAL "#0"
             ZVAL [1] "mixed"
-        "#}
+        "##}
     );
 }
 
@@ -2188,6 +2209,9 @@ fn a_type_parameter_bound_by_several_classes_is_their_intersection() {
                 null
                 null
                 null
+              SHARP_TYPE_ARGS
+                null
+                ZVAL "$0"
         "#}
     );
     assert_eq!(
@@ -2345,6 +2369,9 @@ fn a_generic_class_type_is_its_class_and_a_class_value_type_is_string() {
                 null
                 null
                 null
+              SHARP_TYPE_ARGS
+                null
+                ZVAL "Lib.PaginatedList<Lib.Order>"
             ZVAL [256] "Lib\\PaginatedList"
         "#}
     );
@@ -3082,14 +3109,151 @@ fn a_class_like_metadata_holds_its_header_type_arguments_and_its_bounds() {
     );
 }
 
+/// A call of a generic method carries the type arguments the checker found, written or inferred, as the last child of
+/// its argument list: a `SHARP_TYPE_ARGS` without a `new`. A type parameter of the class the call is in is `$` and its
+/// index, and one of the method the call is in is `#` and its index, which the engine reads from the method's own
+/// call. A lambda runs in a frame of its own, without its method's type arguments, so a `new` or a call in it that
+/// names one carries none. A method whose call needs its type arguments, or whose parameter names a class with type
+/// arguments or a type parameter, ends its parameter list with its metadata: a `SHARP_TYPE_ARGS` of the bounds of its
+/// own type parameters and a type text list with each parameter's type, `Any?` for one the engine never checks.
+#[test]
+fn a_generic_call_carries_its_type_arguments_and_a_generic_method_its_metadata() {
+    let lowered = Lowered::with(
+        indoc! {"
+        namespace App;
+
+        public class Box<TValue>
+        {
+            public Box() { }
+        }
+
+        public class Pair<TFirst, TSecond>
+        {
+            public Pair() { }
+        }
+
+        public class Repository
+        {
+            public static List<T> repeat<T>(T value, int times) => [value];
+
+            public List<Order> run(Order order) => Repository.repeat<Order>(order, 3);
+
+            public List<Order> inferred(Order order) => Repository.repeat(order, 2);
+
+            public List<T> forward<T : DatabaseEntity>(T item) => Repository.repeat<T>(item, 1);
+
+            public Box<T> box<T : DatabaseEntity>() => new Box<T>();
+
+            public Function<Box<T>()> later<T>() => () => new Box<T>();
+
+            public void show(PaginatedList<Order> page, int count) { }
+        }
+
+        public class PaginatedList<TItem : DatabaseEntity>
+        {
+            public PaginatedList() { }
+
+            public Pair<TItem, TOther> pairWith<TOther>() => new Pair<TItem, TOther>();
+
+            public Pair<TItem, TOther> again<TOther>() => this.pairWith<TOther>();
+        }
+    "},
+        &[(
+            "src/App/Entities.php",
+            "<?php namespace App; abstract class DatabaseEntity {} final class Order extends DatabaseEntity {}",
+        )],
+    );
+
+    let call = |count: u32, type_arguments: &str| {
+        format!(
+            indoc! {r#"
+                STMT_LIST
+                  RETURN
+                    STATIC_CALL
+                      ZVAL "App\\Repository"
+                      ZVAL "repeat"
+                      ARG_LIST
+                        VAR
+                          ZVAL "{}"
+                        ZVAL {}
+                        SHARP_TYPE_ARGS
+                          null
+                          ZVAL "{}"
+            "#},
+            if count == 1 { "item" } else { "order" },
+            count,
+            type_arguments,
+        )
+    };
+    assert_eq!(lowered.body(), call(3, "App.Order"));
+    assert_eq!(lowered.body_of("inferred"), call(2, "App.Order"));
+    assert_eq!(lowered.body_of("forward"), call(1, "#0"));
+    assert_eq!(
+        lowered.body_of("box"),
+        indoc! {r##"
+            STMT_LIST
+              RETURN
+                SHARP_TYPE_ARGS
+                  NEW
+                    ZVAL "App\\Box"
+                    ARG_LIST
+                  ZVAL "#0"
+        "##}
+    );
+    assert!(!lowered.body_of("later").contains("SHARP_TYPE_ARGS"), "{}", lowered.body_of("later"));
+    assert_eq!(
+        lowered.body_of("pairWith"),
+        indoc! {r##"
+            STMT_LIST
+              RETURN
+                SHARP_TYPE_ARGS
+                  NEW
+                    ZVAL "App\\Pair"
+                    ARG_LIST
+                  ZVAL "$0, #0"
+        "##}
+    );
+    assert_eq!(
+        lowered.body_of("again"),
+        indoc! {r##"
+            STMT_LIST
+              RETURN
+                METHOD_CALL
+                  VAR
+                    ZVAL "this"
+                  ZVAL "pairWith"
+                  ARG_LIST
+                    SHARP_TYPE_ARGS
+                      null
+                      ZVAL "#0"
+        "##}
+    );
+
+    let metadata = |bounds: &str, parameters: &str| format!("  SHARP_TYPE_ARGS\n    {bounds}\n    {parameters}\n");
+    assert!(
+        lowered.parameters_of("repeat").ends_with(&metadata(r#"ZVAL "Any?""#, r##"ZVAL "#0, Any?""##)),
+        "{}",
+        lowered.parameters_of("repeat")
+    );
+    assert!(lowered.parameters_of("forward").ends_with(&metadata(r#"ZVAL "App.DatabaseEntity""#, r##"ZVAL "#0""##)));
+    assert!(
+        lowered.parameters_of("show").ends_with(&metadata("null", r#"ZVAL "App.PaginatedList<App.Order>, Any?""#)),
+        "{}",
+        lowered.parameters_of("show")
+    );
+    assert_eq!(lowered.parameters_of("pairWith"), format!("PARAM_LIST\n{}", metadata(r#"ZVAL "Any?""#, "null")));
+    assert!(!lowered.parameters_of("run").contains("SHARP_TYPE_ARGS"));
+    assert!(!lowered.parameters_of("__construct").contains("SHARP_TYPE_ARGS"));
+}
+
 /// A PHP# generic class ends with its metadata, a `SHARP_TYPE_ARGS` without a `new` whose second text is its bounds:
 /// the type text of each type parameter's bound, `Any?` for one without a bound. It declares its hidden type-argument
 /// slot from it. A class without type parameters, whose header gives no type arguments, has no metadata. `new` of the
 /// class is a `SHARP_TYPE_ARGS` over the `NEW`, whose text is the type arguments the checker found, each in its full
 /// dotted name. `new Self` gives the new object `this`'s type arguments, so its text is null. A type argument
 /// that names a type parameter of the class writes it as `$` and its index, and the engine gives it `this`'s type
-/// argument at that index. One that names a method's own type parameter has a value only the call knows, so that `new`
-/// carries no type arguments yet.
+/// argument at that index. One that names a method's own type parameter writes it as `#` and its index, and the engine
+/// gives it the method's own type argument at that index.
 #[test]
 fn new_of_a_generic_php_sharp_class_carries_its_type_arguments() {
     let lowered = Lowered::with(
@@ -3182,15 +3346,17 @@ fn new_of_a_generic_php_sharp_class_carries_its_type_arguments() {
     );
     assert_eq!(
         lowered.body_of("open"),
-        indoc! {r#"
+        indoc! {r##"
             STMT_LIST
               RETURN
-                NEW
-                  ZVAL "App\\PaginatedList"
-                  ARG_LIST
-                    VAR
-                      ZVAL "rows"
-        "#}
+                SHARP_TYPE_ARGS
+                  NEW
+                    ZVAL "App\\PaginatedList"
+                    ARG_LIST
+                      VAR
+                        ZVAL "rows"
+                  ZVAL "#0, int"
+        "##}
     );
 }
 
