@@ -144,7 +144,6 @@ pub fn build_site(root: &Path) -> Result<()> {
             ("edit_page", t(ui, "edit_page", "Edit this page")),
             ("nav_guide", t(ui, "nav_guide", "Guide")),
             ("nav_faq", t(ui, "nav_faq", "FAQ")),
-            ("nav_sponsor", t(ui, "nav_sponsor", "Sponsor")),
             ("nav_github", t(ui, "nav_github", "GitHub repository")),
         ]);
         context.insert("ui", &ui_strings);

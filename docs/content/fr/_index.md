@@ -1,6 +1,6 @@
 +++
 title = "Mago"
-description = "La chaîne d'outils PHP oxydée. Un analyseur statique, un linter et un formateur écrits en Rust."
+description = "Le vérificateur et la chaîne d'outils de PHP# : vérifie le code PHP et PHP#, compile PHP#, et passe le linter et le formateur sur le code PHP."
 nav_order = 10
 nav_section = ""
 +++
@@ -10,7 +10,7 @@ nav_section = ""
 
 <div class="home-hero__plate"><span>Mago</span><span class="home-hero__plate-divider">/</span><span>Chaîne d'outils PHP</span><span class="home-hero__plate-divider">/</span><span>mago-sharp</span></div>
 
-<h1 class="home-hero__title">Une chaîne d'outils PHP, <em>oxydée</em>.</h1>
+<h1 class="home-hero__title">Le vérificateur et la chaîne d'outils de <em>PHP#</em>.</h1>
 
 <p class="home-hero__lede">Mago est un analyseur statique, un linter et un formateur pour PHP, écrits en Rust. Conçu pour les projets que leur outillage actuel n'arrive plus à suivre.</p>
 

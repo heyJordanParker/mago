@@ -73,7 +73,6 @@ To get started with Mago and learn how to configure your project, please visit t
 Mago is a community-driven project, and we welcome contributions! Whether you're reporting bugs, suggesting features, writing documentation, or submitting code, your help is valued.
 
 - See our [Contributing Guide](./CONTRIBUTING.md) to get started.
-- Join the discussion on [Discord](https://discord.gg/mwyyjr27eu).
 
 ## Inspiration & Acknowledgements
 

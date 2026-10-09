@@ -26,17 +26,21 @@ No. mago-sharp has no Language Server Protocol implementation. Run it from the c
 
 No. mago-sharp ships no editor-specific extensions.
 
-## Will Mago support analyzer plugins?
+## Does mago-sharp support analyzer plugins?
 
-Yes, but not before `1.0.0`. The plan is for plugins to be written in Rust, compiled to WASM, and loaded by Mago at runtime. That work happens after `1.0.0` ships.
+Yes, through extensions. An extension is an external program that mago-sharp starts from `[extension-hosts]` in `mago.toml` and talks to over a binary worker protocol. It can add linter rules and analyzer plugins. The formatter and guard have no extension API. mago-sharp ships a PHP SDK for writing extensions: the `Mago\Sdk` namespace in the `heyjordanparker/mago-sharp` Composer package. [Extensions](/extensions/overview/) covers the protocol, the SDK, and a complete example.
 
-## What other PHP tools does Mago plan to replace?
+## Which tools does mago-sharp include?
 
-The longer-term vision is for Mago to be a complete QA and development utility for PHP. The formatter, linter, and analyzer are the focus for `1.0.0`. Beyond that, planned tools include:
+One binary runs:
 
-- A PHP version manager.
-- A PHP extension installer.
-- A migration helper for upgrading PHP versions, frameworks, or libraries.
+- `mago lint`, the linter.
+- `mago analyze`, the static analyzer, for PHP and PHP#.
+- `mago format`, the formatter.
+- `mago guard`, which enforces architectural layer rules.
+- `mago compile`, which compiles PHP# files for the PHP# engine.
+
+`mago fix` applies fixes from the guard, analyzer, linter, and formatter until none of them changes anything.
 
 ## Will Mago implement a Composer alternative?
 

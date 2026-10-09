@@ -26,17 +26,21 @@ Non. mago-sharp n'implémente pas le Language Server Protocol. Utilisez-le en li
 
 Non. mago-sharp ne fournit aucune extension propre à un éditeur.
 
-## Mago prendra-t-il en charge des plugins d'analyseur ?
+## mago-sharp prend-il en charge des plugins d'analyseur ?
 
-Oui, mais pas avant la `1.0.0`. Le plan est que les plugins soient écrits en Rust, compilés en WASM, et chargés par Mago à l'exécution. Ce travail aura lieu après la sortie de la `1.0.0`.
+Oui, par des extensions. Une extension est un programme externe que mago-sharp lance depuis `[extension-hosts]` dans `mago.toml` et avec lequel il communique par un protocole binaire de workers. Elle peut ajouter des règles au linter et des plugins à l'analyseur. Le formateur et le guard n'ont pas d'API d'extension. mago-sharp fournit un SDK PHP pour écrire des extensions : l'espace de noms `Mago\Sdk` du paquet Composer `heyjordanparker/mago-sharp`. La page [Extensions](/extensions/overview/) décrit le protocole, le SDK et un exemple complet.
 
-## Quels autres outils PHP Mago prévoit-il de remplacer ?
+## Quels outils mago-sharp inclut-il ?
 
-La vision à plus long terme est que Mago soit un utilitaire complet de qualité et de développement pour PHP. Le formateur, le linter et l'analyseur sont la priorité pour la `1.0.0`. Au-delà, les outils prévus incluent :
+Un seul binaire fournit :
 
-- Un gestionnaire de versions PHP.
-- Un installateur d'extensions PHP.
-- Un assistant de migration pour mettre à niveau les versions de PHP, les frameworks ou les bibliothèques.
+- `mago lint`, le linter.
+- `mago analyze`, l'analyseur statique, pour PHP et PHP#.
+- `mago format`, le formateur.
+- `mago guard`, qui fait respecter les règles d'architecture entre couches.
+- `mago compile`, qui compile les fichiers PHP# pour le moteur PHP#.
+
+`mago fix` applique les corrections du guard, de l'analyseur, du linter et du formateur jusqu'à ce qu'aucun d'eux ne change plus rien.
 
 ## Mago implémentera-t-il une alternative à Composer ?
 

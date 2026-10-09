@@ -26,17 +26,21 @@ nav_section = "参考"
 
 不提供。mago-sharp 不提供任何编辑器专用扩展。
 
-## Mago 会支持分析器插件吗?
+## mago-sharp 支持分析器插件吗?
 
-会,但不会早于 `1.0.0`。计划是用 Rust 编写插件,编译为 WASM,在运行时由 Mago 加载。这项工作会在 `1.0.0` 发布之后进行。
+支持,通过扩展实现。扩展是一个外部程序,mago-sharp 根据 `mago.toml` 中的 `[extension-hosts]` 启动它,并通过二进制 worker 协议与之通信。扩展可以添加 linter 规则和分析器插件。格式化器和 guard 没有扩展 API。mago-sharp 提供用于编写扩展的 PHP SDK,即 Composer 包 `heyjordanparker/mago-sharp` 中的 `Mago\Sdk` 命名空间。[扩展](/extensions/overview/)页面介绍了该协议、SDK 和一个完整示例。
 
-## Mago 还计划替代哪些其他 PHP 工具?
+## mago-sharp 包含哪些工具?
 
-更长远的愿景是让 Mago 成为一套完整的 PHP 质量保障与开发工具。格式化器、linter 和分析器是 `1.0.0` 的重点。在此之外,计划中的工具包括:
+一个二进制文件提供:
 
-- 一个 PHP 版本管理器。
-- 一个 PHP 扩展安装器。
-- 一个用于升级 PHP 版本、框架或库的迁移辅助工具。
+- `mago lint`:linter。
+- `mago analyze`:静态分析器,支持 PHP 和 PHP#。
+- `mago format`:格式化器。
+- `mago guard`:强制执行架构分层规则。
+- `mago compile`:为 PHP# 引擎编译 PHP# 文件。
+
+`mago fix` 会反复应用 guard、分析器、linter 和格式化器的修复,直到它们都不再产生变化。
 
 ## Mago 会实现一个 Composer 替代品吗?
 

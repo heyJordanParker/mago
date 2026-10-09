@@ -1,6 +1,6 @@
 +++
 title = "Mago"
-description = "The oxidized PHP toolchain. A static analyzer, linter, and formatter written in Rust."
+description = "PHP#'s checker and toolchain: checks PHP and PHP# code, compiles PHP#, and lints and formats PHP."
 nav_order = 10
 nav_section = ""
 +++
@@ -10,7 +10,7 @@ nav_section = ""
 
 <div class="home-hero__plate"><span>Mago</span><span class="home-hero__plate-divider">/</span><span>PHP toolchain</span><span class="home-hero__plate-divider">/</span><span>mago-sharp</span></div>
 
-<h1 class="home-hero__title">A PHP toolchain, <em>oxidized</em>.</h1>
+<h1 class="home-hero__title">The checker and toolchain for <em>PHP#</em>.</h1>
 
 <p class="home-hero__lede">Mago is a static analyzer, linter, and formatter for PHP, written in Rust. Built for projects that have outgrown the patience of their tooling.</p>
 

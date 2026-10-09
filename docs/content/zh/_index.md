@@ -1,6 +1,6 @@
 +++
 title = "Mago"
-description = "氧化版 PHP 工具链。一款用 Rust 编写的静态分析器、linter 和格式化器。"
+description = "PHP# 的检查器与工具链:检查 PHP 与 PHP# 代码,编译 PHP#,并对 PHP 代码进行 lint 和格式化。"
 nav_order = 10
 nav_section = ""
 +++
@@ -10,7 +10,7 @@ nav_section = ""
 
 <div class="home-hero__plate"><span>Mago</span><span class="home-hero__plate-divider">/</span><span>PHP 工具链</span><span class="home-hero__plate-divider">/</span><span>mago-sharp</span></div>
 
-<h1 class="home-hero__title">一款<em>氧化</em>的 PHP 工具链。</h1>
+<h1 class="home-hero__title"><em>PHP#</em> 的检查器与工具链。</h1>
 
 <p class="home-hero__lede">Mago 是一款用 Rust 编写的 PHP 静态分析器、linter 和格式化器。专为那些现有工具链已不堪重负的项目而打造。</p>
 

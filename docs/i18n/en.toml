@@ -11,7 +11,6 @@ edit_page = "Edit this page"
 # Header nav links
 nav_guide = "Guide"
 nav_faq = "FAQ"
-nav_sponsor = "Sponsor"
 nav_github = "GitHub repository"
 
 # Linter rules reference page (generated from `mago lint --list-rules`).
