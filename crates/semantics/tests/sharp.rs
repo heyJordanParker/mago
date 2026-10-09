@@ -3319,6 +3319,30 @@ fn a_type_parameter_whose_name_does_not_start_with_t_and_an_uppercase_letter_is_
     );
 }
 
+/// A type parameter is a type, so it starts with a capital letter as every PHP# type does: the rule that names it `T`
+/// or `T` and a capital letter refuses a lowercase one wherever a list declares it, once. A PHP template keeps its own
+/// letters.
+#[test]
+fn a_type_parameter_starts_with_a_capital_letter() {
+    let lowercase = "namespace App.Tenant;\n\nclass Box<t>\n{\n    public void run<item>() { }\n}\n\ninterface Source<t>\n{\n    void next<value>();\n}\n\nenum Status\n{\n    case Open;\n\n    public void run<item>() { }\n}\n";
+    let capitalized = "namespace App.Tenant;\n\nclass Box<T>\n{\n    public void run<TItem>() { }\n}\n\ninterface Source<T>\n{\n    void next<TValue>();\n}\n\nenum Status\n{\n    case Open;\n\n    public void run<TItem>() { }\n}\n";
+    let php = "<?php\n\nnamespace App\\Tenant;\n\n/** @template t */\nclass Box\n{\n}\n";
+    let refusal = "A type parameter's name is `T`, or `T` and a capital letter, as in `TItem`.";
+
+    assert_eq!(
+        issues(lowercase),
+        [
+            format!("3:11 {refusal}"),
+            format!("5:21 {refusal}"),
+            format!("8:18 {refusal}"),
+            format!("10:15 {refusal}"),
+            format!("17:21 {refusal}"),
+        ]
+    );
+    assert_eq!(issues(capitalized), Vec::<String>::new());
+    assert_eq!(issues_in("src/Box.php", php), Vec::<String>::new());
+}
+
 #[test]
 fn a_type_parameter_list_that_declares_a_name_twice_is_an_error() {
     let code =
