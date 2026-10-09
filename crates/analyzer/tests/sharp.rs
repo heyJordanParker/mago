@@ -2065,6 +2065,36 @@ fn a_return_that_may_be_false_speaks_of_its_bool() {
     );
 }
 
+/// A `null` operand of arithmetic, from a PHP method, asks for a number and names no cast, since PHP# casts only
+/// between numbers. PHP keeps its own wording.
+#[test]
+fn a_null_operand_of_arithmetic_asks_for_a_number() {
+    let store = (
+        "src/Lib/Store.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Store\n{\n    public static function nothing(): null { return null; }\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Store;\n\nclass Report\n{\n    public static int left() => Store.nothing() - 1;\n\n    public static int right() => 1 - Store.nothing();\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Store;\n\nclass Report\n{\n    public static function left(): int { return Store::nothing() - 1; }\n\n    public static function right(): int { return 1 - Store::nothing(); }\n}\n";
+    let operands = |analyzed| -> Vec<String> {
+        worded(analyzed, &[store]).into_iter().filter(|line| line.contains(" null-operand ")).collect()
+    };
+
+    assert_eq!(
+        operands(("src/Demo/Report.php", php)),
+        [
+            "9:49 null-operand Left operand in arithmetic operation cannot be `null`. | This is `null`. | Performing arithmetic operations on `null` typically results in `0`. | Ensure the left operand is a number (int/float) or a type that can be cast to a number.",
+            "11:54 null-operand Right operand in arithmetic operation cannot be `null`. | This is `null`. | Performing arithmetic operations on `null` typically results in `0`. | Ensure the right operand is a number (int/float) or a type that can be cast to a number.",
+        ]
+    );
+    assert_eq!(
+        operands(("src/Demo/Report.sharp", sharp)),
+        [
+            "7:33 null-operand Left operand in arithmetic operation cannot be `null`. | This is `null`. | Performing arithmetic operations on `null` typically results in `0`. | Ensure the left operand is a number (int/float).",
+            "9:38 null-operand Right operand in arithmetic operation cannot be `null`. | This is `null`. | Performing arithmetic operations on `null` typically results in `0`. | Ensure the right operand is a number (int/float).",
+        ]
+    );
+}
+
 /// An operand that may be `false`, from a PHP method, asks for a check of `false`. PHP# has no falsiness, and keeps
 /// `(int)` between numbers, so no cast turns `false` into one. PHP keeps its own wording.
 #[test]
