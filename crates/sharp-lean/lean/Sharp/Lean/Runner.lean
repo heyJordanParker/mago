@@ -1,13 +1,14 @@
 /-
-`sharp-lean`: a Mago extension worker that verifies PHP# laws and proposes the proofs Lean's own steps find.
+`sharp-lean`: the program Mago runs to verify PHP# laws and propose the proofs Lean's own steps find.
 
-Each request names one law file's module: the proof module when Lake built it, or else the generated module of its
-code. The runner imports it, as `lake exe runLinter` imports a module, and answers for each law of the request: every
+Mago starts one runner per law file, writes its request to standard input and reads the answer from standard output.
+The request names the file's module: the proof module when Lake built it, or else the generated module of its code.
+The runner imports it, as `lake exe runLinter` imports a module, and answers for each law of the request: every
 theorem of the proof module whose type is exactly the law's statement, with the axioms its proof uses, and, when the
 request asks for one, the first automatic proof step that proves the law.
 
-Mago starts one runner per request. Lean cannot free an imported environment while the tasks that elaborated a
-proposal may still hold parts of it, and Lean's own server likewise restarts a file's worker to import anew.
+One runner answers one request because Lean cannot free an imported environment while the tasks that elaborated a
+proposal may still hold parts of it. Lean's own server likewise restarts a file's worker to import anew.
 -/
 import Lean
 import Sharp.Lean.Law
@@ -16,21 +17,8 @@ open Lean Elab
 
 namespace Sharp.Runner
 
-/-! Mago's extension frame (`crates/extension/src/protocol.rs`) and payload primitives
-(`crates/extension/src/payload.rs`): integers in network byte order, strings prefixed by their byte length as a
-`u32`. -/
-
-structure Frame where
-  kind : UInt8
-  flags : UInt8 := 0
-  id : UInt64
-  parentId : UInt64 := 0
-  payload : ByteArray
-
-def frameRequest : UInt8 := 1
-def frameResponse : UInt8 := 2
-def frameShutdown : UInt8 := 5
-def flagError : UInt8 := 1
+/-! Mago's payload primitives (`crates/extension/src/payload.rs`): integers in network byte order, strings prefixed by
+their byte length as a `u32`. -/
 
 abbrev Decode := StateT Nat (ReaderT ByteArray (Except String))
 
@@ -47,11 +35,6 @@ def u16 : Decode UInt16 := do
 def u32 : Decode UInt32 := do
   let mut value : UInt32 := 0
   for _ in [0:4] do value := (value <<< 8) ||| (← u8).toUInt32
-  return value
-
-def u64 : Decode UInt64 := do
-  let mut value : UInt64 := 0
-  for _ in [0:8] do value := (value <<< 8) ||| (← u8).toUInt64
   return value
 
 def count : Decode Nat := do
@@ -76,39 +59,8 @@ def many (item : Decode α) : Decode (Array α) := do
 def putU8 (b : ByteArray) (v : UInt8) : ByteArray := b.push v
 def putU32 (b : ByteArray) (v : UInt32) : ByteArray :=
   (((b.push (v >>> 24).toUInt8).push (v >>> 16).toUInt8).push (v >>> 8).toUInt8).push v.toUInt8
-def putU64 (b : ByteArray) (v : UInt64) : ByteArray :=
-  putU32 (putU32 b (v >>> 32).toUInt32) v.toUInt32
 def putString (b : ByteArray) (s : String) : ByteArray :=
   putU32 b s.utf8ByteSize.toUInt32 ++ s.toUTF8
-
-def magic : ByteArray := "MAGO".toUTF8
-
-partial def readExact (stream : IO.FS.Stream) (n : Nat) (acc : ByteArray := .empty) : IO ByteArray := do
-  if acc.size ≥ n then return acc
-  let chunk ← stream.read (n - acc.size).toUSize
-  if chunk.isEmpty then throw <| IO.userError s!"stdin ended {n - acc.size} bytes before the frame did"
-  readExact stream n (acc ++ chunk)
-
-/-- Reads one frame, `none` at a clean end of input between frames. -/
-def readFrame (stream : IO.FS.Stream) : IO (Option Frame) := do
-  let first ← stream.read 1
-  if first.isEmpty then return none
-  let header ← readExact stream 32 first
-  let field {α : Type} (d : Decode α) (at_ : Nat) : IO α :=
-    IO.ofExcept <| (d.run' at_).run header |>.mapError IO.userError
-  unless header.extract 0 4 == magic do throw <| IO.userError "the frame does not start with MAGO"
-  let major ← field u16 4
-  unless major == 1 do throw <| IO.userError s!"unsupported extension protocol major version {major}"
-  let length := (← field u32 28).toNat
-  return some {
-    kind := header[8]!, flags := header[9]!, id := ← field u64 12, parentId := ← field u64 20,
-    payload := ← readExact stream length }
-
-def writeFrame (stream : IO.FS.Stream) (frame : Frame) : IO Unit := do
-  let header := putU32 (putU64 (putU64 (putU8 (putU8 (putU32 magic 0x00010000) frame.kind) frame.flags
-    |>.push 0 |>.push 0) frame.id) frame.parentId) frame.payload.size.toUInt32
-  stream.write (header ++ frame.payload)
-  stream.flush
 
 /-! The `Check` request and its answer. Every law message starts as Mago's linter and analyzer messages do: a magic,
 the major and minor protocol version, the message kind, and a reserved `u16`. -/
@@ -237,26 +189,21 @@ def answer (env : Environment) (request : Check) : IO ByteArray := do
     b := putString b (proposal.getD "")
   return b
 
-def respond (request : Check) : IO ByteArray := do
-  answer (← importModules #[{ module := request.module }] {} (loadExts := true)) request
+partial def readAll (stream : IO.FS.Stream) (bytes : ByteArray := .empty) : IO ByteArray := do
+  let chunk ← stream.read 65536
+  if chunk.isEmpty then return bytes else readAll stream (bytes ++ chunk)
 
-partial def serve (stdin stdout : IO.FS.Stream) : IO Unit := do
-  let some frame ← readFrame stdin | return
-  if frame.kind == frameShutdown then return
-  unless frame.kind == frameRequest do return ← serve stdin stdout
-  let reply ← match (check.run' 0).run frame.payload with
-    | .error message => pure (Except.error message)
-    | .ok request =>
-      try pure (Except.ok (← respond request)) catch error => pure (Except.error (toString error))
-  match reply with
-  | .ok payload => writeFrame stdout { kind := frameResponse, id := frame.id, payload }
-  | .error message =>
-    writeFrame stdout { kind := frameResponse, flags := flagError, id := frame.id, payload := message.toUTF8 }
-  serve stdin stdout
+/-- Reads the request to the end of standard input and writes its answer to standard output. Any failure ends the
+runner with its message on standard error. -/
+def respond : IO Unit := do
+  let request ← IO.ofExcept <| ((check.run' 0).run (← readAll (← IO.getStdin))).mapError IO.userError
+  let stdout ← IO.getStdout
+  stdout.write (← answer (← importModules #[{ module := request.module }] {} (loadExts := true)) request)
+  stdout.flush
 
 end Sharp.Runner
 
 unsafe def main : IO Unit := do
   initSearchPath (← findSysroot)
   enableInitializersExecution
-  Sharp.Runner.serve (← IO.getStdin) (← IO.getStdout)
+  Sharp.Runner.respond

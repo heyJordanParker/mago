@@ -1,15 +1,14 @@
-//! The `sharp-lean` runner, spoken to over Mago's extension frames.
+//! The `sharp-lean` runner, which reads one request in Mago's payload encoding from standard input and writes its
+//! answer to standard output.
 
 use std::io;
-use std::num::NonZeroUsize;
+use std::io::Write;
 use std::path::Path;
-use std::time::Duration;
+use std::process::Command;
+use std::process::Stdio;
 
 use mago_extension::PayloadReader;
 use mago_extension::PayloadWriter;
-use mago_extension::WorkerCommand;
-use mago_extension::WorkerPool;
-use mago_extension::WorkerPoolOptions;
 
 use crate::library;
 
@@ -18,10 +17,6 @@ const LAW_PROTOCOL_MAJOR: u16 = 1;
 const LAW_PROTOCOL_MINOR: u16 = 0;
 const CHECK_REQUEST: u16 = 1;
 const CHECKED_RESPONSE: u16 = 2;
-
-/// The longest one request may take: importing a proof module and trying each proof step on each of its laws. Spec
-/// section 28.1's `Money` takes about 2 s, the import and one step, so ten minutes holds a file of many hard laws.
-const REQUEST_TIMEOUT: Duration = Duration::from_mins(10);
 
 /// One law a request asks about.
 pub(crate) struct Question<'question> {
@@ -56,10 +51,10 @@ pub(crate) struct Answer {
     pub(crate) proposal: Option<String>,
 }
 
-/// Starts the runner of `library` on the modules Lake built in `package`, which imports `module` and answers each
+/// Runs the runner of `library` on the modules Lake built in `package`, which imports `module` and answers each
 /// question, counting only the theorems of `proof_module`, or none when it is empty.
 ///
-/// Each call starts its own runner, since Lean cannot free an imported environment in a process that elaborated with
+/// Each call runs its own runner, since Lean cannot free an imported environment in a process that elaborated with
 /// it. `lake env` gives the runner the package's search path, and on Windows the folder of Lean's shared libraries,
 /// which an executable that interprets Lean links to there.
 pub(crate) fn check(
@@ -69,15 +64,31 @@ pub(crate) fn check(
     proof_module: &str,
     questions: &[Question<'_>],
 ) -> io::Result<Vec<Answer>> {
-    let command = WorkerCommand::new("lake")
-        .with_argument("env")
-        .with_argument(library::runner(library))
-        .with_current_directory(package);
-    let options = WorkerPoolOptions { request_timeout: REQUEST_TIMEOUT, ..WorkerPoolOptions::default() };
-    let runner = WorkerPool::spawn(command, NonZeroUsize::MIN, options).map_err(io::Error::other)?;
-    let response = runner.request(encode(module, proof_module, questions)?).map_err(io::Error::other)?;
+    let mut runner = Command::new("lake")
+        .arg("env")
+        .arg(library::runner(library))
+        .current_dir(package)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    // The runner reads the whole request before it writes, so writing it all first cannot fill a pipe both wait on. A
+    // runner that fails before it reads the request is reported by its exit status and standard error.
+    let mut request = runner.stdin.take().ok_or_else(|| io::Error::other("the Lean runner has no standard input"))?;
+    let written = request.write_all(&encode(module, proof_module, questions)?);
+    drop(request);
 
-    decode(&response, questions.len()).map_err(io::Error::other)
+    let output = runner.wait_with_output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "the Lean runner failed with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    written?;
+
+    decode(&output.stdout, questions.len()).map_err(io::Error::other)
 }
 
 fn encode(module: &str, proof_module: &str, questions: &[Question<'_>]) -> io::Result<Vec<u8>> {
