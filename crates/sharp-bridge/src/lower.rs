@@ -440,7 +440,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
     /// A class sets the initial values PHP takes as no default, those that are not constant or belong to a `readonly`
     /// property, at the start of its constructor, in declaration order. A class without a constructor gets a public
-    /// one that spans the class.
+    /// one that spans the class. The property of each promoted `Set` parameter comes just before the constructor.
     fn class(&mut self, class: &Class) -> u32 {
         self.class = self.names.get(&class.name);
         self.enter(class.name.value);
@@ -462,9 +462,14 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let mut has_constructor = false;
         // A law, spec section 28, is checked and never runs, so the engine gets no node for it.
         for member in class.members.iter().filter(|member| !matches!(member, ClassLikeMember::Law(_))) {
-            members.push(match member {
+            let member = match member {
                 ClassLikeMember::Method(method) if php_method_name(method) == b"__construct" => {
                     has_constructor = true;
+                    for parameter in &method.parameter_list.parameters {
+                        if parameter.is_promoted_property() && set_parameter(parameter).is_some() {
+                            members.push(self.promoted_set_property(parameter));
+                        }
+                    }
 
                     self.method(method, modifier_flags(&method.modifiers), &initial_values)
                 }
@@ -485,7 +490,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 ClassLikeMember::Property(property) => self.property(property, parent_name),
                 ClassLikeMember::Constant(constant) => self.constant(constant),
                 _ => unreachable!("check_slice refuses the class member `{member}`"),
-            });
+            };
+            members.push(member);
         }
 
         if !has_constructor && !initial_values.is_empty() {
@@ -697,7 +703,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// An operator is the public static method it runs as, named after .NET's operator method, as php-src's grammar
     /// builds `public static function op_Addition(\App\Money $a, \App\Money $b): \App\Money`. `==` is lifted over null,
     /// as C# lifts it: its parameters are nullable, and its body starts with
-    /// `if ($a === null || $b === null) { return $a === $b; }`, so null equals only null.
+    /// `if ($a === null || $b === null) { return $a === $b; }`, so null equals only null. Its body makes each `Set`
+    /// parameter a `Set` before that, as a method's does.
     fn operator(&mut self, operator: &Operator) -> u32 {
         let Some(name) = php_operator_name(&operator.symbol, operator.parameter_list.parameters.len()) else {
             unreachable!("check_slice refuses the operator `{}`", operator.symbol);
@@ -718,7 +725,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         }
 
         let parameters = self.node(SHARP_AST_PARAM_LIST, 0, self.line(&operator.parameter_list), &parameters);
-        let prologue = if lifted { vec![self.null_lifting(&operator.parameter_list)] } else { Vec::new() };
+        let mut prologue = self.set_parameters(&operator.parameter_list);
+        if lifted {
+            prologue.push(self.null_lifting(&operator.parameter_list));
+        }
         let body = self.method_body(&operator.body, true, prologue);
         let return_type = self.hint(&operator.return_type_hint.hint);
         let attributes = self.attributes(&operator.attribute_lists, None);
@@ -812,10 +822,26 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.parameter_of_type(parameter, hint)
     }
 
-    /// A parameter with its lowered type, or with a null type, as a lambda's parameter can be.
+    /// A parameter with its lowered type, or with a null type, as a lambda's parameter can be. A promoted `Set`
+    /// parameter is a plain one, beside the property [`Self::promoted_set_property`] declares.
     fn parameter_of_type(&mut self, parameter: &FunctionLikeParameter, hint: u32) -> u32 {
         let name = self.string(0, self.line(parameter.variable.span), parameter.variable.name);
         let default = parameter.default_value.as_ref().map_or(NULL, |default| self.expression(default.value));
+        let (member_flags, hooks) =
+            if set_parameter(parameter).is_some() { (0, NULL) } else { self.member_flags_and_hooks(parameter) };
+        let variadic_flag = if parameter.is_variadic() { ZEND_PARAM_VARIADIC } else { 0 };
+        let attributes = self.attributes(&parameter.attribute_lists, None);
+
+        self.node(
+            SHARP_AST_PARAM,
+            member_flags | variadic_flag,
+            self.line(parameter),
+            &[hint, name, default, attributes, NULL, hooks],
+        )
+    }
+
+    /// The flags and the hooks of the property a constructor parameter promotes, or none for any other parameter.
+    fn member_flags_and_hooks(&mut self, parameter: &FunctionLikeParameter) -> (u32, u32) {
         let (accessor_flags, hooks) = match &parameter.hooks {
             Some(accessors) => (
                 accessor_flags(&parameter.modifiers, accessors, self.names),
@@ -823,11 +849,26 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             ),
             None => (0, NULL),
         };
-        let variadic_flag = if parameter.is_variadic() { ZEND_PARAM_VARIADIC } else { 0 };
-        let flags = modifier_flags(&parameter.modifiers) | accessor_flags | variadic_flag;
+
+        (modifier_flags(&parameter.modifiers) | accessor_flags, hooks)
+    }
+
+    /// The property a promoted `Set` parameter declares, with the visibility, accessors and attributes it is written
+    /// with and no default. PHP sets a promoted property from the argument before the constructor's body runs, and a
+    /// get-only one only once, so the constructor sets this property to the `Set` of the argument instead.
+    fn promoted_set_property(&mut self, parameter: &FunctionLikeParameter) -> u32 {
+        let Some(hint) = &parameter.hint else {
+            unreachable!("a `Set` parameter is written with its type");
+        };
+        let hint = self.hint(hint);
+        let line = self.line(parameter.variable.span);
+        let name = self.string(0, line, parameter.variable.name);
+        let (flags, hooks) = self.member_flags_and_hooks(parameter);
+        let element = self.node(SHARP_AST_PROP_ELEM, 0, line, &[name, NULL, NULL, hooks]);
+        let declaration = self.node(SHARP_AST_PROP_DECL, 0, line, &[element]);
         let attributes = self.attributes(&parameter.attribute_lists, None);
 
-        self.node(SHARP_AST_PARAM, flags, self.line(parameter), &[hint, name, default, attributes, NULL, hooks])
+        self.node(SHARP_AST_PROP_GROUP, flags, self.line(parameter), &[hint, declaration, attributes])
     }
 
     /// A field, a property with accessors or a computed property is a property group of one property, as php-src's
@@ -1966,10 +2007,13 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// Spec section 3: a lambda captures the variable itself. PHP's `fn` captures by value what its body reads, which
     /// is the variable itself when nothing writes it, so a lambda with an expression body that captures no written
     /// local is an `ARROW_FUNC`, as php-src's grammar builds `fn`, with its expression as its body. Any other is a
-    /// `CLOSURE` whose body returns the expression.
+    /// `CLOSURE` whose body returns the expression, as is one with a `Set` parameter, which `fn` has no statement
+    /// before its expression to make a `Set`.
     fn arrow_function(&mut self, arrow_function: &ArrowFunction) -> u32 {
         let lambda = arrow_function.span();
-        if !self.names.captures(&lambda).iter().any(|(_, local)| self.names.is_written(local)) {
+        if !self.names.captures(&lambda).iter().any(|(_, local)| self.names.is_written(local))
+            && !arrow_function.parameter_list.parameters.iter().any(|parameter| set_parameter(parameter).is_some())
+        {
             let parameters = self.lambda_parameters(&arrow_function.parameter_list);
             let body = self.lambda_body(|lowering| lowering.expression(arrow_function.expression));
 
@@ -1987,21 +2031,30 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let uses = self.closure_uses(lambda);
         let body = self.lambda_body(|lowering| {
             let line = lowering.line(arrow_function.expression);
+            let mut statements = lowering.set_parameters(&arrow_function.parameter_list);
             let value = lowering.expression(arrow_function.expression);
-            let r#return = lowering.node(SHARP_AST_RETURN, 0, line, &[value]);
+            statements.push(lowering.node(SHARP_AST_RETURN, 0, line, &[value]));
 
-            lowering.node(SHARP_AST_STMT_LIST, 0, line, &[r#return])
+            lowering.node(SHARP_AST_STMT_LIST, 0, line, &statements)
         });
 
         self.declaration(SHARP_AST_CLOSURE, 0, lambda, lambda, b"", &[parameters, uses, body, NULL, NULL])
     }
 
-    /// A lambda with a block body is a `CLOSURE`, as php-src's grammar builds `function () use (…) { … }`.
+    /// A lambda with a block body is a `CLOSURE`, as php-src's grammar builds `function () use (…) { … }`, which makes
+    /// each `Set` parameter a `Set` first.
     fn closure(&mut self, closure: &Closure) -> u32 {
         let lambda = closure.span();
         let parameters = self.lambda_parameters(&closure.parameter_list);
         let uses = self.closure_uses(lambda);
-        let body = self.lambda_body(|lowering| lowering.block(&closure.body));
+        let body = self.lambda_body(|lowering| {
+            let mut statements = lowering.set_parameters(&closure.parameter_list);
+            for statement in &closure.body.statements {
+                statements.push(lowering.statement(statement));
+            }
+
+            lowering.node(SHARP_AST_STMT_LIST, 0, lowering.line(&closure.body), &statements)
+        });
 
         self.declaration(SHARP_AST_CLOSURE, 0, lambda, lambda, b"", &[parameters, uses, body, NULL, NULL])
     }
@@ -2194,8 +2247,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_STATIC_CALL, 0, line, &[class, method, arguments])
     }
 
-    /// `$p = \Sharp\Set::from($p);` for each `Set` parameter, and `$this->p = \Sharp\Set::from($this->p);` for a
-    /// promoted one, since plain PHP and a `List` argument pass any array of the elements. A nullable one stays null.
+    /// `$p = \Sharp\Set::from($p);` for each `Set` parameter, since plain PHP and a `List` argument pass any array of
+    /// the elements, and `$p = \array_map(\Sharp\Set::from(...), $p);` for a variadic one, which keeps each element's
+    /// position or name. A promoted one is the property its constructor declares, `$this->p = \Sharp\Set::from($p);`.
+    /// A nullable one stays null.
     fn set_parameters(&mut self, parameters: &FunctionLikeParameterList) -> Vec<u32> {
         let mut statements = Vec::new();
         for parameter in &parameters.parameters {
@@ -2203,19 +2258,58 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 continue;
             };
             let line = self.line(parameter);
-            let value = self.parameter_place(parameter);
-            let mut set = self.set_from(line, value);
-            if nullable {
-                let value = self.parameter_place(parameter);
-                let is_null = self.is_null(line, value);
-                let null = self.zval(line, sharp_value::SHARP_NULL, |_| {});
-                set = self.node(SHARP_AST_CONDITIONAL, 0, line, &[is_null, null, set]);
-            }
+            let variable = &parameter.variable;
+            let set = if parameter.is_variadic() {
+                let to_set = if nullable {
+                    let name = self.string(0, line, b"set");
+                    let element = self.node(SHARP_AST_PARAM, 0, line, &[NULL, name, NULL, NULL, NULL, NULL]);
+                    let elements = self.node(SHARP_AST_PARAM_LIST, 0, line, &[element]);
+                    let set = self.set_of(variable.span, b"set", true);
+
+                    self.declaration(
+                        SHARP_AST_ARROW_FUNC,
+                        0,
+                        parameter,
+                        parameter,
+                        b"",
+                        &[elements, NULL, set, NULL, NULL],
+                    )
+                } else {
+                    let class = self.string(ZEND_NAME_FQ, line, b"Sharp\\Set");
+                    let method = self.string(0, line, b"from");
+                    let callable = self.node(SHARP_AST_CALLABLE_CONVERT, 0, line, &[]);
+
+                    self.node(SHARP_AST_STATIC_CALL, 0, line, &[class, method, callable])
+                };
+                let function = self.string(ZEND_NAME_FQ, line, b"array_map");
+                let values = self.variable(variable.span, variable.name);
+                let arguments = self.node(SHARP_AST_ARG_LIST, 0, line, &[to_set, values]);
+
+                self.node(SHARP_AST_CALL, 0, line, &[function, arguments])
+            } else {
+                self.set_of(variable.span, variable.name, nullable)
+            };
             let place = self.parameter_place(parameter);
             statements.push(self.node(SHARP_AST_ASSIGN, 0, line, &[place, set]));
         }
 
         statements
+    }
+
+    /// `\Sharp\Set::from($name)`, or `$name === null ? null : \Sharp\Set::from($name)` when it is `nullable`.
+    fn set_of(&mut self, span: Span, name: &[u8], nullable: bool) -> u32 {
+        let line = self.line(span);
+        let value = self.variable(span, name);
+        let set = self.set_from(line, value);
+        if !nullable {
+            return set;
+        }
+
+        let value = self.variable(span, name);
+        let is_null = self.is_null(line, value);
+        let null = self.zval(line, sharp_value::SHARP_NULL, |_| {});
+
+        self.node(SHARP_AST_CONDITIONAL, 0, line, &[is_null, null, set])
     }
 
     /// Where `parameter` holds its value in the body: its variable, or its property when it is promoted.
