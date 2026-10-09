@@ -43,7 +43,7 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::utils::expression::is_this;
 use crate::utils::names::display_sharp_type;
-use crate::utils::names::short_name;
+use mago_names::short_name;
 
 /// Type alias for template lower bounds - maps parameter names to their bounds per defining entity.
 pub type TemplateLowerBounds = HashMap<Word, HashMap<GenericParent, TUnion>>;
@@ -262,11 +262,15 @@ pub(crate) struct TemplateUse {
 /// breaks a marker is reachable only through `this`, which `check_private_method_reach` and
 /// `check_private_property_reach` check where it is reached. A header entry stands at its span in `header_spans`, by
 /// its parent's lowercase name, or at the class's name without one.
-pub(crate) fn find_template_uses(
-    codebase: &CodebaseMetadata,
+pub(crate) fn find_template_uses<A>(
+    context: &Context<'_, '_, A>,
     class: &ClassLikeMetadata,
     header_spans: &WordMap<Span>,
-) -> Vec<TemplateUse> {
+) -> Vec<TemplateUse>
+where
+    A: Arena,
+{
+    let codebase = context.codebase;
     let owner = GenericParent::ClassLike(class.name);
     let mut template_uses = Vec::new();
 
@@ -285,7 +289,7 @@ pub(crate) fn find_template_uses(
             .iter()
             .map(|argument| match argument.types.as_ref() {
                 [TAtomic::GenericParameter(parameter)] => parameter.parameter_name.to_string(),
-                _ => display_sharp_type(argument, codebase),
+                _ => display_sharp_type(context, argument),
             })
             .collect();
         let member = format!("the header `{}<{}>`", short_name(parent.original_name), arguments.join(", "));
@@ -638,7 +642,7 @@ where
     };
 
     let class_name = short_name(class.original_name);
-    let position = find_template_uses(codebase, class, &WordMap::default())
+    let position = find_template_uses(context, class, &WordMap::default())
         .into_iter()
         .filter(|template_use| template_use.template == template)
         .map(|template_use| template_use.position)
@@ -646,8 +650,8 @@ where
 
     issue.message = format!(
         "{} cannot be used as {}.",
-        display_sharp_type(input, codebase),
-        display_sharp_type(&wrap_atomic(wanted.clone()), codebase)
+        display_sharp_type(context, input),
+        display_sharp_type(context, &wrap_atomic(wanted.clone()))
     );
     issue.help = match position {
         Some(Variance::Covariant) if widens => {

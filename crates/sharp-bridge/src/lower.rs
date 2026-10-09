@@ -2,10 +2,12 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use mago_allocator::LocalArena;
+use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::union::TUnion;
 use mago_names::ResolvedNames;
 use mago_names::binding::Binding;
 use mago_names::binding::php_method_name;
+use mago_names::binding::php_operator_name;
 use mago_names::scope::php_name;
 use mago_php_version::PHPVersion;
 use mago_span::HasSpan;
@@ -65,6 +67,7 @@ use mago_syntax::cst::NamedArgument;
 use mago_syntax::cst::NamespaceBody;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::NullableHint;
+use mago_syntax::cst::Operator;
 use mago_syntax::cst::PartialArgument;
 use mago_syntax::cst::PartialArgumentList;
 use mago_syntax::cst::PositionalArgument;
@@ -88,8 +91,10 @@ use mago_syntax::utils::pattern::PhpShape;
 use mago_syntax::utils::pattern::php_shape;
 use mago_syntax_core::stack::ensure_sufficient_stack;
 use mago_syntax_core::utils::parse_literal_integer_as_float;
+use mago_word::Word;
 
 use crate::Unit;
+use crate::kind::SHARP_T_FILE;
 use crate::lower::checked::CheckedProgram;
 use crate::sharp_kind;
 use crate::sharp_kind::SHARP_AST_AND;
@@ -188,7 +193,7 @@ use crate::unit::Read;
 
 pub(crate) mod checked;
 pub(crate) mod inline;
-mod types;
+pub(crate) mod types;
 
 use types::DeclarationKind;
 use types::Types;
@@ -196,8 +201,8 @@ use types::agreed_kind;
 use types::class_value_classes;
 use types::receiver_classes;
 
-/// The values php-src gives the attrs the lowering emits, from `zend_compile.h`, `zend_vm_opcodes.h` and
-/// `zend_language_parser.h`.
+/// The values php-src gives the attrs the lowering emits, from `zend_compile.h` and `zend_vm_opcodes.h`. The tokens
+/// it emits are generated in `kind.rs`.
 const ZEND_NAME_FQ: u32 = 0;
 const ZEND_NAME_NOT_FQ: u32 = 1;
 const ZEND_ACC_PUBLIC: u32 = 1 << 0;
@@ -227,25 +232,31 @@ const ZEND_SUB: u32 = 2;
 const ZEND_MUL: u32 = 3;
 const ZEND_DIV: u32 = 4;
 const ZEND_MOD: u32 = 5;
+const ZEND_SL: u32 = 6;
+const ZEND_SR: u32 = 7;
 const ZEND_CONCAT: u32 = 8;
+const ZEND_BW_OR: u32 = 9;
+const ZEND_BW_AND: u32 = 10;
+const ZEND_BW_XOR: u32 = 11;
 const ZEND_POW: u32 = 12;
+const ZEND_BW_NOT: u32 = 13;
 const ZEND_BOOL_NOT: u32 = 14;
 const ZEND_IS_IDENTICAL: u32 = 16;
 const ZEND_IS_NOT_IDENTICAL: u32 = 17;
-const ZEND_IS_EQUAL: u32 = 18;
-const ZEND_IS_NOT_EQUAL: u32 = 19;
 const ZEND_IS_SMALLER: u32 = 20;
 const ZEND_IS_SMALLER_OR_EQUAL: u32 = 21;
-const T_FILE: u32 = 347;
+const ZEND_SPACESHIP: u32 = 170;
 
 /// A null child.
 const NULL: u32 = u32::MAX;
 
-/// What the operands of an operator are, where spec section 24 makes the operator differ from PHP's.
+/// What the operands of an operator are, where spec sections 19 and 24 make the operator differ from PHP's.
 #[derive(Clone, Copy)]
 enum Operands {
     Strings,
     Ints,
+    /// An int and a float, which spec section 19 compares by value as two floats.
+    Numbers,
     Other,
 }
 
@@ -405,7 +416,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                     self.file_statement(statement, statements);
                 }
             }
-            Statement::Use(_) => {}
+            // An `extern` declaration tells only the checker what plain PHP does.
+            Statement::Use(_) | Statement::Extern(_) => {}
             Statement::Class(class) => statements.push(self.class(class)),
             Statement::Interface(interface) => statements.push(self.interface(interface)),
             Statement::Enum(r#enum) => statements.push(self.r#enum(r#enum)),
@@ -435,7 +447,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         };
         let mut members = Vec::new();
         let mut has_constructor = false;
-        for member in &class.members {
+        // A law, spec section 28, is checked and never runs, so the engine gets no node for it.
+        for member in class.members.iter().filter(|member| !matches!(member, ClassLikeMember::Law(_))) {
             members.push(match member {
                 ClassLikeMember::Method(method) if php_method_name(method) == b"__construct" => {
                     has_constructor = true;
@@ -455,6 +468,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                     self.method(method, modifier_flags(&method.modifiers), &[body])
                 }
                 ClassLikeMember::Method(method) => self.method(method, modifier_flags(&method.modifiers), &[]),
+                ClassLikeMember::Operator(operator) => self.operator(operator),
                 ClassLikeMember::Property(property) => self.property(property, parent_name),
                 ClassLikeMember::Constant(constant) => self.constant(constant),
                 _ => unreachable!("check_slice refuses the class member `{member}`"),
@@ -574,7 +588,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     fn r#enum(&mut self, r#enum: &Enum) -> u32 {
         self.class = self.names.get(&r#enum.name);
         let mut members = Vec::new();
-        for member in &r#enum.members {
+        // A law, spec section 28, is checked and never runs, so the engine gets no node for it.
+        for member in r#enum.members.iter().filter(|member| !matches!(member, ClassLikeMember::Law(_))) {
             members.push(match member {
                 ClassLikeMember::Method(method) => self.method(method, modifier_flags(&method.modifiers), &[]),
                 ClassLikeMember::EnumCase(case) => self.enum_case(case),
@@ -641,29 +656,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         }
 
         let parameters = self.node(SHARP_AST_PARAM_LIST, 0, line, &parameters);
-        let mut statements = first_statements.to_vec();
-        let body = match &method.body {
-            MethodBody::Concrete(block) => {
-                for statement in &block.statements {
-                    statements.push(self.statement(statement));
-                }
-
-                self.node(SHARP_AST_STMT_LIST, 0, self.line(block), &statements)
-            }
-            MethodBody::Expression(body) => {
-                let line = self.line(body);
-                let expression = self.expression(body.expression);
-                statements.push(if method.returns_value() {
-                    self.node(SHARP_AST_RETURN, 0, line, &[expression])
-                } else {
-                    expression
-                });
-
-                self.node(SHARP_AST_STMT_LIST, 0, line, &statements)
-            }
-            MethodBody::Abstract(_) if statements.is_empty() => NULL,
-            MethodBody::Abstract(body) => self.node(SHARP_AST_STMT_LIST, 0, self.line(body), &statements),
-        };
+        let body = self.method_body(&method.body, method.returns_value(), first_statements.to_vec());
         let (start, return_type) = match &method.return_type_hint {
             Some(return_type_hint) => (return_type_hint.span(), self.hint(&return_type_hint.hint)),
             None => (method.name.span, NULL),
@@ -679,6 +672,111 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             php_method_name(method),
             &[parameters, NULL, body, return_type, attributes],
         )
+    }
+
+    /// A method's statement list: `statements`, then its block's statements, or its expression body, which it returns
+    /// when it `returns_value`. An abstract method without `statements` has none.
+    fn method_body(&mut self, body: &MethodBody, returns_value: bool, mut statements: Vec<u32>) -> u32 {
+        match body {
+            MethodBody::Concrete(block) => {
+                for statement in &block.statements {
+                    statements.push(self.statement(statement));
+                }
+
+                self.node(SHARP_AST_STMT_LIST, 0, self.line(block), &statements)
+            }
+            MethodBody::Expression(body) => {
+                let line = self.line(body);
+                let expression = self.expression(body.expression);
+                statements.push(if returns_value {
+                    self.node(SHARP_AST_RETURN, 0, line, &[expression])
+                } else {
+                    expression
+                });
+
+                self.node(SHARP_AST_STMT_LIST, 0, line, &statements)
+            }
+            MethodBody::Abstract(_) if statements.is_empty() => NULL,
+            MethodBody::Abstract(body) => self.node(SHARP_AST_STMT_LIST, 0, self.line(body), &statements),
+        }
+    }
+
+    /// An operator is the public static method it runs as, named after .NET's operator method, as php-src's grammar
+    /// builds `public static function op_Addition(\App\Money $a, \App\Money $b): \App\Money`. `==` is lifted over null,
+    /// as C# lifts it: its parameters are nullable, and its body starts with
+    /// `if ($a === null || $b === null) { return $a === $b; }`, so null equals only null.
+    fn operator(&mut self, operator: &Operator) -> u32 {
+        let Some(name) = php_operator_name(&operator.symbol, operator.parameter_list.parameters.len()) else {
+            unreachable!("check_slice refuses the operator `{}`", operator.symbol);
+        };
+        let lifted = matches!(operator.symbol, BinaryOperator::Equal(_));
+
+        self.enter(name);
+        let mut parameters = Vec::new();
+        for parameter in &operator.parameter_list.parameters {
+            parameters.push(match &parameter.hint {
+                Some(hint) if lifted => {
+                    let hint = self.nullable_hint(hint);
+
+                    self.parameter_of_type(parameter, hint)
+                }
+                _ => self.parameter(parameter),
+            });
+        }
+
+        let parameters = self.node(SHARP_AST_PARAM_LIST, 0, self.line(&operator.parameter_list), &parameters);
+        let prologue = if lifted { vec![self.null_lifting(&operator.parameter_list)] } else { Vec::new() };
+        let body = self.method_body(&operator.body, true, prologue);
+        let return_type = self.hint(&operator.return_type_hint.hint);
+        let attributes = self.attributes(&operator.attribute_lists, None);
+
+        self.declaration(
+            SHARP_AST_METHOD,
+            modifier_flags(&operator.modifiers),
+            &operator.return_type_hint,
+            operator.body.span(),
+            name,
+            &[parameters, NULL, body, return_type, attributes],
+        )
+    }
+
+    /// A type that also holds null: `?T`, as php-src's grammar builds `?\App\Money`, a union with `null` last, or the
+    /// type itself when it holds null already, as `T?` and `Any` do.
+    fn nullable_hint(&mut self, hint: &Hint) -> u32 {
+        match hint {
+            Hint::Nullable(_) | Hint::Mixed(_) => self.hint(hint),
+            Hint::Union(_) => self.union(hint, Some(hint.span())),
+            _ => {
+                let index = self.hint(hint);
+                self.nodes[index as usize].attr |= ZEND_TYPE_NULLABLE;
+
+                index
+            }
+        }
+    }
+
+    /// `if ($a === null || $b === null) { return $a === $b; }` over the two parameters of `operator ==`, on the line of
+    /// its parameter list.
+    fn null_lifting(&mut self, parameters: &FunctionLikeParameterList) -> u32 {
+        let [a, b] = parameters.parameters.as_slice() else {
+            unreachable!("check_slice refuses an `operator ==` without two parameters");
+        };
+        let line = self.line(parameters);
+
+        let a_value = self.variable(a.variable.span, a.variable.name);
+        let a_is_null = self.is_null(line, a_value);
+        let b_value = self.variable(b.variable.span, b.variable.name);
+        let b_is_null = self.is_null(line, b_value);
+        let either_is_null = self.node(SHARP_AST_OR, 0, line, &[a_is_null, b_is_null]);
+
+        let a_value = self.variable(a.variable.span, a.variable.name);
+        let b_value = self.variable(b.variable.span, b.variable.name);
+        let both_are_null = self.node(SHARP_AST_BINARY_OP, ZEND_IS_IDENTICAL, line, &[a_value, b_value]);
+        let r#return = self.node(SHARP_AST_RETURN, 0, line, &[both_are_null]);
+        let statements = self.node(SHARP_AST_STMT_LIST, 0, line, &[r#return]);
+        let branch = self.node(SHARP_AST_IF_ELEM, 0, line, &[either_is_null, statements]);
+
+        self.node(SHARP_AST_IF, 0, line, &[branch])
     }
 
     /// The call an `extern` method's body runs, as php-src's grammar builds `\Sharp\Internal\Text\Text\slug($title)`:
@@ -961,6 +1059,11 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             _ => (hint, None),
         };
 
+        self.union(union, question_mark)
+    }
+
+    /// The type `union`, a union or one type, with null added when `question_mark` is the `?` that adds it.
+    fn union(&mut self, union: &Hint, question_mark: Option<Span>) -> u32 {
         let mut types: Vec<(PhpType, u32)> = Vec::new();
         for member in union_members(union) {
             let php_type = self.erase(member);
@@ -1311,14 +1414,36 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 self.node(SHARP_AST_MATCH, 0, line, &[subject, arms])
             }
-            // Spec section 24: `+` on two strings joins them, and `/` on two ints divides toward zero.
+            // Spec section 24: `+` on two strings joins them, and `/` on two ints divides toward zero. Section 19
+            // orders two strings by their bytes and compares an int with a float as two floats, and an operator on
+            // instances runs the one their class declares.
             Expression::Binary(binary) => {
+                if let Some(call) = self.declared_operator(line, binary) {
+                    return call;
+                }
+
                 let operands = match binary.operator {
                     BinaryOperator::Addition(_) | BinaryOperator::Division(_) => {
                         self.operand_types(binary.lhs, binary.rhs)
                     }
+                    BinaryOperator::Equal(_) | BinaryOperator::NotEqual(_) if self.mixes_numbers(binary) => {
+                        Operands::Numbers
+                    }
+                    BinaryOperator::LessThan(_)
+                    | BinaryOperator::LessThanOrEqual(_)
+                    | BinaryOperator::GreaterThan(_)
+                    | BinaryOperator::GreaterThanOrEqual(_)
+                    | BinaryOperator::Spaceship(_)
+                        if self.orders_strings(binary) =>
+                    {
+                        Operands::Strings
+                    }
                     _ => Operands::Other,
                 };
+                if matches!(operands, Operands::Numbers) {
+                    return self.float_equality(binary, line);
+                }
+
                 let lhs = self.expression(binary.lhs);
                 let rhs = self.expression(binary.rhs);
 
@@ -1327,6 +1452,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                         self.node(SHARP_AST_BINARY_OP, ZEND_CONCAT, line, &[lhs, rhs])
                     }
                     (BinaryOperator::Division(_), Operands::Ints) => self.intdiv(line, lhs, rhs),
+                    (_, Operands::Strings) => self.ordinal(binary, line, lhs, rhs),
                     _ => {
                         let (kind, attr) = binary_kind(binary);
 
@@ -1335,6 +1461,15 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 }
             }
             Expression::UnaryPrefix(unary) => {
+                if let UnaryPrefixOperator::Negation(operator) = unary.operator
+                    && let Some(name) = php_operator_name(&BinaryOperator::Subtraction(operator), 1)
+                    && let Some(class) = self.types.operator_class(name, &[unary.operand])
+                {
+                    let operand = self.expression(unary.operand);
+
+                    return self.operator_call(line, class, name, &[operand]);
+                }
+
                 let (kind, attr) = prefix_kind(&unary.operator);
                 let operand = if unary.operator.is_increment_or_decrement() {
                     self.target(unary.operand)
@@ -1353,22 +1488,38 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
 
                 self.node(kind, 0, line, &[operand])
             }
-            Expression::Assignment(assignment) => match (&assignment.operator, self.operand_types_of(assignment)) {
-                (AssignmentOperator::Addition(_), Operands::Strings) => {
-                    let lhs = self.target(assignment.lhs);
-                    let rhs = self.expression(assignment.rhs);
-
-                    self.node(SHARP_AST_ASSIGN_OP, ZEND_CONCAT, line, &[lhs, rhs])
+            Expression::Assignment(assignment) => {
+                // A compound assignment to an instance assigns what the operator its class declares returns.
+                if let Some(operator) = compound_operator(&assignment.operator)
+                    && let Some(name) = php_operator_name(&operator, 2)
+                    && let Some(class) = self.types.operator_class(name, &[assignment.lhs, assignment.rhs])
+                {
+                    return self.compound_assignment(line, assignment, |this, target, value| {
+                        this.operator_call(line, class, name, &[target, value])
+                    });
                 }
-                (AssignmentOperator::Division(_), Operands::Ints) => self.intdiv_assignment(line, assignment),
-                (operator, _) => {
-                    let (kind, attr) = assignment_kind(operator);
-                    let lhs = self.target(assignment.lhs);
-                    let rhs = self.expression(assignment.rhs);
 
-                    self.node(kind, attr, line, &[lhs, rhs])
+                match (&assignment.operator, self.operand_types_of(assignment)) {
+                    (AssignmentOperator::Addition(_), Operands::Strings) => {
+                        let lhs = self.target(assignment.lhs);
+                        let rhs = self.expression(assignment.rhs);
+
+                        self.node(SHARP_AST_ASSIGN_OP, ZEND_CONCAT, line, &[lhs, rhs])
+                    }
+                    (AssignmentOperator::Division(_), Operands::Ints) => {
+                        self.compound_assignment(line, assignment, |this, target, value| {
+                            this.intdiv(line, target, value)
+                        })
+                    }
+                    (operator, _) => {
+                        let (kind, attr) = assignment_kind(operator);
+                        let lhs = self.target(assignment.lhs);
+                        let rhs = self.expression(assignment.rhs);
+
+                        self.node(kind, attr, line, &[lhs, rhs])
+                    }
                 }
-            },
+            }
             Expression::Call(Call::Method(call)) => self.method_call(expression, call),
             Expression::Call(Call::Function(FunctionCall {
                 function: Expression::Identifier(function),
@@ -1380,13 +1531,13 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                     Some(Binding::Local(_)) => self.variable(function.span(), function.value()),
                     _ => self.string(ZEND_NAME_FQ, self.line(function), function.value()),
                 };
-                let arguments = self.arguments(argument_list);
+                let arguments = self.arguments(argument_list, &[]);
 
                 self.node(SHARP_AST_CALL, 0, line, &[function, arguments])
             }
             Expression::Construct(Construct::Exit(ExitConstruct { arguments: Some(arguments), .. })) => {
                 let function = self.string(ZEND_NAME_FQ, line, b"exit");
-                let arguments = self.arguments(arguments);
+                let arguments = self.arguments(arguments, &[]);
 
                 self.node(SHARP_AST_CALL, 0, line, &[function, arguments])
             }
@@ -1400,7 +1551,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             ) => {
                 let name = self.names.get(class);
                 let class = self.string(ZEND_NAME_FQ, self.line(class), name);
-                let arguments = self.arguments(arguments);
+                let arguments = self.arguments(arguments, &[]);
                 let new = self.node(SHARP_AST_NEW, 0, line, &[class, arguments]);
 
                 match self.types.type_arguments(name, instantiation.span()) {
@@ -1420,7 +1571,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 ..
             }) => {
                 let class = self.string(ZEND_NAME_NOT_FQ, self.line(keyword), b"static");
-                let arguments = self.arguments(arguments);
+                let arguments = self.arguments(arguments, &[]);
                 let new = self.node(SHARP_AST_NEW, 0, line, &[class, arguments]);
 
                 if self.types.bounds(self.class).is_some() {
@@ -1459,14 +1610,15 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
                 let tested = self.tested_links.contains(&expression.span());
                 if tested && let Some((class, _)) = self.class_value(call.object) {
                     let method = self.member(&call.method);
-                    let arguments = self.call_arguments(&call.argument_list, expression);
+                    let arguments = self.call_arguments(&call.argument_list, expression, &[]);
 
                     return self.node(SHARP_AST_STATIC_CALL, 0, line, &[class, method, arguments]);
                 }
 
                 let object = if tested { self.expression(call.object) } else { self.null_safe_object(call.object) };
                 let method = self.member(&call.method);
-                let arguments = self.call_arguments(&call.argument_list, expression);
+                let keys = self.types.key_arguments(expression);
+                let arguments = self.call_arguments(&call.argument_list, expression, &keys);
 
                 if tested {
                     let property = self.node(SHARP_AST_PROP, 0, line, &[object, method]);
@@ -1602,6 +1754,102 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         }
     }
 
+    /// Whether the ordering `binary` compares strings. The checker orders a string only against a string, and never a
+    /// side that may be `null`, so a string on either side means strings on both.
+    fn orders_strings(&self, binary: &Binary) -> bool {
+        [binary.lhs, binary.rhs]
+            .into_iter()
+            .any(|operand| self.types.expression_type(operand).types.iter().any(TAtomic::is_any_string))
+    }
+
+    /// `\strcmp(lhs, rhs) <op> 0`, the ordering `binary` names of two strings by their bytes, so `"10" < "9"`, where
+    /// PHP's `<` compares two numeric strings as numbers.
+    fn ordinal(&mut self, binary: &Binary, line: u32, lhs: u32, rhs: u32) -> u32 {
+        let function = self.string(ZEND_NAME_FQ, line, b"strcmp");
+        let arguments = self.node(SHARP_AST_ARG_LIST, 0, line, &[lhs, rhs]);
+        let comparison = self.node(SHARP_AST_CALL, 0, line, &[function, arguments]);
+        let zero = self.zval(line, sharp_value::SHARP_LONG, |node| node.long_value = 0);
+        let (kind, attr) = binary_kind(binary);
+
+        self.node(kind, attr, line, &[comparison, zero])
+    }
+
+    /// Whether `==` or `!=` compares an int with a float: both sides are numbers, `null` aside, and one may hold an
+    /// int where one may hold a float. The checker refuses every other pair of two different number kinds.
+    fn mixes_numbers(&self, binary: &Binary) -> bool {
+        let [Some([lhs_int, lhs_float]), Some([rhs_int, rhs_float])] =
+            [binary.lhs, binary.rhs].map(|operand| number_kinds(self.types.expression_type(operand)))
+        else {
+            return false;
+        };
+
+        (lhs_int || rhs_int) && (lhs_float || rhs_float)
+    }
+
+    /// `lhs == rhs` of an int and a float as two floats, `(float) $count === $ratio`, as spec section 19 compares
+    /// numbers by value. A side that may hold an int is cast. When a side may be null, both sides go into hidden
+    /// `$operand#N`s, each running once, and null equals only null:
+    /// `(($operand#1 = lhs) === null) === (($operand#2 = rhs) === null) && ($operand#1 === null || (float) $operand#1
+    /// === $operand#2)`, so `(float) null`, which is `0.0`, never compares. `!=` is its `!`. The names are taken
+    /// before the operands are lowered, so an equality inside an operand takes the next ones.
+    fn float_equality(&mut self, binary: &Binary, line: u32) -> u32 {
+        let types = self.types;
+        let (lhs_type, rhs_type) = (types.expression_type(binary.lhs), types.expression_type(binary.rhs));
+        let [cast_lhs, cast_rhs] = [lhs_type, rhs_type].map(|r#type| number_kinds(r#type).is_some_and(|[int, _]| int));
+        if !lhs_type.is_nullable() && !rhs_type.is_nullable() {
+            let lhs = self.expression(binary.lhs);
+            let lhs = self.float(line, lhs, cast_lhs);
+            let rhs = self.expression(binary.rhs);
+            let rhs = self.float(line, rhs, cast_rhs);
+            let (kind, attr) = binary_kind(binary);
+
+            return self.node(kind, attr, line, &[lhs, rhs]);
+        }
+
+        self.temporaries += 2;
+        let lhs_name = format!("operand#{}", self.temporaries - 1).into_bytes();
+        let rhs_name = format!("operand#{}", self.temporaries).into_bytes();
+        let lhs = self.expression(binary.lhs);
+        let rhs = self.expression(binary.rhs);
+
+        let lhs_variable = self.variable(binary.lhs.span(), &lhs_name);
+        let lhs_stored = self.node(SHARP_AST_ASSIGN, 0, line, &[lhs_variable, lhs]);
+        let lhs_is_null = self.is_null(line, lhs_stored);
+        let rhs_variable = self.variable(binary.rhs.span(), &rhs_name);
+        let rhs_stored = self.node(SHARP_AST_ASSIGN, 0, line, &[rhs_variable, rhs]);
+        let rhs_is_null = self.is_null(line, rhs_stored);
+        let same_nulls = self.node(SHARP_AST_BINARY_OP, ZEND_IS_IDENTICAL, line, &[lhs_is_null, rhs_is_null]);
+
+        let lhs_read = self.variable(binary.lhs.span(), &lhs_name);
+        let both_null = self.is_null(line, lhs_read);
+        let lhs_read = self.variable(binary.lhs.span(), &lhs_name);
+        let lhs_float = self.float(line, lhs_read, cast_lhs);
+        let rhs_read = self.variable(binary.rhs.span(), &rhs_name);
+        let rhs_float = self.float(line, rhs_read, cast_rhs);
+        let same_floats = self.node(SHARP_AST_BINARY_OP, ZEND_IS_IDENTICAL, line, &[lhs_float, rhs_float]);
+        let same_values = self.node(SHARP_AST_OR, 0, line, &[both_null, same_floats]);
+        let equality = self.node(SHARP_AST_AND, 0, line, &[same_nulls, same_values]);
+        self.temporaries -= 2;
+
+        if binary.operator.is_negated_equality() {
+            self.node(SHARP_AST_UNARY_OP, ZEND_BOOL_NOT, line, &[equality])
+        } else {
+            equality
+        }
+    }
+
+    /// `value === null`.
+    fn is_null(&mut self, line: u32, value: u32) -> u32 {
+        let null = self.zval(line, sharp_value::SHARP_NULL, |_| {});
+
+        self.node(SHARP_AST_BINARY_OP, ZEND_IS_IDENTICAL, line, &[value, null])
+    }
+
+    /// `value` cast to float when `cast` holds, as `(float) value`.
+    fn float(&mut self, line: u32, value: u32, cast: bool) -> u32 {
+        if cast { self.node(SHARP_AST_CAST, IS_DOUBLE, line, &[value]) } else { value }
+    }
+
     /// `\intdiv(lhs, rhs)`, which divides two ints toward zero.
     fn intdiv(&mut self, line: u32, lhs: u32, rhs: u32) -> u32 {
         let function = self.string(ZEND_NAME_FQ, line, b"intdiv");
@@ -1610,10 +1858,16 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_CALL, 0, line, &[function, arguments])
     }
 
-    /// `target /= value` on ints, as `target = \intdiv(target, value)`. The target's receiver runs once: one that is
-    /// not a local or `this` goes into a hidden `$receiver#N`, which the write sets and the read reads, as php-src
-    /// compiles a property's object before the value assigned to it.
-    fn intdiv_assignment(&mut self, line: u32, assignment: &Assignment) -> u32 {
+    /// `target op= value` as `target = operation(target, value)`, for an operator that differs from PHP's: `/=` on ints
+    /// runs `\intdiv`, and `+=` on an instance runs the `op_Addition` its class declares. The target's receiver runs
+    /// once: one that is not a local or `this` goes into a hidden `$receiver#N`, which the write sets and the read
+    /// reads, as php-src compiles a property's object before the value assigned to it.
+    fn compound_assignment(
+        &mut self,
+        line: u32,
+        assignment: &Assignment,
+        operation: impl FnOnce(&mut Self, u32, u32) -> u32,
+    ) -> u32 {
         let receiver = match assignment.lhs {
             Expression::Access(Access::Property(access))
                 if self.names.static_property_class(access).is_none() && !self.is_local_or_this(access.object) =>
@@ -1643,9 +1897,61 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             None => (self.target(assignment.lhs), self.expression(assignment.lhs)),
         };
         let value = self.expression(assignment.rhs);
-        let quotient = self.intdiv(line, read, value);
+        let result = operation(self, read, value);
 
-        self.node(SHARP_AST_ASSIGN, 0, line, &[target, quotient])
+        self.node(SHARP_AST_ASSIGN, 0, line, &[target, result])
+    }
+
+    /// The call of the static method a PHP# operator on instances runs, as `\App\Money::op_Addition($a, $b)` for
+    /// `a + b`: `!=` is the `!` of `op_Equality`, and an ordering compares what `op_Comparison` returns with 0. `== null`
+    /// and operands with no instance run none.
+    fn declared_operator(&mut self, line: u32, binary: &Binary) -> Option<u32> {
+        let declared = match binary.operator {
+            BinaryOperator::Equal(_) | BinaryOperator::NotEqual(_)
+                if [binary.lhs, binary.rhs]
+                    .into_iter()
+                    .any(|operand| self.types.expression_type(operand).is_null()) =>
+            {
+                return None;
+            }
+            BinaryOperator::Equal(span) | BinaryOperator::NotEqual(span) => BinaryOperator::Equal(span),
+            BinaryOperator::LessThan(span)
+            | BinaryOperator::LessThanOrEqual(span)
+            | BinaryOperator::GreaterThan(span)
+            | BinaryOperator::GreaterThanOrEqual(span)
+            | BinaryOperator::Spaceship(span) => BinaryOperator::Spaceship(span),
+            operator if operator.is_arithmetic() => operator,
+            _ => return None,
+        };
+        let name = php_operator_name(&declared, 2)?;
+        let class = self.types.operator_class(name, &[binary.lhs, binary.rhs])?;
+
+        let lhs = self.expression(binary.lhs);
+        let rhs = self.expression(binary.rhs);
+        let call = self.operator_call(line, class, name, &[lhs, rhs]);
+
+        Some(match binary.operator {
+            BinaryOperator::NotEqual(_) => self.node(SHARP_AST_UNARY_OP, ZEND_BOOL_NOT, line, &[call]),
+            BinaryOperator::LessThan(_)
+            | BinaryOperator::LessThanOrEqual(_)
+            | BinaryOperator::GreaterThan(_)
+            | BinaryOperator::GreaterThanOrEqual(_) => {
+                let zero = self.zval(line, sharp_value::SHARP_LONG, |node| node.long_value = 0);
+                let (kind, attr) = binary_kind(binary);
+
+                self.node(kind, attr, line, &[call, zero])
+            }
+            _ => call,
+        })
+    }
+
+    /// `\Class::name(arguments)`, the static method `class` declares to run an operator.
+    fn operator_call(&mut self, line: u32, class: Word, name: &[u8], arguments: &[u32]) -> u32 {
+        let class = self.string(ZEND_NAME_FQ, line, class.as_bytes());
+        let method = self.string(0, line, name);
+        let arguments = self.node(SHARP_AST_ARG_LIST, 0, line, arguments);
+
+        self.node(SHARP_AST_STATIC_CALL, 0, line, &[class, method, arguments])
     }
 
     /// Whether `expression` is a local, a parameter or `this`, which reading twice runs nothing twice.
@@ -1853,8 +2159,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(kind, 0, self.line(element), &value_and_key)
     }
 
-    /// A key going into a `Map`, in a literal or an index. A `Map` keyed by a backed enum holds each case as its
-    /// backing value, so a case goes in as its `->value`.
+    /// A key going into a `Map`, in a literal, an index or an argument a `Map` method takes as a key. A `Map` keyed by
+    /// a backed enum holds each case as its backing value, so a case goes in as its `->value`.
     fn key(&mut self, key: &Expression) -> u32 {
         let lowered = self.expression(key);
         if self.types.backed_enum(self.types.expression_type(key)).is_none() {
@@ -2068,7 +2374,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             },
         };
         let method = self.member(&call.method);
-        let arguments = self.call_arguments(&call.argument_list, expression);
+        let keys = if kind == SHARP_AST_METHOD_CALL { self.types.key_arguments(expression) } else { Vec::new() };
+        let arguments = self.call_arguments(&call.argument_list, expression, &keys);
 
         if kind == SHARP_AST_METHOD_CALL && self.is_property_call(expression, call.object) {
             let property = self.node(SHARP_AST_PROP, 0, line, &[object, method]);
@@ -2086,7 +2393,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     fn current_position(&mut self, class: &ConstantAccess, call: &MethodCall) -> u32 {
         let (line, column) = self.lines.line_and_column(class.span().start.offset);
         let name = self.string(ZEND_NAME_FQ, line, b"Sharp\\Position");
-        let file = self.node(SHARP_AST_MAGIC_CONST, T_FILE, line, &[]);
+        let file = self.node(SHARP_AST_MAGIC_CONST, SHARP_T_FILE, line, &[]);
         let line_number = self.zval(line, sharp_value::SHARP_LONG, |node| node.long_value = i64::from(line));
         let column = self.zval(line, sharp_value::SHARP_LONG, |node| node.long_value = i64::from(column));
         let function = self.function.clone();
@@ -2114,16 +2421,17 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.string(0, self.line(name.span), name.value)
     }
 
-    fn arguments(&mut self, list: &ArgumentList) -> u32 {
-        let arguments = self.argument_nodes(list);
+    /// A call's arguments, the one at each position in `keys` going in as a key, as `Map.get`'s does.
+    fn arguments(&mut self, list: &ArgumentList, keys: &[usize]) -> u32 {
+        let arguments = self.argument_nodes(list, keys);
 
         self.node(SHARP_AST_ARG_LIST, 0, self.line(list), &arguments)
     }
 
     /// The arguments of the method call `call`. A PHP# generic method's call ends them with the type arguments the
     /// checker found, a `SHARP_TYPE_ARGS` without a `new`, which the engine resolves right before the call.
-    fn call_arguments(&mut self, list: &ArgumentList, call: &Expression) -> u32 {
-        let mut arguments = self.argument_nodes(list);
+    fn call_arguments(&mut self, list: &ArgumentList, call: &Expression, keys: &[usize]) -> u32 {
+        let mut arguments = self.argument_nodes(list, keys);
         let line = self.line(list);
         if let Some(type_arguments) = self.types.call_type_arguments(call, self.class) {
             let text = self.string(0, line, type_arguments.as_bytes());
@@ -2133,12 +2441,17 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_ARG_LIST, 0, line, &arguments)
     }
 
-    fn argument_nodes(&mut self, list: &ArgumentList) -> Vec<u32> {
+    fn argument_nodes(&mut self, list: &ArgumentList, keys: &[usize]) -> Vec<u32> {
         list.arguments
             .iter()
-            .map(|argument| match argument {
-                Argument::Positional(positional) => self.positional_argument(positional),
-                Argument::Named(named) => self.named_argument(named),
+            .enumerate()
+            .map(|(position, argument)| {
+                let is_key = keys.contains(&position);
+                match argument {
+                    Argument::Positional(positional) if is_key => self.key(positional.value),
+                    Argument::Positional(positional) => self.positional_argument(positional),
+                    Argument::Named(named) => self.named_argument(named, is_key),
+                }
             })
             .collect()
     }
@@ -2149,7 +2462,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         for argument in &list.arguments {
             arguments.push(match argument {
                 PartialArgument::Positional(positional) => self.positional_argument(positional),
-                PartialArgument::Named(named) => self.named_argument(named),
+                PartialArgument::Named(named) => self.named_argument(named, false),
                 _ => unreachable!("check_slice refuses a placeholder argument"),
             });
         }
@@ -2167,10 +2480,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(SHARP_AST_UNPACK, 0, self.nodes[value as usize].line, &[value])
     }
 
-    fn named_argument(&mut self, argument: &NamedArgument) -> u32 {
+    fn named_argument(&mut self, argument: &NamedArgument, is_key: bool) -> u32 {
         let line = self.line(argument.name.span);
         let name = self.string(0, line, argument.name.value);
-        let value = self.expression(argument.value);
+        let value = if is_key { self.key(argument.value) } else { self.expression(argument.value) };
 
         self.node(SHARP_AST_NAMED_ARG, 0, line, &[name, value])
     }
@@ -2429,37 +2742,54 @@ fn accessor_flags(modifiers: &Sequence<Modifier>, accessors: &PropertyHookList, 
     }
 }
 
+/// The kinds of number the values of `union` are, `null` aside, as `[may hold an int, may hold a float]`, or `None`
+/// when a value is no number. A type parameter counts as its constraint.
+fn number_kinds(union: &TUnion) -> Option<[bool; 2]> {
+    let mut kinds = [false, false];
+    for atomic in union.types.iter() {
+        match atomic {
+            TAtomic::Null => {}
+            TAtomic::GenericParameter(parameter) => {
+                let [int, float] = number_kinds(&parameter.constraint)?;
+                kinds = [kinds[0] || int, kinds[1] || float];
+            }
+            atomic if atomic.is_int() => kinds[0] = true,
+            atomic if atomic.is_float() => kinds[1] = true,
+            _ => return None,
+        }
+    }
+
+    (kinds != [false, false]).then_some(kinds)
+}
+
 /// The binary operators of the slice, as php-src's grammar builds them. Every operator is named, so a new one does
-/// not compile until it is decided. `== null` and `!= null` test for null alone, as `=== null` and `!== null`.
+/// not compile until it is decided. Spec section 19 compares values strictly, and the checker refuses every pair
+/// `===` would compare differently, so `==` and `!=` are `===` and `!==`.
 fn binary_kind(binary: &Binary) -> (sharp_kind, u32) {
     match binary.operator {
-        BinaryOperator::Equal(_) if binary.is_equality_with_null() => (SHARP_AST_BINARY_OP, ZEND_IS_IDENTICAL),
-        BinaryOperator::NotEqual(_) if binary.is_equality_with_null() => (SHARP_AST_BINARY_OP, ZEND_IS_NOT_IDENTICAL),
         BinaryOperator::Addition(_) => (SHARP_AST_BINARY_OP, ZEND_ADD),
         BinaryOperator::Subtraction(_) => (SHARP_AST_BINARY_OP, ZEND_SUB),
         BinaryOperator::Multiplication(_) => (SHARP_AST_BINARY_OP, ZEND_MUL),
         BinaryOperator::Division(_) => (SHARP_AST_BINARY_OP, ZEND_DIV),
         BinaryOperator::Modulo(_) => (SHARP_AST_BINARY_OP, ZEND_MOD),
         BinaryOperator::Exponentiation(_) => (SHARP_AST_BINARY_OP, ZEND_POW),
-        BinaryOperator::Equal(_) => (SHARP_AST_BINARY_OP, ZEND_IS_EQUAL),
-        BinaryOperator::NotEqual(_) => (SHARP_AST_BINARY_OP, ZEND_IS_NOT_EQUAL),
-        BinaryOperator::Identical(_) => (SHARP_AST_BINARY_OP, ZEND_IS_IDENTICAL),
-        BinaryOperator::NotIdentical(_) => (SHARP_AST_BINARY_OP, ZEND_IS_NOT_IDENTICAL),
+        BinaryOperator::BitwiseOr(_) => (SHARP_AST_BINARY_OP, ZEND_BW_OR),
+        BinaryOperator::BitwiseAnd(_) => (SHARP_AST_BINARY_OP, ZEND_BW_AND),
+        BinaryOperator::BitwiseXor(_) => (SHARP_AST_BINARY_OP, ZEND_BW_XOR),
+        BinaryOperator::LeftShift(_) => (SHARP_AST_BINARY_OP, ZEND_SL),
+        BinaryOperator::RightShift(_) => (SHARP_AST_BINARY_OP, ZEND_SR),
+        BinaryOperator::Equal(_) | BinaryOperator::Identical(_) => (SHARP_AST_BINARY_OP, ZEND_IS_IDENTICAL),
+        BinaryOperator::NotEqual(_) | BinaryOperator::NotIdentical(_) => (SHARP_AST_BINARY_OP, ZEND_IS_NOT_IDENTICAL),
         BinaryOperator::LessThan(_) => (SHARP_AST_BINARY_OP, ZEND_IS_SMALLER),
         BinaryOperator::LessThanOrEqual(_) => (SHARP_AST_BINARY_OP, ZEND_IS_SMALLER_OR_EQUAL),
         BinaryOperator::GreaterThan(_) => (SHARP_AST_GREATER, 0),
         BinaryOperator::GreaterThanOrEqual(_) => (SHARP_AST_GREATER_EQUAL, 0),
+        BinaryOperator::Spaceship(_) => (SHARP_AST_BINARY_OP, ZEND_SPACESHIP),
         // check_slice refuses `and`, so only the `when` of a `match` arm runs as it.
         BinaryOperator::And(_) | BinaryOperator::LowAnd(_) => (SHARP_AST_AND, 0),
         BinaryOperator::Or(_) => (SHARP_AST_OR, 0),
         BinaryOperator::NullCoalesce(_) => (SHARP_AST_COALESCE, 0),
-        BinaryOperator::BitwiseAnd(_)
-        | BinaryOperator::BitwiseOr(_)
-        | BinaryOperator::BitwiseXor(_)
-        | BinaryOperator::LeftShift(_)
-        | BinaryOperator::RightShift(_)
-        | BinaryOperator::AngledNotEqual(_)
-        | BinaryOperator::Spaceship(_)
+        BinaryOperator::AngledNotEqual(_)
         | BinaryOperator::StringConcat(_)
         | BinaryOperator::Instanceof(_)
         | BinaryOperator::LowOr(_)
@@ -2474,6 +2804,7 @@ fn prefix_kind(operator: &UnaryPrefixOperator) -> (sharp_kind, u32) {
         UnaryPrefixOperator::Negation(_) => (SHARP_AST_UNARY_MINUS, 0),
         UnaryPrefixOperator::Plus(_) => (SHARP_AST_UNARY_PLUS, 0),
         UnaryPrefixOperator::Not(_) => (SHARP_AST_UNARY_OP, ZEND_BOOL_NOT),
+        UnaryPrefixOperator::BitwiseNot(_) => (SHARP_AST_UNARY_OP, ZEND_BW_NOT),
         UnaryPrefixOperator::PreIncrement(_) => (SHARP_AST_PRE_INC, 0),
         UnaryPrefixOperator::PreDecrement(_) => (SHARP_AST_PRE_DEC, 0),
         UnaryPrefixOperator::IntCast(..) => (SHARP_AST_CAST, IS_LONG),
@@ -2490,9 +2821,21 @@ fn prefix_kind(operator: &UnaryPrefixOperator) -> (sharp_kind, u32) {
         | UnaryPrefixOperator::ObjectCast(..)
         | UnaryPrefixOperator::UnsetCast(..)
         | UnaryPrefixOperator::BinaryCast(..)
-        | UnaryPrefixOperator::VoidCast(..)
-        | UnaryPrefixOperator::BitwiseNot(_) => unreachable!("check_slice refuses the operator `{operator}`"),
+        | UnaryPrefixOperator::VoidCast(..) => unreachable!("check_slice refuses the operator `{operator}`"),
     }
+}
+
+/// The operator a compound assignment applies, which an instance runs as the one its class declares: `+=` applies `+`.
+const fn compound_operator(operator: &AssignmentOperator) -> Option<BinaryOperator<'static>> {
+    Some(match *operator {
+        AssignmentOperator::Addition(span) => BinaryOperator::Addition(span),
+        AssignmentOperator::Subtraction(span) => BinaryOperator::Subtraction(span),
+        AssignmentOperator::Multiplication(span) => BinaryOperator::Multiplication(span),
+        AssignmentOperator::Division(span) => BinaryOperator::Division(span),
+        AssignmentOperator::Modulo(span) => BinaryOperator::Modulo(span),
+        AssignmentOperator::Exponentiation(span) => BinaryOperator::Exponentiation(span),
+        _ => return None,
+    })
 }
 
 /// The assignment operators of the slice, as php-src's grammar builds them. Every operator is named, so a new one
@@ -2504,15 +2847,15 @@ fn assignment_kind(operator: &AssignmentOperator) -> (sharp_kind, u32) {
         AssignmentOperator::Subtraction(_) => (SHARP_AST_ASSIGN_OP, ZEND_SUB),
         AssignmentOperator::Multiplication(_) => (SHARP_AST_ASSIGN_OP, ZEND_MUL),
         AssignmentOperator::Division(_) => (SHARP_AST_ASSIGN_OP, ZEND_DIV),
+        AssignmentOperator::Modulo(_) => (SHARP_AST_ASSIGN_OP, ZEND_MOD),
         AssignmentOperator::Exponentiation(_) => (SHARP_AST_ASSIGN_OP, ZEND_POW),
+        AssignmentOperator::BitwiseOr(_) => (SHARP_AST_ASSIGN_OP, ZEND_BW_OR),
+        AssignmentOperator::BitwiseAnd(_) => (SHARP_AST_ASSIGN_OP, ZEND_BW_AND),
+        AssignmentOperator::BitwiseXor(_) => (SHARP_AST_ASSIGN_OP, ZEND_BW_XOR),
+        AssignmentOperator::LeftShift(_) => (SHARP_AST_ASSIGN_OP, ZEND_SL),
+        AssignmentOperator::RightShift(_) => (SHARP_AST_ASSIGN_OP, ZEND_SR),
         AssignmentOperator::Coalesce(_) => (SHARP_AST_ASSIGN_COALESCE, 0),
-        AssignmentOperator::Modulo(_)
-        | AssignmentOperator::Concat(_)
-        | AssignmentOperator::BitwiseAnd(_)
-        | AssignmentOperator::BitwiseOr(_)
-        | AssignmentOperator::BitwiseXor(_)
-        | AssignmentOperator::LeftShift(_)
-        | AssignmentOperator::RightShift(_) => unreachable!("check_slice refuses the operator `{operator}`"),
+        AssignmentOperator::Concat(_) => unreachable!("check_slice refuses the operator `{operator}`"),
     }
 }
 
@@ -2557,10 +2900,12 @@ mod tests {
         lower_method("public void run() { PHP_INT_MAX = 1; }");
     }
 
+    /// `??=` reads no operand type, which the unchecked file has none of. An arithmetic one asks whether an instance
+    /// runs a declared operator first.
     #[test]
     #[should_panic(expected = "check_slice refuses writing to `ConstantAccess`")]
     fn a_compound_assignment_to_a_constant_panics() {
-        lower_method("public void run() { PHP_INT_MAX -= 1; }");
+        lower_method("public void run() { PHP_INT_MAX ??= 1; }");
     }
 
     #[test]

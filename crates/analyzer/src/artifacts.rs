@@ -8,6 +8,7 @@ use mago_word::WordMap;
 use mago_word::WordSet;
 
 use mago_algebra::assertion_set::AssertionSet;
+use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::reference::SymbolReferences;
 use mago_codex::ttype::combine_union_types;
@@ -24,6 +25,7 @@ use crate::context::block::BlockContext;
 use crate::context::block::ReferenceConstraintSource;
 use crate::context::scope::case_scope::CaseScope;
 use crate::context::scope::loop_scope::LoopScope;
+use crate::effects::EffectSummary;
 use crate::readonly::PendingReadonlyPropertyWrite;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +53,18 @@ pub struct ResolvedMethodCall {
     pub method: Word,
 }
 
+/// What a PHP# call runs, as the analysis resolved it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallTarget {
+    /// A function or method, and the class the call names, which an `extern` lookup starts from.
+    FunctionLike { callee: FunctionLikeIdentifier, class: Option<Word> },
+    /// The method `method` of the class `class`, which no class declares, so `callee`, the class's `__call` or
+    /// `__callStatic`, serves it.
+    MagicMethod { callee: FunctionLikeIdentifier, class: Word, method: Word },
+    /// The function the property `property`, named with its `$`, holds, which `class` declares.
+    Property { class: Word, property: Word },
+}
+
 #[derive(Debug, Clone)]
 pub struct AnalysisArtifacts {
     pub expression_types: HashMap<(u32, u32), Rc<TUnion>>,
@@ -75,6 +89,10 @@ pub struct AnalysisArtifacts {
     pub resolved_method_calls: Vec<ResolvedMethodCall>,
     /// What each method whose return is taken from its body returned, keyed by class and method.
     pub body_returns: HashMap<(Word, Word), TUnion>,
+    /// What each PHP# body of the file does by itself, for [`Effects::solve`](crate::effects::Effects::solve).
+    pub effect_summaries: Vec<EffectSummary>,
+    /// What each PHP# call runs, keyed by the call's span.
+    pub(crate) call_targets: HashMap<(u32, u32), Vec<CallTarget>>,
     pub(crate) variable_definedness: HashMap<(u32, u32), WordMap<VariableDefinedness>>,
     variable_definedness_targets: Option<Arc<[bool; NodeKind::COUNT]>>,
     pub(crate) pending_readonly_property_writes: Vec<PendingReadonlyPropertyWrite>,
@@ -111,6 +129,8 @@ impl AnalysisArtifacts {
             closure_bind_scope: None,
             resolved_method_calls: Vec::new(),
             body_returns: HashMap::default(),
+            effect_summaries: Vec::new(),
+            call_targets: HashMap::default(),
             variable_definedness: HashMap::default(),
             variable_definedness_targets: None,
             pending_readonly_property_writes: Vec::new(),
@@ -265,6 +285,22 @@ impl AnalysisArtifacts {
         T: HasSpan,
     {
         self.expression_types.insert(get_expression_range(expression), Rc::new(t));
+    }
+
+    /// What the PHP# call `call` runs, as the analysis resolved it when it checked the call.
+    pub fn get_callees<T>(&self, call: &T) -> impl Iterator<Item = &CallTarget>
+    where
+        T: HasSpan,
+    {
+        self.call_targets.get(&get_expression_range(call)).into_iter().flatten()
+    }
+
+    /// Records that the PHP# call at `span` runs `target`, once however often the analysis checks the call.
+    pub(crate) fn record_call_target(&mut self, span: Span, target: CallTarget) {
+        let recorded = self.call_targets.entry((span.start.offset, span.end.offset)).or_default();
+        if !recorded.contains(&target) {
+            recorded.push(target);
+        }
     }
 
     /// Get the type of expression `expression`.

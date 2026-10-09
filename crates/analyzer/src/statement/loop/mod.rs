@@ -17,7 +17,6 @@ use mago_reporting::IssueCollection;
 use mago_algebra::saturate_clauses;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::ttype;
-use mago_codex::ttype::TType;
 use mago_codex::ttype::add_optional_union_type;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
@@ -70,8 +69,14 @@ use crate::error::AnalysisError;
 use crate::formula::get_formula;
 use crate::formula::negate_or_synthesize;
 use crate::reconciler::reconcile_keyed_types;
+use crate::resolver::method::get_declared_collection;
 use crate::statement::r#loop::assignment_map_visitor::get_assignment_map;
 use crate::statement::r#loop::cleaner::clean_nodes;
+use crate::utils::names::display_atomic;
+use crate::utils::names::display_class_like_name;
+use crate::utils::names::display_code_member;
+use crate::utils::names::display_missing_imports;
+use crate::utils::names::display_type;
 
 mod assignment_map_visitor;
 mod cleaner;
@@ -104,15 +109,13 @@ where
 
     expression.analyze(context, block_context, artifacts)?;
 
+    let expression_type = artifacts
+        .get_expression_type(expression)
+        .map_or_else(|| "unknown".to_string(), |union| display_type(context, union));
     context.collector.report_with_code(
         code,
         Issue::error(message.to_string()).with_annotation(Annotation::primary(expression.span()).with_message(
-            format!(
-                "Expected an integer literal here, found an expression of type `{}`.",
-                artifacts
-                    .get_expression_type(expression)
-                    .map_or_else(|| "unknown".to_string(), |union| union.get_id().to_string())
-            ),
+            format!("Expected an integer literal here, found an expression of type `{expression_type}`."),
         )),
     );
 
@@ -192,8 +195,7 @@ where
         for condition in conditions {
             let type_id = artifacts
                 .get_expression_type(*condition)
-                .map(|t| t.get_id())
-                .unwrap_or_else(|| mago_word::word("false"));
+                .map_or_else(|| "false".to_owned(), |condition_type| display_type(context, condition_type));
 
             context.collector.report_with_code(
                 IssueCode::ImpossibleCondition,
@@ -1436,21 +1438,30 @@ where
     iterator.analyze(context, block_context, artifacts)?;
     block_context.flags.set_inside_general_use(was_inside_general_use);
 
+    let (loop_code, in_loop, empty_collection, iterable_kinds) = if context.dialect.is_sharp() {
+        ("loop", "a loop", "an empty list", "an `Iterable<T>`")
+    } else {
+        ("`foreach`", "`foreach`", "an empty array", "an array or a Traversable object")
+    };
+
     let iterator_type = if let Some(it_type) = artifacts.get_rc_expression_type(iterator).cloned() {
         it_type
     } else if let Some(var_type) = iterator_variable_id.and_then(|v| block_context.locals.get(&v).cloned()) {
         var_type
     } else {
+        let requirement = if context.dialect.is_sharp() {
+            "A loop requires an `Iterable<T>`."
+        } else {
+            "Foreach loops require an array or an object implementing `Traversable` to iterate over."
+        };
         context.collector.report_with_code(
             IssueCode::UnknownIteratorType,
-            Issue::error("Cannot determine the type of the expression provided to `foreach`.")
+            Issue::error(format!("Cannot determine the type of the expression provided to {in_loop}."))
                 .with_annotation(
                     Annotation::primary(iterator.span())
                         .with_message("The type of this expression is unknown here"),
                 )
-                .with_note(
-                    "Foreach loops require an array or an object implementing `Traversable` to iterate over."
-                )
+                .with_note(requirement)
                 .with_help(
                     "Ensure the expression is well-defined and has a known iterable type. Check for undefined variables or unresolvable function calls."
                 )
@@ -1464,52 +1475,68 @@ where
     }
 
     if iterator_type.is_null() {
+        let (iterating, null_check) = if context.dialect.is_sharp() {
+            ("Iterating over `null`", "if (iterable != null)")
+        } else {
+            ("In PHP, iterating over `null` with `foreach`", "if ($iterable !== null)")
+        };
         context.collector.report_with_code(
             IssueCode::NullIterator,
-            Issue::error("Iterating over `null` in `foreach`.")
+            Issue::error(format!("Iterating over `null` in {in_loop}."))
                 .with_annotation(Annotation::primary(iterator.span()).with_message("This expression is `null`"))
-                .with_annotation(Annotation::secondary(foreach.body.span()).with_message("This `foreach` will not be executed"))
-                .with_note("In PHP, iterating over `null` with `foreach` behaves like iterating an empty array; the loop body will not execute")
+                .with_annotation(Annotation::secondary(foreach.body.span()).with_message(format!("This {loop_code} will not be executed")))
+                .with_note(format!("{iterating} behaves like iterating {empty_collection}; the loop body will not execute"))
                 .with_note("This can hide uninitialized variables or logic errors.")
-                .with_help("Ensure the expression is initialized to an array or a Traversable object. If `null` is a possible expected state, consider an explicit check before the loop (e.g., `if ($iterable !== null)`).")
+                .with_help(format!("Ensure the expression is initialized to {iterable_kinds}. If `null` is a possible expected state, consider an explicit check before the loop (e.g., `{null_check}`)."))
         );
 
         return Ok((false, get_never(), get_never()));
     }
 
     if iterator_type.is_false() {
+        let iterating = if context.dialect.is_sharp() {
+            "Iterating over `false`"
+        } else {
+            "In PHP, iterating over `false` with `foreach`"
+        };
         context.collector.report_with_code(
             IssueCode::FalseIterator,
-            Issue::error("Iterating over `false` in `foreach`.")
+            Issue::error(format!("Iterating over `false` in {in_loop}."))
                 .with_annotation(Annotation::primary(iterator.span()).with_message("This expression is `false`"))
-                .with_annotation(Annotation::secondary(foreach.span()).with_message("This `foreach` will not be executed"))
-                .with_note("In PHP, iterating over `false` with `foreach` behaves like iterating an empty array; the loop body will not execute.")
+                .with_annotation(Annotation::secondary(foreach.span()).with_message(format!("This {loop_code} will not be executed")))
+                .with_note(format!("{iterating} behaves like iterating {empty_collection}; the loop body will not execute."))
                 .with_note("This often indicates a function call that failed or an unintended boolean value.")
-                .with_help("Ensure the expression evaluates to an array or a Traversable object. Check the return value of functions if this `false` is unexpected.")
+                .with_help(format!("Ensure the expression evaluates to {iterable_kinds}. Check the return value of functions if this `false` is unexpected."))
         );
 
         return Ok((false, get_arraykey(), get_never()));
     }
 
     if iterator_type.is_nullable() && !iterator_type.ignore_nullable_issues() {
+        let iterator_type_str = display_type(context, &iterator_type);
         context.collector.report_with_code(
             IssueCode::PossiblyNullIterator,
-            Issue::warning(format!("Expression being iterated (type `{}`) might be `null` at runtime.", iterator_type.get_id()))
+            Issue::warning(format!("Expression being iterated (type `{iterator_type_str}`) might be `null` at runtime."))
                 .with_annotation(Annotation::primary(iterator.span()).with_message("This might be `null`"))
-                .with_annotation(Annotation::secondary(foreach.span()).with_message("This `foreach` might not be executed"))
-                .with_note("If this expression is `null`, it will be treated as an empty array, and the loop body will not execute.")
+                .with_annotation(Annotation::secondary(foreach.span()).with_message(format!("This {loop_code} might not be executed")))
+                .with_note(format!("If this expression is `null`, it will be treated as {empty_collection}, and the loop body will not execute."))
                 .with_help("Consider checking for `null` before the loop if this is not intended."),
         );
     }
 
     if iterator_type.is_falsable() && !iterator_type.ignore_falsable_issues() {
+        let iterator_type_str = display_type(context, &iterator_type);
         context.collector.report_with_code(
             IssueCode::PossiblyFalseIterator,
-            Issue::warning(format!("Expression being iterated (type `{}`) might be `false` at runtime.", iterator_type.get_id()))
+            Issue::warning(format!("Expression being iterated (type `{iterator_type_str}`) might be `false` at runtime."))
                 .with_annotation(Annotation::primary(iterator.span()).with_message("This might be `false`"))
-                .with_annotation(Annotation::secondary(foreach.span()).with_message("This `foreach` might not be executed"))
-                .with_note("If this expression is `false`, it will be treated as an empty array, and the loop body will not execute.")
-                .with_help("Consider checking for `false` or truthiness before the loop if this is not intended."),
+                .with_annotation(Annotation::secondary(foreach.span()).with_message(format!("This {loop_code} might not be executed")))
+                .with_note(format!("If this expression is `false`, it will be treated as {empty_collection}, and the loop body will not execute."))
+                .with_help(if context.dialect.is_sharp() {
+                    "Consider checking for `false` before the loop if this is not intended."
+                } else {
+                    "Consider checking for `false` or truthiness before the loop if this is not intended."
+                }),
         );
     }
 
@@ -1541,10 +1568,14 @@ where
 
                 let (k, v) = get_array_parameters(array, context.codebase);
 
-                // Spec section 12 reads a PHP# `List`'s indexes from `entries()`, so `[k, v]` reads a `Map`. A `Map`'s
-                // key reads back as its key type: the lowering casts a `string` key PHP stored as an `int`.
+                // Spec section 12 reads a PHP# `List`'s indexes from `entries()`, so `[k, v]` reads a `Map`, which a place
+                // is when it is declared one, whatever literal it holds. A `Map`'s key reads back as its key type: the
+                // lowering casts a `string` key PHP stored as an `int`.
                 if context.dialect.is_sharp()
-                    && let TArray::List(_) = array
+                    && get_declared_collection(context, block_context, artifacts, iterator)
+                        .as_ref()
+                        .unwrap_or(array)
+                        .is_list()
                     && let Some(key) = foreach.target.key()
                 {
                     context.collector.report_with_code(
@@ -1580,12 +1611,27 @@ where
                     TObject::Any | TObject::WithProperties(_) | TObject::HasMethod(_) | TObject::HasProperty(_) => {
                         always_enters_loop = false;
 
+                        let (title, annotation, note, help) = if context.dialect.is_sharp() {
+                            (
+                                "Iterating over an `Object`. This will iterate its public properties.",
+                                "Iterating an `Object` type",
+                                "When a loop reads an `Object` whose class is unknown, PHP iterates its public properties. The keys are the property names, and the values are `Any?`.",
+                                "For predictable and type-safe iteration, give the value an `Iterable<T>` type.",
+                            )
+                        } else {
+                            (
+                                "Iterating over a generic `object`. This will iterate its public properties.",
+                                "Iterating a generic `object` type",
+                                "When `foreach` is used on a generic `object` whose specific class is unknown, PHP will attempt to iterate over its public properties. The keys will be property names (strings) and values their types (typically `mixed` from a static analysis perspective).",
+                                "For predictable and type-safe iteration, ensure the object is an instance of a class implementing `Iterator` or `IteratorAggregate`.",
+                            )
+                        };
                         context.collector.report_with_code(
                             IssueCode::GenericObjectIteration,
-                            Issue::warning("Iterating over a generic `object`. This will iterate its public properties.")
-                                .with_annotation(Annotation::primary(iterator.span()).with_message("Iterating a generic `object` type"))
-                                .with_note("When `foreach` is used on a generic `object` whose specific class is unknown, PHP will attempt to iterate over its public properties. The keys will be property names (strings) and values their types (typically `mixed` from a static analysis perspective).")
-                                .with_help("For predictable and type-safe iteration, ensure the object is an instance of a class implementing `Iterator` or `IteratorAggregate`.")
+                            Issue::warning(title)
+                                .with_annotation(Annotation::primary(iterator.span()).with_message(annotation))
+                                .with_note(note)
+                                .with_help(help),
                         );
 
                         (get_string(), get_mixed())
@@ -1596,8 +1642,12 @@ where
                         if let Some((k, v)) = get_iterable_parameters(iterator_atomic, context.codebase) {
                             (k, v)
                         } else {
-                            let class_name = atomic_object.name;
-                            let iterator_atomic_str = iterator_atomic.get_id();
+                            let class_name = if context.dialect.is_sharp() {
+                                display_class_like_name(context, atomic_object.name)
+                            } else {
+                                atomic_object.name
+                            };
+                            let iterator_atomic_str = display_atomic(context, iterator_atomic);
 
                             context.collector.report_with_code(
                                 IssueCode::NonIterableObjectIteration,
@@ -1617,11 +1667,25 @@ where
                         }
                     }
                     TObject::Enum(enum_instance) => {
-                        let enum_name = enum_instance.get_name();
+                        let enum_name = if context.dialect.is_sharp() {
+                            display_class_like_name(context, enum_instance.get_name())
+                        } else {
+                            enum_instance.get_name()
+                        };
                         let enum_backing_type = context
                             .codebase
                             .get_enum(enum_instance.get_name().as_bytes())
                             .and_then(|class_like| class_like.enum_type.as_ref());
+                        let cases = display_code_member(context, enum_instance.get_name(), "cases()");
+                        // PHP# reads a property as `instance.name` and loops with `for (const case of …)`.
+                        let (instance, case_loop) = if context.dialect.is_sharp() {
+                            ("instance.", format!("for (const case of {cases})"))
+                        } else {
+                            ("$instance->", format!("foreach ({cases} as $case)"))
+                        };
+                        let imports = display_missing_imports(context, [enum_instance.get_name()])
+                            .map(|imports| format!(" {imports}"))
+                            .unwrap_or_default();
 
                         context.collector.report_with_code(
                             IssueCode::EnumIteration,
@@ -1633,12 +1697,12 @@ where
                                     "PHP allows iterating an enum case instance like an object, which exposes its public properties: `name` (string){}.",
                                     if enum_backing_type.is_some() { " and `value` (its scalar backing value)" } else { "" },
                                 ))
-                                .with_note(format!("This is different from iterating through all defined cases of the `{enum_name}` enum using `{enum_name}::cases()`, where each item would be an enum case instance itself."))
+                                .with_note(format!("This is different from iterating through all defined cases of the `{enum_name}` enum using `{cases}`, where each item would be an enum case instance itself."))
                                 .with_note(format!(
-                                    "If you only need the properties of this specific instance, consider accessing them directly (e.g., `$instance->name`{}) for better clarity, unless iterating its few properties is explicitly intended.",
-                                    if enum_backing_type.is_some() { ", `$instance->value`" } else { "" }
+                                    "If you only need the properties of this specific instance, consider accessing them directly (e.g., `{instance}name`{}) for better clarity, unless iterating its few properties is explicitly intended.",
+                                    if enum_backing_type.is_some() { format!(", `{instance}value`") } else { String::new() }
                                 ))
-                                .with_help(format!("If your goal is to loop through all defined cases of the `{enum_name}` enum, use `{enum_name}::cases()` instead (e.g., `foreach ({enum_name}::cases() as $case)`).")),
+                                .with_help(format!("If your goal is to loop through all defined cases of the `{enum_name}` enum, use `{cases}` instead (e.g., `{case_loop}`).{imports}")),
                         );
 
                         match enum_backing_type {
@@ -1663,14 +1727,24 @@ where
                 value_type = Some(add_optional_union_type(obj_value_type, value_type.as_ref(), context.codebase));
             }
             _ => {
-                let iterator_atomic_id = iterator_atomic.get_id();
-                invalid_atomic_ids.push(iterator_atomic_id.to_string());
+                invalid_atomic_ids.push(display_atomic(context, iterator_atomic));
             }
         }
     }
 
     if !has_valid_iterable_type {
-        let iterator_type_id_str = iterator_type.get_id();
+        let iterator_type_id_str = display_type(context, &iterator_type);
+        let (requirement, help) = if context.dialect.is_sharp() {
+            (
+                "A loop requires an `Iterable<T>`.",
+                "Ensure the expression always evaluates to an `Iterable<T>`. Check variable types and function return values.",
+            )
+        } else {
+            (
+                "A `foreach` loop requires an array or an object implementing the `Traversable` interface.",
+                "Ensure the expression always evaluates to an array or a traversable object. Check variable types and function return values.",
+            )
+        };
         let problematic_types_str = if invalid_atomic_ids.is_empty() {
             format!("resolved to type `{iterator_type_id_str}` which is not iterable in this context")
         } else if invalid_atomic_ids.len() == 1 {
@@ -1685,33 +1759,26 @@ where
 
         context.collector.report_with_code(
             IssueCode::InvalidIterator,
-            Issue::error(format!(
-                "The expression provided to `foreach` is not iterable. It {problematic_types_str}."
-            ))
-            .with_annotation(
-                Annotation::primary(iterator.span())
-                    .with_message("This expression cannot be iterated"),
-            )
-            .with_note(
-                "A `foreach` loop requires an array or an object implementing the `Traversable` interface."
-            )
-            .with_note(
-                "Attempting to iterate other types will result in a runtime error or the loop not executing."
-            )
-            .with_help(
-                "Ensure the expression always evaluates to an array or a traversable object. Check variable types and function return values.",
-            ),
+            Issue::error(format!("The expression provided to {in_loop} is not iterable. It {problematic_types_str}."))
+                .with_annotation(
+                    Annotation::primary(iterator.span()).with_message("This expression cannot be iterated"),
+                )
+                .with_note(requirement)
+                .with_note(
+                    "Attempting to iterate other types will result in a runtime error or the loop not executing.",
+                )
+                .with_help(help),
         );
 
         return Ok((false, get_never(), get_never()));
     } else if !invalid_atomic_ids.is_empty() {
-        let iterator_type_id_str = iterator_type.get_id();
+        let iterator_type_id_str = display_type(context, &iterator_type);
         let problematic_types_list_str = invalid_atomic_ids.join("`, `");
 
         context.collector.report_with_code(
             IssueCode::PossiblyInvalidIterator,
             Issue::warning(format!(
-                "The expression provided to `foreach` (type `{iterator_type_id_str}`) might not be iterable at runtime."
+                "The expression provided to {in_loop} (type `{iterator_type_id_str}`) might not be iterable at runtime."
             ))
             .with_annotation(
                 Annotation::primary(iterator.span())
@@ -1720,9 +1787,10 @@ where
             .with_note(format!(
                 "It could evaluate to one of the following non-iterable types: `{problematic_types_list_str}`. If so, a runtime error will occur or the loop will not execute for that specific type."
             ))
-            .with_help(
-                "Ensure all possible types for this expression are iterable, or add checks to handle non-iterable cases before the loop. For analysis, key/value types will include `mixed` due to this uncertainty.",
-            ),
+            .with_help(format!(
+                "Ensure all possible types for this expression are iterable, or add checks to handle non-iterable cases before the loop. For analysis, key/value types will include `{}` due to this uncertainty.",
+                display_type(context, &get_mixed()),
+            )),
         );
 
         return Ok((false, get_mixed(), get_mixed()));

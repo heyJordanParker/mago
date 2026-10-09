@@ -8,6 +8,7 @@ use mago_word::Word;
 use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
+use crate::utils::names::display_class_like_name;
 
 /// Checks if using an experimental class-like from a non-experimental context and reports a warning.
 pub fn check_experimental_class_like<A>(
@@ -34,12 +35,13 @@ pub fn check_experimental_class_like<A>(
         return;
     }
 
+    let class_name = display_class_like_name(context, metadata.original_name);
+
     context.collector.report_with_code(
         IssueCode::ExperimentalUsage,
-        Issue::warning(format!("Usage of experimental class-like `{}`.", metadata.original_name))
+        Issue::warning(format!("Usage of experimental class-like `{class_name}`."))
             .with_annotation(
-                Annotation::primary(span)
-                    .with_message(format!("`{}` is marked as `@experimental`.", metadata.original_name)),
+                Annotation::primary(span).with_message(format!("`{class_name}` is marked as `@experimental`.")),
             )
             .with_note("Experimental APIs may change or be removed without notice.")
             .with_help("Mark the current function or class as `@experimental` to suppress this warning."),

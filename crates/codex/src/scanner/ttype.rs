@@ -302,11 +302,12 @@ fn union_from_hint(
                 .collect();
             let return_type = convert(function.return_type);
 
-            wrap_atomic(TAtomic::Callable(TCallable::Signature(
-                TCallableSignature::new(false, true)
+            wrap_atomic(TAtomic::Callable(TCallable::Signature(TCallableSignature {
+                is_sharp: true,
+                ..TCallableSignature::new(false, true)
                     .with_parameters(parameters)
-                    .with_return_type(Some(Arc::new(return_type))),
-            )))
+                    .with_return_type(Some(Arc::new(return_type)))
+            })))
         }
     }
 }

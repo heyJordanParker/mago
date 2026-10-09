@@ -88,6 +88,15 @@ impl Lowered {
 
     /// The statements of the first method the source declares as `name`.
     fn body_of(&self, name: &str) -> String {
+        self.render(self.child(self.method_named(name), 2))
+    }
+
+    /// The method PHP declares as `name`.
+    fn declared(&self, name: &str) -> String {
+        self.render(self.method_named(name))
+    }
+
+    fn method_named(&self, name: &str) -> u32 {
         assert_eq!(self.diagnostics(), Vec::<String>::new(), "the source lowers");
         let method = self
             .nodes()
@@ -95,7 +104,7 @@ impl Lowered {
             .position(|node| node.kind == sharp_kind::SHARP_AST_METHOD && self.text(node.text) == name)
             .unwrap_or_else(|| panic!("the source declares `{name}`"));
 
-        self.render(self.child(method as u32, 2))
+        method as u32
     }
 
     /// The parameter list of the first method the source declares as `name`.
@@ -272,7 +281,7 @@ fn a_method_without_a_body_returns_the_checker_error() {
     assert_eq!(
         lowered.diagnostics(),
         [
-            "3:21 compile error: Non-Abstract method `Report::run` must have a concrete body.",
+            "3:21 compile error: Non-Abstract method `Report.run` must have a concrete body.",
             "1:7 compile error: Class `Report` does not implement the abstract method `run`."
         ]
     );
@@ -440,6 +449,81 @@ fn a_file_declares_strict_types_then_its_namespace_and_classes() {
                 null
         "#}
     );
+}
+
+/// An `extern` declaration only tells the checker what plain PHP does, so the engine gets the same tree without it.
+#[test]
+fn a_file_with_extern_declarations_lowers_to_the_nodes_it_lowers_to_without_them() {
+    let library = [("vendor/acme/Mailer.php", "<?php\n\nnamespace Acme;\n\nclass Mailer\n{\n}\n")];
+    let with = Lowered::with(
+        "namespace App.Tenant;\n\nimport Acme.Mailer;\n\nextern Mailer uses Mail, Http;\nextern trim;\n\nclass Report\n{\n}\n",
+        &library,
+    );
+    let without = Lowered::with("namespace App.Tenant;\n\nimport Acme.Mailer;\n\n\n\n\nclass Report\n{\n}\n", &library);
+
+    assert_eq!(with.tree(), without.tree());
+}
+
+/// A law, spec section 28, is checked and never runs, so the engine gets the same tree without it.
+#[test]
+fn a_class_or_an_enum_with_a_law_lowers_to_the_nodes_it_lowers_to_without_it() {
+    let with = Lowered::new(
+        "namespace App.Shared;\n\npublic class Money\n{\n    public Money(public int amount { get; }) { }\n\n    law amountIsItself(Money a) => a.amount == a.amount;\n}\n\npublic enum Status\n{\n    case Open;\n\n    law openIsOpen(Status s) => Status.Open == Status.Open;\n}\n",
+    );
+    let without = Lowered::new(
+        "namespace App.Shared;\n\npublic class Money\n{\n    public Money(public int amount { get; }) { }\n\n\n}\n\npublic enum Status\n{\n    case Open;\n\n\n}\n",
+    );
+
+    assert_eq!(with.tree(), without.tree());
+}
+
+/// ```php
+/// <?php
+/// declare(strict_types=1);
+/// namespace App\Tenant;
+/// use Sharp\Text\Regex as Rx;
+/// class Report
+/// {
+///     public function run(string $text): bool
+///     {
+///         return Rx::matches("/a/", $text);
+///     }
+/// }
+/// ```
+///
+/// php-src parses the `use` into `USE [ZEND_SYMBOL_CLASS]` holding `USE_ELEM`, `ZVAL "Sharp\Text\Regex"` and
+/// `ZVAL "Rx"`, and compiles `Rx` to the class it names. The `use` is not lowered: the call names
+/// `Sharp\Text\Regex` in full, as `Regex.matches(…)` under a plain import does.
+#[test]
+fn a_call_through_a_renamed_import_lowers_to_the_call_through_the_plain_import() {
+    let library = [(
+        "src/Sharp/Text/Regex.php",
+        "<?php namespace Sharp\\Text; final class Regex { public static function matches(string $pattern, string $text): bool { return true; } }",
+    )];
+    let renamed = Lowered::with(
+        "namespace App.Tenant;\n\nimport Sharp.Text.Regex as Rx;\n\nclass Report\n{\n    public bool run(string text)\n    {\n        return Rx.matches(\"/a/\", text);\n    }\n}\n",
+        &library,
+    );
+    let plain = Lowered::with(
+        "namespace App.Tenant;\n\nimport Sharp.Text.Regex;\n\nclass Report\n{\n    public bool run(string text)\n    {\n        return Regex.matches(\"/a/\", text);\n    }\n}\n",
+        &library,
+    );
+
+    assert_eq!(
+        renamed.body(),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                STATIC_CALL
+                  ZVAL "Sharp\\Text\\Regex"
+                  ZVAL "matches"
+                  ARG_LIST
+                    ZVAL "/a/"
+                    VAR
+                      ZVAL "text"
+        "#}
+    );
+    assert_eq!(renamed.tree(), plain.tree());
 }
 
 /// ```php
@@ -1931,6 +2015,340 @@ fn a_backed_enum_key_beside_a_map_spread_goes_in_as_its_backing_value() {
 }
 
 /// ```php
+/// return $counts->get($status->value);
+/// ```
+///
+/// `Map.get` declares its parameter as the `Map`'s key type, so a case going in as its key is its `->value`.
+#[test]
+fn a_backed_enum_key_goes_into_map_get_as_its_backing_value() {
+    assert_eq!(
+        body_in(
+            "int? run(Map<Calc, int> counts, Calc status)",
+            "        return counts.get(status);\n",
+            &[("src/Lib/Calc.php", "<?php namespace Lib; enum Calc: string { case Active = 'a'; case Closed = 'c'; }")]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                METHOD_CALL
+                  VAR
+                    ZVAL "counts"
+                  ZVAL "get"
+                  ARG_LIST
+                    PROP
+                      VAR
+                        ZVAL "status"
+                      ZVAL "value"
+        "#}
+    );
+}
+
+/// ```php
+/// $counts->delete($status->value);
+/// $counts->delete(key: \Lib\Calc::Closed->value);
+/// ```
+///
+/// `Map.delete` declares its parameter as the `Map`'s key type, so a case going in as its key is its `->value`,
+/// passed by position or by name.
+#[test]
+fn a_backed_enum_key_goes_into_map_delete_as_its_backing_value() {
+    assert_eq!(
+        body_in(
+            "void run(Map<Calc, int> counts, Calc status)",
+            "        counts.delete(status);\n        counts.delete(key: Calc.Closed);\n",
+            &[("src/Lib/Calc.php", "<?php namespace Lib; enum Calc: string { case Active = 'a'; case Closed = 'c'; }")]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              METHOD_CALL
+                VAR
+                  ZVAL "counts"
+                ZVAL "delete"
+                ARG_LIST
+                  PROP
+                    VAR
+                      ZVAL "status"
+                    ZVAL "value"
+              METHOD_CALL
+                VAR
+                  ZVAL "counts"
+                ZVAL "delete"
+                ARG_LIST
+                  NAMED_ARG
+                    ZVAL "key"
+                    PROP
+                      CLASS_CONST
+                        ZVAL "Lib\\Calc"
+                        ZVAL "Closed"
+                      ZVAL "value"
+        "#}
+    );
+}
+
+/// ```php
+/// return $counts?->get($status->value);
+/// ```
+///
+/// A null-safe call of `Map.get` puts a case in as its `->value` too.
+#[test]
+fn a_backed_enum_key_goes_into_a_null_safe_map_get_as_its_backing_value() {
+    assert_eq!(
+        body_in(
+            "int? run(Map<Calc, int>? counts, Calc status)",
+            "        return counts?.get(status);\n",
+            &[("src/Lib/Calc.php", "<?php namespace Lib; enum Calc: string { case Active = 'a'; case Closed = 'c'; }")]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                NULLSAFE_METHOD_CALL
+                  VAR
+                    ZVAL "counts"
+                  ZVAL "get"
+                  ARG_LIST
+                    PROP
+                      VAR
+                        ZVAL "status"
+                      ZVAL "value"
+        "#}
+    );
+}
+
+/// ```php
+/// $standings->add($status);
+/// ```
+///
+/// `List.add` declares its parameter as the `List`'s element type, not a key type, so a case goes in as the case.
+#[test]
+fn a_backed_enum_value_goes_into_list_add_as_its_case() {
+    assert_eq!(
+        body_in(
+            "void run(List<Calc> standings, Calc status)",
+            "        standings.add(status);\n",
+            &[("src/Lib/Calc.php", "<?php namespace Lib; enum Calc: string { case Active = 'a'; case Closed = 'c'; }")]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              METHOD_CALL
+                VAR
+                  ZVAL "standings"
+                ZVAL "add"
+                ARG_LIST
+                  VAR
+                    ZVAL "status"
+        "#}
+    );
+}
+
+/// ```php
+/// public array $tags = [] { set { $this->tags = []; $this->tags->add("x"); } }
+/// ```
+///
+/// `field = []` leaves the property a `List<string>`, so the checker checks `field.add` as `List.add`, and the add
+/// lowers as that call.
+#[test]
+fn an_emptied_list_field_takes_add_as_the_list_method() {
+    let lowered = Lowered::new(
+        "class Product\n{\n    public List<string> tags { get; set { field = []; field.add(\"x\"); } } = [];\n}\n",
+    );
+
+    assert_eq!(
+        property_groups(&lowered),
+        [indoc! {r#"
+            PROP_GROUP [1]
+              TYPE [7]
+              PROP_DECL
+                PROP_ELEM
+                  ZVAL "tags"
+                  ARRAY [3]
+                  null
+                  STMT_LIST
+                    PROPERTY_HOOK "set" @3-3
+                      null
+                      null
+                      STMT_LIST
+                        ASSIGN
+                          PROP
+                            VAR
+                              ZVAL "this"
+                            ZVAL "tags"
+                          ARRAY [3]
+                        METHOD_CALL
+                          PROP
+                            VAR
+                              ZVAL "this"
+                            ZVAL "tags"
+                          ZVAL "add"
+                          ARG_LIST
+                            ZVAL "x"
+                      null
+                      null
+              null
+        "#}]
+    );
+}
+
+/// ```php
+/// $standings = [$status];
+/// $standings = [];
+/// $standings->add($status);
+/// ```
+///
+/// `standings = []` leaves the local a `List<Calc>`, whose `add` takes an element, so a case goes in as the case.
+#[test]
+fn a_backed_enum_value_goes_into_an_emptied_list_add_as_its_case() {
+    assert_eq!(
+        body_in(
+            "void run(Calc status)",
+            "        List<Calc> standings = [status];\n        standings = [];\n        standings.add(status);\n",
+            &[("src/Lib/Calc.php", "<?php namespace Lib; enum Calc: string { case Active = 'a'; case Closed = 'c'; }")]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "standings"
+                ARRAY [3]
+                  ARRAY_ELEM
+                    VAR
+                      ZVAL "status"
+                    null
+              ASSIGN
+                VAR
+                  ZVAL "standings"
+                ARRAY [3]
+              METHOD_CALL
+                VAR
+                  ZVAL "standings"
+                ZVAL "add"
+                ARG_LIST
+                  VAR
+                    ZVAL "status"
+        "#}
+    );
+}
+
+/// ```php
+/// $counts = [$status->value => 1];
+/// $counts = [];
+/// return $counts->get($status->value);
+/// ```
+///
+/// `counts = [:]` leaves the local a `Map<Calc, int>`, whose `get` takes a key, so a case goes in as its `->value`.
+#[test]
+fn a_backed_enum_key_goes_into_an_emptied_map_get_as_its_backing_value() {
+    assert_eq!(
+        body_in(
+            "int? run(Calc status)",
+            "        Map<Calc, int> counts = [status: 1];\n        counts = [:];\n        return counts.get(status);\n",
+            &[("src/Lib/Calc.php", "<?php namespace Lib; enum Calc: string { case Active = 'a'; case Closed = 'c'; }")]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "counts"
+                ARRAY [3]
+                  ARRAY_ELEM
+                    ZVAL 1
+                    PROP
+                      VAR
+                        ZVAL "status"
+                      ZVAL "value"
+              ASSIGN
+                VAR
+                  ZVAL "counts"
+                ARRAY [3]
+              RETURN
+                METHOD_CALL
+                  VAR
+                    ZVAL "counts"
+                  ZVAL "get"
+                  ARG_LIST
+                    PROP
+                      VAR
+                        ZVAL "status"
+                      ZVAL "value"
+        "#}
+    );
+}
+
+/// ```php
+/// $statuses = [];
+/// foreach ($statuses as $status => $n) {
+///     $status = \Lib\Calc::from($status);
+///     {
+///         $extra += $n;
+///     }
+/// }
+/// return $extra;
+/// ```
+///
+/// `statuses = [:]` leaves the parameter a `Map<Calc, int>`, so the loop reads each key back as its case.
+#[test]
+fn an_emptied_map_loop_reads_each_key_back_as_its_case() {
+    assert_eq!(
+        body_in(
+            "int run(int extra, Map<Calc, int> statuses)",
+            "        statuses = [:];\n        for (const [status, n] of statuses) {\n            extra += n;\n        }\n        return extra;\n",
+            &[("src/Lib/Calc.php", "<?php namespace Lib; enum Calc: string { case Active = 'a'; case Closed = 'c'; }")]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "statuses"
+                ARRAY [3]
+              FOREACH
+                VAR
+                  ZVAL "statuses"
+                VAR
+                  ZVAL "n"
+                VAR
+                  ZVAL "status"
+                STMT_LIST
+                  ASSIGN
+                    VAR
+                      ZVAL "status"
+                    STATIC_CALL
+                      ZVAL "Lib\\Calc"
+                      ZVAL "from"
+                      ARG_LIST
+                        VAR
+                          ZVAL "status"
+                  STMT_LIST
+                    ASSIGN_OP [1]
+                      VAR
+                        ZVAL "extra"
+                      VAR
+                        ZVAL "n"
+              RETURN
+                VAR
+                  ZVAL "extra"
+        "#}
+    );
+}
+
+/// `sizes = []` leaves the parameter a `List<int>`, whose indexes come from `entries()`, so `[k, v]` is refused before
+/// the lowering reads a key type.
+#[test]
+fn an_emptied_list_loop_by_key_and_value_is_refused_before_lowering() {
+    let lowered = Lowered::with(
+        &method_with(
+            "int run(int extra, List<int> sizes)",
+            "        sizes = [];\n        for (const [index, size] of sizes) {\n            extra += index + size;\n        }\n        return extra;\n",
+        ),
+        &[],
+    );
+
+    assert_eq!(
+        lowered.diagnostics(),
+        ["10:37 compile error: `for (const [k, v] of x)` reads the keys of a `Map`, and this is a `List`."]
+    );
+    assert_eq!(lowered.nodes().len(), 0);
+}
+
+/// ```php
 /// public function apply(\Closure $step, ?\Closure $other = null): \Closure { return $step; }
 /// ```
 ///
@@ -3138,10 +3556,7 @@ fn a_bound_writes_a_type_parameter_of_its_own_class_as_any() {
         lowered.render(lowered.child(metadata, 1))
     };
 
-    assert_eq!(
-        [bounds(3), bounds(4)],
-        ["ZVAL \"Demo.Comparable<Any?>\"\n", "ZVAL \"Any?, Demo.Comparable<Any?>\"\n"]
-    );
+    assert_eq!([bounds(3), bounds(4)], ["ZVAL \"Demo.Comparable<Any?>\"\n", "ZVAL \"Any?, Demo.Comparable<Any?>\"\n"]);
 }
 
 /// A call of a generic method carries the type arguments the checker found, written or inferred, as the last child of
@@ -4938,6 +5353,166 @@ fn a_declared_member_wins_over_a_magic_one() {
 }
 
 /// ```php
+/// return \strlen(\gettype($bag->handler())) + \strlen(\gettype($bag->untagged()));
+/// ```
+///
+/// A call `__call` serves is a method call of its name, as the analysis checked it, even beside a private property of
+/// that name, which the call cannot read.
+#[test]
+fn a_call_only_call_serves_is_a_method_call_beside_a_private_property_of_its_name() {
+    let lowered = Lowered::with(
+        "namespace App.Tenant;\n\nimport Lib.Bag;\n\nclass Report\n{\n    public int run(Bag bag)\n    {\n        return strlen(gettype(bag.handler())) + strlen(gettype(bag.untagged()));\n    }\n}\n",
+        &[(
+            "src/Lib/Bag.php",
+            "<?php namespace Lib; final class Bag { private \\Closure $handler; public function __construct() { $this->handler = fn (): int => 1; } public function __call(string $name, array $arguments): mixed { return 1; } }",
+        )],
+    );
+
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                BINARY_OP [1]
+                  CALL
+                    ZVAL "strlen"
+                    ARG_LIST
+                      CALL
+                        ZVAL "gettype"
+                        ARG_LIST
+                          METHOD_CALL
+                            VAR
+                              ZVAL "bag"
+                            ZVAL "handler"
+                            ARG_LIST
+                  CALL
+                    ZVAL "strlen"
+                    ARG_LIST
+                      CALL
+                        ZVAL "gettype"
+                        ARG_LIST
+                          METHOD_CALL
+                            VAR
+                              ZVAL "bag"
+                            ZVAL "untagged"
+                            ARG_LIST
+        "#}
+    );
+}
+
+/// ```php
+/// \Lib\Calc::remember($extra);
+/// \Lib\Order::where($extra);
+/// ```
+///
+/// A static call `__callStatic` serves is a static call of its name, as the analysis checked it, whether the class
+/// declares `__callStatic` or a `@method static` tag names the method a subclass's `__callStatic` serves.
+#[test]
+fn a_static_call_call_static_serves_is_a_static_call_of_its_name() {
+    let lowered = Lowered::with(
+        "namespace App.Tenant;\n\nimport Lib.Calc;\nimport Lib.Order;\n\nclass Report\n{\n    public void run(int extra)\n    {\n        Calc.remember(extra);\n        Order.where(extra);\n    }\n}\n",
+        &[(
+            "src/Lib/Calc.php",
+            "<?php namespace Lib; final class Calc { public static function __callStatic(string $name, array $arguments): mixed { return null; } } /** @method static int where(int $id) */ class Order {}",
+        )],
+    );
+
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              STATIC_CALL
+                ZVAL "Lib\\Calc"
+                ZVAL "remember"
+                ARG_LIST
+                  VAR
+                    ZVAL "extra"
+              STATIC_CALL
+                ZVAL "Lib\\Order"
+                ZVAL "where"
+                ARG_LIST
+                  VAR
+                    ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
+/// return ($holder->handler)($extra) + ($this->scale)($extra);
+/// ```
+///
+/// A call of a property holding a function calls the function the property holds, as the analysis checked it, whether
+/// the property is a PHP `\Closure` an interface declares or a PHP# `Function` the class declares.
+#[test]
+fn a_call_of_a_property_holding_a_function_calls_the_function() {
+    let lowered = Lowered::with(
+        "namespace App.Tenant;\n\nimport Lib.HasHandler;\n\nclass Report\n{\n    private Function<int(int)> scale;\n\n    public Report()\n    {\n        this.scale = n => n;\n    }\n\n    public int run(HasHandler holder, int extra)\n    {\n        return holder.handler(extra) + this.scale(extra);\n    }\n}\n",
+        &[(
+            "src/Lib/HasHandler.php",
+            "<?php namespace Lib; interface HasHandler { /** @var \\Closure(int): int */ public \\Closure $handler { get; } }",
+        )],
+    );
+
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                BINARY_OP [1]
+                  CALL
+                    PROP
+                      VAR
+                        ZVAL "holder"
+                      ZVAL "handler"
+                    ARG_LIST
+                      VAR
+                        ZVAL "extra"
+                  CALL
+                    PROP
+                      VAR
+                        ZVAL "this"
+                      ZVAL "scale"
+                    ARG_LIST
+                      VAR
+                        ZVAL "extra"
+        "#}
+    );
+}
+
+/// ```php
+/// return ($this->format)($amount);
+/// ```
+///
+/// A property holding an object whose class declares `__invoke` is called as that property, though the analysis also
+/// records the `__invoke` it runs.
+#[test]
+fn a_call_of_a_property_holding_an_invokable_object_calls_the_property() {
+    let lowered = Lowered::with(
+        "namespace App.Tenant;\n\nimport Lib.Formatter;\n\nclass Report\n{\n    private Formatter format;\n\n    public Report(Formatter format)\n    {\n        this.format = format;\n    }\n\n    public int run(int amount)\n    {\n        return this.format(amount);\n    }\n}\n",
+        &[(
+            "src/Lib/Formatter.php",
+            "<?php namespace Lib; final class Formatter { public function __invoke(int $amount): int { return $amount; } }",
+        )],
+    );
+
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CALL
+                  PROP
+                    VAR
+                      ZVAL "this"
+                    ZVAL "format"
+                  ARG_LIST
+                    VAR
+                      ZVAL "amount"
+        "#}
+    );
+}
+
+/// ```php
 /// $total = $doc->total(...);
 /// return $total() + $doc->count();
 /// ```
@@ -5290,10 +5865,7 @@ fn a_static_member_only_a_magic_method_serves_is_refused() {
         &[MAGIC_ORDER],
     );
 
-    assert_eq!(
-        lowered.diagnostics(),
-        ["9:29 compile error: Static property `$where` does not exist on class `Lib\\Order`."]
-    );
+    assert_eq!(lowered.diagnostics(), ["9:29 compile error: `Order.where` does not exist."]);
 }
 
 /// A constant expression reads only constants and enum cases, as PHP's does, so a parameter default of a static
@@ -5840,120 +6412,478 @@ fn literals_are_zvals_of_their_php_value() {
 }
 
 /// ```php
-/// $a + $a - \intdiv($a * $a, $a) % $a;
+/// return $a + $a - \intdiv($a * $a, $a) % $a;
 /// ```
 ///
 /// `[1]`, `[2]`, `[3]` and `[5]` are `ZEND_ADD`, `ZEND_SUB`, `ZEND_MUL` and `ZEND_MOD`. `/` on two ints is `\intdiv`.
 #[test]
 fn arithmetic_operators_are_binary_ops() {
     assert_eq!(
-        body("        let a = 1;\n        a + a - a * a / a % a;\n        return a;\n"),
+        body("        let a = 1;\n        return a + a - a * a / a % a;\n"),
         indoc! {r#"
             STMT_LIST
               ASSIGN
                 VAR
                   ZVAL "a"
                 ZVAL 1
-              BINARY_OP [2]
-                BINARY_OP [1]
-                  VAR
-                    ZVAL "a"
-                  VAR
-                    ZVAL "a"
-                BINARY_OP [5]
-                  CALL
-                    ZVAL "intdiv"
-                    ARG_LIST
-                      BINARY_OP [3]
-                        VAR
-                          ZVAL "a"
-                        VAR
-                          ZVAL "a"
-                      VAR
-                        ZVAL "a"
-                  VAR
-                    ZVAL "a"
               RETURN
-                VAR
-                  ZVAL "a"
+                BINARY_OP [2]
+                  BINARY_OP [1]
+                    VAR
+                      ZVAL "a"
+                    VAR
+                      ZVAL "a"
+                  BINARY_OP [5]
+                    CALL
+                      ZVAL "intdiv"
+                      ARG_LIST
+                        BINARY_OP [3]
+                          VAR
+                            ZVAL "a"
+                          VAR
+                            ZVAL "a"
+                        VAR
+                          ZVAL "a"
+                    VAR
+                      ZVAL "a"
         "#}
     );
 }
 
 /// ```php
-/// $a == $a; $a != $a; $a === $a; $a !== $a; $a < $a; $a <= $a; $a > $a; $a >= $a;
+/// $b = $a === $a; $b = $a !== $a; $b = $calc === $calc; $b = $calc !== $calc; $b = $a < $a; $b = $a <= $a;
+/// $b = $a > $a; $b = $a >= $a;
 /// ```
 ///
-/// `[18]`, `[19]`, `[16]`, `[17]`, `[20]` and `[21]` are `ZEND_IS_EQUAL`, `ZEND_IS_NOT_EQUAL`, `ZEND_IS_IDENTICAL`,
-/// `ZEND_IS_NOT_IDENTICAL`, `ZEND_IS_SMALLER` and `ZEND_IS_SMALLER_OR_EQUAL`. `>` and `>=` have kinds of their own.
+/// `==` and `!=` compare values strictly, so they are `ZEND_IS_IDENTICAL` and `ZEND_IS_NOT_IDENTICAL`, `[16]` and
+/// `[17]`, as `===` and `!==` on a class instance are. `[20]` and `[21]` are `ZEND_IS_SMALLER` and
+/// `ZEND_IS_SMALLER_OR_EQUAL`. `>` and `>=` have kinds of their own.
 #[test]
 fn comparison_operators_are_the_kinds_php_gives_them() {
-    let tree = body(
-        "        let a = 1;\n        a == a;\n        a != a;\n        a === a;\n        a !== a;\n        a < a;\n        a <= a;\n        a > a;\n        a >= a;\n        return a;\n",
+    let tree = body_in(
+        "int run(Calc calc)",
+        "        let a = 1;\n        let b = a == a;\n        b = a != a;\n        b = calc === calc;\n        b = calc !== calc;\n        b = a < a;\n        b = a <= a;\n        b = a > a;\n        b = a >= a;\n        return a;\n",
+        &[("src/Lib/Calc.php", "<?php namespace Lib; final class Calc {}")],
     );
-    let operators: Vec<&str> = tree.lines().filter(|line| line.starts_with("  ") && !line.starts_with("   ")).collect();
 
     assert_eq!(
-        operators,
+        assigned_values(&tree),
         [
-            "  ASSIGN",
-            "  BINARY_OP [18]",
-            "  BINARY_OP [19]",
-            "  BINARY_OP [16]",
-            "  BINARY_OP [17]",
-            "  BINARY_OP [20]",
-            "  BINARY_OP [21]",
-            "  GREATER",
-            "  GREATER_EQUAL",
-            "  RETURN",
+            "ZVAL 1",
+            "BINARY_OP [16]",
+            "BINARY_OP [17]",
+            "BINARY_OP [16]",
+            "BINARY_OP [17]",
+            "BINARY_OP [20]",
+            "BINARY_OP [21]",
+            "GREATER",
+            "GREATER_EQUAL",
         ]
     );
 }
 
+/// The kind of the value each top-level assignment of a body's tree assigns, in order.
+fn assigned_values(tree: &str) -> Vec<&str> {
+    let lines: Vec<&str> = tree.lines().collect();
+
+    lines.windows(4).filter(|window| window[0] == "  ASSIGN").map(|window| window[3].trim_start()).collect()
+}
+
 /// ```php
-/// $a = $extra; $a === null; null !== $a; $a == $a;
+/// $a = $extra; $b = $a === null; $b = null !== $a; $b = $a === $a;
 /// ```
 ///
-/// `== null` and `!= null` test for null alone, so `0 == null` is false. `[16]` and `[17]` are `ZEND_IS_IDENTICAL` and
-/// `ZEND_IS_NOT_IDENTICAL`, and `==` between two values stays `ZEND_IS_EQUAL`, `[18]`.
+/// `==` and `!=` on a nullable value are lifted: null equals only null, so `0 == null` is false. `[16]` and `[17]` are
+/// `ZEND_IS_IDENTICAL` and `ZEND_IS_NOT_IDENTICAL`, which compare `null` that way.
 #[test]
 fn equality_with_null_is_identity() {
     let tree = body_in(
         "int run(int? extra)",
-        "        let a = extra;\n        a == null;\n        null != a;\n        a == a;\n        return 1;\n",
+        "        let a = extra;\n        let b = a == null;\n        b = null != a;\n        b = a == a;\n        return 1;\n",
         &[],
     );
-    let operators: Vec<&str> = tree.lines().filter(|line| line.starts_with("  ") && !line.starts_with("   ")).collect();
 
-    assert_eq!(operators, ["  ASSIGN", "  BINARY_OP [16]", "  BINARY_OP [17]", "  BINARY_OP [18]", "  RETURN"]);
+    assert_eq!(assigned_values(&tree), ["VAR", "BINARY_OP [16]", "BINARY_OP [17]", "BINARY_OP [16]"]);
 }
 
 /// ```php
-/// $a && $a || !$a;
+/// $b = $text === "01"; $b = $text !== "01"; $b = $total === 1; $b = $status === Status::Open;
+/// ```
+///
+/// Spec section 19: `==` compares values strictly, so `"1" == "01"` and `"1e3" == "1000"` are false, as PHP's `===`
+/// makes them. `[16]` and `[17]` are `ZEND_IS_IDENTICAL` and `ZEND_IS_NOT_IDENTICAL`.
+#[test]
+fn equality_of_strings_ints_and_enums_is_identity() {
+    let tree = body_in(
+        "int run(string text, int total, Status status)",
+        "        let b = text == \"01\";\n        b = text != \"01\";\n        b = total == 1;\n        b = status == Status.Open;\n        return 1;\n",
+        &[("src/App/Tenant/Status.php", "<?php namespace App\\Tenant; enum Status { case Open; case Closed; }")],
+    );
+
+    assert_eq!(assigned_values(&tree), ["BINARY_OP [16]", "BINARY_OP [17]", "BINARY_OP [16]", "BINARY_OP [16]"]);
+}
+
+/// ```php
+/// $b = (float) $count === $ratio; $b = $ratio !== (float) $count;
+/// ```
+///
+/// Spec section 19: numbers compare by value, so `1 == 1.0` is true. A side that may hold an int is cast to float, and
+/// the floats compare with `===`. `[5]` is `IS_DOUBLE`.
+#[test]
+fn equality_of_an_int_and_a_float_compares_them_as_floats() {
+    assert_eq!(
+        body_in(
+            "int run(int count, float ratio)",
+            "        let b = count == ratio;\n        b = ratio != count;\n        return 1;\n",
+            &[]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "b"
+                BINARY_OP [16]
+                  CAST [5]
+                    VAR
+                      ZVAL "count"
+                  VAR
+                    ZVAL "ratio"
+              ASSIGN
+                VAR
+                  ZVAL "b"
+                BINARY_OP [17]
+                  VAR
+                    ZVAL "ratio"
+                  CAST [5]
+                    VAR
+                      ZVAL "count"
+              RETURN
+                ZVAL 1
+        "#}
+    );
+}
+
+/// A value pattern compares as `==` does, so an int subject matches the float `1.0` as a float.
+#[test]
+fn an_int_subject_matches_a_float_pattern_as_a_float() {
+    assert_eq!(
+        body_in(
+            "int run(int count)",
+            "        return match (count) {\n            == 1.0 => 1,\n            default => 2,\n        };\n",
+            &[]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                MATCH
+                  ZVAL true
+                  MATCH_ARM_LIST
+                    MATCH_ARM
+                      EXPR_LIST
+                        BINARY_OP [16]
+                          CAST [5]
+                            VAR
+                              ZVAL "count"
+                          ZVAL 1.0
+                      ZVAL 1
+                    MATCH_ARM
+                      null
+                      ZVAL 2
+        "#}
+    );
+}
+
+/// ```php
+/// $b = (($operand#1 = $count) === null) === (($operand#2 = $ratio) === null)
+///     && ($operand#1 === null || (float) $operand#1 === $operand#2);
+/// $b = !((($operand#1 = $count) === null) === (($operand#2 = 1.5) === null)
+///     && ($operand#1 === null || (float) $operand#1 === $operand#2));
+/// ```
+///
+/// A nullable side is lifted: null equals only null, and `(float) null` never compares. Each side runs once into a
+/// hidden `$operand#N`, so `int? == float` with a null int is false and two nulls are equal.
+#[test]
+fn equality_of_a_nullable_int_and_a_float_compares_null_before_the_floats() {
+    assert_eq!(
+        body_in(
+            "int run(int? count, float? ratio)",
+            "        let b = count == ratio;\n        b = count != 1.5;\n        return 1;\n",
+            &[]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "b"
+                AND
+                  BINARY_OP [16]
+                    BINARY_OP [16]
+                      ASSIGN
+                        VAR
+                          ZVAL "operand#1"
+                        VAR
+                          ZVAL "count"
+                      ZVAL null
+                    BINARY_OP [16]
+                      ASSIGN
+                        VAR
+                          ZVAL "operand#2"
+                        VAR
+                          ZVAL "ratio"
+                      ZVAL null
+                  OR
+                    BINARY_OP [16]
+                      VAR
+                        ZVAL "operand#1"
+                      ZVAL null
+                    BINARY_OP [16]
+                      CAST [5]
+                        VAR
+                          ZVAL "operand#1"
+                      VAR
+                        ZVAL "operand#2"
+              ASSIGN
+                VAR
+                  ZVAL "b"
+                UNARY_OP [14]
+                  AND
+                    BINARY_OP [16]
+                      BINARY_OP [16]
+                        ASSIGN
+                          VAR
+                            ZVAL "operand#1"
+                          VAR
+                            ZVAL "count"
+                        ZVAL null
+                      BINARY_OP [16]
+                        ASSIGN
+                          VAR
+                            ZVAL "operand#2"
+                          ZVAL 1.5
+                        ZVAL null
+                    OR
+                      BINARY_OP [16]
+                        VAR
+                          ZVAL "operand#1"
+                        ZVAL null
+                      BINARY_OP [16]
+                        CAST [5]
+                          VAR
+                            ZVAL "operand#1"
+                        VAR
+                          ZVAL "operand#2"
+              RETURN
+                ZVAL 1
+        "#}
+    );
+}
+
+/// ```php
+/// return (($operand#1 = $a) === null) === (($operand#2 = ((($operand#3 = $b) === null) === (($operand#4 = $c) === null)
+///     && ($operand#3 === null || (float) $operand#3 === $operand#4)) ? 1 : 2.5) === null)
+///     && ($operand#1 === null || (float) $operand#1 === (float) $operand#2);
+/// ```
+///
+/// An int/float `==` inside another one's operand takes its own `$operand#N`s, so it never overwrites the outer `a`.
+#[test]
+fn a_nested_nullable_int_and_float_equality_takes_its_own_hidden_variables() {
+    assert_eq!(
+        body_in("bool run(int? a, int? b, float c)", "        return a == (b == c ? 1 : 2.5);\n", &[]),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                AND
+                  BINARY_OP [16]
+                    BINARY_OP [16]
+                      ASSIGN
+                        VAR
+                          ZVAL "operand#1"
+                        VAR
+                          ZVAL "a"
+                      ZVAL null
+                    BINARY_OP [16]
+                      ASSIGN
+                        VAR
+                          ZVAL "operand#2"
+                        CONDITIONAL [1]
+                          AND
+                            BINARY_OP [16]
+                              BINARY_OP [16]
+                                ASSIGN
+                                  VAR
+                                    ZVAL "operand#3"
+                                  VAR
+                                    ZVAL "b"
+                                ZVAL null
+                              BINARY_OP [16]
+                                ASSIGN
+                                  VAR
+                                    ZVAL "operand#4"
+                                  VAR
+                                    ZVAL "c"
+                                ZVAL null
+                            OR
+                              BINARY_OP [16]
+                                VAR
+                                  ZVAL "operand#3"
+                                ZVAL null
+                              BINARY_OP [16]
+                                CAST [5]
+                                  VAR
+                                    ZVAL "operand#3"
+                                VAR
+                                  ZVAL "operand#4"
+                          ZVAL 1
+                          ZVAL 2.5
+                      ZVAL null
+                  OR
+                    BINARY_OP [16]
+                      VAR
+                        ZVAL "operand#1"
+                      ZVAL null
+                    BINARY_OP [16]
+                      CAST [5]
+                        VAR
+                          ZVAL "operand#1"
+                      CAST [5]
+                        VAR
+                          ZVAL "operand#2"
+        "#}
+    );
+}
+
+/// ```php
+/// $b = \strcmp($text, "9") < 0; $b = \strcmp($text, $other) >= 0; $b = $total < 9;
+/// ```
+///
+/// PHP's `<` compares two numeric strings as numbers, so `"10" < "9"` is false. PHP# orders two strings by their
+/// bytes, which is the sign of `\strcmp`. Numbers keep PHP's `<`.
+#[test]
+fn string_ordering_is_strcmp_compared_with_zero() {
+    assert_eq!(
+        body_in(
+            "int run(string text, string other, int total)",
+            "        let b = text < \"9\";\n        b = text >= other;\n        b = total < 9;\n        return 1;\n",
+            &[],
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "b"
+                BINARY_OP [20]
+                  CALL
+                    ZVAL "strcmp"
+                    ARG_LIST
+                      VAR
+                        ZVAL "text"
+                      ZVAL "9"
+                  ZVAL 0
+              ASSIGN
+                VAR
+                  ZVAL "b"
+                GREATER_EQUAL
+                  CALL
+                    ZVAL "strcmp"
+                    ARG_LIST
+                      VAR
+                        ZVAL "text"
+                      VAR
+                        ZVAL "other"
+                  ZVAL 0
+              ASSIGN
+                VAR
+                  ZVAL "b"
+                BINARY_OP [20]
+                  VAR
+                    ZVAL "total"
+                  ZVAL 9
+              RETURN
+                ZVAL 1
+        "#}
+    );
+}
+
+/// ```php
+/// return match (true) {
+///     (${'match#1'} = $this->label()) === "01" => 1,
+///     \strcmp(${'match#1'}, "m") < 0 => 2,
+///     default => 3,
+/// };
+/// ```
+///
+/// A comparison pattern on a string compares as `==` and `<` do outside a pattern. The second arm reads the hidden
+/// variable, a node no source writes.
+#[test]
+fn a_string_comparison_pattern_compares_strictly_and_orders_by_strcmp() {
+    assert_eq!(
+        child_body(
+            RUN,
+            "        return match (this.label()) {\n            == \"01\" => 1,\n            < \"m\" => 2,\n            default => 3,\n        };\n",
+            "<?php namespace App\\Tenant; class Base { public function label(): string { return ''; } }",
+        ),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                MATCH
+                  ZVAL true
+                  MATCH_ARM_LIST
+                    MATCH_ARM
+                      EXPR_LIST
+                        BINARY_OP [16]
+                          ASSIGN
+                            VAR
+                              ZVAL "match#1"
+                            METHOD_CALL
+                              VAR
+                                ZVAL "this"
+                              ZVAL "label"
+                              ARG_LIST
+                          ZVAL "01"
+                      ZVAL 1
+                    MATCH_ARM
+                      EXPR_LIST
+                        BINARY_OP [20]
+                          CALL
+                            ZVAL "strcmp"
+                            ARG_LIST
+                              VAR
+                                ZVAL "match#1"
+                              ZVAL "m"
+                          ZVAL 0
+                      ZVAL 2
+                    MATCH_ARM
+                      null
+                      ZVAL 3
+        "#}
+    );
+}
+
+/// ```php
+/// return $a && $a || !$a;
 /// ```
 ///
 /// `[14]` is `ZEND_BOOL_NOT`.
 #[test]
 fn logical_operators_are_and_or_and_bool_not() {
     assert_eq!(
-        body("        let a = true;\n        a && a || !a;\n        return 1;\n"),
+        body_in("bool run(int extra)", "        let a = true;\n        return a && a || !a;\n", &[]),
         indoc! {r#"
             STMT_LIST
               ASSIGN
                 VAR
                   ZVAL "a"
                 ZVAL true
-              OR
-                AND
-                  VAR
-                    ZVAL "a"
-                  VAR
-                    ZVAL "a"
-                UNARY_OP [14]
-                  VAR
-                    ZVAL "a"
               RETURN
-                ZVAL 1
+                OR
+                  AND
+                    VAR
+                      ZVAL "a"
+                    VAR
+                      ZVAL "a"
+                  UNARY_OP [14]
+                    VAR
+                      ZVAL "a"
         "#}
     );
 }
@@ -5989,6 +6919,80 @@ fn compound_assignments_are_assign_ops() {
     assert_eq!(
         operators,
         ["  ASSIGN", "  ASSIGN_OP [2]", "  ASSIGN_OP [3]", "  ASSIGN", "  ASSIGN_OP [12]", "  RETURN"]
+    );
+}
+
+/// ```php
+/// $b = $extra | $extra; $b = $extra & $extra; $b = $extra ^ $extra; $b = $extra << $extra; $b = $extra >> $extra;
+/// $b = ~$extra;
+/// ```
+///
+/// `[9]`, `[10]`, `[11]`, `[6]` and `[7]` are `ZEND_BW_OR`, `ZEND_BW_AND`, `ZEND_BW_XOR`, `ZEND_SL` and `ZEND_SR`, and
+/// `[13]` is `ZEND_BW_NOT`, in php-src's `Zend/zend_vm_opcodes.h`. PHP throws `ArithmeticError` for a negative shift
+/// count, and `<<` drops the bits it shifts out, as spec section 19 has them.
+#[test]
+fn bitwise_operators_are_the_binary_and_unary_ops_php_gives_them() {
+    let tree = body(
+        "        let b = extra | extra;\n        b = extra & extra;\n        b = extra ^ extra;\n        b = extra << extra;\n        b = extra >> extra;\n        b = ~extra;\n        return b;\n",
+    );
+
+    assert_eq!(
+        assigned_values(&tree),
+        ["BINARY_OP [9]", "BINARY_OP [10]", "BINARY_OP [11]", "BINARY_OP [6]", "BINARY_OP [7]", "UNARY_OP [13]"]
+    );
+}
+
+/// ```php
+/// $a |= 1; $a &= 2; $a ^= 4; $a <<= 1; $a >>= 1; $a %= 3;
+/// ```
+///
+/// Each compound form applies the opcode of its operator: `[9]`, `[10]`, `[11]`, `[6]`, `[7]` and `[5]` are
+/// `ZEND_BW_OR`, `ZEND_BW_AND`, `ZEND_BW_XOR`, `ZEND_SL`, `ZEND_SR` and `ZEND_MOD`.
+#[test]
+fn bitwise_and_modulo_compound_assignments_are_assign_ops() {
+    let tree = body(
+        "        let a = extra;\n        a |= 1;\n        a &= 2;\n        a ^= 4;\n        a <<= 1;\n        a >>= 1;\n        a %= 3;\n        return a;\n",
+    );
+    let operators: Vec<&str> = tree.lines().filter(|line| line.starts_with("  ") && !line.starts_with("   ")).collect();
+
+    assert_eq!(
+        operators,
+        [
+            "  ASSIGN",
+            "  ASSIGN_OP [9]",
+            "  ASSIGN_OP [10]",
+            "  ASSIGN_OP [11]",
+            "  ASSIGN_OP [6]",
+            "  ASSIGN_OP [7]",
+            "  ASSIGN_OP [5]",
+            "  RETURN",
+        ]
+    );
+}
+
+/// ```php
+/// return ($extra & 2) !== 0 ? 1 : 0;
+/// ```
+///
+/// `&` binds tighter than `!=` in PHP#, so the flag test compares the `[10]` `ZEND_BW_AND` with 0, where PHP's own
+/// grammar would read `$extra & (2 != 0)`. `[17]` is `ZEND_IS_NOT_IDENTICAL`.
+#[test]
+fn a_flag_test_compares_the_bitwise_and_with_zero() {
+    assert_eq!(
+        body("        return extra & 2 != 0 ? 1 : 0;\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                CONDITIONAL
+                  BINARY_OP [17]
+                    BINARY_OP [10]
+                      VAR
+                        ZVAL "extra"
+                      ZVAL 2
+                    ZVAL 0
+                  ZVAL 1
+                  ZVAL 0
+        "#}
     );
 }
 
@@ -7520,20 +8524,21 @@ fn as_is_a_conditional_that_gives_the_value_or_null() {
 /// ```php
 /// $limit = 10;
 /// $a = $extra === 200;
-/// $b = $extra >= 1 && $extra < $limit || !($extra === -1);
+/// $b = \is_int($extra) && $extra >= 1 && $extra < $limit || !($extra === -1);
 /// $c = $extra === $limit;
 /// $d = \is_object($extra) && (${'match#1'} = $extra->count) > 0 && \is_string($label = $extra->name);
 /// ```
 ///
 /// A value is compared with `===`, a comparison keeps its operator, and `and`, `or` and `not` are `&&`, `||` and
 /// `!`. A bare name is the local's value when a local of that name is in scope. A properties pattern tests that the
-/// value is an object, then reads each property once.
+/// value is an object, then reads each property once. A comparison orders a `Calc`, which declares no `operator <=>`,
+/// only once `int` has ruled it out.
 #[test]
 fn values_comparisons_and_properties_are_the_php_comparisons_they_name() {
     assert_eq!(
         body_in(
             "Calc|int run(Calc|int extra)",
-            "        let limit = 10;\n        const a = extra is 200;\n        const b = extra is >= 1 and < limit or not -1;\n        const c = extra is limit;\n        const d = extra is { count: > 0, name: string label };\n        return extra;\n",
+            "        let limit = 10;\n        const a = extra is 200;\n        const b = extra is int and >= 1 and < limit or (not -1);\n        const c = extra is limit;\n        const d = extra is { count: > 0, name: string label };\n        return extra;\n",
             &[(
                 "src/Lib/Calc.php",
                 "<?php namespace Lib; final class Calc { public int $count = 0; public ?string $name = null; }",
@@ -7557,10 +8562,16 @@ fn values_comparisons_and_properties_are_the_php_comparisons_they_name() {
                   ZVAL "b"
                 OR
                   AND
-                    GREATER_EQUAL
-                      VAR
-                        ZVAL "extra"
-                      ZVAL 1
+                    AND
+                      CALL
+                        ZVAL "is_int"
+                        ARG_LIST
+                          VAR
+                            ZVAL "extra"
+                      GREATER_EQUAL
+                        VAR
+                          ZVAL "extra"
+                        ZVAL 1
                     BINARY_OP [20]
                       VAR
                         ZVAL "extra"
@@ -7807,7 +8818,7 @@ fn a_when_condition_that_is_a_bare_name_is_the_arms_and_operand() {
         guarded("forced == true"),
         bare.replace(
             "              VAR\n                ZVAL \"forced\"\n          ZVAL 1\n",
-            "              BINARY_OP [18]\n                VAR\n                  ZVAL \"forced\"\n                ZVAL true\n          ZVAL 1\n",
+            "              BINARY_OP [16]\n                VAR\n                  ZVAL \"forced\"\n                ZVAL true\n          ZVAL 1\n",
         )
     );
 }
@@ -8197,7 +9208,7 @@ fn an_enum_constant_is_a_class_constant_group_that_reads_a_case() {
 #[test]
 fn a_case_read_is_a_class_constant_in_every_place() {
     let lowered = Lowered::with(
-        "namespace App.Tenant;\n\nimport Lib.Registry;\n\npublic enum Status : string\n{\n    case Active = \"a\";\n    case Paused = Registry.PAUSED;\n\n    public const Status Default = Status.Active;\n\n    public bool active() => this === Status.Active;\n\n    public string label() => this.name;\n}\n\nclass Report\n{\n    public string run(Status status = Status.Active)\n    {\n        if (status === Status.Active) {\n            return Status.Active.label();\n        }\n        return Status.Default.label();\n    }\n}\n",
+        "namespace App.Tenant;\n\nimport Lib.Registry;\n\npublic enum Status : string\n{\n    case Active = \"a\";\n    case Paused = Registry.PAUSED;\n\n    public const Status Default = Status.Active;\n\n    public bool active() => this == Status.Active;\n\n    public string label() => this.name;\n}\n\nclass Report\n{\n    public string run(Status status = Status.Active)\n    {\n        if (status == Status.Active) {\n            return Status.Active.label();\n        }\n        return Status.Default.label();\n    }\n}\n",
         &[("src/Lib/Registry.php", "<?php namespace Lib; final class Registry { public const string PAUSED = 'p'; }")],
     );
     let reads: Vec<String> = lowered
@@ -8272,7 +9283,7 @@ fn a_case_read_is_a_class_constant_in_every_place() {
 #[test]
 fn an_enum_method_lowers_a_list_literal_a_function_type_and_a_lambda_as_a_class_method_does() {
     let lowered = Lowered::new(
-        "enum Suit\n{\n    case Hearts;\n    case Spades;\n\n    public static List<Suit> all() => [Suit.Hearts, Suit.Spades];\n\n    public Function<bool(Suit)> matches()\n    {\n        const first = Suit.Hearts;\n        return other => other === this || other === first;\n    }\n}\n",
+        "enum Suit\n{\n    case Hearts;\n    case Spades;\n\n    public static List<Suit> all() => [Suit.Hearts, Suit.Spades];\n\n    public Function<bool(Suit)> matches()\n    {\n        const first = Suit.Hearts;\n        return other => other == this || other == first;\n    }\n}\n",
     );
 
     assert_eq!(
@@ -8935,4 +9946,439 @@ fn a_form_fingerprint_follows_its_body_and_not_its_lines() {
 
     assert_eq!(fingerprint(&TEXT.1.replacen("{\n", "{\n\n\n", 1)), fingerprint(TEXT.1));
     assert_ne!(fingerprint(&TEXT.1.replace("strtoupper", "strtolower")), fingerprint(TEXT.1));
+}
+
+/// `Money`, which declares `==`, `+`, unary `-` and `<=>` on lines 7, 9, 11 and 13.
+const MONEY: &str = "namespace App;\n\npublic class Money\n{\n    public int hash() => 1;\n\n    public static bool operator ==(Money a, Money b) => true;\n\n    public static Money operator +(Money a, Money b) => a;\n\n    public static Money operator -(Money a) => a;\n\n    public static int operator <=>(Money a, Money b) => 0;\n}\n";
+
+/// ```php
+/// public static function op_Equality(?\App\Money $a, ?\App\Money $b): bool
+/// {
+///     if ($a === null || $b === null) { return $a === $b; }
+///     return true;
+/// }
+/// ```
+///
+/// `==` is lifted over null, as C# lifts it: its parameters are nullable, with `ZEND_TYPE_NULLABLE`, which is 256, and
+/// null equals only null before the declared body runs. `public static` is 17, `===` is 16, and `bool` is a name with
+/// `ZEND_NAME_NOT_FQ`, which is 1.
+#[test]
+fn equality_is_op_equality_with_nullable_parameters_and_the_null_prologue() {
+    assert_eq!(
+        Lowered::new(MONEY).declared("op_Equality"),
+        indoc! {r#"
+            METHOD [17] "op_Equality" @7-7
+              PARAM_LIST
+                PARAM
+                  ZVAL [256] "App\\Money"
+                  ZVAL "a"
+                  null
+                  null
+                  null
+                  null
+                PARAM
+                  ZVAL [256] "App\\Money"
+                  ZVAL "b"
+                  null
+                  null
+                  null
+                  null
+              null
+              STMT_LIST
+                IF
+                  IF_ELEM
+                    OR
+                      BINARY_OP [16]
+                        VAR
+                          ZVAL "a"
+                        ZVAL null
+                      BINARY_OP [16]
+                        VAR
+                          ZVAL "b"
+                        ZVAL null
+                    STMT_LIST
+                      RETURN
+                        BINARY_OP [16]
+                          VAR
+                            ZVAL "a"
+                          VAR
+                            ZVAL "b"
+                RETURN
+                  ZVAL true
+              ZVAL [1] "bool"
+              null
+        "#}
+    );
+}
+
+/// ```php
+/// public static function op_Addition(\App\Money $a, \App\Money $b): \App\Money { return $a; }
+/// public static function op_UnaryNegation(\App\Money $a): \App\Money { return $a; }
+/// ```
+///
+/// Every other operator is the static method it runs as, with its parameters as declared and no prologue. `-` with one
+/// parameter is unary `-`.
+#[test]
+fn addition_and_negation_are_their_static_methods_without_a_prologue() {
+    let lowered = Lowered::new(MONEY);
+
+    assert_eq!(
+        lowered.declared("op_Addition"),
+        indoc! {r#"
+            METHOD [17] "op_Addition" @9-9
+              PARAM_LIST
+                PARAM
+                  ZVAL "App\\Money"
+                  ZVAL "a"
+                  null
+                  null
+                  null
+                  null
+                PARAM
+                  ZVAL "App\\Money"
+                  ZVAL "b"
+                  null
+                  null
+                  null
+                  null
+              null
+              STMT_LIST
+                RETURN
+                  VAR
+                    ZVAL "a"
+              ZVAL "App\\Money"
+              null
+        "#}
+    );
+    assert_eq!(
+        lowered.declared("op_UnaryNegation"),
+        indoc! {r#"
+            METHOD [17] "op_UnaryNegation" @11-11
+              PARAM_LIST
+                PARAM
+                  ZVAL "App\\Money"
+                  ZVAL "a"
+                  null
+                  null
+                  null
+                  null
+              null
+              STMT_LIST
+                RETURN
+                  VAR
+                    ZVAL "a"
+              ZVAL "App\\Money"
+              null
+        "#}
+    );
+}
+
+/// `App\Order`, which extends `Money` and declares no operator.
+const ORDER_OF_MONEY: (&str, &str) = ("src/App/Order.sharp", "namespace App;\n\npublic class Order : Money\n{\n}\n");
+
+/// The statements of `run`, declared with `signature` and holding `statements`, in `App\Ledger`, whose `total` holds a
+/// `Money` and whose `current()` returns it, lowered beside `Money` and `Order`.
+fn ledger_body(signature: &str, statements: &str) -> String {
+    let code = format!(
+        "namespace App;\n\nclass Ledger\n{{\n    public Money total {{ get; set; }}\n\n    public Ledger(Money total)\n    {{\n        this.total = total;\n    }}\n\n    public Ledger current() => this;\n\n    public {signature}\n    {{\n{statements}    }}\n}}\n"
+    );
+
+    Lowered::with(&code, &[("src/App/Money.sharp", MONEY), ORDER_OF_MONEY]).body()
+}
+
+/// ```php
+/// if ($c === null) { return \App\Money::op_Equality($a, $b); }
+/// return !\App\Money::op_Equality($a, $c);
+/// ```
+///
+/// `==` on instances calls the `operator ==` their class declares, and `!=` is its `!`, which is `ZEND_BOOL_NOT`, 14.
+/// The method lifts a nullable side itself. `== null` tests for null with `===`, which is 16, and calls nothing.
+#[test]
+fn equality_of_instances_calls_op_equality_and_inequality_negates_it() {
+    assert_eq!(
+        ledger_body(
+            "bool run(Money a, Money b, Money? c)",
+            "        if (c == null) {\n            return a == b;\n        }\n        return a != c;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              IF
+                IF_ELEM
+                  BINARY_OP [16]
+                    VAR
+                      ZVAL "c"
+                    ZVAL null
+                  STMT_LIST
+                    RETURN
+                      STATIC_CALL
+                        ZVAL "App\\Money"
+                        ZVAL "op_Equality"
+                        ARG_LIST
+                          VAR
+                            ZVAL "a"
+                          VAR
+                            ZVAL "b"
+              RETURN
+                UNARY_OP [14]
+                  STATIC_CALL
+                    ZVAL "App\\Money"
+                    ZVAL "op_Equality"
+                    ARG_LIST
+                      VAR
+                        ZVAL "a"
+                      VAR
+                        ZVAL "c"
+        "#}
+    );
+}
+
+/// ```php
+/// if (\App\Money::op_Comparison($a, $b) < 0) { return \App\Money::op_Comparison($a, $b); }
+/// return 0;
+/// ```
+///
+/// An ordering compares what `operator <=>` returns with 0, and `<=>` is the call itself. `<` is `ZEND_IS_SMALLER`, 20.
+#[test]
+fn ordering_instances_compares_op_comparison_with_zero() {
+    assert_eq!(
+        ledger_body(
+            "int run(Money a, Money b)",
+            "        if (a < b) {\n            return a <=> b;\n        }\n        return 0;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              IF
+                IF_ELEM
+                  BINARY_OP [20]
+                    STATIC_CALL
+                      ZVAL "App\\Money"
+                      ZVAL "op_Comparison"
+                      ARG_LIST
+                        VAR
+                          ZVAL "a"
+                        VAR
+                          ZVAL "b"
+                    ZVAL 0
+                  STMT_LIST
+                    RETURN
+                      STATIC_CALL
+                        ZVAL "App\\Money"
+                        ZVAL "op_Comparison"
+                        ARG_LIST
+                          VAR
+                            ZVAL "a"
+                          VAR
+                            ZVAL "b"
+              RETURN
+                ZVAL 0
+        "#}
+    );
+}
+
+/// ```php
+/// return \App\Money::op_UnaryNegation(\App\Money::op_Addition($a, $b));
+/// ```
+#[test]
+fn arithmetic_on_instances_calls_the_declared_operators() {
+    assert_eq!(
+        ledger_body("Money run(Money a, Money b)", "        return -(a + b);\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                STATIC_CALL
+                  ZVAL "App\\Money"
+                  ZVAL "op_UnaryNegation"
+                  ARG_LIST
+                    STATIC_CALL
+                      ZVAL "App\\Money"
+                      ZVAL "op_Addition"
+                      ARG_LIST
+                        VAR
+                          ZVAL "a"
+                        VAR
+                          ZVAL "b"
+        "#}
+    );
+}
+
+/// ```php
+/// $this->total = \App\Money::op_Addition($this->total, $price);
+/// ($receiver#1 = $this->current())->total = \App\Money::op_Addition($receiver#1->total, $price);
+/// ```
+///
+/// `+=` on an instance assigns what `operator +` returns. A receiver that is not a local or `this` goes into a hidden
+/// variable, which the write sets before the read, so the receiver runs once.
+#[test]
+fn a_compound_assignment_to_an_instance_assigns_the_operator_result_and_runs_its_receiver_once() {
+    assert_eq!(
+        ledger_body("void run(Money price)", "        this.total += price;\n        this.current().total += price;\n"),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                PROP
+                  VAR
+                    ZVAL "this"
+                  ZVAL "total"
+                STATIC_CALL
+                  ZVAL "App\\Money"
+                  ZVAL "op_Addition"
+                  ARG_LIST
+                    PROP
+                      VAR
+                        ZVAL "this"
+                      ZVAL "total"
+                    VAR
+                      ZVAL "price"
+              ASSIGN
+                PROP
+                  ASSIGN
+                    VAR
+                      ZVAL "receiver#1"
+                    METHOD_CALL
+                      VAR
+                        ZVAL "this"
+                      ZVAL "current"
+                      ARG_LIST
+                  ZVAL "total"
+                STATIC_CALL
+                  ZVAL "App\\Money"
+                  ZVAL "op_Addition"
+                  ARG_LIST
+                    PROP
+                      VAR
+                        ZVAL "receiver#1"
+                      ZVAL "total"
+                    VAR
+                      ZVAL "price"
+        "#}
+    );
+}
+
+/// ```php
+/// return (\strcmp($x, $y) <=> 0) + ($m <=> $n);
+/// ```
+///
+/// `<=>` orders two strings by their bytes, as the other orderings do, and two numbers as PHP's `<=>`, which is
+/// `ZEND_SPACESHIP`, 170.
+#[test]
+fn spaceship_orders_strings_by_their_bytes_and_numbers_as_php() {
+    assert_eq!(
+        body_in("int run(string x, string y, int m, int n)", "        return (x <=> y) + (m <=> n);\n", &[]),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                BINARY_OP [1]
+                  BINARY_OP [170]
+                    CALL
+                      ZVAL "strcmp"
+                      ARG_LIST
+                        VAR
+                          ZVAL "x"
+                        VAR
+                          ZVAL "y"
+                    ZVAL 0
+                  BINARY_OP [170]
+                    VAR
+                      ZVAL "m"
+                    VAR
+                      ZVAL "n"
+        "#}
+    );
+}
+
+/// ```php
+/// return \App\Money::op_Equality($order, $other);
+/// ```
+///
+/// `Order` inherits `operator ==` from `Money`, so the call names the class that declares it.
+#[test]
+fn equality_of_a_subclass_calls_the_operator_its_parent_declares() {
+    assert_eq!(
+        ledger_body("bool run(Order order, Order other)", "        return order == other;\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                STATIC_CALL
+                  ZVAL "App\\Money"
+                  ZVAL "op_Equality"
+                  ARG_LIST
+                    VAR
+                      ZVAL "order"
+                    VAR
+                      ZVAL "other"
+        "#}
+    );
+}
+
+/// ```php
+/// return \App\Money::op_Comparison(\App\Money::op_Addition(\App\Money::op_UnaryNegation($order), $order), $money) < 0
+///     && \App\Money::op_Equality($maybe, $money)
+///     && !\App\Money::op_Equality($maybe, $other)
+///     && \App\Money::op_Comparison($money, $order) <= 0;
+/// ```
+///
+/// The bridge calls the class the checker chose for every operand shape it accepts: an operator `Order` inherits, unary
+/// and binary, a `Money` against an `Order`, a nullable left side of `==`, and two nullable sides of `!=`.
+#[test]
+fn every_operand_shape_the_checker_accepts_calls_the_class_that_declares_the_operator() {
+    assert_eq!(
+        ledger_body(
+            "bool run(Order order, Money money, Order? maybe, Money? other)",
+            "        return (-order + order) < money && maybe == money && maybe != other && money <= order;\n"
+        ),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                AND
+                  AND
+                    AND
+                      BINARY_OP [20]
+                        STATIC_CALL
+                          ZVAL "App\\Money"
+                          ZVAL "op_Comparison"
+                          ARG_LIST
+                            STATIC_CALL
+                              ZVAL "App\\Money"
+                              ZVAL "op_Addition"
+                              ARG_LIST
+                                STATIC_CALL
+                                  ZVAL "App\\Money"
+                                  ZVAL "op_UnaryNegation"
+                                  ARG_LIST
+                                    VAR
+                                      ZVAL "order"
+                                VAR
+                                  ZVAL "order"
+                            VAR
+                              ZVAL "money"
+                        ZVAL 0
+                      STATIC_CALL
+                        ZVAL "App\\Money"
+                        ZVAL "op_Equality"
+                        ARG_LIST
+                          VAR
+                            ZVAL "maybe"
+                          VAR
+                            ZVAL "money"
+                    UNARY_OP [14]
+                      STATIC_CALL
+                        ZVAL "App\\Money"
+                        ZVAL "op_Equality"
+                        ARG_LIST
+                          VAR
+                            ZVAL "maybe"
+                          VAR
+                            ZVAL "other"
+                  BINARY_OP [21]
+                    STATIC_CALL
+                      ZVAL "App\\Money"
+                      ZVAL "op_Comparison"
+                      ARG_LIST
+                        VAR
+                          ZVAL "money"
+                        VAR
+                          ZVAL "order"
+                    ZVAL 0
+        "#}
+    );
 }

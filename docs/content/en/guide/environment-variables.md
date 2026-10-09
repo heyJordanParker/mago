@@ -64,8 +64,6 @@ XDG_CONFIG_HOME=/path/to/config mago lint
 
 Mago reserves the `MAGO_` prefix for itself. Only the variables documented on this page are officially recognised. Anything else prefixed `MAGO_` is reserved for internal use and may be silently ignored or repurposed in a future release.
 
-> Earlier versions auto-mapped every `MAGO_*` variable into the configuration tree, so something like `MAGO_LINT=1` would crash with an "unknown field" error. Mago 1.25 narrowed this to the explicit list below.
-
 ## Configuration overrides
 
 These variables override the matching key in `mago.toml`. They cover top-level scalars only; there is no env-var support for nested settings like individual rule levels. Use the config file (or an `extends` layer) for those.

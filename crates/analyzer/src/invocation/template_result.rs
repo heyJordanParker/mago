@@ -36,8 +36,8 @@ use crate::statement::function_like::check_template_arguments;
 use crate::statement::get_type_from_hint;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_function_like_identifier;
-use crate::utils::names::display_sharp_member;
 use crate::utils::template::get_template_types_for_class_member;
+use mago_names::display_sharp_member;
 
 /// Populates the `TemplateResult` with template types from the invocation target.
 ///

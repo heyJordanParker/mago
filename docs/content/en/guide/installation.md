@@ -1,6 +1,6 @@
 +++
 title = "Installation"
-description = "Install Mago via the shell installer, a manual download, Docker, or your language's package manager."
+description = "Install Mago via the shell installer, a manual download, Composer, or a Nix flake."
 nav_order = 20
 nav_section = "Guide"
 +++
@@ -15,19 +15,19 @@ The recommended path on macOS and Linux. The script detects your platform, fetch
 With `curl`:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -sSf https://carthage.software/mago.sh | bash
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/heyJordanParker/mago-sharp/master/scripts/install.sh | bash
 ```
 
 With `wget`:
 
 ```sh
-wget -qO- https://carthage.software/mago.sh | bash
+wget -qO- https://raw.githubusercontent.com/heyJordanParker/mago-sharp/master/scripts/install.sh | bash
 ```
 
 ### Pin a specific version
 
 ```sh
-curl --proto '=https' --tlsv1.2 -sSf https://carthage.software/mago.sh | bash -s -- --version=1.51.0
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/heyJordanParker/mago-sharp/master/scripts/install.sh | bash -s -- --version=0.2.0
 ```
 
 The same syntax works with `wget`.
@@ -39,7 +39,7 @@ If the [GitHub CLI](https://cli.github.com/) is on your PATH, the installer veri
 To make verification mandatory, pass `--always-verify`. The installer aborts before touching your PATH if `gh` is unavailable, too old, or the attestation does not match.
 
 ```sh
-curl --proto '=https' --tlsv1.2 -sSf https://carthage.software/mago.sh | bash -s -- --always-verify
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/heyJordanParker/mago-sharp/master/scripts/install.sh | bash -s -- --always-verify
 ```
 
 To opt out entirely, pass `--no-verify`. The two flags are mutually exclusive.
@@ -55,7 +55,7 @@ The recommended path on Windows and a fine fallback on any system without `bash`
 If you keep the archive around, you can verify it yourself before extracting.
 
 ```sh
-VERSION=0.1.0
+VERSION=0.2.0
 TARGET=x86_64-unknown-linux-gnu  # adjust for your platform
 ASSET=mago-${VERSION}-${TARGET}.tar.gz
 
@@ -72,26 +72,14 @@ A successful verification prints `Verification succeeded!` and the workflow run 
 
 The attestation is bound to the archive, not to the extracted binary. If you only kept the binary you cannot verify it directly. Re-download the archive, verify it, and compare the inner binary's `sha256sum` to the one already on your system.
 
-## Docker
-
-The official image is built from `scratch` and weighs roughly 26 MB. It runs anywhere Docker does, supports `linux/amd64` and `linux/arm64`, and needs no host PHP runtime.
-
-```sh
-docker run --rm -v $(pwd):/app -w /app ghcr.io/carthage-software/mago lint
-```
-
-Tags include `latest`, exact versions, and progressively looser pins (for example `1.51.0`, `1.51`, `1`). The [Docker recipe](/recipes/docker/) covers CI examples and the limitations to be aware of.
-
 ## Package managers
-
-These routes are convenient but rely on external publishing schedules that often lag the GitHub release. After installing through any of them, run [`mago self-update`](/guide/upgrading/) to pull the latest official binary.
 
 ### Composer
 
 For PHP projects:
 
 ```sh
-composer require --dev "heyjordanparker/mago-sharp:^0.1.0"
+composer require --dev "heyjordanparker/mago-sharp:^0.2.0"
 ```
 
 The Composer package is a thin wrapper. The first call to `vendor/bin/mago` downloads the matching pre-built binary from the GitHub release and caches it. Subsequent calls reuse the cache and make no network requests.
@@ -104,34 +92,6 @@ If GitHub's anonymous rate limit blocks the first download (common on shared CI 
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-### Homebrew
-
-The community-maintained formula often lags the official release. Install it, then run `mago self-update` immediately.
-
-```sh
-brew install mago
-mago self-update
-```
-
-### WinGet
-
-For Windows. The WinGet package can lag behind the GitHub release, so update the installed binary afterwards.
-
-```powershell
-winget install CarthageSoftware.Mago
-mago self-update
-```
-
-### Nixpkgs / NixOS
-
-[Nixpkgs](https://github.com/NixOS/nixpkgs/blob/master/pkgs/by-name/ma/mago/package.nix) distributes pre-built
-Mago derivations:
-
-```sh
-nix-shell -p mago
-mago --version
-```
-
 ### Nix Flake
 
 You can run and build Mago yourself via [Nix flakes](https://nixos.wiki/wiki/flakes):
@@ -142,15 +102,6 @@ nix run git+https://github.com/heyJordanParker/mago-sharp -- --version
 
 Note: the Mago main repository relies on `.gitattributes` for distribution, so you have to use `git+https`
 in order to get all the files necessary for Mago to compile.
-
-### Cargo
-
-Crates.io publishing can lag a few hours behind a release. Same pattern as Homebrew, and WinGet.
-
-```sh
-cargo install mago
-mago self-update
-```
 
 ## Verifying releases in detail
 
@@ -180,7 +131,7 @@ The verify call reads from the public attestations API, so no `gh auth` is requi
 
 ### Pinning the install script
 
-`https://carthage.software/mago.sh` redirects to [`scripts/install.sh`](https://github.com/carthage-software/mago/blob/main/scripts/install.sh) on the `main` branch. Future revisions are picked up automatically, which is convenient but also means future installer changes land without warning.
+The installer URL above serves [`scripts/install.sh`](https://github.com/heyJordanParker/mago-sharp/blob/master/scripts/install.sh) from the `master` branch. Future revisions are picked up automatically, which is convenient but also means future installer changes land without warning.
 
 For stricter supply-chain hygiene, pin the script to a specific commit you have reviewed:
 

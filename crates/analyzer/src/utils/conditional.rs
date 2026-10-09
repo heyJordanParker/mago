@@ -5,7 +5,6 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use mago_codex::assertion::Assertion;
-use mago_codex::ttype::TType;
 use mago_codex::ttype::union::TUnion;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -27,6 +26,8 @@ use crate::context::scope::conditional_scope::IfConditionalScope;
 use crate::context::scope::if_scope::IfScope;
 use crate::error::AnalysisError;
 use crate::reconciler::reconcile_keyed_types;
+use crate::utils::names::display_truth;
+use crate::utils::names::display_type;
 
 pub(crate) fn analyze<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
@@ -279,13 +280,15 @@ fn get_definitely_evaluated_expression_inside_if<'ast, 'arena>(
     condition
 }
 
+/// Reports a condition whose type makes it always false or always true. A PHP# file names the type as PHP# writes it.
 pub fn handle_paradoxical_condition<T, A>(context: &mut Context<'_, '_, A>, expression: &T, expression_type: &TUnion)
 where
     T: HasSpan,
     A: Arena,
 {
     if expression_type.is_always_falsy() {
-        let type_id = expression_type.get_id();
+        let type_id = display_type(context, expression_type);
+        let truth = display_truth(context, false);
         context.collector.report_with_code(
             IssueCode::ImpossibleCondition,
             Issue::warning(format!(
@@ -293,7 +296,7 @@ where
             ))
             .with_annotation(
                 Annotation::primary(expression.span())
-                    .with_message(format!("Expression of type `{type_id}` is always falsy")),
+                    .with_message(format!("Expression of type `{type_id}` is always {truth}")),
             )
             .with_note(
                 "Because this condition is always false, the code block it controls will never be executed."
@@ -303,7 +306,8 @@ where
             ),
         );
     } else if expression_type.is_always_truthy() {
-        let type_id = expression_type.get_id();
+        let type_id = display_type(context, expression_type);
+        let truth = display_truth(context, true);
         context.collector.report_with_code(
             IssueCode::RedundantCondition,
             Issue::warning(format!(
@@ -311,7 +315,7 @@ where
             ))
             .with_annotation(
                 Annotation::primary(expression.span())
-                    .with_message(format!("Expression of type `{type_id}` is always truthy")),
+                    .with_message(format!("Expression of type `{type_id}` is always {truth}")),
             )
             .with_note(
                 "Because this condition is always true, the code block it controls will always execute if this part of the code is reached."

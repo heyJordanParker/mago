@@ -1,6 +1,6 @@
 {
   "name": "heyjordanparker/mago-sharp",
-  "description": "Mago is a toolchain for PHP that aims to provide a set of tools to help developers write better code.",
+  "description": "PHP#'s checker and toolchain: checks PHP and PHP# code, compiles PHP#, and lints and formats PHP.",
   "type": "library",
   "license": "MIT OR Apache-2.0",
   "authors": [

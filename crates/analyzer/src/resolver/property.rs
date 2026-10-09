@@ -30,6 +30,7 @@ use mago_codex::ttype::template::TemplateResult;
 use mago_codex::ttype::template::inferred_type_replacer;
 use mago_codex::ttype::union::TUnion;
 use mago_names::ResolvedNames;
+use mago_names::display_sharp_member;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -55,8 +56,9 @@ use crate::resolver::selector::resolve_member_selector;
 use crate::statement::function_like::get_this_type;
 use crate::utils::expression::analyze_member_object;
 use crate::utils::expression::is_this;
+use crate::utils::names::display_atomic;
 use crate::utils::names::display_class_like_name;
-use crate::utils::names::display_sharp_type;
+use crate::utils::names::display_member;
 use crate::utils::names::display_type;
 use crate::utils::template::check_private_method_reach;
 use crate::utils::template::check_private_property_reach;
@@ -203,7 +205,8 @@ where
                 result.has_ambiguous_path = true;
 
                 if !block_context.flags.inside_isset() {
-                    report_ambiguous_access(context, property_selector, object_expression.span(), word("object"));
+                    let object_type = display_atomic(context, object_atomic);
+                    report_ambiguous_access(context, property_selector, object_expression.span(), &object_type);
                 }
 
                 continue;
@@ -228,12 +231,8 @@ where
                 } else {
                     result.has_ambiguous_path = true;
                     if !block_context.flags.inside_isset() {
-                        report_ambiguous_access(
-                            context,
-                            property_selector,
-                            object_expression.span(),
-                            object_type.get_id(),
-                        );
+                        let object_type = display_type(context, &object_type);
+                        report_ambiguous_access(context, property_selector, object_expression.span(), &object_type);
                     }
                 }
 
@@ -263,12 +262,8 @@ where
                 } else {
                     result.has_ambiguous_path = true;
                     if !block_context.flags.inside_isset() {
-                        report_ambiguous_access(
-                            context,
-                            property_selector,
-                            object_expression.span(),
-                            object_type.get_id(),
-                        );
+                        let object_type = display_type(context, &object_type);
+                        report_ambiguous_access(context, property_selector, object_expression.span(), &object_type);
                     }
                 }
 
@@ -296,12 +291,8 @@ where
                         result.has_ambiguous_path = true;
 
                         if !block_context.flags.inside_isset() {
-                            report_ambiguous_access(
-                                context,
-                                property_selector,
-                                object_expression.span(),
-                                object_type.get_id(),
-                            );
+                            let object_type = display_type(context, &object_type);
+                            report_ambiguous_access(context, property_selector, object_expression.span(), &object_type);
                         }
 
                         continue;
@@ -510,6 +501,7 @@ fn report_external_invalid_property_access<A>(
     A: Arena,
 {
     let class = context.codebase.get_class_like(class.as_bytes()).map_or(class, |metadata| metadata.original_name);
+    let property = display_member(context, class, property);
     let (code, action, direction) = if for_assignment {
         (IssueCode::InvalidPropertyWrite, "write to", "read-only")
     } else {
@@ -517,7 +509,7 @@ fn report_external_invalid_property_access<A>(
     };
     context.collector.report_with_code(
         code,
-        Issue::error(format!("Cannot {action} extension-provided {direction} property `{class}::{property}`."))
+        Issue::error(format!("Cannot {action} extension-provided {direction} property `{property}`."))
             .with_annotation(Annotation::primary(span).with_message(format!("This property is {direction}"))),
     );
 }
@@ -1023,7 +1015,7 @@ where
     let DeclaredProperty { declaring_class: declaring_class_metadata, property: property_metadata, .. } = resolution;
     let declaring_class_id = declaring_class_metadata.name;
 
-    let property_display_name = format!("{}::{}", declaring_class_metadata.original_name, prop_name);
+    let property_display_name = display_member(context, declaring_class_metadata.original_name, prop_name);
     crate::utils::availability::check_property_availability(
         context,
         property_metadata,
@@ -1534,6 +1526,9 @@ fn report_access_on_null<'ctx, A>(
             );
         }
         (false, false) => {
+            let (nullsafe, null_check) =
+                if context.dialect.is_sharp() { ("?.", "if (obj != null)") } else { ("?->", "if ($obj !== null)") };
+
             if !block_context.flags.inside_isset() {
                 if block_context.flags.inside_assignment() {
                     context.collector.report_with_code(
@@ -1544,7 +1539,7 @@ fn report_access_on_null<'ctx, A>(
                                     .with_message("This expression can be `null` here"),
                             )
                             .with_note("If this expression is `null` at runtime, PHP will raise a warning and the property access will result in `null`.")
-                            .with_help("Add a check to ensure the value is not `null` (e.g., `if ($obj !== null)`).")
+                            .with_help(format!("Add a check to ensure the value is not `null` (e.g., `{null_check}`)."))
                     );
                 } else {
                     context.collector.report_with_code(
@@ -1555,8 +1550,8 @@ fn report_access_on_null<'ctx, A>(
                                     .with_message("This expression can be `null` here"),
                             )
                             .with_note("If this expression is `null` at runtime, PHP will raise a warning and the property access will result in `null`.")
-                            .with_help("Use the nullsafe operator (`?->`) to safely access the property, or add a check to ensure the value is not `null` (e.g., `if ($obj !== null)`).")
-                            .with_edit(operator_span.file_id, TextEdit::replace(operator_span, "?->")),
+                            .with_help(format!("Use the nullsafe operator (`{nullsafe}`) to safely access the property, or add a check to ensure the value is not `null` (e.g., `{null_check}`)."))
+                            .with_edit(operator_span.file_id, TextEdit::replace(operator_span, nullsafe)),
                     );
                 }
             }
@@ -1619,11 +1614,7 @@ fn report_access_on_non_object<A>(
 ) where
     A: Arena,
 {
-    let type_str = if context.dialect.is_sharp() {
-        display_sharp_type(&TUnion::from_atomic(written_type.clone()), context.codebase)
-    } else {
-        atomic_type.get_id().to_string()
-    };
+    let type_str = display_atomic(context, if context.dialect.is_sharp() { written_type } else { atomic_type });
     context.collector.report_with_code(
         if atomic_type.is_mixed() { IssueCode::MixedPropertyAccess } else { IssueCode::InvalidPropertyAccess },
         Issue::error(format!("Attempting to access a property on a non-object type (`{type_str}`)."))
@@ -1638,7 +1629,7 @@ fn report_ambiguous_access<A>(
     context: &mut Context<'_, '_, A>,
     selector: &ClassLikeMemberSelector,
     object_span: Span,
-    object_type: Word,
+    object_type: &str,
 ) where
     A: Arena,
 {
@@ -1662,12 +1653,14 @@ fn report_possibly_non_existent_property<A>(
 ) where
     A: Arena,
 {
+    let object_type = display_type(context, object_type);
+
     context.collector.report_with_code(
         IssueCode::PossiblyNonExistentProperty,
-        Issue::error(format!("Property `{prop_name}` might not exist on object `{}`.", object_type.get_id()))
+        Issue::error(format!("Property `{prop_name}` might not exist on object `{object_type}`."))
             .with_annotation(Annotation::primary(selector_span).with_message("Property might not exist here"))
             .with_annotation(
-                Annotation::secondary(object_span).with_message(format!("On instance of `{}`", object_type.get_id())),
+                Annotation::secondary(object_span).with_message(format!("On instance of `{object_type}`")),
             )
             .with_note(
                 "If this property does not exist at runtime, PHP will raise a warning and the expression will evaluate to `null`.",
@@ -1755,6 +1748,26 @@ fn report_non_existent_property<A>(
 {
     let class_kind_str = context.codebase.get_class_like(classname.as_bytes()).map_or("class", |m| m.kind.as_str());
     let classname = display_class_like_name(context, classname);
+
+    // PHP# writes no sealed object type, so its message names the property of a class.
+    if context.dialect.is_sharp() {
+        let property = display_sharp_member(classname, prop_name);
+        let name = prop_name.as_str_lossy();
+        let name = name.trim_start_matches('$');
+
+        context.collector.report_with_code(
+            IssueCode::NonExistentProperty,
+            Issue::error(format!("Property `{property}` does not exist."))
+                .with_annotation(Annotation::primary(selector_span).with_message("Property not found here"))
+                .with_annotation(
+                    Annotation::secondary(object_span).with_message(format!("On instance of `{classname}`")),
+                )
+                .with_note(format!("The {class_kind_str} `{classname}` does not define the property `{name}`."))
+                .with_help("Define the property in the class or check for its existence before accessing it."),
+        );
+
+        return;
+    }
 
     context.collector.report_with_code(
         IssueCode::NonExistentProperty,

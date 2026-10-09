@@ -170,7 +170,7 @@ where
             }
 
             if self.is_at_is_or_as()? {
-                if Precedence::Comparison <= precedence {
+                if Precedence::SharpComparison <= precedence {
                     break;
                 }
 
@@ -192,7 +192,7 @@ where
 
                 left = self.parse_postfix_expression(left, kind, precedence)?;
             } else if kind.is_infix() {
-                let infix_precedence = Precedence::infix(&kind);
+                let infix_precedence = Precedence::infix(&kind).in_dialect(self.dialect);
 
                 if infix_precedence < precedence {
                     break;
@@ -206,7 +206,7 @@ where
 
                 if let Expression::Binary(binary) = left
                     && matches!(binary.rhs, Expression::Assignment(_))
-                    && infix_precedence > binary.operator.precedence()
+                    && infix_precedence > binary.operator.precedence().in_dialect(self.dialect)
                 {
                     left = self.arena.alloc(Expression::Binary(Binary {
                         lhs: binary.lhs,
@@ -820,61 +820,61 @@ where
             }
             T!["=="] => {
                 let operator = self.stream.consume_span()?;
-                let rhs = self.parse_expression_with_precedence(Precedence::Equality)?;
+                let rhs = self.parse_expression_with_precedence(Precedence::Equality.in_dialect(self.dialect))?;
 
                 Expression::Binary(Binary { lhs, operator: BinaryOperator::Equal(operator), rhs })
             }
             T!["==="] => {
                 let operator = self.stream.consume_span()?;
-                let rhs = self.parse_expression_with_precedence(Precedence::Equality)?;
+                let rhs = self.parse_expression_with_precedence(Precedence::Equality.in_dialect(self.dialect))?;
 
                 Expression::Binary(Binary { lhs, operator: BinaryOperator::Identical(operator), rhs })
             }
             T!["!="] => {
                 let operator = self.stream.consume_span()?;
-                let rhs = self.parse_expression_with_precedence(Precedence::Equality)?;
+                let rhs = self.parse_expression_with_precedence(Precedence::Equality.in_dialect(self.dialect))?;
 
                 Expression::Binary(Binary { lhs, operator: BinaryOperator::NotEqual(operator), rhs })
             }
             T!["!=="] => {
                 let operator = self.stream.consume_span()?;
-                let rhs = self.parse_expression_with_precedence(Precedence::Equality)?;
+                let rhs = self.parse_expression_with_precedence(Precedence::Equality.in_dialect(self.dialect))?;
 
                 Expression::Binary(Binary { lhs, operator: BinaryOperator::NotIdentical(operator), rhs })
             }
             T!["<>"] => {
                 let operator = self.stream.consume_span()?;
-                let rhs = self.parse_expression_with_precedence(Precedence::Equality)?;
+                let rhs = self.parse_expression_with_precedence(Precedence::Equality.in_dialect(self.dialect))?;
 
                 Expression::Binary(Binary { lhs, operator: BinaryOperator::AngledNotEqual(operator), rhs })
             }
             T!["<"] => {
                 let operator = self.stream.consume_span()?;
-                let rhs = self.parse_expression_with_precedence(Precedence::Comparison)?;
+                let rhs = self.parse_expression_with_precedence(Precedence::Comparison.in_dialect(self.dialect))?;
 
                 Expression::Binary(Binary { lhs, operator: BinaryOperator::LessThan(operator), rhs })
             }
             T![">"] => {
                 let operator = self.stream.consume_span()?;
-                let rhs = self.parse_expression_with_precedence(Precedence::Comparison)?;
+                let rhs = self.parse_expression_with_precedence(Precedence::Comparison.in_dialect(self.dialect))?;
 
                 Expression::Binary(Binary { lhs, operator: BinaryOperator::GreaterThan(operator), rhs })
             }
             T!["<="] => {
                 let operator = self.stream.consume_span()?;
-                let rhs = self.parse_expression_with_precedence(Precedence::Comparison)?;
+                let rhs = self.parse_expression_with_precedence(Precedence::Comparison.in_dialect(self.dialect))?;
 
                 Expression::Binary(Binary { lhs, operator: BinaryOperator::LessThanOrEqual(operator), rhs })
             }
             T![">="] => {
                 let operator = self.stream.consume_span()?;
-                let rhs = self.parse_expression_with_precedence(Precedence::Comparison)?;
+                let rhs = self.parse_expression_with_precedence(Precedence::Comparison.in_dialect(self.dialect))?;
 
                 Expression::Binary(Binary { lhs, operator: BinaryOperator::GreaterThanOrEqual(operator), rhs })
             }
             T!["<=>"] => {
                 let operator = self.stream.consume_span()?;
-                let rhs = self.parse_expression_with_precedence(Precedence::Equality)?;
+                let rhs = self.parse_expression_with_precedence(Precedence::Equality.in_dialect(self.dialect))?;
 
                 Expression::Binary(Binary { lhs, operator: BinaryOperator::Spaceship(operator), rhs })
             }

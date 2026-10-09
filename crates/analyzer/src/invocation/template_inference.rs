@@ -1249,6 +1249,7 @@ pub fn infer_parameter_templates_from_argument<A>(
         let template_name = violation.template_name;
         let inferred_bound = display_type(context, &violation.inferred_bound);
         let constraint = display_type(context, &violation.constraint);
+
         context.collector.report_with_code(
             IssueCode::TemplateConstraintViolation,
             Issue::error(format!("Argument type mismatch for {kind} `{template_name}`."))

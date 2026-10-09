@@ -14,6 +14,7 @@ use mago_names::binding::php_variable_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
+use mago_span::Span;
 use mago_syntax::cst::ComputedProperty;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::HookedProperty;
@@ -26,6 +27,7 @@ use mago_syntax::cst::PropertyHookConcreteBody;
 use mago_syntax::cst::PropertyHookConcreteExpressionBody;
 use mago_syntax::cst::PropertyItem;
 use mago_word::Word;
+use mago_word::concat_word;
 use mago_word::word;
 
 use crate::analyzable::Analyzable;
@@ -33,17 +35,24 @@ use crate::artifacts::AnalysisArtifacts;
 use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
+use crate::effects;
+use crate::effects::Body;
+use crate::effects::short_name;
 use crate::error::AnalysisError;
+use crate::expression::array::check_sharp_literal_kind;
 use crate::statement::analyze_statements;
 use crate::statement::attributes::AttributeTarget;
 use crate::statement::attributes::analyze_attributes;
+use crate::statement::function_like::FunctionLikeBody;
 use crate::statement::function_like::add_properties_to_context;
 use crate::statement::function_like::get_this_type;
 use crate::statement::function_like::report_missing_return;
 use crate::statement::function_like::report_undefined_type_references;
 use crate::statement::r#return::handle_return_value;
+use crate::utils::names::display_member;
 use crate::utils::names::display_sharp_accessor;
 use crate::utils::names::display_type;
+use crate::utils::names::display_value_type;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for Property<'arena> {
     fn analyze<'ctx, A>(
@@ -147,53 +156,57 @@ where
     if let Some(class_metadata) = block_context.scope.get_class_like()
         && let Some(property_metadata) = class_metadata.properties.get(&php_variable_name(variable_name))
         && let Some(declared_type_metadata) = property_metadata.type_metadata.as_ref()
-        && (is_sharp
+    {
+        check_sharp_literal_kind(context, value, &declared_type_metadata.type_union);
+
+        if (is_sharp
             || !(declared_type_metadata.type_union.is_mixed()
                 || declared_type_metadata.type_union.has_template_types()))
-        && let Some(value_type) = artifacts.get_expression_type(value)
-        && !value_type.is_never()
-    {
-        let mut declared_type = declared_type_metadata.type_union.clone();
-        expand_union(
-            context.codebase,
-            &mut declared_type,
-            &TypeExpansionOptions {
-                self_class: Some(class_metadata.original_name),
-                static_class_type: StaticClassType::Name(class_metadata.original_name),
-                ..Default::default()
-            },
-        );
+            && let Some(value_type) = artifacts.get_expression_type(value)
+            && !value_type.is_never()
+        {
+            let mut declared_type = declared_type_metadata.type_union.clone();
+            expand_union(
+                context.codebase,
+                &mut declared_type,
+                &TypeExpansionOptions {
+                    self_class: Some(class_metadata.original_name),
+                    static_class_type: StaticClassType::Name(class_metadata.original_name),
+                    ..Default::default()
+                },
+            );
 
-        let mut comparison_result = ComparisonResult::for_dialect(context.dialect);
-        if !union_comparator::is_contained_by(
-            context.codebase,
-            value_type,
-            &declared_type,
-            !is_sharp,
-            !is_sharp,
-            false,
-            &mut comparison_result,
-        ) {
-            let value_type_str = display_type(context, value_type);
-            let declared_type_str = display_type(context, &declared_type);
-            let class_name = class_metadata.original_name;
-            let property_name = mago_bytes::BytesDisplay(variable_name);
+            let mut comparison_result = ComparisonResult::for_dialect(context.dialect);
+            if !union_comparator::is_contained_by(
+                context.codebase,
+                value_type,
+                &declared_type,
+                !is_sharp,
+                !is_sharp,
+                false,
+                &mut comparison_result,
+            ) {
+                let value_type_str = display_value_type(context, value_type, &declared_type);
+                let declared_type_str = display_type(context, &declared_type);
+                let property =
+                    display_member(context, class_metadata.original_name, mago_bytes::BytesDisplay(variable_name));
 
-            let issue = Issue::error(format!(
-                    "Default value for property `{class_name}::{property_name}` is not assignable to its declared type."
-                ))
-                .with_annotation(
-                    Annotation::primary(value.span())
-                        .with_message(format!("This default value has type `{value_type_str}`")),
-                )
-                .with_annotation(
-                    Annotation::secondary(declared_type_metadata.span)
-                        .with_message(format!("Property is declared with type `{declared_type_str}`")),
-                )
-                .with_note("A property's default value must be assignable to the property's declared type.")
-                .with_help("Change the default value to match the declared type, or update the property type to accept the default.");
+                let issue = Issue::error(format!(
+                        "Default value for property `{property}` is not assignable to its declared type."
+                    ))
+                    .with_annotation(
+                        Annotation::primary(value.span())
+                            .with_message(format!("This default value has type `{value_type_str}`")),
+                    )
+                    .with_annotation(
+                        Annotation::secondary(declared_type_metadata.span)
+                            .with_message(format!("Property is declared with type `{declared_type_str}`")),
+                    )
+                    .with_note("A property's default value must be assignable to the property's declared type.")
+                    .with_help("Change the default value to match the declared type, or update the property type to accept the default.");
 
-            context.collector.report_with_code(IssueCode::InvalidPropertyDefaultValue, issue);
+                context.collector.report_with_code(IssueCode::InvalidPropertyDefaultValue, issue);
+            }
         }
     }
 
@@ -283,8 +296,12 @@ where
                 && let Some(property_type) =
                     class_like.properties.get(&property_name).and_then(|property| property.type_metadata.as_ref())
             {
-                let accessor =
-                    word(display_sharp_accessor(class_like.original_name, property_name, word(hook.name.value)));
+                let accessor = word(display_sharp_accessor(
+                    context,
+                    class_like.original_name,
+                    property_name,
+                    word(hook.name.value),
+                ));
                 report_missing_return(
                     context,
                     "property hook",
@@ -300,7 +317,51 @@ where
         }
     }
 
+    // A `set` accessor's value is its one parameter, written or implicit.
+    let parameters = match &hook.parameter_list {
+        Some(parameter_list) => parameter_list.parameters.iter().map(|parameter| parameter.variable.span).collect(),
+        None if hook.name.value == b"set" => vec![hook.name.span],
+        None => Vec::new(),
+    };
+    let code = match body {
+        PropertyHookConcreteBody::Block(block) => {
+            FunctionLikeBody::Statements(block.statements.as_slice(), block.span())
+        }
+        PropertyHookConcreteBody::Expression(expr_body) => FunctionLikeBody::Expression(expr_body.expression),
+    };
+    record_accessor_summary(hook.name.value, property_name, parameters, code, context, parent_block_context, artifacts);
+
     Ok(())
+}
+
+/// Records what a PHP# accessor's body does, for the effect rules.
+fn record_accessor_summary<'arena, A>(
+    accessor: &[u8],
+    property_name: Word,
+    parameters: Vec<Span>,
+    code: FunctionLikeBody<'_, 'arena>,
+    context: &Context<'_, 'arena, A>,
+    parent_block_context: &BlockContext<'_>,
+    artifacts: &mut AnalysisArtifacts,
+) where
+    A: Arena,
+{
+    let Some(class_like) = parent_block_context.scope.get_class_like() else {
+        return;
+    };
+    if !context.dialect.is_sharp() {
+        return;
+    }
+
+    let property = property_name.as_bytes().strip_prefix(b"$").unwrap_or(property_name.as_bytes());
+    effects::summary::record(
+        context,
+        artifacts,
+        Body::Accessor(class_like.name, property_name, word(accessor)),
+        concat_word!(short_name(class_like.original_name), ".", property),
+        parameters,
+        code,
+    );
 }
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for ComputedProperty<'arena> {
@@ -325,7 +386,11 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ComputedProperty<'arena> {
         let property_name = php_variable_name(self.variable.name);
         let mut hook_block_context = hook_block_context(b"get", None, property_name, context, block_context)?;
 
-        analyze_hook_expression(b"get", &self.body, context, &mut hook_block_context, artifacts)
+        analyze_hook_expression(b"get", &self.body, context, &mut hook_block_context, artifacts)?;
+        let code = FunctionLikeBody::Expression(self.body.expression);
+        record_accessor_summary(b"get", property_name, Vec::new(), code, context, block_context, artifacts);
+
+        Ok(())
     }
 }
 

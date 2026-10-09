@@ -5,6 +5,7 @@ use mago_names::binding::BindingError;
 use mago_names::binding::Local;
 use mago_names::binding::LocalKind;
 use mago_names::binding::php_method_name;
+use mago_names::binding::php_operator_name;
 use mago_names::scope::php_name;
 use mago_php_version::PHPVersion;
 use mago_reporting::Annotation;
@@ -17,7 +18,9 @@ use mago_syntax::cst::Argument;
 use mago_syntax::cst::ArrayElement;
 use mago_syntax::cst::Assignment;
 use mago_syntax::cst::AssignmentOperator;
+use mago_syntax::cst::Binary;
 use mago_syntax::cst::BinaryOperator;
+use mago_syntax::cst::BinaryPattern;
 use mago_syntax::cst::Block;
 use mago_syntax::cst::Break;
 use mago_syntax::cst::Call;
@@ -25,6 +28,7 @@ use mago_syntax::cst::Class;
 use mago_syntax::cst::ClassLikeConstant;
 use mago_syntax::cst::ClassLikeMember;
 use mago_syntax::cst::ClassLikeMemberSelector;
+use mago_syntax::cst::ComparisonPattern;
 use mago_syntax::cst::CompositeString;
 use mago_syntax::cst::Conditional;
 use mago_syntax::cst::ConstantAccess;
@@ -60,6 +64,7 @@ use mago_syntax::cst::Namespace;
 use mago_syntax::cst::NamespaceBody;
 use mago_syntax::cst::Node;
 use mago_syntax::cst::NullableHint;
+use mago_syntax::cst::Operator;
 use mago_syntax::cst::PartialArgument;
 use mago_syntax::cst::Pattern;
 use mago_syntax::cst::PatternMatch;
@@ -91,6 +96,8 @@ use mago_syntax::cst::Variable;
 use mago_syntax::cst::While;
 use mago_syntax::cst::WhileBody;
 use mago_syntax::cst::built_in_generic_arity;
+use mago_syntax::token::GetPrecedence;
+use mago_syntax::token::Precedence;
 use mago_syntax_core::stack::ensure_sufficient_stack;
 
 use crate::internal::consts::RESERVED_CLASS_NAMES;
@@ -112,8 +119,11 @@ const ANY: &[u8] = b"Any";
 /// - At file level: `namespace`, `import`, `class`, `interface` and `enum`. A file has at most one namespace, named
 ///   and written without braces.
 /// - A class: attributes, an optional `public`, `abstract` or `final`, a name, optional type parameters, an optional
-///   `: Base, Interface` header, constants, fields, properties and methods, with no other modifiers, `extends` or
-///   `implements`. The engine tells the base class from the interfaces when it links the class.
+///   `: Base, Interface` header, constants, fields, properties, methods, operators and laws, with no other modifiers,
+///   `extends` or `implements`. The engine tells the base class from the interfaces when it links the class.
+/// - A law, spec section 28, in a class or an enum: `law`, a name, parameters checked as a method's and an expression
+///   body. `check_members` refuses a default and a variadic parameter, because a law's parameters range over every
+///   value.
 /// - A static class, `public static class Text`, as spec sections 26 and 29 write it: `static` and an optional
 ///   `public`, no header and no constructor, and only constants and static members. The bridge lowers it to a final
 ///   PHP class.
@@ -131,8 +141,8 @@ const ANY: &[u8] = b"Any";
 ///   member uses none of its class's type parameters, because G1 erases them and every `Box<…>` shares the member: not
 ///   a static field's or property's type, nor a static method's signature or body. A static method's own type
 ///   parameters are its own. The analyzer checks variance, bounds and inference.
-/// - An enum: attributes, an optional `public`, a name, an optional `: string, Interface` header, constants, cases and
-///   methods, with no other modifiers or `implements`. A leading `int` or `string` in the header is the backing type,
+/// - An enum: attributes, an optional `public`, a name, an optional `: string, Interface` header, constants, cases,
+///   methods and laws, with no other modifiers or `implements`. A leading `int` or `string` in the header is the backing type,
 ///   and every class name is an interface. A constant follows a class constant's rules. A case has attributes as a
 ///   class has them, and is `case Active;` or, in a backed enum, `case Active = "a";`, whose value is a constant
 ///   expression. A case named `class`, compared ignoring case, is an error, as in PHP. A method follows a class's
@@ -180,6 +190,12 @@ const ANY: &[u8] = b"Any";
 ///   writes them. Its name does not start with `__`, which PHP reserves for magic methods, and is not its class's name,
 ///   compared ignoring case, which PHP# gives to the constructor, nor, compared ignoring case, a property's of its
 ///   class.
+/// - An operator, as spec section 19 writes `public static Money operator +(Money a, Money b) => …;`: `public static`,
+///   a return type, `operator`, one of `+ - * / % **`, unary `-`, `==` and `<=>`, parameters and a method body.
+///   `!=` derives from `==`, and `< > <= >=` from `<=>`, so declaring one is an error that names its source. `==`,
+///   `<=>` and the binary arithmetic operators take two parameters, unary `-` one, and one of them is the declaring
+///   class. `==` returns `bool`, and `<=>` `int`. A class declares each operator once, because each runs as one
+///   static method named after .NET's, such as `op_Addition`. An interface or an enum declares no operator.
 /// - An `extern` method, `public static extern string slug(string title);`, whose body is native, compiled into the
 ///   engine, as spec section 29 writes it: a `public static` method of a static class, with no body. Only the
 ///   standard library declares one, and the analyzer refuses one anywhere else.
@@ -233,7 +249,9 @@ const ANY: &[u8] = b"Any";
 ///   by `|`, and an optional variable written without `$`, which lives until the clause's block ends. A type parameter
 ///   as a catch type is not supported yet. A local
 ///   statement can have its type written, as in `Money? total = null;` or `const int base = 2;`, from the types
-///   above but `void`.
+///   above but `void`. An expression statement whose operator is binary, as in `flags | MASK;`, is an error that
+///   names its compound assignment or its result, because the result is never used, except `??` and an assignment
+///   that PHP's `and`, `or` and `xor` bind looser than.
 /// - Writes: `=`, compound assignment, `++` and `--` write only a local, a parameter, a member written
 ///   `object.name` or, when static, `Class.name`, or an index of one of them written `target[key]`. The analyzer,
 ///   which knows the types, allows an index write only on a `Map`, and a read not under `??` or `?.` only on a `List`,
@@ -268,7 +286,10 @@ const ANY: &[u8] = b"Any";
 ///   variable that code changes, whose capture is not supported yet. A call of a local by its bare name, `f(x)`,
 ///   calls the lambda the local holds, with positional, named and spread arguments.
 /// - Operators: `+ - * / % **`, `== != === !== < > <= >=`, `&& || !`, `??`, unary `-` and `+`, `++` and `--`, and
-///   `= += -= *= /= **= ??=`.
+///   `= += -= *= /= **= ??=`. Spec section 19 puts `<`, `<=`, `>`, `>=`, `is` and `as` in one row and `==`, `!=`,
+///   `===` and `<=>` in the next, and an operator of either row that takes an operand of its own row without
+///   parentheses, as in `a < b < c` or `a is T is U`, is an error that names the groupings to write. So is a comparison
+///   in the value of a comparison or value pattern, as in `x is > a < b`.
 /// - `@`, which hides PHP's warnings, in a method body of a file whose namespace is `Sharp` or below it, where the
 ///   standard library writes it before a method throws its own exception. Anywhere else it is an error, and the
 ///   analyzer refuses it in any file that is not the standard library's.
@@ -281,8 +302,9 @@ const ANY: &[u8] = b"Any";
 ///   block. A pattern is a type with an optional name, as in `int count`, a value, a comparison such as `< 10`, a
 ///   properties pattern such as `{ total: > 0 }`, or patterns joined by `and`, `or` and `not`. A type pattern is never
 ///   nullable, and a name under `or` or `not` is an error, as C#'s CS8780, except under the `not` that starts the
-///   pattern of `is`. The parser reports list patterns, and enum case patterns with fields or a name, as not supported
-///   yet.
+///   pattern of `is`. `not` beside `or` is an error that names both readings, as decision 045 decides, and `!x is T`,
+///   which reads as `(!x) is T`, is an error that writes `x is not T`, as decision 044 decides. The parser reports list
+///   patterns, and enum case patterns with fields or a name, as not supported yet.
 /// - What needs a type argument while the code runs, which G1 erases, is not supported yet: a type parameter in a
 ///   pattern, a `match` arm, `as` or a catch clause, `typeof` and `new` of a type parameter, a static member reached
 ///   through a type parameter, as in `TItem.make()` and `TItem.LIMIT`, and any type with type arguments in a pattern or
@@ -311,7 +333,7 @@ const ANY: &[u8] = b"Any";
 /// constant, parameter or local. A method name that starts but does not end with `__`, as PHP's magic methods do,
 /// stays not supported yet.
 ///
-/// Seventeen more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
+/// Nineteen more refusals need inferred types or the codebase, so the analyzer makes them as its part of this contract:
 /// - `new` on a static class, in `analyze_class_instantiation`, and a class that extends one, in
 ///   `check_class_like_extends`, because the static class may be another file's.
 /// - an `extern` method anywhere but a standard library file whose class is under `Sharp`, in `Method`'s `analyze`,
@@ -344,6 +366,9 @@ const ANY: &[u8] = b"Any";
 ///   the engine refuses, in `validate_method_signature_compatibility`.
 /// - a full name in code, such as `App.Shared.Money.of(1)`, which spec section 23 keeps in `import` lines, in
 ///   `report_full_name`. One file cannot tell it from a class and its member, such as `Status.Active`.
+/// - an `operator ==` in a class that neither declares nor inherits a `public int hash()`, in `Operator`'s `analyze`,
+///   because the parent may be another file's.
+/// - an operator a parent already declares, in `check_inherited_operators`, because the parent may be another file's.
 #[inline]
 pub fn check_slice(node: Node<'_, '_>, context: &mut Context<'_, '_, '_>) {
     let place = match context.slice_places.last() {
@@ -481,6 +506,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             | Node::Statement(
                 Statement::Namespace(_)
                 | Statement::Use(_)
+                | Statement::Extern(_)
                 | Statement::Class(_)
                 | Statement::Interface(_)
                 | Statement::Enum(_),
@@ -493,9 +519,12 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             | Node::Identifier(Identifier::Dotted(_))
             | Node::DottedIdentifier(_)
             | Node::Use(_)
+            | Node::Extern(_)
+            | Node::Uses(_)
             | Node::UseItems(UseItems::Sequence(_))
             | Node::UseItemSequence(_)
-            | Node::UseItem(_),
+            | Node::UseItem(_)
+            | Node::UseItemAlias(_),
             File,
         ) => Some(File),
         (Node::Class(class), File) => {
@@ -506,12 +535,8 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
             Some(Class)
         }
-        // The walk checks a class's and an enum's name in `check_class_name`.
-        (Node::Interface(interface), File) => {
-            check_declared_name(interface.name.value, interface.name.span, context);
-
-            Some(Interface)
-        }
+        // The walk checks a class's, an interface's and an enum's name in `check_class_name`.
+        (Node::Interface(_), File) => Some(Interface),
         (Node::Enum(_), File) => Some(Enum),
         (Node::FunctionLikeParameterList(parameters), Method | Signature) => {
             report_optional_before_required(parameters, context);
@@ -609,7 +634,18 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         (Node::PositionalArgument(argument), Attribute) => argument.ellipsis.is_none().then_some(Constant),
         (Node::NamedArgument(_), Attribute) => Some(Constant),
 
-        (Node::ClassLikeMember(ClassLikeMember::Method(_)), Class | Enum) => Some(place),
+        (Node::ClassLikeMember(ClassLikeMember::Method(_) | ClassLikeMember::Law(_)), Class | Enum) => Some(place),
+        // A law's parameters and body are checked as a method's. `check_members` refuses a default and a variadic one.
+        (Node::Law(_), Class | Enum) => Some(Method),
+        (Node::ClassLikeMember(ClassLikeMember::Operator(_)), Class) => Some(Class),
+        // An operator's parts are a method's, and `check_operator` decides its modifiers and its symbol, the one binary
+        // operator a method's parts hold.
+        (Node::Operator(operator), Class) => {
+            check_operator(operator, context);
+
+            Some(Method)
+        }
+        (Node::BinaryOperator(_), Method) => Some(Method),
         // `check_enum` reports a property in an enum, and a backing type other than `int` or `string`.
         (Node::ClassLikeMember(ClassLikeMember::Property(_)) | Node::EnumBackingTypeHint(_), Enum) => None,
         (Node::EnumCase(case), Enum) if case.item.name().value.eq_ignore_ascii_case(b"class") => {
@@ -715,7 +751,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             context.report(
                 Issue::error("PHP# has no `mixed`: write `Any?`, or `Any` for a value that is never null.")
                     .with_annotation(Annotation::primary(mixed.span).with_message("Written here."))
-                    .with_note("Spec section 24 removes PHP's `mixed`: `Any` holds a value of any type but null, and `Any?` also allows null."),
+                    .with_note("PHP# removes PHP's `mixed`: `Any` holds a value of any type but null, and `Any?` also allows null."),
             );
 
             None
@@ -811,7 +847,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
                     "A `public` constructor parameter needs accessors: a public member is a property, as in `public int id { get; }`.",
                 )
                 .with_annotation(Annotation::primary(public.span()).with_message("Declared `public` here."))
-                .with_note("Spec section 9 makes a `public` parameter without accessors an error, as a public field is."),
+                .with_note("A `public` parameter without accessors is an error, as a public field is."),
                 parameter.span(),
                 Parameter,
                 context,
@@ -938,6 +974,17 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
 
             None
         }
+        // `??` runs its right side only for null, so `value ?? throw …` is a statement with an effect, and so is an
+        // assignment PHP's `and`, `or` and `xor` bind looser than, as in `a = b or c`.
+        (Node::ExpressionStatement(statement), Body)
+            if let Expression::Binary(binary) = statement.expression
+                && !binary.operator.is_null_coalesce()
+                && ![binary.lhs, binary.rhs].iter().any(|operand| matches!(operand, Expression::Assignment(_))) =>
+        {
+            report_no_effect(binary, context);
+
+            None
+        }
         (
             Node::Statement(
                 Statement::Block(_)
@@ -983,7 +1030,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
                 node.span(),
                 form,
                 "write `printf` or `fwrite`.",
-                "Output is a function call in PHP#, as spec section 8 writes it.",
+                "Output is a function call in PHP#.",
                 context,
             );
 
@@ -998,7 +1045,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             context.report(
                 Issue::error("PHP# calls `exit` as a function: write `exit(0)`.")
                     .with_annotation(Annotation::primary(exit.exit.span).with_message("Written here."))
-                    .with_note("`exit` is PHP 8.4's built-in function in PHP#, as spec section 8 writes it."),
+                    .with_note("`exit` is PHP 8.4's built-in function in PHP#."),
             );
 
             None
@@ -1026,11 +1073,38 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             Body,
         ) => Some(Body),
 
+        (
+            Node::Expression(expression @ (Expression::Binary(_) | Expression::Is(_) | Expression::As(_))),
+            Body | Constant,
+        ) if let Some(groupings) = comparison_chain(expression, context) => {
+            report_comparison_chain(expression.span(), &groupings, context);
+
+            None
+        }
         (Node::Statement(Statement::PatternMatch(pattern_match)), Body) => {
             check_pattern_match(pattern_match, false, context).then_some(Body)
         }
         (Node::Expression(Expression::PatternMatch(pattern_match)), Body) => {
             check_pattern_match(pattern_match, true, context).then_some(Body)
+        }
+        (Node::Is(is), Body)
+            if let Expression::UnaryPrefix(UnaryPrefix { operator: UnaryPrefixOperator::Not(_), operand }) = is.value =>
+        {
+            let operand = BytesDisplay(context.get_code_snippet(operand));
+            let pattern = BytesDisplay(context.get_code_snippet(is.pattern));
+            context.report(
+                Issue::error(format!(
+                    "Write `{operand} is not {pattern}`: `!` applies to `{operand}` before `is` tests it."
+                ))
+                .with_annotation(Annotation::primary(is.span()).with_message("`!` takes the value before `is` tests it."))
+                .with_note("`is` binds with the comparisons, so `!entity is HasDesign` reads as `(!entity) is HasDesign`, and a negative test is written `is not`."),
+            );
+
+            None
+        }
+        (Node::Is(is), Body) if report_chained_pattern(is.span(), is.pattern, context) => None,
+        (Node::PatternMatchPatternArm(arm), Body) if report_chained_pattern(arm.pattern.span(), arm.pattern, context) => {
+            None
         }
         (Node::Is(is), Body) => {
             // `is not T name` declares `name` where the test is false, so the outermost `not` hides no variable.
@@ -1049,7 +1123,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
                 context.report(
                     Issue::error("`as` converts to a type that is not nullable or `void`.")
                         .with_annotation(Annotation::primary(r#as.hint.span()).with_message("Written here."))
-                        .with_note("`as T` already gives `T?`: the value as a `T`, or null when it is not one, as spec section 21 says."),
+                        .with_note("`as T` already gives `T?`: the value as a `T`, or null when it is not one."),
                 );
 
                 None
@@ -1095,6 +1169,13 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         }
         (Node::Hint(hint), Place::Pattern) if is_slice_type(hint) && !matches!(hint, Hint::Void(_)) => {
             Some(Place::Pattern)
+        }
+        (Node::BinaryPattern(binary), Place::Pattern)
+            if !binary.is_and() && [binary.left, binary.right].iter().any(|side| matches!(side, Pattern::Not(_))) =>
+        {
+            report_not_beside_or(binary, context);
+
+            None
         }
         (
             Node::TypePattern(_)
@@ -1432,6 +1513,103 @@ fn is_slice_signature(method: &Method) -> Result<(), (&'static str, &'static str
         ))
     } else {
         Ok(())
+    }
+}
+
+/// Checks an operator a class declares, spec section 19: a symbol a class can declare, `public static`, the number of
+/// parameters its symbol takes with one of them the class itself, `bool` from `==` and `int` from `<=>`, and one
+/// declaration of it in its class. A refused symbol is the one error, because the other rules depend on it. The
+/// analyzer checks that a class that declares `==` has a `hash()`.
+fn check_operator(operator: &Operator, context: &mut Context<'_, '_, '_>) {
+    let Some(class) = enclosing_class(context.program, operator.span()) else {
+        return;
+    };
+    let names = context.names;
+    let class_name = BytesDisplay(class.name.value);
+    let symbol = BytesDisplay(operator.symbol.as_bytes());
+    let mut report = |message: String, span: Span| {
+        context.report(Issue::error(message).with_annotation(Annotation::primary(span).with_message("Declared here.")));
+    };
+
+    let Some(name) = php_operator_name(&operator.symbol, operator.parameter_list.parameters.len()) else {
+        let reason = match operator.symbol {
+            BinaryOperator::NotEqual(_) | BinaryOperator::AngledNotEqual(_) => "it is derived from `==`".to_owned(),
+            BinaryOperator::LessThan(_)
+            | BinaryOperator::LessThanOrEqual(_)
+            | BinaryOperator::GreaterThan(_)
+            | BinaryOperator::GreaterThanOrEqual(_) => "it is derived from `<=>`".to_owned(),
+            _ => format!("only {} can", Operator::DECLARABLE),
+        };
+
+        return report(format!("`operator {symbol}` cannot be declared: {reason}."), operator.symbol.span());
+    };
+
+    if operator.modifiers.len() != 2
+        || !operator.modifiers.contains_static()
+        || operator.modifiers.get_public().is_none()
+    {
+        report(
+            format!(
+                "An operator is `public static`, as in `public static {class_name} operator +({class_name} a, {class_name} b)`."
+            ),
+            operator.operator.span,
+        );
+    }
+
+    let parameters = &operator.parameter_list.parameters;
+    let class_fqcn = names.get(class.name);
+    if matches!(operator.symbol, BinaryOperator::Subtraction(_)) && !matches!(parameters.len(), 1 | 2) {
+        report(
+            "`operator -` takes one parameter, to negate, or two, to subtract.".to_owned(),
+            operator.parameter_list.span(),
+        );
+    } else if !matches!(operator.symbol, BinaryOperator::Subtraction(_)) && parameters.len() != 2 {
+        report(format!("`operator {symbol}` takes two parameters."), operator.parameter_list.span());
+    } else if !parameters
+        .iter()
+        .any(|parameter| parameter.hint.as_ref().is_some_and(|hint| is_class_type(hint, class_fqcn, names)))
+    {
+        report(
+            format!("One parameter of `operator {symbol}` is `{class_name}`, the class that declares it."),
+            operator.parameter_list.span(),
+        );
+    }
+
+    let return_type = &operator.return_type_hint.hint;
+    match operator.symbol {
+        BinaryOperator::Equal(_) if !matches!(return_type, Hint::Bool(_)) => {
+            report("`operator ==` returns `bool`.".to_owned(), return_type.span());
+        }
+        BinaryOperator::Spaceship(_) if !matches!(return_type, Hint::Integer(_)) => {
+            report("`operator <=>` returns `int`.".to_owned(), return_type.span());
+        }
+        _ => {}
+    }
+
+    let declared_before = class
+        .members
+        .iter()
+        .filter_map(|member| match member {
+            ClassLikeMember::Operator(earlier) => Some(earlier),
+            _ => None,
+        })
+        .take_while(|earlier| earlier.span() != operator.span())
+        .any(|earlier| php_operator_name(&earlier.symbol, earlier.parameter_list.parameters.len()) == Some(name));
+    if declared_before {
+        let unary = if name == b"op_UnaryNegation" { "Unary " } else { "" };
+        report(format!("{unary}`operator {symbol}` is declared twice in `{class_name}`."), operator.operator.span);
+    }
+}
+
+/// Whether a parameter's type is the class `class_fqcn`, written by its name, nullable or not, or as `Self`.
+fn is_class_type(hint: &Hint, class_fqcn: &[u8], names: &ResolvedNames) -> bool {
+    match hint {
+        Hint::Nullable(nullable) => is_class_type(nullable.hint, class_fqcn, names),
+        Hint::Identifier(identifier) => {
+            names.resolve(identifier).is_some_and(|name| name.eq_ignore_ascii_case(class_fqcn))
+        }
+        Hint::Self_(_) => true,
+        _ => false,
     }
 }
 
@@ -2038,6 +2216,157 @@ fn check_conditional(conditional: &Conditional, context: &mut Context<'_, '_, '_
     Place::Body
 }
 
+/// The row of spec section 19's precedence table a comparison or an equality sits on, with the operand it tests and,
+/// for a binary operator, the operand it tests against. `is` and `as` test against a pattern and a type, which hold
+/// no comparison of their own.
+fn comparison_operands<'ast, 'arena>(
+    expression: &'ast Expression<'arena>,
+) -> Option<(Precedence, &'ast Expression<'arena>, Option<&'ast Expression<'arena>>)> {
+    let (row, tested, against) = match expression {
+        Expression::Binary(binary) => (binary.operator.precedence(), binary.lhs, Some(binary.rhs)),
+        Expression::Is(is) => (Precedence::Comparison, is.value, None),
+        Expression::As(r#as) => (Precedence::Comparison, r#as.value, None),
+        _ => return None,
+    };
+
+    matches!(row, Precedence::Comparison | Precedence::Equality).then_some((row, tested, against))
+}
+
+/// The groupings to choose from when a comparison or an equality takes an operand of its own row without parentheses,
+/// which spec section 19 makes an error, as in `a < b < c`: the first operator grouped first, then the second. A
+/// grouping that would put a value inside a pattern or a type, as `a is (T is U)` would, is left out.
+fn comparison_chain(expression: &Expression, context: &Context<'_, '_, '_>) -> Option<Vec<String>> {
+    let (row, tested, against) = comparison_operands(expression)?;
+    let span = expression.span();
+    let written = |span: Span| BytesDisplay(context.get_code_snippet(span)).to_string();
+
+    if let Some(against) = against
+        && let Some((inner_row, inner_tested, _)) = comparison_operands(against)
+        && inner_row == row
+    {
+        let middle = inner_tested.end_position();
+
+        return Some(vec![
+            format!("({}){}", written(span.to_end(middle)), written(span.from_start(middle))),
+            format!("{}({})", written(span.to_end(against.start_position())), written(against.span())),
+        ]);
+    }
+
+    let (inner_row, _, inner_against) = comparison_operands(tested)?;
+    if inner_row != row {
+        return None;
+    }
+
+    let grouped = format!("({}){}", written(tested.span()), written(span.from_start(tested.end_position())));
+    let other = inner_against.map(|inner_against| {
+        let middle = inner_against.start_position();
+
+        format!("{}({})", written(span.to_end(middle)), written(span.from_start(middle)))
+    });
+
+    Some(std::iter::once(grouped).chain(other).collect())
+}
+
+/// Reports a test whose pattern holds a comparison in the value of a comparison or value pattern, as `x is > 1 < 2`,
+/// which chains because the value reads up to the comparison row. The grouping is the whole test as written, each such
+/// value in parentheses. Returns whether it reported.
+fn report_chained_pattern(test: Span, pattern: &Pattern, context: &mut Context<'_, '_, '_>) -> bool {
+    fn chained_values<'ast, 'arena>(pattern: &'ast Pattern<'arena>, values: &mut Vec<&'ast Expression<'arena>>) {
+        match pattern {
+            Pattern::Comparison(ComparisonPattern { value, .. }) | Pattern::Value(value) => {
+                if comparison_operands(value).is_some() {
+                    values.push(value);
+                }
+            }
+            Pattern::Type(_) => {}
+            Pattern::Not(not) => chained_values(not.pattern, values),
+            Pattern::Binary(binary) => {
+                chained_values(binary.left, values);
+                chained_values(binary.right, values);
+            }
+            Pattern::Parenthesized(parenthesized) => chained_values(parenthesized.pattern, values),
+            Pattern::Properties(properties) => {
+                for property in &properties.properties {
+                    chained_values(property.pattern, values);
+                }
+            }
+        }
+    }
+
+    let mut values = Vec::new();
+    chained_values(pattern, &mut values);
+    if values.is_empty() {
+        return false;
+    }
+
+    let written = |span: Span| BytesDisplay(context.get_code_snippet(span)).to_string();
+    let mut grouping = String::new();
+    let mut written_to = test.start;
+    for value in values {
+        grouping.push_str(&written(Span::new(test.file_id, written_to, value.start_position())));
+        grouping.push('(');
+        grouping.push_str(&written(value.span()));
+        grouping.push(')');
+        written_to = value.end_position();
+    }
+    grouping.push_str(&written(test.from_start(written_to)));
+    report_comparison_chain(test, &[grouping], context);
+
+    true
+}
+
+fn report_comparison_chain(span: Span, groupings: &[String], context: &mut Context<'_, '_, '_>) {
+    let groupings: Vec<String> = groupings.iter().map(|grouping| format!("`{grouping}`")).collect();
+
+    context.report(
+        Issue::error(format!("Comparisons do not chain: write {}.", groupings.join(" or ")))
+            .with_annotation(Annotation::primary(span).with_message("Chained here."))
+            .with_note("PHP#'s precedence table puts `<`, `<=`, `>`, `>=`, `is` and `as` in one row and `==`, `!=`, `===` and `<=>` in the next, and an operator takes an operand of its own row only in parentheses."),
+    );
+}
+
+/// Reports `not` beside `or` in a pattern, which decision 045 makes an error, naming both readings: `not` over the
+/// whole `or`, and each `not` over its own side.
+fn report_not_beside_or(binary: &BinaryPattern, context: &mut Context<'_, '_, '_>) {
+    let written = |pattern: &Pattern| BytesDisplay(context.get_code_snippet(pattern)).to_string();
+    let (whole, own): (Vec<String>, Vec<String>) = [binary.left, binary.right]
+        .into_iter()
+        .map(|side| match side {
+            Pattern::Not(not) => (written(not.pattern), format!("({})", written(side))),
+            _ => (written(side), written(side)),
+        })
+        .unzip();
+    let or = BytesDisplay(binary.operator.value);
+
+    context.report(
+        Issue::error(format!("Write `not ({} {or} {})`, or `{} {or} {}`.", whole[0], whole[1], own[0], own[1]))
+            .with_annotation(Annotation::primary(binary.span()).with_message("`not` beside `or`."))
+            .with_note("In a pattern, `not` beside `or` needs parentheses. C# reads `not Paid or Refunded` as `(not Paid) or Refunded`, where `or Refunded` adds nothing."),
+    );
+}
+
+/// Reports an expression statement whose top operator is a binary one other than `??`, without an assignment for an
+/// operand: its result is never used. An arithmetic or bitwise operator on a write target names its compound
+/// assignment.
+fn report_no_effect(binary: &Binary, context: &mut Context<'_, '_, '_>) {
+    let fix =
+        if (binary.operator.is_arithmetic() || binary.operator.is_bitwise()) && is_slice_target(binary.lhs, context) {
+            format!(
+                "write `{} {}= {}` to keep its result",
+                BytesDisplay(context.get_code_snippet(binary.lhs)),
+                BytesDisplay(binary.operator.as_bytes()),
+                BytesDisplay(context.get_code_snippet(binary.rhs))
+            )
+        } else {
+            format!("use the result of `{}`, or remove the statement", BytesDisplay(context.get_code_snippet(binary)))
+        };
+
+    context.report(
+        Issue::error(format!("This statement has no effect: {fix}."))
+            .with_annotation(Annotation::primary(binary.span()).with_message("Its result is never used.")),
+    );
+}
+
 /// The expression a node writes: the left side of an assignment, or the operand of `++` or `--`.
 fn write_target<'ast, 'arena>(node: Node<'ast, 'arena>) -> Option<&'ast Expression<'arena>> {
     match node {
@@ -2081,8 +2410,10 @@ fn check_pattern_match(pattern_match: &PatternMatch, is_expression: bool, contex
         None if !pattern_match.arms.iter().all(|arm| names_class_values(arm, context)) => {
             context.report(
                 Issue::error("A `match` needs a `default` arm.")
-                    .with_annotation(Annotation::primary(pattern_match.r#match.span).with_message("This `match` has none."))
-                    .with_note("Spec section 21: only a `match` on an enum may leave out `default`, when its arms cover every case.")
+                    .with_annotation(
+                        Annotation::primary(pattern_match.r#match.span).with_message("This `match` has none."),
+                    )
+                    .with_note("Only a `match` on an enum may leave out `default`, when its arms cover every case.")
                     .with_help("Add `default => …` as the last arm."),
             );
 
@@ -2643,16 +2974,16 @@ const fn is_slice_binary_operator(operator: &BinaryOperator) -> bool {
         | BinaryOperator::LessThanOrEqual(_)
         | BinaryOperator::GreaterThan(_)
         | BinaryOperator::GreaterThanOrEqual(_)
+        | BinaryOperator::Spaceship(_)
         | BinaryOperator::And(_)
         | BinaryOperator::Or(_)
-        | BinaryOperator::NullCoalesce(_) => true,
-        BinaryOperator::BitwiseAnd(_)
+        | BinaryOperator::NullCoalesce(_)
+        | BinaryOperator::BitwiseAnd(_)
         | BinaryOperator::BitwiseOr(_)
         | BinaryOperator::BitwiseXor(_)
         | BinaryOperator::LeftShift(_)
-        | BinaryOperator::RightShift(_)
-        | BinaryOperator::AngledNotEqual(_)
-        | BinaryOperator::Spaceship(_)
+        | BinaryOperator::RightShift(_) => true,
+        BinaryOperator::AngledNotEqual(_)
         | BinaryOperator::StringConcat(_)
         | BinaryOperator::Instanceof(_)
         | BinaryOperator::LowAnd(_)
@@ -2666,7 +2997,10 @@ const fn is_slice_binary_operator(operator: &BinaryOperator) -> bool {
 /// compile until it is decided.
 fn is_slice_prefix_operator(operator: &UnaryPrefixOperator, place: Place) -> bool {
     match operator {
-        UnaryPrefixOperator::Negation(_) | UnaryPrefixOperator::Plus(_) | UnaryPrefixOperator::Not(_) => true,
+        UnaryPrefixOperator::Negation(_)
+        | UnaryPrefixOperator::Plus(_)
+        | UnaryPrefixOperator::Not(_)
+        | UnaryPrefixOperator::BitwiseNot(_) => true,
         UnaryPrefixOperator::PreIncrement(_)
         | UnaryPrefixOperator::PreDecrement(_)
         | UnaryPrefixOperator::ErrorControl(_) => place == Place::Body,
@@ -2683,8 +3017,7 @@ fn is_slice_prefix_operator(operator: &UnaryPrefixOperator, place: Place) -> boo
         | UnaryPrefixOperator::UnsetCast(..)
         | UnaryPrefixOperator::StringCast(..)
         | UnaryPrefixOperator::BinaryCast(..)
-        | UnaryPrefixOperator::VoidCast(..)
-        | UnaryPrefixOperator::BitwiseNot(_) => false,
+        | UnaryPrefixOperator::VoidCast(..) => false,
     }
 }
 
@@ -2745,7 +3078,7 @@ fn check_cast(unary_prefix: &UnaryPrefix, place: Place, context: &mut Context<'_
         operator.span(),
         cast.as_bytes(),
         instead,
-        "Spec section 24 keeps `(int)`, `(float)` and `(string)` between numbers, and removes PHP's other casts and its cast aliases.",
+        "PHP# keeps `(int)`, `(float)` and `(string)` between numbers, and removes PHP's other casts and its cast aliases.",
         context,
     );
 }
@@ -2862,7 +3195,7 @@ fn report_magic_constant(name: &[u8], span: Span, constant: Option<&MagicConstan
         span,
         name,
         instead,
-        "Spec section 27 removes PHP's magic constants and every other `__Something__` name: `Position` says where code sits in its source.",
+        "PHP# removes PHP's magic constants and every other `__Something__` name: `Position` says where code sits in its source.",
         context,
     );
 }
@@ -2876,15 +3209,15 @@ const fn is_slice_assignment_operator(operator: &AssignmentOperator) -> bool {
         | AssignmentOperator::Subtraction(_)
         | AssignmentOperator::Multiplication(_)
         | AssignmentOperator::Division(_)
+        | AssignmentOperator::Modulo(_)
         | AssignmentOperator::Exponentiation(_)
-        | AssignmentOperator::Coalesce(_) => true,
-        AssignmentOperator::Modulo(_)
-        | AssignmentOperator::Concat(_)
+        | AssignmentOperator::Coalesce(_)
         | AssignmentOperator::BitwiseAnd(_)
         | AssignmentOperator::BitwiseOr(_)
         | AssignmentOperator::BitwiseXor(_)
         | AssignmentOperator::LeftShift(_)
-        | AssignmentOperator::RightShift(_) => false,
+        | AssignmentOperator::RightShift(_) => true,
+        AssignmentOperator::Concat(_) => false,
     }
 }
 
@@ -2914,7 +3247,7 @@ const fn supported(place: Place) -> &'static str {
     match place {
         Place::File => "At file level, PHP# supports `namespace`, `import`, `class`, `interface` and `enum`.",
         Place::Class => {
-            "A PHP# class has attributes, an optional `public`, `abstract` or `final`, a name, optional type parameters as in `<out TItem : DatabaseEntity>`, an optional `: Base, Interface` header, constants, fields, properties and methods, with no other modifiers, `extends` or `implements`."
+            "A PHP# class has attributes, an optional `public`, `abstract` or `final`, a name, optional type parameters as in `<out TItem : DatabaseEntity>`, an optional `: Base, Interface` header, constants, fields, properties, methods, operators and laws, with no other modifiers, `extends` or `implements`."
         }
         Place::Interface => {
             "A PHP# interface has an optional `public`, a name, optional type parameters as in `<in TItem>`, an optional `: Interface` header and methods, with no attributes, other modifiers, `extends`, constants or properties."
@@ -2923,7 +3256,7 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# interface method has no modifier, optional type parameters, parameters, a return type of `int`, `float`, `bool`, `string`, `Any`, `void`, a class or a type parameter, a generic type as in `List<T>` or `PaginatedList<Order>`, or `Self`, each but `void` nullable as in `int?`, or a union of them but `void`, as in `int|string`, and no body."
         }
         Place::Enum => {
-            "A PHP# enum has attributes, an optional `public`, a name, an optional `: string, Interface` header whose `int` or `string` comes first, constants, cases and methods, with no other modifiers or `implements`."
+            "A PHP# enum has attributes, an optional `public`, a name, an optional `: string, Interface` header whose `int` or `string` comes first, constants, cases, methods and laws, with no other modifiers or `implements`."
         }
         Place::Header => {
             "A PHP# header names each base class and interface by its short name, as in `: DatabaseEntity, Linkable`, and a generic one with its type arguments, as in `: PaginatedList<Order>`."
@@ -3134,10 +3467,11 @@ pub fn check_binding_errors(context: &mut Context<'_, '_, '_>) {
     }
 }
 
-/// Checks the name of a PHP# class or enum against the names the engine reserves, beyond the keywords the PHP checks
-/// reject, and against the `__Something__` names spec section 27 removes. The standard library's `Sharp.Int`,
-/// `Sharp.Float` and `Sharp.Bool` are the engine's one exception, and the analyzer refuses them in any file that is not
-/// the standard library's.
+/// Checks the name of a PHP# class, interface or enum against the names the engine reserves, beyond the keywords the
+/// PHP checks reject, against the `__Something__` names spec section 27 removes, and against spec section 24's
+/// capital letter. A name gets the first of these errors only. The standard library's `Sharp.Int`, `Sharp.Float` and
+/// `Sharp.Bool` are the engine's one exception, and the analyzer refuses them in any file that is not the standard
+/// library's.
 #[inline]
 pub fn check_class_name(class_name: &LocalIdentifier, context: &mut Context<'_, '_, '_>) {
     let is_keyword = RESERVED_KEYWORDS
@@ -3156,66 +3490,118 @@ pub fn check_class_name(class_name: &LocalIdentifier, context: &mut Context<'_, 
                 .with_annotation(Annotation::primary(class_name.span).with_message("Class declared here."))
                 .with_note("PHP# reserves this name for a type."),
         );
-    } else {
+    } else if is_keyword || is_magic_name(class_name.value) {
         check_declared_name(class_name.value, class_name.span, context);
+    } else {
+        check_capitalized(class_name.value, class_name.span, context);
     }
 }
 
-/// Checks the classes and imports of a PHP# file against each other, as the engine does when it compiles the file.
+/// Reports a type name or a namespace part a PHP# file gives that does not start with a capital letter, A to Z, as
+/// spec section 24 writes every type but the built-in ones, and spec section 23 every part of a `namespace` line. The
+/// parser reads the same letter to tell a type with type arguments, `Box<int>`, from a comparison.
+fn check_capitalized(name: &[u8], span: Span, context: &mut Context<'_, '_, '_>) {
+    if name.first().is_some_and(u8::is_ascii_uppercase) {
+        return;
+    }
+
+    let name = BytesDisplay(name);
+
+    context.report(
+        Issue::error(format!(
+            "`{name}` must start with a capital letter: PHP# capitalizes every namespace and every type except the built-in ones."
+        ))
+        .with_annotation(Annotation::primary(span).with_message("Named here.")),
+    );
+}
+
+/// Checks the namespace, classes and imports of a PHP# file: each part of the namespace starts with a capital letter,
+/// and the classes and imports name no class twice, which the engine also checks when it compiles the file. An import's
+/// namespace keeps its letters, because it names a namespace another file declares, often a plain PHP one.
 #[inline]
 pub fn check_declarations(program: &Program, context: &mut Context<'_, '_, '_>) {
     let (classes, imports) = declarations(program);
-    let namespace = first_namespace(program).and_then(|namespace| namespace.name.as_ref()).map(php_name);
+    let name = first_namespace(program).and_then(|namespace| namespace.name.as_ref());
+
+    if let Some(name) = name {
+        let mut start = 0;
+
+        for part in name.value().split(|&byte| byte == b'.') {
+            let end = start + part.len() as u32;
+
+            check_capitalized(part, name.span().subspan(start, end), context);
+            start = end + 1;
+        }
+    }
+
+    let namespace = name.map(php_name);
 
     for (index, import) in imports.iter().enumerate() {
-        let short_name = import.name.last_segment();
+        let imported_name = imported_name(import);
         let full_name = BytesDisplay(import.name.value());
+        let rename = format!(
+            "Rename the import with `as`, as in `import {full_name} as Other{};`.",
+            BytesDisplay(import.name.last_segment())
+        );
 
-        if is_reserved_class_name(short_name) && !is_sharp_type_class(&php_name(&import.name)) {
-            let short_name = BytesDisplay(short_name);
+        // A standard library type class imported under its own name is the type the name already gives.
+        if is_reserved_class_name(imported_name)
+            && !(imported_name.eq_ignore_ascii_case(import.name.last_segment())
+                && is_sharp_type_class(&php_name(&import.name)))
+        {
+            let imported_name = BytesDisplay(imported_name);
 
             context.report(
                 Issue::error(format!(
-                    "Cannot import `{full_name}` as `{short_name}`: PHP# reserves `{short_name}` for a type."
+                    "Cannot import `{full_name}` as `{imported_name}`: PHP# reserves `{imported_name}` for a type."
                 ))
-                .with_annotation(Annotation::primary(import.name.span()).with_message("Imported here."))
-                .with_help("Import a class with another name."),
+                .with_annotation(Annotation::primary(import.span()).with_message("Imported here."))
+                .with_help(rename.clone()),
             );
+        } else if let Some(alias) = &import.alias {
+            check_capitalized(alias.identifier.value, alias.identifier.span, context);
         }
 
         if let Some(earlier) =
-            imports[..index].iter().find(|earlier| earlier.name.last_segment().eq_ignore_ascii_case(short_name))
+            imports[..index].iter().find(|earlier| self::imported_name(earlier).eq_ignore_ascii_case(imported_name))
         {
             let earlier_full_name = BytesDisplay(earlier.name.value());
 
             context.report(
                 Issue::error(format!(
                     "Cannot import `{full_name}` as `{}`: `{earlier_full_name}` is already imported as `{}`.",
-                    BytesDisplay(short_name),
-                    BytesDisplay(earlier.name.last_segment()),
+                    BytesDisplay(imported_name),
+                    BytesDisplay(self::imported_name(earlier)),
                 ))
-                .with_annotation(Annotation::primary(import.name.span()).with_message("Imported again here."))
-                .with_annotation(Annotation::secondary(earlier.name.span()).with_message("First imported here."))
-                .with_note("Class names are case-insensitive."),
+                .with_annotation(Annotation::primary(import.span()).with_message("Imported again here."))
+                .with_annotation(Annotation::secondary(earlier.span()).with_message("First imported here."))
+                .with_note("Class names are case-insensitive.")
+                .with_help(rename.clone()),
             );
         }
 
         // Importing the class the file declares names that class, which the engine accepts.
-        if let Some(class) = classes.iter().find(|class| class.name.value.eq_ignore_ascii_case(short_name))
+        if let Some(class) = classes.iter().find(|class| class.name.value.eq_ignore_ascii_case(imported_name))
             && !names_class(&php_name(&import.name), namespace.as_deref(), class.name.value)
         {
-            let short_name = BytesDisplay(short_name);
+            let imported_name = BytesDisplay(imported_name);
             let class_name = BytesDisplay(class.name.value);
 
             context.report(
                 Issue::error(format!(
-                    "Cannot import `{full_name}` as `{short_name}`: this file declares a class named `{class_name}`."
+                    "Cannot import `{full_name}` as `{imported_name}`: this file declares a class named `{class_name}`."
                 ))
-                .with_annotation(Annotation::primary(import.name.span()).with_message("Imported here."))
-                .with_annotation(Annotation::secondary(class.name.span).with_message("Class declared here.")),
+                .with_annotation(Annotation::primary(import.span()).with_message("Imported here."))
+                .with_annotation(Annotation::secondary(class.name.span).with_message("Class declared here."))
+                .with_help(rename),
             );
         }
     }
+}
+
+/// The name an import gives its class in the file: the name after `as`, or else the last segment of the class name.
+fn imported_name<'arena>(import: &UseItem<'arena>) -> &'arena [u8] {
+    import.alias.as_ref().map_or_else(|| import.name.last_segment(), |alias| alias.identifier.value)
 }
 
 #[inline]
@@ -3487,7 +3873,7 @@ fn report_bare_member(span: Span, name: &[u8], context: &mut Context<'_, '_, '_>
     context.report(Issue::error(message).with_annotation(Annotation::primary(span).with_message("Used here.")));
 }
 
-/// The class of the static method whose body holds `span`, which has no `this`.
+/// The class of the static method or the law whose body holds `span`, which has no `this`.
 fn enclosing_static_method_class<'ast, 'arena>(
     program: &'ast Program<'arena>,
     span: Span,
@@ -3497,10 +3883,13 @@ fn enclosing_static_method_class<'ast, 'arena>(
     class
         .members
         .iter()
-        .any(|member| {
-            matches!(member, ClassLikeMember::Method(method)
-                if method.span().contains(&span.start)
-                    && method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Static(_))))
+        .any(|member| match member {
+            ClassLikeMember::Method(method) => {
+                method.span().contains(&span.start)
+                    && method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Static(_)))
+            }
+            ClassLikeMember::Law(law) => law.span().contains(&span.start),
+            _ => false,
         })
         .then_some(class)
 }

@@ -473,6 +473,40 @@ fn an_imported_name_is_the_imported_class_and_not_the_standard_library_one() {
     }
 }
 
+/// Spec section 23: `import X.Y as Z;` names the class `Z` in this file. A rename shadows the standard library class
+/// of its new name, as any import does, and leaves the standard library class of the old short name in place.
+#[test]
+fn a_renamed_import_names_the_imported_class_by_its_new_name() {
+    const CODE: &str = "namespace App;\n\nimport Sharp.Text.Regex as Rx;\nimport Lib.Store as Position;\nimport Lib.Cache as LibCache;\nimport Stripe.StripeClient as Client;\n\nextern Client uses Http;\n\nclass Report\n{\n    public bool run(string text, Position here, Cache store, LibCache other)\n    {\n        return Rx.matches(\"/a/\", text);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "Rx.matches", 0), Some(Binding::Class));
+    assert_eq!(binding(&names, CODE, "Client uses", 0), Some(Binding::Class));
+    for (needle, class) in [
+        ("Rx.matches", "Sharp\\Text\\Regex"),
+        ("Position here", "Lib\\Store"),
+        ("Cache store", "Sharp\\Cache"),
+        ("LibCache other", "Lib\\Cache"),
+        ("Client uses", "Stripe\\StripeClient"),
+    ] {
+        assert_eq!(String::from_utf8_lossy(resolved(&names, CODE, needle, 0)), class, "`{needle}`");
+    }
+}
+
+#[test]
+fn a_php_use_renamed_with_as_names_the_imported_class_by_its_new_name() {
+    const CODE: &str = "<?php namespace App; use Sharp\\Text\\Regex as Rx; use Lib\\Cache as LibCache; Rx::matches('/a/', 'a'); new Cache(); new LibCache();";
+    let arena = LocalArena::new();
+    let file = File::ephemeral(Cow::Borrowed(b"src/Store.php"), Cow::Borrowed(CODE.as_bytes()));
+    let program = parse_file(&arena, &file);
+    let names = NameResolver::new(&arena).resolve(program);
+
+    for (needle, class) in [("Rx::", "Sharp\\Text\\Regex"), ("LibCache()", "Lib\\Cache"), ("Cache()", "App\\Cache")] {
+        assert_eq!(String::from_utf8_lossy(resolved(&names, CODE, needle, 0)), class, "`{needle}`");
+    }
+}
+
 #[test]
 fn a_class_the_file_declares_after_its_use_is_the_class_and_not_the_standard_library_one() {
     const CODE: &str = "namespace App.Tenant.Store;\n\nclass Report\n{\n    public void run(Position here)\n    {\n        Position.current();\n    }\n}\n\nclass Position\n{\n}\n";
@@ -518,6 +552,65 @@ fn a_bare_replaces_attribute_is_the_attribute_of_the_standard_library() {
     let names = bind(&arena, CODE);
 
     assert_eq!(resolved(&names, CODE, "Replaces", 0), b"Sharp\\Replaces");
+}
+
+/// An `extern` target binds through the file's imports as a class first, and `Class.member` binds its class and keeps
+/// the member name as written, spec section 29.
+#[test]
+fn an_extern_target_binds_an_imported_class_and_keeps_its_member_name() {
+    const CODE: &str = "namespace App.Stubs;\n\nimport Carbon.Carbon;\nimport Stripe.StripeClient;\n\nextern Carbon.now uses Clock;\nextern StripeClient uses Http;\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "Carbon.now", 0), Some(Binding::Class));
+    assert_eq!(resolved(&names, CODE, "Carbon.now", 0), b"Carbon\\Carbon");
+    assert!(!names.contains(&Position::new(offset(CODE, "now", 0))), "`now` has a resolved name");
+    assert_eq!(binding(&names, CODE, "StripeClient uses", 0), Some(Binding::Class));
+    assert_eq!(resolved(&names, CODE, "StripeClient uses", 0), b"Stripe\\StripeClient");
+}
+
+/// A law binds as a static method does, spec section 28: its parameters are locals of that law alone, and their types
+/// resolve through the file's imports.
+#[test]
+fn a_law_binds_its_parameters_as_its_own_locals_and_their_types_through_the_imports() {
+    const CODE: &str = "namespace App.Shared;\n\nimport App.Billing.Currency;\n\nclass Money\n{\n    law sameCurrency(Currency left, Money right) => left == right.currency;\n\n    law sameAmount(int left) => left == left;\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(resolved(&names, CODE, "Currency left", 0), b"App\\Billing\\Currency");
+    assert_eq!(resolved(&names, CODE, "Money right", 0), b"App\\Shared\\Money");
+    assert_eq!(binding(&names, CODE, "left", 1), Some(local(CODE, "left", 0, LocalKind::Parameter)));
+    assert_eq!(binding(&names, CODE, "right", 1), Some(local(CODE, "right", 0, LocalKind::Parameter)));
+    assert_eq!(binding(&names, CODE, "left", 3), Some(local(CODE, "left", 2, LocalKind::Parameter)));
+    assert_eq!(binding(&names, CODE, "left", 4), Some(local(CODE, "left", 2, LocalKind::Parameter)));
+    assert_eq!(names.binding_errors(), []);
+}
+
+/// A bare `extern` target that the file does not import is a global function, since PHP# has no functions of its own.
+#[test]
+fn a_bare_extern_target_that_is_not_imported_is_a_global_function() {
+    const CODE: &str = "namespace App.Stubs;\n\nextern trim;\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(binding(&names, CODE, "trim", 0), None);
+    assert_eq!(resolved(&names, CODE, "trim", 0), b"trim");
+}
+
+/// An effect name binds as a class name, so a standard effect is the class in the `Sharp` namespace and a project
+/// effect resolves through the imports.
+#[test]
+fn an_effect_name_binds_as_a_class_name() {
+    const CODE: &str = "namespace App.Stubs;\n\nimport App.Effects.Payments;\n\nextern now uses Http, Database, Files, Console, Process, Clock, Random, Cache, Mail, Environment, Payments;\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    for effect in ["Http", "Database", "Files", "Console", "Process", "Clock", "Random", "Cache", "Mail", "Environment"]
+    {
+        assert_eq!(binding(&names, CODE, effect, 0), Some(Binding::Class), "`{effect}`");
+        assert_eq!(String::from_utf8_lossy(resolved(&names, CODE, effect, 0)), format!("Sharp\\{effect}"));
+    }
+    assert_eq!(resolved(&names, CODE, "Payments;", 1), b"App\\Effects\\Payments");
 }
 
 #[test]

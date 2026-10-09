@@ -1300,6 +1300,9 @@ where
                 ClassLikeMember::Property(m) => m.format(f),
                 ClassLikeMember::EnumCase(m) => m.format(f),
                 ClassLikeMember::Method(m) => m.format(f),
+                ClassLikeMember::Operator(_) | ClassLikeMember::Law(_) => {
+                    unreachable!("`mago format` skips PHP# files, the only ones with it")
+                }
             }
         })
     }

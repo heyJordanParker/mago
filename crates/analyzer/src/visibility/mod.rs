@@ -18,6 +18,8 @@ use crate::context::block::BlockContext;
 use crate::resolver::property::DeclaredProperty;
 use crate::resolver::property::DeclaredPropertyKind;
 use crate::resolver::property::resolve_declared_property;
+use crate::utils::names::display_class_like_name;
+use crate::utils::names::display_member;
 use mago_bytes::BytesDisplay;
 
 /// Checks if a method is visible from the current scope and reports a detailed
@@ -69,8 +71,8 @@ where
             .get_class_like(declaring_class.as_bytes())
             .map_or_else(|| declaring_class, |metadata| metadata.original_name);
 
-        let issue_title =
-            format!("Cannot access {} method `{}::{}`.", visibility, declaring_class_name, BytesDisplay(method_name));
+        let method = display_member(context, declaring_class_name, BytesDisplay(method_name));
+        let issue_title = format!("Cannot access {visibility} method `{method}`.");
         let help_text = format!(
             "Change the visibility of method `{}` to `public`, or call it from an allowed scope.",
             BytesDisplay(method_name)
@@ -183,12 +185,11 @@ where
         }
 
         let class_name = &declaring_class_metadata.original_name;
+        let property = display_member(context, *class_name, property_name);
 
         context.collector.report_with_code(
             IssueCode::InvalidPropertyRead,
-            Issue::error(format!(
-                "Cannot read from write-only property `{class_name}::{property_name}`."
-            ))
+            Issue::error(format!("Cannot read from write-only property `{property}`."))
             .with_annotation(
                 Annotation::primary(member_span.unwrap_or(access_span))
                     .with_message("Attempt to read from a write-only property"),
@@ -209,19 +210,21 @@ where
         && !property_metadata.hooks.contains_key(&word(b"get"))
         && property_metadata.flags.is_virtual_property()
     {
-        let class_name = &declaring_class_metadata.original_name;
+        let property = display_member(context, declaring_class_metadata.original_name, property_name);
 
         context.collector.report_with_code(
             IssueCode::InvalidPropertyRead,
-            Issue::error(format!(
-                "Cannot read from write-only property `{class_name}::{property_name}` - property only has a set hook."
-            ))
-            .with_annotation(Annotation::primary(member_span.unwrap_or(access_span)).with_message("Read access here"))
-            .with_annotation(
-                Annotation::secondary(property_metadata.span.or(property_metadata.name_span).unwrap_or(access_span))
+            Issue::error(format!("Cannot read from write-only property `{property}` - property only has a set hook."))
+                .with_annotation(
+                    Annotation::primary(member_span.unwrap_or(access_span)).with_message("Read access here"),
+                )
+                .with_annotation(
+                    Annotation::secondary(
+                        property_metadata.span.or(property_metadata.name_span).unwrap_or(access_span),
+                    )
                     .with_message("Property defined here with only a set hook"),
-            )
-            .with_help("Add a get hook to make this property readable."),
+                )
+                .with_help("Add a get hook to make this property readable."),
         );
 
         return false;
@@ -236,13 +239,24 @@ where
     );
 
     if !is_visible {
-        let issue_title = format!(
-            "Cannot read {} property `{}` from class `{}`.",
-            visibility, property_name, declaring_class_metadata.original_name
-        );
-
-        let help_text =
-            format!("Make the property `{property_name}` readable (e.g., `public`), or add a public getter method.");
+        // PHP names the property and its class apart, and PHP# names the property as it reads: `Order.total`.
+        let (issue_title, help_text) = if context.dialect.is_sharp() {
+            let property = display_member(context, declaring_class_metadata.original_name, property_name);
+            (
+                format!("Cannot read {visibility} property `{property}`."),
+                format!("Make the property `{property}` readable (e.g., `public`), or add a public getter method."),
+            )
+        } else {
+            (
+                format!(
+                    "Cannot read {visibility} property `{property_name}` from class `{}`.",
+                    declaring_class_metadata.original_name
+                ),
+                format!(
+                    "Make the property `{property_name}` readable (e.g., `public`), or add a public getter method."
+                ),
+            )
+        };
 
         report_visibility_issue(
             context,
@@ -276,10 +290,10 @@ where
 
     if matches!(kind, DeclaredPropertyKind::Magic) {
         if property_metadata.flags.is_readonly() {
-            let class_name = &declaring_class_metadata.original_name;
+            let property = display_member(context, declaring_class_metadata.original_name, property_name);
             context.collector.report_with_code(
                 IssueCode::InvalidPropertyWrite,
-                Issue::error(format!("Cannot write to documented read-only property `{class_name}::{property_name}`."))
+                Issue::error(format!("Cannot write to documented read-only property `{property}`."))
                     .with_annotation(
                         Annotation::primary(member_span.unwrap_or(access_span)).with_message("This property is read-only"),
                     )
@@ -297,19 +311,21 @@ where
         && !property_metadata.hooks.contains_key(&word(b"set"))
         && property_metadata.flags.is_virtual_property()
     {
-        let class_name = &declaring_class_metadata.original_name;
+        let property = display_member(context, declaring_class_metadata.original_name, property_name);
 
         context.collector.report_with_code(
             IssueCode::InvalidPropertyWrite,
-            Issue::error(format!(
-                "Cannot write to read-only property `{class_name}::{property_name}` - property only has a get hook."
-            ))
-            .with_annotation(Annotation::primary(member_span.unwrap_or(access_span)).with_message("Write access here"))
-            .with_annotation(
-                Annotation::secondary(property_metadata.span.or(property_metadata.name_span).unwrap_or(access_span))
+            Issue::error(format!("Cannot write to read-only property `{property}` - property only has a get hook."))
+                .with_annotation(
+                    Annotation::primary(member_span.unwrap_or(access_span)).with_message("Write access here"),
+                )
+                .with_annotation(
+                    Annotation::secondary(
+                        property_metadata.span.or(property_metadata.name_span).unwrap_or(access_span),
+                    )
                     .with_message("Property defined here with only a get hook"),
-            )
-            .with_help("Add a set hook to make this property writable."),
+                )
+                .with_help("Add a set hook to make this property writable."),
         );
 
         return false;
@@ -335,14 +351,26 @@ where
                 member_span,
             );
         } else {
-            let issue_title = format!(
-                "Cannot write to {} property `{}` on class `{}`.",
-                visibility, property_name, declaring_class_metadata.original_name
-            );
-
-            let help_text = format!(
-                "Make the property `{property_name}` writable (e.g., `public` or `public(set)`), or add a public setter method."
-            );
+            // PHP names the property and its class apart, and PHP# names the property as it reads: `Order.total`.
+            let (issue_title, help_text) = if context.dialect.is_sharp() {
+                let property = display_member(context, declaring_class_metadata.original_name, property_name);
+                (
+                    format!("Cannot write to {visibility} property `{property}`."),
+                    format!(
+                        "Make the property `{property}` writable (e.g., `public` or `public(set)`), or add a public setter method."
+                    ),
+                )
+            } else {
+                (
+                    format!(
+                        "Cannot write to {visibility} property `{property_name}` on class `{}`.",
+                        declaring_class_metadata.original_name
+                    ),
+                    format!(
+                        "Make the property `{property_name}` writable (e.g., `public` or `public(set)`), or add a public setter method."
+                    ),
+                )
+            };
 
             report_visibility_issue(
                 context,
@@ -377,7 +405,7 @@ fn report_readonly_write_scope_issue<A>(
 ) where
     A: Arena,
 {
-    let class_name = &declaring_class.original_name;
+    let class_name = display_class_like_name(context, declaring_class.original_name);
     let property_name = property.name.0;
 
     let allowed_scope = if visibility == Visibility::Private {
@@ -387,26 +415,19 @@ fn report_readonly_write_scope_issue<A>(
     };
 
     let current_scope = match calling_class {
-        Some(current_class) => {
-            let current_class_name = context
-                .codebase
-                .get_class_like(current_class.as_bytes())
-                .map_or(current_class, |metadata| metadata.original_name);
-
-            format!("from within `{current_class_name}`")
-        }
+        Some(current_class) => format!("from within `{}`", display_class_like_name(context, current_class)),
         None => "from the global scope".to_string(),
     };
 
-    let mut issue =
-        Issue::error(format!("Cannot initialize readonly property `{class_name}::{property_name}` {current_scope}."))
-            .with_annotation(
-                Annotation::primary(member_span.unwrap_or(access_span))
-                    .with_message(format!("Only {allowed_scope} may initialize this readonly property")),
-            )
-            .with_annotation(
-                Annotation::secondary(access_span).with_message(format!("Invalid write occurs here, {current_scope}")),
-            );
+    let property_display = display_member(context, class_name, property_name);
+    let mut issue = Issue::error(format!("Cannot initialize readonly property `{property_display}` {current_scope}."))
+        .with_annotation(
+            Annotation::primary(member_span.unwrap_or(access_span))
+                .with_message(format!("Only {allowed_scope} may initialize this readonly property")),
+        )
+        .with_annotation(
+            Annotation::secondary(access_span).with_message(format!("Invalid write occurs here, {current_scope}")),
+        );
 
     if let Some(definition_span) = property.span.or(property.name_span) {
         issue =
@@ -524,6 +545,10 @@ fn report_visibility_issue<A>(
     A: Arena,
 {
     let current_scope_str = if let Some(current_class) = calling_class {
+        // PHP keeps the lowercase name Mago looks the class up by, and PHP# names the class as it is declared.
+        let current_class =
+            if context.dialect.is_sharp() { display_class_like_name(context, current_class) } else { current_class };
+
         format!("from within `{current_class}`")
     } else {
         "from the global scope".to_string()

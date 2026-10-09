@@ -50,7 +50,6 @@ use const STDERR;
  * Steps, in order:
  *  - mirror `docs/dist/` into `<gh-pages>/<version>/` (replacing any prior
  *    contents of that version's directory),
- *  - on a `main` build, refresh the cross-version `sponsors.json`,
  *  - keep the custom-domain `CNAME` in lock-step with `docs/`,
  *  - copy redirect stubs from `dist/` into the worktree root,
  *  - update `versions.json` with the current build,
@@ -72,7 +71,6 @@ function main(array $arguments): int
     $built = $docs . '/dist';
 
     namespace\mirror_version($built, $ghPages, $version);
-    namespace\refresh_sponsors($docs, $ghPages, $version);
     namespace\refresh_cname($docs, $ghPages);
     namespace\refresh_root_seo_files($built, $ghPages, $version);
     namespace\copy_redirect_stubs($docs . '/redirects.toml', $built, $ghPages);
@@ -92,7 +90,7 @@ function mirror_version(string $built, string $ghPages, string $version): void
     // redirect stubs and meta files (sitemap, robots, versions.json) at
     // `dist/`'s root. We only mirror the version-scoped subtree onto
     // `gh-pages/<version>/`; the root files are handled by the dedicated
-    // copy_redirect_stubs / refresh_sponsors / write_root_redirect helpers.
+    // copy_redirect_stubs / write_root_redirect helpers.
     $source = $built . '/' . $version;
     if (!is_dir($source)) {
         throw new RuntimeException(sprintf('built docs version directory not found at %s', $source));
@@ -101,20 +99,6 @@ function mirror_version(string $built, string $ghPages, string $version): void
     $destination = $ghPages . '/' . $version;
     namespace\remove_directory($destination);
     namespace\copy_directory($source, $destination);
-}
-
-function refresh_sponsors(string $docs, string $ghPages, string $version): void
-{
-    if ('main' !== $version) {
-        return;
-    }
-
-    $source = $docs . '/sponsors.json';
-    if (!is_file($source)) {
-        return;
-    }
-
-    copy($source, $ghPages . '/sponsors.json');
 }
 
 function refresh_cname(string $docs, string $ghPages): void

@@ -1,4 +1,6 @@
 use mago_allocator::Arena;
+use std::rc::Rc;
+
 use mago_word::Word;
 use mago_word::WordMap;
 
@@ -31,6 +33,7 @@ use mago_syntax_core::stack::ensure_sufficient_stack;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
+use crate::artifacts::CallTarget;
 use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
@@ -41,6 +44,7 @@ use crate::expression::call::analyze_invocation_targets;
 use crate::expression::call::function_call::resolve_callable_targets;
 use crate::expression::call::record_external_method_call;
 use crate::expression::call::record_external_method_call_targets;
+use crate::expression::constant_access::field_storage;
 use crate::invocation::Invocation;
 use crate::invocation::InvocationArgumentsSource;
 use crate::invocation::InvocationTarget;
@@ -58,12 +62,14 @@ use crate::plugin::ExpressionHookResult;
 use crate::plugin::context::HookContext;
 use crate::resolver::method::UndocumentedMethod;
 use crate::resolver::method::UnresolvedMethod;
+use crate::resolver::method::get_declared_collection;
 use crate::resolver::method::report_non_documented_method;
 use crate::resolver::method::report_non_existent_method;
 use crate::resolver::method::resolve_method_targets;
 use crate::resolver::property::check_redundant_nullsafe;
 use crate::utils::expression::get_block_expression_id;
 use crate::utils::expression::is_this;
+use crate::utils::names::display_member;
 use crate::visibility::check_method_visibility;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for MethodCall<'arena> {
@@ -331,8 +337,8 @@ where
             .get_method_by_id(&resolved_method.method_identifier)
             .expect("method metadata should exist for resolved method");
 
-        let method_display = format!(
-            "{}::{}",
+        let method_display = display_member(
+            context,
             resolved_method.method_identifier.get_class_name(),
             resolved_method.method_identifier.get_method_name(),
         );
@@ -383,6 +389,10 @@ where
             &block_context.scope,
             property.declaring_class,
             property.property_name,
+        );
+        artifacts.record_call_target(
+            span,
+            CallTarget::Property { class: property.declaring_class, property: property.property_name },
         );
 
         let (targets, has_invalid_target) =
@@ -462,7 +472,8 @@ where
 /// A method that changes a PHP# collection writes it back where it lives, as spec section 12 decides, so the
 /// collection is a place the caller can write: a local or a parameter, `field`, which its accessor writes as the
 /// storage, or a property whose `set` the caller reaches, which the property write check decides as it does for an
-/// index write.
+/// index write. The change may fill the collection past any literal the analyzer saw in it, so the place holds the
+/// collection it is declared as from then on, beside whatever else, such as `null`, it held.
 fn check_changed_collection<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
     block_context: &mut BlockContext<'ctx>,
@@ -472,25 +483,35 @@ fn check_changed_collection<'ctx, 'arena, A>(
 where
     A: Arena,
 {
+    let mut changed_type = artifacts.get_expression_type(collection).cloned().unwrap_or_else(get_mixed);
+    if let Some(declared) = get_declared_collection(context, block_context, artifacts, collection) {
+        let others = changed_type.types.iter().filter(|atomic| !matches!(atomic, TAtomic::Array(_))).cloned();
+        changed_type = changed_type.clone_with_types(others.chain([TAtomic::Array(declared)]).collect());
+    }
+
     match collection.unparenthesized() {
         Expression::ConstantAccess(name)
             if matches!(context.resolved_names.binding(&name.name), Some(Binding::Local(_) | Binding::Field)) =>
         {
+            let place = match context.resolved_names.binding(&name.name) {
+                Some(Binding::Field) => field_storage(name, context, block_context),
+                _ => Some(collection),
+            };
+            if let Some(place) = place.and_then(|place| get_block_expression_id(place, context, block_context)) {
+                block_context.locals.insert(place, Rc::new(changed_type));
+            }
+
             Ok(())
         }
-        Expression::Access(Access::Property(access)) => {
-            let collection_type = artifacts.get_expression_type(collection).cloned().unwrap_or_else(get_mixed);
-
-            property_assignment::analyze(
-                context,
-                block_context,
-                artifacts,
-                access,
-                &collection_type,
-                None,
-                PropertyWriteKind::Mutation,
-            )
-        }
+        Expression::Access(Access::Property(access)) => property_assignment::analyze(
+            context,
+            block_context,
+            artifacts,
+            access,
+            &changed_type,
+            None,
+            PropertyWriteKind::Mutation,
+        ),
         _ => {
             context.collector.report_with_code(
                 IssueCode::InvalidPassByReference,
@@ -602,11 +623,23 @@ where
 
         let requested_identifier =
             FunctionLikeIdentifier::Method(undocumented_method.classname, undocumented_method.method_name);
+        let magic_identifier = FunctionLikeIdentifier::Method(
+            magic_call_method.method_identifier.get_class_name(),
+            magic_call_method.method_identifier.get_method_name(),
+        );
+        if context.dialect.is_sharp() {
+            artifacts.record_call_target(
+                span,
+                CallTarget::MagicMethod {
+                    callee: magic_identifier,
+                    class: undocumented_method.classname,
+                    method: undocumented_method.method_name,
+                },
+            );
+        }
+
         let target = InvocationTarget::FunctionLike {
-            identifier: FunctionLikeIdentifier::Method(
-                magic_call_method.method_identifier.get_class_name(),
-                magic_call_method.method_identifier.get_method_name(),
-            ),
+            identifier: magic_identifier,
             metadata: method_metadata,
             inferred_return_type: None,
             effective_signature: None,

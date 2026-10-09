@@ -227,7 +227,7 @@ impl<'ctx> InvocationTarget<'ctx> {
             method_context: Some(MethodTargetContext { class_type: StaticClassType::Object(receiver), .. }),
             ..
         } = self
-            && let Some(collection) = crate::utils::names::display_sharp_collection(receiver, context.codebase)
+            && let Some(collection) = crate::utils::names::display_sharp_collection(context, receiver)
         {
             return format!("{collection}.{method_name}");
         }

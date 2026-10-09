@@ -59,6 +59,7 @@ use crate::scanner::docblock::apply_common_metadata_flag;
 use crate::scanner::docblock::parse_docblock;
 use crate::scanner::docblock::parse_docblock_trivia;
 use crate::scanner::enum_case::scan_enum_case;
+use crate::scanner::function_like::scan_law;
 use crate::scanner::property::scan_properties;
 use crate::scanner::ttype::get_type_metadata_from_hint;
 use crate::scanner::ttype::get_type_metadata_from_type;
@@ -1259,6 +1260,15 @@ where
         }
 
         class_like_metadata.enum_cases.insert(case_metadata.name, case_metadata);
+    }
+
+    for member in members {
+        let ClassLikeMember::Law(law) = member else {
+            continue;
+        };
+
+        let law_metadata = scan_law(law, &class_like_metadata, context, scope, &type_context);
+        class_like_metadata.laws.entry(law_metadata.name).or_insert(law_metadata);
     }
 
     if class_like_metadata.kind.is_enum()

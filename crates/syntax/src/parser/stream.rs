@@ -234,12 +234,12 @@ where
     ///
     /// Returns a [`ParseError`] if the lexer fails to produce a token.
     pub fn peek_kind_after_parentheses(&mut self) -> Result<Option<TokenKind>, ParseError> {
-        let mut kinds = self.kinds_ahead();
+        let mut tokens = self.peek_tokens();
         let mut depth = 0usize;
-        while let Some(kind) = kinds.next().transpose()? {
-            match kind {
+        while let Some(token) = tokens.next() {
+            match token?.kind {
                 T!["("] => depth += 1,
-                T![")"] if depth == 1 => return Ok(kinds.next().transpose()?),
+                T![")"] if depth == 1 => return Ok(tokens.next().transpose()?.map(|token| token.kind)),
                 T![")"] => depth -= 1,
                 _ => {}
             }
@@ -258,10 +258,10 @@ where
     ///
     /// Returns a [`ParseError`] if the lexer fails to produce a token.
     pub fn peek_kind_after_type_arguments(&mut self) -> Result<Option<TokenKind>, ParseError> {
-        let mut kinds = self.kinds_ahead();
+        let mut tokens = self.peek_tokens();
         let mut depth = 0usize;
-        while let Some(kind) = kinds.next().transpose()? {
-            depth = match kind {
+        while let Some(token) = tokens.next() {
+            depth = match token?.kind {
                 T!["<"] => depth + 1,
                 T![">"] if depth >= 1 => depth - 1,
                 T![">>"] if depth >= 2 => depth - 2,
@@ -282,24 +282,24 @@ where
                 _ => return Ok(None),
             };
             if depth == 0 {
-                return Ok(kinds.next().transpose()?);
+                return Ok(tokens.next().transpose()?.map(|token| token.kind));
             }
         }
 
         Ok(None)
     }
 
-    /// The kinds of the tokens from the head of the stream on, without trivia: the buffered tokens, then the tokens a
-    /// copy of the lexer reads, so reading them consumes nothing.
-    fn kinds_ahead(&self) -> impl Iterator<Item = Result<TokenKind, SyntaxError>> + '_ {
+    /// The significant tokens from the head of the stream to the end of the file, read with a copy of the lexer, so
+    /// it consumes nothing.
+    pub(crate) fn peek_tokens(&self) -> impl Iterator<Item = Result<Token<'input>, SyntaxError>> + '_ {
         let mut lexer = self.lexer.clone();
-        let buffered = (0..self.buffer.len()).filter_map(|index| self.buffer.get(index)).map(|token| Ok(token.kind));
+        let buffered = (0..self.buffer.len()).filter_map(|index| self.buffer.get(index)).map(Ok);
 
         buffered.chain(std::iter::from_fn(move || {
             loop {
                 match lexer.advance()? {
                     Ok(token) if token.kind.is_trivia() => {}
-                    token => return Some(token.map(|token| token.kind)),
+                    result => return Some(result),
                 }
             }
         }))

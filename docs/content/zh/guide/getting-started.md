@@ -29,4 +29,3 @@ mago analyze        # 进行类型检查并发现逻辑 bug
 - [安装](/guide/installation/) 介绍每一种受支持的安装方式。
 - [初始化](/guide/initialization/) 介绍交互式的 `mago init` 配置流程。
 - [配置](/guide/configuration/) 是 `mago.toml` 中每个选项的参考。
-- [Playground](/playground/) 在浏览器中运行完整的 Mago 分析器,无需安装即可试用。

@@ -66,6 +66,9 @@ impl FunctionCallHook for SessionSetSaveHandlerHook {
 
         let is_object_form = !first_arg_type.has_callable() && first_arg_type.is_objecty();
 
+        // PHP# names a parameter without `$`.
+        let parameter_name = |name: &str| if context.dialect.is_sharp() { name.to_owned() } else { format!("${name}") };
+
         if is_object_form {
             if arguments.len() > 2 {
                 let Some(third_arg) = arguments.get(2) else {
@@ -90,11 +93,17 @@ impl FunctionCallHook for SessionSetSaveHandlerHook {
                             "When the first argument is a `SessionHandlerInterface`, `session_set_save_handler()` expects at most 2 arguments, but received {}.",
                             arguments.len()
                         ))
-                        .with_help("Remove the extra arguments. The object form only accepts the handler and an optional `$register_shutdown` boolean."),
+                        .with_help(format!(
+                            "Remove the extra arguments. The object form only accepts the handler and an optional `{}` boolean.",
+                            parameter_name("register_shutdown")
+                        )),
                 );
             }
         } else {
             if arguments.len() < 6 {
+                let callbacks = ["open", "close", "read", "write", "destroy", "gc"]
+                    .map(|callback| format!("`{}`", parameter_name(callback)))
+                    .join(", ");
                 context.report(
                     IssueCode::TooFewArguments,
                     Issue::error("Too few arguments provided for function `session_set_save_handler`.")
@@ -106,7 +115,7 @@ impl FunctionCallHook for SessionSetSaveHandlerHook {
                             Annotation::secondary(call.function.span()).with_message("For this function call"),
                         )
                         .with_note(format!(
-                            "The callable form of `session_set_save_handler()` requires at least 6 arguments (`$open`, `$close`, `$read`, `$write`, `$destroy`, `$gc`), but only {} were provided.",
+                            "The callable form of `session_set_save_handler()` requires at least 6 arguments ({callbacks}), but only {} were provided.",
                             arguments.len()
                         ))
                         .with_help("Provide all 6 required callback arguments, or pass a `SessionHandlerInterface` object instead."),

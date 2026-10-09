@@ -51,9 +51,11 @@ use crate::context::block::ReferenceConstraintSource;
 use crate::context::scope::var_has_root;
 use crate::context::scope::var_references_dynamic;
 use crate::error::AnalysisError;
+use crate::expression::array::check_sharp_literal_kind;
 use crate::expression::constant_access::field_storage;
 use crate::expression::find_expression_logic_issues;
 use crate::formula::get_formula;
+use crate::resolver::method::get_declared_collection;
 use crate::resolver::property::get_localized_property_type;
 use crate::resolver::static_property::StaticProperty;
 use crate::statement::function_like::expect_function_type;
@@ -68,6 +70,8 @@ use crate::utils::expression::get_root_expression_id;
 use crate::utils::expression::is_variable;
 use crate::utils::misc::unwrap_expression;
 use crate::utils::names::display_type;
+use crate::utils::names::display_value_type;
+use crate::utils::names::display_variable_name;
 use crate::utils::template::explain_blocked_substitution;
 
 mod array_assignment;
@@ -217,6 +221,24 @@ where
         Rc::new(get_mixed())
     };
 
+    // PHP# `[]` and `[:]` name no element type, and PHP types both as one empty array. A place declared as a `List` or
+    // a `Map` takes only a literal of its own collection, from `=` and from `??=`, which stores its right side as it
+    // is, and keeps that collection when one empties it, as its declaration does, so its rules and elements stay.
+    let declared_collection = match assignment_operator {
+        None | Some(AssignmentOperator::Coalesce(_)) if context.dialect.is_sharp() => {
+            get_declared_collection(context, block_context, artifacts, target_expression)
+                .map(|collection| Rc::new(TUnion::from_atomic(TAtomic::Array(collection))))
+        }
+        _ => None,
+    };
+    if let (Some(declared_collection), Some(source_expression)) = (&declared_collection, source_expression) {
+        check_sharp_literal_kind(context, source_expression, declared_collection);
+    }
+    let source_type = match (declared_collection, source_type.types.as_ref()) {
+        (Some(declared_collection), [TAtomic::Array(array)]) if array.is_empty() => declared_collection,
+        _ => source_type,
+    };
+
     if let (Some(target_variable_id), None) = (&target_variable_id, assignment_operator)
         && block_context.flags.inside_loop()
         && !block_context.flags.inside_assignment_operation()
@@ -225,6 +247,7 @@ where
         && cloned_var.name == target_variable_id.as_bytes()
         && let Some(assignment_span) = assignment_span
     {
+        let target_variable_id = display_variable_name(context, target_variable_id.as_bytes());
         context.collector.report_with_code(
             IssueCode::CloneInsideLoop,
             Issue::warning(format!(
@@ -560,6 +583,7 @@ pub fn analyze_assignment_to_variable<'ctx, 'arena, A>(
             let assigned_type_str = assigned_type.get_id();
             let constraint_type_str = constraint_type.get_id();
             let primary_error_span = source_expression.map_or(variable_span, mago_span::HasSpan::span);
+            let variable_id = display_variable_name(context, variable_id.as_bytes());
 
             let issue = match constraint.source {
                 ReferenceConstraintSource::Parameter => {
@@ -651,10 +675,9 @@ pub fn analyze_assignment_to_variable<'ctx, 'arena, A>(
             &mut ComparisonResult::for_dialect(context.dialect),
         )
     {
-        let variable_name = variable_id.to_string();
-        let name = variable_name.trim_start_matches('$');
+        let name = display_variable_name(context, variable_id.as_bytes());
         let local_type_str = display_type(context, &local_type);
-        let assigned_type_str = display_type(context, &assigned_type);
+        let assigned_type_str = display_value_type(context, &assigned_type, &local_type);
 
         let issue = Issue::error(format!("Invalid assignment to `{name}`: it is declared as `{local_type_str}`."))
             .with_annotation(

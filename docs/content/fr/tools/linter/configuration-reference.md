@@ -78,8 +78,6 @@ Chaque entrée peut être un chemin simple ou un glob :
 - Les chemins simples (`"tests"`, `"tests/"`, `"src/Foo.php"`) correspondent comme préfixes par rapport au chemin de fichier relatif depuis la racine du projet.
 - Les motifs glob (toute entrée contenant `*`, `?`, `[` ou `{`) correspondent au chemin relatif complet en utilisant le même moteur de glob que `source.excludes` global, avec les paramètres `[source.glob]` appliqués.
 
-Les motifs glob dans les `exclude` par règle nécessitent Mago 1.20 ou version ultérieure. Les versions antérieures n'acceptent que les chemins préfixes simples.
-
 `exclude` par règle n'est pas la même chose que `[linter].excludes` :
 
 - `[linter].excludes` retire les fichiers de toutes les règles.

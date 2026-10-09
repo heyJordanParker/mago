@@ -33,12 +33,15 @@ use mago_sharp_bridge::unit::Input;
 use mago_sharp_bridge::unit::Read;
 use mago_sharp_bridge::unit::Reads;
 use mago_sharp_bridge::unit::SHARP_UNIT_MAGIC;
+use mago_sharp_bridge::unit::compiled_path;
 use mago_sharp_bridge::unit::encode;
 use mago_sharp_bridge::unit::header;
+use mago_sharp_bridge::unit::is_stale;
 use mago_sharp_bridge::unit::key;
 use mago_sharp_bridge::unit::sharp_input;
 use mago_sharp_bridge::unit::sharp_unit_header;
 use mago_sharp_bridge::unit::source_hash;
+use mago_sharp_bridge::unit::stamp;
 use xxhash_rust::xxh3::xxh3_128;
 
 const SOURCE: &str = "namespace App.Tenant;\n\nclass Report\n{\n    public string title()\n    {\n        return \"weekly\";\n    }\n}\n";
@@ -308,6 +311,106 @@ fn header_refuses_a_short_file_a_wrong_magic_a_wrong_abi_and_a_wrong_length() {
     assert_eq!(header(&changed(offset_of!(sharp_unit_header, facts_size))), Err(FormatError::Length));
 }
 
+fn write(root: &Path, name: &str, contents: &str) {
+    let path = root.join(name);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, contents).unwrap();
+}
+
+#[test]
+fn stamp_gives_the_size_and_hash_of_a_file_and_none_where_no_file_is() {
+    let directory = tempfile::tempdir().unwrap();
+    write(directory.path(), "app/Report.sharp", SOURCE);
+
+    let stamped = stamp(directory.path(), b"app/Report.sharp").unwrap().expect("a file is there");
+
+    assert_eq!(stamped.path, b"app/Report.sharp");
+    assert_eq!(stamped.size, SOURCE.len() as u64);
+    assert_eq!(stamped.hash, source_hash(SOURCE.as_bytes()));
+    assert_ne!(stamped.mtime_ns, 0);
+    assert_eq!(stamp(directory.path(), b"app/Missing.sharp").unwrap(), None);
+}
+
+#[test]
+fn compiled_path_mirrors_the_real_source_path_under_the_sharp_folder() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    write(&root, "app/Shared/Money.sharp", SOURCE);
+
+    assert_eq!(
+        compiled_path(&root, &root.join("app/Shared/Money.sharp")).unwrap(),
+        Some(root.join(".sharp/app/Shared/Money.sharpc"))
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn compiled_path_is_none_for_a_link_to_a_file_outside_the_root() {
+    let outside = tempfile::tempdir().unwrap();
+    write(outside.path(), "Money.sharp", SOURCE);
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    fs::create_dir_all(root.join("app")).unwrap();
+    std::os::unix::fs::symlink(outside.path().join("Money.sharp"), root.join("app/Money.sharp")).unwrap();
+
+    assert_eq!(compiled_path(&root, &root.join("app/Money.sharp")).unwrap(), None);
+}
+
+/// A compiled file of [`SOURCE`] whose inputs are the stamps of `names` in `root`, as `mago compile` writes it.
+fn compiled_with_inputs(root: &Path, names: &[&str]) -> Vec<u8> {
+    let inputs: Vec<Input> = names
+        .iter()
+        .map(|name| {
+            stamp(root, name.as_bytes()).unwrap().unwrap_or(Input {
+                path: name.as_bytes().to_vec(),
+                size: 0,
+                mtime_ns: 0,
+                hash: [0; 16],
+            })
+        })
+        .collect();
+
+    encode(&lowered(SOURCE), SOURCE.as_bytes(), KEY, &inputs, &[])
+}
+
+#[test]
+fn a_compiled_file_is_current_until_one_of_its_inputs_changes() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    write(root, "app/Report.sharp", SOURCE);
+    write(root, "app/Report.lean", "theorem a : True := trivial\n");
+    let bytes = compiled_with_inputs(root, &["app/Report.sharp", "app/Report.lean", "app/Absent.lean"]);
+
+    assert!(!is_stale(root, &bytes).unwrap(), "every input is as it was stamped");
+
+    write(root, "app/Report.lean", "theorem a : True := by trivial\n");
+    assert!(is_stale(root, &bytes).unwrap(), "an input's bytes changed");
+
+    write(root, "app/Report.lean", "theorem a : True := trivial\n");
+    assert!(!is_stale(root, &bytes).unwrap(), "rewriting the same bytes keeps it current");
+
+    write(root, "app/Absent.lean", "theorem b : True := trivial\n");
+    assert!(is_stale(root, &bytes).unwrap(), "a file appeared where an input was absent");
+
+    fs::remove_file(root.join("app/Absent.lean")).unwrap();
+    fs::remove_file(root.join("app/Report.lean")).unwrap();
+    assert!(is_stale(root, &bytes).unwrap(), "an input that was there is gone");
+}
+
+#[test]
+fn a_compiled_file_another_checker_build_wrote_or_that_is_no_compiled_file_is_stale() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    write(root, "app/Report.sharp", SOURCE);
+    let bytes = compiled_with_inputs(root, &["app/Report.sharp"]);
+    let mut other_build = bytes.clone();
+    other_build[offset_of!(sharp_unit_header, checker)] ^= 1;
+
+    assert!(!is_stale(root, &bytes).unwrap());
+    assert!(is_stale(root, &other_build).unwrap());
+    assert!(is_stale(root, b"not a compiled file").unwrap());
+}
+
 fn read(name: &str, fingerprint: u64) -> Read {
     Read { name: name.as_bytes().to_vec(), fingerprint }
 }
@@ -469,6 +572,20 @@ fn the_c_header_carries_the_magic_the_abi_and_the_mago_commit() {
     assert!(HEADER.contains("#error"), "the header refuses a big-endian target");
 }
 
+#[test]
+fn the_c_header_defines_each_token_the_lowering_writes() {
+    let kinds = fs::read_to_string(repository().join("crates/sharp-bridge/src/kind.rs")).unwrap();
+    let tokens: Vec<(&str, &str)> = kinds
+        .lines()
+        .filter_map(|line| line.strip_prefix("pub const SHARP_T_")?.strip_suffix(';')?.split_once(": u32 = "))
+        .collect();
+
+    assert!(!tokens.is_empty(), "kind.rs holds the tokens the lowering writes");
+    for (token, value) in tokens {
+        assert!(HEADER.contains(&format!("\n#define SHARP_T_{token} {value}\n")), "SHARP_T_{token}: {HEADER}");
+    }
+}
+
 fn repository() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
@@ -494,25 +611,17 @@ enum _zend_ast_kind {
 };
 ";
 
-const ZEND_COMPILE_H: &str = "#define ZEND_ISEMPTY\t\t\t(1<<0)
-
-/* PHP# marks
- *
- * PHP# marks AST nodes and oplines in fields php-src already fills.
- *
- * ZEND_SHARP_OPERATOR_SYNTAX: the operator follows PHP#'s rules.
- *   attr of ZEND_AST_BINARY_OP, ZEND_AST_ASSIGN_OP          upstream: the opcode
- *
- * ZEND_SHARP_OPERATOR: the compiler turns ZEND_SHARP_OPERATOR_SYNTAX into it.
- *   extended_value of ZEND_ADD, ZEND_SUB                    upstream: none
- */
-#define ZEND_SHARP_OPERATOR_SYNTAX\t(1<<15)
-#define ZEND_SHARP_OPERATOR\t(1<<30)
-
-#define ZEND_LAST_CATCH\t\t\t(1<<0)
+const ZEND_LANGUAGE_PARSER_H: &str = "  enum zendtokentype
+  {
+    ZENDEMPTY = -2,
+    END = 0,                       /* \"end of file\"  */
+    T_LINE = 346,                  /* \"'__LINE__'\"  */
+    T_FILE = 347,                  /* \"'__FILE__'\"  */
+    T_DIR = 348,                   /* \"'__DIR__'\"  */
+  };
 ";
 
-/// `just regen-sharp-kinds` for `zend_ast`, run in a copy of the repository's script and bridge sources after `edit`
+/// The generator given only `zend_ast`, run in a copy of the repository's script and bridge sources after `edit`
 /// changes one of those sources. The copy lives as long as the returned folder.
 fn generator(zend_ast: &str, edit: Option<(&str, &str, &str)>) -> (tempfile::TempDir, Command) {
     let root = tempfile::tempdir().unwrap();
@@ -537,14 +646,19 @@ fn generator(zend_ast: &str, edit: Option<(&str, &str, &str)>) -> (tempfile::Tem
     (root, command)
 }
 
-/// The `SHARP_UNIT_ABI` line the generator prints for `zend_ast` after `edit`.
-fn generated_abi(zend_ast: &str, edit: Option<(&str, &str, &str)>) -> String {
-    let (_root, mut command) = generator(zend_ast, edit);
-    let output = command.output().unwrap();
+/// What the generator prints for `zend_ast` and `zend_language_parser` after `edit`.
+fn generated(zend_ast: &str, zend_language_parser: &str, edit: Option<(&str, &str, &str)>) -> String {
+    let (root, mut command) = generator(zend_ast, edit);
+    fs::write(root.path().join("zend_language_parser.h"), zend_language_parser).unwrap();
+    let output = command.arg(root.path().join("zend_language_parser.h")).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 
-    String::from_utf8(output.stdout)
-        .unwrap()
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// The `SHARP_UNIT_ABI` line the generator prints for `zend_ast` and `zend_language_parser` after `edit`.
+fn generated_abi(zend_ast: &str, zend_language_parser: &str, edit: Option<(&str, &str, &str)>) -> String {
+    generated(zend_ast, zend_language_parser, edit)
         .lines()
         .find(|line| line.starts_with("pub const SHARP_UNIT_ABI: [u8; 16] = 0x"))
         .expect("the generator prints SHARP_UNIT_ABI")
@@ -552,55 +666,160 @@ fn generated_abi(zend_ast: &str, edit: Option<(&str, &str, &str)>) -> String {
 }
 
 #[test]
-fn the_unit_abi_changes_with_the_kind_table_and_the_layouts() {
-    if !php_is_available("the_unit_abi_changes_with_the_kind_table_and_the_layouts") {
+fn the_unit_abi_changes_with_the_kind_table_the_tokens_and_the_layouts() {
+    if !php_is_available("the_unit_abi_changes_with_the_kind_table_the_tokens_and_the_layouts") {
         return;
     }
 
-    let base = generated_abi(ZEND_AST_H, None);
-    assert_eq!(generated_abi(ZEND_AST_H, None), base);
+    let base = generated_abi(ZEND_AST_H, ZEND_LANGUAGE_PARSER_H, None);
+    assert_eq!(generated_abi(ZEND_AST_H, ZEND_LANGUAGE_PARSER_H, None), base);
     assert_eq!(
-        generated_abi(ZEND_AST_H, Some(("lib.rs", "/// First line.", "/// The first line."))),
+        generated_abi(ZEND_AST_H, ZEND_LANGUAGE_PARSER_H, Some(("lib.rs", "/// First line.", "/// The first line."))),
         base,
         "a comment is not layout"
+    );
+    assert_eq!(
+        generated_abi(ZEND_AST_H, &ZEND_LANGUAGE_PARSER_H.replace("T_LINE = 346", "T_LINE = 345"), None),
+        base,
+        "a token the lowering does not write is not ABI"
     );
 
     for (change, abi) in [
         (
             "a kind",
-            generated_abi(&ZEND_AST_H.replace("ZEND_AST_CONSTANT,", "ZEND_AST_CONSTANT,\n\tZEND_AST_ZNODE,"), None),
+            generated_abi(
+                &ZEND_AST_H.replace("ZEND_AST_CONSTANT,", "ZEND_AST_CONSTANT,\n\tZEND_AST_ZNODE,"),
+                ZEND_LANGUAGE_PARSER_H,
+                None,
+            ),
         ),
-        ("a sharp_node field", generated_abi(ZEND_AST_H, Some(("lib.rs", "pub line: u32,", "pub line: u64,")))),
+        ("a token", generated_abi(ZEND_AST_H, &ZEND_LANGUAGE_PARSER_H.replace("T_FILE = 347", "T_FILE = 348"), None)),
+        (
+            "a sharp_node field",
+            generated_abi(ZEND_AST_H, ZEND_LANGUAGE_PARSER_H, Some(("lib.rs", "pub line: u32,", "pub line: u64,"))),
+        ),
         (
             "a sharp_value case",
-            generated_abi(ZEND_AST_H, Some(("lib.rs", "SHARP_LONG,", "SHARP_LONG,\n    SHARP_ARRAY,"))),
+            generated_abi(
+                ZEND_AST_H,
+                ZEND_LANGUAGE_PARSER_H,
+                Some(("lib.rs", "SHARP_LONG,", "SHARP_LONG,\n    SHARP_ARRAY,")),
+            ),
         ),
-        ("a sharp_str field", generated_abi(ZEND_AST_H, Some(("lib.rs", "pub len: u32,", "pub len: u64,")))),
+        (
+            "a sharp_str field",
+            generated_abi(ZEND_AST_H, ZEND_LANGUAGE_PARSER_H, Some(("lib.rs", "pub len: u32,", "pub len: u64,"))),
+        ),
         (
             "a header field",
-            generated_abi(ZEND_AST_H, Some(("unit.rs", "pub facts_size: u32,", "pub facts_size: u64,"))),
+            generated_abi(
+                ZEND_AST_H,
+                ZEND_LANGUAGE_PARSER_H,
+                Some(("unit.rs", "pub facts_size: u32,", "pub facts_size: u64,")),
+            ),
         ),
         (
             "a sharp_input field",
-            generated_abi(ZEND_AST_H, Some(("unit.rs", "pub mtime_ns: i64,", "pub mtime_ns: u64,"))),
+            generated_abi(
+                ZEND_AST_H,
+                ZEND_LANGUAGE_PARSER_H,
+                Some(("unit.rs", "pub mtime_ns: i64,", "pub mtime_ns: u64,")),
+            ),
         ),
     ] {
         assert_ne!(abi, base, "{change}");
     }
 }
 
-/// The generator reads one header, so a second argument is an error.
 #[test]
-fn the_kind_generator_takes_only_zend_ast_h() {
-    if !php_is_available("the_kind_generator_takes_only_zend_ast_h") {
+fn each_generated_token_equals_its_value_in_zend_language_parser_h() {
+    if !php_is_available("each_generated_token_equals_its_value_in_zend_language_parser_h") {
+        return;
+    }
+
+    for value in ["347", "512"] {
+        let kinds =
+            generated(ZEND_AST_H, &ZEND_LANGUAGE_PARSER_H.replace("T_FILE = 347", &format!("T_FILE = {value}")), None);
+
+        assert!(kinds.contains(&format!("\npub const SHARP_T_FILE: u32 = {value};\n")), "{kinds}");
+    }
+}
+
+#[test]
+fn the_kind_generator_requires_zend_language_parser_h() {
+    if !php_is_available("the_kind_generator_requires_zend_language_parser_h") {
+        return;
+    }
+
+    let (_root, mut command) = generator(ZEND_AST_H, None);
+    let output = command.output().unwrap();
+
+    assert!(!output.status.success(), "a missing parser header is an error");
+    let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(printed.contains("Pass the path to php-sharp's `Zend/zend_language_parser.h`."), "{printed}");
+}
+
+/// The generator reads two headers, so a third argument is an error.
+#[test]
+fn the_kind_generator_takes_only_zend_ast_h_and_zend_language_parser_h() {
+    if !php_is_available("the_kind_generator_takes_only_zend_ast_h_and_zend_language_parser_h") {
         return;
     }
 
     let (root, mut command) = generator(ZEND_AST_H, None);
-    fs::write(root.path().join("zend_compile.h"), ZEND_COMPILE_H).unwrap();
-    let output = command.arg(root.path().join("zend_compile.h")).output().unwrap();
+    fs::write(root.path().join("zend_language_parser.h"), ZEND_LANGUAGE_PARSER_H).unwrap();
+    let output = command
+        .arg(root.path().join("zend_language_parser.h"))
+        .arg(root.path().join("zend_language_parser.h"))
+        .output()
+        .unwrap();
 
-    assert!(!output.status.success(), "a second argument is an error");
+    assert!(!output.status.success(), "a third argument is an error");
     let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-    assert!(printed.contains("Pass only the path to php-src's `Zend/zend_ast.h`."), "{printed}");
+    assert!(
+        printed.contains(
+            "Pass only the paths to php-src's `Zend/zend_ast.h` and php-sharp's `Zend/zend_language_parser.h`."
+        ),
+        "{printed}"
+    );
+}
+
+#[test]
+fn the_kind_generator_refuses_a_parser_header_without_a_token_the_lowering_writes() {
+    if !php_is_available("the_kind_generator_refuses_a_parser_header_without_a_token_the_lowering_writes") {
+        return;
+    }
+
+    let (root, mut command) = generator(ZEND_AST_H, None);
+    fs::write(root.path().join("zend_language_parser.h"), ZEND_LANGUAGE_PARSER_H.replace("T_FILE", "T_PATH")).unwrap();
+    let output = command.arg(root.path().join("zend_language_parser.h")).output().unwrap();
+
+    assert!(!output.status.success(), "a parser header without T_FILE is an error");
+    let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(printed.contains("Unable to find the token `T_FILE`"), "{printed}");
+}
+
+/// The lowering names a php-src token only by its `SHARP_T_` constant, which the generator writes to `kind.rs`, so a
+/// token the generator does not write is a compile error.
+#[test]
+fn the_bridge_names_each_token_by_its_generated_constant() {
+    let mut named = Vec::new();
+    let mut folders = vec![repository().join("crates/sharp-bridge/src")];
+    while let Some(folder) = folders.pop() {
+        for entry in fs::read_dir(folder).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                folders.push(path);
+            } else if !path.ends_with("kind.rs") {
+                let source = fs::read_to_string(&path).unwrap();
+                for word in source.split(|character: char| !(character.is_ascii_alphanumeric() || character == '_')) {
+                    if word.starts_with("T_") {
+                        named.push(format!("{} names {word}", path.display()));
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(named.is_empty(), "{named:#?}");
 }

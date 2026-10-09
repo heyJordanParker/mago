@@ -79,6 +79,43 @@ fn namespace_and_import_take_dotted_names() {
     assert_eq!(source(CODE, &imported), "App.Shared.Money");
 }
 
+/// Asserts that `code`, the file at `path`, parses to one import of `written` renamed to `Rx`.
+fn assert_renamed_import(path: &'static str, code: &'static str, written: &str) {
+    let arena = LocalArena::new();
+    let program = parse(&arena, path, code);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(Statement::Namespace(namespace)) =
+        program.statements.iter().find(|statement| matches!(statement, Statement::Namespace(_)))
+    else {
+        panic!("expected a namespace, got {:#?}", program.statements);
+    };
+    let Some(Statement::Use(Use { items: UseItems::Sequence(items), .. })) = namespace.statements().first() else {
+        panic!("expected one plain import, got {:#?}", namespace.statements());
+    };
+    let item = items.items.first().expect("one imported class");
+    let alias = item.alias.as_ref().expect("an alias");
+
+    assert_eq!(source(code, &item.name), written, "the imported name");
+    assert_eq!(alias.r#as.value, b"as", "the keyword");
+    assert_eq!(source(code, &alias.identifier), "Rx", "the alias");
+}
+
+/// Spec section 23 renames an import with `as`, into the alias node PHP's `use … as` has.
+#[test]
+fn an_import_renamed_with_as_holds_its_dotted_name_and_its_alias() {
+    assert_renamed_import("src/App.sharp", "namespace App;\n\nimport Sharp.Text.Regex as Rx;\n", "Sharp.Text.Regex");
+}
+
+#[test]
+fn a_php_use_renamed_with_as_holds_its_name_and_its_alias() {
+    assert_renamed_import(
+        "src/App.php",
+        "<?php\n\nnamespace App;\n\nuse Sharp\\Text\\Regex as Rx;\n",
+        "Sharp\\Text\\Regex",
+    );
+}
+
 #[test]
 fn dotted_name_with_a_space_is_a_parse_error() {
     let arena = LocalArena::new();
@@ -1438,6 +1475,35 @@ fn a_spaced_question_mark_after_a_name_is_not_a_typed_local() {
 }
 
 #[test]
+fn a_statement_starting_with_a_name_and_a_bar_is_a_typed_local_only_when_a_name_follows_the_type() {
+    const CODE: &str = "class Report\n{\n    void run()\n    {\n        flags | MASK;\n        a | b == c;\n        (flags | 1);\n        int|string key = 1;\n        Calc|List<int>|Report? found = null;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let statements: Vec<String> = method_body(program)
+        .iter()
+        .map(|statement| match statement {
+            Statement::LocalDeclaration(local) => {
+                format!("local {}", source(CODE, local.hint.as_ref().expect("a type")))
+            }
+            Statement::Expression(statement) => format!("expression {}", grouping(CODE, statement.expression)),
+            _ => panic!("expected a local or an expression statement, got {statement:#?}"),
+        })
+        .collect();
+    assert_eq!(
+        statements,
+        [
+            "expression (flags | MASK)",
+            "expression ((a | b) == c)",
+            "expression (flags | 1)",
+            "local int|string",
+            "local Calc|List<int>|Report?",
+        ]
+    );
+}
+
+#[test]
 fn a_for_loop_declares_its_counter_with_let_or_const() {
     const CODE: &str = "class Report\n{\n    void run()\n    {\n        for (let i = 0; i < 3; i++) {\n        }\n        for (const j = 0; ; ) {\n        }\n    }\n}\n";
     let arena = LocalArena::new();
@@ -2649,6 +2715,177 @@ fn extern_in_a_php_file_is_a_name() {
     assert_eq!(property.hint().map(|hint| source(CODE, hint)), Some("extern"));
 }
 
+/// A file-level `extern` declares the effects of a plain PHP class, method or function, spec section 29. Its target is
+/// a bare name or `Class.member`, and `uses` lists its effects.
+#[test]
+fn extern_declares_a_class_a_method_or_a_function_and_its_effects() {
+    const CODE: &str = "namespace App.Stubs;\n\nimport Stripe.StripeClient;\nimport Carbon.Carbon;\n\nextern StripeClient uses Http;\nextern Carbon.now uses Clock;\nextern now uses Clock;\nextern BigDecimal;\nextern trim;\nextern Mailer uses Http, Mail;\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "app/Stubs/Stripe.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(Statement::Namespace(namespace)) = program.statements.first() else {
+        panic!("expected a namespace, got {:#?}", program.statements);
+    };
+    let externs: Vec<(&str, bool, Vec<&str>, &str)> = namespace
+        .statements()
+        .iter()
+        .filter_map(|statement| match statement {
+            Statement::Extern(declaration) => Some(declaration),
+            _ => None,
+        })
+        .map(|declaration| {
+            (
+                source(CODE, &declaration.target),
+                declaration.target.is_dotted(),
+                declaration.uses.iter().flat_map(|uses| uses.names.iter()).map(|name| source(CODE, name)).collect(),
+                source(CODE, declaration),
+            )
+        })
+        .collect();
+    assert_eq!(
+        externs,
+        [
+            ("StripeClient", false, vec!["Http"], "extern StripeClient uses Http;"),
+            ("Carbon.now", true, vec!["Clock"], "extern Carbon.now uses Clock;"),
+            ("now", false, vec!["Clock"], "extern now uses Clock;"),
+            ("BigDecimal", false, vec![], "extern BigDecimal;"),
+            ("trim", false, vec![], "extern trim;"),
+            ("Mailer", false, vec!["Http", "Mail"], "extern Mailer uses Http, Mail;"),
+        ]
+    );
+    let Some(Statement::Extern(stripe)) =
+        namespace.statements().iter().find(|statement| matches!(statement, Statement::Extern(_)))
+    else {
+        panic!("expected an extern, got {:#?}", namespace.statements());
+    };
+    assert_eq!(stripe.r#extern.value, b"extern");
+    assert_eq!(stripe.uses.as_ref().map(|uses| source(CODE, uses)), Some("uses Http"));
+}
+
+/// `extern` declares only when a name follows it, so `extern(text)` at the start of a PHP# statement stays a call.
+#[test]
+fn extern_before_a_parenthesis_stays_a_call_in_php_sharp() {
+    const CODE: &str = "class Text\n{\n    public void run(string text)\n    {\n        extern(text);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Text.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [statement] = method_body(program) else {
+        panic!("expected one statement, got {:#?}", method_body(program));
+    };
+    let Expression::Call(Call::Function(call)) = expression(statement) else {
+        panic!("expected a call, got {statement:#?}");
+    };
+    assert_eq!(source(CODE, call.function), "extern");
+}
+
+/// PHP has no `extern` declaration, so a `.php` statement that starts with `extern` stays a call or a constant.
+#[test]
+fn extern_starting_a_php_statement_stays_a_call_or_a_constant() {
+    const CODE: &str = "<?php\n\nextern(text);\nextern;\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/text.php", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::OpeningTag(_), call, constant] = program.statements.as_slice() else {
+        panic!("expected two expression statements, got {:#?}", program.statements);
+    };
+    assert!(matches!(expression(call), Expression::Call(Call::Function(_))), "{call:#?}");
+    assert_eq!(bare_name(expression(constant)), b"extern");
+}
+
+/// Spec section 28: a law states a fact about a class's values, written as its name, its typed parameters and an
+/// expression after `=>`.
+#[test]
+fn a_law_in_a_class_is_its_name_its_parameters_and_an_expression_body() {
+    const CODE: &str = "public class Money\n{\n    public Money(public int amount { get; }, public string currency { get; }) { }\n    public Money add(Money other) => new Money(this.amount + other.amount, this.currency);\n\n    law addKeepsCurrency(Money a, Money b) => a.add(b).currency == a.currency;\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "app/Shared/Money.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [ClassLikeMember::Method(_), ClassLikeMember::Method(_), ClassLikeMember::Law(law)] =
+        class_members(program).as_slice()
+    else {
+        panic!("expected two methods and a law, got {:#?}", class_members(program));
+    };
+    let parameters: Vec<&str> = law.parameter_list.parameters.iter().map(|parameter| source(CODE, parameter)).collect();
+    assert_eq!(law.law.value, b"law");
+    assert_eq!(source(CODE, &law.name), "addKeepsCurrency");
+    assert_eq!(parameters, ["Money a", "Money b"]);
+    assert_eq!(source(CODE, law.body.expression), "a.add(b).currency == a.currency");
+    assert_eq!(source(CODE, law), "law addKeepsCurrency(Money a, Money b) => a.add(b).currency == a.currency;");
+}
+
+/// Spec section 28 gives a state machine its laws on its status enum, beside the cases and the transition method.
+#[test]
+fn a_law_in_an_enum_follows_its_cases_and_methods() {
+    const CODE: &str = "public enum Status : string\n{\n    case Open = \"open\";\n    case Refunded = \"refunded\";\n\n    public Status after(Payment e) => this;\n    law refundedIsFinal(Payment e) => Status.Refunded.after(e) == Status.Refunded;\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "app/Billing/Status.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(Statement::Enum(status)) = program.statements.first() else {
+        panic!("expected an enum, got {:#?}", program.statements);
+    };
+    let [
+        ClassLikeMember::EnumCase(_),
+        ClassLikeMember::EnumCase(_),
+        ClassLikeMember::Method(_),
+        ClassLikeMember::Law(law),
+    ] = status.members.as_slice()
+    else {
+        panic!("expected two cases, a method and a law, got {:#?}", status.members);
+    };
+    assert_eq!(source(CODE, law), "law refundedIsFinal(Payment e) => Status.Refunded.after(e) == Status.Refunded;");
+}
+
+/// PHP has no laws, so a `.php` member that starts with `law` stays a typed property, and `law(…)` a call.
+#[test]
+fn law_in_a_php_file_is_a_name() {
+    const CODE: &str = "<?php\n\nclass Rules\n{\n    law $law;\n\n    public function check(): bool\n    {\n        return law(1);\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Rules.php", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [Statement::OpeningTag(_), Statement::Class(class)] = program.statements.as_slice() else {
+        panic!("expected a class, got {:#?}", program.statements);
+    };
+    let [ClassLikeMember::Property(property), ClassLikeMember::Method(check)] = class.members.as_slice() else {
+        panic!("expected a property and a method, got {:#?}", class.members);
+    };
+    assert_eq!(property.hint().map(|hint| source(CODE, hint)), Some("law"));
+    let MethodBody::Concrete(body) = &check.body else {
+        panic!("expected a method body, got {:#?}", check.body);
+    };
+    let [statement] = body.statements.as_slice() else {
+        panic!("expected one statement, got {:#?}", body.statements);
+    };
+    assert!(matches!(expression(statement), Expression::Call(Call::Function(_))), "{statement:#?}");
+}
+
+/// `law` starts a law only at the start of a member, before a name and `(`. After a modifier it is a return type, and
+/// before `(` a call.
+#[test]
+fn law_after_a_modifier_or_before_a_parenthesis_stays_a_name_in_php_sharp() {
+    const CODE: &str = "class Rules\n{\n    public law make(int x) => law(x);\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Rules.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [ClassLikeMember::Method(make)] = class_members(program).as_slice() else {
+        panic!("expected a method, got {:#?}", class_members(program));
+    };
+    assert_eq!(make.return_type_hint.as_ref().map(|hint| source(CODE, hint)), Some("law"));
+    let MethodBody::Expression(body) = &make.body else {
+        panic!("expected an expression body, got {:#?}", make.body);
+    };
+    let Expression::Call(Call::Function(call)) = body.expression else {
+        panic!("expected a call, got {:#?}", body.expression);
+    };
+    assert_eq!(source(CODE, call.function), "law");
+}
+
 /// The lexer reads `Self` and `self` as one keyword. The checker tells them apart by how the keyword is written.
 #[test]
 fn self_is_a_return_type_an_instantiated_class_and_the_class_of_a_static_call() {
@@ -2765,6 +3002,105 @@ fn dot_keeps_concatenating_in_php() {
         panic!("expected an expression statement, got {:#?}", program.statements);
     };
     assert!(matches!(statement.expression, Expression::Binary(binary) if binary.operator.is_concatenation()));
+}
+
+/// The expression's source with every binary operation, `is` and `as` wrapped in parentheses, and the value of a
+/// comparison or value pattern grouped the same way, showing how the parser grouped it.
+fn grouping(code: &str, expression: &Expression) -> String {
+    match expression {
+        Expression::Binary(binary) => format!(
+            "({} {} {})",
+            grouping(code, binary.lhs),
+            source(code, &binary.operator),
+            grouping(code, binary.rhs)
+        ),
+        Expression::Is(is) => {
+            let pattern = match is.pattern {
+                Pattern::Comparison(comparison) => {
+                    format!("{} {}", source(code, &comparison.operator), grouping(code, comparison.value))
+                }
+                Pattern::Value(value) => grouping(code, value),
+                pattern => source(code, pattern).to_owned(),
+            };
+
+            format!("({} is {pattern})", grouping(code, is.value))
+        }
+        Expression::As(r#as) => format!("({} as {})", grouping(code, r#as.value), source(code, r#as.hint)),
+        _ => source(code, expression).to_owned(),
+    }
+}
+
+#[test]
+fn bitwise_operators_bind_tighter_than_comparisons() {
+    const CODE: &str = "class Report\n{\n    bool run()\n    {\n        return permissions & WRITE != 0;\n        return a | b == c ^ d;\n        return a & b < c | d;\n        return a == b & c;\n        return a << 1 & b;\n        return a | b ^ c & d;\n        return a < b == c;\n        return a && b | c;\n        return a + b << c;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let groupings: Vec<String> =
+        method_body(program).iter().map(|statement| grouping(CODE, expression(statement))).collect();
+    assert_eq!(
+        groupings,
+        [
+            "((permissions & WRITE) != 0)",
+            "((a | b) == (c ^ d))",
+            "((a & b) < (c | d))",
+            "(a == (b & c))",
+            "((a << 1) & b)",
+            "(a | (b ^ (c & d)))",
+            "((a < b) == c)",
+            "(a && (b | c))",
+            "((a + b) << c)",
+        ]
+    );
+}
+
+#[test]
+fn php_keeps_bitwise_operators_looser_than_comparisons() {
+    const CODE: &str = "<?php\n$permissions & $WRITE != 0;\n$a | $b == $c ^ $d;\n$a & $b < $c | $d;\n$a == $b & $c;\n$a << 1 & $b;\n$a | $b ^ $c & $d;\n$a < $b == $c;\n$a && $b | $c;\n$a + $b << $c;\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.php", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let groupings: Vec<String> =
+        program.statements.iter().skip(1).map(|statement| grouping(CODE, expression(statement))).collect();
+    assert_eq!(
+        groupings,
+        [
+            "($permissions & ($WRITE != 0))",
+            "($a | (($b == $c) ^ $d))",
+            "(($a & ($b < $c)) | $d)",
+            "(($a == $b) & $c)",
+            "(($a << 1) & $b)",
+            "($a | ($b ^ ($c & $d)))",
+            "(($a < $b) == $c)",
+            "($a && ($b | $c))",
+            "(($a + $b) << $c)",
+        ]
+    );
+}
+
+#[test]
+fn is_and_as_bind_with_the_comparisons_below_the_bitwise_operators() {
+    const CODE: &str = "class Report\n{\n    bool run()\n    {\n        return flags is > 1 | 2;\n        return flags is 1 | 2;\n        return a & b is int;\n        return a | b as Calc;\n        return a == b is Calc;\n        return a < b is Calc;\n        return a is Calc is Report;\n    }\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Report.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let groupings: Vec<String> =
+        method_body(program).iter().map(|statement| grouping(CODE, expression(statement))).collect();
+    assert_eq!(
+        groupings,
+        [
+            "(flags is > (1 | 2))",
+            "(flags is (1 | 2))",
+            "((a & b) is int)",
+            "((a | b) as Calc)",
+            "(a == (b is Calc))",
+            "((a < b) is Calc)",
+            "((a is Calc) is Report)",
+        ]
+    );
 }
 
 #[test]
@@ -3238,4 +3574,150 @@ fn php_keeps_its_match_of_conditions() {
         panic!("expected an expression statement, got {:#?}", program.statements);
     };
     assert!(matches!(statement.expression, Expression::Match(_)), "{statement:#?}");
+}
+
+#[test]
+fn an_operator_is_its_return_type_operator_its_symbol_its_parameters_and_its_body() {
+    const CODE: &str = "class Money\n{\n    public static bool operator ==(Money a, Money b) => a.cents == b.cents;\n\n    public static int operator <=>(Money a, Money b)\n    {\n        return a.cents - b.cents;\n    }\n\n    public static Money operator +(Money a, Money b) => a;\n\n    public static Money operator -(Money a, Money b) => a;\n\n    public static Money operator *(Money a, int b) => a;\n\n    public static Money operator /(Money a, int b) => a;\n\n    public static Money operator %(Money a, int b) => a;\n\n    public static Money operator **(Money a, int b) => a;\n\n    public static Money operator -(Money a) => a;\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Money.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let operators: Vec<_> = class_members(program)
+        .iter()
+        .map(|member| {
+            let ClassLikeMember::Operator(operator) = member else {
+                panic!("expected an operator, got {member:#?}");
+            };
+            assert!(operator.return_type_hint.colon.is_none());
+            assert_eq!(operator.operator.value, b"operator");
+
+            (
+                source(CODE, &operator.return_type_hint),
+                source(CODE, &operator.symbol),
+                operator.parameter_list.parameters.len(),
+                matches!(operator.body, MethodBody::Expression(_)),
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        operators,
+        [
+            ("bool", "==", 2, true),
+            ("int", "<=>", 2, false),
+            ("Money", "+", 2, true),
+            ("Money", "-", 2, true),
+            ("Money", "*", 2, true),
+            ("Money", "/", 2, true),
+            ("Money", "%", 2, true),
+            ("Money", "**", 2, true),
+            ("Money", "-", 1, true),
+        ]
+    );
+    let Some(ClassLikeMember::Operator(equality)) = class_members(program).first() else {
+        panic!("expected an operator, got {:#?}", class_members(program));
+    };
+    assert!(matches!(equality.symbol, BinaryOperator::Equal(_)), "{:#?}", equality.symbol);
+    assert_eq!(source(CODE, equality), "public static bool operator ==(Money a, Money b) => a.cents == b.cents;");
+}
+
+#[test]
+fn an_operator_starts_at_its_attributes() {
+    const CODE: &str = "class Money\n{\n    [Pure] public static Money operator +(Money a, Money b) => a;\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Money.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(ClassLikeMember::Operator(operator)) = class_members(program).first() else {
+        panic!("expected an operator, got {:#?}", class_members(program));
+    };
+    assert_eq!(source(CODE, operator), "[Pure] public static Money operator +(Money a, Money b) => a;");
+}
+
+#[test]
+fn a_binary_operator_a_class_cannot_declare_parses_for_semantics_to_refuse() {
+    const CODE: &str = "class Money\n{\n    public static bool operator !=(Money a, Money b) => false;\n\n    public static bool operator <(Money a, Money b) => false;\n\n    public static bool operator &&(Money a, Money b) => false;\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Money.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let symbols: Vec<_> = class_members(program)
+        .iter()
+        .map(|member| {
+            let ClassLikeMember::Operator(operator) = member else {
+                panic!("expected an operator, got {member:#?}");
+            };
+
+            source(CODE, &operator.symbol)
+        })
+        .collect();
+    assert_eq!(symbols, ["!=", "<", "&&"]);
+}
+
+#[test]
+fn a_symbol_that_is_no_binary_operator_is_a_parse_error_that_names_the_declared_operators() {
+    const CODE: &str =
+        "class Money\n{\n    public static bool operator !(Money a) => false;\n\n    public int cents() => 1;\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Money.sharp", CODE);
+
+    let errors: Vec<_> = program.errors.iter().map(|error| (error.to_string(), source(CODE, error))).collect();
+    assert_eq!(
+        errors,
+        [("`operator !` cannot be declared: only `+ - * / % **`, unary `-`, `==` and `<=>` can.".to_owned(), "!")]
+    );
+    let [ClassLikeMember::Method(cents)] = class_members(program).as_slice() else {
+        panic!("expected the method after the operator, got {:#?}", class_members(program));
+    };
+    assert_eq!(cents.name.value, b"cents");
+}
+
+#[test]
+fn an_operator_without_a_body_is_a_parse_error() {
+    let arena = LocalArena::new();
+    let program =
+        parse(&arena, "src/Money.sharp", "class Money\n{\n    public static bool operator ==(Money a, Money b);\n}\n");
+
+    assert_eq!(
+        program.errors.first().map(ToString::to_string).as_deref(),
+        Some("Expected one of `LeftBrace`, found `Semicolon`")
+    );
+}
+
+#[test]
+fn a_member_named_operator_is_a_method_or_a_field() {
+    const CODE: &str = "class Calc\n{\n    public int operator() => 1;\n\n    private int operator = 1;\n}\n";
+    let arena = LocalArena::new();
+    let program = parse(&arena, "src/Calc.sharp", CODE);
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let [ClassLikeMember::Method(method), ClassLikeMember::Property(field)] = class_members(program).as_slice() else {
+        panic!("expected a method and a field, got {:#?}", class_members(program));
+    };
+    assert_eq!(method.name.value, b"operator");
+    assert_eq!(field.first_variable().name, b"operator");
+}
+
+#[test]
+fn php_keeps_reading_operator_as_a_name() {
+    let arena = LocalArena::new();
+    let program = parse(
+        &arena,
+        "src/Calc.php",
+        "<?php class Calc { public function operator() {} public operator $value; const operator = 1; }",
+    );
+
+    assert!(program.errors.is_empty(), "{:#?}", program.errors);
+    let Some(Statement::Class(class)) = program.statements.get(1) else {
+        panic!("expected a class, got {:#?}", program.statements);
+    };
+    let [ClassLikeMember::Method(method), ClassLikeMember::Property(property), ClassLikeMember::Constant(constant)] =
+        class.members.as_slice()
+    else {
+        panic!("expected a method, a property and a constant, got {:#?}", class.members);
+    };
+    assert_eq!(method.name.value, b"operator");
+    assert!(matches!(property.hint(), Some(Hint::Identifier(name)) if name.value() == b"operator"), "{property:#?}");
+    assert_eq!(constant.first_item().name.value, b"operator");
 }

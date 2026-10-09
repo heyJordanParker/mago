@@ -104,13 +104,13 @@ where
         && !lhs_type.possibly_undefined_from_try()
         && !is_static_var
     {
+        let lhs_type_str = display_type(context, lhs_type);
         let issue = context.as_null_check_error(
             Issue::help(
                 "Redundant null coalesce: left-hand side can never be `null` or undefined."
             )
             .with_annotation(Annotation::primary(binary.lhs.span()).with_message(format!(
-                "This expression (type `{}`) is never `null` or undefined",
-                display_type(context, lhs_type)
+                "This expression (type `{lhs_type_str}`) is never `null` or undefined"
             )))
             .with_annotation(
                 Annotation::secondary(binary.rhs.span()).with_message("This right-hand side will never be evaluated"),

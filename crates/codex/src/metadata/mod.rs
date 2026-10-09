@@ -25,6 +25,7 @@ use crate::metadata::class_like::ClassLikeMetadata;
 use crate::metadata::class_like_constant::ClassLikeConstantMetadata;
 use crate::metadata::constant::ConstantMetadata;
 use crate::metadata::enum_case::EnumCaseMetadata;
+use crate::metadata::r#extern::ExternMetadata;
 use crate::metadata::flags::MetadataFlags;
 use crate::metadata::function_like::FunctionLikeMetadata;
 use crate::metadata::property::PropertyMetadata;
@@ -44,6 +45,7 @@ pub mod class_like;
 pub mod class_like_constant;
 pub mod constant;
 pub mod enum_case;
+pub mod r#extern;
 pub mod flags;
 pub mod function_like;
 pub mod parameter;
@@ -102,6 +104,11 @@ pub struct CodebaseMetadata {
     /// span and the method, and the entries come in the order the library declares them: by the path of their file,
     /// then by source order. Only a file `File::is_standard_library` marks adds entries.
     pub wrapped_functions: WordMap<Vec<(Word, Span, MethodIdentifier)>>,
+    /// Map from the target of a PHP# `extern` declaration, keyed as [`ExternMetadata::target`], to every declaration
+    /// of it in the order [`ExternMetadata`] sorts them. The first one declares the target, and each later one is a
+    /// duplicate.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub externs: HashMap<(Word, Word), Vec<ExternMetadata>>,
     /// Map from class/interface FQCN to the set of all its descendants (recursive).
     pub all_class_like_descendants: WordMap<WordSet>,
     /// Map from class/interface FQCN to the set of its direct descendants (children).
@@ -1149,6 +1156,7 @@ impl CodebaseMetadata {
 
         self.symbols.extend(other.symbols);
         self.merge_wrapped_functions(other.wrapped_functions);
+        self.merge_externs(other.externs);
 
         for (k, v) in other.all_class_like_descendants {
             self.all_class_like_descendants.entry(k).or_default().extend(v);
@@ -1237,6 +1245,7 @@ impl CodebaseMetadata {
         self.merge_wrapped_functions(
             other.wrapped_functions.iter().map(|(function, wrappers)| (*function, wrappers.clone())),
         );
+        self.merge_externs(other.externs.iter().map(|(target, declarations)| (*target, declarations.clone())));
 
         for (k, v) in &other.all_class_like_descendants {
             self.all_class_like_descendants.entry(*k).or_default().extend(v.iter().copied());
@@ -1275,6 +1284,17 @@ impl CodebaseMetadata {
         for (function, wrappers) in incoming {
             let merged = self.wrapped_functions.entry(function).or_default();
             merged.extend(wrappers);
+            merged.sort_unstable();
+            merged.dedup();
+        }
+    }
+
+    /// Adds another codebase's `extern` declarations, keeping each target's declarations in the order
+    /// [`ExternMetadata`] sorts them, whatever order the files merge in.
+    fn merge_externs(&mut self, incoming: impl IntoIterator<Item = ((Word, Word), Vec<ExternMetadata>)>) {
+        for (target, declarations) in incoming {
+            let merged = self.externs.entry(target).or_default();
+            merged.extend(declarations);
             merged.sort_unstable();
             merged.dedup();
         }
@@ -1551,6 +1571,10 @@ impl CodebaseMetadata {
             wrappers.retain(|(_, span, _)| !removed_files.contains(&span.file_id));
         }
         self.wrapped_functions.retain(|_, wrappers| !wrappers.is_empty());
+        for declarations in self.externs.values_mut() {
+            declarations.retain(|declaration| !removed_files.contains(&declaration.span.file_id));
+        }
+        self.externs.retain(|_, declarations| !declarations.is_empty());
     }
 
     /// Takes all issues from the codebase metadata.

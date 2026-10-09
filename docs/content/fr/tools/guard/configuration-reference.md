@@ -49,10 +49,10 @@ La section périmètre définit les règles de dépendance entre parties du proj
 ```toml
 [guard.perimeter]
 layering = [
-    "CarthageSoftware\\Domain",
-    "CarthageSoftware\\Application",
-    "CarthageSoftware\\UI",
-    "CarthageSoftware\\Infrastructure",
+    "App\\Domain",
+    "App\\Application",
+    "App\\UI",
+    "App\\Infrastructure",
 ]
 
 [guard.perimeter.layers]
@@ -61,19 +61,19 @@ psr = ["Psr\\**"]
 framework = ["Symfony\\**", "Doctrine\\**"]
 
 [[guard.perimeter.rules]]
-namespace = "CarthageSoftware\\Domain"
+namespace = "App\\Domain"
 permit = ["@layer:core"]
 
 [[guard.perimeter.rules]]
-namespace = "CarthageSoftware\\Application"
+namespace = "App\\Application"
 permit = ["@layer:core", "@layer:psr"]
 
 [[guard.perimeter.rules]]
-namespace = "CarthageSoftware\\Infrastructure"
+namespace = "App\\Infrastructure"
 permit = ["@layer:core", "@layer:psr", "@layer:framework"]
 
 [[guard.perimeter.rules]]
-namespace = "CarthageSoftware\\Tests"
+namespace = "App\\Tests"
 permit = ["@all"]
 ```
 
@@ -148,7 +148,7 @@ Les restrictions sont évaluées avant les règles `permit` ordinaires et le lay
 
 ```toml
 [[guard.structural.rules]]
-on = "CarthageSoftware\\UI\\**\\Controller\\**"
+on = "App\\UI\\**\\Controller\\**"
 target = "class"
 must-be-named = "*Controller"
 must-be-final = true
@@ -156,20 +156,20 @@ must-be-readonly = true
 reason = "Controllers must be final and follow naming conventions."
 
 [[guard.structural.rules]]
-on = "CarthageSoftware\\Domain\\**\\Repository\\**"
+on = "App\\Domain\\**\\Repository\\**"
 target = "interface"
 must-be-named = "*RepositoryInterface"
 reason = "Domain repository interfaces must follow a standard naming convention."
 
 [[guard.structural.rules]]
-on = "CarthageSoftware\\Infrastructure\\**\\Repository\\**"
+on = "App\\Infrastructure\\**\\Repository\\**"
 target = "class"
 must-be-final = true
-must-extend = "CarthageSoftware\\Infrastructure\\Shared\\Repository\\AbstractRepository"
+must-extend = "App\\Infrastructure\\Shared\\Repository\\AbstractRepository"
 reason = "Infrastructure repositories must extend our abstract class."
 
 [[guard.structural.rules]]
-on = "CarthageSoftware\\Domain\\**\\Enum\\**"
+on = "App\\Domain\\**\\Enum\\**"
 must-be = ["enum"]
 reason = "This namespace is designated for enums only."
 ```

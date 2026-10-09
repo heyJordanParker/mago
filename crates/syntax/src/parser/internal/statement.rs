@@ -49,6 +49,13 @@ where
             T![Identifier] if self.dialect.is_sharp() && token.value == b"import" => {
                 Statement::Use(self.parse_import()?)
             }
+            T![Identifier]
+                if self.dialect.is_sharp()
+                    && token.value == b"extern"
+                    && self.stream.peek_kind(1)?.is_some_and(|kind| kind.is_identifier_maybe_reserved()) =>
+            {
+                Statement::Extern(self.parse_extern()?)
+            }
             T!["const" | Identifier | "list" | "function" | "class" | "("] if self.is_at_local_declaration()? => {
                 Statement::LocalDeclaration(self.parse_local_declaration()?)
             }

@@ -94,13 +94,11 @@ where
             .get(value.start_offset() as usize..value.end_offset() as usize)
             .unwrap_or_default(),
     );
+    let value_text = display_sharp_type(context, value_type);
     let message = if value_type.has_mixed() {
-        format!(
-            "T is {}, which could itself be a list; check what `{source}` is with `is` first",
-            display_sharp_type(value_type, codebase)
-        )
+        format!("T is {value_text}, which could itself be a list; check what `{source}` is with `is` first")
     } else {
-        let collections: Vec<&TAtomic> = element_type.types.iter().filter(|atomic| atomic.is_array()).collect();
+        let collections: Vec<TAtomic> = element_type.types.iter().filter(|atomic| atomic.is_array()).cloned().collect();
         if collections.is_empty() {
             return Some(get_list(element_type));
         }
@@ -111,17 +109,18 @@ where
             "map"
         };
         let reason = if collections.len() == element_type.types.len() { "itself a" } else { "which can be a" };
+        let collection_type = display_sharp_type(context, &TUnion::from_vec(collections));
 
-        format!("T is {}, {reason} {kind}", display_sharp_type(&element_type, codebase))
+        format!(
+            "T is {}, {reason} {kind}; write `{source} is {collection_type} one ? [one] : {source}`",
+            display_sharp_type(context, &element_type)
+        )
     };
 
     context.collector.report_with_code(
         IssueCode::InvalidArgument,
         Issue::error(message)
-            .with_annotation(
-                Annotation::primary(value.span())
-                    .with_message(format!("This is `{}`.", display_sharp_type(value_type, codebase))),
-            )
+            .with_annotation(Annotation::primary(value.span()).with_message(format!("This is `{value_text}`.")))
             .with_note("`wrap` returns a `List` or a `Map` as it is, because both run as PHP arrays."),
     );
 

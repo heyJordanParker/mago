@@ -23,55 +23,41 @@ In each location it looks for `mago.{toml,yaml,yml,json}` first, then `mago.dist
 
 ## Editor schema
 
-Every release publishes a JSON schema describing the full configuration tree. Editors that understand the schema give you autocomplete, hover documentation, and inline validation for `mago.{toml,yaml,yml,json}`.
+Mago describes the full configuration tree as a JSON schema. Editors that understand the schema give you autocomplete, hover documentation, and inline validation for `mago.{toml,yaml,yml,json}`.
 
-The schema is hosted at:
-
-- `https://mago.carthage.software/<version>/schema.json` — pinned to a specific release such as `1.51.0`.
-- `https://mago.carthage.software/latest/schema.json` — the most recent stable release.
-- `https://mago.carthage.software/main/schema.json` — the development build from `main`.
-
-Pin the URL to the version of Mago you have installed so the schema and your binary stay in sync. `mago init` writes the pinned URL into the file it scaffolds.
+When you install Mago through Composer (`heyjordanparker/mago-sharp`), a version-matched schema is written to `vendor/heyjordanparker/mago-sharp/schema.json` the first time you run `mago`. Reference it with a relative path so it always tracks the installed version. `mago init` writes this reference when that file exists.
 
 How you reference it depends on the format:
 
 ```toml
-#:schema https://mago.carthage.software/1.51.0/schema.json
-version = "1"
+#:schema vendor/heyjordanparker/mago-sharp/schema.json
+version = "0.2"
 php-version = "8.3"
 ```
 
 ```yaml
-# yaml-language-server: $schema=https://mago.carthage.software/1.51.0/schema.json
-version: "1"
+# yaml-language-server: $schema=vendor/heyjordanparker/mago-sharp/schema.json
+version: "0.2"
 php-version: "8.3"
 ```
 
 ```json
 {
-  "$schema": "https://mago.carthage.software/1.51.0/schema.json",
-  "version": "1",
+  "$schema": "vendor/heyjordanparker/mago-sharp/schema.json",
+  "version": "0.2",
   "php-version": "8.3"
 }
 ```
 
 For TOML the comment is read by the [Taplo](https://taplo.tamasfe.dev/) language server, which powers the "Even Better TOML" VS Code extension and the JetBrains TOML support. For YAML the comment is read by the [Red Hat YAML language server](https://github.com/redhat-developer/yaml-language-server). For JSON every modern editor reads `$schema` natively. Mago itself ignores the `$schema` key and the magic comments — they exist purely for editor tooling.
 
-If you regenerate the schema in CI (for example, to validate config files programmatically), `mago config --schema` prints it to stdout.
+Without Composer, `mago config --schema` prints the schema of the installed binary to stdout. Save it next to your config, reference that file instead, and regenerate it after each upgrade so the schema and your binary stay in sync:
 
-### Local schema with Composer
-
-When you install Mago through Composer (`heyjordanparker/mago-sharp`), a version-matched schema is written to `vendor/heyjordanparker/mago-sharp/schema.json` the first time you run `mago`. Reference it with a relative path so it always tracks the installed version — no manual URL bump when a Composer update bumps Mago:
-
-```toml
-#:schema vendor/heyjordanparker/mago-sharp/schema.json
-version = "1"
-php-version = "8.3"
+```sh
+mago config --schema > mago.schema.json
 ```
 
 ## Sharing configuration with `extends`
-
-> Available since Mago 1.25. Earlier versions silently ignore the directive.
 
 The `extends` directive lets one config layer on top of others without copy-pasting. Useful when several projects share a base standard.
 
@@ -139,7 +125,7 @@ Cycles are detected via canonical-path tracking and surface a clear error rather
 These keys live at the root of `mago.toml`.
 
 ```toml
-version = "1"
+version = "0.2"
 php-version = "8.2"
 threads = 8
 stack-size = 8388608     # 8 MiB
@@ -148,7 +134,7 @@ editor-url = "phpstorm://open?file=%file%&line=%line%&column=%column%"
 
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `version` | string | none | Pins the Mago version this project is tested against. Accepts a major (`"1"`), minor (`"1.51"`), or exact (`"1.51.0"`) pin. See [version pinning](#version-pinning). |
+| `version` | string | none | Pins the Mago version this project is tested against. Accepts a major (`"0"`), minor (`"0.2"`), or exact (`"0.2.0"`) pin. See [version pinning](#version-pinning). |
 | `php-version` | string | latest stable | The PHP version Mago should target for parsing and analysis. `mago init` autodetects this from `composer.json` when possible. |
 | `allow-unsupported-php-version` | boolean | `false` | Allow Mago to run on a PHP version it does not officially support. Not recommended. |
 | `no-version-check` | boolean | `false` | Silences the warning emitted when the installed binary drifts from the pinned version. Major-version drift is always fatal. |
@@ -162,9 +148,9 @@ Pinning the version surfaces drift between the installed binary and the project'
 
 Three pin levels:
 
-- **Major pin** (`version = "1"`): any `1.x.y` satisfies the pin. A bump to `2.x` is a hard error because a new major may ship with incompatible defaults, schema changes, or rule behaviour. This is the default `mago init` writes.
-- **Minor pin** (`version = "1.51"`): any `1.51.y` satisfies the pin. Drift to a different minor warns; drift across majors is still fatal.
-- **Exact pin** (`version = "1.51.0"`): any drift warns; drift across majors is still fatal.
+- **Major pin** (`version = "0"`): any `0.x.y` satisfies the pin. A bump to `1.x` is a hard error because a new major may ship with incompatible defaults, schema changes, or rule behaviour. From 1.0 on, this is the default `mago init` writes.
+- **Minor pin** (`version = "0.2"`): any `0.2.y` satisfies the pin. Drift to a different minor warns; drift across majors is still fatal. Before 1.0 a new minor release may break the configuration, as in Cargo's caret rule, so this is the default `mago init` writes.
+- **Exact pin** (`version = "0.2.0"`): any drift warns; drift across majors is still fatal.
 
 The warning can be silenced with `--no-version-check`, the `MAGO_NO_VERSION_CHECK` environment variable, or `no-version-check = true` in the config. None of those affect major-version drift, which is the entire point of pinning.
 
@@ -174,7 +160,7 @@ To sync the installed binary to the project's pin:
 mago self-update --to-project-version
 ```
 
-For exact pins, this resolves directly to that release tag. For major or minor pins, Mago scans recent GitHub releases and installs the highest one that satisfies the pin. So `version = "1"` with 2.0 already shipped still installs the latest 1.x release without dragging you forward.
+For exact pins, this resolves directly to that release tag. For major or minor pins, Mago scans recent GitHub releases and installs the highest one that satisfies the pin. So `version = "0"` with 1.0 already shipped still installs the latest 0.x release without dragging you forward.
 
 `version` is currently optional. A future Mago release may start warning when it is missing, to prepare projects for the eventual 2.0 upgrade.
 
@@ -255,7 +241,7 @@ Each of these is reported as a diagnostic on the patch file:
 
 ### Glob settings
 
-`[source.glob]` tunes how globs match. Available since 1.19.
+`[source.glob]` tunes how globs match.
 
 ```toml
 [source.glob]
@@ -293,7 +279,7 @@ excludes = ["src/**/AutoGenerated/**/*.php"]
 excludes = ["database/migrations/**"]
 ```
 
-The linter also supports per-rule path exclusions, useful when you want one rule to skip a path while everything else still applies. Glob patterns there require Mago 1.20 or later. The full reference is on the [linter configuration page](/tools/linter/configuration-reference/#per-rule-excludes).
+The linter also supports per-rule path exclusions, useful when you want one rule to skip a path while everything else still applies. The full reference is on the [linter configuration page](/tools/linter/configuration-reference/#per-rule-excludes).
 
 ```toml
 [linter.rules]

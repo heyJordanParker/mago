@@ -4,10 +4,6 @@ template_dir := `mktemp -d`
 list:
     @just --list
 
-# Update sponsors data
-update-sponsors:
-    php scripts/update-sponsors-docs.php
-
 # Regenerate the analyzer issue codes.
 regen-analyzer-issue-codes:
     rm -f crates/analyzer/src/code.rs
@@ -18,9 +14,9 @@ regen-analyzer-issue-codes:
 regen-sdk-node-kinds:
     php scripts/regen-sdk-node-kinds.php
 
-# Regenerate the PHP# bridge's `sharp_kind` and `SHARP_UNIT_ABI` from php-sharp's `Zend/zend_ast.h`.
-regen-sharp-kinds zend_ast_h:
-    php scripts/regen-sharp-kinds.php {{zend_ast_h}} > crates/sharp-bridge/src/kind.rs
+# Regenerate the PHP# bridge's `sharp_kind`, `SHARP_T_*` tokens and `SHARP_UNIT_ABI` from php-sharp's `Zend/zend_ast.h` and `Zend/zend_language_parser.h`.
+regen-sharp-kinds zend_ast_h zend_language_parser_h:
+    php scripts/regen-sharp-kinds.php {{zend_ast_h}} {{zend_language_parser_h}} > crates/sharp-bridge/src/kind.rs
 
 # Copy the PHP# bridge's C header, `sharp_unit.h`, which php-sharp commits as `ext/sharp/sharp_unit.h`.
 sharp-header destination:

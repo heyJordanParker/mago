@@ -47,5 +47,3 @@ Then open `http://127.0.0.1:3031/main/en/`.
 - Static assets live under `static/` and are copied to `dist/_assets/`.
 - The linter rules reference (`content/<lang>/tools/linter/rules.md`) is
   regenerated on every build by walking the in-process `mago-linter` registry.
-- The playground template loads CodeMirror from a CDN via an import map; no
-  bundle ships with the site.

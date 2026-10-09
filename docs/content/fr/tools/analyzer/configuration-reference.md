@@ -94,7 +94,7 @@ Ces indicateurs activent ou désactivent des analyses individuelles. Les valeurs
 | :--- | :--- | :--- |
 | `find-unused-expressions` | `true` | Signale les expressions dont le résultat est ignoré, comme `$a + $b;`. |
 | `find-unused-definitions` | `true` | Signale les définitions privées qui ne sont jamais référencées. |
-| `find-overly-wide-return-types` | `false` | Avertit lorsqu'un type de retour déclaré contient une branche que le corps ne produit jamais, comme `: string\|false` sur une fonction qui retourne toujours une chaîne. Disponible depuis 1.20.0. |
+| `find-overly-wide-return-types` | `false` | Avertit lorsqu'un type de retour déclaré contient une branche que le corps ne produit jamais, comme `: string\|false` sur une fonction qui retourne toujours une chaîne. |
 | `analyze-dead-code` | `false` | Analyse le code qui semble inaccessible. |
 | `memoize-properties` | `true` | Suit les valeurs littérales de propriété pour une inférence plus précise, au prix d'un peu de mémoire. |
 | `allow-possibly-undefined-array-keys` | `true` | **Déprécié.** Autorise l'accès aux clés qui peuvent manquer sans le signaler. Le passer à `false` signale uniquement les lectures de `array<K, V>` avec une clé littérale unique et n'élargit pas le type à `T\|null`. Préférez `strict-array-index-existence`. |
@@ -116,7 +116,7 @@ Ces indicateurs activent ou désactivent des analyses individuelles. Les valeurs
 | `check-name-casing` | `false` | Signale les casses incorrectes lors du référencement des classes, fonctions, etc. Aide à prévenir les échecs d'autoload sur les systèmes de fichiers sensibles à la casse. |
 | `enforce-class-finality` | `false` | Signale les classes qui ne sont pas `final`, `abstract` ou annotées `@api` et n'ont pas d'enfants. |
 | `require-api-or-internal` | `false` | Exige que les classes abstraites, interfaces et traits soient annotés `@api` ou `@internal`. |
-| `check-experimental` | `false` | Signale l'utilisation de symboles `@experimental` depuis des contextes non expérimentaux. Disponible depuis 1.19.0. |
+| `check-experimental` | `false` | Signale l'utilisation de symboles `@experimental` depuis des contextes non expérimentaux. |
 | `allow-side-effects-in-conditions` | `true` | Lorsque `false`, signale les appels à des fonctions impures à l'intérieur des conditions de `if`, `while`, `for`, ternaire ou `match`. |
 
 ## Initialisation des propriétés

@@ -41,13 +41,14 @@ pub fn check_call(call: &Call, context: &mut Context<'_, '_, '_>) {
 /// PHP requires these to be wrapped: `(function(){})()`.
 fn check_for_closure_invocation_without_parentheses(function: &Expression<'_>, context: &mut Context<'_, '_, '_>) {
     if let Expression::Closure(closure) = function {
-        context.report(
-            Issue::error("Immediately invoked closure must be wrapped in parentheses.")
-                .with_annotation(
-                    Annotation::primary(closure.span())
-                        .with_message("Closure is invoked here without wrapping parentheses."),
-                )
-                .with_help("Wrap the closure in parentheses before invoking it, e.g. `(function() { ... })()`."),
+        let issue = Issue::error("Immediately invoked closure must be wrapped in parentheses.").with_annotation(
+            Annotation::primary(closure.span()).with_message("Closure is invoked here without wrapping parentheses."),
         );
+
+        context.report(if context.program.dialect.is_sharp() {
+            issue
+        } else {
+            issue.with_help("Wrap the closure in parentheses before invoking it, e.g. `(function() { ... })()`.")
+        });
     }
 }

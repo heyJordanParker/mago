@@ -1,6 +1,9 @@
 use mago_analyzer::artifacts::AnalysisArtifacts;
+use mago_analyzer::artifacts::CallTarget;
+use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::identifier::method::MethodIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
+use mago_codex::metadata::parameter::FunctionLikeParameterMetadata;
 use mago_codex::metadata::property::PropertyMetadata;
 use mago_codex::misc::GenericParent;
 use mago_codex::ttype::TType;
@@ -17,8 +20,8 @@ use mago_codex::ttype::union::TUnion;
 use mago_names::ResolvedNames;
 use mago_span::HasSpan;
 use mago_span::Span;
+use mago_syntax::cst::Argument;
 use mago_syntax::cst::Call;
-use mago_syntax::cst::ClassLikeMemberSelector;
 use mago_syntax::cst::ConstantAccess;
 use mago_syntax::cst::Expression;
 use mago_syntax::dialect::Dialect;
@@ -41,22 +44,25 @@ pub struct Types<'analysis> {
 
 /// The declaration a class or member name resolves to, as the checker found it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Declaration {
-    pub(crate) kind: DeclarationKind,
+pub struct Declaration {
+    pub kind: DeclarationKind,
     /// The class that declares it: a class itself, or the class an inherited member is declared in.
-    pub(crate) class: Word,
+    pub class: Word,
     /// The member's name, or a class's own name.
-    pub(crate) name: Word,
+    pub name: Word,
     /// Whether code outside the class may use it. A class is public.
-    pub(crate) public: bool,
+    pub public: bool,
 }
 
 /// What a declaration is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DeclarationKind {
+pub enum DeclarationKind {
     Class,
     Interface,
-    Enum,
+    /// `backed` is whether each case has a backing value, which a `Map` keyed by the enum holds for the case.
+    Enum {
+        backed: bool,
+    },
     Constant,
     EnumCase,
     StaticProperty,
@@ -87,7 +93,8 @@ impl<'analysis> Types<'analysis> {
     }
 
     /// The type the analysis gave `expression`.
-    pub(crate) fn expression_type(&self, expression: &Expression) -> &'analysis TUnion {
+    #[must_use]
+    pub fn expression_type(&self, expression: &Expression) -> &'analysis TUnion {
         self.artifacts.get_expression_type(expression).unwrap_or_else(|| {
             unreachable!(
                 "the analysis types every expression of a file the checker accepted, not {:?}",
@@ -97,7 +104,8 @@ impl<'analysis> Types<'analysis> {
     }
 
     /// The declaration the fully qualified class name `class` resolves to.
-    pub(crate) fn class_declaration(&self, class: &[u8]) -> Declaration {
+    #[must_use]
+    pub fn class_declaration(&self, class: &[u8]) -> Declaration {
         let metadata = self.codebase.get_class_like(class).unwrap_or_else(|| {
             unreachable!("the checker refuses the unknown class `{}`", String::from_utf8_lossy(class))
         });
@@ -105,7 +113,7 @@ impl<'analysis> Types<'analysis> {
         let kind = if metadata.kind.is_interface() {
             DeclarationKind::Interface
         } else if metadata.kind.is_enum() {
-            DeclarationKind::Enum
+            DeclarationKind::Enum { backed: metadata.enum_type.is_some() }
         } else {
             DeclarationKind::Class
         };
@@ -264,7 +272,8 @@ impl<'analysis> Types<'analysis> {
     /// The declaration `member` of the fully qualified class name `class` resolves to when code reads it: an enum case,
     /// a constant, a property, then a method, which the read takes as a first-class callable. Only when the class
     /// declares none of them is it a property its `__get` serves. A call is [`Self::call_target`]'s.
-    pub(crate) fn member_declaration(&self, class: &[u8], member: &[u8]) -> Declaration {
+    #[must_use]
+    pub fn member_declaration(&self, class: &[u8], member: &[u8]) -> Declaration {
         let declared = |kind, public| Declaration { kind, class: word(class), name: word(member), public };
 
         if self.codebase.get_enum_case(class, member).is_some() {
@@ -286,47 +295,35 @@ impl<'analysis> Types<'analysis> {
         }
     }
 
-    /// The declaration the method call `call`, null-safe or not, runs, as PHP finds it. `Class.m()` and a class value's
-    /// `type.m()` run the class's method, or else a static method its `__callStatic` serves. `object.m()` runs the
-    /// receiver's method, or else its property holding a function, as spec section 14 calls one, or else a method its
-    /// `__call` serves. Every class the receiver can be has the same kind of member, and `class` is the first's.
-    /// `Self.m()` and `super.m()` lower to `static::` and `parent::`, and no caller asks their target.
-    pub(crate) fn call_target(&self, call: &Expression) -> Declaration {
-        let (object, method, class) = match call {
-            Expression::Call(Call::Method(call)) => (call.object, &call.method, self.names.static_call_class(call)),
-            Expression::Call(Call::NullSafeMethod(call)) => (call.object, &call.method, None),
-            _ => unreachable!("only a method call has a typed call target yet"),
-        };
-        let ClassLikeMemberSelector::Identifier(method) = method else {
-            unreachable!("check_slice refuses the method name `{method}`");
-        };
-        if let Some(class) = class {
-            return self.static_call_declaration(self.names.get(&class.name), method.value);
-        }
-        if matches!(object, Expression::Self_(_) | Expression::Parent(_)) {
+    /// The declaration the method call `call`, null-safe or not, runs, as the analysis resolved it when it checked the
+    /// call: a method, a method the class's `__call` or `__callStatic` serves, or a property holding a function, as spec
+    /// section 14 calls one. Every class the receiver can be has the same kind of member, and the declaration is the
+    /// first the analysis recorded. A call of a property also records what the function it holds runs, such as an
+    /// object's `__invoke`, for the effects check, and lowers as the property alone.
+    #[must_use]
+    pub fn call_target(&self, call: &Expression) -> Declaration {
+        let targets: Vec<&CallTarget> = self.artifacts.get_callees(call).collect();
+        let calls_property = targets.iter().any(|target| matches!(target, CallTarget::Property { .. }));
+        let declarations: Vec<Declaration> = targets
+            .into_iter()
+            .filter(|target| !calls_property || matches!(target, CallTarget::Property { .. }))
+            .map(|target| self.target_declaration(target))
+            .collect();
+        let Some(&declaration) = declarations.first() else {
             unreachable!(
-                "`Self.m()` and `super.m()` lower to `static::` and `parent::`, and no caller asks their target"
+                "the analysis records what each call of a file the checker accepted runs, not {:?}",
+                call.span()
             );
-        }
-
-        let r#type = self.expression_type(object);
-        let declarations: Vec<Declaration> = if let Some(classes) = class_value_classes(r#type) {
-            classes.iter().map(|class| self.static_call_declaration(class, method.value)).collect()
-        } else {
-            receiver_classes(r#type)
-                .unwrap_or_else(|| unreachable!("the lowering asks only for a receiver whose type names classes"))
-                .iter()
-                .map(|class| self.call_declaration(class, method.value))
-                .collect()
         };
         agreed_kind(declarations.iter().map(|declaration| declaration.kind));
 
-        declarations[0]
+        declaration
     }
 
     /// The full name of the constant the read `constant` reaches, as the analysis found it: the constant of that name
     /// in the file's namespace, or else the global one.
-    pub(crate) fn constant_target(&self, constant: &ConstantAccess) -> Word {
+    #[must_use]
+    pub fn constant_target(&self, constant: &ConstantAccess) -> Word {
         self.codebase
             .get_constant_or_global(self.names.get(constant), constant.name.value())
             .unwrap_or_else(|| unreachable!("the checker refuses the undefined constant `{}`", constant.name))
@@ -342,46 +339,35 @@ impl<'analysis> Types<'analysis> {
         self.inline_forms.get(&key(declaration.class.as_bytes(), declaration.name.as_bytes()))
     }
 
-    /// What a static call of `class`'s `method` runs: its method, or else a static method its `__callStatic` serves.
-    fn static_call_declaration(&self, class: &[u8], method: &[u8]) -> Declaration {
-        let served = || Declaration {
-            kind: DeclarationKind::StaticMethod,
-            class: word(class),
-            name: word(method),
-            public: true,
+    /// The declaration of what the analysis recorded a method call runs. A method `__call` or `__callStatic` serves is
+    /// public and, as any subclass may declare it, overridable.
+    fn target_declaration(&self, target: &CallTarget) -> Declaration {
+        let method = |class: Word, method: Word| {
+            self.method_declaration(class.as_bytes(), method.as_bytes())
+                .unwrap_or_else(|| unreachable!("the analysis resolved `{class}.{method}()` from the codebase"))
         };
 
-        self.method_declaration(class, method)
-            .or_else(|| self.codebase.method_exists(class, b"__callStatic").then(served))
-            .unwrap_or_else(|| {
-                unreachable!(
-                    "the checker refuses `{}.{}()`, which names no method",
-                    String::from_utf8_lossy(class),
-                    String::from_utf8_lossy(method)
-                )
-            })
-    }
+        match *target {
+            CallTarget::FunctionLike { callee: FunctionLikeIdentifier::Method(class, name), .. } => method(class, name),
+            CallTarget::MagicMethod {
+                callee: FunctionLikeIdentifier::Method(magic_class, magic),
+                class,
+                method: name,
+            } => {
+                let kind = match method(magic_class, magic).kind {
+                    DeclarationKind::StaticMethod => DeclarationKind::StaticMethod,
+                    _ => DeclarationKind::Method { overridable: true },
+                };
 
-    /// What `class`'s call of `method` runs: its method, its property holding a function, or else a method its
-    /// `__call` serves.
-    fn call_declaration(&self, class: &[u8], method: &[u8]) -> Declaration {
-        let called = || Declaration {
-            kind: DeclarationKind::Method { overridable: true },
-            class: word(class),
-            name: word(method),
-            public: true,
-        };
-
-        self.method_declaration(class, method)
-            .or_else(|| self.property_declaration(class, method))
-            .or_else(|| self.codebase.method_exists(class, b"__call").then(called))
-            .unwrap_or_else(|| {
-                unreachable!(
-                    "the checker refuses `{}.{}()`, which names no method or property",
-                    String::from_utf8_lossy(class),
-                    String::from_utf8_lossy(method)
-                )
-            })
+                Declaration { kind, class, name, public: true }
+            }
+            CallTarget::Property { class, property } => property
+                .as_bytes()
+                .strip_prefix(b"$")
+                .and_then(|property| self.property_declaration(class.as_bytes(), property))
+                .unwrap_or_else(|| unreachable!("the analysis resolved the property `{class}.{property}`")),
+            target => unreachable!("a method call runs a method or a property's function, not {target:?}"),
+        }
     }
 
     /// The type of the keys a value of `r#type` holds, or none when part of it is no `Map` or `List`.
@@ -396,6 +382,51 @@ impl<'analysis> Types<'analysis> {
         }
 
         key_type
+    }
+
+    /// The positions of the arguments of the method call `call`, null-safe or not, that go in as its receiver's key.
+    /// The analyzer checks a call on a `Map` against `Sharp\MapMethods<K, V>`, whose `K` the `Map`'s key type fills
+    /// (spec section 12), so an argument goes in as a key when the call runs a `MapMethods` method and its parameter
+    /// is a template parameter bounded by `array-key`, as in `get(K $key)`. The method is the one the analyzer checked
+    /// the call against, which a `List` emptied by `[]` keeps. The caller asks only about a call on a value.
+    pub(crate) fn key_arguments(&self, call: &Expression) -> Vec<usize> {
+        let arguments = match call {
+            Expression::Call(Call::Method(call)) => &call.argument_list,
+            Expression::Call(Call::NullSafeMethod(call)) => &call.argument_list,
+            _ => unreachable!("only a method call has arguments a receiver takes as its key"),
+        };
+        let mut callees = self.artifacts.get_callees(call);
+        let (Some(CallTarget::FunctionLike { callee: FunctionLikeIdentifier::Method(class, method), .. }), None) =
+            (callees.next(), callees.next())
+        else {
+            return Vec::new();
+        };
+        if !class.as_bytes().eq_ignore_ascii_case(b"Sharp\\MapMethods") {
+            return Vec::new();
+        }
+        let metadata = self
+            .codebase
+            .get_method(class.as_bytes(), method.as_bytes())
+            .unwrap_or_else(|| unreachable!("the analyzer resolved `Map.{method}()` from the codebase"));
+
+        arguments
+            .arguments
+            .iter()
+            .enumerate()
+            .filter(|(position, argument)| {
+                let parameter = match argument {
+                    Argument::Positional(argument) if argument.ellipsis.is_none() => metadata.parameters.get(*position),
+                    Argument::Positional(_) => None,
+                    Argument::Named(argument) => metadata
+                        .parameters
+                        .iter()
+                        .find(|parameter| parameter.name.0.as_bytes().strip_prefix(b"$") == Some(argument.name.value)),
+                };
+
+                parameter.is_some_and(takes_key)
+            })
+            .map(|(position, _)| position)
+            .collect()
     }
 
     /// The property `class` declares or inherits by the name `property`, if any.
@@ -436,6 +467,24 @@ impl<'analysis> Types<'analysis> {
         self.codebase
             .get_declaring_property(root.as_bytes(), variable)
             .unwrap_or_else(|| unreachable!("`{root}` declares the property"))
+    }
+
+    /// The class declaring the static method `name` a PHP# operator on `operands` runs as, as the checker chose it: the
+    /// one the left operand's class declares or inherits, else the right one's, as `App\Money` for `op_Addition` on
+    /// two `Order`s that inherit it. Operands with no instance of one class, enums aside, run none.
+    pub(crate) fn operator_class(&self, name: &[u8], operands: &[&Expression]) -> Option<Word> {
+        operands.iter().find_map(|operand| {
+            let classes = receiver_classes(self.expression_type(operand))?;
+            let [class] = classes.as_slice() else {
+                return None;
+            };
+            if matches!(self.class_declaration(class).kind, DeclarationKind::Enum { .. }) {
+                return None;
+            }
+            let method = self.method_declaration(class, name)?;
+
+            (method.kind == DeclarationKind::StaticMethod).then(|| self.class_declaration(method.class.as_bytes()).name)
+        })
     }
 
     /// The method `class` declares or inherits by the name `method`, if any.
@@ -496,6 +545,13 @@ pub(crate) fn class_value_classes(r#type: &TUnion) -> Option<Vec<&[u8]>> {
         .collect::<Option<_>>()?;
 
     (!classes.is_empty()).then_some(classes)
+}
+
+/// Whether `parameter` takes a collection's key: its type is a template parameter bounded by `array-key`.
+fn takes_key(parameter: &FunctionLikeParameterMetadata) -> bool {
+    parameter.type_metadata.as_ref().is_some_and(|r#type| {
+        matches!(r#type.type_union.types.as_ref(), [TAtomic::GenericParameter(template)] if template.constraint.is_array_key())
+    })
 }
 
 /// The kind of member every class a receiver can be declares, which the checker requires to be one kind. Its details,

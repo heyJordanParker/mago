@@ -1,7 +1,6 @@
 use mago_allocator::Arena;
 use std::rc::Rc;
 
-use mago_codex::ttype::TType;
 use mago_codex::ttype::combine_union_types;
 use mago_codex::ttype::get_never;
 use mago_reporting::Annotation;
@@ -15,6 +14,7 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::utils::names::display_atomic;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for Throw<'arena> {
     fn analyze<'ctx, A>(
@@ -60,7 +60,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Throw<'arena> {
                         block_context.possibly_thrown_exceptions.entry(object_name).or_default().insert(self.span());
                     }
                 } else {
-                    let exception_atomic_str = exception_atomic.get_id();
+                    let exception_atomic_str = display_atomic(context, exception_atomic);
 
                     context.collector.report_with_code(
                         IssueCode::InvalidThrow,

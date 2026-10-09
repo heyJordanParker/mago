@@ -8,37 +8,39 @@ nav_section = "Reference"
 
 ## Why the name "Mago"?
 
-The project was originally named "fennec", after the fennec fox native to North Africa. A name conflict with another tool forced a rename.
+The name comes from upstream Mago, which was first named "fennec", after the fennec fox native to North Africa. A name conflict with another tool forced a rename.
 
-We picked "Mago" to stay close to our roots at Carthage Software. Mago of Carthage was an ancient Carthaginian writer known as the "Father of Agriculture". As he cultivated the land, the tool aims to help developers cultivate their codebases.
+Carthage Software, upstream's maintainer, named it after Mago of Carthage, an ancient Carthaginian writer known as the "Father of Agriculture". As he cultivated the land, the tool aims to help developers cultivate their codebases.
 
-The name has a useful double meaning. In Spanish and Italian, "mago" means "magician" or "wizard". The logo captures both: a fennec fox in a wizard's hat and robe, with the ancient Carthaginian symbol of Tanit on its garments.
+The name has a useful double meaning. In Spanish and Italian, "mago" means "magician" or "wizard". The logo, drawn for upstream Mago, captures both: a fennec fox in a wizard's hat and robe, with the ancient Carthaginian symbol of Tanit on its garments.
 
 ## How do you pronounce Mago?
 
 `/ˈmɑːɡoʊ/`, "mah-go". Two syllables: "ma" as in "mama", "go" as in "go".
 
-## Will Mago implement an LSP?
+## Does mago-sharp ship a language server?
 
-Yes. The Language Server Protocol implementation is planned for `2.0.0`. It was originally scheduled for `1.0.0` but moved out so the LSP can land feature-complete instead of as a minimal first cut.
+No. mago-sharp has no Language Server Protocol implementation. Run it from the command line or in CI. [Configuration](/guide/configuration/) covers the JSON schema editors use to validate `mago.toml`, and the terminal links that open a reported file in your editor.
 
-For the longer write-up, see the blog post [Why Mago 1.0.0 Won't Ship With an LSP](https://carthage.software/en/blog/article/Why-Mago-1-0-0-Won-t-Ship-With-an-LSP).
+## Does mago-sharp offer editor extensions (VS Code, etc.)?
 
-## Will Mago offer editor extensions (VS Code, etc.)?
+No. mago-sharp ships no editor-specific extensions.
 
-No. The project will focus on implementing the LSP standard and will not maintain editor-specific extensions. Editors that support LSP integration (Helix, Neovim via lspconfig, VS Code with a generic client) will work with Mago. We encourage the community to build editor-specific wrappers and are happy to feature well-regarded ones on the website.
+## Does mago-sharp support analyzer plugins?
 
-## Will Mago support analyzer plugins?
+Yes, through extensions. An extension is an external program that mago-sharp starts from `[extension-hosts]` in `mago.toml` and talks to over a binary worker protocol. It can add linter rules and analyzer plugins. The formatter and guard have no extension API. mago-sharp ships a PHP SDK for writing extensions: the `Mago\Sdk` namespace in the `heyjordanparker/mago-sharp` Composer package. [Extensions](/extensions/overview/) covers the protocol, the SDK, and a complete example.
 
-Yes, but not before `1.0.0`. The plan is for plugins to be written in Rust, compiled to WASM, and loaded by Mago at runtime. That work happens after `1.0.0` ships.
+## Which tools does mago-sharp include?
 
-## What other PHP tools does Mago plan to replace?
+One binary runs:
 
-The longer-term vision is for Mago to be a complete QA and development utility for PHP. The formatter, linter, and analyzer are the focus for `1.0.0`. Beyond that, planned tools include:
+- `mago lint`, the linter.
+- `mago analyze`, the static analyzer, for PHP and PHP#.
+- `mago format`, the formatter.
+- `mago guard`, which enforces architectural layer rules.
+- `mago compile`, which compiles PHP# files for the PHP# engine.
 
-- A PHP version manager.
-- A PHP extension installer.
-- A migration helper for upgrading PHP versions, frameworks, or libraries.
+`mago fix` applies fixes from the guard, analyzer, linter, and formatter until none of them changes anything.
 
 ## Will Mago implement a Composer alternative?
 

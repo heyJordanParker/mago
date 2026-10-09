@@ -35,8 +35,10 @@ use mago_syntax::dialect::Dialect;
 use mago_word::Word;
 use mago_word::word;
 
+use crate::context::Context;
 use crate::utils::names::display_sharp_type;
-use crate::utils::names::short_name;
+use mago_allocator::Arena;
+use mago_names::short_name;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SignatureCompatibilityIssue {
@@ -600,13 +602,16 @@ pub(super) fn erase(r#type: &TUnion, codebase: &CodebaseMetadata) -> TUnion {
 /// `display_sharp_type` does, `Order`, `Entity?` or `Iterable<Any?>`, but has no `mixed`, `array`, `Closure` or
 /// `callable`, so a PHP# file writes a type with any of them in it as PHP's, as in PHP's `mixed`, PHP's `Closure` or
 /// PHP's `array|null`.
-pub(super) fn display_erased(erased: &TUnion, dialect: Dialect, codebase: &CodebaseMetadata) -> String {
+pub(super) fn display_erased<A>(erased: &TUnion, context: &Context<'_, '_, A>) -> String
+where
+    A: Arena,
+{
     let is_php_only = erased
         .types
         .iter()
         .any(|atomic| matches!(atomic, TAtomic::Mixed(_) | TAtomic::Array(_) | TAtomic::Callable(_)));
-    if dialect.is_sharp() && !is_php_only {
-        return format!("`{}`", display_sharp_type(erased, codebase));
+    if context.dialect.is_sharp() && !is_php_only {
+        return format!("`{}`", display_sharp_type(context, erased));
     }
 
     let members: Vec<String> = erased
@@ -622,7 +627,7 @@ pub(super) fn display_erased(erased: &TUnion, dialect: Dialect, codebase: &Codeb
         .collect();
     let erased = members.join("|");
 
-    if dialect.is_sharp() { format!("PHP's `{erased}`") } else { format!("`{erased}`") }
+    if context.dialect.is_sharp() { format!("PHP's `{erased}`") } else { format!("`{erased}`") }
 }
 
 const fn is_visibility_narrowed(child_visibility: Visibility, parent_visibility: Visibility) -> bool {

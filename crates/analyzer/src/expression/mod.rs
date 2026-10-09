@@ -37,6 +37,7 @@ use mago_syntax::cst::PatternMatchArm;
 use mago_syntax::cst::PropertiesPattern;
 use mago_syntax::cst::Statement;
 use mago_syntax::cst::TypePattern;
+use mago_syntax::cst::UnaryPrefixOperator;
 use mago_syntax::utils::pattern::PhpShape;
 use mago_syntax::utils::pattern::called_function;
 use mago_syntax::walker::Walker;
@@ -63,7 +64,9 @@ use crate::statement::class_like::analyze_class_like;
 use crate::statement::class_like::override_attribute;
 use crate::statement::get_type_from_hint;
 use crate::utils::misc::check_for_paradox;
-use crate::utils::names::short_name;
+use crate::utils::names::display_code_member;
+use crate::utils::names::display_member;
+use crate::utils::names::display_missing_imports;
 
 pub mod access;
 pub mod argument_list;
@@ -263,6 +266,10 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
                 }
                 Expression::Self_(keyword) | Expression::Static(keyword) | Expression::Parent(keyword) => {
                     let keyword_str = mago_bytes::BytesDisplay(keyword.value);
+                    let keyword_name = word(keyword.value);
+                    let operator = if context.dialect.is_sharp() { "." } else { "::" };
+                    let constant = display_member(context, keyword_name, "CONSTANT");
+                    let method = display_member(context, keyword_name, "method()");
 
                     context.collector.report_with_code(
                     IssueCode::InvalidScopeKeywordContext,
@@ -272,10 +279,10 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Expression<'arena> {
                                 .with_message(format!("`{keyword_str}` used as a value here")),
                         )
                         .with_note(
-                            format!("The `{keyword_str}` keyword is used to refer to a class scope and must be used with the `::` operator.")
+                            format!("The `{keyword_str}` keyword is used to refer to a class scope and must be used with the `{operator}` operator.")
                         )
                         .with_help(
-                            format!("Use `{keyword_str}::CONSTANT`, `{keyword_str}::method()`, or `new {keyword_str}()` instead.")
+                            format!("Use `{constant}`, `{method}`, or `new {keyword_str}()` instead.")
                         ),
                 );
 
@@ -354,6 +361,18 @@ where
         return Ok(());
     };
 
+    let patterns = context.patterns.len();
+    match node {
+        Node::Expression(Expression::Is(is)) => context.patterns.push((Some(is.is), is.pattern)),
+        Node::Expression(Expression::PatternMatch(pattern_match))
+        | Node::Statement(Statement::PatternMatch(pattern_match)) => {
+            context.patterns.extend(pattern_match.arms.iter().filter_map(|arm| match arm {
+                PatternMatchArm::Pattern(arm) => Some((None, arm.pattern)),
+                PatternMatchArm::Default(_) => None,
+            }));
+        }
+        _ => {}
+    }
     context.temporaries += temporaries;
     let (result, issues) = context.record(|context| match php {
         Node::Expression(expression) => expression.analyze(context, block_context, artifacts),
@@ -361,6 +380,7 @@ where
         _ => Ok(()),
     });
     context.temporaries -= temporaries;
+    context.patterns.truncate(patterns);
 
     // The PHP of a pattern calls a type test that no source the user wrote calls. It is the PHP# syntax itself, so it is
     // never replaced by syntax. A properties pattern's `is_object` is its null check, which a value that cannot be null
@@ -445,7 +465,7 @@ where
             IssueCode::ImpossibleTypeComparison,
             Issue::error("This pattern never matches the value it tests.")
                 .with_annotation(Annotation::primary(pattern).with_message("Never matches."))
-                .with_note("Spec section 21 makes a pattern that can never match an error, as C# does (CS8121).")
+                .with_note("PHP# makes a pattern that can never match an error, as C# does (CS8121).")
                 .with_help("Remove the pattern, or test a value that can match it."),
         );
     }
@@ -487,10 +507,10 @@ fn report_unhandled<'ctx, 'arena, A>(
         .iter()
         .all(|atomic| matches!(atomic, TAtomic::Null) || enum_value(atomic, context.codebase).is_some());
 
-    let missing = if is_enum {
+    let (missing, enums) = if is_enum {
         missing_cases(pattern_match.span(), &value_type, handled, context, block_context, artifacts)
     } else {
-        vec![]
+        (vec![], vec![])
     };
     let message = match missing.as_slice() {
         _ if !is_enum => "A `match` needs a `default` arm.".to_owned(),
@@ -502,6 +522,10 @@ fn report_unhandled<'ctx, 'arena, A>(
             format!("This `match` misses {} and `{last}`.", rest.join(", "))
         }
     };
+    let message = match display_missing_imports(context, enums) {
+        Some(imports) => format!("{message} {imports}"),
+        None => message,
+    };
 
     context.collector.report_with_code(
         IssueCode::MatchNotExhaustive,
@@ -509,15 +533,13 @@ fn report_unhandled<'ctx, 'arena, A>(
             .with_annotation(
                 Annotation::primary(pattern_match.r#match.span).with_message("This `match` has no `default`."),
             )
-            .with_note(
-                "Spec section 21: only a `match` on an enum may leave out `default`, when its arms cover every case.",
-            )
+            .with_note("Only a `match` on an enum may leave out `default`, when its arms cover every case.")
             .with_help("Add an arm for each value it misses, or add `default => …` as the last arm."),
     );
 }
 
 /// The cases of the enum `value_type` that no `handled` test of the `match` at `span` matches, as PHP# writes them,
-/// `Status.Open`, in the order the enum declares them, and `null` last.
+/// `Status.Open`, in the order the enum declares them, and `null` last, with the enums those cases name.
 fn missing_cases<'ctx, 'arena, A>(
     span: Span,
     value_type: &TUnion,
@@ -525,7 +547,7 @@ fn missing_cases<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
     block_context: &BlockContext<'ctx>,
     artifacts: &AnalysisArtifacts,
-) -> Vec<String>
+) -> (Vec<String>, Vec<Word>)
 where
     A: Arena,
 {
@@ -572,16 +594,19 @@ where
             enums.push(*name);
         }
     }
+    let mut named = Vec::new();
     for name in enums {
         let Some(metadata) = context.codebase.get_enum(name.as_bytes()) else {
             continue;
         };
-        let written_name = short_name(metadata.original_name);
         let mut declared: Vec<_> = metadata.enum_cases.values().collect();
         declared.sort_by_key(|case| case.span.start.offset);
         for case in declared {
             if cases.iter().any(|(enum_name, left)| *enum_name == name && left.is_none_or(|left| left == case.name)) {
-                missing.push(format!("{written_name}.{}", case.name));
+                missing.push(display_code_member(context, metadata.original_name, case.name));
+                if !named.contains(&metadata.original_name) {
+                    named.push(metadata.original_name);
+                }
             }
         }
     }
@@ -589,7 +614,7 @@ where
         missing.push("null".to_owned());
     }
 
-    missing
+    (missing, named)
 }
 
 /// The enum and the case a type holds: one case, or every case of the enum when the case is `None`. `None` for a type
@@ -644,7 +669,8 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Parenthesized<'arena> {
     }
 }
 
-/// Whether an error already refuses `expression`. `check_slice` refuses it when it failed to parse, it is `typeof` or
+/// Whether an error already refuses `expression`. `check_slice` refuses it when it failed to parse, it is `!x is T`, it
+/// is `typeof` or
 /// `new` of a type parameter, it tests or converts a value to a type with an
 /// [erased part](mago_names::ResolvedNames::erased_type) in `is`, `as` or a `match` arm, or it reads or calls a member of
 /// a type parameter or of `typeof` of one through any chain of property reads. [`report_untested_generic_classes`]
@@ -662,7 +688,8 @@ where
             return matches!(instantiation.class, Expression::Identifier(class) if resolved_names.is_type_parameter(class));
         }
         Expression::Is(is) => {
-            return type_pattern_hints(is.pattern).into_iter().any(|hint| is_untestable(hint, context));
+            return matches!(is.value, Expression::UnaryPrefix(prefix) if matches!(prefix.operator, UnaryPrefixOperator::Not(_)))
+                || type_pattern_hints(is.pattern).into_iter().any(|hint| is_untestable(hint, context));
         }
         Expression::As(r#as) => return is_untestable(r#as.hint, context),
         Expression::PatternMatch(pattern_match) => return is_refused_match(pattern_match, context),
@@ -885,13 +912,7 @@ pub fn find_expression_logic_issues<'ctx, 'arena, A>(
     let expression_span = expression.span();
 
     // this will see whether any of the clauses in set A conflict with the clauses in set B
-    check_for_paradox(
-        &mut context.collector,
-        &block_context.clauses,
-        &expression_clauses,
-        expression_span,
-        &context.settings.algebra_thresholds(),
-    );
+    check_for_paradox(context, &block_context.clauses, &expression_clauses, expression_span);
 
     expression_clauses.extend(block_context.clauses.iter().map(|v| (**v).clone()));
 

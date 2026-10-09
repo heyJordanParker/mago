@@ -1,4 +1,8 @@
+use std::cell::OnceCell;
+
+use foldhash::HashMap;
 use mago_allocator::Arena;
+use mago_names::short_name;
 use mago_word::Word;
 use mago_word::WordMap;
 use mago_word::WordSet;
@@ -6,7 +10,6 @@ use mago_word::WordSet;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::metadata::class_like::ClassLikeMetadata;
 use mago_codex::reference::SymbolReferences;
-use mago_codex::ttype::TType;
 use mago_codex::ttype::resolution::TypeResolutionContext;
 use mago_codex::ttype::union::TUnion;
 use mago_collector::Collector;
@@ -24,6 +27,8 @@ use mago_span::Span;
 use mago_syntax::comments::docblock::PrecedingDocblocks;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::Identifier;
+use mago_syntax::cst::Keyword;
+use mago_syntax::cst::Pattern;
 use mago_syntax::cst::Trivia;
 use mago_syntax::dialect::Dialect;
 
@@ -32,6 +37,7 @@ use crate::artifacts::AnalysisArtifacts;
 use crate::code::IssueCode;
 use crate::context::assertion::AssertionContext;
 use crate::context::block::BlockContext;
+use crate::expression::binary::utils::display_operand;
 use crate::external::ExternalAnalysisSession;
 use crate::plugin::PluginRegistry;
 use crate::settings::Settings;
@@ -59,6 +65,9 @@ where
     pub(super) comments: &'arena [Trivia<'arena>],
     pub(super) settings: &'ctx Settings,
     pub(super) scope: NamespaceScope,
+    /// The name each import of a `.sharp` file gives its class, as the file writes it: the name after `as`, or else the
+    /// last segment of the class name. Keyed by the lowercase full name of the class.
+    pub(super) imported_names: WordMap<Word>,
     pub(super) collector: Collector<'ctx, 'arena, A>,
     pub(super) statement_span: Span,
     pub(super) plugin_registry: &'ctx PluginRegistry,
@@ -66,7 +75,12 @@ where
     pub(super) additional_symbol_references: Option<&'ctx SymbolReferences>,
     /// How many hidden variables the PHP# pattern forms being analyzed hold, as `php_shape` numbers them.
     pub(super) temporaries: u32,
+    /// The patterns of the PHP# `is` and `match` forms being analyzed, each with the `is` written before it, so a
+    /// report on their PHP names a pattern as the file writes it.
+    pub(super) patterns: Vec<(Option<Keyword<'arena>>, &'arena Pattern<'arena>)>,
     class_initializers: WordMap<WordSet>,
+    /// How many class-likes of the codebase have each lowercase short name, counted the first time a message asks.
+    short_name_counts: OnceCell<HashMap<String, u32>>,
 }
 
 impl<'ctx, 'arena, A> Context<'ctx, 'arena, A>
@@ -97,14 +111,38 @@ where
             comments,
             settings,
             scope: NamespaceScope::default(),
+            imported_names: WordMap::default(),
             statement_span,
             collector,
             plugin_registry,
             external_analysis_session,
             additional_symbol_references,
             temporaries: 0,
+            patterns: Vec::new(),
             class_initializers: WordMap::default(),
+            short_name_counts: OnceCell::new(),
         }
+    }
+
+    /// Whether another class-like of the project or its vendors has the short name of the class-like `name`, compared
+    /// without case as PHP compares class names. PHP's built-in class-likes don't count: a `.sharp` file reaches one,
+    /// like `Dom\Text`, only through an import, and one file can't import two classes of one short name without an
+    /// alias. The prelude's `Sharp\` class-likes do count, as a `.sharp` file reaches them with no import.
+    pub(crate) fn shares_short_name(&self, name: Word) -> bool {
+        let counts = self.short_name_counts.get_or_init(|| {
+            let mut counts = HashMap::default();
+            for (class_like, metadata) in &self.codebase.class_likes {
+                // php-sharp#60: the prelude's `Sharp\` class-likes are built-in, yet a `.sharp` file reaches them with no
+                // import.
+                if !metadata.flags.is_built_in() || class_like.as_bytes().starts_with(b"sharp\\") {
+                    *counts.entry(short_name(class_like).to_ascii_lowercase()).or_insert(0) += 1;
+                }
+            }
+
+            counts
+        });
+
+        counts.get(&short_name(name).to_ascii_lowercase()).is_some_and(|count| *count > 1)
     }
 
     pub(crate) fn prepare_class_initializers(
@@ -152,7 +190,7 @@ where
         }
 
         issue.level = Level::Error;
-        issue.with_note("In PHP# a type holds null only when written with `?` (spec section 24), so a `?` or a null check that cannot matter is an error (spec section 14.4).")
+        issue.with_note("In PHP# a type holds null only when written with `?`, so a `?` or a null check that cannot matter is an error.")
     }
 
     /// Reports a PHP# condition, or an operand of `&&`, `||` or `!`, whose type is not `bool`. Spec section 21 makes each
@@ -175,11 +213,13 @@ where
             return;
         }
 
+        let condition_type = display_operand(self, condition_type);
+
         self.collector.report_with_code(
             IssueCode::InvalidOperand,
-            Issue::error(format!("`{construct}` takes a `bool`, but this is `{}`.", condition_type.get_id()))
+            Issue::error(format!("`{construct}` takes a `bool`, but this is `{condition_type}`."))
                 .with_annotation(Annotation::primary(condition.span()).with_message("This is not `bool`."))
-                .with_note("Spec section 21 makes every PHP# condition a `bool`, so PHP's truthiness never applies.")
+                .with_note("PHP# conditions are `bool`, so PHP's truthiness never applies.")
                 .with_help("Compare the value, as in `count > 0` or `name != \"\"`."),
         );
     }
@@ -262,6 +302,7 @@ where
             this_class_name,
             trust_existence_checks: self.settings.trust_existence_checks,
             temporaries: self.temporaries,
+            dialect: self.dialect,
         }
     }
 

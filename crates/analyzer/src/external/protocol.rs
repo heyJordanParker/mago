@@ -135,7 +135,7 @@ use crate::invocation::MethodTargetContext;
 
 pub const ANALYZER_PROTOCOL_MAGIC: [u8; 4] = *b"MANA";
 pub const ANALYZER_PROTOCOL_MAJOR: u16 = 1;
-pub const ANALYZER_PROTOCOL_MINOR: u16 = 10;
+pub const ANALYZER_PROTOCOL_MINOR: u16 = 11;
 
 const HEADER_LENGTH: usize = 12;
 const INITIAL_MESSAGE_CAPACITY: usize = 256;

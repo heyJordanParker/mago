@@ -10,7 +10,6 @@ use regex::Regex;
 
 use mago_algebra::assertion_set::AssertionSet;
 use mago_allocator::Arena;
-use mago_bytes::BytesDisplay;
 use mago_codex::assertion::Assertion;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::ttype::add_optional_union_type;
@@ -51,6 +50,8 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::context::scope::var_has_root;
 use crate::resolver::property::resolve_declared_property;
+use crate::utils::names::display_atomic;
+use crate::utils::names::display_variable_name;
 
 pub mod assertion_reconciler;
 pub mod negated_assertion_reconciler;
@@ -1458,6 +1459,12 @@ pub(crate) fn trigger_issue_for_impossible<A>(
         assertion_atom = word(&assertion_atom.as_bytes()[1..]);
     }
 
+    if context.dialect.is_sharp()
+        && let Some(atomic) = assertion.get_type()
+    {
+        assertion_atom = word(display_atomic(context, atomic));
+    }
+
     let mut redundant = redundant;
     if negated {
         not_operator = !not_operator;
@@ -1497,24 +1504,33 @@ fn report_impossible_issue<A>(
 ) where
     A: Arena,
 {
-    let key = BytesDisplay(key);
+    let key = display_variable_name(context, key);
     let subject_desc = if old_var_type_string.is_empty() || old_var_type_string.len() > 50 {
         format!("`{key}`")
     } else {
         format!("`{key}` (type `{old_var_type_string}`)")
     };
 
+    let sharp = context.dialect.is_sharp();
     let (issue_kind, main_message_verb, specific_note, specific_help) = match assertion {
         Assertion::Truthy => (
             IssueCode::ImpossibleCondition,
             "will always evaluate to false".to_owned(),
-            format!("Variable {subject_desc} is always falsy and can never satisfy a truthiness check."),
+            if sharp {
+                format!("Variable {subject_desc} is never `true`, so this condition is always `false`.")
+            } else {
+                format!("Variable {subject_desc} is always falsy and can never satisfy a truthiness check.")
+            },
             "Review the logic or type of the variable; this condition will never pass.".to_string(),
         ),
         Assertion::Falsy => (
             IssueCode::ImpossibleCondition,
             "will always evaluate to false".to_owned(),
-            format!("Variable {subject_desc} is always truthy, so asserting it is falsy will always be false."),
+            if sharp {
+                format!("Variable {subject_desc} is never `false`, so this condition is always `false`.")
+            } else {
+                format!("Variable {subject_desc} is always truthy, so asserting it is falsy will always be false.")
+            },
             "Review the logic or type of the variable; this condition will never pass.".to_string(),
         ),
         Assertion::IsType(TAtomic::Null) => (
@@ -1578,13 +1594,14 @@ fn report_redundant_issue<A>(
 ) where
     A: Arena,
 {
-    let key = BytesDisplay(key);
+    let key = display_variable_name(context, key);
     let subject_desc = if old_var_type_string.is_empty() || old_var_type_string.len() > 50 {
         format!("`{key}`")
     } else {
         format!("`{key}` (type `{old_var_type_string}`)")
     };
 
+    let sharp = context.dialect.is_sharp();
     let (issue_kind, main_message_verb, specific_note, specific_help) = match assertion {
         Assertion::IsIsset | Assertion::IsEqualIsset => (
             IssueCode::RedundantIssetCheck,
@@ -1595,13 +1612,21 @@ fn report_redundant_issue<A>(
         Assertion::Truthy => (
             IssueCode::RedundantCondition,
             "will always evaluate to true".to_owned(),
-            format!("Variable {subject_desc} is always truthy. This condition is redundant and the code block will always execute if reached."),
+            if sharp {
+                format!("Variable {subject_desc} is never `false`, so this condition is always `true`.")
+            } else {
+                format!("Variable {subject_desc} is always truthy. This condition is redundant and the code block will always execute if reached.")
+            },
             "Simplify or remove the redundant condition if the guarded code should always run.".to_owned()
         ),
         Assertion::Falsy => (
             IssueCode::RedundantCondition,
             "will always evaluate to true".to_owned(),
-            format!("Variable {subject_desc} is always falsy, so asserting it's falsy is always true and redundant."),
+            if sharp {
+                format!("Variable {subject_desc} is never `true`, so this condition is always `true`.")
+            } else {
+                format!("Variable {subject_desc} is always falsy, so asserting it's falsy is always true and redundant.")
+            },
             "Simplify or remove the redundant condition if the guarded code should always run.".to_owned()
         ),
         Assertion::HasArrayKey(array_key_assertion) => (

@@ -36,7 +36,7 @@ use crate::resolver::static_property::StaticProperty;
 use crate::resolver::static_property::StaticPropertyName;
 use crate::utils::expression::get_bare_name_variable_id;
 use crate::utils::names::and_list;
-use crate::utils::names::short_name;
+use mago_names::short_name;
 
 pub mod class_constant_access;
 pub mod property_access;

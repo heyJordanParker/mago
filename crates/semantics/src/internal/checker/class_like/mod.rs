@@ -78,7 +78,7 @@ pub fn check_class<'ast, 'arena>(class: &'ast Class<'arena>, context: &mut Conte
     let class_name_bytes: &[u8] = class.name.value;
     let class_fqcn_bytes: &[u8] = context.get_name(class.name.span.start);
     let class_name = BytesDisplay(class_name_bytes);
-    let class_fqcn = BytesDisplay(class_fqcn_bytes);
+    let class_fqcn = context.display_class_like_name(class_fqcn_bytes);
 
     if RESERVED_KEYWORDS.iter().any(|keyword| keyword.eq_ignore_ascii_case(class_name_bytes))
         || SOFT_RESERVED_KEYWORDS_MINUS_SYMBOL_ALLOWED
@@ -281,11 +281,10 @@ pub fn check_class<'ast, 'arena>(class: &'ast Class<'arena>, context: &mut Conte
                             Annotation::primary(class.name.span())
                                 .with_message("Class is missing the `abstract` modifier."),
                         )
-                        .with_annotation(
-                            Annotation::secondary(method.span()).with_message(format!(
-                                "Abstract method `{class_name}::{method_name}` declared here."
-                            )),
-                        )
+                        .with_annotation(Annotation::secondary(method.span()).with_message(format!(
+                            "Abstract method `{}` declared here.",
+                            context.display_member(class_name_bytes, method_name)
+                        )))
                         .with_help("Add the `abstract` modifier to the class."),
                     );
                 }
@@ -296,7 +295,8 @@ pub fn check_class<'ast, 'arena>(class: &'ast Class<'arena>, context: &mut Conte
                             let param_name = BytesDisplay(parameter.variable.name);
                             context.report(
                                 Issue::error(format!(
-                                    "Hooked property `{class_name}::{param_name}` cannot be readonly."
+                                    "Hooked property `{}` cannot be readonly.",
+                                    context.display_member(class_name_bytes, param_name)
                                 ))
                                 .with_annotation(
                                     Annotation::primary(hooks.span())
@@ -355,7 +355,7 @@ pub fn check_interface<'ast, 'arena>(interface: &'ast Interface<'arena>, context
     let interface_name_bytes: &[u8] = interface.name.value;
     let interface_fqcn_bytes: &[u8] = context.get_name(interface.name.span.start);
     let interface_name = BytesDisplay(interface_name_bytes);
-    let interface_fqcn = BytesDisplay(interface_fqcn_bytes);
+    let interface_fqcn = context.display_class_like_name(interface_fqcn_bytes);
 
     if RESERVED_KEYWORDS.iter().any(|keyword| keyword.eq_ignore_ascii_case(interface_name_bytes))
         || SOFT_RESERVED_KEYWORDS_MINUS_SYMBOL_ALLOWED
@@ -425,7 +425,7 @@ pub fn check_interface<'ast, 'arena>(interface: &'ast Interface<'arena>, context
             }
             ClassLikeMember::Method(method) => {
                 let method_name_bytes: &[u8] = method.name.value;
-                let method_name = BytesDisplay(method_name_bytes);
+                let method_display = context.display_member(interface_name_bytes, BytesDisplay(method_name_bytes));
 
                 let mut visibilities = vec![];
                 for modifier in &method.modifiers {
@@ -439,7 +439,7 @@ pub fn check_interface<'ast, 'arena>(interface: &'ast Interface<'arena>, context
 
                     context.report(
                         Issue::error(format!(
-                            "Interface method `{interface_name}::{method_name}` cannot have `{visibility_name}` modifier."
+                            "Interface method `{method_display}` cannot have `{visibility_name}` modifier."
                         ))
                         .with_annotation(
                             Annotation::primary(visibility.span())
@@ -458,7 +458,7 @@ pub fn check_interface<'ast, 'arena>(interface: &'ast Interface<'arena>, context
 
                 if let MethodBody::Concrete(body) = &method.body {
                     context.report(
-                        Issue::error(format!("Interface method `{interface_name}::{method_name}` cannot have a body."))
+                        Issue::error(format!("Interface method `{method_display}` cannot have a body."))
                             .with_annotations([
                                 Annotation::primary(body.span()).with_message("Method body declared here."),
                                 Annotation::primary(method.name.span()).with_message("Method name defined here."),
@@ -473,7 +473,7 @@ pub fn check_interface<'ast, 'arena>(interface: &'ast Interface<'arena>, context
                 if let Some(abstract_modifier) = method.modifiers.get_abstract() {
                     context.report(
                         Issue::error(format!(
-                            "Interface method `{interface_name}::{method_name}` must not be abstract."
+                            "Interface method `{method_display}` must not be abstract."
                         ))
                         .with_annotation(
                             Annotation::primary(abstract_modifier.span())
@@ -483,7 +483,7 @@ pub fn check_interface<'ast, 'arena>(interface: &'ast Interface<'arena>, context
                             Annotation::secondary(interface.span())
                                 .with_message(format!("Interface `{interface_fqcn}` declared here.")),
                             Annotation::secondary(method.span())
-                                .with_message(format!("Method `{interface_name}::{method_name}` declared here.")),
+                                .with_message(format!("Method `{method_display}` declared here.")),
                         ])
                         .with_help("Remove the `abstract` modifier as all interface methods are implicitly abstract.")
                         .with_note(
@@ -523,7 +523,8 @@ pub fn check_interface<'ast, 'arena>(interface: &'ast Interface<'arena>, context
                                 );
                     }
                     Property::Hooked(hooked_property) => {
-                        let property_name = BytesDisplay(hooked_property.item.variable().name);
+                        let property_display = context
+                            .display_member(interface_name_bytes, BytesDisplay(hooked_property.item.variable().name));
 
                         let mut found_public = false;
                         let mut non_public_read_visibilities = vec![];
@@ -547,7 +548,7 @@ pub fn check_interface<'ast, 'arena>(interface: &'ast Interface<'arena>, context
 
                             context.report(
                                         Issue::error(format!(
-                                            "Interface virtual property `{interface_name}::{property_name}` must not specify asymmetric visibility.",
+                                            "Interface virtual property `{property_display}` must not specify asymmetric visibility.",
                                         ))
                                         .with_annotation(
                                             Annotation::primary(visibility.span())
@@ -568,7 +569,7 @@ pub fn check_interface<'ast, 'arena>(interface: &'ast Interface<'arena>, context
 
                             context.report(
                                 Issue::error(format!(
-                                    "Interface virtual property `{interface_name}::{property_name}` cannot have `{visibility_name}` modifier.",
+                                    "Interface virtual property `{property_display}` cannot have `{visibility_name}` modifier.",
                                 ))
                                 .with_annotation(
                                     Annotation::primary(visibility.span()).with_message(format!(
@@ -588,7 +589,7 @@ pub fn check_interface<'ast, 'arena>(interface: &'ast Interface<'arena>, context
                         if !found_public {
                             context.report(
                                 Issue::error(format!(
-                                    "Interface virtual property `{interface_name}::{property_name}` must be declared public."
+                                    "Interface virtual property `{property_display}` must be declared public."
                                 ))
                                 .with_annotation(
                                     Annotation::primary(hooked_property.span()).with_message("Property defined here."),
@@ -604,7 +605,7 @@ pub fn check_interface<'ast, 'arena>(interface: &'ast Interface<'arena>, context
                         if let Some(abstract_modifier) = hooked_property.modifiers.get_abstract() {
                             context.report(
                                             Issue::error(format!(
-                                                "Interface virtual property `{interface_name}::{property_name}` cannot be abstract."
+                                                "Interface virtual property `{property_display}` cannot be abstract."
                                             ))
                                             .with_annotation(
                                                 Annotation::primary(abstract_modifier.span())
@@ -625,7 +626,7 @@ pub fn check_interface<'ast, 'arena>(interface: &'ast Interface<'arena>, context
                         if let PropertyItem::Concrete(item) = &hooked_property.item {
                             context.report(
                                 Issue::error(format!(
-                                    "Interface virtual property `{interface_name}::{property_name}` cannot have a default value."
+                                    "Interface virtual property `{property_display}` cannot have a default value."
                                 ))
                                 .with_annotation(
                                     Annotation::primary(item.equals.join(item.value.span()))
@@ -649,7 +650,7 @@ pub fn check_interface<'ast, 'arena>(interface: &'ast Interface<'arena>, context
                             if let PropertyHookBody::Concrete(property_hook_concrete_body) = &hook.body {
                                 context.report(
                                     Issue::error(format!(
-                                        "Interface virtual property `{interface_name}::{property_name}` must be abstract."
+                                        "Interface virtual property `{property_display}` must be abstract."
                                     ))
                                     .with_annotation(
                                         Annotation::primary(property_hook_concrete_body.span())
@@ -669,24 +670,24 @@ pub fn check_interface<'ast, 'arena>(interface: &'ast Interface<'arena>, context
                         }
                     }
                     Property::Computed(computed_property) => {
-                        let property_name = BytesDisplay(computed_property.variable.name);
+                        let property_display =
+                            context.display_member(interface_name_bytes, BytesDisplay(computed_property.variable.name));
 
                         context.report(
-                            Issue::error(format!(
-                                "Interface virtual property `{interface_name}::{property_name}` must be abstract."
-                            ))
-                            .with_annotation(
-                                Annotation::primary(computed_property.body.span()).with_message("Body defined here."),
-                            )
-                            .with_annotation(
-                                Annotation::secondary(computed_property.variable.span())
-                                    .with_message("Property declared here."),
-                            )
-                            .with_annotation(
-                                Annotation::secondary(interface.span())
-                                    .with_message(format!("Interface `{interface_fqcn}` defined here.")),
-                            )
-                            .with_note("Abstract hooked properties must not contain a body."),
+                            Issue::error(format!("Interface virtual property `{property_display}` must be abstract."))
+                                .with_annotation(
+                                    Annotation::primary(computed_property.body.span())
+                                        .with_message("Body defined here."),
+                                )
+                                .with_annotation(
+                                    Annotation::secondary(computed_property.variable.span())
+                                        .with_message("Property declared here."),
+                                )
+                                .with_annotation(
+                                    Annotation::secondary(interface.span())
+                                        .with_message(format!("Interface `{interface_fqcn}` defined here.")),
+                                )
+                                .with_note("Abstract hooked properties must not contain a body."),
                         );
                     }
                 }
@@ -740,6 +741,8 @@ pub fn check_interface<'ast, 'arena>(interface: &'ast Interface<'arena>, context
                     context,
                 );
             }
+            // Only a PHP# file declares an operator or a law, and `check_slice` refuses either in an interface.
+            ClassLikeMember::Operator(_) | ClassLikeMember::Law(_) => {}
         }
     }
 }
@@ -749,7 +752,7 @@ pub fn check_trait<'ast, 'arena>(r#trait: &'ast Trait<'arena>, context: &mut Con
     let class_like_name_bytes: &[u8] = r#trait.name.value;
     let class_like_fqcn_bytes: &[u8] = context.get_name(r#trait.name.span.start);
     let class_like_name = BytesDisplay(class_like_name_bytes);
-    let class_like_fqcn = BytesDisplay(class_like_fqcn_bytes);
+    let class_like_fqcn = context.display_class_like_name(class_like_fqcn_bytes);
 
     if RESERVED_KEYWORDS.iter().any(|keyword| keyword.eq_ignore_ascii_case(class_like_name_bytes))
         || SOFT_RESERVED_KEYWORDS_MINUS_SYMBOL_ALLOWED
@@ -853,7 +856,7 @@ pub fn check_enum<'ast, 'arena>(r#enum: &'ast Enum<'arena>, context: &mut Contex
     let enum_name_bytes: &[u8] = r#enum.name.value;
     let enum_fqcn_bytes: &[u8] = context.get_name(r#enum.name.span.start);
     let enum_name = BytesDisplay(enum_name_bytes);
-    let enum_fqcn = BytesDisplay(enum_fqcn_bytes);
+    let enum_fqcn = context.display_class_like_name(enum_fqcn_bytes);
     let enum_is_backed = r#enum.backing_type_hint.is_some();
 
     if RESERVED_KEYWORDS.iter().any(|keyword| keyword.eq_ignore_ascii_case(enum_name_bytes))
@@ -936,8 +939,10 @@ pub fn check_enum<'ast, 'arena>(r#enum: &'ast Enum<'arena>, context: &mut Contex
                                         .with_message("Value assigned to the enum case."),
                                 )
                                 .with_annotations([
-                                    Annotation::secondary(item.name.span())
-                                        .with_message(format!("Case `{enum_name}::{item_name}` declared here.")),
+                                    Annotation::secondary(item.name.span()).with_message(format!(
+                                        "Case `{}` declared here.",
+                                        context.display_member(enum_name_bytes, item_name)
+                                    )),
                                     Annotation::secondary(r#enum.span())
                                         .with_message(format!("Enum `{enum_fqcn}` defined here.")),
                                 ])
@@ -952,6 +957,7 @@ pub fn check_enum<'ast, 'arena>(r#enum: &'ast Enum<'arena>, context: &mut Contex
             ClassLikeMember::Method(method) => {
                 let method_name_bytes: &[u8] = method.name.value;
                 let method_name = BytesDisplay(method_name_bytes);
+                let method_display = context.display_member(enum_name_bytes, method_name);
 
                 if let Some(magic_method) = ENUM_FORBIDDEN_MAGIC_METHODS
                     .iter()
@@ -974,7 +980,7 @@ pub fn check_enum<'ast, 'arena>(r#enum: &'ast Enum<'arena>, context: &mut Contex
 
                 if let Some(abstract_modifier) = method.modifiers.get_abstract() {
                     context.report(
-                        Issue::error(format!("Enum method `{enum_name}::{method_name}` must not be abstract."))
+                        Issue::error(format!("Enum method `{method_display}` must not be abstract."))
                             .with_annotation(
                                 Annotation::primary(abstract_modifier.span())
                                     .with_message("Abstract modifier found here."),
@@ -983,7 +989,7 @@ pub fn check_enum<'ast, 'arena>(r#enum: &'ast Enum<'arena>, context: &mut Contex
                                 Annotation::secondary(r#enum.span())
                                     .with_message(format!("Enum `{enum_fqcn}` defined here.")),
                                 Annotation::secondary(method.span())
-                                    .with_message(format!("Method `{enum_name}::{method_name}` defined here.")),
+                                    .with_message(format!("Method `{method_display}` defined here.")),
                             ])
                             .with_help(format!(
                                 "Remove the abstract modifier from the method `{method_name}` in enum `{enum_name}`."
@@ -1263,27 +1269,48 @@ pub fn check_members<'ast, 'arena>(
     class_like_fqcn: &[u8],
     context: &mut Context<'_, 'ast, 'arena>,
 ) {
-    let class_like_name = BytesDisplay(class_like_name);
-    let class_like_fqcn = BytesDisplay(class_like_fqcn);
+    let class_like_fqcn = context.display_class_like_name(class_like_fqcn);
     let mut method_names: HashMap<Vec<u8>, Span> = HashMap::new();
     let mut constant_names: HashMap<&[u8], (bool, Span)> = HashMap::new();
     let mut property_names: HashMap<&[u8], (bool, Span)> = HashMap::new();
 
     for member in members {
+        // A law shares its class's method names, so a law and a method of one name are declared twice.
+        let callable_name = match member {
+            ClassLikeMember::Method(method) => Some(&method.name),
+            ClassLikeMember::Law(law) => Some(&law.name),
+            _ => None,
+        };
+        if let Some(name) = callable_name {
+            let lowercase_name = name.value.to_ascii_lowercase();
+            if let Some(previous) = method_names.get(&lowercase_name) {
+                let method_display = context.display_member(class_like_name, BytesDisplay(name.value));
+                context.report(
+                    Issue::error(format!("{class_like_kind} method `{method_display}` has already been defined"))
+                        .with_annotation(Annotation::primary(name.span()))
+                        .with_annotations([
+                            Annotation::secondary(*previous).with_message("previous definition"),
+                            Annotation::secondary(class_like_span.span())
+                                .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
+                        ]),
+                );
+            } else {
+                method_names.insert(lowercase_name, name.span());
+            }
+        }
+
         match &member {
             ClassLikeMember::Property(property) => match &property {
                 Property::Plain(plain_property) => {
                     for item in &plain_property.items {
                         let item_name_bytes: &[u8] = item.variable().name;
-                        let item_name = BytesDisplay(item_name_bytes);
 
                         if let Some((is_promoted, span)) = property_names.get(item_name_bytes) {
+                            let item_display = context.display_member(class_like_name, BytesDisplay(item_name_bytes));
                             let message = if *is_promoted {
-                                format!(
-                                    "property `{class_like_name}::{item_name}` has already been defined as a promoted property"
-                                )
+                                format!("property `{item_display}` has already been defined as a promoted property")
                             } else {
-                                format!("property `{class_like_name}::{item_name}` has already been defined")
+                                format!("property `{item_display}` has already been defined")
                             };
 
                             context.report(
@@ -1291,7 +1318,7 @@ pub fn check_members<'ast, 'arena>(
                                     .with_annotation(Annotation::primary(item.variable().span()))
                                     .with_annotations([
                                         Annotation::secondary(*span).with_message(format!(
-                                            "property `{class_like_name}::{item_name}` previously defined here."
+                                            "property `{item_display}` previously defined here."
                                         )),
                                         Annotation::secondary(class_like_span.span()).with_message(format!(
                                             "{class_like_kind} `{class_like_fqcn}` defined here."
@@ -1307,24 +1334,21 @@ pub fn check_members<'ast, 'arena>(
                 Property::Hooked(_) | Property::Computed(_) => {
                     let item_variable = property.first_variable();
                     let item_name_bytes: &[u8] = item_variable.name;
-                    let item_name = BytesDisplay(item_name_bytes);
 
                     if let Some((is_promoted, span)) = property_names.get(item_name_bytes) {
+                        let item_display = context.display_member(class_like_name, BytesDisplay(item_name_bytes));
                         let message = if *is_promoted {
-                            format!(
-                                "property `{class_like_name}::{item_name}` has already been defined as a promoted property"
-                            )
+                            format!("property `{item_display}` has already been defined as a promoted property")
                         } else {
-                            format!("property `{class_like_name}::{item_name}` has already been defined")
+                            format!("property `{item_display}` has already been defined")
                         };
 
                         context.report(
                             Issue::error(message)
                                 .with_annotation(Annotation::primary(item_variable.span()))
                                 .with_annotations([
-                                    Annotation::secondary(*span).with_message(format!(
-                                        "property `{class_like_name}::{item_name}` previously defined here."
-                                    )),
+                                    Annotation::secondary(*span)
+                                        .with_message(format!("property `{item_display}` previously defined here.")),
                                     Annotation::secondary(class_like_span.span())
                                         .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
                                 ])
@@ -1336,41 +1360,17 @@ pub fn check_members<'ast, 'arena>(
                 }
             },
             ClassLikeMember::Method(method) => {
-                let method_name_bytes: &[u8] = method.name.value;
-                let method_name = BytesDisplay(method_name_bytes);
-                let lowercase_method_name = method_name_bytes.to_ascii_lowercase();
-
-                if let Some(previous) = method_names.get(&lowercase_method_name) {
-                    context.report(
-                        Issue::error(format!(
-                            "{class_like_kind} method `{class_like_name}::{method_name}` has already been defined"
-                        ))
-                        .with_annotation(Annotation::primary(method.name.span()))
-                        .with_annotations([
-                            Annotation::secondary(*previous).with_message("previous definition"),
-                            Annotation::secondary(class_like_span.span())
-                                .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
-                        ]),
-                    );
-                } else {
-                    method_names.insert(lowercase_method_name, method.name.span());
-                }
-
-                if method_name_bytes.eq_ignore_ascii_case(CONSTRUCTOR_MAGIC_METHOD) {
+                if method.name.value.eq_ignore_ascii_case(CONSTRUCTOR_MAGIC_METHOD) {
                     for parameter in &method.parameter_list.parameters {
                         if parameter.is_promoted_property() {
                             let item_name_bytes: &[u8] = parameter.variable.name;
-                            let item_name = BytesDisplay(item_name_bytes);
+                            let item_display = context.display_member(class_like_name, BytesDisplay(item_name_bytes));
 
                             if let Some((is_promoted, span)) = property_names.get(item_name_bytes) {
                                 let message = if *is_promoted {
-                                    format!(
-                                        "promoted property `{class_like_name}::{item_name}` has already been defined"
-                                    )
+                                    format!("promoted property `{item_display}` has already been defined")
                                 } else {
-                                    format!(
-                                        "promoted property `{class_like_name}::{item_name}` has already been defined as a property"
-                                    )
+                                    format!("promoted property `{item_display}` has already been defined as a property")
                                 };
 
                                 context.report(
@@ -1378,7 +1378,7 @@ pub fn check_members<'ast, 'arena>(
                                         .with_annotation(Annotation::primary(parameter.variable.span()))
                                         .with_annotations([
                                             Annotation::secondary(*span).with_message(format!(
-                                                "property `{class_like_name}::{item_name}` previously defined here."
+                                                "property `{item_display}` previously defined here."
                                             )),
                                             Annotation::secondary(class_like_span.span()).with_message(format!(
                                                 "{class_like_kind} `{class_like_fqcn}` defined here."
@@ -1398,17 +1398,16 @@ pub fn check_members<'ast, 'arena>(
                     let item_name_bytes: &[u8] = item.name.value;
 
                     if let Some((is_constant, span)) = constant_names.get(item_name_bytes) {
-                        let name = BytesDisplay(item_name_bytes);
+                        let name_display = context.display_member(class_like_name, BytesDisplay(item_name_bytes));
                         if *is_constant {
                             context.report(
                                 Issue::error(format!(
-                                    "{class_like_kind} constant `{class_like_name}::{name}` has already been defined",
+                                    "{class_like_kind} constant `{name_display}` has already been defined",
                                 ))
                                 .with_annotation(Annotation::primary(item.name.span()))
                                 .with_annotations([
-                                    Annotation::secondary(*span).with_message(format!(
-                                        "Constant `{class_like_name}::{name}` previously defined here."
-                                    )),
+                                    Annotation::secondary(*span)
+                                        .with_message(format!("Constant `{name_display}` previously defined here.")),
                                     Annotation::secondary(class_like_span.span())
                                         .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
                                 ]),
@@ -1416,12 +1415,12 @@ pub fn check_members<'ast, 'arena>(
                         } else {
                             context.report(
                                 Issue::error(format!(
-                                    "{class_like_kind} case `{class_like_name}::{name}` and constant `{class_like_name}::{name}` cannot have the same name"
+                                    "{class_like_kind} case `{name_display}` and constant `{name_display}` cannot have the same name"
                                 ))
                                 .with_annotation(Annotation::primary(item.name.span()))
                                 .with_annotations([
                                     Annotation::secondary(*span)
-                                        .with_message(format!("case `{class_like_name}::{name}` defined here.")),
+                                        .with_message(format!("case `{name_display}` defined here.")),
                                     Annotation::secondary(class_like_span.span()).with_message(format!(
                                         "{class_like_kind} `{class_like_fqcn}` defined here."
                                     )),
@@ -1437,38 +1436,60 @@ pub fn check_members<'ast, 'arena>(
                 let case_name_bytes: &[u8] = enum_case.item.name().value;
 
                 if let Some((is_constant, span)) = constant_names.get(case_name_bytes) {
-                    let name = BytesDisplay(case_name_bytes);
+                    let name_display = context.display_member(class_like_name, BytesDisplay(case_name_bytes));
                     if *is_constant {
                         context.report(
                             Issue::error(format!(
-                                "{class_like_kind} case `{class_like_name}::{name}` and constant `{class_like_name}::{name}` cannot have the same name"
+                                "{class_like_kind} case `{name_display}` and constant `{name_display}` cannot have the same name"
                             ))
                             .with_annotation(Annotation::primary(enum_case.item.name().span()))
                             .with_annotations([
                                 Annotation::secondary(*span)
-                                    .with_message(format!("Constant `{class_like_name}::{name}` defined here.")),
+                                    .with_message(format!("Constant `{name_display}` defined here.")),
                                 Annotation::secondary(class_like_span.span())
                                     .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
                             ]),
                         );
                     } else {
                         context.report(
-                            Issue::error(format!(
-                                "{class_like_kind} case `{class_like_name}::{name}` has already been defined",
-                            ))
-                            .with_annotation(Annotation::primary(enum_case.item.name().span()))
-                            .with_annotations([
-                                Annotation::secondary(*span)
-                                    .with_message(format!("case `{class_like_name}::{name}` previously defined here.")),
-                                Annotation::secondary(class_like_span.span())
-                                    .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
-                            ]),
+                            Issue::error(format!("{class_like_kind} case `{name_display}` has already been defined",))
+                                .with_annotation(Annotation::primary(enum_case.item.name().span()))
+                                .with_annotations([
+                                    Annotation::secondary(*span)
+                                        .with_message(format!("case `{name_display}` previously defined here.")),
+                                    Annotation::secondary(class_like_span.span())
+                                        .with_message(format!("{class_like_kind} `{class_like_fqcn}` defined here.")),
+                                ]),
                         );
                     }
 
                     continue;
                 }
                 constant_names.insert(case_name_bytes, (false, enum_case.item.name().span()));
+            }
+            ClassLikeMember::Law(law) => {
+                for parameter in &law.parameter_list.parameters {
+                    let name = BytesDisplay(parameter.variable.name);
+                    let refusal = if let Some(default_value) = &parameter.default_value {
+                        Some((
+                            format!("so `{name}` cannot have a default"),
+                            default_value.span(),
+                            "Default written here.",
+                        ))
+                    } else {
+                        parameter.ellipsis.map(|ellipsis| {
+                            (format!("so `{name}` cannot be variadic"), ellipsis, "Variadic written here.")
+                        })
+                    };
+
+                    if let Some((reason, span, written)) = refusal {
+                        context.report(
+                            Issue::error(format!("A law's parameters range over every value, {reason}."))
+                                .with_annotation(Annotation::primary(span).with_message(written))
+                                .with_note("A law states a fact about every value of its parameters."),
+                        );
+                    }
+                }
             }
             _ => {}
         }

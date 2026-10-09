@@ -10,6 +10,7 @@ use mago_codex::ttype::get_mixed;
 use mago_codex::ttype::get_never;
 use mago_codex::ttype::intersect_union_types;
 use mago_codex::ttype::union::TUnion;
+use mago_names::display_sharp_member;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -27,7 +28,9 @@ use crate::resolver::property::resolve_instance_properties;
 use crate::utils::expression::get_property_access_expression_id;
 use crate::utils::expression::is_this;
 use crate::utils::get_type_diff;
+use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_type;
+use crate::utils::names::display_value_type;
 use crate::utils::template::explain_blocked_substitution;
 
 #[inline]
@@ -112,9 +115,14 @@ where
         }
 
         if !type_match_found {
-            let property_name = resolved_property.property_name;
+            let property_name = match resolved_property.declaring_class_id {
+                Some(class_id) if context.dialect.is_sharp() => {
+                    display_sharp_member(display_class_like_name(context, class_id), resolved_property.property_name)
+                }
+                _ => resolved_property.property_name.to_string(),
+            };
             let property_type_str = display_type(context, &resolved_property.property_type);
-            let assigned_type_str = display_type(context, assigned_value_type);
+            let assigned_type_str = display_value_type(context, assigned_value_type, &resolved_property.property_type);
 
             let mut issue;
 

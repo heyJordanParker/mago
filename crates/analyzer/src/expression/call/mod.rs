@@ -24,6 +24,7 @@ use mago_word::concat_word;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
+use crate::artifacts::CallTarget;
 use crate::artifacts::ResolvedMethodCall;
 use crate::code::IssueCode;
 use crate::context::Context;
@@ -268,6 +269,11 @@ where
         }
 
         if let Some(identifier) = target.get_function_like_identifier() {
+            if context.dialect.is_sharp() {
+                let class = target.get_method_context().map(|method_context| method_context.class_like_metadata.name);
+                artifacts.record_call_target(call_span, CallTarget::FunctionLike { callee: *identifier, class });
+            }
+
             match identifier {
                 FunctionLikeIdentifier::Function(function_name) => {
                     let normalized_name = ascii_lowercase_word(function_name.as_ref());

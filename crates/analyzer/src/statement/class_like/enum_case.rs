@@ -1,5 +1,5 @@
 use mago_allocator::Arena;
-use mago_codex::ttype::TType;
+use mago_codex::ttype::union::TUnion;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -15,6 +15,10 @@ use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::statement::attributes::AttributeTarget;
 use crate::statement::attributes::analyze_attributes;
+use crate::utils::names::display_class_like_name;
+use crate::utils::names::display_member;
+use crate::utils::names::display_type;
+use crate::utils::names::display_value_type;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for EnumCase<'arena> {
     fn analyze<'ctx, A>(
@@ -72,14 +76,17 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for EnumCaseBackedItem<'arena> {
             ));
         };
 
-        let enum_name = current_enum.original_name;
+        let enum_name = display_class_like_name(context, current_enum.original_name);
         let case_name = mago_bytes::BytesDisplay(self.name.value);
+        let qualified_case = display_member(context, enum_name, case_name);
+        // PHP names the case alone where its enum follows in the message, and PHP# names a case only as `Enum.case`.
+        let case = if context.dialect.is_sharp() { qualified_case.clone() } else { case_name.to_string() };
 
         let Some(backing_type) = &current_enum.enum_type else {
             context.collector.report_with_code(
                 IssueCode::InvalidEnumCaseValue,
                 Issue::error(format!(
-                    "Case `{case_name}` in pure enum `{enum_name}` cannot have a value."
+                    "Case `{case}` in pure enum `{enum_name}` cannot have a value."
                 ))
                 .with_annotation(Annotation::primary(self.value.span()).with_message("This value is not allowed"))
                 .with_annotation(
@@ -97,7 +104,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for EnumCaseBackedItem<'arena> {
         let Some(value_type) = artifacts.get_rc_expression_type(&self.value).cloned() else {
             context.collector.report_with_code(
                 IssueCode::InvalidEnumCaseValue,
-                Issue::error(format!("Could not infer the type of the value for case `{enum_name}::{case_name}`."))
+                Issue::error(format!("Could not infer the type of the value for case `{qualified_case}`."))
                     .with_annotation(Annotation::primary(self.value.span()).with_message("The type of this value could not be determined"))
                     .with_note("The value of a backed enum case must be a constant expression that resolves to either a string or an integer.")
                     .with_help("Please use a literal or a constant expression for the value."),
@@ -106,15 +113,15 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for EnumCaseBackedItem<'arena> {
             return Ok(());
         };
 
-        let backing_type_str = backing_type.get_id();
-
         if (backing_type.is_int() && !value_type.is_int()) || (backing_type.is_string() && !value_type.is_string()) {
-            let value_type_str = value_type.get_id();
+            let backing_union = TUnion::from_atomic(backing_type.clone());
+            let backing_type_str = display_type(context, &backing_union);
+            let value_type_str = display_value_type(context, &value_type, &backing_union);
 
             context.collector.report_with_code(
                 IssueCode::InvalidEnumCaseValue,
                 Issue::error(format!(
-                    "Invalid case value for `{enum_name}::{case_name}`. Expected `{backing_type_str}`, but got `{value_type_str}`."
+                    "Invalid case value for `{qualified_case}`. Expected `{backing_type_str}`, but got `{value_type_str}`."
                 ))
                 .with_annotation(
                     Annotation::primary(self.value.span())

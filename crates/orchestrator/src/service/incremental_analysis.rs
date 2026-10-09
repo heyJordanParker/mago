@@ -17,6 +17,8 @@ use mago_analyzer::Analyzer;
 use mago_analyzer::analysis_result::AnalysisResult;
 use mago_analyzer::analysis_result::LateSymbolReferenceIssueReconciler;
 use mago_analyzer::artifacts::AnalysisArtifacts;
+use mago_analyzer::effects::EffectSummary;
+use mago_analyzer::effects::Effects;
 use mago_analyzer::external::AFTER_FILE_ANALYSIS_BATCH_SIZE;
 use mago_analyzer::external::CodebaseScanFile;
 use mago_analyzer::external::CodebaseScanPlan;
@@ -33,6 +35,7 @@ use mago_codex::diff::CodebaseDiff;
 use mago_codex::identifier::method::MethodIdentifier;
 use mago_codex::metadata::CodebaseEntryKeys;
 use mago_codex::metadata::CodebaseMetadata;
+use mago_codex::metadata::r#extern::ExternMetadata;
 use mago_codex::populator::populate_codebase;
 use mago_codex::populator::populate_codebase_targeted;
 use mago_codex::reference::SymbolReferences;
@@ -82,6 +85,11 @@ struct FileState {
     /// What the file's extension hooks and providers read from the codebase, kept apart from the references they
     /// contribute: a read only decides when the file is analyzed again.
     reads: FileReads,
+    /// What each PHP# body of the file does by itself. Every run solves the summaries of all files again, so an
+    /// unchanged file's getter sees a changed callee without being analyzed again.
+    effect_summaries: Vec<EffectSummary>,
+    /// The effect rules' issues in the file, from the last run's solve.
+    effect_issues: IssueCollection,
 }
 
 struct SelectiveAnalysisOutput {
@@ -95,6 +103,9 @@ struct SelectiveAnalysisOutput {
     per_file_pragmas: HashMap<FileId, DeferredPragmas>,
     snapshots: Vec<Arc<FileAnalysisSnapshot>>,
     codebase_issues: IssueCollection,
+    per_file_effect_summaries: HashMap<FileId, Vec<EffectSummary>>,
+    /// The effect rules' issues of every file, analyzed or skipped.
+    per_file_effect_issues: HashMap<FileId, IssueCollection>,
 }
 
 /// A self-contained incremental analysis service.
@@ -371,7 +382,11 @@ impl IncrementalAnalysisService {
     fn collect_all_issues(&self) -> IssueCollection {
         let total: usize = self.codebase_issues.len()
             + self.lifecycle_issues.len()
-            + self.file_states.values().map(|s| s.analysis_issues.len() + s.codebase_issues.len()).sum::<usize>();
+            + self
+                .file_states
+                .values()
+                .map(|s| s.analysis_issues.len() + s.effect_issues.len() + s.codebase_issues.len())
+                .sum::<usize>();
 
         let mut states = self.file_states.iter().collect::<Vec<_>>();
         states.sort_unstable_by_key(|(file_id, _)| **file_id);
@@ -385,12 +400,30 @@ impl IncrementalAnalysisService {
                 issues.extend(state.analysis_issues.iter().cloned());
             }
 
+            if !state.effect_issues.is_empty() {
+                issues.extend(state.effect_issues.iter().cloned());
+            }
+
             if !state.codebase_issues.is_empty() {
                 issues.extend(state.codebase_issues.iter().cloned());
             }
         }
 
         issues
+    }
+
+    /// Caches each analyzed file's effect summaries, and gives every file the effect issues of this run's solve.
+    fn store_effects(
+        &mut self,
+        mut summaries: HashMap<FileId, Vec<EffectSummary>>,
+        mut issues: HashMap<FileId, IssueCollection>,
+    ) {
+        for (file_id, state) in &mut self.file_states {
+            if let Some(file_summaries) = summaries.remove(file_id) {
+                state.effect_summaries = file_summaries;
+            }
+            state.effect_issues = issues.remove(file_id).unwrap_or_default();
+        }
     }
 
     fn refresh_late_reference_issues(&mut self) {
@@ -524,6 +557,8 @@ impl IncrementalAnalysisService {
                     deferred_pragmas: None,
                     late_symbol_references: SymbolReferences::new(),
                     reads: FileReads::default(),
+                    effect_summaries: Vec::new(),
+                    effect_issues: IssueCollection::default(),
                 },
             );
         }
@@ -539,6 +574,8 @@ impl IncrementalAnalysisService {
             per_file_pragmas,
             snapshots,
             codebase_issues: all_codebase_issues,
+            per_file_effect_summaries,
+            per_file_effect_issues,
         } =
             self.run_analyzer_selective(&mut merged_codebase, symbol_references, &self.settings, &HashSet::default())?;
         #[cfg(test)]
@@ -566,6 +603,7 @@ impl IncrementalAnalysisService {
                 state.reads = reads_by_file.remove(&file_id).unwrap_or_default();
             }
         }
+        self.store_effects(per_file_effect_summaries, per_file_effect_issues);
 
         self.codebase = merged_codebase;
         self.symbol_references = std::mem::take(&mut analysis_result.symbol_references);
@@ -867,6 +905,18 @@ impl IncrementalAnalysisService {
             return self.analyze();
         }
 
+        let externs_changed = new_file_scans
+            .iter()
+            .any(|(file_id, metadata)| externs_in(metadata, *file_id) != externs_in(&self.codebase, *file_id))
+            || self
+                .file_states
+                .keys()
+                .any(|file_id| !current_file_ids.contains(file_id) && !externs_in(&self.codebase, *file_id).is_empty());
+
+        if externs_changed {
+            return self.analyze();
+        }
+
         let body_only = diff.get_changed().is_empty() && deleted_count == 0;
 
         if !body_only {
@@ -960,6 +1010,8 @@ impl IncrementalAnalysisService {
                 per_file_pragmas,
                 snapshots,
                 codebase_issues: new_codebase_issues,
+                per_file_effect_summaries,
+                per_file_effect_issues,
             } = self.run_analyzer_selective(&mut merged_codebase, symbol_references, &self.settings, &files_to_skip)?;
             #[cfg(test)]
             {
@@ -1027,9 +1079,12 @@ impl IncrementalAnalysisService {
                         deferred_pragmas,
                         late_symbol_references,
                         reads: reads_by_file.remove(&file_id).unwrap_or_default(),
+                        effect_summaries: Vec::new(),
+                        effect_issues: IssueCollection::default(),
                     },
                 );
             }
+            self.store_effects(per_file_effect_summaries, per_file_effect_issues);
 
             self.codebase = merged_codebase;
             self.symbol_references = std::mem::take(&mut analysis_result.symbol_references);
@@ -1206,6 +1261,8 @@ impl IncrementalAnalysisService {
             per_file_pragmas,
             snapshots,
             codebase_issues: new_codebase_issues,
+            per_file_effect_summaries,
+            per_file_effect_issues,
         } = self.run_analyzer_selective(&mut merged_codebase, symbol_references, &self.settings, &files_to_skip)?;
         #[cfg(test)]
         {
@@ -1273,9 +1330,12 @@ impl IncrementalAnalysisService {
                     deferred_pragmas,
                     late_symbol_references,
                     reads: reads_by_file.remove(&file_id).unwrap_or_default(),
+                    effect_summaries: Vec::new(),
+                    effect_issues: IssueCollection::default(),
                 },
             );
         }
+        self.store_effects(per_file_effect_summaries, per_file_effect_issues);
 
         self.codebase = merged_codebase;
         self.symbol_references = std::mem::take(&mut analysis_result.symbol_references);
@@ -1517,7 +1577,7 @@ impl IncrementalAnalysisService {
         #[cfg(not(target_arch = "wasm32"))]
         let slowest_files = trace_enabled.then(SlowestFiles::new);
 
-        let results: Vec<(FileId, AnalysisResult, Option<Arc<FileAnalysisSnapshot>>)> = host_files
+        let results = host_files
             .into_par_iter()
             .map_init(LocalArena::new, |arena, source_file| {
                 #[cfg(not(target_arch = "wasm32"))]
@@ -1545,7 +1605,7 @@ impl IncrementalAnalysisService {
                 }
 
                 let semantic_issues = semantics_checker.check(&source_file, program, &resolved_names);
-                let artifacts = if program.dialect.is_sharp() {
+                let mut artifacts = if program.dialect.is_sharp() {
                     let artifacts = analyzer.analyze_with_artifacts(program, &mut analysis_result)?;
                     let analyzer_issues = std::mem::take(&mut analysis_result.issues);
                     let analyzer_issues = drop_follow_on_issues(&source_file, &semantic_issues, analyzer_issues);
@@ -1604,7 +1664,7 @@ impl IncrementalAnalysisService {
                     analyzing_bar.inc(1);
                 }
 
-                Ok((file_id, analysis_result, snapshot))
+                Ok((file_id, analysis_result, snapshot, std::mem::take(&mut artifacts.effect_summaries)))
             })
             .collect::<Result<Vec<_>, OrchestratorError>>()?;
         if let Some(analyzing_bar) = analyzing_bar {
@@ -1633,11 +1693,13 @@ impl IncrementalAnalysisService {
         let mut per_file_issues: HashMap<FileId, IssueCollection> = HashMap::default();
         let mut per_file_pragmas: HashMap<FileId, DeferredPragmas> = HashMap::default();
         let mut snapshots = Vec::new();
+        let mut per_file_effect_summaries: HashMap<FileId, Vec<EffectSummary>> = HashMap::default();
 
-        for (file_id, mut result, snapshot) in results {
+        for (file_id, mut result, snapshot, effect_summaries) in results {
             let mut deferred_pragmas = result.take_deferred_pragmas();
             aggregated_result.symbol_references.extend(result.symbol_references);
             per_file_issues.insert(file_id, result.issues);
+            per_file_effect_summaries.insert(file_id, effect_summaries);
             if let Some(pragmas) = deferred_pragmas.pop() {
                 per_file_pragmas.insert(file_id, pragmas);
             }
@@ -1701,6 +1763,25 @@ impl IncrementalAnalysisService {
             late_symbol_references.extend(references.clone());
         }
 
+        // The solve runs over the summaries of every file, so a body edit reaches the getters of the files it skipped.
+        let mut effect_summaries: Vec<(FileId, &[EffectSummary])> =
+            per_file_effect_summaries.iter().map(|(file_id, summaries)| (*file_id, summaries.as_slice())).collect();
+        effect_summaries.extend(
+            effective_skip_files
+                .iter()
+                .filter_map(|file_id| Some((*file_id, self.file_states.get(file_id)?.effect_summaries.as_slice()))),
+        );
+        effect_summaries.sort_unstable_by_key(|(file_id, _)| *file_id);
+        let effect_summaries: Vec<EffectSummary> =
+            effect_summaries.into_iter().flat_map(|(_, summaries)| summaries.iter().cloned()).collect();
+        let mut per_file_effect_issues: HashMap<FileId, IssueCollection> = HashMap::default();
+        for issue in Effects::solve(codebase, &effect_summaries).issues(codebase) {
+            match issue.primary_span() {
+                Some(span) => per_file_effect_issues.entry(span.file_id).or_default().push(issue),
+                None => aggregated_result.issues.push(issue),
+            }
+        }
+
         let cached_pragmas =
             effective_skip_files.iter().filter_map(|file_id| self.file_states.get(file_id)?.deferred_pragmas.clone());
         let mut pragma_reconciler = DeferredIssueReconciler::new(
@@ -1708,7 +1789,7 @@ impl IncrementalAnalysisService {
             self.database.files(),
         );
         aggregated_result.issues = pragma_reconciler.reconcile(std::mem::take(&mut aggregated_result.issues))?;
-        for issues in per_file_issues.values_mut() {
+        for issues in per_file_issues.values_mut().chain(per_file_effect_issues.values_mut()) {
             *issues = pragma_reconciler.reconcile(std::mem::take(issues))?;
         }
         let codebase_issues = if self.scan_only {
@@ -1804,8 +1885,20 @@ impl IncrementalAnalysisService {
             per_file_pragmas,
             snapshots,
             codebase_issues,
+            per_file_effect_summaries,
+            per_file_effect_issues,
         })
     }
+}
+
+/// The `extern` declarations in `file_id`, in the codebase's order. A body's summary records the effects of the
+/// declarations its calls fall under, and the second declaration of a target is an error in its own file, so a change
+/// to them changes files that the signature diff cannot see.
+fn externs_in(codebase: &CodebaseMetadata, file_id: FileId) -> Vec<&ExternMetadata> {
+    let mut externs: Vec<&ExternMetadata> =
+        codebase.externs.values().flatten().filter(|declaration| declaration.span.file_id == file_id).collect();
+    externs.sort();
+    externs
 }
 
 /// The functions `file_id`'s `[Replaces]` attributes wrap, each with its wrapping methods in the codebase's order. A
@@ -3104,6 +3197,118 @@ mod tests {
         service.update_database(db.read_only());
         service.analyze_incremental(None).expect("Incremental failed.");
         assert_matches_full(&service, &db, "removed class alias");
+    }
+
+    /// A body edit changes what every caller's body reaches, so the warm run re-analyzes only the edited file and
+    /// the solve over every cached summary reports the getter in the unchanged file.
+    #[test]
+    fn test_watch_body_edit_reaches_an_unchanged_files_getter() {
+        let order =
+            |price: &str| format!("namespace App;\n\npublic class Order\n{{\n    public int price() => {price};\n}}\n");
+        let cart = "namespace App;\n\npublic class Cart\n{\n    public Cart(private Order order) { }\n\n    public int total => this.order.price();\n}\n";
+        let clock = "namespace App.Stubs;\n\nextern now uses Clock;\n";
+        let now = "<?php\nfunction now(): int { return time(); }\n";
+        let order_id = FileId::new(b"src/Order.sharp");
+        let mut db = make_database(vec![
+            ("src/Order.sharp", order("1").as_str()),
+            ("src/Cart.sharp", cart),
+            ("src/Clock.sharp", clock),
+            ("src/now.php", now),
+        ]);
+        let impure_getters = |service: &IncrementalAnalysisService| {
+            service
+                .collect_all_issues()
+                .iter()
+                .filter(|issue| issue.code.as_deref() == Some("impure-getter"))
+                .map(|issue| issue.message.clone())
+                .collect::<Vec<_>>()
+        };
+
+        let mut service = make_watch_service(&db);
+        service.analyze().expect("Initial analysis failed.");
+        assert_eq!(impure_getters(&service), Vec::<String>::new());
+
+        db.update(order_id, Cow::Owned(order("now()").into_bytes()));
+        service.update_database(db.read_only());
+        service.analyze_incremental(Some(&[order_id])).expect("Incremental analysis failed.");
+        assert_eq!(
+            impure_getters(&service),
+            ["Getter `total` reaches `Order.price`, which calls `now` with the effect `Clock`. Getters must be pure."]
+        );
+        assert_eq!(service.analyzed_files, HashSet::from_iter([order_id]));
+        assert_matches_full(&service, &db, "Order.price calls now");
+
+        db.update(order_id, Cow::Owned(order("1").into_bytes()));
+        service.update_database(db.read_only());
+        service.analyze_incremental(Some(&[order_id])).expect("Incremental analysis failed.");
+        assert_eq!(impure_getters(&service), Vec::<String>::new());
+        assert_eq!(service.analyzed_files, HashSet::from_iter([order_id]));
+        assert_matches_full(&service, &db, "Order.price returns 1 again");
+    }
+
+    /// A body records the effects its `extern` declarations list, so an edit of a declaration changes the summaries
+    /// of every file that calls what it declares.
+    #[test]
+    fn test_watch_extern_edit_reaches_every_caller() {
+        let clock = |uses: &str| format!("namespace App.Stubs;\n\nextern now{uses};\n");
+        let report = "namespace App;\n\npublic class Report\n{\n    public int stamp => now();\n}\n";
+        let now = "<?php\nfunction now(): int { return time(); }\n";
+        let clock_id = FileId::new(b"src/Clock.sharp");
+        let mut db = make_database(vec![
+            ("src/Clock.sharp", clock("").as_str()),
+            ("src/Report.sharp", report),
+            ("src/now.php", now),
+        ]);
+        let impure_getters = |service: &IncrementalAnalysisService| {
+            service.collect_all_issues().iter().filter(|issue| issue.code.as_deref() == Some("impure-getter")).count()
+        };
+
+        let mut service = make_watch_service(&db);
+        service.analyze().expect("Initial analysis failed.");
+        assert_eq!(impure_getters(&service), 0);
+
+        db.update(clock_id, Cow::Owned(clock(" uses Clock").into_bytes()));
+        service.update_database(db.read_only());
+        service.analyze_incremental(Some(&[clock_id])).expect("Incremental analysis failed.");
+        assert_eq!(impure_getters(&service), 1);
+        assert_matches_full(&service, &db, "now uses Clock");
+
+        db.update(clock_id, Cow::Owned(clock("").into_bytes()));
+        service.update_database(db.read_only());
+        service.analyze_incremental(Some(&[clock_id])).expect("Incremental analysis failed.");
+        assert_eq!(impure_getters(&service), 0);
+        assert_matches_full(&service, &db, "now is pure again");
+    }
+
+    /// A signature edit re-analyzes its file in watch mode, and the methods it did not touch keep what they do.
+    #[test]
+    fn test_watch_signature_edit_keeps_the_effects_of_the_files_other_methods() {
+        let order = |extra: &str| {
+            format!("namespace App;\n\npublic class Order\n{{\n    public int price() => now();\n{extra}}}\n")
+        };
+        let cart = "namespace App;\n\npublic class Cart\n{\n    public Cart(private Order order) { }\n\n    public int total => this.order.price();\n}\n";
+        let clock = "namespace App.Stubs;\n\nextern now uses Clock;\n";
+        let now = "<?php\nfunction now(): int { return time(); }\n";
+        let order_id = FileId::new(b"src/Order.sharp");
+        let mut db = make_database(vec![
+            ("src/Order.sharp", order("").as_str()),
+            ("src/Cart.sharp", cart),
+            ("src/Clock.sharp", clock),
+            ("src/now.php", now),
+        ]);
+        let impure_getters = |service: &IncrementalAnalysisService| {
+            service.collect_all_issues().iter().filter(|issue| issue.code.as_deref() == Some("impure-getter")).count()
+        };
+
+        let mut service = make_watch_service(&db);
+        service.analyze().expect("Initial analysis failed.");
+        assert_eq!(impure_getters(&service), 1);
+
+        db.update(order_id, Cow::Owned(order("\n    public int discount() => 0;\n").into_bytes()));
+        service.update_database(db.read_only());
+        service.analyze_incremental(Some(&[order_id])).expect("Incremental analysis failed.");
+        assert_eq!(impure_getters(&service), 1);
+        assert_matches_full(&service, &db, "Order gains discount");
     }
 
     /// A library edit that adds or drops a `[Replaces]` changes the diagnostics of a project file that calls the

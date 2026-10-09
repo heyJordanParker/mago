@@ -52,6 +52,7 @@ use mago_codex::ttype::union::TUnion;
 use mago_codex::ttype::wrap_atomic;
 use mago_codex::visibility::Visibility;
 use mago_names::binding::php_variable_name;
+use mago_names::display_sharp_member;
 use mago_php_version::feature::Feature;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -71,6 +72,7 @@ use crate::context::block::BlockContext;
 use crate::context::block::ReferenceConstraint;
 use crate::context::block::ReferenceConstraintSource;
 use crate::error::AnalysisError;
+use crate::expression::array::check_sharp_literal_kind;
 use crate::expression::instantiation::report_missing_type_arguments;
 use crate::resolver::property::localize_property_type;
 use crate::resolver::property::resolve_declared_property;
@@ -81,10 +83,13 @@ use crate::statement::class_like::property::analyze_property_hook;
 use crate::statement::r#return::handle_return_value;
 use crate::statement::r#static::infer_static_local_types;
 use crate::utils::expression::get_variable_id;
+use crate::utils::names::display_atomic;
+use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_nullable_type;
 use crate::utils::names::display_sharp_type;
 use crate::utils::names::display_type;
-use crate::utils::names::short_name;
+use crate::utils::names::display_value_type;
+use crate::utils::names::display_variable_name;
 
 pub mod function;
 pub mod rejected_nullable_parameter;
@@ -416,6 +421,9 @@ where
                     value,
                     return_type.map(|return_type| &return_type.type_union),
                 );
+                if let Some(return_type) = return_type {
+                    check_sharp_literal_kind(context, value, &return_type.type_union);
+                }
 
                 block_context.flags.set_inside_return(true);
                 value.analyze(context, block_context, &mut artifacts)?;
@@ -445,10 +453,19 @@ where
         // A conditional return type whose branches are all `void`/`never` erases to `void`, which
         // the check above cannot see through since it only sees the unexpanded conditional.
         if !expanded_type.is_void() {
+            let (kind, name) = match block_context.scope.get_class_like() {
+                Some(class_like) if context.dialect.is_sharp() && function_metadata.kind.is_method() => {
+                    let class_name = display_class_like_name(context, class_like.original_name);
+
+                    ("method", word(display_sharp_member(class_name, function_metadata.original_name)))
+                }
+                _ => ("function", function_metadata.name),
+            };
+
             report_missing_return(
                 context,
-                "function",
-                function_metadata.name,
+                kind,
+                name,
                 function_metadata.name_span.unwrap_or(function_metadata.span),
                 body.span(),
                 &expanded_type,
@@ -464,6 +481,7 @@ where
     parent_artifacts.inferred_type_arguments.extend(std::mem::take(&mut artifacts.inferred_type_arguments));
     parent_artifacts.variable_definedness.extend(std::mem::take(&mut artifacts.variable_definedness));
     parent_artifacts.resolved_method_calls.append(&mut artifacts.resolved_method_calls);
+    parent_artifacts.call_targets.extend(std::mem::take(&mut artifacts.call_targets));
     parent_artifacts.symbol_references.extend(std::mem::take(&mut artifacts.symbol_references));
     parent_artifacts.pending_readonly_property_writes.append(&mut artifacts.pending_readonly_property_writes);
 
@@ -1255,11 +1273,8 @@ fn check_return_type_metadata_width<'ctx, A>(
         return;
     }
 
-    let unused_list = unused_atomics
-        .iter()
-        .map(|atomic| display_type(context, &TUnion::from_atomic((*atomic).clone())))
-        .collect::<Vec<_>>()
-        .join("`, `");
+    let unused_list =
+        unused_atomics.iter().map(|atomic| display_atomic(context, atomic)).collect::<Vec<_>>().join("`, `");
 
     let declared_str = display_type(context, &expanded_declared);
     let return_span = return_type_metadata.span;
@@ -1660,6 +1675,8 @@ fn check_parameter_default_value<'ctx, 'arena, A>(
 ) where
     A: Arena,
 {
+    check_sharp_literal_kind(context, default_expression, declared_type);
+
     // A PHP# type holds null only when it is written with `?`, so its `Any` and its type parameters are checked and it
     // has no implicitly nullable parameter.
     let is_sharp = context.dialect.is_sharp();
@@ -1693,9 +1710,9 @@ fn check_parameter_default_value<'ctx, 'arena, A>(
         return;
     }
 
-    let default_type_str = display_type(context, default_type);
+    let default_type_str = display_value_type(context, default_type, declared_type);
     let declared_type_str = display_type(context, declared_type);
-    let param_name = parameter_metadata.name.0;
+    let param_name = display_variable_name(context, parameter_metadata.name.0.as_bytes());
 
     let issue = Issue::error(format!(
         "Default value for parameter `{param_name}` is not assignable to its declared type."
@@ -1817,7 +1834,7 @@ where
 {
     let codebase = context.codebase;
     let is_sharp = context.dialect.is_sharp();
-    let owner = if is_sharp { short_name(word(owner.to_string())) } else { owner.to_string() };
+    let owner = if is_sharp { mago_names::short_name(owner.to_string()) } else { owner.to_string() };
     let (kind, sentence_kind) = if is_sharp { ("type", "Type") } else { ("template", "Template") };
 
     let expected = templates.len();
@@ -1944,7 +1961,7 @@ where
             continue;
         }
 
-        let key_id = display_sharp_type(key_type, context.codebase);
+        let key_id = display_sharp_type(context, key_type);
         context.collector.report_with_code(
             IssueCode::TemplateConstraintViolation,
             Issue::error(format!(

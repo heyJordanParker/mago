@@ -1,4 +1,3 @@
-mod benchmarks;
 mod config;
 mod content;
 mod i18n;

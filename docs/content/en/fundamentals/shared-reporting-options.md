@@ -70,8 +70,6 @@ If `--reporting-format` is not set, Mago picks one based on the environment:
 
 CI pipelines therefore get native annotations and AI agents get a token-efficient format with no configuration. Pass `--reporting-format` explicitly to override.
 
-> Auto-detection is available since Mago 1.18. On 1.17 and earlier, set `--reporting-format=github` or `--reporting-format=gitlab` explicitly.
-
 ## Baseline
 
 Flags for managing baseline files. The full guide is on the [baseline page](/fundamentals/baseline/).

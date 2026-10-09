@@ -48,7 +48,7 @@ pub struct SelfUpdateCommand {
     /// Update to a specific version by providing the version tag.
     ///
     /// This option allows you to specify a particular version of Mago to update to, rather than the latest version.
-    /// The version tag should match the format used in the release tags (e.g., `1.0.0-beta.10`).
+    /// The version tag should match the format used in the release tags (e.g., `0.1.0`).
     /// If the specified version is not found, an error will be returned.
     #[arg(long, value_name = "VERSION_TAG", conflicts_with = "to_project_version")]
     pub tag: Option<String>,
@@ -56,11 +56,11 @@ pub struct SelfUpdateCommand {
     /// Update to whatever version the project's `mago.toml` pins.
     ///
     /// Reads the `version` field from `mago.toml` and installs the matching release.
-    /// Fails if `mago.toml` has no `version` pin; add one (e.g. `version = "1"`) or
+    /// Fails if `mago.toml` has no `version` pin; add one (e.g. `version = "0.2"`) or
     /// use `--tag` explicitly.
     ///
-    /// For exact pins (`version = "1.19.3"`) this resolves to that exact release tag.
-    /// For non-exact pins (`version = "1"` or `version = "1.19"`) this installs the
+    /// For exact pins (`version = "0.2.0"`) this resolves to that exact release tag.
+    /// For non-exact pins (`version = "0"` or `version = "0.2"`) this installs the
     /// latest published release that satisfies the pin, or fails with a clear error
     /// if the latest release is on a different major/minor line.
     #[arg(long, conflicts_with = "tag")]
@@ -80,7 +80,8 @@ pub fn execute(command: SelfUpdateCommand, project_version_pin: Option<String>) 
             Some(pin) => pin,
             None => {
                 tracing::error!(
-                    "Add a pin to `mago.toml` (e.g. `version = \"1\"` at the top of the file), or pass `--tag <VERSION>` instead."
+                    "Add a pin to `mago.toml` (e.g. `version = \"{}\"` at the top of the file), or pass `--tag <VERSION>` instead.",
+                    version_pin()
                 );
 
                 return Err(Error::NoPinnedProjectVersion);
@@ -98,7 +99,7 @@ pub fn execute(command: SelfUpdateCommand, project_version_pin: Option<String>) 
         } else {
             info!("Resolving latest release satisfying project pin `{pin}`...");
 
-            find_latest_release_satisfying(&pin)?
+            find_latest_release_satisfying(&pin, fetch_releases()?)?
         }
     } else {
         match command.tag {
@@ -201,49 +202,37 @@ fn confirm_prompt(msg: &str) -> Result<(), UpdateError> {
     Ok(())
 }
 
-/// Scans recent releases and returns the version string of the highest one
-/// that satisfies `pin`.
-fn find_latest_release_satisfying(pin: &VersionPin) -> Result<Release, Error> {
+fn fetch_releases() -> Result<Vec<Release>, Error> {
     const MAX_PAGES: u32 = 10;
 
-    let pin_major = parse_version_components(&pin.to_string()).map(|(m, _, _)| m).unwrap_or(0);
+    let mut releases = Vec::new();
+    for page in 1..=MAX_PAGES {
+        let page_releases = github::list_releases(REPO_OWNER, REPO_NAME, page)?;
+        if page_releases.is_empty() {
+            break;
+        }
+
+        releases.extend(page_releases);
+    }
+
+    Ok(releases)
+}
+
+fn find_latest_release_satisfying(pin: &VersionPin, releases: Vec<Release>) -> Result<Release, Error> {
+    let latest_seen = releases.first().map(|release| release.version.clone());
 
     let mut best: Option<(Release, (u64, u64, u64))> = None;
-    let mut latest_seen: Option<String> = None;
+    for release in releases {
+        let Ok(components) = parse_version_components(&release.version) else {
+            continue;
+        };
 
-    for page in 1..=MAX_PAGES {
-        let releases = github::list_releases(REPO_OWNER, REPO_NAME, page).map_err(Error::SelfUpdate)?;
-
-        if releases.is_empty() {
-            break;
+        if !matches!(pin.check(&release.version), Ok(VersionCheck::Match)) {
+            continue;
         }
 
-        if latest_seen.is_none() {
-            latest_seen = Some(releases[0].version.clone());
-        }
-
-        let mut page_touched_pin_era = false;
-
-        for release in releases {
-            let Ok(components) = parse_version_components(&release.version) else {
-                continue;
-            };
-
-            if components.0 >= pin_major {
-                page_touched_pin_era = true;
-            }
-
-            if !matches!(pin.check(&release.version), Ok(VersionCheck::Match)) {
-                continue;
-            }
-
-            if best.as_ref().is_none_or(|(_, best_components)| components > *best_components) {
-                best = Some((release, components));
-            }
-        }
-
-        if !page_touched_pin_era {
-            break;
+        if best.as_ref().is_none_or(|(_, best_components)| components > *best_components) {
+            best = Some((release, components));
         }
     }
 
@@ -251,12 +240,6 @@ fn find_latest_release_satisfying(pin: &VersionPin) -> Result<Release, Error> {
         Ok(version)
     } else {
         let latest = latest_seen.unwrap_or_else(|| "unknown".to_owned());
-        tracing::error!(
-            "Scanned the most recent releases on GitHub but none matched `{pin}`; the most recent one was `{latest}`."
-        );
-        tracing::error!(
-            "If a matching release exists further back in history, pass `--tag <VERSION>` explicitly to install it."
-        );
         Err(Error::LatestReleaseDoesNotSatisfyPin(pin.to_string(), latest))
     }
 }
@@ -315,5 +298,38 @@ fn get_target_asset_from_release(release: &Release) -> Result<&ReleaseAsset, Upd
         );
         tracing::error!("Please try again in a few minutes.");
         Err(UpdateError::Release(format!("binary for `{TARGET}` not yet available in release `{}`", release.version)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn listing() -> Vec<Release> {
+        ["0.2.0", "0.1.0"]
+            .into_iter()
+            .map(|version| Release { name: version.to_owned(), version: version.to_owned(), assets: Vec::new() })
+            .collect()
+    }
+
+    #[test]
+    fn a_pin_no_release_satisfies_names_the_pin_of_this_binary() {
+        let found = find_latest_release_satisfying(&VersionPin::parse("1").unwrap(), listing());
+
+        assert_eq!(
+            found.map(|release| release.version).map_err(|error| error.to_string()),
+            Err(format!(
+                "No published mago release satisfies the `version` pin `1` in mago.toml (most recent: `0.2.0`). Set `version = \"{}\"` in mago.toml to use this mago binary.",
+                version_pin()
+            ))
+        );
+    }
+
+    #[test]
+    fn a_pin_of_a_mago_sharp_line_finds_its_newest_release() {
+        let newest = |pin: &str| find_latest_release_satisfying(&VersionPin::parse(pin).unwrap(), listing()).unwrap();
+
+        assert_eq!(newest("0").version, "0.2.0");
+        assert_eq!(newest("0.1").version, "0.1.0");
     }
 }

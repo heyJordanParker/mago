@@ -63,6 +63,62 @@ fn the_slice_fixtures_have_no_semantic_issues() {
     assert_eq!(issues(include_str!("fixtures/library.sharp")), Vec::<String>::new());
 }
 
+/// `extern` declares the effects of plain PHP at file level, spec section 29, and nowhere else.
+#[test]
+fn extern_is_a_declaration_of_the_file_and_of_no_method_body() {
+    let code = "namespace App.Stubs;\n\nimport Stripe.StripeClient;\n\nextern StripeClient uses Http;\nextern Carbon.now uses Clock, Random;\nextern trim;\n\nclass Report\n{\n    public int run(int extra)\n    {\n        extern trim;\n        return extra;\n    }\n}\n";
+
+    assert_eq!(issues(code), ["13:9 This statement is not supported yet in PHP#."]);
+}
+
+/// Spec section 28: a law states a fact about the values of a class or an enum, and an interface has no values.
+#[test]
+fn a_law_is_a_member_of_a_class_or_an_enum_and_of_no_interface() {
+    let code = "namespace App.Shared;\n\npublic class Money\n{\n    law sameAmount(int a) => a == a;\n}\n\npublic enum Status\n{\n    case Open;\n\n    law openIsOpen(Status s) => Status.Open == Status.Open;\n}\n\npublic interface Priced\n{\n    law positive(int a) => a >= 0;\n}\n";
+
+    assert_eq!(issues(code), ["17:5 This class member is not supported yet in PHP#."]);
+}
+
+/// A law's parameters range over every value, so none has a default and none collects the rest of the arguments.
+#[test]
+fn a_law_parameter_with_a_default_or_a_spread_is_refused() {
+    let code = "namespace App.Shared;\n\npublic class Money\n{\n    law withDefault(int a = 1) => a == a;\n    law withRest(int ...rest) => true;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:27 A law's parameters range over every value, so `a` cannot have a default.",
+            "6:22 A law's parameters range over every value, so `rest` cannot be variadic.",
+        ]
+    );
+    assert_eq!(
+        check("src/Report.sharp", code).into_iter().map(|issue| issue.notes).collect::<Vec<_>>(),
+        [
+            ["A law states a fact about every value of its parameters."],
+            ["A law states a fact about every value of its parameters."],
+        ]
+    );
+}
+
+/// A law has no `this`, so a bare member in it is written through the class name, as in a static method.
+#[test]
+fn a_bare_member_in_a_law_is_written_through_the_class_name() {
+    let code = "namespace App.Shared;\n\npublic class Money\n{\n    private int cents = 0;\n\n    law positive(Money a) => cents > 0;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["7:30 Write `Money.cents`: a static method reaches the members of its class through the class name."]
+    );
+}
+
+/// A law and a method share their class's member names, so a name is declared once.
+#[test]
+fn a_law_and_a_method_named_alike_are_a_duplicate_member() {
+    let code = "namespace App.Shared;\n\npublic class Money\n{\n    public bool positive(int a) => a > 0;\n\n    law positive(int a) => a > 0 || a <= 0;\n}\n";
+
+    assert_eq!(issues(code), ["7:9 class method `Money.positive` has already been defined"]);
+}
+
 #[test]
 fn every_construct_outside_the_slice_is_not_supported_yet() {
     let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\ntrait Named\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        switch (extra) {\n            default: return 1;\n        }\n        const made = new Report;\n        const partial = this.run(...);\n        const text = <<<TEXT\ntotal\nTEXT;\n        return extra;\n    }\n}\n";
@@ -464,7 +520,7 @@ fn a_function_called_by_its_bare_name_is_in_the_slice() {
 #[test]
 fn a_construct_outside_the_slice_is_not_supported_yet_in_a_catch_block_or_a_call_argument() {
     let code = leak(method(
-        "        try {\n        } catch (Missing failure) {\n            extra = extra & 1;\n        }\n        return count(this.run(...));\n",
+        "        try {\n        } catch (Missing failure) {\n            extra = extra <> 1;\n        }\n        return count(this.run(...));\n",
     ));
 
     assert_eq!(
@@ -805,7 +861,7 @@ fn an_interface_property_is_not_supported_yet_with_or_without_accessor_bodies() 
     assert_eq!(
         issues(code),
         [
-            "6:31 Interface virtual property `Named::label` must be abstract.",
+            "6:31 Interface virtual property `Named.label` must be abstract.",
             "5:5 This class member is not supported yet in PHP#.",
             "6:5 This class member is not supported yet in PHP#."
         ]
@@ -919,7 +975,7 @@ fn int_float_and_bool_outside_the_sharp_namespace_are_reserved() {
         ("App", "Int"),
         ("App", "Bool"),
         ("Sharp.Text", "Float"),
-        ("sharp", "Int"),
+        ("SHARP", "Int"),
         ("Sharp", "INT"),
         ("Sharp", "Mixed"),
     ] {
@@ -933,6 +989,14 @@ fn int_float_and_bool_outside_the_sharp_namespace_are_reserved() {
             "{namespace}.{name}"
         );
     }
+
+    assert_eq!(
+        issues("namespace sharp;\n\npublic static class Int\n{\n    public static int one() => 1;\n}\n"),
+        [
+            "1:11 `sharp` must start with a capital letter: PHP# capitalizes every namespace and every type except the built-in ones.",
+            "3:21 Cannot use `Int` as a class name: it is reserved.",
+        ]
+    );
 }
 
 #[test]
@@ -940,7 +1004,7 @@ fn methods_whose_names_differ_only_in_case_are_an_error() {
     let code = "class Report\n{\n    public int run() { return 1; }\n\n    public int Run() { return 2; }\n}\n";
 
     // The PHP checks already reject this, so PHP# adds no second error.
-    assert_eq!(issues(code), ["5:16 class method `Report::Run` has already been defined"]);
+    assert_eq!(issues(code), ["5:16 class method `Report.Run` has already been defined"]);
 }
 
 #[test]
@@ -1001,6 +1065,193 @@ fn an_import_named_like_a_class_of_the_same_file_is_an_error() {
         issues(code),
         ["3:8 Cannot import `App.Shared.Report` as `Report`: this file declares a class named `Report`."]
     );
+}
+
+/// Spec section 23: a renamed import is used by its new name, so two imports of one name clash whether either is
+/// renamed or not.
+#[test]
+fn an_import_renamed_to_the_name_of_another_import_is_an_error() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Calc as Tool;\nimport Other.Tool;\nimport Third.Thing as TOOL;\n\nclass Report\n{\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "4:8 Cannot import `Other.Tool` as `Tool`: `Lib.Calc` is already imported as `Tool`.",
+            "5:8 Cannot import `Third.Thing` as `TOOL`: `Lib.Calc` is already imported as `Tool`.",
+        ]
+    );
+}
+
+#[test]
+fn an_import_renamed_like_a_class_of_the_same_file_or_a_reserved_name_is_an_error() {
+    let code = "namespace App.Tenant;\n\nimport App.Shared.Page as Report;\nimport Lib.Thing as Int;\nimport Sharp.Int as Float;\n\nclass Report\n{\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "3:8 Cannot import `App.Shared.Page` as `Report`: this file declares a class named `Report`.",
+            "4:8 Cannot import `Lib.Thing` as `Int`: PHP# reserves `Int` for a type.",
+            "5:8 Cannot import `Sharp.Int` as `Float`: PHP# reserves `Float` for a type.",
+        ]
+    );
+}
+
+/// Spec section 23: renaming one of two imports of one name, or an import named like a class the file declares, fixes
+/// the clash. An import renamed to the class the file declares names that class, as a plain import of it does.
+#[test]
+fn renaming_an_import_away_from_a_taken_or_reserved_name_is_valid() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Calc;\nimport Other.Calc as OtherCalc;\nimport App.Shared.Report as SharedReport;\nimport Lib.Int as Number;\nimport App.Tenant.Report as Report;\n\nclass Report\n{\n}\n";
+
+    assert_eq!(issues(code), Vec::<String>::new());
+}
+
+/// A clash names the code that fixes it: the import renamed with `as`, as rustc's E0252 suggests.
+#[test]
+fn a_clashing_import_is_helped_with_the_import_renamed() {
+    let code = "namespace App.Tenant;\n\nimport Lib.Calc;\nimport Other.Calc;\nimport App.Shared.Report;\nimport Lib.Any;\n\nclass Report\n{\n}\n";
+
+    let helps: Vec<Option<String>> = check("src/Report.sharp", code).into_iter().map(|issue| issue.help).collect();
+
+    assert_eq!(
+        helps,
+        [
+            Some("Rename the import with `as`, as in `import Other.Calc as OtherCalc;`.".to_owned()),
+            Some("Rename the import with `as`, as in `import App.Shared.Report as OtherReport;`.".to_owned()),
+            Some("Rename the import with `as`, as in `import Lib.Any as OtherAny;`.".to_owned()),
+        ]
+    );
+}
+
+/// Spec section 24 capitalizes every type but the built-in ones, and the parser reads a capitalized name before `<` as
+/// a type with type arguments. So a class, an interface and an enum start with a capital letter.
+#[test]
+fn a_class_interface_or_enum_name_starts_with_a_capital_letter() {
+    let lowercase =
+        "namespace App.Tenant;\n\nclass box\n{\n}\n\ninterface priced\n{\n}\n\nenum status\n{\n    case Open;\n}\n";
+    let capitalized =
+        "namespace App.Tenant;\n\nclass Box\n{\n}\n\ninterface Priced\n{\n}\n\nenum Status\n{\n    case Open;\n}\n";
+    let rule =
+        "must start with a capital letter: PHP# capitalizes every namespace and every type except the built-in ones.";
+
+    assert_eq!(
+        issues(lowercase),
+        [format!("3:7 `box` {rule}"), format!("7:11 `priced` {rule}"), format!("11:6 `status` {rule}")]
+    );
+    assert_eq!(issues(capitalized), Vec::<String>::new());
+}
+
+/// A name that starts with `_` is not capitalized. A `__Something__` name keeps its own error.
+#[test]
+fn a_type_name_that_starts_with_an_underscore_is_an_error() {
+    let code = "namespace App.Tenant;\n\nclass _Box\n{\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "3:7 `_Box` must start with a capital letter: PHP# capitalizes every namespace and every type except the built-in ones."
+        ]
+    );
+}
+
+/// An import's new name is a type name of the file, so it starts with a capital letter as a declared one does.
+#[test]
+fn an_import_alias_starts_with_a_capital_letter() {
+    let lowercase = "namespace App.Tenant;\n\nimport Lib.Box as box;\n\nclass Report\n{\n}\n";
+    let capitalized = "namespace App.Tenant;\n\nimport Lib.Box as Crate;\n\nclass Report\n{\n}\n";
+
+    assert_eq!(
+        issues(lowercase),
+        [
+            "3:19 `box` must start with a capital letter: PHP# capitalizes every namespace and every type except the built-in ones."
+        ]
+    );
+    assert_eq!(issues(capitalized), Vec::<String>::new());
+}
+
+/// PHP# capitalizes every namespace as it does every type, so each part of a `namespace` line starts with a capital
+/// letter, and the error names the part.
+#[test]
+fn a_namespace_part_starts_with_a_capital_letter() {
+    let lowercase = "namespace App.store;\n\nclass Report\n{\n}\n";
+    let capitalized = "namespace App.Store.Orders;\n\nclass Report\n{\n}\n";
+
+    assert_eq!(
+        issues(lowercase),
+        [
+            "1:15 `store` must start with a capital letter: PHP# capitalizes every namespace and every type except the built-in ones."
+        ]
+    );
+    assert_eq!(issues(capitalized), Vec::<String>::new());
+}
+
+/// The first part of a namespace is checked as every other part is, and so is a namespace of one part.
+#[test]
+fn a_lowercase_first_namespace_part_is_an_error() {
+    assert_eq!(
+        issues("namespace app.Store;\n\nclass Report\n{\n}\n"),
+        [
+            "1:11 `app` must start with a capital letter: PHP# capitalizes every namespace and every type except the built-in ones."
+        ]
+    );
+    assert_eq!(
+        issues("namespace app;\n\nclass Report\n{\n}\n"),
+        [
+            "1:11 `app` must start with a capital letter: PHP# capitalizes every namespace and every type except the built-in ones."
+        ]
+    );
+}
+
+/// Each lowercase part of a namespace is its own error, at that part.
+#[test]
+fn each_lowercase_namespace_part_is_its_own_error() {
+    let rule =
+        "must start with a capital letter: PHP# capitalizes every namespace and every type except the built-in ones.";
+
+    assert_eq!(
+        issues("namespace app.Store.orders;\n\nclass Report\n{\n}\n"),
+        [format!("1:11 `app` {rule}"), format!("1:21 `orders` {rule}")]
+    );
+}
+
+/// A namespace part that starts with `_` is not capitalized, as a type name that starts with `_` is not.
+#[test]
+fn a_namespace_part_that_starts_with_an_underscore_is_an_error() {
+    assert_eq!(
+        issues("namespace App._Store;\n\nclass Report\n{\n}\n"),
+        [
+            "1:15 `_Store` must start with a capital letter: PHP# capitalizes every namespace and every type except the built-in ones."
+        ]
+    );
+}
+
+/// An import names a namespace another file declares, and plain PHP vendor namespaces are often lowercase, so an
+/// import's namespace parts keep their letters.
+#[test]
+fn an_import_keeps_its_lowercase_namespace_parts() {
+    assert_eq!(issues("namespace App.Tenant;\n\nimport vendor.lib.Box;\n\nclass Report\n{\n}\n"), Vec::<String>::new());
+}
+
+/// Plain PHP keeps its own namespaces, so a lowercase namespace part there reports nothing.
+#[test]
+fn a_php_file_keeps_its_lowercase_namespace_parts() {
+    assert_eq!(issues_in("src/Report.php", "<?php\n\nnamespace App\\store;\n"), Vec::<String>::new());
+}
+
+/// Plain PHP keeps its own names, so a lowercase class, interface, enum or `use` alias there reports nothing.
+#[test]
+fn a_php_file_keeps_its_lowercase_type_names_and_use_aliases() {
+    let types = "<?php\n\nclass box\n{\n}\n\ninterface priced\n{\n}\n\nenum status\n{\n    case Open;\n}\n";
+
+    assert_eq!(issues_in("src/Report.php", types), Vec::<String>::new());
+    assert_eq!(issues_in("src/Report.php", "<?php\n\nuse Lib\\Box as box;\n"), Vec::<String>::new());
+}
+
+/// An interface's name is checked as a class's is, so a reserved one is an error, as the engine refuses it.
+#[test]
+fn an_interface_named_like_a_reserved_class_name_is_an_error() {
+    let code = "namespace App.Tenant;\n\ninterface Mixed\n{\n}\n";
+
+    assert_eq!(issues(code), ["3:11 Cannot use `Mixed` as a class name: it is reserved."]);
 }
 
 #[test]
@@ -1636,7 +1887,7 @@ fn a_static_constructor_is_not_supported_yet() {
 fn a_method_without_a_body_reports_only_the_php_error() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int run();\n}\n";
 
-    assert_eq!(issues(code), ["5:21 Non-Abstract method `Report::run` must have a concrete body."]);
+    assert_eq!(issues(code), ["5:21 Non-Abstract method `Report.run` must have a concrete body."]);
 }
 
 #[test]
@@ -1750,7 +2001,7 @@ fn extern_on_a_field_is_not_supported_yet() {
 
 #[test]
 fn the_error_control_operator_is_in_the_slice_under_the_sharp_namespace() {
-    for namespace in ["Sharp", "Sharp.Text", "sharp.text"] {
+    for namespace in ["Sharp", "Sharp.Text", "SHARP.Text"] {
         let code = leak(format!(
             "namespace {namespace};\n\npublic static class Text\n{{\n    public static string quiet(string title) => @trim(title);\n}}\n"
         ));
@@ -1902,7 +2153,7 @@ fn a_void_field_reports_only_the_php_error() {
 
     assert_eq!(
         issues(code),
-        ["6:13 Property `Report::plain` cannot have type `void`.", "5:13 Type `void` cannot be nullable."]
+        ["6:13 Property `Report.plain` cannot have type `void`.", "5:13 Type `void` cannot be nullable."]
     );
 }
 
@@ -1958,7 +2209,7 @@ fn a_class_constant_has_an_access_modifier_an_optional_type_and_a_constant_value
 
 #[test]
 fn a_class_constant_outside_the_slice_is_not_supported_yet() {
-    let code = "namespace App.Tenant;\n\nclass Report\n{\n    const A = 1;\n    public const B = 1, C = 2;\n    final public const D = 1;\n    public const E = 2 << 3;\n    public const iterable F = [];\n}\n";
+    let code = "namespace App.Tenant;\n\nclass Report\n{\n    const A = 1;\n    public const B = 1, C = 2;\n    final public const D = 1;\n    public const E = 2 <> 3;\n    public const iterable F = [];\n}\n";
 
     assert_eq!(
         issues(code),
@@ -2078,7 +2329,7 @@ fn properties_outside_the_slice_are_not_supported_yet() {
     assert_eq!(
         issues(code),
         [
-            "8:12 Property `Report::d` cannot be declared abstract",
+            "8:12 Property `Report.d` cannot be declared abstract",
             "5:9 A property without `public`, `protected` or `private` is not supported yet in PHP#.",
             "6:23 A get-only static property is not supported yet in PHP#.",
             "7:20 This accessor is not supported yet in PHP#.",
@@ -2364,10 +2615,23 @@ fn exponentiation_and_its_compound_assignment_are_in_the_slice() {
     assert_eq!(issues(code), Vec::<String>::new());
 }
 
+/// Spec section 19 gives flags `|`, `&`, `^`, `~`, `<<`, `>>` and their compound forms, and lists `%=`. The analyzer
+/// checks their operands. A parameter default, which is a constant expression, takes them too.
+#[test]
+fn bitwise_operators_their_compound_assignments_and_modulo_assignment_are_in_the_slice() {
+    let body = leak(method(
+        "        let a = extra & 1 | extra ^ 2;\n        a = extra << 1 >> 2;\n        a = ~extra;\n        a &= 1;\n        a |= 2;\n        a ^= 4;\n        a <<= 1;\n        a >>= 1;\n        a %= 3;\n        return a;\n",
+    ));
+    let default = "class Report\n{\n    public int run(int mask = ~0 & 1 | 2 ^ 4 << 1 >> 1)\n    {\n        return mask;\n    }\n}\n";
+
+    assert_eq!(issues(body), Vec::<String>::new());
+    assert_eq!(issues(default), Vec::<String>::new());
+}
+
 #[test]
 fn operators_outside_the_slice_are_not_supported_yet() {
     let code = leak(method(
-        "        let a = extra;\n        a = @extra;\n        a = extra & 1;\n        a = extra | 1;\n        a = extra ^ 1;\n        a = extra << 1;\n        a = extra >> 1;\n        a = ~extra;\n        a = extra xor true;\n        a = extra and true;\n        a = extra or true;\n        a = extra <=> 1;\n        a = extra <> 1;\n        a %= 2;\n        a &= 2;\n        return a;\n",
+        "        let a = extra;\n        a = @extra;\n        a = extra xor true;\n        a = extra and true;\n        a = extra or true;\n        a = extra <> 1;\n        return a;\n",
     ));
 
     assert_eq!(
@@ -2378,17 +2642,17 @@ fn operators_outside_the_slice_are_not_supported_yet() {
             "10:19 This operator is not supported yet in PHP#.",
             "11:19 This operator is not supported yet in PHP#.",
             "12:19 This operator is not supported yet in PHP#.",
-            "13:19 This operator is not supported yet in PHP#.",
-            "14:13 This operator is not supported yet in PHP#.",
-            "15:19 This operator is not supported yet in PHP#.",
-            "16:19 This operator is not supported yet in PHP#.",
-            "17:19 This operator is not supported yet in PHP#.",
-            "18:19 This operator is not supported yet in PHP#.",
-            "19:19 This operator is not supported yet in PHP#.",
-            "20:11 This operator is not supported yet in PHP#.",
-            "21:11 This operator is not supported yet in PHP#.",
         ]
     );
+}
+
+/// `<=>` orders two values, as spec section 19 writes it for numbers, strings and instances whose class declares
+/// `operator <=>`. The analyzer checks its operands.
+#[test]
+fn spaceship_is_in_the_slice() {
+    let code = leak(method("        return extra <=> 1;\n"));
+
+    assert_eq!(issues(code), Vec::<String>::new());
 }
 
 #[test]
@@ -2908,7 +3172,7 @@ fn position_current_as_a_constant_or_an_enum_case_value_keeps_the_constant_expre
     assert_eq!(
         issues(code),
         [
-            "5:34 Constant `Reports::HERE` value contains a non-constant expression.",
+            "5:34 Constant `Reports.HERE` value contains a non-constant expression.",
             "5:34 This expression is not supported yet in PHP#.",
             "10:17 This expression is not supported yet in PHP#.",
         ]
@@ -3093,8 +3357,9 @@ fn a_bound_that_is_not_a_class_an_interface_or_a_generic_class_type_is_an_error(
             .map(|line| format!("{line}:24 A bound is a class or an interface, as in `<TItem : DatabaseEntity>`."))
             .collect::<Vec<_>>()
     );
-    assert!(check("src/Report.sharp", code).iter().all(|issue| issue.notes
-        == ["PHP# bounds a type parameter by classes and interfaces, several joined with `&`."]));
+    assert!(check("src/Report.sharp", code).iter().all(
+        |issue| issue.notes == ["PHP# bounds a type parameter by classes and interfaces, several joined with `&`."]
+    ));
 }
 
 /// A generic type goes wherever a type goes. `Map`'s key rule applies to `Map` alone, `Class<T>` takes a class, an
@@ -3505,6 +3770,70 @@ fn a_pattern_variable_named_this_is_an_error() {
     assert_eq!(issues(code), ["7:26 Cannot name a pattern variable `this`: `this` is the object the method runs on."]);
 }
 
+/// Spec section 19 groups `< <= > >= is as` in one row and `== != === <=>` in the next, and neither row chains.
+#[test]
+fn comparisons_and_equalities_do_not_chain_and_name_both_groupings() {
+    let code = leak(method(
+        "        const a = extra < 1 < 2;\n        const b = extra == 1 != 2;\n        const c = extra is int is bool;\n        const d = extra < 1 is bool;\n        const e = extra is > 1 < 2;\n        const f = extra < 1 == true;\n        const g = extra == 1 is bool;\n        const h = (extra < 1) < 2;\n        match (extra) {\n            > 1 < 2 => this.run(1),\n            default => this.run(2),\n        }\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:19 Comparisons do not chain: write `(extra < 1) < 2` or `extra < (1 < 2)`.",
+            "8:19 Comparisons do not chain: write `(extra == 1) != 2` or `extra == (1 != 2)`.",
+            "9:19 Comparisons do not chain: write `(extra is int) is bool`.",
+            "10:19 Comparisons do not chain: write `(extra < 1) is bool` or `extra < (1 is bool)`.",
+            "11:19 Comparisons do not chain: write `extra is > (1 < 2)`.",
+            "16:13 Comparisons do not chain: write `> (1 < 2)`.",
+        ]
+    );
+}
+
+/// Decision 044: `is` binds with the comparisons, so `!entity is HasDesign` reads as `(!entity) is HasDesign`.
+#[test]
+fn not_before_is_is_an_error_that_writes_is_not() {
+    let code = leak(method(
+        "        if (!extra is int) {\n        }\n        if ((!extra) is bool) {\n        }\n        if (!(extra is int)) {\n        }\n        if (extra is not int) {\n        }\n        return extra;\n",
+    ));
+
+    assert_eq!(issues(code), ["7:13 Write `extra is not int`: `!` applies to `extra` before `is` tests it."]);
+}
+
+/// Decision 045: `not` beside `or` reads two ways, and `not` beside `and` reads the way it binds.
+#[test]
+fn not_beside_or_in_a_pattern_needs_parentheses_and_not_beside_and_does_not() {
+    let code = leak(method(
+        "        const a = extra is not Paid or Refunded;\n        const b = extra is Paid or not Refunded;\n        const c = match (extra) {\n            not Paid or Refunded => 1,\n            default => 0,\n        };\n        const d = extra is not (Paid or Refunded);\n        const e = extra is (not Paid) or Refunded;\n        const f = extra is not null and not \"\";\n        return extra;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "7:28 Write `not (Paid or Refunded)`, or `(not Paid) or Refunded`.",
+            "8:28 Write `not (Paid or Refunded)`, or `Paid or (not Refunded)`.",
+            "10:13 Write `not (Paid or Refunded)`, or `(not Paid) or Refunded`.",
+        ]
+    );
+}
+
+#[test]
+fn a_binary_operation_as_a_statement_has_no_effect() {
+    let code = leak(method(
+        "        let flags = extra;\n        flags | 4;\n        extra + 1;\n        extra == 1;\n        1 - extra;\n        extra ?? 1;\n        this.run(1);\n        return flags;\n",
+    ));
+
+    assert_eq!(
+        issues(code),
+        [
+            "8:9 This statement has no effect: write `flags |= 4` to keep its result.",
+            "9:9 This statement has no effect: write `extra += 1` to keep its result.",
+            "10:9 This statement has no effect: use the result of `extra == 1`, or remove the statement.",
+            "11:9 This statement has no effect: use the result of `1 - extra`, or remove the statement.",
+        ]
+    );
+}
+
 #[test]
 fn lambdas_with_an_expression_or_a_block_body_and_calls_of_function_locals_are_in_the_slice() {
     let code = leak(method(
@@ -3629,4 +3958,220 @@ fn a_lambda_capturing_a_loop_variable_that_changes_is_not_supported_yet() {
             "12:32 This capture of a loop variable that changes is not supported yet in PHP#.",
         ]
     );
+}
+
+/// Every semantic issue in the source, in the dialect its path names, as its message and its annotations' messages.
+fn worded(path: &'static str, code: &'static str) -> Vec<String> {
+    check(path, code)
+        .into_iter()
+        .map(|issue| {
+            std::iter::once(issue.message)
+                .chain(issue.annotations.into_iter().filter_map(|annotation| annotation.message))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        })
+        .collect()
+}
+
+/// A member defined twice is named as PHP# names a member, `Order.total`, and its class by the name the file writes,
+/// `Order`. The PHP twin keeps Mago's `Order::total`, `Order::$count` and `Demo\Order`.
+#[test]
+fn a_member_defined_twice_and_its_class_are_named_as_sharp_writes_them() {
+    let code = "namespace Demo;\n\npublic class Order\n{\n    private int count = 0;\n\n    private int count = 1;\n\n    public int total() => 1;\n\n    public int total() => 2;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    public int $count = 0;\n\n    public int $count = 1;\n\n    public function total(): int\n    {\n        return 1;\n    }\n\n    public function total(): int\n    {\n        return 2;\n    }\n}\n";
+
+    assert_eq!(
+        worded("src/Demo/Order.php", php),
+        [
+            "property `Order::$count` has already been defined | property `Order::$count` previously defined here. | class `Demo\\Order` defined here.",
+            "class method `Order::total` has already been defined | previous definition | class `Demo\\Order` defined here.",
+        ]
+    );
+    assert_eq!(
+        worded("src/Demo/Order.sharp", code),
+        [
+            "property `Order.count` has already been defined | property `Order.count` previously defined here. | class `Order` defined here.",
+            "class method `Order.total` has already been defined | previous definition | class `Order` defined here.",
+        ]
+    );
+}
+
+/// A class-level error names the class by the name the file writes: `Order` in a `.sharp` file, and its full name
+/// `Demo\Order` in the PHP twin.
+#[test]
+fn a_class_error_names_the_class_as_sharp_writes_it() {
+    let code = "namespace Demo;\n\npublic class Order\n{\n    case Open;\n\n    public abstract int total();\n}\n";
+    let php =
+        "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    case Open;\n\n    abstract public function total(): int;\n}\n";
+
+    assert_eq!(
+        worded("src/Demo/Order.php", php),
+        [
+            "Class `Order` cannot contain enum cases. | Enum case found in class. | Class `Demo\\Order` declared here.",
+            "Class `Order` contains an abstract method `total`, so the class must be declared abstract. | Class is missing the `abstract` modifier. | Abstract method `Order::total` declared here.",
+        ]
+    );
+    assert_eq!(
+        worded("src/Demo/Order.sharp", code),
+        [
+            "Class `Order` cannot contain enum cases. | Enum case found in class. | Class `Order` declared here.",
+            "Class `Order` contains an abstract method `total`, so the class must be declared abstract. | Class is missing the `abstract` modifier. | Abstract method `Order.total` declared here.",
+            "This class member is not supported yet in PHP#. | Not supported yet.",
+        ]
+    );
+}
+
+/// Spec section 14 gives no form that calls a lambda where it is written, and no form that reads a member of a `new`
+/// expression, so the errors for those PHP forms name no code to write in a `.sharp` file. The PHP twin keeps
+/// upstream's examples.
+#[test]
+fn an_error_for_a_php_form_without_a_sharp_form_names_no_php_code() {
+    let code = "namespace Demo;\n\nclass Order\n{\n    public int run()\n    {\n        const order = new Order[0]();\n        return () => { return 1; }();\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    public function run(): int\n    {\n        $order = new Order[0]();\n        return function () { return 1; }();\n    }\n}\n";
+    let helps = |path, code| -> Vec<(String, Option<String>)> {
+        check(path, code).into_iter().map(|issue| (issue.message, issue.help)).collect()
+    };
+
+    assert_eq!(
+        helps("src/Demo/Order.php", php),
+        [
+            (
+                "`[` cannot follow a class name in a `new` expression.".to_owned(),
+                Some("Wrap the new expression in parentheses, e.g. `(new Foo())->bar()`.".to_owned())
+            ),
+            (
+                "Immediately invoked closure must be wrapped in parentheses.".to_owned(),
+                Some("Wrap the closure in parentheses before invoking it, e.g. `(function() { ... })()`.".to_owned())
+            ),
+        ]
+    );
+    assert_eq!(
+        helps("src/Demo/Order.sharp", code),
+        [
+            ("This expression is not supported yet in PHP#.".to_owned(), None),
+            ("`[` cannot follow a class name in a `new` expression.".to_owned(), None),
+            ("This expression is not supported yet in PHP#.".to_owned(), None),
+            ("Immediately invoked closure must be wrapped in parentheses.".to_owned(), None),
+        ]
+    );
+}
+
+/// A PHP# class `Money`, for `src/Money.sharp`, whose members start on line 5.
+fn money(members: &str) -> &'static str {
+    leak(format!("namespace App;\n\npublic class Money\n{{\n{members}}}\n"))
+}
+
+#[test]
+fn a_class_declares_each_operator_public_static_with_its_own_class_as_a_parameter() {
+    let code = money(
+        "    [Pure] public static bool operator ==(Money a, Money? b) => true;\n    static public int operator <=>(Money a, Money b) => 0;\n    public static Money operator +(Money a, Money b) => a;\n    public static Money operator -(Money a, Money b) => a;\n    public static Money operator *(Money a, int factor) => a;\n    public static Money operator /(int a, Money b) => b;\n    public static Money operator %(Money a, int b) => a;\n    public static Money operator **(Money a, int b) => a;\n    public static Money operator -(Money a)\n    {\n        return a;\n    }\n",
+    );
+
+    assert_eq!(issues_in("src/Money.sharp", code), Vec::<String>::new());
+}
+
+#[test]
+fn an_operator_a_class_cannot_declare_is_an_error_that_names_the_operators_it_derives_from() {
+    let code = money(
+        "    public static bool operator !=(Money a, Money b) => false;\n    public static bool operator <(Money a, Money b) => false;\n    public static bool operator >=(Money a, Money b) => false;\n    public static bool operator &&(Money a, Money b) => false;\n",
+    );
+
+    assert_eq!(
+        issues_in("src/Money.sharp", code),
+        [
+            "5:33 `operator !=` cannot be declared: it is derived from `==`.",
+            "6:33 `operator <` cannot be declared: it is derived from `<=>`.",
+            "7:33 `operator >=` cannot be declared: it is derived from `<=>`.",
+            "8:33 `operator &&` cannot be declared: only `+ - * / % **`, unary `-`, `==` and `<=>` can.",
+        ]
+    );
+}
+
+#[test]
+fn an_operator_that_is_not_public_static_is_an_error() {
+    let code = money(
+        "    public Money operator +(Money a, Money b) => a;\n    private static Money operator -(Money a, Money b) => a;\n    static Money operator *(Money a, Money b) => a;\n",
+    );
+
+    let message = "An operator is `public static`, as in `public static Money operator +(Money a, Money b)`.";
+    assert_eq!(
+        issues_in("src/Money.sharp", code),
+        [format!("5:18 {message}"), format!("6:26 {message}"), format!("7:18 {message}")]
+    );
+}
+
+#[test]
+fn an_operator_with_the_wrong_number_of_parameters_is_an_error() {
+    let code = money(
+        "    public static bool operator ==(Money a) => false;\n    public static Money operator +(Money a, Money b, Money c) => a;\n    public static Money operator -() => null;\n",
+    );
+
+    assert_eq!(
+        issues_in("src/Money.sharp", code),
+        [
+            "5:35 `operator ==` takes two parameters.",
+            "6:35 `operator +` takes two parameters.",
+            "7:35 `operator -` takes one parameter, to negate, or two, to subtract.",
+        ]
+    );
+}
+
+#[test]
+fn an_operator_without_its_class_as_a_parameter_is_an_error() {
+    let code = money("    public static int operator +(int a, int b) => a + b;\n");
+
+    assert_eq!(
+        issues_in("src/Money.sharp", code),
+        ["5:33 One parameter of `operator +` is `Money`, the class that declares it."]
+    );
+}
+
+#[test]
+fn equality_returns_bool_and_comparison_returns_int() {
+    let code = money(
+        "    public static int operator ==(Money a, Money b) => 1;\n    public static bool? operator <=>(Money a, Money b) => true;\n",
+    );
+
+    assert_eq!(
+        issues_in("src/Money.sharp", code),
+        ["5:19 `operator ==` returns `bool`.", "6:19 `operator <=>` returns `int`."]
+    );
+}
+
+#[test]
+fn an_operator_declared_twice_in_a_class_is_an_error() {
+    let code = money(
+        "    public static Money operator +(Money a, Money b) => a;\n    public static Money operator -(Money a) => a;\n    public static Money operator -(Money a, Money b) => a;\n    public static Money operator +(Money a, int b) => a;\n    public static Money operator -(Money a) => a;\n",
+    );
+
+    assert_eq!(
+        issues_in("src/Money.sharp", code),
+        ["8:25 `operator +` is declared twice in `Money`.", "9:25 Unary `operator -` is declared twice in `Money`."]
+    );
+}
+
+#[test]
+fn an_operator_body_is_a_method_body() {
+    let code = money(
+        "    public static Money operator +(Money a, Money b)\n    {\n        echo \"adding\";\n        return a;\n    }\n",
+    );
+
+    assert_eq!(issues_in("src/Money.sharp", code), ["7:9 PHP# has no `echo`: write `printf` or `fwrite`."]);
+}
+
+#[test]
+fn an_interface_or_an_enum_declares_no_operator() {
+    let interface =
+        "namespace App;\n\npublic interface Priced\n{\n    public static int operator +(Priced a, Priced b) => 0;\n}\n";
+    let r#enum = "namespace App;\n\npublic enum Suit\n{\n    case Hearts;\n\n    public static int operator +(Suit a, Suit b) => 0;\n}\n";
+
+    assert_eq!(issues_in("src/Priced.sharp", interface), ["5:5 This class member is not supported yet in PHP#."]);
+    assert_eq!(issues_in("src/Suit.sharp", r#enum), ["7:5 This class member is not supported yet in PHP#."]);
+}
+
+#[test]
+fn a_php_class_keeps_its_static_methods_named_like_operators() {
+    let code = "<?php\n\nclass Money\n{\n    public static function op_Equality(?Money $a, ?Money $b): bool { return true; }\n\n    public static function op_Addition(Money $a, int $b): Money { return $a; }\n}\n";
+
+    assert_eq!(issues_in("src/Money.php", code), Vec::<String>::new());
 }

@@ -55,13 +55,20 @@ impl FunctionCallHook for IntdivHook {
             return Ok(());
         }
 
+        // PHP# names a variable without `$` and writes `!=` for the strict comparison (spec section 19).
+        let (call_text, guard) = if context.dialect.is_sharp() {
+            ("intdiv(num, 0)", "divisor != 0")
+        } else {
+            ("intdiv($num, 0)", "$divisor !== 0")
+        };
+
         context.report(
             IssueCode::InvalidOperand,
             Issue::error("Call to `intdiv()` with a zero divisor.")
                 .with_annotation(Annotation::primary(divisor_expr.span()).with_message("This divisor is zero"))
                 .with_annotation(Annotation::secondary(call.function.span()).with_message("In this `intdiv()` call"))
-                .with_note("`intdiv($num, 0)` throws `DivisionByZeroError` at runtime.")
-                .with_help("Guard the call with `$divisor !== 0` or restrict the divisor's type to exclude zero."),
+                .with_note(format!("`{call_text}` throws `DivisionByZeroError` at runtime."))
+                .with_help(format!("Guard the call with `{guard}` or restrict the divisor's type to exclude zero.")),
         );
 
         Ok(())

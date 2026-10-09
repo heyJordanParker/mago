@@ -26,6 +26,7 @@ use crate::plugin::context::HookContext;
 use crate::plugin::hook::StaticCall;
 use crate::resolver::static_method::resolve_static_method_targets;
 use crate::utils::expression::expression_is_nullsafe;
+use crate::utils::names::display_member;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for StaticMethodCall<'arena> {
     fn analyze<'ctx, A>(
@@ -118,8 +119,8 @@ where
             .get_method_by_id(&resolved_method.method_identifier)
             .expect("method metadata should exist for resolved method");
 
-        let method_display = format!(
-            "{}::{}",
+        let method_display = display_member(
+            context,
             resolved_method.method_identifier.get_class_name(),
             resolved_method.method_identifier.get_method_name(),
         );

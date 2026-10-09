@@ -12,10 +12,9 @@
 
 [![CI Status](https://github.com/heyJordanParker/mago-sharp/actions/workflows/ci.yml/badge.svg)](https://github.com/heyJordanParker/mago-sharp/actions/workflows/ci.yml)
 [![CD Status](https://github.com/heyJordanParker/mago-sharp/actions/workflows/cd.yml/badge.svg)](https://github.com/heyJordanParker/mago-sharp/actions/workflows/cd.yml)
-[![Crates.io](https://img.shields.io/crates/v/mago.svg)](https://crates.io/crates/mago)
 [![Latest Stable Version for PHP](https://poser.pugx.org/heyjordanparker/mago-sharp/v)](https://packagist.org/packages/heyjordanparker/mago-sharp)
 [![Total Composer Downloads](http://poser.pugx.org/heyjordanparker/mago-sharp/downloads)](https://packagist.org/packages/heyjordanparker/mago-sharp)
-[![License](https://img.shields.io/crates/l/mago.svg)](https://github.com/heyJordanParker/mago-sharp/blob/master/LICENSE-MIT)
+[![License](https://img.shields.io/github/license/heyJordanParker/mago-sharp)](https://github.com/heyJordanParker/mago-sharp/blob/master/LICENSE-MIT)
 
 </div>
 
@@ -26,7 +25,6 @@
 - [Installation](#installation)
 - [Getting Started](#getting-started)
 - [Features](#features)
-- [Our Sponsors](#our-sponsors)
 - [Contributing](#contributing)
 - [Inspiration & Acknowledgements](#inspiration--acknowledgements)
 - [License](#license)
@@ -36,20 +34,20 @@
 The most common way to install Mago on macOS and Linux is by using our shell script:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -sSf https://carthage.software/mago.sh | bash
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/heyJordanParker/mago-sharp/master/scripts/install.sh | bash
 ```
 
 To install a specific version:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -sSf https://carthage.software/mago.sh | bash -s -- --version=1.51.0
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/heyJordanParker/mago-sharp/master/scripts/install.sh | bash -s -- --version=0.2.0
 ```
 
-For all other installation methods, including Homebrew, Composer, and Cargo, please refer to our official **[Installation Guide](https://mago.carthage.software/latest/en/guide/installation/)**.
+For all other installation methods, including Composer, please refer to the **[Installation Guide](docs/content/en/guide/installation.md)**.
 
 ## Getting Started
 
-To get started with Mago and learn how to configure your project, please visit our **[Getting Started Guide](https://mago.carthage.software/latest/en/guide/getting-started/)** in the official documentation.
+To get started with Mago and learn how to configure your project, please visit the **[Getting Started Guide](docs/content/en/guide/getting-started.md)**.
 
 ## Features
 
@@ -61,20 +59,11 @@ To get started with Mago and learn how to configure your project, please visit o
 - 🧠 Semantic Checks: Ensure code correctness with robust semantic analysis.
 - 🌳 CST Visualization: Explore your code’s structure with Concrete Syntax Tree (CST) parsing.
 
-## Our Sponsors
-
-<!-- START-SPONSORS -->
-<p align="center"><a href="https://opensource.check24.de/project/mago/" title="CHECK24"><kbd><img src="https://carthage.software/media/01a01a1f-9b15-5cd1-1205-96a7452e17cb" width="120" height="120" alt="CHECK24" /></kbd></a><a href="https://www.jetbrains.com/" title="JetBrains"><kbd><img src="https://avatars.githubusercontent.com/u/60931315?u=f9b545e50cace9e9028f77eaf1e83104d18d4d48&v=4&s=240" width="120" height="120" alt="JetBrains" /></kbd></a></p><p align="center"><a href="https://github.com/jasonrm" title="Jason R. McNeil"><kbd><img src="https://avatars.githubusercontent.com/u/39949?u=69c0e4fb08c439250978d41dbc3371d2f0609b98&v=4&s=160" width="80" height="80" alt="Jason R. McNeil" /></kbd></a><a href="https://ofcompute.rs/" title="Vincent Berset"><kbd><img src="https://avatars.githubusercontent.com/u/5173120?u=95efc76cd8fc804536dc6dd25781a95b650bf902&v=4&s=160" width="80" height="80" alt="Vincent Berset" /></kbd></a></p><p align="center"><a href="https://www.ticketswap.com" title="TicketSwap"><kbd><img src="https://avatars.githubusercontent.com/u/5766233?v=4&s=96" width="48" height="48" alt="TicketSwap" /></kbd></a><a href="https://github.com/kambo-1st" title="Bohuslav Šimek"><kbd><img src="https://avatars.githubusercontent.com/u/6493048?u=5eddf1eb923810745d8bdd62496d245238833d07&v=4&s=96" width="48" height="48" alt="Bohuslav Šimek" /></kbd></a><a href="https://heysora.net/" title="HeySora"><kbd><img src="https://avatars.githubusercontent.com/u/17962248?u=f648cc7bd2aca843662fc8166e206e0b047f075a&v=4&s=96" width="48" height="48" alt="HeySora" /></kbd></a></p>
-
-[See all sponsors](SPONSORS.md)
-<!-- END-SPONSORS -->
-
 ## Contributing
 
-Mago is a community-driven project, and we welcome contributions! Whether you're reporting bugs, suggesting features, writing documentation, or submitting code, your help is valued.
+Contributions are welcome.
 
 - See our [Contributing Guide](./CONTRIBUTING.md) to get started.
-- Join the discussion on [Discord](https://discord.gg/mwyyjr27eu).
 
 ## Inspiration & Acknowledgements
 
