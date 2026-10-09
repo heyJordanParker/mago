@@ -12,6 +12,7 @@ use mago_reporting::Issue;
 use mago_reporting::IssueCollection;
 use mago_sharp_bridge::unit;
 use mago_span::Span;
+use rayon::prelude::*;
 
 use crate::issues;
 use crate::library;
@@ -22,6 +23,7 @@ use crate::package::Program;
 use crate::package::Root;
 use crate::package::Toolchain;
 use crate::runner;
+use crate::runner::Answer;
 use crate::runner::Question;
 use crate::runner::Verdict;
 use crate::translate::Law;
@@ -208,25 +210,34 @@ impl Lean {
             return Ok(issues);
         }
 
-        for item in checked {
-            let vendor = item.translation.name.starts_with(VENDOR);
-            let questions: Vec<Question<'_>> = item
-                .translation
-                .laws
-                .iter()
-                .map(|law| Question {
-                    statement: &law.statement,
-                    propose: !vendor,
-                    unfold: program.definitions(&law.statement),
-                })
-                .collect();
-            let (module, proof_module) = if item.exists {
-                (item.module.clone(), item.module.clone())
-            } else {
-                (package::module_name(item.translation), String::new())
-            };
-            let answers = runner::check(&library, &package.directory, &module, &proof_module, &questions)?;
+        // One runner per file, run on Mago's thread pool, so `threads` caps how many run at once, each near 465 MB.
+        let answers: Vec<io::Result<Vec<Answer>>> = checked
+            .par_iter()
+            .map(|item| {
+                let vendor = item.translation.name.starts_with(VENDOR);
+                let questions: Vec<Question<'_>> = item
+                    .translation
+                    .laws
+                    .iter()
+                    .map(|law| Question {
+                        statement: &law.statement,
+                        propose: !vendor,
+                        unfold: program.definitions(&law.statement),
+                    })
+                    .collect();
+                let (module, proof_module) = if item.exists {
+                    (item.module.clone(), item.module.clone())
+                } else {
+                    (package::module_name(item.translation), String::new())
+                };
 
+                runner::check(&library, &package.directory, &module, &proof_module, &questions)
+            })
+            .collect();
+
+        for (item, answers) in checked.into_iter().zip(answers) {
+            let answers = answers?;
+            let vendor = item.translation.name.starts_with(VENDOR);
             let file = String::from_utf8_lossy(&item.proof).into_owned();
             let mut text = if item.exists {
                 fs::read_to_string(self.path(&item.proof))?

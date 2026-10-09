@@ -355,6 +355,83 @@ fn compile_refuses_a_law_a_changed_method_breaks_on_the_law_line_and_writes_no_c
     assert_eq!(read(root, "app/Shared/Money.lean"), MONEY_PROOF, "an existing proof is never rewritten");
 }
 
+/// `Money` with a second class `Wallet` of the same shape, each with its law in its own file.
+fn money_and_wallet() -> tempfile::TempDir {
+    lawful_project(&[
+        ("app/Shared/Money.sharp", LAWFUL_MONEY),
+        ("app/Shared/Wallet.sharp", &LAWFUL_MONEY.replace("Money", "Wallet")),
+    ])
+}
+
+#[test]
+fn compile_proves_two_stale_law_files_and_refuses_each_one_whose_method_breaks_its_law() {
+    let directory = money_and_wallet();
+    let root = directory.path();
+    compile_succeeds(root);
+    assert_eq!(read(root, "app/Shared/Money.lean"), MONEY_PROOF);
+    assert_eq!(read(root, "app/Shared/Wallet.lean"), MONEY_PROOF.replace("Money", "Wallet"));
+
+    for class in ["Money", "Wallet"] {
+        write(
+            root,
+            &format!("app/Shared/{class}.sharp"),
+            &LAWFUL_MONEY
+                .replace("this.amount + other.amount, this.currency", "this.amount + other.amount, other.currency")
+                .replace("Money", class),
+        );
+    }
+    let output = compile_lines(root);
+
+    assert_eq!(output.status.code(), Some(1), "{}", printed(&output));
+    for class in ["Money", "Wallet"] {
+        assert!(
+            printed(&output).contains(&format!("app/Shared/{class}.sharp:8:5:error - unproven-law: Law addKeepsCurrency is not proven: Lean rejected its proof in app/Shared/{class}.lean line 4: unsolved goals")),
+            "{class}: {}",
+            printed(&output)
+        );
+        assert!(!compiled(root, &format!("app/Shared/{class}.sharp")).exists(), "{class}");
+    }
+}
+
+/// Puts a `lake` first on the `PATH` that runs the real one, except that each `sharp-lean` runner it starts first
+/// waits up to 30 seconds for a second runner to start. A runner that waited in vain leaves `alone` in `folder`.
+#[cfg(unix)]
+fn rendezvous_lake(folder: &Path) -> std::ffi::OsString {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = std::env::var_os("PATH").unwrap();
+    let real =
+        std::env::split_paths(&path).map(|directory| directory.join("lake")).find(|lake| lake.is_file()).unwrap();
+    let started = folder.join("started");
+    std::fs::create_dir_all(&started).unwrap();
+    let script = format!(
+        "#!/bin/sh\ncase \"$2\" in\n  */sharp-lean)\n    touch '{started}/'$$\n    for _ in $(seq 300); do\n      [ \"$(ls '{started}' | wc -l)\" -ge 2 ] && break\n      sleep 0.1\n    done\n    [ \"$(ls '{started}' | wc -l)\" -ge 2 ] || touch '{alone}'\n    ;;\nesac\nexec '{real}' \"$@\"\n",
+        started = started.display(),
+        alone = folder.join("alone").display(),
+        real = real.display(),
+    );
+    let lake = folder.join("bin/lake");
+    write(folder, "bin/lake", &script);
+    std::fs::set_permissions(&lake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    std::env::join_paths(std::iter::once(folder.join("bin")).chain(std::env::split_paths(&path))).unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn compile_runs_the_runners_of_two_stale_law_files_at_the_same_time() {
+    let directory = money_and_wallet();
+    let root = directory.path();
+    let lake = tempfile::tempdir().unwrap();
+
+    let output =
+        command(root, "never").env("PATH", rendezvous_lake(lake.path())).env("MAGO_THREADS", "2").output().unwrap();
+
+    assert!(output.status.success(), "{}", printed(&output));
+    assert!(!lake.path().join("alone").exists(), "the second runner started only after the first one ended");
+    assert_eq!(read(root, "app/Shared/Wallet.lean"), MONEY_PROOF.replace("Money", "Wallet"));
+}
+
 #[test]
 fn compile_refuses_a_gap_every_time_and_never_leaves_a_current_compiled_file() {
     let directory = lawful_project(&[

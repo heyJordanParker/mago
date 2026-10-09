@@ -1937,6 +1937,7 @@ dependencies = [
  "mago-span",
  "mago-syntax",
  "mago-word",
+ "rayon",
  "serde",
  "serde_json",
  "tempfile",
