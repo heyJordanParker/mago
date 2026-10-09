@@ -51,6 +51,7 @@ use crate::context::block::ReferenceConstraintSource;
 use crate::context::scope::var_has_root;
 use crate::context::scope::var_references_dynamic;
 use crate::error::AnalysisError;
+use crate::expression::array::get_set_literal_type;
 use crate::expression::constant_access::field_storage;
 use crate::expression::find_expression_logic_issues;
 use crate::formula::get_formula;
@@ -218,12 +219,20 @@ where
         Rc::new(get_mixed())
     };
 
-    // PHP# `[]` and `[:]` name no element type, and PHP types both as one empty array. A place declared as a `List` or
-    // a `Map` keeps that collection when one empties it, as its declaration does, so its rules and elements stay.
+    // PHP# `[]` and `[:]` name no element type, and PHP types both as one empty array. A place declared as a `List`, a
+    // `Map` or a `Set` keeps that collection when one empties it, as its declaration does, so its rules and elements
+    // stay. A list literal at a place declared a `Set` is that `Set`.
     let source_type = match (assignment_operator, source_type.types.as_ref()) {
-        (None, [TAtomic::Array(array)]) if context.dialect.is_sharp() && array.is_empty() => {
-            get_declared_collection(context, block_context, artifacts, target_expression)
-                .map_or(source_type, |collection| Rc::new(TUnion::from_atomic(TAtomic::Array(collection))))
+        (None, [TAtomic::Array(array)]) if context.dialect.is_sharp() => {
+            match get_declared_collection(context, block_context, artifacts, target_expression) {
+                Some(collection) if array.is_empty() => Rc::new(TUnion::from_atomic(TAtomic::Array(collection))),
+                Some(set @ TArray::Set(_)) => source_expression
+                    .and_then(|source| {
+                        get_set_literal_type(context, artifacts, source, &TUnion::from_atomic(TAtomic::Array(set)))
+                    })
+                    .map_or(source_type, Rc::new),
+                _ => source_type,
+            }
         }
         _ => source_type,
     };

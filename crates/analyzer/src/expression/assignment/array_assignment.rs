@@ -334,6 +334,7 @@ where
                         keyed_array.non_empty = true;
                     }
                 }
+                TArray::Set(_) => {}
             }
         }
     } else {
@@ -412,6 +413,7 @@ where
 
                         keyed_array.non_empty = true;
                     }
+                    TArray::Set(_) => {}
                 }
             }
         }
@@ -503,6 +505,7 @@ where
                             known_non_list: keyed_array.known_non_list,
                         })));
                     }
+                    TArray::Set(_) => collection_types.push(original_type.clone()),
                 },
                 TAtomic::Null | TAtomic::Void => {
                     collection_types.push(TAtomic::Array(TArray::Keyed(TKeyedArray {
@@ -588,6 +591,7 @@ where
                             })));
                         }
                     }
+                    TArray::Set(_) => collection_types.push(original_type.clone()),
                 },
                 TAtomic::Null | TAtomic::Void => {
                     collection_types.push(TAtomic::Array(TArray::List(TList {

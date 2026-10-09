@@ -65,6 +65,7 @@ use crate::expression::assignment::analyze_assignment;
 use crate::plugin::HookAction;
 use crate::plugin::context::HookContext;
 use crate::statement::function_like::report_map_keys_without_backing_value;
+use crate::statement::function_like::report_unsupported_set_elements;
 use crate::utils::docblock::populate_docblock_variables;
 use crate::utils::docblock::populate_docblock_variables_excluding;
 use crate::utils::expression::expression_has_observable_side_effect;
@@ -383,6 +384,7 @@ where
 
     let local_type = (Rc::new(local_type), hint.span());
     report_map_keys_without_backing_value(context, &local_type.0, local_type.1);
+    report_unsupported_set_elements(context, &local_type.0, local_type.1);
     block_context.local_types.insert(variable_id, local_type.clone());
 
     Some(local_type)
@@ -486,7 +488,7 @@ fn report_key_mixing_a_backed_enum<A>(
 }
 
 /// The type a written type would give a value: every literal and narrowed scalar widened, and every list or map shape
-/// made a `List<T>` or `Map<TKey, TValue>` of any length.
+/// made a `List<T>` or `Map<TKey, TValue>` of any length. A `Set<T>` keeps its kind.
 fn get_general_type(value: &TUnion, codebase: &CodebaseMetadata) -> TUnion {
     let mut widened = value.clone();
     widened.widen_scalars();
@@ -505,6 +507,7 @@ fn get_general_type(value: &TUnion, codebase: &CodebaseMetadata) -> TUnion {
                         Arc::new(get_general_type(&key, codebase)),
                         value,
                     )),
+                    TArray::Set(_) => TArray::Set(value),
                 })
             }
             atomic => atomic.clone(),

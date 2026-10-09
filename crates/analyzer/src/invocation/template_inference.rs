@@ -545,6 +545,40 @@ fn infer_templates_from_input_and_container_types<A>(
                                     }
                                 }
                             }
+                            // A `Set` holds its elements as values, so a list passed for it gives its elements too.
+                            (TArray::Set(container_element_type), input_array) => {
+                                let (_, input_value_type) = get_array_parameters(input_array, context.codebase);
+                                infer_templates_from_input_and_container_types(
+                                    context,
+                                    container_element_type,
+                                    &input_value_type,
+                                    template_result,
+                                    options,
+                                    violations,
+                                );
+                            }
+                            // Plain PHP reads a `Set` as the array it runs as, keyed by each element's backing value.
+                            (TArray::Keyed(container_array), TArray::Set(input_element_type)) => {
+                                if let Some((container_key_type, container_value_type)) = &container_array.parameters {
+                                    infer_templates_from_input_and_container_types(
+                                        context,
+                                        container_key_type,
+                                        &get_backing_key_type(input_element_type, context.codebase),
+                                        template_result,
+                                        options,
+                                        violations,
+                                    );
+                                    infer_templates_from_input_and_container_types(
+                                        context,
+                                        container_value_type,
+                                        input_element_type,
+                                        template_result,
+                                        options,
+                                        violations,
+                                    );
+                                }
+                            }
+                            (TArray::List(_), TArray::Set(_)) => {}
                         }
                     }
                 }
@@ -1291,6 +1325,9 @@ fn resolve_atomic_unbound_templates(atomic: &TAtomic) -> TAtomic {
                         new_keyed.known_items = Some(new_items);
                     }
                     TArray::Keyed(new_keyed)
+                }
+                TArray::Set(element_type) => {
+                    TArray::Set(Arc::new(resolve_unbound_templates_to_constraints(element_type)))
                 }
             };
             TAtomic::Array(new_array)

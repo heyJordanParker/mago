@@ -10,6 +10,7 @@ use mago_codex::ttype::TType;
 use mago_codex::ttype::add_union_type;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
+use mago_codex::ttype::atomic::array::list::TList;
 use mago_codex::ttype::atomic::callable::TCallable;
 use mago_codex::ttype::cast::cast_atomic_to_callable;
 use mago_codex::ttype::combiner::CombinerOptions;
@@ -310,9 +311,23 @@ pub fn verify_argument_type<'arena, A>(
         if context.dialect.is_sharp() { None } else { get_backing_array_type(parameter_type, context.codebase) };
     let parameter_type = backing_parameter_type.as_ref().unwrap_or(parameter_type);
 
+    // Spec section 12 converts a list passed where a `Set` is expected: a PHP# method makes a `Set` of each `Set`
+    // parameter before its body runs, so the parameter takes a `List` of its elements too.
+    let list_accepting_parameter_type = invocation_target
+        .get_parameter(argument_offset)
+        .filter(|parameter| !parameter.is_variadic())
+        .and_then(|_| get_list_accepting_set_type(parameter_type));
+
     let mut union_comparison_result = ComparisonResult::with_strict_nonnull(context.dialect.is_sharp());
-    let type_match_found =
-        is_contained_by(context.codebase, input_type, parameter_type, true, true, false, &mut union_comparison_result);
+    let type_match_found = is_contained_by(
+        context.codebase,
+        input_type,
+        list_accepting_parameter_type.as_ref().unwrap_or(parameter_type),
+        true,
+        true,
+        false,
+        &mut union_comparison_result,
+    );
 
     if type_match_found {
         return;
@@ -489,6 +504,26 @@ fn get_backing_array_type(parameter_type: &TUnion, codebase: &CodebaseMetadata) 
     Some(TUnion::from_vec(
         parameter_type.types.iter().map(|atomic| backing_atomic(atomic).unwrap_or_else(|| atomic.clone())).collect(),
     ))
+}
+
+/// Returns `parameter_type` with each `Set` also taking a `List` of its elements, or `None` when it has no `Set`.
+fn get_list_accepting_set_type(parameter_type: &TUnion) -> Option<TUnion> {
+    let lists: Vec<TAtomic> = parameter_type
+        .types
+        .iter()
+        .filter_map(|atomic| match atomic {
+            TAtomic::Array(TArray::Set(element_type)) => {
+                Some(TAtomic::Array(TArray::List(TList::new(Arc::clone(element_type)))))
+            }
+            _ => None,
+        })
+        .collect();
+
+    if lists.is_empty() {
+        return None;
+    }
+
+    Some(TUnion::from_vec(parameter_type.types.iter().cloned().chain(lists).collect()))
 }
 
 /// Gets the element type when unpacking an argument with the spread operator. In PHP# a type that may not be iterable

@@ -20,6 +20,7 @@ use mago_codex::ttype::combiner::combine;
 use mago_codex::ttype::comparator::ComparisonResult;
 use mago_codex::ttype::comparator::union_comparator;
 use mago_codex::ttype::comparator::union_comparator::is_contained_by;
+use mago_codex::ttype::get_array_parameters;
 use mago_codex::ttype::get_arraykey;
 use mago_codex::ttype::get_backing_key_type;
 use mago_codex::ttype::get_empty_keyed_array;
@@ -102,6 +103,36 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for LegacyArray<'arena> {
     {
         analyze_array_elements(context, block_context, artifacts, self.span(), self.elements.as_slice())
     }
+}
+
+/// The type a PHP# list literal has at a place declared a `Set`: spec section 12 makes it the `Set` of its elements,
+/// which the lowering keys by each element. The literal keeps this type, so its place checks its elements. `None` for
+/// any other value or place.
+pub(crate) fn get_set_literal_type<A>(
+    context: &Context<'_, '_, A>,
+    artifacts: &mut AnalysisArtifacts,
+    value: &Expression<'_>,
+    declared_type: &TUnion,
+) -> Option<TUnion>
+where
+    A: Arena,
+{
+    if !context.dialect.is_sharp()
+        || !matches!(unwrap_expression(value), Expression::Array(_))
+        || !declared_type.types.iter().any(|atomic| matches!(atomic, TAtomic::Array(TArray::Set(_))))
+    {
+        return None;
+    }
+
+    let list @ TArray::List(_) = artifacts.get_expression_type(value)?.get_single_array()? else {
+        return None;
+    };
+
+    let (_, element_type) = get_array_parameters(list, context.codebase);
+    let set_type = TUnion::from_atomic(TAtomic::Array(TArray::Set(Arc::new(element_type))));
+    artifacts.set_expression_type(value, set_type.clone());
+
+    Some(set_type)
 }
 
 #[derive(Debug)]
@@ -556,19 +587,17 @@ fn report_sharp_literal_spreads<A>(
                     continue;
                 };
 
+                let is_list_or_map =
+                    |atomic: &TAtomic| matches!(atomic, TAtomic::Array(TArray::List(_) | TArray::Keyed(_)));
+
                 if spread_type.types.iter().all(|atomic| atomic.is_list() || atomic.is_never()) {
                     false
-                } else if spread_type
-                    .types
-                    .iter()
-                    .all(|atomic| matches!(atomic, TAtomic::Array(_)) || atomic.is_never())
-                {
+                } else if spread_type.types.iter().all(|atomic| is_list_or_map(atomic) || atomic.is_never()) {
                     true
                 } else {
                     // A value that may not be iterable already has PHP's own error.
                     if let Some(atomic) = spread_type.types.iter().find(|atomic| {
-                        !matches!(atomic, TAtomic::Array(_))
-                            && get_iterable_value_parameter(atomic, context.codebase).is_some()
+                        !is_list_or_map(atomic) && get_iterable_value_parameter(atomic, context.codebase).is_some()
                     }) {
                         let type_str = display_atomic(context, atomic);
                         context.collector.report_with_code(
@@ -732,6 +761,18 @@ fn handle_variadic_array_element<'arena, A>(
                     }
 
                     (None, Cow::Borrowed(list_data.get_element_type()))
+                }
+                // A PHP# `Set` spread is refused above; plain PHP spreads the array it runs as, keyed by each
+                // element's backing value.
+                TArray::Set(element_type) => {
+                    all_non_empty = false;
+                    array_creation_info.is_list = false;
+                    array_creation_info.can_create_objectlike = false;
+
+                    (
+                        Some(Cow::Owned(get_backing_key_type(element_type, context.codebase).into_owned())),
+                        Cow::Borrowed(element_type.as_ref()),
+                    )
                 }
             },
             atomic => {

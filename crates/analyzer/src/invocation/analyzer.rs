@@ -1620,6 +1620,7 @@ fn populate_parameter_types_from_unpacked<A>(
                     }
                 }
             }
+            TArray::Set(_) => {}
         }
 
         for (parameter_name, (branch_type, definitely_supplied)) in branch_types {
@@ -1804,6 +1805,7 @@ fn validate_unpacked_argument_elements<'ctx, 'arena, A>(
                     target_name_str,
                 );
             }
+            TArray::Set(_) => {}
         }
     }
 }

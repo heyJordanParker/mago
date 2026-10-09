@@ -1888,6 +1888,16 @@ fn encode_array_snapshot<'type_info>(
 
             writer.write_bool(keyed.non_empty);
         }
+        // An external analyzer is plain PHP, which sees a `Set` as the array it runs as: each element keyed by itself,
+        // as a `Map` of the element type.
+        TArray::Set(element_type) => {
+            writer.write_u8(2);
+            writer.write_bool(false);
+            writer.write_bool(true);
+            encode_union_snapshot_inner(writer, element_type, types, depth + 1)?;
+            encode_union_snapshot_inner(writer, element_type, types, depth + 1)?;
+            writer.write_bool(false);
+        }
     }
 
     Ok(())

@@ -62,6 +62,21 @@ final class List
     public static function wrap(mixed $value): array {}
 }
 
+final class Set
+{
+    /**
+     * The set `$values` makes: each value keyed by itself, or by its backing value when it is a backed enum, in the
+     * order of its first appearance. A set comes back as it is. A method that takes a PHP# `Set` runs this on it first.
+     *
+     * @template T of int|string|\BackedEnum
+     *
+     * @param array<array-key, T> $values
+     *
+     * @return array<array-key, T>
+     */
+    public static function from(array $values): array {}
+}
+
 /**
  * The methods a PHP# `List<T>` has. The analyzer checks a call on a list against them, and the engine runs them on
  * `Sharp\Collection`. A method without `@mutation-free` changes the list.
@@ -298,6 +313,125 @@ final class MapMethods
      * @param \Closure(V): R $selector
      *
      * @return list<V> the values in ascending order of what `$selector` gives, equal ones in their order.
+     *
+     * @mutation-free
+     */
+    public function sortedBy(\Closure $selector): array {}
+}
+
+/**
+ * The methods a PHP# `Set<T>` has. The analyzer checks a call on a set against them. A method without
+ * `@mutation-free` changes the set.
+ *
+ * @template T
+ */
+final class SetMethods
+{
+    /**
+     * Adds `$value`, if the set does not hold it.
+     *
+     * @param T $value
+     *
+     * @return bool whether the set did not hold `$value`.
+     */
+    public function add(mixed $value): bool {}
+
+    /**
+     * Removes `$value`, if the set holds it.
+     *
+     * @param T $value
+     *
+     * @return bool whether the set held `$value`.
+     */
+    public function remove(mixed $value): bool {}
+
+    /**
+     * Removes every element.
+     */
+    public function clear(): void {}
+
+    /**
+     * @param T $value
+     *
+     * @return bool whether the set holds `$value`.
+     *
+     * @mutation-free
+     */
+    public function contains(mixed $value): bool {}
+
+    /**
+     * @return int how many elements the set holds.
+     *
+     * @mutation-free
+     */
+    public function count(): int {}
+
+    /**
+     * @return list<T> the elements, in the order they were added.
+     *
+     * @mutation-free
+     */
+    public function toList(): array {}
+
+    /**
+     * The analyzer gives a call the type `Set<T>`, which a docblock cannot write.
+     *
+     * @param \Closure(T): bool $predicate
+     *
+     * @return array<array-key, T> the set of the elements `$predicate` keeps, in order.
+     *
+     * @mutation-free
+     */
+    public function filter(\Closure $predicate): array {}
+
+    /**
+     * @template R
+     *
+     * @param \Closure(T): R $transform
+     *
+     * @return list<R> what `$transform` gives for each element, in order.
+     *
+     * @mutation-free
+     */
+    public function map(\Closure $transform): array {}
+
+    /**
+     * @template R of int|float
+     *
+     * @param \Closure(T): R $selector
+     *
+     * @return R the sum of what `$selector` gives for each element, 0 for an empty set.
+     *
+     * @mutation-free
+     */
+    public function sumOf(\Closure $selector): int|float {}
+
+    /**
+     * @param \Closure(T): bool $predicate
+     *
+     * @return T the first element `$predicate` keeps.
+     *
+     * @throws \OutOfRangeException when `$predicate` keeps no element.
+     *
+     * @mutation-free
+     */
+    public function first(\Closure $predicate): mixed {}
+
+    /**
+     * @param \Closure(T): bool $predicate
+     *
+     * @return bool whether `$predicate` keeps any element.
+     *
+     * @mutation-free
+     */
+    public function any(\Closure $predicate): bool {}
+
+    /**
+     * @template R
+     *
+     * @param \Closure(T): R $selector
+     *
+     * @return list<T> the elements in ascending order of what `$selector` gives, equal ones in their order.
      *
      * @mutation-free
      */
