@@ -476,14 +476,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             ));
         }
 
-        // A PHP# generic class declares the hidden slot that holds each object's type arguments, which start as its
-        // bounds.
-        if let Some(bounds) = self.types.bounds(self.class) {
-            let line = self.line(class.name);
-            let bounds = self.string(0, line, bounds.as_bytes());
-            members.push(self.node(SHARP_AST_SHARP_TYPE_ARGS, 0, line, &[NULL, bounds]));
-        }
-
+        members.push(self.class_metadata(self.line(class.name)));
         let members = self.node(SHARP_AST_STMT_LIST, 0, self.line(class.left_brace), &members);
         let attributes = self.attributes(&class.attribute_lists, None);
 
@@ -495,6 +488,17 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             class.name.value,
             &[parent, interfaces, members, attributes, NULL],
         )
+    }
+
+    /// The metadata of the PHP# class-like being lowered, which the engine keeps with the class: the type arguments its
+    /// header gives each generic parent and interface, and the bounds of its type parameters, each a type text or null
+    /// when it has none. A generic class also declares from it the hidden slot that holds each object's type
+    /// arguments, which start as its bounds.
+    fn class_metadata(&mut self, line: u32) -> u32 {
+        let header = self.types.header(self.class).map_or(NULL, |header| self.string(0, line, header.as_bytes()));
+        let bounds = self.types.bounds(self.class).map_or(NULL, |bounds| self.string(0, line, bounds.as_bytes()));
+
+        self.node(SHARP_AST_SHARP_TYPE_ARGS, 0, line, &[header, bounds])
     }
 
     /// A class header's names as PHP's `extends` name and `implements` name list, with the parent's full name: the name
@@ -544,6 +548,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             members.push(self.method(method, ZEND_ACC_PUBLIC, &[]));
         }
 
+        members.push(self.class_metadata(self.line(interface.name)));
         let members = self.node(SHARP_AST_STMT_LIST, 0, self.line(interface.left_brace), &members);
         let header = interface.inheritance.as_ref().map_or(NULL, |inheritance| self.name_list(inheritance));
 
@@ -572,6 +577,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             });
         }
 
+        members.push(self.class_metadata(self.line(r#enum.name)));
         let members = self.node(SHARP_AST_STMT_LIST, 0, self.line(r#enum.left_brace), &members);
         let attributes = self.attributes(&r#enum.attribute_lists, None);
         let header = r#enum.inheritance.as_ref().map_or(NULL, |inheritance| self.name_list(inheritance));

@@ -128,6 +128,28 @@ impl<'analysis> Types<'analysis> {
         Some(bounds.join(", "))
     }
 
+    /// The type arguments the header of the fully qualified class name `class` gives each generic parent and
+    /// interface, as a type text list of those classes with their type arguments, each type parameter of `class`
+    /// written as `$` and its index, and sorted by their text: `App.PaginatedList<App.Order>` for
+    /// `OrderPage : PaginatedList<Order>`, and `App.Base<List<$0>>` for `Sub<T> : Base<List<T>>`. None when the header
+    /// gives none.
+    pub(crate) fn header(&self, class: &[u8]) -> Option<String> {
+        let metadata = self.codebase.get_class_like(class)?;
+        let mut ancestors: Vec<String> = metadata
+            .template_extended_offsets
+            .iter()
+            .map(|(ancestor, arguments)| {
+                let arguments: Vec<String> =
+                    arguments.iter().map(|argument| text(argument, self.codebase, Parameter::Index)).collect();
+
+                format!("{}<{}>", class_text(*ancestor, self.codebase), arguments.join(", "))
+            })
+            .collect();
+        ancestors.sort_unstable();
+
+        (!ancestors.is_empty()).then(|| ancestors.join(", "))
+    }
+
     /// The type arguments the `new` at `span` gives the fully qualified class name `class`, as the checker found them,
     /// when it is a PHP# generic class: the type text of each in declaration order, joined by `, `. A type parameter of
     /// the class the `new` is in is written as `$` and its index, which the engine replaces with `this`'s type argument
