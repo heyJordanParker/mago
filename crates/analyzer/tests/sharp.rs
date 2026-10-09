@@ -2232,6 +2232,44 @@ fn a_null_check_on_a_value_that_is_never_null_keeps_its_php_report() {
     );
 }
 
+/// A null check that cannot matter names the test as the developer wrote it: `is null` and `is not null` run as
+/// PHP's `===`, which the developer never wrote. PHP names its own operator.
+#[test]
+fn a_redundant_null_check_names_the_test_it_is_written_with() {
+    let sharp = "namespace Demo;\n\nclass Billing\n{\n    public void renew(Customer report)\n    {\n        const a = report is null;\n        const b = report is not null;\n        const c = report == null;\n        const d = report != null;\n        const e = match (report) {\n            null => 0,\n            default => 1,\n        };\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Billing\n{\n    public function renew(Customer $report): void\n    {\n        $a = $report === null;\n        $b = $report !== null;\n    }\n}\n";
+    let redundant = |analyzed| -> Vec<String> {
+        worded(analyzed, &[("src/Demo/Customer.sharp", CUSTOMER)])
+            .into_iter()
+            .filter(|line| line.contains(" redundant-comparison "))
+            .collect()
+    };
+
+    let sharp_report = |at: &str, check: &str| {
+        format!(
+            "{at} redundant-comparison Redundant {check}: `Customer` is never `null`. | This is `Customer`, which is never `null` | This null check cannot matter | In PHP# a type holds null only when written with `?`, so a `?` or a null check that cannot matter is an error. | Remove the null check."
+        )
+    };
+
+    assert_eq!(
+        redundant(("src/Demo/Billing.php", php)),
+        [
+            "9:14 redundant-comparison Redundant `===` comparison: left-hand side is never identical to right-hand side. | Left operand is `Demo\\Customer` | Right operand is `null` | The `===` operator will always return `false` in this case. | Consider simplifying or removing this comparison as it always evaluates to `false`.",
+            "10:14 redundant-comparison Redundant `!==` comparison: left-hand side is always not identical to right-hand side. | Left operand is `Demo\\Customer` | Right operand is `null` | The `!==` operator will always return `true` in this case. | Consider simplifying or removing this comparison as it always evaluates to `true`.",
+        ]
+    );
+    assert_eq!(
+        redundant(("src/Demo/Billing.sharp", sharp)),
+        [
+            sharp_report("7:19", "`is null` check"),
+            sharp_report("8:19", "`is not null` check"),
+            sharp_report("9:19", "`==` comparison"),
+            sharp_report("10:19", "`!=` comparison"),
+            sharp_report("11:34", "`null` check"),
+        ]
+    );
+}
+
 /// `== null` and `!= null` run as PHP's `=== null` and `!== null`, so they test for null alone and are no loose
 /// comparison with `null`.
 #[test]

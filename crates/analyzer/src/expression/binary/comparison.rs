@@ -991,20 +991,51 @@ fn report_redundant_null_comparison<'arena, A>(
     }
 
     let operand_type_str = display_type(context, operand_type);
+    let check = match written_null_pattern(context, binary) {
+        Some(pattern) => format!("`{pattern}` check"),
+        None => format!("`{}` comparison", BytesDisplay(binary.operator.as_bytes())),
+    };
     let issue = context.as_null_check_error(
-        Issue::help(format!(
-            "Redundant `{}` comparison: `{operand_type_str}` is never `null`.",
-            BytesDisplay(binary.operator.as_bytes())
-        ))
-        .with_annotation(
-            Annotation::primary(operand.span())
-                .with_message(format!("This is `{operand_type_str}`, which is never `null`")),
-        )
-        .with_annotation(Annotation::secondary(operator_span).with_message("This null check cannot matter"))
-        .with_help("Remove the null check."),
+        Issue::help(format!("Redundant {check}: `{operand_type_str}` is never `null`."))
+            .with_annotation(
+                Annotation::primary(operand.span())
+                    .with_message(format!("This is `{operand_type_str}`, which is never `null`")),
+            )
+            .with_annotation(Annotation::secondary(operator_span).with_message("This null check cannot matter"))
+            .with_help("Remove the null check."),
     );
 
     context.collector.report_with_code(IssueCode::RedundantComparison, issue);
+}
+
+/// The PHP# null pattern a check runs, as written: `is null`, `is not null`, or a `match` arm's `null`. The pattern
+/// runs as PHP's `===`, whose operator is empty at the start of `null`, so the words before it are read back from the
+/// source. A written operator gives none.
+fn written_null_pattern<A>(context: &Context<'_, '_, A>, binary: &Binary<'_>) -> Option<String>
+where
+    A: Arena,
+{
+    let operator = binary.operator.span();
+    if operator.length() != 0 {
+        return None;
+    }
+
+    let contents = &context.source_file.contents;
+    let mut start = operator.start.offset as usize;
+    for keyword in [&b"not"[..], b"is"] {
+        if let Some(rest) = contents[..start].trim_ascii_end().strip_suffix(keyword)
+            && rest.last().is_none_or(|byte| !byte.is_ascii_alphanumeric() && *byte != b'_')
+        {
+            start = rest.len();
+        }
+    }
+
+    let words = contents[start..binary.rhs.span().end.offset as usize]
+        .split(u8::is_ascii_whitespace)
+        .filter(|word| !word.is_empty())
+        .map(String::from_utf8_lossy);
+
+    Some(words.collect::<Vec<_>>().join(" "))
 }
 
 /// Helper to report redundant comparison issues.
