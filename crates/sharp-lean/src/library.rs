@@ -22,9 +22,6 @@ const PACKAGE: [(&str, &str); 6] = [
     ("Sharp/Lean/Runner.lean", include_str!("../lean/Sharp/Lean/Runner.lean")),
 ];
 
-/// Where Lake writes a package's built modules.
-pub(crate) const LIBRARY: &str = ".lake/build/lib/lean";
-
 /// The runner executable in the library's build.
 pub(crate) fn runner(library: &Path) -> PathBuf {
     library.join(".lake/build/bin").join(format!("sharp-lean{}", std::env::consts::EXE_SUFFIX))

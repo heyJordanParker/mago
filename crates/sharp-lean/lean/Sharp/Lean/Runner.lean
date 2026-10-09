@@ -5,6 +5,9 @@ Each request names one law file's module: the proof module when Lake built it, o
 code. The runner imports it, as `lake exe runLinter` imports a module, and answers for each law of the request: every
 theorem of the proof module whose type is exactly the law's statement, with the axioms its proof uses, and, when the
 request asks for one, the first automatic proof step that proves the law.
+
+Mago starts one runner per request. Lean cannot free an imported environment while the tasks that elaborated a
+proposal may still hold parts of it, and Lean's own server likewise restarts a file's worker to import anew.
 -/
 import Lean
 import Sharp.Lean.Law
@@ -234,11 +237,10 @@ def answer (env : Environment) (request : Check) : IO ByteArray := do
     b := putString b (proposal.getD "")
   return b
 
-unsafe def respond (request : Check) : IO ByteArray := do
-  let env ← importModules #[{ module := request.module }] {} (loadExts := true)
-  try answer env request finally env.freeRegions
+def respond (request : Check) : IO ByteArray := do
+  answer (← importModules #[{ module := request.module }] {} (loadExts := true)) request
 
-unsafe def serve (stdin stdout : IO.FS.Stream) : IO Unit := do
+partial def serve (stdin stdout : IO.FS.Stream) : IO Unit := do
   let some frame ← readFrame stdin | return
   if frame.kind == frameShutdown then return
   unless frame.kind == frameRequest do return ← serve stdin stdout

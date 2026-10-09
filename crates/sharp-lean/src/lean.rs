@@ -21,8 +21,8 @@ use crate::package::Package;
 use crate::package::Program;
 use crate::package::Root;
 use crate::package::Toolchain;
+use crate::runner;
 use crate::runner::Question;
-use crate::runner::Runner;
 use crate::runner::Verdict;
 use crate::translate::Law;
 use crate::translate::Translation;
@@ -208,7 +208,6 @@ impl Lean {
             return Ok(issues);
         }
 
-        let runner = Runner::start(&library, &package.directory)?;
         for item in checked {
             let vendor = item.translation.name.starts_with(VENDOR);
             let questions: Vec<Question<'_>> = item
@@ -226,7 +225,7 @@ impl Lean {
             } else {
                 (package::module_name(item.translation), String::new())
             };
-            let answers = runner.check(&module, &proof_module, &questions)?;
+            let answers = runner::check(&library, &package.directory, &module, &proof_module, &questions)?;
 
             let file = String::from_utf8_lossy(&item.proof).into_owned();
             let mut text = if item.exists {

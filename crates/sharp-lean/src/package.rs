@@ -25,9 +25,6 @@ use crate::translate::Translation;
 use crate::translate::Unmodeled;
 use crate::translate::Use;
 
-/// The package's folder under the workspace root, apart from the `.sharpc` mirror of the sources.
-pub(crate) const FOLDER: &str = ".sharp/.lean";
-
 /// Every declaration of every translation, indexed by its Lean name.
 pub(crate) struct Program<'program> {
     translations: &'program [Translation],
@@ -387,9 +384,10 @@ pub(crate) struct Package {
 }
 
 impl Package {
-    /// The package of the workspace at `root`.
+    /// The package of the workspace at `root`, in `.sharp/.lean/` apart from the `.sharpc` mirror of the sources. The
+    /// folder is joined one name at a time, since `cmd` reads a `/` in a Windows path as a switch.
     pub(crate) fn new(root: &Path) -> Self {
-        Self { directory: plain(root).join(FOLDER) }
+        Self { directory: plain(root).join(".sharp").join(".lean") }
     }
 
     /// Writes the package's Lean version, so elan installs it on first use, and asks `lake` for its version there.
@@ -451,7 +449,7 @@ impl Package {
             fs::remove_dir_all(&proofs)?;
         }
         for root in linked {
-            let link = proofs.join(root.namespace.replace('.', "/"));
+            let link = root.namespace.split('.').fold(proofs.clone(), |link, name| link.join(name));
             fs::create_dir_all(link.parent().unwrap_or(&proofs))?;
             link_directory(&root.directory, &link)?;
         }

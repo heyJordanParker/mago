@@ -56,36 +56,28 @@ pub(crate) struct Answer {
     pub(crate) proposal: Option<String>,
 }
 
-/// The `sharp-lean` process.
-pub(crate) struct Runner {
-    pool: WorkerPool,
-}
+/// Starts the runner of `library` on the modules Lake built in `package`, which imports `module` and answers each
+/// question, counting only the theorems of `proof_module`, or none when it is empty.
+///
+/// Each call starts its own runner, since Lean cannot free an imported environment in a process that elaborated with
+/// it. `lake env` gives the runner the package's search path, and on Windows the folder of Lean's shared libraries,
+/// which an executable that interprets Lean links to there.
+pub(crate) fn check(
+    library: &Path,
+    package: &Path,
+    module: &str,
+    proof_module: &str,
+    questions: &[Question<'_>],
+) -> io::Result<Vec<Answer>> {
+    let command = WorkerCommand::new("lake")
+        .with_argument("env")
+        .with_argument(library::runner(library))
+        .with_current_directory(package);
+    let options = WorkerPoolOptions { request_timeout: REQUEST_TIMEOUT, ..WorkerPoolOptions::default() };
+    let runner = WorkerPool::spawn(command, NonZeroUsize::MIN, options).map_err(io::Error::other)?;
+    let response = runner.request(encode(module, proof_module, questions)?).map_err(io::Error::other)?;
 
-impl Runner {
-    /// Starts the runner of `library` on the modules Lake built in `package`.
-    pub(crate) fn start(library: &Path, package: &Path) -> io::Result<Runner> {
-        let lean_path = std::env::join_paths([library.join(library::LIBRARY), package.join(library::LIBRARY)])
-            .map_err(io::Error::other)?;
-        let command = WorkerCommand::new(library::runner(library))
-            .with_current_directory(package)
-            .with_environment("LEAN_PATH", lean_path);
-        let options = WorkerPoolOptions { request_timeout: REQUEST_TIMEOUT, ..WorkerPoolOptions::default() };
-
-        Ok(Runner { pool: WorkerPool::spawn(command, NonZeroUsize::MIN, options).map_err(io::Error::other)? })
-    }
-
-    /// Imports `module` and answers each question, counting only the theorems of `proof_module`, or none when it is
-    /// empty.
-    pub(crate) fn check(
-        &self,
-        module: &str,
-        proof_module: &str,
-        questions: &[Question<'_>],
-    ) -> io::Result<Vec<Answer>> {
-        let response = self.pool.request(encode(module, proof_module, questions)?).map_err(io::Error::other)?;
-
-        decode(&response, questions.len()).map_err(io::Error::other)
-    }
+    decode(&response, questions.len()).map_err(io::Error::other)
 }
 
 fn encode(module: &str, proof_module: &str, questions: &[Question<'_>]) -> io::Result<Vec<u8>> {

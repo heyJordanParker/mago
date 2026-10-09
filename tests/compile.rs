@@ -52,6 +52,12 @@ fn compile(root: &Path) -> Output {
     command(root, "never").output().unwrap()
 }
 
+/// Compiles `root`, and fails the test with the printed output unless the compile succeeds.
+fn compile_succeeds(root: &Path) {
+    let output = compile(root);
+    assert!(output.status.success(), "{}", printed(&output));
+}
+
 fn printed(output: &Output) -> String {
     format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr))
 }
@@ -107,7 +113,7 @@ fn compile_writes_each_accepted_file_into_the_sharp_folder_at_its_source_path() 
 fn compile_refuses_a_file_with_an_error_writes_the_others_and_deletes_its_old_compiled_file() {
     let directory = project(ORDER, MONEY);
     let root = directory.path();
-    assert!(compile(root).status.success());
+    compile_succeeds(root);
 
     write(root, "app/Order.sharp", BROKEN_ORDER);
     let output = compile(root);
@@ -136,15 +142,15 @@ fn compile_refuses_a_package_file_with_an_error_and_names_its_package() {
 fn compile_deletes_the_compiled_file_of_a_renamed_or_removed_source() {
     let directory = project(ORDER, MONEY);
     let root = directory.path();
-    assert!(compile(root).status.success());
+    compile_succeeds(root);
 
     std::fs::rename(root.join("app/Order.sharp"), root.join("app/Invoice.sharp")).unwrap();
-    assert!(compile(root).status.success());
+    compile_succeeds(root);
     assert!(!compiled(root, "app/Order.sharp").exists());
     assert!(compiled(root, "app/Invoice.sharp").exists());
 
     std::fs::remove_file(root.join("app/Invoice.sharp")).unwrap();
-    assert!(compile(root).status.success());
+    compile_succeeds(root);
     assert_eq!(files_under(&root.join(".sharp")), [Path::new("vendor/acme/money/src/Money.sharpc")]);
 }
 
@@ -223,13 +229,13 @@ fn compile_reports_a_link_to_a_file_outside_the_project_and_writes_no_compiled_f
 fn compile_replaces_a_compiled_file_by_rename_so_no_reader_sees_a_partial_file() {
     let directory = project(ORDER, MONEY);
     let root = directory.path();
-    assert!(compile(root).status.success());
+    compile_succeeds(root);
     let before = std::fs::read(compiled(root, "app/Order.sharp")).unwrap();
     // On Windows, `File::open` shares the file for deletion, which lets a rename replace it while it is open.
     let mut open = std::fs::File::open(compiled(root, "app/Order.sharp")).unwrap();
 
     write(root, "app/Order.sharp", &ORDER.replace("extra + 1", "extra + 2"));
-    assert!(compile(root).status.success());
+    compile_succeeds(root);
 
     let mut still_open = Vec::new();
     std::io::Read::read_to_end(&mut open, &mut still_open).unwrap();
@@ -290,10 +296,32 @@ fn compile_proves_a_law_with_the_proof_it_creates_and_writes_the_compiled_file()
 }
 
 #[test]
+fn compiles_that_start_together_on_an_empty_cache_each_prove_their_law_and_leave_one_library_build() {
+    let cache = tempfile::tempdir().unwrap();
+    let projects: Vec<_> = (0..4).map(|_| lawful_project(&[("app/Shared/Money.sharp", LAWFUL_MONEY)])).collect();
+
+    let outputs: Vec<Output> = std::thread::scope(|scope| {
+        let compiles: Vec<_> = projects
+            .iter()
+            .map(|project| {
+                scope.spawn(|| command(project.path(), "never").env("XDG_CACHE_HOME", cache.path()).output().unwrap())
+            })
+            .collect();
+        compiles.into_iter().map(|compile| compile.join().unwrap()).collect()
+    });
+
+    for (project, output) in projects.iter().zip(&outputs) {
+        assert!(output.status.success(), "{}", printed(output));
+        assert_eq!(read(project.path(), "app/Shared/Money.lean"), MONEY_PROOF);
+    }
+    assert_eq!(std::fs::read_dir(cache.path().join("mago/lean")).unwrap().count(), 1, "one library build is left");
+}
+
+#[test]
 fn a_second_compile_leaves_the_proof_byte_identical_and_starts_no_lean_process() {
     let directory = lawful_project(&[("app/Shared/Money.sharp", LAWFUL_MONEY)]);
     let root = directory.path();
-    assert!(compile(root).status.success());
+    compile_succeeds(root);
     let before = std::fs::read(compiled(root, "app/Shared/Money.sharp")).unwrap();
 
     let output = compile_without_lean(root);
@@ -307,7 +335,7 @@ fn a_second_compile_leaves_the_proof_byte_identical_and_starts_no_lean_process()
 fn compile_refuses_a_law_a_changed_method_breaks_on_the_law_line_and_writes_no_compiled_file() {
     let directory = lawful_project(&[("app/Shared/Money.sharp", LAWFUL_MONEY)]);
     let root = directory.path();
-    assert!(compile(root).status.success());
+    compile_succeeds(root);
 
     write(
         root,
@@ -380,7 +408,7 @@ fn compile_refuses_a_proof_that_uses_native_decide() {
 fn compile_reports_the_proof_of_a_deleted_law_on_the_class_name() {
     let directory = lawful_project(&[("app/Shared/Money.sharp", LAWFUL_MONEY)]);
     let root = directory.path();
-    assert!(compile(root).status.success());
+    compile_succeeds(root);
 
     write(
         root,
@@ -430,7 +458,7 @@ fn compile_needs_no_lean_for_a_project_with_no_law_and_no_proof_file() {
 fn an_edit_to_a_file_no_law_reaches_starts_no_lean_process() {
     let directory = lawful_project(&[("app/Shared/Money.sharp", LAWFUL_MONEY), ("app/Order.sharp", ORDER)]);
     let root = directory.path();
-    assert!(compile(root).status.success());
+    compile_succeeds(root);
 
     write(root, "app/Order.sharp", &ORDER.replace("extra + 1", "extra + 2"));
     let output = compile_without_lean(root);
@@ -443,7 +471,7 @@ fn an_edit_to_a_file_no_law_reaches_starts_no_lean_process() {
 fn compile_deletes_the_lean_package_once_no_law_and_no_proof_file_remain() {
     let directory = lawful_project(&[("app/Shared/Money.sharp", LAWFUL_MONEY)]);
     let root = directory.path();
-    assert!(compile(root).status.success());
+    compile_succeeds(root);
 
     std::fs::remove_file(root.join("app/Shared/Money.sharp")).unwrap();
     std::fs::remove_file(root.join("app/Shared/Money.lean")).unwrap();
@@ -459,7 +487,7 @@ fn compile_deletes_the_lean_package_once_no_law_and_no_proof_file_remain() {
 fn compile_appends_a_proof_for_a_new_law_and_keeps_every_existing_proof() {
     let directory = lawful_project(&[("app/Shared/Money.sharp", LAWFUL_MONEY)]);
     let root = directory.path();
-    assert!(compile(root).status.success());
+    compile_succeeds(root);
 
     write(
         root,
