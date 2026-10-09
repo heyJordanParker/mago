@@ -37,6 +37,7 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::invocation::InvocationTarget;
+use crate::invocation::analyzer::adjust_offset_for_variadic;
 use crate::statement::function_like::closure_parameter_types;
 use crate::utils::expression::is_referenceable;
 use crate::utils::get_type_diff;
@@ -317,11 +318,15 @@ pub fn verify_argument_type<'arena, A>(
         if context.dialect.is_sharp() { None } else { get_backing_array_type(parameter_type, context.codebase) };
     let parameter_type = backing_parameter_type.as_ref().unwrap_or(parameter_type);
 
-    // Spec section 12 converts a list passed where a `Set` is expected: a PHP# method makes a `Set` of each `Set`
-    // parameter before its body runs, so the parameter takes a `List` of its elements too.
+    // Spec section 12 converts a list passed where a `Set` is expected: a PHP# method or lambda makes a `Set` of each
+    // parameter it declares `Set` before its body runs, so that parameter takes a `List` of its elements too. A call
+    // through a `Function` value, of plain PHP, or of a parameter whose `Set` comes from a template runs no such body.
     let list_accepting_parameter_type = invocation_target
-        .get_parameter(argument_offset)
-        .filter(|parameter| !parameter.is_variadic())
+        .get_function_like_metadata()
+        .filter(|function| function.flags.is_sharp())
+        .and_then(|_| invocation_target.get_parameter(adjust_offset_for_variadic(invocation_target, argument_offset)))
+        .and_then(|parameter| parameter.get_type())
+        .filter(|declared_type| is_declared_set(declared_type))
         .and_then(|_| get_list_accepting_set_type(parameter_type));
 
     let mut union_comparison_result = ComparisonResult::with_strict_nonnull(context.dialect.is_sharp());
@@ -510,6 +515,12 @@ fn get_backing_array_type(parameter_type: &TUnion, codebase: &CodebaseMetadata) 
     Some(TUnion::from_vec(
         parameter_type.types.iter().map(|atomic| backing_atomic(atomic).unwrap_or_else(|| atomic.clone())).collect(),
     ))
+}
+
+/// Whether a parameter declared `declared_type` is written `Set<T>` or `Set<T>?`, the parameters the lowering converts.
+fn is_declared_set(declared_type: &TUnion) -> bool {
+    declared_type.types.iter().any(|atomic| matches!(atomic, TAtomic::Array(TArray::Set(_))))
+        && declared_type.types.iter().all(|atomic| matches!(atomic, TAtomic::Array(TArray::Set(_)) | TAtomic::Null))
 }
 
 /// Returns `parameter_type` with each `Set` also taking a `List` of its elements, or `None` when it has no `Set`.
