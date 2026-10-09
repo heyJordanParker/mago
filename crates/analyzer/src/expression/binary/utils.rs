@@ -117,14 +117,17 @@ fn expand_in_class(codebase: &CodebaseMetadata, method: &MethodIdentifier, union
     union
 }
 
-/// The one class of an instance of `operand_type`, `null` aside. An enum, which no operator takes, is none.
+/// The one class of an instance of `operand_type`, `null` aside, and a type parameter's the one class of its bound. An
+/// enum, which no operator takes, is none.
 fn get_instance_class(operand_type: &TUnion, codebase: &CodebaseMetadata) -> Option<Word> {
     let mut types = operand_type.types.iter().filter(|atomic| !atomic.is_null());
-    let (Some(TAtomic::Object(TObject::Named(object))), None) = (types.next(), types.next()) else {
-        return None;
-    };
-
-    codebase.get_enum(object.name.as_bytes()).is_none().then_some(object.name)
+    match (types.next(), types.next()) {
+        (Some(TAtomic::Object(TObject::Named(object))), None) => {
+            codebase.get_enum(object.name.as_bytes()).is_none().then_some(object.name)
+        }
+        (Some(TAtomic::GenericParameter(parameter)), None) => get_instance_class(&parameter.constraint, codebase),
+        _ => None,
+    }
 }
 
 /// Checks the operands of a PHP# operator as the arguments of the static call `method` it runs as, at `span`, and

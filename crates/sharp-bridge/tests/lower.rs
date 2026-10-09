@@ -10294,6 +10294,30 @@ fn arithmetic_on_instances_calls_the_declared_operators() {
 }
 
 /// ```php
+/// return \App\Money::op_Addition($a, $b);
+/// ```
+///
+/// A value of a type parameter bounded by `Money` runs the operator `Money` declares.
+#[test]
+fn arithmetic_on_a_type_parameter_calls_the_operator_its_bound_declares() {
+    assert_eq!(
+        ledger_body("Money run<T : Money>(T a, T b)", "        return a + b;\n"),
+        indoc! {r#"
+            STMT_LIST
+              RETURN
+                STATIC_CALL
+                  ZVAL "App\\Money"
+                  ZVAL "op_Addition"
+                  ARG_LIST
+                    VAR
+                      ZVAL "a"
+                    VAR
+                      ZVAL "b"
+        "#}
+    );
+}
+
+/// ```php
 /// $this->total = \App\Money::op_Addition($this->total, $price);
 /// $receiver#1->total = \App\Money::op_Addition(($receiver#1 = $this->current())->total, $price);
 /// ```

@@ -9132,6 +9132,17 @@ fn a_declared_operator_runs_where_it_is_used() {
     assert_eq!(issues(("src/App/Ledger.sharp", sharp), &[MONEY_OPERATORS, ORDER_OF_MONEY]), Vec::<String>::new());
 }
 
+/// A value of a type parameter bounded by `Money` runs the operators `Money` declares, as a `Money` does. PHP keeps
+/// its own operators on a templated object.
+#[test]
+fn an_operator_on_a_type_parameter_runs_the_operator_its_bound_declares() {
+    let sharp = "namespace App;\n\npublic class Ledger\n{\n    public static Money sum<T : Money>(T a, T b) => a + b;\n\n    public static Money negated<T : Money>(T a) => -a;\n\n    public static bool less<T : Money>(T a, T b) => a < b;\n\n    public static bool same<T : Money>(T a, T b) => a == b;\n}\n";
+    let php = "<?php\n\nnamespace App;\n\nfinal class Ledger\n{\n    /**\n     * @template T of Money\n     * @param T $a\n     * @param T $b\n     */\n    public static function sum(Money $a, Money $b): Money { return $a + $b; }\n\n    /**\n     * @template T of Money\n     * @param T $a\n     * @param T $b\n     */\n    public static function less(Money $a, Money $b): bool { return $a < $b; }\n}\n";
+
+    assert_eq!(issues(("src/App/Ledger.php", php), &[MONEY_OPERATORS, ORDER_OF_MONEY]), Vec::<String>::new());
+    assert_eq!(issues(("src/App/Ledger.sharp", sharp), &[MONEY_OPERATORS, ORDER_OF_MONEY]), Vec::<String>::new());
+}
+
 const DATABASE_ENTITY: (&str, &str) = (
     "src/App/DatabaseEntity.sharp",
     "namespace App;\n\npublic class DatabaseEntity\n{\n    public int id { get; }\n\n    public DatabaseEntity(int id)\n    {\n        this.id = id;\n    }\n\n    public int hash() => this.id;\n\n    public static bool operator ==(DatabaseEntity a, DatabaseEntity b) => a.id == b.id;\n}\n",

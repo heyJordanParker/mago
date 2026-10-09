@@ -508,18 +508,17 @@ impl<'analysis> Types<'analysis> {
 }
 
 /// The fully qualified names of the classes a value of `r#type` can be, leaving out `null`, or none when part of the
-/// type is no class, such as a collection.
+/// type is no class, such as a collection. A value of a type parameter can be the classes of its bound.
 pub(crate) fn receiver_classes(r#type: &TUnion) -> Option<Vec<&[u8]>> {
-    let classes: Vec<&[u8]> = r#type
-        .types
-        .iter()
-        .filter(|atomic| !atomic.is_null())
-        .map(|atomic| match atomic {
-            TAtomic::Object(TObject::Named(object)) => Some(object.name.as_bytes()),
-            TAtomic::Object(TObject::Enum(object)) => Some(object.name.as_bytes()),
-            _ => None,
-        })
-        .collect::<Option<_>>()?;
+    let mut classes = Vec::new();
+    for atomic in r#type.types.iter().filter(|atomic| !atomic.is_null()) {
+        match atomic {
+            TAtomic::Object(TObject::Named(object)) => classes.push(object.name.as_bytes()),
+            TAtomic::Object(TObject::Enum(object)) => classes.push(object.name.as_bytes()),
+            TAtomic::GenericParameter(parameter) => classes.extend(receiver_classes(&parameter.constraint)?),
+            _ => return None,
+        }
+    }
 
     (!classes.is_empty()).then_some(classes)
 }
