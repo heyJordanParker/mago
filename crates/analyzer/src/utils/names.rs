@@ -1,7 +1,11 @@
 //! Helpers for rendering symbol names in user-facing diagnostics.
 
+use std::cell::OnceCell;
+
+use foldhash::HashMap;
 use mago_allocator::Arena;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
+use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
@@ -13,9 +17,11 @@ use mago_codex::ttype::get_array_parameters;
 use mago_codex::ttype::union::TUnion;
 use mago_names::display_sharp_member;
 use mago_names::kind::NameKind;
+use mago_names::scope::NamespaceScope;
 use mago_names::short_name;
 use mago_syntax_core::utils::is_part_of_identifier;
 use mago_word::Word;
+use mago_word::WordMap;
 use mago_word::ascii_lowercase_word;
 use mago_word::word;
 
@@ -29,36 +35,62 @@ where
     A: Arena,
 {
     if context.dialect.is_sharp() {
-        word(sharp_class_like_name(context, name))
+        word(sharp_class_like_name(context.codebase, &context.imported_names, &context.short_name_counts, name))
     } else {
         context.codebase.get_class_like(name.as_bytes()).map_or(name, |m| m.original_name)
     }
 }
 
-/// Returns the case-preserved name of the class-like `name` as a `.sharp` file names it: the name the file's import
-/// gives it, as in `Rx` for `import Sharp.Text.Regex as Rx;` and `Order` for `import App.Orders.Order;`. A class the
-/// file doesn't import is named by its short name, or, when another class-like of the codebase has the same short name,
-/// by its full name with `.` between its parts, so `Billing.Order` and `App.Orders.Order` stay apart.
-fn sharp_class_like_name<A>(context: &Context<'_, '_, A>, name: Word) -> String
-where
-    A: Arena,
-{
-    let name = context.codebase.get_class_like(name.as_bytes()).map_or(name, |m| m.original_name);
+/// Returns the case-preserved name of the class-like `name` as a `.sharp` file names it, given the `imported_names` of
+/// the file: the name the file's import gives it, as in `Rx` for `import Sharp.Text.Regex as Rx;` and `Order` for
+/// `import App.Orders.Order;`. A class the file doesn't import is named by its short name, or, when another class-like
+/// of `codebase` has the same short name, by its full name with `.` between its parts, so `Billing.Order` and
+/// `App.Orders.Order` stay apart. `short_name_counts` keeps the count of each short name once it is first needed.
+pub(crate) fn sharp_class_like_name(
+    codebase: &CodebaseMetadata,
+    imported_names: &WordMap<Word>,
+    short_name_counts: &OnceCell<HashMap<String, u32>>,
+    name: Word,
+) -> String {
+    let name = codebase.get_class_like(name.as_bytes()).map_or(name, |m| m.original_name);
     let full_name = mago_bytes::trim_start_byte(name.as_bytes(), b'\\');
 
-    if let Some(imported_name) = context.imported_names.get(&ascii_lowercase_word(full_name)) {
+    if let Some(imported_name) = imported_names.get(&ascii_lowercase_word(full_name)) {
         imported_name.to_string()
-    } else if context.shares_short_name(name) {
+    } else if shares_short_name(codebase, short_name_counts, name) {
         String::from_utf8_lossy(full_name).replace('\\', ".")
     } else {
         short_name(name)
     }
 }
 
-/// Returns the sentence that names the `import` lines a `.sharp` file needs before code that names `class_names` by
-/// their short names compiles, as `Add `import Sharp.Text.Regex;` to the file.`: one line for each class-like the file
-/// doesn't [bind](binds_class_like), once each, in the order given. Returns `None` when the file binds them all, and in
-/// a PHP file.
+/// Whether another class-like of the project or its vendors has the short name of the class-like `name`, compared
+/// without case as PHP compares class names. PHP's built-in class-likes don't count: a `.sharp` file reaches one,
+/// like `Dom\Text`, only through an import, and one file can't import two classes of one short name without an
+/// alias. The prelude's `Sharp\` class-likes do count, as a `.sharp` file reaches them with no import.
+fn shares_short_name(
+    codebase: &CodebaseMetadata,
+    short_name_counts: &OnceCell<HashMap<String, u32>>,
+    name: Word,
+) -> bool {
+    let counts = short_name_counts.get_or_init(|| {
+        let mut counts = HashMap::default();
+        for (class_like, metadata) in &codebase.class_likes {
+            // php-sharp#60: the prelude's `Sharp\` class-likes are built-in, yet a `.sharp` file reaches them with no
+            // import.
+            if !metadata.flags.is_built_in() || class_like.as_bytes().starts_with(b"sharp\\") {
+                *counts.entry(short_name(class_like).to_ascii_lowercase()).or_insert(0) += 1;
+            }
+        }
+
+        counts
+    });
+
+    counts.get(&short_name(name).to_ascii_lowercase()).is_some_and(|count| *count > 1)
+}
+
+/// Returns the sentence that names the `import` lines the analyzed file needs, as [`sharp_missing_imports`] writes it,
+/// or `None` in a PHP file.
 pub(crate) fn display_missing_imports<A>(
     context: &Context<'_, '_, A>,
     class_names: impl IntoIterator<Item = Word>,
@@ -70,14 +102,27 @@ where
         return None;
     }
 
+    sharp_missing_imports(context.codebase, &context.imported_names, &context.scope, class_names)
+}
+
+/// Returns the sentence that names the `import` lines a `.sharp` file, with the `imported_names` and `scope` of its
+/// imports and namespace, needs before code that names `class_names` by their short names compiles, as
+/// `Add `import Sharp.Text.Regex;` to the file.`: one line for each class-like the file doesn't
+/// [bind](binds_class_like), once each, in the order given. Returns `None` when the file binds them all.
+pub(crate) fn sharp_missing_imports(
+    codebase: &CodebaseMetadata,
+    imported_names: &WordMap<Word>,
+    scope: &NamespaceScope,
+    class_names: impl IntoIterator<Item = Word>,
+) -> Option<String> {
     let mut imports: Vec<String> = Vec::new();
     for class_name in class_names {
-        let name = context.codebase.get_class_like(class_name.as_bytes()).map_or(class_name, |m| m.original_name);
+        let name = codebase.get_class_like(class_name.as_bytes()).map_or(class_name, |m| m.original_name);
         let import = format!(
             "`import {};`",
             String::from_utf8_lossy(mago_bytes::trim_start_byte(name.as_bytes(), b'\\')).replace('\\', ".")
         );
-        if !binds_class_like(context, name) && !imports.contains(&import) {
+        if !binds_class_like(imported_names, scope, name) && !imports.contains(&import) {
             imports.push(import);
         }
     }
@@ -88,19 +133,17 @@ where
     Some(format!("Add {imports} to the file."))
 }
 
-/// Whether the analyzed file binds a name to the class-like `name`, as spec section 23 binds a name: by an import, under
-/// its short name or the name after `as`, by declaring it, or by sharing its namespace. A class-like directly in `Sharp`
-/// is imported by default, unless the file imports or declares another class-like of its short name.
-fn binds_class_like<A>(context: &Context<'_, '_, A>, name: Word) -> bool
-where
-    A: Arena,
-{
+/// Whether a `.sharp` file with the `imported_names` and `scope` of its imports and namespace binds a name to the
+/// class-like `name`, as spec section 23 binds a name: by an import, under its short name or the name after `as`, by
+/// declaring it, or by sharing its namespace. A class-like directly in `Sharp` is imported by default, unless the file
+/// imports or declares another class-like of its short name.
+fn binds_class_like(imported_names: &WordMap<Word>, scope: &NamespaceScope, name: Word) -> bool {
     let name = mago_bytes::trim_start_byte(name.as_bytes(), b'\\');
-    if context.imported_names.contains_key(&ascii_lowercase_word(name)) {
+    if imported_names.contains_key(&ascii_lowercase_word(name)) {
         return true;
     }
 
-    let (bound, imported) = context.scope.resolve(NameKind::Default, short_name(name));
+    let (bound, imported) = scope.resolve(NameKind::Default, short_name(name));
     if bound.eq_ignore_ascii_case(name) {
         return true;
     }
@@ -163,7 +206,13 @@ where
                     && !matches!(class_start.checked_sub(1).map(|before| id[before]), Some(b'$' | b'>'))
                 {
                     written.truncate(written.len() - (index - class_start));
-                    written.extend_from_slice(sharp_class_like_name(context, word(&id[class_start..index])).as_bytes());
+                    let class_name = sharp_class_like_name(
+                        context.codebase,
+                        &context.imported_names,
+                        &context.short_name_counts,
+                        word(&id[class_start..index]),
+                    );
+                    written.extend_from_slice(class_name.as_bytes());
                 }
 
                 (b".", 2)
@@ -377,7 +426,8 @@ where
             let Some(name) = object.get_name() else {
                 return atomic.get_id().to_string();
             };
-            let name = sharp_class_like_name(context, name);
+            let name =
+                sharp_class_like_name(context.codebase, &context.imported_names, &context.short_name_counts, name);
             match object.get_type_parameters() {
                 Some(parameters) if !parameters.is_empty() => {
                     let parameters: Vec<String> =
@@ -398,7 +448,10 @@ where
             format!("Function<{}({})>", written(signature.get_return_type()), parameters.join(", "))
         }
         TAtomic::Scalar(TScalar::ClassLikeString(class_string)) => match class_string {
-            TClassLikeString::Literal { value } => format!("Class<{}>", sharp_class_like_name(context, *value)),
+            TClassLikeString::Literal { value } => format!(
+                "Class<{}>",
+                sharp_class_like_name(context.codebase, &context.imported_names, &context.short_name_counts, *value)
+            ),
             TClassLikeString::OfType { constraint, .. } => {
                 format!("Class<{}>", display_sharp_atomic(context, constraint))
             }
@@ -444,7 +497,10 @@ pub(crate) fn display_sharp_accessor<A>(
 where
     A: Arena,
 {
-    display_sharp_member(sharp_class_like_name(context, class_name), format_args!("{property_name}.{hook_name}"))
+    display_sharp_member(
+        sharp_class_like_name(context.codebase, &context.imported_names, &context.short_name_counts, class_name),
+        format_args!("{property_name}.{hook_name}"),
+    )
 }
 
 /// The member `member_name` of the class `class_name` as the analyzed file names it: `Box.put` in a `.sharp` file, with
@@ -460,16 +516,18 @@ where
     A: Arena,
 {
     if context.dialect.is_sharp() {
-        display_sharp_member(sharp_class_like_name(context, class_name), member_name)
+        display_sharp_member(
+            sharp_class_like_name(context.codebase, &context.imported_names, &context.short_name_counts, class_name),
+            member_name,
+        )
     } else {
         format!("{class_name}::{member_name}")
     }
 }
 
 /// The member `member_name` of the class `class_name` as code the analyzed file writes: `Status.cases()` in a `.sharp`
-/// file, by the name an import binds, and `Status::cases()` in PHP. The class is named as [`sharp_class_like_name`]
-/// names it, cut to its last part: PHP# refuses a full name in code (spec section 23), so the dotted name that tells two
-/// classes of one short name apart in prose would not compile here.
+/// file, by the name an import binds, and `Status::cases()` in PHP. The class is named as [`sharp_code_class_name`]
+/// names it.
 #[must_use]
 pub(crate) fn display_code_member<A>(
     context: &Context<'_, '_, A>,
@@ -480,9 +538,10 @@ where
     A: Arena,
 {
     if context.dialect.is_sharp() {
-        let class_name = sharp_class_like_name(context, class_name);
+        let class_name =
+            sharp_class_like_name(context.codebase, &context.imported_names, &context.short_name_counts, class_name);
 
-        display_sharp_member(class_name.rsplit('.').next().unwrap_or_default(), member_name)
+        display_sharp_member(sharp_code_class_name(&class_name), member_name)
     } else {
         display_member(context, class_name, member_name)
     }
@@ -498,6 +557,14 @@ pub(crate) fn and_list(names: &[Word]) -> String {
         Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
         None => String::new(),
     }
+}
+
+/// The class `class_name`, named as [`sharp_class_like_name`] names it, as `.sharp` code writes it: its last part. PHP#
+/// refuses a full name in code (spec section 23), so the dotted name that tells two classes of one short name apart in
+/// prose would not compile there.
+#[must_use]
+pub(crate) fn sharp_code_class_name(class_name: &str) -> &str {
+    class_name.rsplit('.').next().unwrap_or_default()
 }
 
 /// Returns `List` or `Map` when `object` is `Sharp\ListMethods` or `Sharp\MapMethods`.

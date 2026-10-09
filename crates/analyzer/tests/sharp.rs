@@ -1401,6 +1401,154 @@ fn replacing_a_php_method_follows_php_rules_with_override_required() {
     );
 }
 
+/// A plain PHP parent whose methods type a native `array` return and parameter in their docblocks.
+const COUNTER: &str = "<?php\n\nnamespace Lib;\n\nabstract class Counter\n{\n    /** @return list<int> */\n    public function counts(): array\n    {\n        return [];\n    }\n\n    /** @param list<string> $tags */\n    public function tag(array $tags): void\n    {\n    }\n}\n";
+
+/// A PHP# override of `COUNTER`'s `counts` that writes a `Map` return type.
+const TALLY: &str = "namespace Demo;\n\nimport Lib.Counter;\n\npublic class Tally : Counter\n{\n    public override Map<int, int> counts()\n    {\n        return [:];\n    }\n}\n";
+
+/// A PHP# override returns the type it writes, because PHP# reads no docblock, so the parent's `@return list<int>`
+/// never replaces its `Map<int, int>` and an empty `Map` literal is accepted. The signature check compares that type
+/// with the parent's `@return` and reports that it does not fit. The PHP twin inherits the parent's `@return`, so a
+/// string-keyed array is refused.
+#[test]
+fn an_override_of_a_plain_php_method_returns_the_type_it_writes() {
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Counter;\n\nclass Tally extends Counter\n{\n    #[\\Override]\n    public function counts(): array\n    {\n        return ['a' => 1];\n    }\n}\n";
+    let others = [("src/Lib/Counter.php", COUNTER)];
+
+    assert_eq!(issues(("src/Demo/Tally.php", php), &others), ["12:16 invalid-return-statement"]);
+    assert_eq!(
+        messages(("src/Demo/Tally.sharp", TALLY), &others),
+        [
+            "Return type `Map<int, int>` of `Tally.counts` is incompatible with parent return type `List<int>` of `Counter.counts`"
+        ]
+    );
+}
+
+/// A PHP# override whose written return type fits the parent's `@return` passes the signature check. The PHP twin
+/// writes the same override in PHP.
+#[test]
+fn an_override_of_a_plain_php_method_whose_return_type_fits_the_parents_docblock_is_accepted() {
+    let sharp = "namespace Demo;\n\nimport Lib.Counter;\n\npublic class Tally : Counter\n{\n    public override List<int> counts()\n    {\n        return [1];\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Counter;\n\nclass Tally extends Counter\n{\n    #[\\Override]\n    public function counts(): array\n    {\n        return [1];\n    }\n}\n";
+    let others = [("src/Lib/Counter.php", COUNTER)];
+
+    assert_eq!(issues(("src/Demo/Tally.php", php), &others), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Tally.sharp", sharp), &others), Vec::<String>::new());
+}
+
+/// A plain PHP subclass of a PHP# override meets the type the override writes, as a subclass of any PHP# method does,
+/// and inherits no `@return` from the plain PHP class above the override.
+#[test]
+fn a_plain_php_subclass_of_a_sharp_override_meets_the_type_the_override_writes() {
+    let plain = "namespace Demo;\n\npublic class Tally\n{\n    public virtual Map<int, int> counts()\n    {\n        return [:];\n    }\n}\n";
+    let rush = "<?php\n\nnamespace Demo;\n\nclass Rush extends Tally\n{\n    #[\\Override]\n    public function counts(): array\n    {\n        return ['a' => 1];\n    }\n}\n";
+
+    let below_plain = issues(("src/Demo/Rush.php", rush), &[("src/Demo/Tally.sharp", plain)]);
+    let below_override =
+        issues(("src/Demo/Rush.php", rush), &[("src/Demo/Tally.sharp", TALLY), ("src/Lib/Counter.php", COUNTER)]);
+
+    assert_eq!(below_plain, ["8:21 incompatible-return-type"]);
+    assert_eq!(below_override, below_plain);
+}
+
+/// A PHP# override takes the parameter type it writes, so `tags` is a `Map` whose `get` takes its key. The signature
+/// check compares that type with the parent's `@param` type and reports that it accepts less. The PHP twin inherits
+/// the parent's `@param`.
+#[test]
+fn an_override_of_a_plain_php_method_takes_the_parameter_type_it_writes() {
+    let sharp = "namespace Demo;\n\nimport Lib.Counter;\n\npublic class Labels : Counter\n{\n    public int? last = null;\n\n    public override void tag(Map<string, int> tags)\n    {\n        this.last = tags.get(\"a\");\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Counter;\n\nclass Labels extends Counter\n{\n    #[\\Override]\n    public function tag(array $tags): void\n    {\n        /** @psalm-trace $tags */\n        $count = count($tags);\n    }\n}\n";
+    let others = [("src/Lib/Counter.php", COUNTER)];
+
+    assert_eq!(messages(("src/Demo/Labels.php", php), &others), ["Trace: Type of `$tags` is `list<string>`"]);
+    assert_eq!(
+        messages(("src/Demo/Labels.sharp", sharp), &others),
+        [
+            "Parameter `tags` of `Labels.tag` expects type `Map<string, int>` but parent `Counter.tag` expects type `List<string>`"
+        ]
+    );
+}
+
+/// A PHP# method that implements a plain PHP interface method keeps the types it writes, as an override does, and the
+/// signature check reports each one that does not fit the interface's docblock. The PHP twin inherits the interface's
+/// `@return` and `@param`.
+#[test]
+fn an_implementation_of_a_plain_php_interface_method_keeps_the_types_it_writes() {
+    let library = "<?php\n\nnamespace Lib;\n\ninterface Source\n{\n    /** @return list<int> */\n    public function counts(): array;\n\n    /** @param list<string> $tags */\n    public function tag(array $tags): void;\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Source;\n\npublic class Feed : Source\n{\n    public int? last = null;\n\n    public Map<int, int> counts()\n    {\n        return [:];\n    }\n\n    public void tag(Map<string, int> tags)\n    {\n        this.last = tags.get(\"a\");\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Source;\n\nclass Feed implements Source\n{\n    public function counts(): array\n    {\n        return ['a' => 1];\n    }\n\n    public function tag(array $tags): void\n    {\n        /** @psalm-trace $tags */\n        $count = count($tags);\n    }\n}\n";
+    let others = [("src/Lib/Source.php", library)];
+
+    assert_eq!(issues(("src/Demo/Feed.php", php), &others), ["11:16 invalid-return-statement", "16:26 psalm-trace"]);
+    assert_eq!(
+        messages(("src/Demo/Feed.sharp", sharp), &others),
+        [
+            "Return type `Map<int, int>` of `Feed.counts` is incompatible with parent return type `List<int>` of `Source.counts`",
+            "Parameter `tags` of `Feed.tag` expects type `Map<string, int>` but parent `Source.tag` expects type `List<string>`"
+        ]
+    );
+}
+
+/// A PHP# override throws nothing its parent's `@throws` names, so a plain PHP caller that checks thrown types has
+/// nothing to handle. The PHP twin inherits the `@throws`.
+#[test]
+fn an_override_of_a_plain_php_method_takes_no_throws_from_the_parent() {
+    let library = "<?php\n\nnamespace Lib;\n\nabstract class Loader\n{\n    /** @throws \\RuntimeException */\n    public function load(): int\n    {\n        return 1;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Loader;\n\npublic class FileLoader : Loader\n{\n    public override int load() => 2;\n}\n";
+    let php_twin = "<?php\n\nnamespace Demo;\n\nuse Lib\\Loader;\n\nclass FileLoader extends Loader\n{\n    #[\\Override]\n    public function load(): int\n    {\n        return 2;\n    }\n}\n";
+    let caller =
+        "<?php\n\nnamespace Demo;\n\nfunction run(FileLoader $loader): int\n{\n    return $loader->load();\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/run.php", caller), &[("src/Demo/FileLoader.php", php_twin), ("src/Lib/Loader.php", library)]),
+        ["7:12 unhandled-thrown-type"]
+    );
+    assert_eq!(
+        issues(("src/Demo/run.php", caller), &[("src/Demo/FileLoader.sharp", sharp), ("src/Lib/Loader.php", library)]),
+        Vec::<String>::new()
+    );
+}
+
+/// A PHP# override declares no template its parent's `@template` declares, so a call of it is not generic and records
+/// no type argument for the running program. The PHP twin inherits the template.
+#[test]
+fn an_override_of_a_plain_php_method_takes_no_template_from_the_parent() {
+    let library = "<?php\n\nnamespace Lib;\n\nabstract class Keeper\n{\n    /**\n     * @template T\n     * @param T $value\n     * @return T\n     */\n    public function keep(mixed $value): mixed\n    {\n        return $value;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Keeper;\n\npublic class Box : Keeper\n{\n    public override Any? keep(Any? value) => value;\n\n    public int run()\n    {\n        this.keep(5);\n        return 1;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Keeper;\n\nclass Box extends Keeper\n{\n    #[\\Override]\n    public function keep(mixed $value): mixed\n    {\n        return $value;\n    }\n\n    public function run(): int\n    {\n        $this->keep(5);\n        return 1;\n    }\n}\n";
+    let type_arguments = |analyzed: (&'static str, &'static str), call: &str| {
+        let start = analyzed.1.find(call).unwrap() as u32;
+        let (issues, artifacts) =
+            analyze_with_artifacts(&PLUGIN_REGISTRY, settings(), analyzed, &[("src/Lib/Keeper.php", library)]);
+        assert!(issues.is_empty(), "{issues:?}");
+
+        artifacts
+            .inferred_type_arguments
+            .get(&(start, start + call.len() as u32))
+            .map(|arguments| arguments.iter().map(|argument| argument.get_id().to_string()).collect::<Vec<_>>())
+    };
+
+    assert_eq!(type_arguments(("src/Demo/Box.php", php), "$this->keep(5)"), Some(vec!["int".to_owned()]));
+    assert_eq!(type_arguments(("src/Demo/Box.sharp", sharp), "this.keep(5)"), None);
+}
+
+/// A PHP# override takes no `@psalm-assert-if-true` from its parent, so a call of it narrows nothing the parent's
+/// docblock promises and a later `is string` check is possible. The PHP twin inherits the assertion.
+#[test]
+fn an_override_of_a_plain_php_method_takes_no_assertion_from_the_parent() {
+    let library = "<?php\n\nnamespace Lib;\n\nabstract class Check\n{\n    /** @psalm-assert-if-true int $value */\n    public function matches(mixed $value): bool\n    {\n        return is_int($value);\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Check;\n\npublic class TextCheck : Check\n{\n    public override bool matches(Any? value) => value is string;\n\n    public int size(Any? value)\n    {\n        if (this.matches(value) && value is string) {\n            return 1;\n        }\n        return 0;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Check;\n\nclass TextCheck extends Check\n{\n    #[\\Override]\n    public function matches(mixed $value): bool\n    {\n        return is_string($value);\n    }\n\n    public function size(mixed $value): int\n    {\n        if ($this->matches($value) && is_string($value)) {\n            return 1;\n        }\n        return 0;\n    }\n}\n";
+    let others = [("src/Lib/Check.php", library)];
+
+    assert_eq!(
+        codes(&issues(("src/Demo/TextCheck.php", php), &others)),
+        ["impossible-type-comparison", "redundant-logical-operation", "impossible-condition"]
+    );
+    assert_eq!(issues(("src/Demo/TextCheck.sharp", sharp), &others), Vec::<String>::new());
+}
+
 /// A parse error reports its spot once, so returning what failed to parse adds no `never-return`, in PHP# and PHP.
 #[test]
 fn returning_a_value_that_failed_to_parse_adds_no_issue() {
@@ -1850,9 +1998,9 @@ fn a_condition_that_always_holds_names_its_php_sharp_type() {
     assert_eq!(
         messages(("src/Demo/Report.sharp", sharp), &[]),
         [
-            "This condition (type `2`) will always evaluate to true.",
+            "This condition (type `2`) will always evaluate to `true`.",
             "`if` takes a `bool`, but this is `int`.",
-            "This condition (type `true`) will always evaluate to true.",
+            "This condition (type `true`) will always evaluate to `true`.",
         ]
     );
     assert_eq!(
@@ -1877,8 +2025,8 @@ fn a_loop_condition_that_never_holds_names_its_php_sharp_type() {
     assert_eq!(
         impossible(("src/Demo/Report.sharp", sharp)),
         [
-            "8:16 impossible-condition Impossible condition: variable `n` (type `0`) will always evaluate to false. | This condition always evaluates to false | Variable `n` (type `0`) is never `true`, so this condition is always `false`. | Review the logic or type of the variable; this condition will never pass.",
-            "8:16 impossible-condition This loop condition (type `0`) will always evaluate to false. | This condition is always false, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
+            "8:16 impossible-condition Impossible condition: variable `n` (type `0`) will always evaluate to `false`. | This condition always evaluates to `false` | Variable `n` (type `0`) is never `true`, so this condition is always `false`. | Review the logic or type of the variable; this condition will never pass.",
+            "8:16 impossible-condition This loop condition (type `0`) will always evaluate to `false`. | This condition is always `false`, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
         ]
     );
     assert_eq!(
@@ -1922,23 +2070,235 @@ fn a_condition_that_always_or_never_holds_speaks_of_its_bool() {
     assert_eq!(
         worded(("src/Demo/Report.sharp", sharp), &[]),
         [
-            "5:56 impossible-condition This condition (type `false`) will always evaluate to false. | Expression of type `false` is always `false` | Because this condition is always false, the code block it controls will never be executed. | Check the logic of this expression. If the code block is intended to be unreachable, consider removing it. Otherwise, revise the condition.",
-            "6:57 impossible-condition This condition (type `false`) will always evaluate to false. | Expression of type `false` is always `false` | Because this condition is always false, the code block it controls will never be executed. | Check the logic of this expression. If the code block is intended to be unreachable, consider removing it. Otherwise, revise the condition.",
-            "7:55 redundant-condition This condition (type `true`) will always evaluate to true. | Expression of type `true` is always `true` | Because this condition is always true, the code block it controls will always execute if this part of the code is reached. | The explicit condition might be redundant. | Consider simplifying or removing the conditional check if the guarded code should always execute, or verify the expression's logic if a conditional check is truly needed.",
-            "8:60 redundant-condition This condition (type `true`) will always evaluate to true. | Expression of type `true` is always `true` | Because this condition is always true, the code block it controls will always execute if this part of the code is reached. | The explicit condition might be redundant. | Consider simplifying or removing the conditional check if the guarded code should always execute, or verify the expression's logic if a conditional check is truly needed.",
+            "5:56 impossible-condition This condition (type `false`) will always evaluate to `false`. | Expression of type `false` is always `false` | Because this condition is always `false`, the code block it controls will never be executed. | Check the logic of this expression. If the code block is intended to be unreachable, consider removing it. Otherwise, revise the condition.",
+            "6:57 impossible-condition This condition (type `false`) will always evaluate to `false`. | Expression of type `false` is always `false` | Because this condition is always `false`, the code block it controls will never be executed. | Check the logic of this expression. If the code block is intended to be unreachable, consider removing it. Otherwise, revise the condition.",
+            "7:55 redundant-condition This condition (type `true`) will always evaluate to `true`. | Expression of type `true` is always `true` | Because this condition is always `true`, the code block it controls will always execute if this part of the code is reached. | The explicit condition might be redundant. | Consider simplifying or removing the conditional check if the guarded code should always execute, or verify the expression's logic if a conditional check is truly needed.",
+            "8:60 redundant-condition This condition (type `true`) will always evaluate to `true`. | Expression of type `true` is always `true` | Because this condition is always `true`, the code block it controls will always execute if this part of the code is reached. | The explicit condition might be redundant. | Consider simplifying or removing the conditional check if the guarded code should always execute, or verify the expression's logic if a conditional check is truly needed.",
             "9:79 redundant-condition Redundant ternary operator: condition is always `true`. | This condition (type `true`) is always `true` | This `then` branch is always evaluated, making it the result of the expression | This `else` branch will never be evaluated | The ternary operator `? :` evaluates the `else` branch only when the condition is `false`. | Consider replacing the entire expression with just this `then` branch.",
             "9:94 impossible-condition Redundant ternary operator: condition is always `false`. | This condition (type `false`) is always `false` | This `then` branch will never be evaluated | This `else` branch is always evaluated, making it the result of the expression | The ternary operator `? :` evaluates the `then` branch only when the condition is `true`. | Consider replacing the entire expression with just this `else` branch.",
             "10:89 redundant-logical-operation Redundant `&&` operation: left operand is always `false` and right operand is not evaluated. | Left operand is always `false` | Right operand is not evaluated | The `&&` operator will always return `false` in this case. | Consider simplifying this expression to `false`.",
             "10:106 redundant-logical-operation Redundant `||` operation: left operand is always `true` and right operand is not evaluated. | Left operand is always `true` | Right operand is not evaluated | The `||` operator will always return `true` in this case. | Consider simplifying this expression to `true`.",
             "10:88 redundant-logical-operation Redundant `||` operation: left operand is always `false` and right operand is always `true`. | Left operand is always `false` | Right operand is always `true` | The `||` operator will always return `true` in this case. | Consider simplifying this expression to `true`.",
-            "11:76 impossible-condition Impossible condition: variable `off` (type `false`) will always evaluate to false. | This condition always evaluates to false | Variable `off` (type `false`) is never `true`, so this condition is always `false`. | Review the logic or type of the variable; this condition will never pass.",
-            "11:76 impossible-condition This loop condition (type `false`) will always evaluate to false. | This condition is always false, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
-            "11:102 impossible-condition Impossible condition: variable `on` (type `true`) will always evaluate to false. | This condition always evaluates to false | Variable `on` (type `true`) is never `false`, so this condition is always `false`. | Review the logic or type of the variable; this condition will never pass.",
-            "11:102 impossible-condition This loop condition (type `false`) will always evaluate to false. | This condition is always false, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
-            "11:128 redundant-condition Redundant condition: variable `on` (type `true`) will always evaluate to true. | This condition always evaluates to true | Variable `on` (type `true`) is never `false`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
-            "12:65 redundant-condition Redundant condition: variable `off` (type `false`) will always evaluate to true. | This condition always evaluates to true | Variable `off` (type `false`) is never `true`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
-            "13:73 redundant-condition Redundant condition: variable `off` (type `false`) will always evaluate to true. | This condition always evaluates to true | Variable `off` (type `false`) is never `true`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
+            "11:76 impossible-condition Impossible condition: variable `off` (type `false`) will always evaluate to `false`. | This condition always evaluates to `false` | Variable `off` (type `false`) is never `true`, so this condition is always `false`. | Review the logic or type of the variable; this condition will never pass.",
+            "11:76 impossible-condition This loop condition (type `false`) will always evaluate to `false`. | This condition is always `false`, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
+            "11:102 impossible-condition Impossible condition: variable `on` (type `true`) will always evaluate to `false`. | This condition always evaluates to `false` | Variable `on` (type `true`) is never `false`, so this condition is always `false`. | Review the logic or type of the variable; this condition will never pass.",
+            "11:102 impossible-condition This loop condition (type `false`) will always evaluate to `false`. | This condition is always `false`, the loop body will never execute | Check the logic of this loop condition. The loop body is unreachable.",
+            "11:128 redundant-condition Redundant condition: variable `on` (type `true`) will always evaluate to `true`. | This condition always evaluates to `true` | Variable `on` (type `true`) is never `false`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
+            "12:65 redundant-condition Redundant condition: variable `off` (type `false`) will always evaluate to `true`. | This condition always evaluates to `true` | Variable `off` (type `false`) is never `true`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
+            "13:73 redundant-condition Redundant condition: variable `off` (type `false`) will always evaluate to `true`. | This condition always evaluates to `true` | Variable `off` (type `false`) is never `true`, so this condition is always `true`. | Simplify or remove the redundant condition if the guarded code should always run.",
             "13:73 redundant-logical-operation Redundant `||` operation: left operand is always `false` and right operand is evaluated. | Left operand is always `false` | Right operand is evaluated | The `||` operator will always return the boolean value of the right-hand side in this case. | Consider simplifying this expression to just the right operand.",
+        ]
+    );
+}
+
+/// A null check or a type check that always or never holds speaks of the `bool` it is: always `true` or always
+/// `false`. PHP keeps its own wording.
+#[test]
+fn a_null_or_type_check_that_always_or_never_holds_speaks_of_its_bool() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static int isNull(int x) { while (x == null) { return 1; } return 0; }\n    public static int notNull(int x) { while (x != null) { return 1; } return 0; }\n    public static int known(int? x) { if (x == null) { while (x != null) { return 1; } } return 0; }\n    public static int other() { const on = true; while (on == false) { return 1; } return 0; }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function isNull(int $x): int { while ($x === null) { return 1; } return 0; }\n    public static function notNull(int $x): int { while ($x !== null) { return 1; } return 0; }\n    public static function known(?int $x): int { if ($x === null) { while ($x !== null) { return 1; } } return 0; }\n    public static function other(): int { $on = true; while ($on === false) { return 1; } return 0; }\n}\n";
+    let checks = |analyzed| -> Vec<String> {
+        worded(analyzed, &[]).into_iter().filter(|line| line.contains("-type-comparison ")).collect()
+    };
+
+    assert_eq!(
+        checks(("src/Demo/Report.php", php)),
+        [
+            "7:57 impossible-null-type-comparison Impossible condition: variable `$x` (type `int`) can never be `null`. | This condition always evaluates to false | Variable `$x` (type `int`) does not include `null`. | The condition checking if `$x` is `null` will always be false. Remove or refactor the condition.",
+            "8:58 impossible-null-type-comparison Impossible condition: variable `$x` (type `int`) will always be `null`. | This condition always evaluates to false | Variable `$x` (type `int`) is already known to be `null`, so asserting it's not `null` is impossible. | The condition checking if `$x` is not `null` will always be false. Review the variable's state or condition.",
+            "9:76 redundant-type-comparison Redundant condition: variable `$x` (type `null`) is already known to be `null`. | This condition always evaluates to true | The type of variable `$x` (type `null`) already satisfies the condition that it is `null`. This check is redundant. | This condition is always true and the associated code block will always execute if reached. Consider simplifying.",
+            "10:62 impossible-type-comparison Impossible condition: variable `$on` (type `true`) can never be `false`. | This condition always evaluates to false | The type of variable `$on` (type `true`) is incompatible with the assertion that it is `false`. | This condition is impossible and the associated code block will never execute. Review the types and condition logic.",
+        ]
+    );
+    assert_eq!(
+        checks(("src/Demo/Report.sharp", sharp)),
+        [
+            "5:46 impossible-null-type-comparison Impossible condition: variable `x` (type `int`) can never be `null`. | This condition always evaluates to `false` | Variable `x` (type `int`) does not include `null`. | The condition checking if `x` is `null` will always be `false`. Remove or refactor the condition.",
+            "6:47 impossible-null-type-comparison Impossible condition: variable `x` (type `int`) will always be `null`. | This condition always evaluates to `false` | Variable `x` (type `int`) is already known to be `null`, so asserting it's not `null` is impossible. | The condition checking if `x` is not `null` will always be `false`. Review the variable's state or condition.",
+            "7:63 redundant-type-comparison Redundant condition: variable `x` (type `null`) is already known to be `null`. | This condition always evaluates to `true` | The type of variable `x` (type `null`) already satisfies the condition that it is `null`. This check is redundant. | This condition is always `true` and the associated code block will always execute if reached. Consider simplifying.",
+            "8:57 impossible-type-comparison Impossible condition: variable `on` (type `true`) can never be `false`. | This condition always evaluates to `false` | The type of variable `on` (type `true`) is incompatible with the assertion that it is `false`. | This condition is impossible and the associated code block will never execute. Review the types and condition logic.",
+        ]
+    );
+}
+
+/// A comparison that always or never holds, and an ordering of `false`, write `true` and `false` as PHP# writes them.
+/// PHP# refuses `false == 0`, so the ordering names the rule it keeps. PHP keeps its own wording.
+#[test]
+fn a_comparison_that_always_or_never_holds_speaks_of_its_bool() {
+    let store = (
+        "src/Lib/Store.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Store\n{\n    public static function off(): false { return false; }\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Store;\n\nclass Report\n{\n    public static bool same() { const a = 1; return a != 1; }\n    public static bool other() { const a = 1; return a != 2; }\n    public static bool less() { return Store.off() < 1; }\n    public static int order() { return Store.off() <=> 1; }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Store;\n\nclass Report\n{\n    public static function same(): bool { $a = 1; return $a != 1; }\n    public static function other(): bool { $a = 1; return $a != 2; }\n    public static function less(): bool { return Store::off() < 1; }\n    public static function order(): int { return Store::off() <=> 1; }\n}\n";
+    let comparisons = |analyzed| -> Vec<String> {
+        worded(analyzed, &[store])
+            .into_iter()
+            .filter(|line| line.contains(" redundant-comparison ") || line.contains(" false-operand "))
+            .collect()
+    };
+
+    assert_eq!(
+        comparisons(("src/Demo/Report.php", php)),
+        [
+            "9:58 redundant-comparison Redundant `!=` comparison: left-hand side is never equal to (always false for !=) right-hand side. | Left operand is `int(1)` | Right operand is `int(1)` | The `!=` operator will always return `false` in this case. | Consider simplifying or removing this comparison as it always evaluates to `false`.",
+            "10:59 redundant-comparison Redundant `!=` comparison: left-hand side is always not equal to (always true for !=) right-hand side. | Left operand is `int(1)` | Right operand is `int(2)` | The `!=` operator will always return `true` in this case. | Consider simplifying or removing this comparison as it always evaluates to `true`.",
+            "11:50 false-operand Left operand in `<` comparison is `false`. | This is `false` | PHP compares `false` with other types according to specific rules (e.g., `false == 0` is true using `<`). This can hide bugs. | Ensure this operand is not `false` or explicitly handle the `false` case if it represents a distinct state (e.g., an error from a function).",
+            "11:50 redundant-comparison Redundant `<` comparison: left-hand side is always less than right-hand side. | Left operand is `false` | Right operand is `int(1)` | The `<` operator will always return `true` in this case. | Consider simplifying or removing this comparison as it always evaluates to `true`.",
+            "12:50 false-operand Left operand in spaceship comparison (`<=>`) is `false`. | This is `false` | PHP compares `false` with other types according to specific rules (e.g., `false == 0` is true, `false < 1` is true). | Ensure this comparison with `false` is intended, or provide a non-false operand.",
+        ]
+    );
+    assert_eq!(
+        comparisons(("src/Demo/Report.sharp", sharp)),
+        [
+            "7:53 redundant-comparison Redundant `!=` comparison: left-hand side is never equal to (always `false` for !=) right-hand side. | Left operand is `1` | Right operand is `1` | The `!=` operator will always return `false` in this case. | Consider simplifying or removing this comparison as it always evaluates to `false`.",
+            "8:54 redundant-comparison Redundant `!=` comparison: left-hand side is always not equal to (always `true` for !=) right-hand side. | Left operand is `1` | Right operand is `2` | The `!=` operator will always return `true` in this case. | Consider simplifying or removing this comparison as it always evaluates to `true`.",
+            "9:40 false-operand Left operand in `<` comparison is `false`. | This is `false` | PHP compares `false` with other types according to specific rules (e.g., `false < 1` is `true`). This can hide bugs. | Ensure this operand is not `false` or explicitly handle the `false` case if it represents a distinct state (e.g., an error from a function).",
+            "9:40 redundant-comparison Redundant `<` comparison: left-hand side is always less than right-hand side. | Left operand is `false` | Right operand is `1` | The `<` operator will always return `true` in this case. | Consider simplifying or removing this comparison as it always evaluates to `true`.",
+            "10:40 false-operand Left operand in spaceship comparison (`<=>`) is `false`. | This is `false` | PHP compares `false` with other types according to specific rules (e.g., `false < 1` is `true`). | Ensure this comparison with `false` is intended, or provide a non-false operand.",
+        ]
+    );
+}
+
+/// A `match` arm that never or always matches writes the `bool` of its condition as PHP# writes it. PHP keeps its own
+/// wording.
+#[test]
+fn a_match_arm_that_never_or_always_matches_speaks_of_its_bool() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static string twice(int x) => match (x) { 1 => \"one\", 1 => \"again\", default => \"other\" };\n    public static string always() => match (true) { true => \"yes\", default => \"no\" };\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function twice(int $x): string { return match ($x) { 1 => 'one', 1 => 'again', default => 'other' }; }\n    public static function always(): string { return match (true) { true => 'yes', default => 'no' }; }\n}\n";
+    let arms = |analyzed| -> Vec<String> {
+        worded(analyzed, &[])
+            .into_iter()
+            .filter(|line| line.contains(" unreachable-match-arm ") || line.contains(" match-arm-always-true "))
+            .collect()
+    };
+
+    assert_eq!(
+        arms(("src/Demo/Report.php", php)),
+        [
+            "7:84 unreachable-match-arm This match arm is unreachable. | This arm can never be reached | In this match expression | The condition is always false in this context.",
+            "8:69 match-arm-always-true This match arm is always true, making subsequent arms unreachable. | This arm covers all remaining cases for the subject | In this match expression | Any arms after this one can never be reached.",
+        ]
+    );
+    assert_eq!(
+        arms(("src/Demo/Report.sharp", sharp)),
+        [
+            "5:66 unreachable-match-arm This match arm is unreachable. | This arm can never be reached | In this match expression | The condition is always `false` in this context.",
+            "6:53 match-arm-always-true This match arm is always `true`, making subsequent arms unreachable. | This arm covers all remaining cases for the subject | In this match expression | Any arms after this one can never be reached.",
+        ]
+    );
+}
+
+/// A `??` on a key the shape never holds writes the `bool` of the check as PHP# writes it. PHP keeps its own wording.
+#[test]
+fn a_fallback_on_a_missing_key_speaks_of_its_bool() {
+    let store = (
+        "src/Lib/Store.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Store\n{\n    /** @return array{a: int} */\n    public static function shape(): array { return ['a' => 1]; }\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Store;\n\nclass Report\n{\n    public static int missing() { const m = Store.shape(); return m[\"b\"] ?? 0; }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Store;\n\nclass Report\n{\n    public static function missing(): int { $m = Store::shape(); return $m['b'] ?? 0; }\n}\n";
+    let checks = |analyzed| -> Vec<String> {
+        worded(analyzed, &[store])
+            .into_iter()
+            .filter(|line| line.contains(" impossible-nonnull-entry-check "))
+            .collect()
+    };
+
+    assert_eq!(
+        checks(("src/Demo/Report.php", php)),
+        [
+            "9:76 impossible-nonnull-entry-check Impossible `isset` check on key `'b'` accessed on `array{'a': int}`. | `isset` on key `'b'` will always be false here. | The analysis determined that the key `'b'` definitely does not exist in this array, so checking `isset` is unnecessary. | Remove the redundant `isset` check.",
+        ]
+    );
+    assert_eq!(
+        checks(("src/Demo/Report.sharp", sharp)),
+        [
+            "7:69 impossible-nonnull-entry-check Impossible `isset` check on key `'b'` accessed on `Map<\"a\", int>`. | `isset` on key `'b'` will always be `false` here. | The analysis determined that the key `'b'` definitely does not exist in this array, so checking `isset` is unnecessary. | Remove the redundant `isset` check.",
+        ]
+    );
+}
+
+/// A method that may return `false` from a PHP function writes `false` as PHP# writes it, and asks for no `int|false`
+/// return type, which PHP# cannot write. PHP keeps its own wording. `a_message_names_an_accessor_as_sharp_writes_it`
+/// pins the same report on an accessor.
+#[test]
+fn a_return_that_may_be_false_speaks_of_its_bool() {
+    let sharp =
+        "namespace Demo;\n\nclass Report\n{\n    public static int position() { return strpos(\"ab\", \"b\"); }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    public static function position(): int { return strpos('ab', 'b'); }\n}\n";
+    let returns = |analyzed| -> Vec<String> {
+        worded(analyzed, &[]).into_iter().filter(|line| line.contains(" falsable-return-statement ")).collect()
+    };
+
+    assert_eq!(
+        returns(("src/Demo/Report.php", php)),
+        [
+            "7:53 falsable-return-statement Function `Demo\\Report::position` is declared to return `int` but possibly returns 'false' (inferred as `false|non-negative-int`). | Potentially 'false' returned here. | Return type declared as non-falsable `int` here | The declared return type does not permit 'false', but the analysis indicates that 'false' or a falsable type could be returned from this path. | You can either change the return type declaration of `Demo\\Report::position` to include 'false' (e.g., 'int|false'), or ensure that this function path never returns 'false'.",
+        ]
+    );
+    assert_eq!(
+        returns(("src/Demo/Report.sharp", sharp)),
+        [
+            "5:43 falsable-return-statement Method `Report.position` is declared to return `int` but possibly returns `false` (inferred as `bool|int`). | Potentially `false` returned here. | Return type declared as non-falsable `int` here | The declared return type does not permit `false`, but this path could return `false`. | Ensure this method path never returns `false`.",
+        ]
+    );
+}
+
+/// A `null` operand of arithmetic, from a PHP method, asks for a number and names no cast, since PHP# casts only
+/// between numbers. PHP keeps its own wording.
+#[test]
+fn a_null_operand_of_arithmetic_asks_for_a_number() {
+    let store = (
+        "src/Lib/Store.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Store\n{\n    public static function nothing(): null { return null; }\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Store;\n\nclass Report\n{\n    public static int left() => Store.nothing() - 1;\n\n    public static int right() => 1 - Store.nothing();\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Store;\n\nclass Report\n{\n    public static function left(): int { return Store::nothing() - 1; }\n\n    public static function right(): int { return 1 - Store::nothing(); }\n}\n";
+    let operands = |analyzed| -> Vec<String> {
+        worded(analyzed, &[store]).into_iter().filter(|line| line.contains(" null-operand ")).collect()
+    };
+
+    assert_eq!(
+        operands(("src/Demo/Report.php", php)),
+        [
+            "9:49 null-operand Left operand in arithmetic operation cannot be `null`. | This is `null`. | Performing arithmetic operations on `null` typically results in `0`. | Ensure the left operand is a number (int/float) or a type that can be cast to a number.",
+            "11:54 null-operand Right operand in arithmetic operation cannot be `null`. | This is `null`. | Performing arithmetic operations on `null` typically results in `0`. | Ensure the right operand is a number (int/float) or a type that can be cast to a number.",
+        ]
+    );
+    assert_eq!(
+        operands(("src/Demo/Report.sharp", sharp)),
+        [
+            "7:33 null-operand Left operand in arithmetic operation cannot be `null`. | This is `null`. | Performing arithmetic operations on `null` typically results in `0`. | Ensure the left operand is a number (int/float).",
+            "9:38 null-operand Right operand in arithmetic operation cannot be `null`. | This is `null`. | Performing arithmetic operations on `null` typically results in `0`. | Ensure the right operand is a number (int/float).",
+        ]
+    );
+}
+
+/// A literal keyed by a value that cannot key a `Map` names the `Map` key rule, as a `Map` type that breaks it does,
+/// and names no cast, since PHP# casts only between numbers. PHP keeps its own wording.
+#[test]
+fn a_literal_keyed_by_a_value_that_cannot_key_a_map_names_the_map_key_rule() {
+    let store = (
+        "src/Lib/Store.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Store\n{\n    public static function object(): object { return new \\stdClass(); }\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Store;\n\nclass Report\n{\n    public static int count() { const m = [Store.object(): 1]; return m.count(); }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Store;\n\nclass Report\n{\n    public static function count(): int { $m = [Store::object() => 1]; return count($m); }\n}\n";
+    let keys = |analyzed| -> Vec<String> {
+        worded(analyzed, &[store]).into_iter().filter(|line| line.contains(" invalid-array-element-key ")).collect()
+    };
+
+    assert_eq!(
+        keys(("src/Demo/Report.php", php)),
+        [
+            "9:49 invalid-array-element-key Invalid array key type. | This has type `object`, which cannot be cast to a string or integer. | In PHP, array keys must be strings or integers. While types like `bool` or `float` are automatically cast, a value of type `object` cannot be. | Ensure the array key is either a string or an integer.",
+        ]
+    );
+    assert_eq!(
+        keys(("src/Demo/Report.sharp", sharp)),
+        [
+            "7:44 invalid-array-element-key A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value, and `Object` has none. | `Object` keys this `Map`. | Key the `Map` by an `int`, a `string` or a backed enum, such as `enum Status: string`.",
         ]
     );
 }
@@ -2045,8 +2405,8 @@ fn a_paradoxical_or_repeated_condition_names_its_php_sharp_types() {
     assert_eq!(
         conditions(("src/Demo/Report.sharp", sharp)),
         [
-            "8:17 paradoxical-condition Paradoxical condition | This condition (`!done && count is not 2`) can never be true here | Because of this preceding condition... | ...the analyzer knows that `count is 2 || done` must be true for this code path to be taken. | Therefore, this new condition (`!done && count is not 2`) directly contradicts that established fact. | As a result, the code this condition guards is unreachable. | Remove the unreachable code or refactor the conditional logic.",
-            "17:13 redundant-condition Redundant condition | This condition (`!done`) is always true here | This was already established as true by a previous condition here | The analyzer determined this condition is guaranteed to be true based on preceding logic, making this check unnecessary. | Consider removing this redundant conditional check to simplify the code.",
+            "8:17 paradoxical-condition Paradoxical condition | This condition (`!done && count is not 2`) can never be `true` here | Because of this preceding condition... | ...the analyzer knows that `count is 2 || done` must be `true` for this code path to be taken. | Therefore, this new condition (`!done && count is not 2`) directly contradicts that established fact. | As a result, the code this condition guards is unreachable. | Remove the unreachable code or refactor the conditional logic.",
+            "17:13 redundant-condition Redundant condition | This condition (`!done`) is always `true` here | This was already established as `true` by a previous condition here | The analyzer determined this condition is guaranteed to be `true` based on preceding logic, making this check unnecessary. | Consider removing this redundant conditional check to simplify the code.",
         ]
     );
     assert_eq!(
@@ -7231,7 +7591,8 @@ fn an_extern_method_in_a_project_file_is_an_error_in_any_namespace() {
 }
 
 /// An argument the parameter refuses is named as PHP# writes its type: `TItem`, `Any?`, `List<Any?>`, `int?`, a
-/// literal by its type, and `Class<Dog>`. The PHP twin keeps Mago's text.
+/// literal by its type, and `Class<Dog>`. A `false` argument asks for no `int|false` parameter, which PHP# cannot
+/// write. The PHP twin keeps Mago's text.
 #[test]
 fn a_refused_argument_names_its_types_as_sharp_writes_them() {
     let sharp = "namespace Demo;\n\npublic class Animal\n{\n}\n\npublic class Dog : Animal\n{\n}\n\npublic class Report\n{\n    public static int keep(int number) => number;\n\n    public static Dog pet(Dog dog) => dog;\n\n    public static List<int> counts(List<int> numbers) => numbers;\n\n    public static void run<TItem>(TItem item, Any? anything, Animal animal, List<Any?> values, int|string key, int? maybe)\n    {\n        Report.keep(item);\n        Report.keep(anything);\n        Report.pet(animal);\n        Report.counts(values);\n        Report.keep(key);\n        Report.keep(null);\n        Report.keep(maybe);\n        Report.keep(false);\n        Report.keep(\"text\");\n        Report.keep(typeof(Dog));\n    }\n}\n";
@@ -7262,7 +7623,7 @@ fn a_refused_argument_names_its_types_as_sharp_writes_them() {
             "25:21 possibly-invalid-argument Possible argument type mismatch for argument #1 of `Report.keep`: expected `int`, but possibly received `int|string`. | This might not be type `int` | Arguments to this method are incorrect | The provided type `int|string` overlaps with `int` but is not fully contained. | Ensure the argument always has the expected type using checks or assertions.",
             "26:21 null-argument Argument #1 of method `Report.keep` is `null`, but parameter type `int` does not accept it. | This argument is `null` | Arguments to this method are incorrect | Provide a non-null value, or declare the parameter as nullable (e.g., `int?`).",
             "27:21 possibly-null-argument Argument #1 of method `Report.keep` is possibly `null`, but parameter type `int` does not accept it. | This argument of type `int?` might be `null` | Arguments to this method are incorrect | Add a `null` check before this call to ensure the value is not `null`.",
-            "28:21 false-argument Argument #1 of method `Report.keep` is `false`, but parameter type `int` does not accept it. | This argument is `false` | Arguments to this method are incorrect | Provide a different value, or update the parameter type to accept false (e.g., `int|false`).",
+            "28:21 false-argument Argument #1 of method `Report.keep` is `false`, but parameter type `int` does not accept it. | This argument is `false` | Arguments to this method are incorrect | Provide a different value.",
             "29:21 invalid-argument Invalid argument type for argument #1 of `Report.keep`: expected `int`, but found `string`. | This has type `string` | Arguments to this method are incorrect | The provided type `string` is not compatible with the expected type `int`. | Change the argument value to match `int`, or update the parameter's type declaration.",
             "30:21 invalid-argument Invalid argument type for argument #1 of `Report.keep`: expected `int`, but found `Class<Dog>`. | This has type `Class<Dog>` | Arguments to this method are incorrect | The provided type `Class<Dog>` is not compatible with the expected type `int`. | Change the argument value to match `int`, or update the parameter's type declaration.",
         ]
@@ -7377,7 +7738,7 @@ fn a_message_names_an_accessor_as_sharp_writes_it() {
             "7:23 missing-return-statement Missing return statement in property hook `Box.open.get` | This property hook is declared to return 'int'... | ...but this path can exit without returning a value. | A property hook that does not explicitly return a value will implicitly return `null`. | Add a `return` statement that provides a value of type 'int' to all paths, or change the property hook's return type to 'int?' and return `null` explicitly.",
             "9:26 mixed-return-statement Could not infer a precise return type for property hook `Box.amount.get`. Saw type `Any?`. | Type inferred as `Any?` here. | The analysis could not determine a specific type for the value returned here. | Add specific type hints to variables or properties involved in calculating the return value.",
             "11:24 nullable-return-statement Property hook `Box.size.get` returns nullable value `int?` but property type is `int`. | Nullable value returned here. | The property type does not permit null, but this expression could return null. | Ensure the hook always returns a non-null value, or change the property type to `int?`.",
-            "13:28 falsable-return-statement Property hook `Box.position.get` returns falsable value `bool|int` but property type is `int`. | Potentially 'false' returned here. | The property type does not permit false, but this expression could return false. | Ensure the hook never returns false, or change the property type to `int|false`.",
+            "13:28 falsable-return-statement Property hook `Box.position.get` returns falsable value `bool|int` but property type is `int`. | Potentially `false` returned here. | The property type does not permit `false`, but this expression could return `false`. | Ensure the hook never returns `false`.",
         ]
     );
 }
@@ -8914,7 +9275,7 @@ fn a_getter_calling_a_plain_php_property_holding_a_function_has_an_unknown_effec
     let refused = [
         "app/Shop/Till.sharp:9:26 impure-getter: Getter `closed` calls `Holder.closure`, which has no `extern` declaration. Getters must be pure. Help: Property `Holder.closure` holds plain PHP code, which no `extern` can declare. Call it outside the getter, or through a method of `Holder` that an `extern` declares.",
         "app/Shop/Till.sharp:11:26 impure-getter: Getter `called` calls `Holder.callback`, which has no `extern` declaration. Getters must be pure. Help: Property `Holder.callback` holds plain PHP code, which no `extern` can declare. Call it outside the getter, or through a method of `Holder` that an `extern` declares.",
-        "app/Shop/Till.sharp:13:29 impure-getter: Getter `formatted` calls `Formatter.__invoke`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Formatter.__invoke;` when it has no effect, or name its effects after `uses`.",
+        "app/Shop/Till.sharp:13:29 impure-getter: Getter `formatted` calls `Formatter.__invoke`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Formatter.__invoke;` when it has no effect, or name its effects after `uses`. Add `import Lib.Formatter;` to the file.",
     ];
 
     assert_eq!(effect_issues(&[till, holder]), refused);
@@ -8982,7 +9343,7 @@ fn a_getter_building_and_changing_a_new_object_passes() {
     let (codebase, summaries) = summarized(&[page, builder]);
     let add = FunctionLikeIdentifier::Method(ascii_lowercase_word(b"App\\Shop\\Builder"), ascii_lowercase_word(b"add"));
     assert_eq!(
-        Effects::solve(&codebase, &summaries).impurity(&add).map(|impurity| impurity.to_string()).as_deref(),
+        Effects::solve(&codebase, &summaries).impurity(&codebase, &add).as_deref(),
         Some("changes `this.text`"),
         "the getter calls a method that changes its object, and the object is the getter's own"
     );
@@ -9059,7 +9420,7 @@ fn a_recursive_pair_of_methods_solves_without_looping() {
     let effects = Effects::solve(&codebase, &summaries);
     let even = FunctionLikeIdentifier::Method(ascii_lowercase_word(b"App\\Shop\\Tree"), ascii_lowercase_word(b"even"));
     assert_eq!(
-        effects.impurity(&even).map(|impurity| impurity.to_string()).as_deref(),
+        effects.impurity(&codebase, &even).as_deref(),
         Some("reaches `Tree.odd`, which calls `now` with the effect `Clock`")
     );
 }
@@ -9180,6 +9541,159 @@ fn a_law_calling_plain_php_with_no_extern_names_the_missing_declaration() {
         effect_issues(&[refund, GATEWAY]),
         [
             "app/Shop/Refund.sharp:7:38 impure-law: Law `refundAllowed` calls `Gateway.charge`, which has no `extern` declaration. Laws hold only over pure code. Help: Declare it in a .sharp file: `extern Gateway.charge;` when it has no effect, or name its effects after `uses`."
+        ]
+    );
+}
+
+const APP_CLOCK: (&str, &str) = (
+    "src/App/Clock.php",
+    "<?php\n\nnamespace App;\n\nfinal class Clock\n{\n    public function now(): int\n    {\n        return 0;\n    }\n}\n",
+);
+
+const VENDOR_CLOCK: (&str, &str) = (
+    "src/Vendor/Clock.php",
+    "<?php\n\nnamespace Vendor;\n\nfinal class Clock\n{\n    /** @var \\Closure(int): int */\n    public \\Closure $tick;\n\n    public function now(): int\n    {\n        return time();\n    }\n}\n",
+);
+
+/// A PHP# class that hands out a `Vendor\Clock`, so a getter in its namespace reaches the clock with no import.
+const CLOCK_SOURCE: (&str, &str) = (
+    "app/Shop/Source.sharp",
+    "namespace App.Shop;\n\nimport Vendor.Clock;\n\npublic class Source\n{\n    public Source(private Clock time) { }\n\n    public Clock clock() => this.time;\n}\n",
+);
+
+/// An effects message names a class as every other message does: by its full name when another class shares its short
+/// name.
+#[test]
+fn a_getter_calling_a_method_of_a_class_that_shares_its_short_name_names_the_class_in_full() {
+    let timer = (
+        "app/Shop/Timer.sharp",
+        "namespace App.Shop;\n\npublic class Timer\n{\n    public Timer(private Source source) { }\n\n    public int started => this.source.clock().now();\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[timer, CLOCK_SOURCE, VENDOR_CLOCK, APP_CLOCK]),
+        [
+            "app/Shop/Timer.sharp:7:27 impure-getter: Getter `started` calls `Vendor.Clock.now`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Clock.now;` when it has no effect, or name its effects after `uses`. Add `import Vendor.Clock;` to the file."
+        ]
+    );
+}
+
+/// The help for a plain PHP property names its class by the same rule as the message.
+#[test]
+fn a_getter_calling_a_plain_php_property_of_a_class_that_shares_its_short_name_names_the_class_in_full() {
+    let timer = (
+        "app/Shop/Timer.sharp",
+        "namespace App.Shop;\n\npublic class Timer\n{\n    public Timer(private Source source) { }\n\n    public int ticked => this.source.clock().tick(2);\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[timer, CLOCK_SOURCE, VENDOR_CLOCK, APP_CLOCK]),
+        [
+            "app/Shop/Timer.sharp:7:26 impure-getter: Getter `ticked` calls `Vendor.Clock.tick`, which has no `extern` declaration. Getters must be pure. Help: Property `Vendor.Clock.tick` holds plain PHP code, which no `extern` can declare. Call it outside the getter, or through a method of `Vendor.Clock` that an `extern` declares."
+        ]
+    );
+}
+
+/// An effects message names a class the file imports by the name its import gives it.
+#[test]
+fn a_getter_calling_a_method_of_a_class_imported_under_another_name_names_the_class_by_that_name() {
+    let timer = (
+        "app/Shop/Timer.sharp",
+        "namespace App.Shop;\n\nimport Vendor.Clock as VendorClock;\n\npublic class Timer\n{\n    public Timer(private VendorClock clock) { }\n\n    public int started => this.clock.now();\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[timer, VENDOR_CLOCK, APP_CLOCK]),
+        [
+            "app/Shop/Timer.sharp:9:27 impure-getter: Getter `started` calls `VendorClock.now`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern VendorClock.now;` when it has no effect, or name its effects after `uses`."
+        ]
+    );
+}
+
+/// The PHP# method a getter reaches is named by the same rule as a plain PHP class.
+#[test]
+fn a_getter_reaching_a_method_of_a_php_sharp_class_that_shares_its_short_name_names_the_class_in_full() {
+    let shop_order = ("app/Shop/Order.sharp", "namespace App.Shop;\n\npublic class Order\n{\n}\n");
+    let billing_order = (
+        "app/Billing/Order.sharp",
+        "namespace App.Billing;\n\npublic class Order\n{\n    public int price() => now();\n}\n",
+    );
+    let cart = (
+        "app/Billing/Cart.sharp",
+        "namespace App.Billing;\n\npublic class Cart\n{\n    public Cart(private Order order) { }\n\n    public int total => this.order.price();\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[cart, billing_order, shop_order, CLOCK_STUB, NOW]),
+        [
+            "app/Billing/Cart.sharp:7:25 impure-getter: Getter `total` reaches `App.Billing.Order.price`, which calls `now` with the effect `Clock`. Getters must be pure."
+        ]
+    );
+}
+
+/// The message is the getter's, so it names a class as the getter's file does, whatever the file of the method that
+/// makes the call imports.
+#[test]
+fn a_getter_reaching_a_call_in_another_file_names_the_class_as_the_getter_file_does() {
+    let order = (
+        "app/Shop/Order.sharp",
+        "namespace App.Shop;\n\nimport Vendor.Clock as VendorClock;\n\npublic class Order\n{\n    public Order(private VendorClock clock) { }\n\n    public int stamp() => this.clock.now();\n}\n",
+    );
+    let cart = (
+        "app/Shop/Cart.sharp",
+        "namespace App.Shop;\n\npublic class Cart\n{\n    public Cart(private Order order) { }\n\n    public int stamped => this.order.stamp();\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[cart, order, VENDOR_CLOCK, APP_CLOCK]),
+        [
+            "app/Shop/Cart.sharp:7:27 impure-getter: Getter `stamped` reaches `Order.stamp`, which calls `Vendor.Clock.now` with no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Clock.now;` when it has no effect, or name its effects after `uses`. Add `import Vendor.Clock;` to the file."
+        ]
+    );
+}
+
+const METER: (&str, &str) = (
+    "src/Lib/Meter.php",
+    "<?php\n\nnamespace Lib;\n\nfinal class Meter\n{\n    public function read(): int\n    {\n        return 0;\n    }\n}\n",
+);
+
+/// The `extern` the help writes compiles only where its class is bound, so the help names the import a class from
+/// another namespace needs, even when no other class shares its short name.
+#[test]
+fn a_getter_calling_a_class_its_file_does_not_import_names_the_import_the_extern_needs() {
+    let gauge = (
+        "app/Shop/Gauge.sharp",
+        "namespace App.Shop;\n\nimport Lib.Meter;\n\npublic class Gauge\n{\n    public Gauge(private Meter source) { }\n\n    public Meter meter() => this.source;\n}\n",
+    );
+    let panel = (
+        "app/Shop/Panel.sharp",
+        "namespace App.Shop;\n\npublic class Panel\n{\n    public Panel(private Gauge gauge) { }\n\n    public int level => this.gauge.meter().read();\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[panel, gauge, METER]),
+        [
+            "app/Shop/Panel.sharp:7:25 impure-getter: Getter `level` calls `Meter.read`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Meter.read;` when it has no effect, or name its effects after `uses`. Add `import Lib.Meter;` to the file."
+        ]
+    );
+}
+
+/// A class of the file's own namespace is bound without an import, so the help names none.
+#[test]
+fn a_getter_calling_a_class_of_its_own_namespace_names_no_import() {
+    let printer = (
+        "src/App/Shop/Printer.php",
+        "<?php\n\nnamespace App\\Shop;\n\nfinal class Printer\n{\n    public function print(): int\n    {\n        return 0;\n    }\n}\n",
+    );
+    let kiosk = (
+        "app/Shop/Kiosk.sharp",
+        "namespace App.Shop;\n\npublic class Kiosk\n{\n    public Kiosk(private Printer printer) { }\n\n    public int printed => this.printer.print();\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[kiosk, printer]),
+        [
+            "app/Shop/Kiosk.sharp:7:27 impure-getter: Getter `printed` calls `Printer.print`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Printer.print;` when it has no effect, or name its effects after `uses`."
         ]
     );
 }

@@ -157,18 +157,17 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Statement<'arena> {
                     Ok(())
                 }
                 Statement::Use(r#use) => {
-                    context.scope.populate_from_use(r#use);
+                    Arc::make_mut(&mut context.scope).populate_from_use(r#use);
                     if context.dialect.is_sharp()
                         && let UseItems::Sequence(sequence) = &r#use.items
                     {
+                        let imported_names = Arc::make_mut(&mut context.imported_names);
                         for item in &sequence.items {
                             let imported_name = item
                                 .alias
                                 .as_ref()
                                 .map_or_else(|| item.name.last_segment(), |alias| alias.identifier.value);
-                            context
-                                .imported_names
-                                .insert(ascii_lowercase_word(&php_name(&item.name)), word(imported_name));
+                            imported_names.insert(ascii_lowercase_word(&php_name(&item.name)), word(imported_name));
                         }
                     }
                     if context.settings.check_use_statements {
@@ -183,10 +182,10 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Statement<'arena> {
                 Statement::Namespace(namespace) => {
                     match &namespace.name {
                         Some(name) => {
-                            context.scope = NamespaceScope::for_namespace(php_name(name));
+                            context.scope = Arc::new(NamespaceScope::for_namespace(php_name(name)));
                         }
                         None => {
-                            context.scope = NamespaceScope::global();
+                            context.scope = Arc::new(NamespaceScope::global());
                         }
                     }
 
@@ -195,28 +194,28 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Statement<'arena> {
                 Statement::Class(class) => {
                     let class_name = context.resolved_names.get(&class.name);
 
-                    context.scope.add(NameKind::Default, class_name, &None::<&str>);
+                    Arc::make_mut(&mut context.scope).add(NameKind::Default, class_name, &None::<&str>);
 
                     class.analyze(context, block_context, artifacts)
                 }
                 Statement::Interface(interface) => {
                     let interface_name = context.resolved_names.get(&interface.name);
 
-                    context.scope.add(NameKind::Default, interface_name, &None::<&str>);
+                    Arc::make_mut(&mut context.scope).add(NameKind::Default, interface_name, &None::<&str>);
 
                     interface.analyze(context, block_context, artifacts)
                 }
                 Statement::Trait(r#trait) => {
                     let trait_name = context.resolved_names.get(&r#trait.name);
 
-                    context.scope.add(NameKind::Default, trait_name, &None::<&str>);
+                    Arc::make_mut(&mut context.scope).add(NameKind::Default, trait_name, &None::<&str>);
 
                     r#trait.analyze(context, block_context, artifacts)
                 }
                 Statement::Enum(r#enum) => {
                     let enum_name = context.resolved_names.get(&r#enum.name);
 
-                    context.scope.add(NameKind::Default, enum_name, &None::<&str>);
+                    Arc::make_mut(&mut context.scope).add(NameKind::Default, enum_name, &None::<&str>);
 
                     r#enum.analyze(context, block_context, artifacts)
                 }
@@ -224,7 +223,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Statement<'arena> {
                     for item in &constant.items {
                         let constant_item_name = context.resolved_names.get(&item.name);
 
-                        context.scope.add(NameKind::Constant, constant_item_name, &None::<&str>);
+                        Arc::make_mut(&mut context.scope).add(NameKind::Constant, constant_item_name, &None::<&str>);
                     }
 
                     constant.analyze(context, block_context, artifacts)
@@ -232,7 +231,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Statement<'arena> {
                 Statement::Function(function) => {
                     let function_name = context.resolved_names.get(&function.name);
 
-                    context.scope.add(NameKind::Function, function_name, &None::<&str>);
+                    Arc::make_mut(&mut context.scope).add(NameKind::Function, function_name, &None::<&str>);
 
                     function.analyze(context, block_context, artifacts)
                 }
