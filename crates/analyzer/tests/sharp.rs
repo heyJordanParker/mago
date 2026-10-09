@@ -5301,6 +5301,14 @@ fn a_literal_where_a_list_or_a_map_is_declared_is_accepted() {
     assert_eq!(issues(("src/Demo/Grid.sharp", sharp), &[]), Vec::<String>::new());
 }
 
+/// A return or a parameter that declares a `Map` before a `List` takes a literal of either collection too.
+#[test]
+fn a_literal_where_a_map_or_a_list_is_declared_is_accepted() {
+    let sharp = "namespace Demo;\n\nclass Grid\n{\n    public Map<string, int>|List<int> none() => [:];\n\n    public Map<string, int>|List<int> empty() => [];\n\n    public int fill() => Grid.size([:]) + Grid.size([]);\n\n    private static int size(Map<string, int>|List<int> cells) => count(cells);\n}\n";
+
+    assert_eq!(issues(("src/Demo/Grid.sharp", sharp), &[]), Vec::<String>::new());
+}
+
 /// PHP has one empty array, so a return or a parameter typed `list<int>|array<string, int>` takes `[]`.
 #[test]
 fn an_empty_php_array_where_a_list_or_a_string_keyed_array_is_declared_is_accepted() {

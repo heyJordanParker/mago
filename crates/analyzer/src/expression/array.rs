@@ -613,11 +613,11 @@ fn report_sharp_literal_spreads<A>(
 }
 
 /// Reports a PHP# literal written where the other collection is declared. `[]` and `[a, b]` are `List` literals, and
-/// `[:]` and `[key: value]` are `Map` literals, whatever their place declares. A `declared` type that holds both a
-/// `List` and a `Map` takes either literal, as `List.wrap`'s `T|List<T>` does once `T` is a `Map`. A literal reaches the
-/// place as `value` itself, or through the right side of `??`, either branch of `? :` or an arm of a `match`, at any
-/// depth. A literal of spreads names no collection of its own, and `report_sharp_literal_spreads` checks what it
-/// spreads.
+/// `[:]` and `[key: value]` are `Map` literals, whatever their place declares. A literal is refused only when no
+/// collection in `declared` takes its kind, whatever their order, so `List.wrap`'s `T|List<T>` takes either literal
+/// once `T` is a `Map`. A literal reaches the place as `value` itself, or through the right side of `??`, either branch
+/// of `? :` or an arm of a `match`, at any depth. A literal of spreads names no collection of its own, and
+/// `report_sharp_literal_spreads` checks what it spreads.
 pub(crate) fn check_sharp_literal_kind<A>(context: &mut Context<'_, '_, A>, value: &Expression<'_>, declared: &TUnion)
 where
     A: Arena,
@@ -626,16 +626,15 @@ where
         return;
     }
 
-    let mut collections = declared.types.iter().filter_map(|atomic| match atomic {
+    let collections = declared.types.iter().filter_map(|atomic| match atomic {
         TAtomic::Array(array) => Some(array),
         _ => None,
     });
-    let Some(collection) = collections.next() else {
+    let Some(collection) = collections.clone().next() else {
         return;
     };
-    if collections.any(|other| other.is_list() != collection.is_list()) {
-        return;
-    }
+    let takes_map_literal = collections.clone().any(|array| matches!(array, TArray::Keyed(_)));
+    let takes_list_literal = collections.clone().any(|array| matches!(array, TArray::List(_)));
 
     // The values still to look at, last first, so the literals are reported in the order they are written.
     let mut values = vec![value];
@@ -667,7 +666,11 @@ where
             None if literal.elements.is_empty() => literal.colon.is_some(),
             None => continue,
         };
+        if (is_map_literal && takes_map_literal) || (!is_map_literal && takes_list_literal) {
+            continue;
+        }
 
+        // No collection takes the literal, so the first is of a kind it cannot reach, and names the literal to write.
         let message = match (is_map_literal, collection.is_list(), literal.elements.is_empty()) {
             (false, false, true) => "`[]` is an empty List. An empty Map is written `[:]`.",
             (false, false, false) => "A Map literal is written `[key: value]`.",
