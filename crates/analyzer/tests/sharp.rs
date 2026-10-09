@@ -2095,6 +2095,34 @@ fn a_null_operand_of_arithmetic_asks_for_a_number() {
     );
 }
 
+/// A literal keyed by a value that cannot key a `Map` names the `Map` key rule, as a `Map` type that breaks it does,
+/// and names no cast, since PHP# casts only between numbers. PHP keeps its own wording.
+#[test]
+fn a_literal_keyed_by_a_value_that_cannot_key_a_map_names_the_map_key_rule() {
+    let store = (
+        "src/Lib/Store.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Store\n{\n    public static function object(): object { return new \\stdClass(); }\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Store;\n\nclass Report\n{\n    public static int count() { const m = [Store.object(): 1]; return m.count(); }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Store;\n\nclass Report\n{\n    public static function count(): int { $m = [Store::object() => 1]; return count($m); }\n}\n";
+    let keys = |analyzed| -> Vec<String> {
+        worded(analyzed, &[store]).into_iter().filter(|line| line.contains(" invalid-array-element-key ")).collect()
+    };
+
+    assert_eq!(
+        keys(("src/Demo/Report.php", php)),
+        [
+            "9:49 invalid-array-element-key Invalid array key type. | This has type `object`, which cannot be cast to a string or integer. | In PHP, array keys must be strings or integers. While types like `bool` or `float` are automatically cast, a value of type `object` cannot be. | Ensure the array key is either a string or an integer.",
+        ]
+    );
+    assert_eq!(
+        keys(("src/Demo/Report.sharp", sharp)),
+        [
+            "7:44 invalid-array-element-key A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value, and `Object` has none. | `Object` keys this `Map`. | Key the `Map` by an `int`, a `string` or a backed enum, such as `enum Status: string`.",
+        ]
+    );
+}
+
 /// An operand that may be `false`, from a PHP method, asks for a check of `false`. PHP# has no falsiness, and keeps
 /// `(int)` between numbers, so no cast turns `false` into one. PHP keeps its own wording.
 #[test]
