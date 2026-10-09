@@ -2075,6 +2075,139 @@ fn a_backed_enum_value_goes_into_list_add_as_its_case() {
 }
 
 /// ```php
+/// public array $tags = [] { set { $this->tags = []; $this->tags->add("x"); } }
+/// ```
+///
+/// `field = []` leaves the property a `List<string>`, so the checker checks `field.add` as `List.add`, and the add
+/// lowers as that call.
+#[test]
+fn an_emptied_list_field_takes_add_as_the_list_method() {
+    let lowered = Lowered::new(
+        "class Product\n{\n    public List<string> tags { get; set { field = []; field.add(\"x\"); } } = [];\n}\n",
+    );
+
+    assert_eq!(
+        property_groups(&lowered),
+        [indoc! {r#"
+            PROP_GROUP [1]
+              TYPE [7]
+              PROP_DECL
+                PROP_ELEM
+                  ZVAL "tags"
+                  ARRAY [3]
+                  null
+                  STMT_LIST
+                    PROPERTY_HOOK "set" @3-3
+                      null
+                      null
+                      STMT_LIST
+                        ASSIGN
+                          PROP
+                            VAR
+                              ZVAL "this"
+                            ZVAL "tags"
+                          ARRAY [3]
+                        METHOD_CALL
+                          PROP
+                            VAR
+                              ZVAL "this"
+                            ZVAL "tags"
+                          ZVAL "add"
+                          ARG_LIST
+                            ZVAL "x"
+                      null
+                      null
+              null
+        "#}]
+    );
+}
+
+/// ```php
+/// $standings = [$status];
+/// $standings = [];
+/// $standings->add($status);
+/// ```
+///
+/// `standings = []` leaves the local a `List<Calc>`, whose `add` takes an element, so a case goes in as the case.
+#[test]
+fn a_backed_enum_value_goes_into_an_emptied_list_add_as_its_case() {
+    assert_eq!(
+        body_in(
+            "void run(Calc status)",
+            "        List<Calc> standings = [status];\n        standings = [];\n        standings.add(status);\n",
+            &[("src/Lib/Calc.php", "<?php namespace Lib; enum Calc: string { case Active = 'a'; case Closed = 'c'; }")]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "standings"
+                ARRAY [3]
+                  ARRAY_ELEM
+                    VAR
+                      ZVAL "status"
+                    null
+              ASSIGN
+                VAR
+                  ZVAL "standings"
+                ARRAY [3]
+              METHOD_CALL
+                VAR
+                  ZVAL "standings"
+                ZVAL "add"
+                ARG_LIST
+                  VAR
+                    ZVAL "status"
+        "#}
+    );
+}
+
+/// ```php
+/// $counts = [$status->value => 1];
+/// $counts = [];
+/// return $counts->get($status->value);
+/// ```
+///
+/// `counts = []` leaves the local a `Map<Calc, int>`, whose `get` takes a key, so a case goes in as its `->value`.
+#[test]
+fn a_backed_enum_key_goes_into_an_emptied_map_get_as_its_backing_value() {
+    assert_eq!(
+        body_in(
+            "int? run(Calc status)",
+            "        Map<Calc, int> counts = [status: 1];\n        counts = [];\n        return counts.get(status);\n",
+            &[("src/Lib/Calc.php", "<?php namespace Lib; enum Calc: string { case Active = 'a'; case Closed = 'c'; }")]
+        ),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN
+                VAR
+                  ZVAL "counts"
+                ARRAY [3]
+                  ARRAY_ELEM
+                    ZVAL 1
+                    PROP
+                      VAR
+                        ZVAL "status"
+                      ZVAL "value"
+              ASSIGN
+                VAR
+                  ZVAL "counts"
+                ARRAY [3]
+              RETURN
+                METHOD_CALL
+                  VAR
+                    ZVAL "counts"
+                  ZVAL "get"
+                  ARG_LIST
+                    PROP
+                      VAR
+                        ZVAL "status"
+                      ZVAL "value"
+        "#}
+    );
+}
+
+/// ```php
 /// public function apply(\Closure $step, ?\Closure $other = null): \Closure { return $step; }
 /// ```
 ///

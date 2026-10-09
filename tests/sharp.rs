@@ -1479,6 +1479,26 @@ fn compile_refuses_a_file_whose_law_calls_plain_php_with_an_effect() {
     assert!(root.join(".sharp/app/Stubs/Billing.sharpc").exists(), "{printed}");
 }
 
+/// A `set` that empties its `List` with `field = []` and adds to it again, as php-sharp's `Accessors.sharp` does,
+/// compiles: the add is the `List` method the checker checked.
+#[test]
+fn compile_writes_a_list_property_whose_set_empties_and_refills_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    write(root, "mago.toml", "php-version = \"8.4\"\n\n[source]\npaths = [\"app\"]\n");
+    write(
+        root,
+        "app/Store/Product.sharp",
+        "namespace Store;\n\nclass Product\n{\n    public List<string> tags\n    {\n        get => field;\n        set\n        {\n            field = [];\n            for (const tag of value) {\n                field.add(tag);\n            }\n        }\n    } = [];\n}\n",
+    );
+
+    let output = run(root, "compile", &[]);
+    let printed = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+
+    assert_eq!(output.status.code(), Some(0), "{printed}");
+    assert!(root.join(".sharp/app/Store/Product.sharpc").is_file(), "{printed}");
+}
+
 #[test]
 fn compile_and_analyze_print_json_under_mago_reporting_format_in_github_actions() {
     let directory = suppressed_workspace("Broken.sharp", &broken_sharp(""), "");
