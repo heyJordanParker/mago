@@ -257,10 +257,24 @@ where
     A: Arena,
 {
     match (context.dialect.is_sharp(), holds) {
-        (true, true) => "`true`",
-        (true, false) => "`false`",
+        (true, _) => display_bool(context, holds),
         (false, true) => "truthy",
         (false, false) => "falsy",
+    }
+}
+
+/// Returns the `bool` value `value` as the analyzed file writes it in prose: `` `true` `` or `` `false` `` in a
+/// `.sharp` file, as PHP# writes its `bool` literals, and true or false in PHP.
+#[must_use]
+pub(crate) const fn display_bool<A>(context: &Context<'_, '_, A>, value: bool) -> &'static str
+where
+    A: Arena,
+{
+    match (context.dialect.is_sharp(), value) {
+        (true, true) => "`true`",
+        (true, false) => "`false`",
+        (false, true) => "true",
+        (false, false) => "false",
     }
 }
 
