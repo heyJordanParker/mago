@@ -2,7 +2,7 @@ site-name = "Mago"
 site-description = "The oxidized PHP toolchain"
 default-language = "en"
 accent-color = "#3c8d58"
-base-url = "https://mago.carthage.software"
+base-url = "https://github.com/heyJordanParker/mago-sharp/tree/master/docs"
 source-edit-url = "https://github.com/heyJordanParker/mago-sharp/edit/master/docs"
 
 # Top-level sidebar sections, in display order. The list is interleaved across
