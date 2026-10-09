@@ -4749,6 +4749,18 @@ fn new_on_a_templated_class_without_a_constructor_records_mixed() {
     );
 }
 
+/// A PHP# generic class without a constructor takes the type arguments its `new` writes, as does a class whose parent
+/// has none, and `new Self()` gives it this's own type parameters.
+#[test]
+fn new_on_a_generic_class_without_a_constructor_records_the_type_arguments_it_writes() {
+    let sharp = "namespace Demo;\n\npublic class Box<T>\n{\n    public List<T> items = [];\n}\n\npublic final class Tray<T>\n{\n    public List<T> items = [];\n\n    public Self copy() => new Self();\n}\n\npublic class Crate<T> : Box<List<T>>\n{\n}\n\npublic class Report\n{\n    public Box<int> box() => new Box<int>();\n\n    public Crate<string> crate() => new Crate<string>();\n}\n";
+    let analyzed = ("src/Demo/Report.sharp", sharp);
+
+    assert_eq!(recorded_type_arguments(analyzed, "<?php\n", "new Box<int>()"), ["int"]);
+    assert_eq!(recorded_type_arguments(analyzed, "<?php\n", "new Crate<string>()"), ["string"]);
+    assert_eq!(recorded_type_arguments(analyzed, "<?php\n", "new Self()"), ["('T.demo\\tray extends mixed)"]);
+}
+
 /// A literal records its scalar type once, however many literals bind the template.
 #[test]
 fn a_template_bound_by_several_literals_records_their_scalar_type_once() {

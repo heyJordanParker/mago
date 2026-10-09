@@ -383,7 +383,7 @@ where
 
     let is_spl_object_storage = classname_str.as_bytes().eq_ignore_ascii_case(b"splobjectstorage");
 
-    if let Some(constructor) = context.codebase.get_method_by_id(&constructor_declraing_id) {
+    let binds_type_arguments = if let Some(constructor) = context.codebase.get_method_by_id(&constructor_declraing_id) {
         has_inconsistent_constructor =
             has_inconsistent_constructor && !constructor.method_metadata.as_ref().is_some_and(|meta| meta.is_final);
         constructor_span = Some(constructor.name_span.unwrap_or(constructor.span));
@@ -449,6 +449,33 @@ where
             is_impossible = true;
         }
 
+        true
+    } else if let Some(argument_list) = &argument_list
+        && !argument_list.arguments.is_empty()
+    {
+        if !metadata.has_incomplete_hierarchy() {
+            context.collector.report_with_code(
+                IssueCode::TooManyArguments,
+                Issue::error(format!(
+                    "Class `{classname_str}` has no `__construct` method, but arguments were provided to `new`."
+                ))
+                .with_annotation(Annotation::primary(argument_list.span()).with_message("Arguments provided here"))
+                .with_annotation(
+                    Annotation::secondary(class_expression_span)
+                        .with_message(format!("For class `{classname_str}` which has no constructor")),
+                )
+                .with_help("Remove the arguments, or define a `__construct` method in the class if arguments are needed for initialization."),
+            );
+        }
+
+        argument_list.analyze(context, block_context, artifacts)?;
+
+        false
+    } else {
+        true
+    };
+
+    if binds_type_arguments {
         let mut resolved_template_types = vec![];
         let mut recorded_type_arguments = vec![];
         for (offset, (template_name, _)) in metadata.template_types.iter().enumerate() {
@@ -502,38 +529,6 @@ where
             artifacts.record_type_arguments(instantiation_span, recorded_type_arguments.into_iter(), context.codebase);
             type_parameters = Some(resolved_template_types);
         }
-    } else if let Some(argument_list) = &argument_list
-        && !argument_list.arguments.is_empty()
-    {
-        if !metadata.has_incomplete_hierarchy() {
-            context.collector.report_with_code(
-                IssueCode::TooManyArguments,
-                Issue::error(format!(
-                    "Class `{classname_str}` has no `__construct` method, but arguments were provided to `new`."
-                ))
-                .with_annotation(Annotation::primary(argument_list.span()).with_message("Arguments provided here"))
-                .with_annotation(
-                    Annotation::secondary(class_expression_span)
-                        .with_message(format!("For class `{classname_str}` which has no constructor")),
-                )
-                .with_help("Remove the arguments, or define a `__construct` method in the class if arguments are needed for initialization."),
-            );
-        }
-
-        argument_list.analyze(context, block_context, artifacts)?;
-    } else if !metadata.template_types.is_empty() {
-        artifacts.record_type_arguments(
-            instantiation_span,
-            metadata.template_types.iter().map(|_| None),
-            context.codebase,
-        );
-        type_parameters = Some(
-            metadata
-                .template_types
-                .iter()
-                .map(|(_, _)| if is_spl_object_storage { get_never() } else { wrap_atomic(TAtomic::Placeholder) })
-                .collect(),
-        );
     }
 
     let skip_constructor_warning =
