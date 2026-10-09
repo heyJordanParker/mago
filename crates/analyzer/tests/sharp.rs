@@ -250,14 +250,15 @@ fn a_later_value_of_an_untyped_null_start_adds_no_issue() {
 
 /// A `let`'s first value fixes its general type: a literal widens to its scalar type, and a list or map literal to a
 /// `List<T>` or `Map<TKey, TValue>` of any length, so the local takes any value of that type and a collection method
-/// checks its arguments against it.
+/// checks its arguments against it. A `List` literal assigned to the `Map` is refused as a literal of the other
+/// collection too.
 #[test]
 fn a_let_local_takes_any_value_of_its_first_values_general_type() {
     let sharp = "namespace Demo;\n\nclass Tally\n{\n    public int run()\n    {\n        let total = 0;\n        total = 5;\n        let sizes = [5];\n        sizes = [];\n        sizes.add(6);\n        sizes.add(\"six\");\n        let rows = [[1]];\n        rows = [[2, 3], []];\n        let prices = [\"a\": 1];\n        prices = [\"b\": 2, \"c\": 3];\n        prices = [1.5];\n        return total + count(sizes) + count(rows) + count(prices);\n    }\n}\n";
 
     assert_eq!(
         issues(("src/Demo/Tally.sharp", sharp), &[]),
-        ["12:19 invalid-argument", "17:18 invalid-local-assignment-value"]
+        ["12:19 invalid-argument", "17:18 invalid-array-element", "17:18 invalid-local-assignment-value"]
     );
 }
 
@@ -4120,13 +4121,16 @@ fn an_emptied_map_keeps_the_map_rules() {
     assert_eq!(issues(("src/Demo/Counts.sharp", sharp), &[]), ["14:24 possibly-undefined-array-index"]);
 }
 
-/// A `List` literal assigned to a `Map<int, string>` fills a `Map`: its keys are read by `[k, v]`, and a bare read is
-/// refused.
+/// A `List` literal assigned to a `Map<int, string>` is an error, and the place stays the `Map` it is declared: its
+/// keys are read by `[k, v]`, and a bare read is refused.
 #[test]
-fn a_list_literal_assigned_to_a_map_keeps_the_map_rules() {
+fn a_list_literal_assigned_to_a_map_is_an_error_and_the_map_rules_stay() {
     let sharp = "namespace Demo;\n\nclass Names\n{\n    public int total(Map<int, string> names)\n    {\n        names = [\"a\"];\n        let total = 0;\n        for (const [id, name] of names) {\n            total += id + strlen(name);\n        }\n        return total + strlen(names[0]);\n    }\n}\n";
 
-    assert_eq!(issues(("src/Demo/Names.sharp", sharp), &[]), ["12:31 possibly-undefined-array-index"]);
+    assert_eq!(
+        issues(("src/Demo/Names.sharp", sharp), &[]),
+        ["7:17 invalid-array-element", "12:31 possibly-undefined-array-index"]
+    );
 }
 
 /// A method that changes a `List` leaves it the `List` it is declared, so an index past the literal it held reads it.
@@ -4146,6 +4150,144 @@ fn an_emptied_php_array_narrows_to_an_empty_array() {
         issues(("src/Demo/Tags.php", php), &[]),
         ["12:22 mismatched-array-index", "12:16 invalid-return-statement"]
     );
+}
+
+/// `[]` is an empty `List`, so it is an error wherever a `Map` is declared: a property default, a parameter default,
+/// a declaration, an assignment, an argument and a return.
+#[test]
+fn an_empty_list_literal_where_a_map_is_declared_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Counts\n{\n    public Map<string, int> byName = [];\n\n    public Map<string, int> run(Map<string, int> seed = [])\n    {\n        Map<string, int> counts = [];\n        counts = [];\n        this.keep(counts);\n        this.keep(seed);\n        this.keep(this.none());\n        this.keep([]);\n        return [];\n    }\n\n    private Map<string, int> none() => [];\n\n    private void keep(Map<string, int> counts)\n    {\n        this.byName = counts;\n    }\n}\n";
+
+    let message = "invalid-array-element `[]` is an empty List. An empty Map is written `[:]`.";
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counts.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        [
+            format!("5:38 {message}"),
+            format!("7:57 {message}"),
+            format!("9:35 {message}"),
+            format!("10:18 {message}"),
+            format!("14:19 {message}"),
+            format!("15:16 {message}"),
+            format!("18:40 {message}"),
+        ]
+    );
+}
+
+/// PHP has one empty array, so a typed PHP place takes `[]` wherever an `array<string, int>` is declared.
+#[test]
+fn an_empty_php_array_where_a_string_keyed_array_is_declared_is_accepted() {
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Counts\n{\n    /** @var array<string, int> */\n    public array $byName = [];\n\n    /**\n     * @param array<string, int> $seed\n     *\n     * @return array<string, int>\n     */\n    public function run(array $seed = []): array\n    {\n        /** @var array<string, int> $counts */\n        $counts = [];\n        $counts = [];\n        $this->keep($counts);\n        $this->keep($seed);\n        $this->keep($this->none());\n        $this->keep([]);\n\n        return [];\n    }\n\n    /** @return array<string, int> */\n    private function none(): array\n    {\n        return [];\n    }\n\n    /** @param array<string, int> $counts */\n    private function keep(array $counts): void\n    {\n        $this->byName = $counts;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Counts.php", php), &[]), Vec::<String>::new());
+}
+
+/// `[:]` is an empty `Map`, so it is an error wherever a `List` is declared: a property default, a parameter default,
+/// a declaration, an assignment, an argument and a return.
+#[test]
+fn an_empty_map_literal_where_a_list_is_declared_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public List<string> all = [:];\n\n    public List<string> run(List<string> seed = [:])\n    {\n        List<string> tags = [:];\n        tags = [:];\n        this.keep(tags);\n        this.keep(seed);\n        this.keep(this.none());\n        this.keep([:]);\n        return [:];\n    }\n\n    private List<string> none() => [:];\n\n    private void keep(List<string> tags)\n    {\n        this.all = tags;\n    }\n}\n";
+
+    let message = "invalid-array-element `[:]` is an empty Map. An empty List is written `[]`.";
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Tags.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        [
+            format!("5:31 {message}"),
+            format!("7:49 {message}"),
+            format!("9:29 {message}"),
+            format!("10:16 {message}"),
+            format!("14:19 {message}"),
+            format!("15:16 {message}"),
+            format!("18:36 {message}"),
+        ]
+    );
+}
+
+/// PHP has one empty array, so a typed PHP place takes `[]` wherever a `list<string>` is declared.
+#[test]
+fn an_empty_php_array_where_a_list_is_declared_is_accepted() {
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /** @var list<string> */\n    public array $all = [];\n\n    /**\n     * @param list<string> $seed\n     *\n     * @return list<string>\n     */\n    public function run(array $seed = []): array\n    {\n        /** @var list<string> $tags */\n        $tags = [];\n        $tags = [];\n        $this->keep($tags);\n        $this->keep($seed);\n        $this->keep($this->none());\n        $this->keep([]);\n\n        return [];\n    }\n\n    /** @return list<string> */\n    private function none(): array\n    {\n        return [];\n    }\n\n    /** @param list<string> $tags */\n    private function keep(array $tags): void\n    {\n        $this->all = $tags;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.php", php), &[]), Vec::<String>::new());
+}
+
+/// `["a"]` is a `List` literal, so it is an error wherever a `Map` is declared, even a `Map<int, string>` whose types
+/// it fits: a property default, a parameter default, a declaration, an assignment, an argument and a return.
+#[test]
+fn a_list_literal_where_a_map_is_declared_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Names\n{\n    public Map<int, string> byId = [\"a\"];\n\n    public Map<int, string> run(Map<int, string> seed = [\"a\"])\n    {\n        Map<int, string> names = [\"a\"];\n        names = [\"a\"];\n        this.keep(names);\n        this.keep(seed);\n        this.keep(this.none());\n        this.keep([\"a\"]);\n        return [\"a\"];\n    }\n\n    private Map<int, string> none() => [\"a\"];\n\n    private void keep(Map<int, string> names)\n    {\n        this.byId = names;\n    }\n}\n";
+
+    let message = "invalid-array-element A Map literal is written `[key: value]`.";
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Names.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        [
+            format!("5:36 {message}"),
+            format!("7:57 {message}"),
+            format!("9:34 {message}"),
+            format!("10:17 {message}"),
+            format!("14:19 {message}"),
+            format!("15:16 {message}"),
+            format!("18:40 {message}"),
+        ]
+    );
+}
+
+/// PHP has one array, so a typed PHP place takes `['a']` wherever an `array<int, string>` is declared.
+#[test]
+fn a_php_list_where_an_int_keyed_array_is_declared_is_accepted() {
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Names\n{\n    /** @var array<int, string> */\n    public array $byId = ['a'];\n\n    /**\n     * @param array<int, string> $seed\n     *\n     * @return array<int, string>\n     */\n    public function run(array $seed = ['a']): array\n    {\n        /** @var array<int, string> $names */\n        $names = ['a'];\n        $names = ['a'];\n        $this->keep($names);\n        $this->keep($seed);\n        $this->keep($this->none());\n        $this->keep(['a']);\n\n        return ['a'];\n    }\n\n    /** @return array<int, string> */\n    private function none(): array\n    {\n        return ['a'];\n    }\n\n    /** @param array<int, string> $names */\n    private function keep(array $names): void\n    {\n        $this->byId = $names;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Names.php", php), &[]), Vec::<String>::new());
+}
+
+/// `[0: 1]` is a `Map` literal, so it is an error wherever a `List` is declared, even where its keys run from 0 as a
+/// `List`'s do: a property default, a parameter default, a declaration, an assignment, an argument and a return.
+#[test]
+fn a_map_literal_where_a_list_is_declared_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Sizes\n{\n    public List<int> all = [0: 1];\n\n    public List<int> run(List<int> seed = [0: 1])\n    {\n        List<int> sizes = [0: 1];\n        sizes = [0: 1];\n        this.keep(sizes);\n        this.keep(seed);\n        this.keep(this.none());\n        this.keep([0: 1]);\n        return [0: 1];\n    }\n\n    private List<int> none() => [0: 1];\n\n    private void keep(List<int> sizes)\n    {\n        this.all = sizes;\n    }\n}\n";
+
+    let message = "invalid-array-element A List literal is written `[a, b]`.";
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Sizes.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        [
+            format!("5:28 {message}"),
+            format!("7:43 {message}"),
+            format!("9:27 {message}"),
+            format!("10:17 {message}"),
+            format!("14:19 {message}"),
+            format!("15:16 {message}"),
+            format!("18:33 {message}"),
+        ]
+    );
+}
+
+/// PHP has one array, so a typed PHP place takes `[0 => 1]` wherever a `list<int>` is declared.
+#[test]
+fn a_php_array_with_list_keys_where_a_list_is_declared_is_accepted() {
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Sizes\n{\n    /** @var list<int> */\n    public array $all = [0 => 1];\n\n    /**\n     * @param list<int> $seed\n     *\n     * @return list<int>\n     */\n    public function run(array $seed = [0 => 1]): array\n    {\n        /** @var list<int> $sizes */\n        $sizes = [0 => 1];\n        $sizes = [0 => 1];\n        $this->keep($sizes);\n        $this->keep($seed);\n        $this->keep($this->none());\n        $this->keep([0 => 1]);\n\n        return [0 => 1];\n    }\n\n    /** @return list<int> */\n    private function none(): array\n    {\n        return [0 => 1];\n    }\n\n    /** @param list<int> $sizes */\n    private function keep(array $sizes): void\n    {\n        $this->all = $sizes;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Sizes.php", php), &[]), Vec::<String>::new());
+}
+
+/// A literal of the collection its place declares compiles at every site, as does a literal of spreads, which names
+/// no collection of its own, and a literal passed to a plain PHP function, whose `array` is neither a `List` nor a
+/// `Map`.
+#[test]
+fn a_literal_of_the_declared_collection_is_accepted() {
+    let sharp = "namespace Demo;\n\nclass Clean\n{\n    public List<string> tags = [];\n    public Map<string, int> counts = [:];\n\n    public Map<string, int> run(List<string> seed = [], Map<string, int> more = [\"a\": 1])\n    {\n        List<string> a = [];\n        Map<string, int> m = [:];\n        Map<string, int> n = [\"a\": 1];\n        a = [\"x\"];\n        m = [:];\n        this.keep(a, [], m, [\"b\": 2]);\n        this.keep(seed, [...a, ...seed], more, [...m, \"c\": 3]);\n        this.tags = [\"y\"];\n        this.counts = [\"d\": 4];\n        return n;\n    }\n\n    public List<string> none() => [];\n\n    public Map<string, int> nothing()\n    {\n        return [:];\n    }\n\n    public string joined()\n    {\n        return implode(\",\", [\"a\", \"b\"]) + implode(\",\", []);\n    }\n\n    private void keep(List<string> a, List<string> b, Map<string, int> c, Map<string, int> d)\n    {\n        this.tags = [...a, ...b];\n        this.counts = [...c, ...d];\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Clean.sharp", sharp), &[]), Vec::<String>::new());
 }
 
 /// A `List` has `add`, `set`, `get` and `entries()`, and a `Map` has `delete` and `get`, each typed by the elements of

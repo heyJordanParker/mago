@@ -36,6 +36,7 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::context::scope::control_action::ControlAction;
 use crate::error::AnalysisError;
+use crate::expression::array::check_sharp_literal_kind;
 use crate::expression::is_refused;
 use crate::statement::function_like::expect_function_type;
 use crate::utils::docblock::check_docblock_type_incompatibility;
@@ -71,6 +72,9 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for Return<'arena> {
                 return_value,
                 return_type.map(|return_type| &return_type.type_union),
             );
+            if let Some(return_type) = return_type {
+                check_sharp_literal_kind(context, return_value, &return_type.type_union);
+            }
 
             block_context.flags.set_inside_return(true);
             return_value.analyze(context, block_context, artifacts)?;
