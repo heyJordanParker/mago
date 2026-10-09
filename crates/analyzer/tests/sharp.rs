@@ -1911,6 +1911,38 @@ fn a_condition_that_always_or_never_holds_speaks_of_its_bool() {
     );
 }
 
+/// An operand that may be `false`, from a PHP method, asks for a check of `false`. PHP# has no falsiness, and keeps
+/// `(int)` and `(string)` between numbers, so no cast turns `false` into one. PHP keeps its own wording.
+#[test]
+fn an_operand_that_may_be_false_asks_for_a_check_of_false() {
+    let store = (
+        "src/Lib/Store.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Store\n{\n    public static function count(): int|false { return 1; }\n    public static function name(): string|false { return 'a'; }\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Store;\n\nclass Report\n{\n    public static int add() { return Store.count() + 1; }\n    public static int addRight() { return 1 + Store.count(); }\n    public static string join() { let text = \"a\"; text .= Store.name(); return text; }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Store;\n\nclass Report\n{\n    public static function add(): int { return Store::count() + 1; }\n    public static function addRight(): int { return 1 + Store::count(); }\n    public static function join(): string { $text = 'a'; $text .= Store::name(); return $text; }\n}\n";
+    let possibly_false = |analyzed| -> Vec<String> {
+        worded(analyzed, &[store]).into_iter().filter(|line| line.contains(" possibly-false-operand ")).collect()
+    };
+
+    assert_eq!(
+        possibly_false(("src/Demo/Report.sharp", sharp)),
+        [
+            "7:38 possibly-false-operand Left operand in arithmetic operation might be `false` (type `false|int`). | This might be `false`. | Performing arithmetic operations on `false` typically results in `0`. | Ensure the left operand is not `false` before the operation.",
+            "8:47 possibly-false-operand Right operand in arithmetic operation might be `false` (type `false|int`). | This might be `false`. | Performing arithmetic operations on `false` typically results in `0`. | Ensure the right operand is not `false` before the operation.",
+            "9:59 possibly-false-operand Possibly false right operand used in string concatenation (type `false|string`). | This might be `false` | If this operand is `false` at runtime, it will be implicitly converted to an empty string `''`. | Ensure the operand is not `false` before concatenation.",
+        ]
+    );
+    assert_eq!(
+        possibly_false(("src/Demo/Report.php", php)),
+        [
+            "9:48 possibly-false-operand Left operand in arithmetic operation might be `false` (type `false|int`). | This might be `false`. | Performing arithmetic operations on `false` typically results in `0`. | Ensure the left operand is non-falsy before the operation, or explicitly cast if coercion is intended.",
+            "10:57 possibly-false-operand Right operand in arithmetic operation might be `false` (type `false|int`). | This might be `false`. | Performing arithmetic operations on `false` typically results in `0`. | Ensure the right operand is non-falsy before the operation, or explicitly cast if coercion is intended.",
+            "11:67 possibly-false-operand Possibly false right operand used in string concatenation (type `false|string`). | This might be `false` | If this operand is `false` at runtime, it will be implicitly converted to an empty string `''`. | Ensure the operand is non-falsy before concatenation, or explicitly cast to string.",
+        ]
+    );
+}
+
 /// A condition that contradicts or repeats an earlier one names its variables and types as PHP# writes them. The
 /// earlier condition reads as the `||` it is. PHP keeps its own wording.
 #[test]
