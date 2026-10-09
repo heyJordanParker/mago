@@ -18,15 +18,13 @@ nav_section = "参考"
 
 `/ˈmɑːɡoʊ/`,"mah-go"。两个音节:"ma" 像 "mama" 中的发音,"go" 像 "go" 的发音。
 
-## Mago 会实现 LSP 吗?
+## mago-sharp 提供语言服务器吗?
 
-会。Language Server Protocol 实现计划在 `2.0.0` 版本中推出。最初安排在 `1.0.0`,但被推后,以便 LSP 能够以功能完整的形态发布,而不是一个最小化的初版。
+不提供。mago-sharp 没有实现 Language Server Protocol。请在命令行或 CI 中使用它。[配置](/guide/configuration/)页面介绍了编辑器用来校验 `mago.toml` 的 JSON Schema,以及在编辑器中打开报告文件的终端链接。
 
-更长篇幅的说明请见博客文章 [Why Mago 1.0.0 Won't Ship With an LSP](https://carthage.software/en/blog/article/Why-Mago-1-0-0-Won-t-Ship-With-an-LSP)。
+## mago-sharp 提供编辑器扩展(VS Code 等)吗?
 
-## Mago 会提供编辑器扩展(VS Code 等)吗?
-
-不会。本项目将专注于实现 LSP 标准,不会维护编辑器特定的扩展。支持 LSP 集成的编辑器(Helix、通过 lspconfig 的 Neovim、搭配通用客户端的 VS Code)都能与 Mago 协同工作。我们鼓励社区构建编辑器特定的封装,并乐于在网站上展示口碑良好的实现。
+不提供。mago-sharp 不提供任何编辑器专用扩展。
 
 ## Mago 会支持分析器插件吗?
 

@@ -18,15 +18,13 @@ Le nom a un double sens utile. En espagnol et en italien, « mago » signifie «
 
 `/ˈmɑːɡoʊ/`, « ma-go ». Deux syllabes : « ma » comme dans « maman », « go » comme dans « go ».
 
-## Mago implémentera-t-il un LSP ?
+## mago-sharp fournit-il un serveur de langage ?
 
-Oui. L'implémentation du Language Server Protocol est prévue pour la `2.0.0`. Elle était initialement planifiée pour la `1.0.0`, mais a été décalée afin que le LSP arrive complet plutôt que comme une première version minimale.
+Non. mago-sharp n'implémente pas le Language Server Protocol. Utilisez-le en ligne de commande ou en CI. La page [Configuration](/guide/configuration/) décrit le schéma JSON que les éditeurs utilisent pour valider `mago.toml`, ainsi que les liens de terminal qui ouvrent un fichier signalé dans votre éditeur.
 
-Pour le détail, voir le billet de blog [Why Mago 1.0.0 Won't Ship With an LSP](https://carthage.software/en/blog/article/Why-Mago-1-0-0-Won-t-Ship-With-an-LSP).
+## mago-sharp propose-t-il des extensions d'éditeur (VS Code, etc.) ?
 
-## Mago proposera-t-il des extensions d'éditeur (VS Code, etc.) ?
-
-Non. Le projet se concentrera sur l'implémentation du standard LSP et ne maintiendra pas d'extensions spécifiques à un éditeur. Les éditeurs qui prennent en charge l'intégration LSP (Helix, Neovim via lspconfig, VS Code avec un client générique) fonctionneront avec Mago. Nous encourageons la communauté à construire des wrappers spécifiques à un éditeur et serons heureux de mettre en avant les plus appréciés sur le site.
+Non. mago-sharp ne fournit aucune extension propre à un éditeur.
 
 ## Mago prendra-t-il en charge des plugins d'analyseur ?
 
