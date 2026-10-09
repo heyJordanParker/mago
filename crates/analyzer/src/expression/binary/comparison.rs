@@ -16,12 +16,14 @@ use mago_names::binding::php_operator_name;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
+use mago_span::Span;
 use mago_syntax::cst::ArrayElement;
 use mago_syntax::cst::Binary;
 use mago_syntax::cst::BinaryOperator;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::Literal;
 use mago_syntax::cst::Parenthesized;
+use mago_syntax::cst::Pattern;
 use mago_syntax::cst::Variable;
 use mago_text_edit::TextEdit;
 use mago_word::Word;
@@ -1009,33 +1011,45 @@ fn report_redundant_null_comparison<'arena, A>(
 }
 
 /// The PHP# null pattern a check runs, as written: `is null`, `is not null`, or a `match` arm's `null`. The pattern
-/// runs as PHP's `===`, whose operator is empty at the start of `null`, so the words before it are read back from the
-/// source. A written operator gives none.
+/// runs as PHP's `===` of the value it tests, so the check is the pattern of the forms being analyzed that holds that
+/// value. A written operator is no pattern, and gives none.
 fn written_null_pattern<A>(context: &Context<'_, '_, A>, binary: &Binary<'_>) -> Option<String>
 where
     A: Arena,
 {
-    let operator = binary.operator.span();
-    if operator.length() != 0 {
-        return None;
-    }
+    let value = binary.rhs.span();
+    let leading = context
+        .patterns
+        .iter()
+        .find_map(|(is, pattern)| written_words(pattern, is.iter().map(|is| is.value).collect(), value))?;
+    let words = leading.into_iter().chain([&context.source_file.contents[value.to_range_usize()]]);
 
-    let contents = &context.source_file.contents;
-    let mut start = operator.start.offset as usize;
-    for keyword in [&b"not"[..], b"is"] {
-        if let Some(rest) = contents[..start].trim_ascii_end().strip_suffix(keyword)
-            && rest.last().is_none_or(|byte| !byte.is_ascii_alphanumeric() && *byte != b'_')
-        {
-            start = rest.len();
+    Some(words.map(String::from_utf8_lossy).collect::<Vec<_>>().join(" "))
+}
+
+/// The keywords written right before the pattern of `value` inside `pattern`, given the `leading` keywords written right
+/// before `pattern`: each `not` on the way, and none after `and`, `or`, `(` or a property's `:`.
+fn written_words<'arena>(
+    pattern: &Pattern<'arena>,
+    mut leading: Vec<&'arena [u8]>,
+    value: Span,
+) -> Option<Vec<&'arena [u8]>> {
+    match pattern {
+        Pattern::Not(not) => {
+            leading.push(not.not.value);
+
+            written_words(not.pattern, leading, value)
         }
+        Pattern::Binary(binary) => {
+            written_words(binary.left, leading, value).or_else(|| written_words(binary.right, Vec::new(), value))
+        }
+        Pattern::Parenthesized(parenthesized) => written_words(parenthesized.pattern, Vec::new(), value),
+        Pattern::Properties(properties) => {
+            properties.properties.iter().find_map(|property| written_words(property.pattern, Vec::new(), value))
+        }
+        Pattern::Type(_) | Pattern::Value(_) => (pattern.span() == value).then_some(leading),
+        Pattern::Comparison(_) => None,
     }
-
-    let words = contents[start..binary.rhs.span().end.offset as usize]
-        .split(u8::is_ascii_whitespace)
-        .filter(|word| !word.is_empty())
-        .map(String::from_utf8_lossy);
-
-    Some(words.collect::<Vec<_>>().join(" "))
 }
 
 /// Helper to report redundant comparison issues.
