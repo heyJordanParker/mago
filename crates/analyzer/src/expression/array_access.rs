@@ -5,6 +5,7 @@ use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::get_arraykey;
 use mago_codex::ttype::get_mixed;
+use mago_codex::ttype::union::TUnion;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -131,8 +132,8 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ArrayAccess<'arena> {
 /// Spec section 12 types a PHP# `Map` read `V?`, because a key is often missing. A bare read throws on a missing
 /// key, so a `Map` is read only where the read is handled: `??` and `?.` read a missing key as null, as `isset`
 /// does. A refused bare read keeps the type `V` it would have when it runs, so it is reported once. A `List` read
-/// stays bare, because a `List`'s keys run without gaps. A place is the collection it is declared as, whatever
-/// literal it holds.
+/// stays bare, because a `List`'s keys run without gaps. A place is the collections it is declared as, whatever
+/// literal it holds, and a place that may be a `Map` is read as one.
 pub(crate) fn check_sharp_map_read<'arena, A>(
     access: &ArrayAccess<'arena>,
     context: &mut Context<'_, 'arena, A>,
@@ -141,13 +142,13 @@ pub(crate) fn check_sharp_map_read<'arena, A>(
 ) where
     A: Arena,
 {
-    let is_map = match get_declared_collection(context, block_context, artifacts, access.array) {
-        Some(collection) => collection.is_keyed(),
-        None => artifacts.get_expression_type(access.array).is_some_and(|container| {
-            container.types.iter().any(|atomic| matches!(atomic, TAtomic::Array(TArray::Keyed(_))))
-        }),
+    let has_map =
+        |container: &TUnion| container.types.iter().any(|atomic| matches!(atomic, TAtomic::Array(TArray::Keyed(_))));
+    let may_be_map = match get_declared_collection(context, block_context, artifacts, access.array) {
+        Some(declared) => has_map(&declared),
+        None => artifacts.get_expression_type(access.array).is_some_and(has_map),
     };
-    if !is_map {
+    if !may_be_map {
         return;
     }
 

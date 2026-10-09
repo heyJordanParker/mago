@@ -43,9 +43,11 @@ use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::context::block::ReferenceConstraintSource;
 use crate::error::AnalysisError;
+use crate::expression::array::check_sharp_literal_kind;
 use crate::expression::assignment::PropertyWriteKind;
 use crate::expression::assignment::property_assignment;
 use crate::resolver::method::get_declared_collection;
+use crate::resolver::method::get_declared_type;
 use crate::utils::expression::array::ArrayTarget;
 use crate::utils::expression::array::get_array_target_type_given_index;
 use crate::utils::expression::get_block_expression_id;
@@ -58,6 +60,7 @@ pub(crate) fn analyze<'ctx, 'arena, A>(
     block_context: &mut BlockContext<'ctx>,
     artifacts: &mut AnalysisArtifacts,
     array_target: ArrayTarget<'_, 'arena>,
+    assign_value: Option<&Expression<'arena>>,
     assign_value_type: &TUnion,
 ) -> Result<(), AnalysisError>
 where
@@ -89,6 +92,28 @@ where
         root_array_type.types.iter().all(|atomic| atomic.extends_or_implements(context.codebase, b"ArrayAccess"));
 
     let mut current_type = root_array_type.clone();
+
+    // A value written into a PHP# `Map` takes only a literal of the collection its value type declares, as a value
+    // written to a declared place does, at any depth. A `List` and a `Set` are never written by index, which their own
+    // checks refuse.
+    if context.dialect.is_sharp()
+        && let Some(value) = assign_value
+        && let Some(declared) = get_declared_type(context, block_context, artifacts, root_array_expression)
+        && let Some(element) = array_target_expressions.iter().try_fold(declared, |declared, _| {
+            declared
+                .types
+                .iter()
+                .filter_map(|atomic| match atomic {
+                    TAtomic::Array(map @ TArray::Keyed(_)) => Some(get_array_parameters(map, context.codebase).1),
+                    _ => None,
+                })
+                .reduce(|first, other| {
+                    combine_union_types(&first, &other, context.codebase, context.settings.combiner_options())
+                })
+        })
+    {
+        check_sharp_literal_kind(context, value, &element);
+    }
 
     let root_var_id = get_block_expression_id(root_array_expression, context, block_context);
     let current_index = analyze_nested_array_assignment(
@@ -134,31 +159,40 @@ where
         root_array_type
     };
 
-    // A PHP# local, parameter or `field` is the collection it is declared as, so an element written into it must fit
-    // that type's elements, as one written into a property must, and the place keeps its type. Its key is the index
-    // checks' to report.
+    // A PHP# local, parameter or `field` is the collections it is declared as, so an element written into it must fit
+    // the elements of each of them, as one written into a property must, and the place keeps its type. Its key is the
+    // index checks' to report.
     if context.dialect.is_sharp()
         && let Expression::ConstantAccess(access) = root_array_expression.unparenthesized()
         && let Some(declared) = get_declared_collection(context, block_context, artifacts, root_array_expression)
     {
-        let (_, declared_element) = get_array_parameters(&declared, context.codebase);
+        let declared_elements: Vec<TUnion> = declared
+            .types
+            .iter()
+            .filter_map(|atomic| match atomic {
+                TAtomic::Array(collection) => Some(get_array_parameters(collection, context.codebase).1),
+                _ => None,
+            })
+            .collect();
         let fits = root_array_type.types.iter().all(|atomic| {
             let TAtomic::Array(written) = atomic else {
                 return true;
             };
+            let written_element = get_array_parameters(written, context.codebase).1;
 
-            union_comparator::is_contained_by(
-                context.codebase,
-                &get_array_parameters(written, context.codebase).1,
-                &declared_element,
-                false,
-                false,
-                false,
-                &mut ComparisonResult::with_strict_nonnull(true),
-            )
+            declared_elements.iter().all(|declared_element| {
+                union_comparator::is_contained_by(
+                    context.codebase,
+                    &written_element,
+                    declared_element,
+                    false,
+                    false,
+                    false,
+                    &mut ComparisonResult::with_strict_nonnull(true),
+                )
+            })
         });
         if !fits {
-            let declared = TUnion::from_atomic(TAtomic::Array(declared));
             let name = String::from_utf8_lossy(access.name.value());
             let declared_str = display_type(context, &declared);
             let written_str = display_value_type(context, &root_array_type, &declared);
