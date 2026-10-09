@@ -35,6 +35,7 @@ use crate::reconciler::assertion_reconciler;
 use crate::reconciler::reconcile_keyed_types;
 use crate::utils::conditional;
 use crate::utils::expression::is_derived_access_path;
+use crate::utils::names::display_truth;
 use crate::utils::names::display_type;
 use crate::utils::symbol_existence::extract_function_constant_existence;
 
@@ -390,32 +391,34 @@ where
         if condition_type.is_always_truthy() {
             is_condition_truthy = true;
             let condition_type_str = display_type(context, condition_type);
+            let (holds, fails) = (display_truth(context, true), display_truth(context, false));
 
-            let issue =
-                if let Some(then) = then {
-                    // `$A ? $B : $C` where `$A` is always truthy
-                    Issue::help("Redundant ternary operator: condition is always truthy.")
-                        .with_annotation(
-                            Annotation::primary(condition.span())
-                                .with_message(format!("This condition (type `{condition_type_str}`) is always truthy")),
-                        )
-                        .with_annotation(Annotation::secondary(then.span()).with_message(
+            let issue = if let Some(then) = then {
+                // `$A ? $B : $C` where `$A` is always truthy
+                Issue::help(format!("Redundant ternary operator: condition is always {holds}."))
+                    .with_annotation(
+                        Annotation::primary(condition.span())
+                            .with_message(format!("This condition (type `{condition_type_str}`) is always {holds}")),
+                    )
+                    .with_annotation(
+                        Annotation::secondary(then.span()).with_message(
                             "This `then` branch is always evaluated, making it the result of the expression",
-                        ))
-                        .with_annotation(
-                            Annotation::secondary(r#else.span())
-                                .with_message("This `else` branch will never be evaluated"),
-                        )
-                        .with_note(
-                            "The ternary operator `? :` evaluates the `else` branch only when the condition is falsy.",
-                        )
-                        .with_help("Consider replacing the entire expression with just this `then` branch.")
-                } else {
-                    // `$A ?: $C` where `$A` is always truthy
-                    Issue::help("Redundant Elvis operator: left-hand side is always truthy.")
-                    .with_annotation(Annotation::primary(condition.span()).with_message(format!(
-                        "This expression (type `{condition_type_str}`) is always truthy"
-                    )))
+                        ),
+                    )
+                    .with_annotation(
+                        Annotation::secondary(r#else.span()).with_message("This `else` branch will never be evaluated"),
+                    )
+                    .with_note(format!(
+                        "The ternary operator `? :` evaluates the `else` branch only when the condition is {fails}."
+                    ))
+                    .with_help("Consider replacing the entire expression with just this `then` branch.")
+            } else {
+                // `$A ?: $C` where `$A` is always truthy
+                Issue::help("Redundant Elvis operator: left-hand side is always truthy.")
+                    .with_annotation(
+                        Annotation::primary(condition.span())
+                            .with_message(format!("This expression (type `{condition_type_str}`) is always truthy")),
+                    )
                     .with_annotation(
                         Annotation::secondary(r#else.span())
                             .with_message("This right-hand side will never be evaluated"),
@@ -424,7 +427,7 @@ where
                         "The Elvis operator `?:` evaluates the right-hand side only if the left-hand side is falsy.",
                     )
                     .with_help("Consider removing the `?:` operator and the right-hand side expression.")
-                };
+            };
 
             context.collector.propose_with_code(IssueCode::RedundantCondition, issue, |edits| {
                 if let Some(then_expr) = then {
@@ -445,33 +448,35 @@ where
         } else if condition_type.is_always_falsy() {
             is_condition_falsy = true;
             let condition_type_str = display_type(context, condition_type);
+            let (holds, fails) = (display_truth(context, true), display_truth(context, false));
 
             // https://en.wikipedia.org/wiki/Ternary_conditional_operator
-            let issue =
-                if let Some(then) = then {
-                    // `$A ? $B : $C` where `$A` is always falsy
-                    Issue::warning("Redundant ternary operator: condition is always falsy.")
-                        .with_annotation(
-                            Annotation::primary(condition.span())
-                                .with_message(format!("This condition (type `{condition_type_str}`) is always falsy")),
-                        )
-                        .with_annotation(
-                            Annotation::secondary(then.span())
-                                .with_message("This `then` branch will never be evaluated"),
-                        )
-                        .with_annotation(Annotation::secondary(r#else.span()).with_message(
+            let issue = if let Some(then) = then {
+                // `$A ? $B : $C` where `$A` is always falsy
+                Issue::warning(format!("Redundant ternary operator: condition is always {fails}."))
+                    .with_annotation(
+                        Annotation::primary(condition.span())
+                            .with_message(format!("This condition (type `{condition_type_str}`) is always {fails}")),
+                    )
+                    .with_annotation(
+                        Annotation::secondary(then.span()).with_message("This `then` branch will never be evaluated"),
+                    )
+                    .with_annotation(
+                        Annotation::secondary(r#else.span()).with_message(
                             "This `else` branch is always evaluated, making it the result of the expression",
-                        ))
-                        .with_note(
-                            "The ternary operator `? :` evaluates the `then` branch only when the condition is truthy.",
-                        )
-                        .with_help("Consider replacing the entire expression with just this `else` branch.")
-                } else {
-                    // `$A ?: $C` where `$A` is always falsy
-                    Issue::warning("Redundant Elvis operator: left-hand side is always falsy.")
-                    .with_annotation(Annotation::primary(condition.span()).with_message(format!(
-                        "This expression (type `{condition_type_str}`) is always falsy"
-                    )))
+                        ),
+                    )
+                    .with_note(format!(
+                        "The ternary operator `? :` evaluates the `then` branch only when the condition is {holds}."
+                    ))
+                    .with_help("Consider replacing the entire expression with just this `else` branch.")
+            } else {
+                // `$A ?: $C` where `$A` is always falsy
+                Issue::warning("Redundant Elvis operator: left-hand side is always falsy.")
+                    .with_annotation(
+                        Annotation::primary(condition.span())
+                            .with_message(format!("This expression (type `{condition_type_str}`) is always falsy")),
+                    )
                     .with_annotation(Annotation::secondary(r#else.span()).with_message(
                         "This right-hand side is always evaluated, making it the result of the expression",
                     ))
@@ -479,7 +484,7 @@ where
                         "The Elvis operator `?:` evaluates the right-hand side only if the left-hand side is falsy.",
                     )
                     .with_help("Consider replacing the entire expression with just the right-hand side.")
-                };
+            };
 
             context.collector.propose_with_code(IssueCode::ImpossibleCondition, issue, |edits| {
                 // For always-falsy conditions, delete everything before the else expression
