@@ -16,6 +16,7 @@ use crate::metadata::ttype::TypeMetadata;
 use crate::scanner::Context;
 use crate::ttype::TType;
 use crate::ttype::atomic::TAtomic;
+use crate::ttype::atomic::array::TArray;
 use crate::ttype::atomic::callable::TCallable;
 use crate::ttype::atomic::callable::TCallableSignature;
 use crate::ttype::atomic::callable::parameter::TCallableParameter;
@@ -202,6 +203,7 @@ fn union_from_hint(
             match (generic.name.value, arguments.next(), arguments.next(), arguments.next()) {
                 (b"List", Some(element), None, None) => get_list(element),
                 (b"Map", Some(key), Some(value), None) => get_keyed_array(key, value),
+                (b"Set", Some(element), None, None) => wrap_atomic(TAtomic::Array(TArray::Set(Arc::new(element)))),
                 _ => get_mixed_keyed_array(),
             }
         }

@@ -179,7 +179,7 @@ fn the_analyzer_reads_the_dialect_from_the_program_not_the_file_name() {
 /// `@mutation-free`, which changes the collection.
 #[test]
 fn the_binder_knows_every_changing_collection_method() {
-    for class in ["Sharp\\ListMethods", "Sharp\\MapMethods"] {
+    for class in ["Sharp\\ListMethods", "Sharp\\MapMethods", "Sharp\\SetMethods"] {
         let metadata =
             PRELUDE.metadata.get_class_like(class.as_bytes()).expect("the collection stub is in the prelude");
         let mut changing: Vec<&str> = metadata
@@ -4778,6 +4778,61 @@ fn an_empty_map_literal_where_a_list_is_declared_is_an_error() {
     );
 }
 
+/// `[:]` and `[key: value]` are `Map` literals, so each is an error wherever a `Set` is declared: a property default, a
+/// parameter default, a declaration, an assignment, an argument and a return. `[]` and `["a"]` are the `Set`. PHP has
+/// one empty array, and its array of a `Set`'s elements takes `[]`.
+#[test]
+fn a_map_literal_where_a_set_is_declared_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public Set<string> all = [:];\n\n    public Set<string> run(Set<string> seed = [:])\n    {\n        Set<string> tags = [:];\n        tags = [\"a\": \"a\"];\n        this.keep([:]);\n        this.keep([]);\n        this.keep([\"a\"]);\n        return [:];\n    }\n\n    private void keep(Set<string> tags)\n    {\n        this.all = tags;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /** @var array<string, string> */\n    public array $all = [];\n\n    public function run(): void\n    {\n        $this->all = [];\n    }\n}\n";
+
+    let empty = "invalid-array-element `[:]` is an empty Map. An empty Set is written `[]`.";
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Tags.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        [
+            format!("5:30 {empty}"),
+            format!("7:47 {empty}"),
+            format!("9:28 {empty}"),
+            "10:16 invalid-array-element A Set literal is written `[a, b]`.".to_owned(),
+            format!("11:19 {empty}"),
+            format!("14:16 {empty}"),
+        ]
+    );
+    assert_eq!(issues(("src/Demo/Tags.php", php), &[]), Vec::<String>::new());
+}
+
+/// A `List` and a `Set` each take a `List` literal and neither takes a `Map` literal, so a place declared as either
+/// refuses `[:]`. PHP has one empty array, and its array of either takes `[]`.
+#[test]
+fn a_place_declared_a_list_or_a_set_refuses_an_empty_map() {
+    let sharp =
+        "namespace Demo;\n\nclass Tags\n{\n    public List<int>|Set<int> ids()\n    {\n        return [:];\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /** @return list<int>|array<int, int> */\n    public function ids(): array\n    {\n        return [];\n    }\n}\n";
+
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Tags.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        ["7:16 invalid-array-element `[:]` is an empty Map. An empty List is written `[]`."]
+    );
+    assert_eq!(issues(("src/Demo/Tags.php", php), &[]), Vec::<String>::new());
+}
+
+/// A `Set` takes a `List` literal, so a place declared a `Map` or a `Set` takes `[1]` as the `Set`. PHP has one kind of
+/// array, and its array of either takes `[1]`.
+#[test]
+fn a_place_declared_a_map_or_a_set_takes_a_list_literal() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public Map<string, int>|Set<int> ids()\n    {\n        return [1];\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /** @return array<string, int>|array<int, int> */\n    public function ids(): array\n    {\n        return [1];\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), Vec::<String>::new());
+    assert_eq!(issues(("src/Demo/Tags.php", php), &[]), Vec::<String>::new());
+}
+
 /// PHP has one empty array, so a typed PHP place takes `[]` wherever a `list<string>` is declared.
 #[test]
 fn an_empty_php_array_where_a_list_is_declared_is_accepted() {
@@ -5794,6 +5849,305 @@ fn a_written_loop_variable_type_checks_as_a_typed_local_does() {
         issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
         ["21:24 invalid-local-assignment-value"]
     );
+}
+
+/// A `Set` runs as a PHP array keyed by each element, or by a backed enum's backing value, so the first `Set` slice
+/// holds `int`, `string` and backed enums. A `Set` of a class or a pure enum is a type that is not supported yet, as
+/// the semantic checks refuse any other element type. PHP writes no `Set`.
+#[test]
+fn a_set_of_a_class_or_a_pure_enum_is_not_supported_yet() {
+    let sharp = "namespace Demo;\n\nimport Lib.Line;\nimport Lib.Pure;\nimport Lib.Status;\n\nclass Tally\n{\n    public Set<Line> lines = [];\n\n    public Set<Pure> count(Set<Status> statuses, Set<Line> others)\n    {\n        Set<Pure> local = [];\n        return local;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Line;\n\nfinal class Tally\n{\n    /** @var array<Line> */\n    public array $lines = [];\n\n    /** @param array<Line> $others */\n    public function count(array $others): array\n    {\n        return $others;\n    }\n}\n";
+
+    assert_eq!(
+        refusals(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
+        [
+            "9:12 not-supported-yet This type is not supported yet in PHP#. | ",
+            "11:12 not-supported-yet This type is not supported yet in PHP#. | ",
+            "11:50 not-supported-yet This type is not supported yet in PHP#. | ",
+            "13:9 not-supported-yet This type is not supported yet in PHP#. | ",
+        ]
+    );
+    assert_eq!(issues(("src/Demo/Tally.php", php), &[("src/Lib/Status.php", STATUS)]), Vec::<String>::new());
+}
+
+/// A `Set` has the methods of `Sharp\SetMethods`, each typed by its elements: `add`, `remove` and `clear` change it,
+/// `filter` gives a `Set`, and `map` and `sortedBy` give a `List`.
+#[test]
+fn set_methods_take_and_give_the_types_of_their_elements() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Tags\n{\n    public int run(Set<string> tags, Set<Status> statuses)\n    {\n        bool added = tags.add(\"vip\");\n        bool removed = tags.remove(\"new\");\n        bool held = tags.contains(\"vip\") && statuses.contains(Status.Active);\n        List<string> listed = tags.toList();\n        Set<string> kept = tags.filter(tag => tag != \"x\");\n        List<int> sizes = tags.map(tag => strlen(tag));\n        bool lengthy = tags.any(tag => strlen(tag) > 3);\n        string first = tags.first(tag => tag != \"\");\n        List<Status> sorted = statuses.sortedBy(status => status.value);\n        statuses.add(Status.Closed);\n        statuses.remove(Status.Active);\n        tags.clear();\n        return tags.count() + tags.sumOf(tag => strlen(tag)) + count(listed) + count(kept) + count(sizes) + count(sorted) + (added && removed && held && lengthy ? 1 : 0) + strlen(first);\n    }\n\n    public void wrong(Set<string> tags, Set<Status> statuses)\n    {\n        tags.add(1);\n        statuses.add(\"active\");\n        List<int> kept = tags.filter(tag => tag != \"x\");\n        Set<int> sizes = tags.map(tag => strlen(tag));\n        tags.get(0);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tags.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
+        [
+            "26:18 invalid-argument",
+            "27:22 invalid-argument",
+            "28:26 invalid-local-assignment-value",
+            "29:26 invalid-local-assignment-value",
+            "30:14 non-existent-method",
+        ]
+    );
+}
+
+/// A message about a `Set` method names the `Set` type the code wrote, never `Sharp\SetMethods`, and a parameter's
+/// `Set` type reads as PHP# writes it. A `.php` call on `SetMethods<string>` names the receiver as `Set<string>` too,
+/// as one on `MapMethods` names a `Map`, and the argument by its PHP type.
+#[test]
+fn a_set_message_names_the_sharp_type() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Tally\n{\n    public void wrong(Set<string> tags, Set<Status> statuses, Map<string, int> counts)\n    {\n        tags.add(1);\n        statuses.contains(\"active\");\n        tags.get(0);\n        this.mark(counts);\n    }\n\n    public void mark(Set<Status> statuses)\n    {\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Sharp\\SetMethods;\n\nfinal class Tally\n{\n    /** @param SetMethods<string> $tags */\n    public function wrong(SetMethods $tags): void\n    {\n        $tags->add(1);\n        $tags->get(0);\n    }\n}\n";
+
+    let issues =
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]);
+    let sharp_messages: Vec<&str> = issues.iter().map(|issue| issue.message.as_str()).collect();
+    assert_eq!(
+        sharp_messages,
+        [
+            "Invalid argument type for argument #1 of `Set<string>.add`: expected `string`, but found `int`.",
+            "Invalid argument type for argument #1 of `Set<Status>.contains`: expected `Status`, but found `string`.",
+            "Method `get` does not exist on `Set<string>`.",
+            "Invalid argument type for argument #1 of `Tally.mark`: expected `Set<Status>`, but found `Map<string, int>`.",
+        ]
+    );
+    for issue in &issues {
+        let text = format!("{issue:?}");
+        assert!(!text.contains("SetMethods"), "{text}");
+    }
+    assert_eq!(
+        messages(("src/Demo/Tally.php", php), &[]),
+        [
+            "Invalid argument type for argument #1 of `Set<string>.add`: expected `string`, but found `int(1)`.",
+            "Method `get` does not exist on `Set<string>`.",
+        ]
+    );
+}
+
+/// A `Set` has no index: its elements are tested with `contains` and added with `add`, so an index read or write is an
+/// error. PHP keeps reading and writing an array's keys.
+#[test]
+fn an_index_of_a_set_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public string read(Set<string> tags)\n    {\n        tags[\"vip\"] = \"vip\";\n        return tags[0];\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /** @param array<string, string> $tags */\n    public function read(array $tags): string\n    {\n        $tags['vip'] = 'vip';\n        return $tags['vip'];\n    }\n}\n";
+
+    assert_eq!(
+        refusals(("src/Demo/Tags.sharp", sharp), &[]),
+        [
+            "7:9 invalid-array-access A `Set<string>` has no index. | Test an element with `set.contains(x)`, add one with `set.add(x)`, or read each one with `for (const x of set)`.",
+            "8:16 invalid-array-access A `Set<string>` has no index. | Test an element with `set.contains(x)`, add one with `set.add(x)`, or read each one with `for (const x of set)`.",
+        ]
+    );
+    assert_eq!(issues(("src/Demo/Tags.php", php), &[]), Vec::<String>::new());
+}
+
+/// A `Set` is a collection, which `==` cannot compare by value yet. PHP keeps comparing its arrays.
+#[test]
+fn equality_of_a_set_is_not_supported_yet() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static bool same(Set<int> items, Set<int> others) => items == others;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    /** @param array<int, int> $items @param array<int, int> $others */\n    public static function same(array $items, array $others): bool { return $items == $others; }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
+    assert_eq!(
+        refusals(("src/Demo/Report.sharp", sharp), &[]),
+        [
+            "5:65 not-supported-yet `==` on a collection is not supported yet, so it cannot compare `Set<int>` with `Set<int>`. | Compare the elements one by one."
+        ]
+    );
+}
+
+/// Spec section 12 converts a list passed where a `Set` is expected, so a `List` or a list literal is accepted as an
+/// argument, and the receiving method makes it a `Set`. A `Map` is never a `Set`, and a `Set` is never a `Map` or a
+/// `List`. A `List` is converted only where it is passed, so a typed local takes no `List`. A plain PHP caller passes a
+/// list too.
+#[test]
+fn a_list_is_passed_where_a_set_is_expected_and_a_map_is_not() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public void take(Set<string> tags)\n    {\n    }\n\n    public void keep(Map<string, string> named, List<string> listed)\n    {\n    }\n\n    public void run(List<string> names, Map<string, string> named, Set<string> tags)\n    {\n        this.take(names);\n        this.take([\"vip\", \"new\"]);\n        this.take(tags);\n        this.take(named);\n        this.keep(tags, names);\n        this.keep(named, tags);\n        Set<string> fromList = names;\n        Set<string> fromMap = named;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Caller\n{\n    public function run(Tags $tags): void\n    {\n        $tags->take(['vip', 'new']);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tags.sharp", sharp), &[]),
+        [
+            "18:19 invalid-argument",
+            "19:19 invalid-argument",
+            "20:26 invalid-argument",
+            "21:32 invalid-local-assignment-value",
+            "22:31 invalid-local-assignment-value",
+        ]
+    );
+    assert_eq!(issues(("src/Demo/Caller.php", php), &[("src/Demo/Tags.sharp", sharp)]), Vec::<String>::new());
+}
+
+/// A list becomes a `Set` only in the body of the PHP# method or lambda that declares the parameter `Set`, so only a
+/// call of one takes a list there, each element of a variadic one too, and a lambda a local holds is one. Neither
+/// `Sharp\ListMethods.add` of a `List<Set<string>>`, whose `Set` comes from its template, nor a call through a
+/// `Function` value runs such a body, so each takes only a `Set`. A plain PHP caller still passes a list to a PHP#
+/// method.
+#[test]
+fn a_list_is_passed_as_a_set_only_to_a_body_that_makes_it_one() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public void take(Set<string> tags)\n    {\n    }\n\n    public void many(Set<string> ...tags)\n    {\n    }\n\n    public void run(List<string> names, List<Set<string>> all, Function<bool(Set<string>)> check)\n    {\n        this.take(names);\n        this.many(names, [\"vip\"]);\n        all.add([\"vip\"]);\n        all.add(names);\n        check([\"vip\"]);\n        const typed = (Set<string> tags) => tags.contains(\"vip\");\n        typed([\"vip\"]);\n        Function<bool(Set<string>)> inferred = tags => tags.contains(\"vip\");\n        inferred(names);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Caller\n{\n    public function run(Tags $tags): void\n    {\n        $tags->take(['vip']);\n        $tags->many(['vip'], ['new']);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tags.sharp", sharp), &[]),
+        ["17:17 invalid-argument", "18:17 invalid-argument", "19:15 invalid-argument", "23:18 invalid-argument",]
+    );
+    assert_eq!(issues(("src/Demo/Caller.php", php), &[("src/Demo/Tags.sharp", sharp)]), Vec::<String>::new());
+}
+
+/// `Sharp\Set` is the engine's class that makes each `Set` parameter a `Set`, which only the lowering calls, as
+/// `Sharp\Collection` is the class each collection method runs on. Neither is a class PHP# code imports and calls, so
+/// `Set.from` is an unknown method, as `\Sharp\Set::from` is in PHP.
+#[test]
+fn the_engines_set_class_is_not_a_class_sharp_code_calls() {
+    let sharp = "namespace Demo;\n\nimport Sharp.Set;\n\nclass Tags\n{\n    public int count(List<string> tags)\n    {\n        const made = Set.from(tags);\n        return count(made);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /** @param list<string> $tags */\n    public function count(array $tags): int\n    {\n        $made = \\Sharp\\Set::from($tags);\n        return count($made);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["9:26 non-existent-method", "10:22 mixed-argument"]);
+    assert_eq!(
+        issues(("src/Demo/Tags.php", php), &[]),
+        ["10:29 non-existent-method", "10:9 mixed-assignment", "11:22 mixed-argument"]
+    );
+}
+
+/// A `match` gives the value of its arm, so a list literal there is a `List`, which a place declared `Set` refuses.
+#[test]
+fn a_list_literal_in_a_match_arm_where_a_set_is_declared_is_refused() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public Set<string> pick(bool flag)\n    {\n        Set<string> tags = match (flag) {\n            true => [\"a\"],\n            default => [\"b\"],\n        };\n        return tags;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /** @return array<string, string> */\n    public function pick(bool $flag): array\n    {\n        $tags = match ($flag) {\n            true => ['a' => 'a'],\n            default => ['b' => 'b'],\n        };\n        return $tags;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["7:28 invalid-local-assignment-value"]);
+    assert_eq!(issues(("src/Demo/Tags.php", php), &[]), Vec::<String>::new());
+}
+
+/// `??` gives either side, so a list literal on its right is a `List`, which a place declared `Set` refuses.
+#[test]
+fn a_list_literal_after_null_coalescing_where_a_set_is_declared_is_refused() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public Set<string> pick(Set<string>? maybe)\n    {\n        Set<string> tags = maybe ?? [\"a\"];\n        return tags;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /**\n     * @param array<string, string>|null $maybe\n     * @return array<string, string>\n     */\n    public function pick(?array $maybe): array\n    {\n        $tags = $maybe ?? ['a' => 'a'];\n        return $tags;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["7:28 invalid-local-assignment-value"]);
+    assert_eq!(issues(("src/Demo/Tags.php", php), &[]), Vec::<String>::new());
+}
+
+/// `?:` gives either branch, so a list literal there is a `List`, which a place declared `Set` refuses, and never
+/// compiles into a list held as a `Set`.
+#[test]
+fn a_list_literal_in_a_conditional_where_a_set_is_declared_is_refused() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public Set<string> pick(bool flag)\n    {\n        Set<string> tags = flag ? [\"a\"] : [\"b\"];\n        return tags;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /** @return array<string, string> */\n    public function pick(bool $flag): array\n    {\n        $tags = $flag ? ['a' => 'a'] : ['b' => 'b'];\n        return $tags;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["7:28 invalid-local-assignment-value"]);
+    assert_eq!(issues(("src/Demo/Tags.php", php), &[]), Vec::<String>::new());
+}
+
+/// Only a literal whose own place is declared `Set` is a `Set`, so a list literal inside a `List` of `Set`s is a
+/// `List`, which the place refuses.
+#[test]
+fn a_list_literal_inside_a_list_of_sets_is_refused() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public List<Set<string>> all()\n    {\n        List<Set<string>> all = [[\"a\"]];\n        return all;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /** @return list<array<string, string>> */\n    public function all(): array\n    {\n        $all = [['a' => 'a']];\n        return $all;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["7:33 invalid-local-assignment-value"]);
+    assert_eq!(issues(("src/Demo/Tags.php", php), &[]), Vec::<String>::new());
+}
+
+/// A list literal that is a value of a `Map` literal of `Set`s is a `List`, which the place refuses.
+#[test]
+fn a_list_literal_as_a_value_in_a_map_of_sets_is_refused() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public Map<string, Set<string>> named()\n    {\n        Map<string, Set<string>> named = [\"x\": [\"a\"]];\n        return named;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /** @return array<string, array<string, string>> */\n    public function named(): array\n    {\n        $named = ['x' => ['a' => 'a']];\n        return $named;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["7:42 invalid-local-assignment-value"]);
+    assert_eq!(issues(("src/Demo/Tags.php", php), &[]), Vec::<String>::new());
+}
+
+/// A list literal assigned to an entry of a `Map` of `Set`s is a `List`, which the `Map` refuses, whether a property,
+/// a parameter or a local holds it. Each keeps its `Set`s, so a later `get` never reads a list as a `Set`.
+#[test]
+fn a_list_literal_assigned_to_an_entry_of_a_map_of_sets_is_refused() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    private Map<string, Set<string>> named = [:];\n\n    public bool put(Map<string, Set<string>> given)\n    {\n        this.named[\"x\"] = [\"a\"];\n        given[\"x\"] = [\"a\"];\n        Map<string, Set<string>> local = [:];\n        local[\"x\"] = [\"a\"];\n        return local.get(\"x\")?.contains(\"a\") ?? false;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /** @var array<string, array<string, string>> */\n    private array $named = [];\n\n    /** @param array<string, array<string, string>> $given */\n    public function put(array $given): bool\n    {\n        $this->named['x'] = ['a' => 'a'];\n        $given['x'] = ['a' => 'a'];\n        $local = [];\n        $local['x'] = ['a' => 'a'];\n        return isset($local['x']['a']);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tags.sharp", sharp), &[]),
+        [
+            "9:9 invalid-property-assignment-value",
+            "10:9 invalid-local-assignment-value",
+            "12:9 invalid-local-assignment-value",
+        ]
+    );
+    assert_eq!(issues(("src/Demo/Tags.php", php), &[]), Vec::<String>::new());
+}
+
+/// A PHP# local, parameter or `field` is the collection it is declared as, so an element written into it must fit
+/// that type, as one written into a property must, and the place keeps its type. PHP keeps widening an array.
+#[test]
+fn an_element_written_into_a_typed_local_or_parameter_must_fit_its_type() {
+    let sharp = "namespace Demo;\n\nclass Tally\n{\n    public int put(Map<string, int> counts)\n    {\n        counts[\"x\"] = \"text\";\n        Map<string, int> local = [:];\n        local[\"y\"] = 2;\n        local[\"z\"] = \"text\";\n        return count(counts) + count(local);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tally\n{\n    /** @param array<string, int> $counts */\n    public function put(array $counts): int\n    {\n        $counts['x'] = 'text';\n        $local = [];\n        $local['y'] = 2;\n        $local['z'] = 'text';\n        return count($counts) + count($local);\n    }\n}\n";
+
+    assert_eq!(
+        refusals(("src/Demo/Tally.sharp", sharp), &[]),
+        [
+            "7:9 invalid-local-assignment-value Invalid assignment to `counts`: it is declared as `Map<string, int>`. | Write a value of `Map<string, int>`'s element type, or change the type `counts` is declared with.",
+            "10:9 invalid-local-assignment-value Invalid assignment to `local`: it is declared as `Map<string, int>`. | Write a value of `Map<string, int>`'s element type, or change the type `local` is declared with.",
+        ]
+    );
+    assert_eq!(issues(("src/Demo/Tally.php", php), &[]), Vec::<String>::new());
+}
+
+/// Plain PHP receives a `Set` as the array it runs as, keyed by each element or its backing value, so a `Set` passes
+/// where plain PHP takes an `array`, and to `count` and `in_array`.
+#[test]
+fn a_set_passes_where_plain_php_takes_an_array() {
+    let sharp = "namespace Demo;\n\nimport Lib.Sink;\nimport Lib.Status;\n\nclass Tally\n{\n    public int total(Set<string> tags, Set<Status> statuses)\n    {\n        return count(tags) + Sink.plain(tags) + Sink.plain(statuses) + (in_array(\"vip\", tags, true) ? 1 : 0);\n    }\n}\n";
+    let sink = "<?php\n\nnamespace Lib;\n\nfinal class Sink\n{\n    public static function plain(array $values): int\n    {\n        return count($values);\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS), ("src/Lib/Sink.php", sink)]),
+        Vec::<String>::new()
+    );
+}
+
+/// A loop over a `Set` reads its elements, typed or not. A `Set` has no keys of its own, so `[k, v]` is refused, as
+/// on a `List`. PHP keeps reading an array's keys.
+#[test]
+fn a_loop_over_a_set_reads_its_elements_and_no_keys() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Tally\n{\n    public int read(Set<string> tags, Set<Status> statuses)\n    {\n        let total = 0;\n        for (const tag of tags) {\n            total += strlen(tag);\n        }\n        for (const Status status of statuses) {\n            total += strlen(status.value);\n        }\n        for (const [key, tag] of tags) {\n        }\n        return total;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tally\n{\n    /** @param array<string, string> $tags */\n    public function read(array $tags): int\n    {\n        $total = 0;\n        foreach ($tags as $key => $tag) {\n            $total += strlen($key) + strlen($tag);\n        }\n        return $total;\n    }\n}\n";
+
+    assert_eq!(
+        refusals(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
+        [
+            "16:34 invalid-iterator `for (const [k, v] of x)` reads the keys of a `Map`, and this is a `Set`. | Loop over the elements alone, as in `for (const x of set)`."
+        ]
+    );
+    assert_eq!(issues(("src/Demo/Tally.php", php), &[]), Vec::<String>::new());
+}
+
+/// Spec section 12: the declared type makes a list literal a `Set`, at a typed local, an assignment, a property's
+/// initial value, a parameter's default and a return, so each takes the literal and checks its elements.
+#[test]
+fn a_list_literal_where_a_set_is_declared_is_a_set() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Tags\n{\n    public Set<string> all = [];\n    public Set<Status> open = [Status.Active];\n\n    public Set<string> run(Set<string> extra = [\"new\"])\n    {\n        Set<string> tags = [\"vip\", \"new\"];\n        tags = [\"old\"];\n        this.all = [\"a\", \"b\"];\n        Set<string> wrong = [\"vip\", 1];\n        return [\"x\"];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tags.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
+        ["15:29 invalid-local-assignment-value"]
+    );
+}
+
+/// A spread copies a `List`'s values or a `Map`'s entries, and a `Set` is neither, so a `.sharp` literal refuses its
+/// spread. PHP keeps spreading the array a `Set` runs as.
+#[test]
+fn a_spread_of_a_set_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public List<string> all(Set<string> tags)\n    {\n        return [...tags];\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /** @param array<string, string> $tags @return array<string, string> */\n    public function all(array $tags): array\n    {\n        return [...$tags];\n    }\n}\n";
+
+    assert_eq!(
+        refusals(("src/Demo/Tags.sharp", sharp), &[])[0],
+        "7:17 invalid-array-element Cannot spread a value of type `Set<string>`: PHP# spreads a `List` or a `Map`. | Spread a `List`, such as a `list<int>` from plain PHP."
+    );
+    assert_eq!(issues(("src/Demo/Tags.php", php), &[]), Vec::<String>::new());
 }
 
 /// A `List` spread appends, so a literal of values and `List` spreads is a `List`, a plain PHP `list<int>` included.

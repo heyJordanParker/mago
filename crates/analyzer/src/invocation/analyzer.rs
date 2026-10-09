@@ -130,7 +130,7 @@ where
 }
 
 /// Adjusts argument offset for variadic parameters.
-fn adjust_offset_for_variadic(target: &InvocationTarget<'_>, argument_offset: usize) -> usize {
+pub(super) fn adjust_offset_for_variadic(target: &InvocationTarget<'_>, argument_offset: usize) -> usize {
     let parameter_count = target.parameter_count();
     if parameter_count > 0
         && argument_offset >= parameter_count
@@ -1636,6 +1636,7 @@ fn populate_parameter_types_from_unpacked<A>(
                     }
                 }
             }
+            TArray::Set(_) => {}
         }
 
         for (parameter_name, (branch_type, definitely_supplied)) in branch_types {
@@ -1820,6 +1821,7 @@ fn validate_unpacked_argument_elements<'ctx, 'arena, A>(
                     target_name_str,
                 );
             }
+            TArray::Set(_) => {}
         }
     }
 }

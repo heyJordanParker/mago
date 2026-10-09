@@ -1221,8 +1221,9 @@ where
 }
 
 /// The class whose methods a PHP# collection has, as spec section 12 writes them: a `List<T>` is called as
-/// `Sharp\ListMethods<T>` and a `Map<K, V>` as `Sharp\MapMethods<K, V>`, so each method is typed by the elements.
-/// A PHP# element type is never narrower than `int` or `string`, so a literal the analyzer knows widens to it.
+/// `Sharp\ListMethods<T>`, a `Map<K, V>` as `Sharp\MapMethods<K, V>` and a `Set<T>` as `Sharp\SetMethods<T>`, so each
+/// method is typed by the elements. A PHP# element type is never narrower than `int` or `string`, so a literal the
+/// analyzer knows widens to it.
 fn get_collection_methods(array: &TArray, codebase: &CodebaseMetadata) -> TObject {
     let (mut key, mut value) = get_array_parameters(array, codebase);
     key.widen_scalars();
@@ -1231,6 +1232,7 @@ fn get_collection_methods(array: &TArray, codebase: &CodebaseMetadata) -> TObjec
     TObject::Named(match array {
         TArray::List(_) => TNamedObject::new_with_type_parameters(word("Sharp\\ListMethods"), Some(vec![value])),
         TArray::Keyed(_) => TNamedObject::new_with_type_parameters(word("Sharp\\MapMethods"), Some(vec![key, value])),
+        TArray::Set(_) => TNamedObject::new_with_type_parameters(word("Sharp\\SetMethods"), Some(vec![value])),
     })
 }
 
