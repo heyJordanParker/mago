@@ -130,6 +130,7 @@ use crate::cst::cst::IssetConstruct;
 use crate::cst::cst::KeyValueArrayElement;
 use crate::cst::cst::Keyword;
 use crate::cst::cst::Label;
+use crate::cst::cst::Law;
 use crate::cst::cst::LegacyArray;
 use crate::cst::cst::List;
 use crate::cst::cst::Literal;
@@ -326,6 +327,7 @@ pub enum NodeKind {
     MethodBody,
     MethodExpressionBody,
     Operator,
+    Law,
     ComputedProperty,
     HookedProperty,
     PlainProperty,
@@ -596,6 +598,7 @@ pub enum Node<'ast, 'arena> {
     MethodBody(&'ast MethodBody<'arena>),
     MethodExpressionBody(&'ast MethodExpressionBody<'arena>),
     Operator(&'ast Operator<'arena>),
+    Law(&'ast Law<'arena>),
     ComputedProperty(&'ast ComputedProperty<'arena>),
     HookedProperty(&'ast HookedProperty<'arena>),
     PlainProperty(&'ast PlainProperty<'arena>),
@@ -947,6 +950,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
             Self::MethodBody(_) => NodeKind::MethodBody,
             Self::MethodExpressionBody(_) => NodeKind::MethodExpressionBody,
             Self::Operator(_) => NodeKind::Operator,
+            Self::Law(_) => NodeKind::Law,
             Self::ComputedProperty(_) => NodeKind::ComputedProperty,
             Self::HookedProperty(_) => NodeKind::HookedProperty,
             Self::PlainProperty(_) => NodeKind::PlainProperty,
@@ -1384,6 +1388,7 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 ClassLikeMember::EnumCase(node) => f(Node::EnumCase(node)),
                 ClassLikeMember::Method(node) => f(Node::Method(node)),
                 ClassLikeMember::Operator(node) => f(Node::Operator(node)),
+                ClassLikeMember::Law(node) => f(Node::Law(node)),
             },
             Node::ClassLikeMemberExpressionSelector(node) => f(Node::Expression(node.expression)),
             Node::ClassLikeMemberSelector(node) => match node {
@@ -1438,6 +1443,12 @@ impl<'ast, 'arena> Node<'ast, 'arena> {
                 f(Node::BinaryOperator(&node.symbol));
                 f(Node::FunctionLikeParameterList(&node.parameter_list));
                 f(Node::MethodBody(&node.body));
+            }
+            Node::Law(node) => {
+                f(Node::Keyword(&node.law));
+                f(Node::LocalIdentifier(&node.name));
+                f(Node::FunctionLikeParameterList(&node.parameter_list));
+                f(Node::MethodExpressionBody(&node.body));
             }
             Node::ComputedProperty(node) => {
                 for item in node.attribute_lists.iter() {
@@ -2837,6 +2848,7 @@ impl HasSpan for Node<'_, '_> {
             Self::MethodBody(node) => node.span(),
             Self::MethodExpressionBody(node) => node.span(),
             Self::Operator(node) => node.span(),
+            Self::Law(node) => node.span(),
             Self::ComputedProperty(node) => node.span(),
             Self::HookedProperty(node) => node.span(),
             Self::PlainProperty(node) => node.span(),

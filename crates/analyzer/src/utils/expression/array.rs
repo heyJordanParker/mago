@@ -49,7 +49,9 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::context::scope::var_has_root;
+use crate::utils::names::display_atomic;
 use crate::utils::names::display_sharp_type;
+use crate::utils::names::display_type;
 
 #[derive(Debug, Clone, Copy)]
 pub enum ArrayTarget<'ast, 'arena> {
@@ -304,9 +306,11 @@ where
                                 .with_note(
                                     "Attempting to read an array index on `null` will result in a runtime error.",
                                 )
-                                .with_help(
-                                    "Ensure the variable holds an array before accessing it, possibly by checking with `is_array()` or initializing it.",
-                                ),
+                                .with_help(if context.dialect.is_sharp() {
+                                    "Ensure the value is not `null` before reading an index, as in `if (value != null)`."
+                                } else {
+                                    "Ensure the variable holds an array before accessing it, possibly by checking with `is_array()` or initializing it."
+                                }),
                         );
                     } else {
                         context.collector.report_with_code(
@@ -346,9 +350,11 @@ where
                                 .with_note(
                                     "Attempting to read an array index on `false` will result in a runtime error.",
                                 )
-                                .with_help(
-                                    "Ensure the variable holds an array before accessing it, possibly by checking with `is_array()` or `!== false`.",
-                                ),
+                                .with_help(if context.dialect.is_sharp() {
+                                    "Ensure the value is not `false` before reading an index."
+                                } else {
+                                    "Ensure the variable holds an array before accessing it, possibly by checking with `is_array()` or `!== false`."
+                                }),
                         );
                     } else {
                         context.collector.report_with_code(
@@ -391,7 +397,7 @@ where
                     || block_context.flags.inside_unset()
                     || (in_assignment && is_allowed_in_assignment))
                 {
-                    let type_id = atomic_var_type.get_id();
+                    let type_id = display_atomic(context, atomic_var_type);
 
                     let has_array_accessible = array_like_type.types.iter().any(|t| {
                         matches!(
@@ -441,12 +447,12 @@ where
     }
 
     if !has_valid_expected_index {
-        let index_type_str = index_type.get_id();
-        let array_like_type_str = array_like_type.get_id();
+        let index_type_str = display_type(context, index_type);
+        let array_like_type_str = display_type(context, array_like_type);
         let expected_index_types_str: Vec<String> = expected_index_types
             .iter()
             .flat_map(|union| union.types.as_ref())
-            .map(|t| t.get_id().to_string())
+            .map(|t| display_atomic(context, t))
             .collect();
 
         let expected_types_list = if let Some(last_index_str) = expected_index_types_str.last() {
@@ -555,13 +561,18 @@ where
                 // Determine if this is likely a string or integer key based on the index type
                 let is_likely_string_key =
                     index_type.types.iter().any(|t| matches!(t, TAtomic::Scalar(TScalar::String(_))));
+                let array_like_type_str = display_type(context, array_like_type);
+                let guard = if context.dialect.is_sharp() {
+                    "read it with the null coalesce operator (`??`)"
+                } else {
+                    "use `isset()` or the null coalesce operator (`??`)"
+                };
 
                 if is_likely_string_key {
                     context.collector.report_with_code(
                         IssueCode::PossiblyUndefinedStringArrayIndex,
                         Issue::warning(format!(
-                            "Possibly undefined array key accessed on `{}`.",
-                            array_like_type.get_id()
+                            "Possibly undefined array key accessed on `{array_like_type_str}`."
                         ))
                         .with_annotation(
                             Annotation::primary(access_index_span)
@@ -570,16 +581,15 @@ where
                         .with_note(
                             "The key exists in some but not all variants of the union type."
                         )
-                        .with_help(
-                            "Ensure the key exists before accessing it, or use `isset()` or the null coalesce operator (`??`) to handle potential missing keys."
-                        ),
+                        .with_help(format!(
+                            "Ensure the key exists before accessing it, or {guard} to handle potential missing keys."
+                        )),
                     );
                 } else {
                     context.collector.report_with_code(
                         IssueCode::PossiblyUndefinedIntArrayIndex,
                         Issue::warning(format!(
-                            "Possibly undefined array index accessed on `{}`.",
-                            array_like_type.get_id()
+                            "Possibly undefined array index accessed on `{array_like_type_str}`."
                         ))
                         .with_annotation(
                             Annotation::primary(access_index_span)
@@ -588,9 +598,9 @@ where
                         .with_note(
                             "The index exists in some but not all variants of the union type."
                         )
-                        .with_help(
-                            "Ensure the index exists before accessing it, or use `isset()` or the null coalesce operator (`??`) to handle potential missing indices."
-                        ),
+                        .with_help(format!(
+                            "Ensure the index exists before accessing it, or {guard} to handle potential missing indices."
+                        )),
                     );
                 }
             }
@@ -690,7 +700,7 @@ where
                             Issue::warning(format!(
                                 "Possibly undefined array key `{}` accessed on `{}`.",
                                 val,
-                                list.get_id()
+                                display_atomic(context, list)
                             ))
                             .with_annotation(
                                 Annotation::primary(span)
@@ -722,7 +732,7 @@ where
                         Issue::error(format!(
                             "Undefined list index `{}` accessed on `{}`.",
                             index,
-                            list.get_id()
+                            display_atomic(context, list)
                         ))
                         .with_annotation(
                             Annotation::primary(span)
@@ -771,7 +781,7 @@ where
                     .unwrap_or_else(|| "the requested index".to_string());
                 context.collector.report_with_code(
                     IssueCode::PossiblyUndefinedIntArrayIndex,
-                    Issue::warning(format!("Possibly undefined array index accessed on `{}`.", list.get_id()))
+                    Issue::warning(format!("Possibly undefined array index accessed on `{}`.", display_atomic(context, list)))
                         .with_annotation(
                             Annotation::primary(span).with_message(format!("{key_label} might not exist.")),
                         )
@@ -798,14 +808,15 @@ where
             {
                 context.collector.report_with_code(
                     IssueCode::ImpossibleArrayAccess,
-                    Issue::error(format!("Cannot access elements of an empty list `{}`.", list.get_id()))
-                        .with_annotation(
-                            Annotation::primary(span).with_message("The list is empty, no elements to access."),
-                        )
-                        .with_note(
-                            "Attempting to access an element in an empty list will always result in a `null` value.",
-                        )
-                        .with_help("Ensure the list is not empty before accessing its elements."),
+                    Issue::error(format!(
+                        "Cannot access elements of an empty list `{}`.",
+                        display_atomic(context, list)
+                    ))
+                    .with_annotation(
+                        Annotation::primary(span).with_message("The list is empty, no elements to access."),
+                    )
+                    .with_note("Attempting to access an element in an empty list will always result in a `null` value.")
+                    .with_help("Ensure the list is not empty before accessing its elements."),
                 );
             }
 
@@ -830,7 +841,7 @@ where
                         IssueCode::PossiblyUndefinedIntArrayIndex,
                         Issue::warning(format!(
                             "Possibly undefined array index accessed on `{}`.",
-                            list.get_id()
+                            display_atomic(context, list)
                         ))
                         .with_annotation(
                             Annotation::primary(span)
@@ -909,7 +920,7 @@ where
                     Issue::warning(format!(
                         "Possibly undefined array key {} accessed on `{}`.",
                         array_key,
-                        keyed_array.get_id()
+                        display_atomic(context, &TAtomic::Array(TArray::Keyed(keyed_array.clone())))
                     ))
                     .with_annotation(
                         Annotation::primary(span).with_message(format!("Key {array_key} might not exist.")),
@@ -1119,7 +1130,7 @@ where
                             Issue::error(format!(
                                 "Undefined array key {} accessed on `{}`.",
                                 array_key,
-                                keyed_array.get_id()
+                                display_atomic(context, &TAtomic::Array(TArray::Keyed(keyed_array.clone())))
                             ))
                             .with_annotation(
                                 Annotation::primary(span)
@@ -1180,7 +1191,7 @@ where
                         Issue::warning(format!(
                             "Impossible `isset` check on key `{}` accessed on `{}`.",
                             array_key,
-                            keyed_array.get_id()
+                            display_atomic(context, &TAtomic::Array(TArray::Keyed(keyed_array.clone())))
                         ))
                         .with_annotation(
                             Annotation::primary(span)
@@ -1253,7 +1264,7 @@ where
             && !block_context.flags.inside_isset()
             && !block_context.flags.inside_unset()
         {
-            let index_type_str = index_type.get_id();
+            let index_type_str = display_type(context, index_type);
             let code = match index_type.get_single_array_key() {
                 Some(ArrayKey::Integer(_)) => IssueCode::PossiblyUndefinedIntArrayIndex,
                 Some(ArrayKey::String(_)) => IssueCode::PossiblyUndefinedStringArrayIndex,
@@ -1271,7 +1282,7 @@ where
                 code,
                 Issue::warning(format!(
                     "Possibly undefined array key `{index_type_str}` accessed on `{}`.",
-                    keyed_array.get_id()
+                    display_atomic(context, &TAtomic::Array(TArray::Keyed(keyed_array.clone())))
                 ))
                 .with_annotation(
                     Annotation::primary(span)
@@ -1320,7 +1331,7 @@ where
                 if !inside_isset_or_unset && (lax_warn || strict) {
                     let single_key = index_type.get_single_array_key();
                     if strict || single_key.is_some() {
-                        let index_type_str = index_type.get_id();
+                        let index_type_str = display_type(context, index_type);
                         let code = match &single_key {
                             Some(ArrayKey::Integer(_)) => IssueCode::PossiblyUndefinedIntArrayIndex,
                             Some(ArrayKey::String(_)) => IssueCode::PossiblyUndefinedStringArrayIndex,
@@ -1338,7 +1349,7 @@ where
                             code,
                             Issue::warning(format!(
                                 "Possibly undefined array key `{index_type_str}` accessed on `{}`.",
-                                keyed_array.get_id()
+                                display_atomic(context, &TAtomic::Array(TArray::Keyed(keyed_array.clone())))
                             ))
                             .with_annotation(
                                 Annotation::primary(span)
@@ -1480,7 +1491,7 @@ where
             IssueCode::InvalidArrayAccess,
             Issue::error(format!(
                 "Cannot access array index on object `{}` that does not implement `ArrayAccess`.",
-                named_object.get_id()
+                display_atomic(context, named_object)
             ))
             .with_annotation(Annotation::primary(span).with_message("Object does not implement `ArrayAccess`."))
             .with_note("Only objects implementing `ArrayAccess` can be accessed like arrays.")
@@ -1523,8 +1534,8 @@ where
         );
 
         if !value_type_contained {
-            let expected_type_str = resulting_value_type.get_id();
-            let assigned_type_str = assign_value_type.get_id();
+            let expected_type_str = display_type(context, &resulting_value_type);
+            let assigned_type_str = display_type(context, assign_value_type);
 
             context.collector.report_with_code(
                 IssueCode::InvalidArrayAccessAssignmentValue,
@@ -1629,7 +1640,7 @@ where
                     IssueCode::MixedArrayAssignment,
                     Issue::error(format!(
                         "Unsafe array assignment on type `{}`.",
-                        mixed.get_id()
+                        display_atomic(context, mixed)
                     ))
                     .with_annotation(
                         Annotation::primary(span)
@@ -1646,7 +1657,7 @@ where
         } else {
             context.collector.report_with_code(
                 IssueCode::MixedArrayAccess,
-                Issue::error(format!("Unsafe array access on type `{}`.", mixed.get_id()))
+                Issue::error(format!("Unsafe array access on type `{}`.", display_atomic(context, mixed)))
                 .with_annotation(Annotation::primary(span).with_message("Cannot safely access index because base type is `mixed`."))
                 .with_note("The variable being accessed might not be an array at runtime.")
                 .with_help("Ensure the variable holds an array before accessing an index, potentially using type checks or assertions."),

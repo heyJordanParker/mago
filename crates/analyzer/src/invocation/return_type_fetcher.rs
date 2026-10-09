@@ -94,11 +94,9 @@ where
             .get(value.start_offset() as usize..value.end_offset() as usize)
             .unwrap_or_default(),
     );
+    let value_text = display_sharp_type(context, value_type);
     let message = if value_type.has_mixed() {
-        format!(
-            "T is {}, which could itself be a list; check what `{source}` is with `is` first",
-            display_sharp_type(context, value_type)
-        )
+        format!("T is {value_text}, which could itself be a list; check what `{source}` is with `is` first")
     } else {
         let collections: Vec<TAtomic> = element_type.types.iter().filter(|atomic| atomic.is_array()).cloned().collect();
         if collections.is_empty() {
@@ -118,12 +116,11 @@ where
             display_sharp_type(context, &element_type)
         )
     };
-    let value_type = display_sharp_type(context, value_type);
 
     context.collector.report_with_code(
         IssueCode::InvalidArgument,
         Issue::error(message)
-            .with_annotation(Annotation::primary(value.span()).with_message(format!("This is `{value_type}`.")))
+            .with_annotation(Annotation::primary(value.span()).with_message(format!("This is `{value_text}`.")))
             .with_note("`wrap` returns a `List` or a `Map` as it is, because both run as PHP arrays."),
     );
 

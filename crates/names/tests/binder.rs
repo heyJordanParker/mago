@@ -480,6 +480,23 @@ fn an_extern_target_binds_an_imported_class_and_keeps_its_member_name() {
     assert_eq!(resolved(&names, CODE, "StripeClient uses", 0), b"Stripe\\StripeClient");
 }
 
+/// A law binds as a static method does, spec section 28: its parameters are locals of that law alone, and their types
+/// resolve through the file's imports.
+#[test]
+fn a_law_binds_its_parameters_as_its_own_locals_and_their_types_through_the_imports() {
+    const CODE: &str = "namespace App.Shared;\n\nimport App.Billing.Currency;\n\nclass Money\n{\n    law sameCurrency(Currency left, Money right) => left == right.currency;\n\n    law sameAmount(int left) => left == left;\n}\n";
+    let arena = LocalArena::new();
+    let names = bind(&arena, CODE);
+
+    assert_eq!(resolved(&names, CODE, "Currency left", 0), b"App\\Billing\\Currency");
+    assert_eq!(resolved(&names, CODE, "Money right", 0), b"App\\Shared\\Money");
+    assert_eq!(binding(&names, CODE, "left", 1), Some(local(CODE, "left", 0, LocalKind::Parameter)));
+    assert_eq!(binding(&names, CODE, "right", 1), Some(local(CODE, "right", 0, LocalKind::Parameter)));
+    assert_eq!(binding(&names, CODE, "left", 3), Some(local(CODE, "left", 2, LocalKind::Parameter)));
+    assert_eq!(binding(&names, CODE, "left", 4), Some(local(CODE, "left", 2, LocalKind::Parameter)));
+    assert_eq!(names.binding_errors(), []);
+}
+
 /// A bare `extern` target that the file does not import is a global function, since PHP# has no functions of its own.
 #[test]
 fn a_bare_extern_target_that_is_not_imported_is_a_global_function() {

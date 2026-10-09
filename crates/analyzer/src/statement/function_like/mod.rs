@@ -48,6 +48,7 @@ use mago_codex::ttype::union::TUnion;
 use mago_codex::ttype::wrap_atomic;
 use mago_codex::visibility::Visibility;
 use mago_names::binding::php_variable_name;
+use mago_names::display_sharp_member;
 use mago_php_version::feature::Feature;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -76,6 +77,13 @@ use crate::statement::class_like::property::analyze_property_hook;
 use crate::statement::r#return::handle_return_value;
 use crate::statement::r#static::infer_static_local_types;
 use crate::utils::expression::get_variable_id;
+use crate::utils::names::display_atomic;
+use crate::utils::names::display_class_like_name;
+use crate::utils::names::display_nullable_type;
+use crate::utils::names::display_sharp_type;
+use crate::utils::names::display_type;
+use crate::utils::names::display_value_type;
+use crate::utils::names::display_variable_name;
 
 pub mod function;
 pub mod rejected_nullable_parameter;
@@ -436,10 +444,19 @@ where
         // A conditional return type whose branches are all `void`/`never` erases to `void`, which
         // the check above cannot see through since it only sees the unexpanded conditional.
         if !expanded_type.is_void() {
+            let (kind, name) = match block_context.scope.get_class_like() {
+                Some(class_like) if context.dialect.is_sharp() && function_metadata.kind.is_method() => {
+                    let class_name = display_class_like_name(context, class_like.original_name);
+
+                    ("method", word(display_sharp_member(class_name, function_metadata.original_name)))
+                }
+                _ => ("function", function_metadata.name),
+            };
+
             report_missing_return(
                 context,
-                "function",
-                function_metadata.name,
+                kind,
+                name,
                 function_metadata.name_span.unwrap_or(function_metadata.span),
                 body.span(),
                 &expanded_type,
@@ -734,13 +751,16 @@ pub(crate) fn report_missing_return<A>(
 ) where
     A: Arena,
 {
-    let expected_return_type_id = expected_type.get_id();
+    let expected_return_type_id = display_type(context, expected_type);
 
     let help_message = if expected_type.is_nullable() {
         "Ensure all code paths end with a `return` statement. You may need to add `return null;` to the paths that currently don't return a value.".to_string()
     } else {
+        let nullable_return_type_id =
+            display_nullable_type(context, expected_type, format!("{expected_return_type_id}|null"));
+
         format!(
-            "Add a `return` statement that provides a value of type '{expected_return_type_id}' to all paths, or change the {kind}'s return type to '{expected_return_type_id}|null' and return `null` explicitly."
+            "Add a `return` statement that provides a value of type '{expected_return_type_id}' to all paths, or change the {kind}'s return type to '{nullable_return_type_id}' and return `null` explicitly."
         )
     };
 
@@ -1235,9 +1255,10 @@ fn check_return_type_metadata_width<'ctx, A>(
         return;
     }
 
-    let unused_list = unused_atomics.iter().map(|a| a.get_id().to_string()).collect::<Vec<_>>().join("`, `");
+    let unused_list =
+        unused_atomics.iter().map(|atomic| display_atomic(context, atomic)).collect::<Vec<_>>().join("`, `");
 
-    let declared_str = expanded_declared.get_id();
+    let declared_str = display_type(context, &expanded_declared);
     let return_span = return_type_metadata.span;
     let function_label = function_like_metadata.name;
 
@@ -1664,9 +1685,9 @@ fn check_parameter_default_value<'ctx, 'arena, A>(
         return;
     }
 
-    let default_type_str = default_type.get_id();
-    let declared_type_str = declared_type.get_id();
-    let param_name = parameter_metadata.name.0;
+    let default_type_str = display_value_type(context, default_type, declared_type);
+    let declared_type_str = display_type(context, declared_type);
+    let param_name = display_variable_name(context, parameter_metadata.name.0.as_bytes());
 
     let issue = Issue::error(format!(
         "Default value for parameter `{param_name}` is not assignable to its declared type."
@@ -1743,7 +1764,7 @@ where
             continue;
         };
 
-        let class_name = class.original_name;
+        let class_name = display_class_like_name(context, class.original_name);
         let expected = class.template_types.len();
         let required = class.template_types.values().take_while(|template| template.default.is_none()).count();
         if arguments.len() < required || arguments.len() > expected {
@@ -1804,8 +1825,8 @@ where
                 continue;
             }
 
-            let argument_id = expanded_argument.get_id();
-            let constraint_id = constraint.get_id();
+            let argument_id = display_type(context, &expanded_argument);
+            let constraint_id = display_type(context, &constraint);
             context.collector.report_with_code(
                 IssueCode::TemplateConstraintViolation,
                 Issue::error(format!(
@@ -1847,7 +1868,7 @@ where
             continue;
         }
 
-        let key_id = key_type.get_id();
+        let key_id = display_sharp_type(context, key_type);
         context.collector.report_with_code(
             IssueCode::TemplateConstraintViolation,
             Issue::error(format!(

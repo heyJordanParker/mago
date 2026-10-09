@@ -1,13 +1,13 @@
 use mago_allocator::Arena;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::metadata::function_like::FunctionLikeMetadata;
-use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::callable::TCallable;
 use mago_codex::ttype::atomic::callable::TCallableSignature;
 use mago_codex::ttype::cast::cast_atomic_to_callable;
 use mago_codex::ttype::expander::contains_parameter_variable;
 use mago_codex::ttype::template::TemplateResult;
 use mago_codex::ttype::union::TUnion;
+use mago_names::display_sharp_member;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
@@ -39,7 +39,8 @@ use crate::invocation::InvocationTarget;
 use crate::plugin::ExpressionHookResult;
 use crate::plugin::context::HookContext;
 use crate::utils::expression::get_bare_name_variable_id;
-use crate::utils::names::display_sharp_method;
+use crate::utils::names::display_atomic;
+use crate::utils::names::display_missing_imports;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for FunctionCall<'arena> {
     fn analyze<'ctx, A>(
@@ -274,7 +275,7 @@ where
                 source: None,
             });
         } else {
-            let type_name = atomic.get_id();
+            let type_name = display_atomic(context, atomic);
 
             context.collector.report_with_code(
                 IssueCode::InvalidCallable,
@@ -327,23 +328,34 @@ where
         return false;
     };
 
-    let methods: Vec<String> = wrappers
+    let (classes, methods): (Vec<Word>, Vec<String>) = wrappers
         .iter()
         .filter_map(|(_, _, method)| {
             let class = codebase.get_class_like(method.get_class_name().as_bytes())?;
 
-            Some(format!("`{}(…)`", display_sharp_method(context, class, codebase.get_method_by_id(method)?)))
+            let method = codebase.get_method_by_id(method)?;
+
+            // Code to write names the class by its short name, as its import binds it: PHP# refuses a full name in
+            // code, so the dotted name that tells two classes apart in prose would not compile here.
+            Some((
+                class.original_name,
+                format!("`{}(…)`", display_sharp_member(class.original_name, method.original_name)),
+            ))
         })
-        .collect();
+        .unzip();
     let Some((last, others)) = methods.split_last() else {
         return false;
     };
     let methods = if others.is_empty() { last.clone() } else { format!("{} or {last}", others.join(", ")) };
+    let imports = display_missing_imports(context, classes).map(|imports| format!(" {imports}")).unwrap_or_default();
 
     context.collector.report_with_code(
         IssueCode::WrappedFunction,
-        Issue::error(format!("`{}` is wrapped by the standard library: write {methods}.", function.original_name))
-            .with_annotation(Annotation::primary(span).with_message("Called here.")),
+        Issue::error(format!(
+            "`{}` is wrapped by the standard library: write {methods}.{imports}",
+            function.original_name
+        ))
+        .with_annotation(Annotation::primary(span).with_message("Called here.")),
     );
 
     true
@@ -448,7 +460,7 @@ where
     Some(if block_context.scope.is_static() {
         format!(
             "Write `{}()`: a static method reaches the members of its class through the class name.",
-            display_sharp_method(context, class, method)
+            display_sharp_member(class.original_name, method.original_name)
         )
     } else {
         format!("Write `this.{}()`: members of the same object are always written with `this.`.", method.original_name)

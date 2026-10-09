@@ -34,6 +34,23 @@ mod internal;
 /// writes its local too, which captures it by reference, as harmless.
 pub const CHANGING_COLLECTION_METHODS: [&str; 3] = ["add", "set", "delete"];
 
+/// The last segment of the full name `name`, as a PHP# import writes it.
+#[must_use]
+pub fn short_name(name: impl AsRef<[u8]>) -> String {
+    let name = name.as_ref();
+
+    String::from_utf8_lossy(name.rsplit(|byte| *byte == b'\\').next().unwrap_or(name)).into_owned()
+}
+
+/// The member `member_name` of the class `class_name` as PHP# names it: `Box.put`.
+///
+/// C# names a member the same way in its messages. A method, a property, a constant and an enum case read alike, so a
+/// property's `$` is dropped: `Box.total`.
+#[must_use]
+pub fn display_sharp_member(class_name: impl AsRef<[u8]>, member_name: impl std::fmt::Display) -> String {
+    format!("{}.{}", short_name(class_name), member_name.to_string().trim_start_matches('$'))
+}
+
 /// Stores the results of a name resolution pass over a PHP program.
 ///
 /// Maps the start byte offset of every identifier in the source to a tuple of

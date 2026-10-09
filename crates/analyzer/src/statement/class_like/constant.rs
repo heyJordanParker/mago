@@ -1,5 +1,4 @@
 use mago_allocator::Arena;
-use mago_codex::ttype::TType;
 use mago_codex::ttype::comparator::ComparisonResult;
 use mago_codex::ttype::comparator::union_comparator;
 use mago_codex::ttype::expander::StaticClassType;
@@ -20,6 +19,9 @@ use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::statement::attributes::AttributeTarget;
 use crate::statement::attributes::analyze_attributes;
+use crate::utils::names::display_member;
+use crate::utils::names::display_type;
+use crate::utils::names::display_value_type;
 
 impl<'ast, 'arena> Analyzable<'ast, 'arena> for ClassLikeConstant<'arena> {
     fn analyze<'ctx, A>(
@@ -65,20 +67,20 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ClassLikeConstantItem<'arena> {
         if let Some(class_metadata) = block_context.scope.get_class_like()
             && let Some(constant_metadata) = class_metadata.constants.get(&word(self.name.value))
         {
+            let constant =
+                display_member(context, class_metadata.original_name, mago_bytes::BytesDisplay(self.name.value));
+
             if let Some(inferred_type) = constant_metadata.inferred_type.as_ref()
                 && inferred_type.is_never()
             {
                 context.collector.report_with_code(
                     IssueCode::UnresolvableClassConstant,
-                    Issue::error(format!(
-                        "Cannot resolve the value of class constant `{}::{}`.",
-                        class_metadata.original_name,
-                        mago_bytes::BytesDisplay(self.name.value),
-                    ))
-                    .with_annotation(
-                        Annotation::primary(self.value.span()).with_message("This initializer could not be evaluated"),
-                    )
-                    .with_note("Mago could not determine a value for this constant from its initializer."),
+                    Issue::error(format!("Cannot resolve the value of class constant `{constant}`."))
+                        .with_annotation(
+                            Annotation::primary(self.value.span())
+                                .with_message("This initializer could not be evaluated"),
+                        )
+                        .with_note("Mago could not determine a value for this constant from its initializer."),
                 );
             } else if let Some(declared_type_metadata) = constant_metadata.type_metadata.as_ref()
                 && let Some(value_type) = artifacts.get_expression_type(&self.value)
@@ -108,13 +110,11 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ClassLikeConstantItem<'arena> {
                     false,
                     &mut comparison_result,
                 ) {
-                    let value_type_str = value_type.get_id();
-                    let declared_type_str = declared_type.get_id();
-                    let class_name = class_metadata.original_name;
-                    let constant_name = mago_bytes::BytesDisplay(self.name.value);
+                    let value_type_str = display_value_type(context, value_type, &declared_type);
+                    let declared_type_str = display_type(context, &declared_type);
 
                     let issue = Issue::error(format!(
-                        "Value for constant `{class_name}::{constant_name}` is not assignable to its declared type."
+                        "Value for constant `{constant}` is not assignable to its declared type."
                     ))
                     .with_annotation(
                         Annotation::primary(self.value.span())

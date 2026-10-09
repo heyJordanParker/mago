@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use foldhash::HashSet;
 
-use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::array::key::ArrayKey;
@@ -57,6 +56,8 @@ use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::utils::expression::get_block_expression_id;
 use crate::utils::misc::unwrap_expression;
+use crate::utils::names::display_atomic;
+use crate::utils::names::display_type;
 
 /// Analyzes array literals and their elements.
 ///
@@ -189,7 +190,7 @@ where
                             // A PHP# literal keys a `Map` by a backed enum, which runs as its backing value.
                             item_key_type.clone()
                         } else if !item_key_type.is_always_array_key(true) {
-                            let item_key_type_id = item_key_type.get_id();
+                            let item_key_type_id = display_type(context, item_key_type);
 
                             context.collector.report_with_code(
                                 IssueCode::InvalidArrayElementKey,
@@ -569,7 +570,7 @@ fn report_sharp_literal_spreads<A>(
                         !matches!(atomic, TAtomic::Array(_))
                             && get_iterable_value_parameter(atomic, context.codebase).is_some()
                     }) {
-                        let type_str = atomic.get_id();
+                        let type_str = display_atomic(context, atomic);
                         context.collector.report_with_code(
                             IssueCode::InvalidArrayElement,
                             Issue::error(format!(
@@ -741,12 +742,11 @@ fn handle_variadic_array_element<'arena, A>(
                     array_creation_info.item_key_atomic_types.push(TAtomic::Scalar(TScalar::ArrayKey));
                     array_creation_info.item_value_atomic_types.push(TAtomic::Mixed(TMixed::new()));
 
+                    let atomic_str = display_atomic(context, atomic);
+
                     context.collector.report_with_code(
                         IssueCode::InvalidArrayElement,
-                        Issue::error(format!(
-                            "Cannot use spread operator on non-iterable type `{}`.",
-                            atomic.get_id()
-                        ))
+                        Issue::error(format!("Cannot use spread operator on non-iterable type `{atomic_str}`."))
                         .with_annotation(
                             Annotation::primary(variadic_array_element.span())
                                 .with_message("Spread operator requires an iterable type.")
@@ -811,12 +811,11 @@ fn handle_variadic_array_element<'arena, A>(
             }
 
             if !is_array_key_key {
+                let key_type_str = display_type(context, &key_type);
+
                 context.collector.report_with_code(
                     IssueCode::InvalidArrayElementKey,
-                    Issue::error(format!(
-                        "Cannot use spread operator on an iterable with key type `{}`.",
-                        key_type.get_id()
-                    ))
+                    Issue::error(format!("Cannot use spread operator on an iterable with key type `{key_type_str}`."))
                     .with_annotation(
                         Annotation::primary(variadic_array_element.span())
                             .with_message("Spread operator requires an iterable type with array-key keys.")

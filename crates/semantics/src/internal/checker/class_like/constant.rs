@@ -18,10 +18,9 @@ pub fn check_class_like_constant<'ast, 'arena>(
     class_like_fqcn: &[u8],
     context: &mut Context<'_, 'ast, 'arena>,
 ) {
-    let class_like_name = BytesDisplay(class_like_name);
-    let class_like_fqcn = BytesDisplay(class_like_fqcn);
+    let class_like_fqcn = context.display_class_like_name(class_like_fqcn);
     let first_item = class_like_constant.first_item();
-    let first_item_name = BytesDisplay(first_item.name.value);
+    let first_item_display = context.display_member(class_like_name, BytesDisplay(first_item.name.value));
 
     let mut last_final: Option<Span> = None;
     let mut last_visibility: Option<Span> = None;
@@ -38,7 +37,7 @@ pub fn check_class_like_constant<'ast, 'arena>(
                         .with_annotation(Annotation::primary(modifier.span()))
                         .with_annotations([
                             Annotation::secondary(first_item.span()).with_message(format!(
-                                "{class_like_kind} constant `{class_like_name}::{first_item_name}` is declared here."
+                                "{class_like_kind} constant `{first_item_display}` is declared here."
                             )),
                             Annotation::secondary(class_like_span)
                                 .with_message(format!("{class_like_kind} `{class_like_fqcn}` is declared here.")),
@@ -61,11 +60,10 @@ pub fn check_class_like_constant<'ast, 'arena>(
                             .with_annotations([
                                 Annotation::secondary(last_final).with_message("previous `final` modifier"),
                                 Annotation::secondary(first_item.span()).with_message(format!(
-                                    "{class_like_kind} constant `{class_like_name}::{first_item_name}` is declared here."
+                                    "{class_like_kind} constant `{first_item_display}` is declared here."
                                 )),
-                                Annotation::secondary(class_like_span).with_message(format!(
-                                    "{class_like_kind} `{class_like_fqcn}` is declared here."
-                                )),
+                                Annotation::secondary(class_like_span)
+                                    .with_message(format!("{class_like_kind} `{class_like_fqcn}` is declared here.")),
                             ]),
                     );
                 }
@@ -91,11 +89,10 @@ pub fn check_class_like_constant<'ast, 'arena>(
                             .with_annotations([
                                 Annotation::secondary(last_visibility).with_message("previous visibility modifier"),
                                 Annotation::secondary(first_item.span()).with_message(format!(
-                                    "{class_like_kind} constant `{class_like_name}::{first_item_name}` is declared here."
+                                    "{class_like_kind} constant `{first_item_display}` is declared here."
                                 )),
-                                Annotation::secondary(class_like_span).with_message(format!(
-                                    "{class_like_kind} `{class_like_fqcn}` is declared here."
-                                )),
+                                Annotation::secondary(class_like_span)
+                                    .with_message(format!("{class_like_kind} `{class_like_fqcn}` is declared here.")),
                             ]),
                     );
                 }
@@ -117,21 +114,18 @@ pub fn check_class_like_constant<'ast, 'arena>(
     }
 
     for item in &class_like_constant.items {
-        let item_name = BytesDisplay(item.name.value);
+        let item_display = context.display_member(class_like_name, BytesDisplay(item.name.value));
 
         if !item.value.is_constant(&context.version, false) {
             context.report(
-                Issue::error(format!(
-                    "Constant `{class_like_name}::{item_name}` value contains a non-constant expression."
-                ))
-                .with_annotation(Annotation::primary(item.value.span()))
-                .with_annotations([
-                    Annotation::secondary(item.name.span()).with_message(format!(
-                        "{class_like_kind} constant `{class_like_name}::{item_name}` is declared here."
-                    )),
-                    Annotation::secondary(class_like_span)
-                        .with_message(format!("{class_like_kind} `{class_like_fqcn}` is declared here.")),
-                ]),
+                Issue::error(format!("Constant `{item_display}` value contains a non-constant expression."))
+                    .with_annotation(Annotation::primary(item.value.span()))
+                    .with_annotations([
+                        Annotation::secondary(item.name.span())
+                            .with_message(format!("{class_like_kind} constant `{item_display}` is declared here.")),
+                        Annotation::secondary(class_like_span)
+                            .with_message(format!("{class_like_kind} `{class_like_fqcn}` is declared here.")),
+                    ]),
             );
         }
     }

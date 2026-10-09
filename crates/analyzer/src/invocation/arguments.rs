@@ -4,7 +4,6 @@ use std::sync::Arc;
 use foldhash::HashMap;
 
 use mago_allocator::Arena;
-use mago_bytes::BytesDisplay;
 use mago_codex::identifier::function_like::FunctionLikeIdentifier;
 use mago_codex::metadata::CodebaseMetadata;
 use mago_codex::ttype::TType;
@@ -40,6 +39,11 @@ use crate::invocation::InvocationTarget;
 use crate::statement::function_like::closure_parameter_types;
 use crate::utils::expression::is_referenceable;
 use crate::utils::get_type_diff;
+use crate::utils::names::display_atomic;
+use crate::utils::names::display_nullable_type;
+use crate::utils::names::display_type;
+use crate::utils::names::display_value_type;
+use crate::utils::names::display_variable_name;
 
 /// Checks if an argument can be passed by reference.
 pub(super) fn is_argument_referenceable(
@@ -139,9 +143,10 @@ where
     {
         let target_kind_str = invocation_target.guess_kind();
         let target_name_str = invocation_target.guess_name(context);
-        let parameter_label = invocation_target
-            .get_effective_parameter_name(argument_offset)
-            .map_or_else(|| format!("#{}", argument_offset + 1), |name| format!("`{}`", BytesDisplay(name.as_bytes())));
+        let parameter_label = invocation_target.get_effective_parameter_name(argument_offset).map_or_else(
+            || format!("#{}", argument_offset + 1),
+            |name| format!("`{}`", display_variable_name(context, name.as_bytes())),
+        );
 
         context.collector.report_with_code(
             IssueCode::InvalidPassByReference,
@@ -181,11 +186,11 @@ pub fn verify_argument_type<'arena, A>(
     let effective_parameter_name = invocation_target.get_effective_parameter_name(argument_offset);
     let argument_label = effective_parameter_name.map_or_else(
         || format!("argument #{}", argument_offset + 1),
-        |name| format!("`{}`", BytesDisplay(name.as_bytes())),
+        |name| format!("`{}`", display_variable_name(context, name.as_bytes())),
     );
     let argument_subject = effective_parameter_name.map_or_else(
         || format!("Argument #{}", argument_offset + 1),
-        |name| format!("Argument `{}`", BytesDisplay(name.as_bytes())),
+        |name| format!("Argument `{}`", display_variable_name(context, name.as_bytes())),
     );
 
     if input_type.is_never() {
@@ -216,7 +221,9 @@ pub fn verify_argument_type<'arena, A>(
     if !parameter_type.accepts_null() {
         if input_type.is_null() {
             let target_name_str = invocation_target.guess_name(context);
-            let parameter_type_str = parameter_type.get_id();
+            let parameter_type_str = display_type(context, parameter_type);
+            let nullable_parameter_type_str =
+                display_nullable_type(context, parameter_type, format!("{parameter_type_str}|null"));
             let call_site = Annotation::secondary(invocation_target.span())
                 .with_message(format!("Arguments to this {target_kind_str} are incorrect"));
             context.collector.report_with_code(
@@ -227,7 +234,7 @@ pub fn verify_argument_type<'arena, A>(
                 .with_annotation(Annotation::primary(input_expression.span()).with_message("This argument is `null`"))
                 .with_annotation(call_site)
                 .with_help(format!(
-                    "Provide a non-null value, or declare the parameter as nullable (e.g., `{parameter_type_str}|null`)."
+                    "Provide a non-null value, or declare the parameter as nullable (e.g., `{nullable_parameter_type_str}`)."
                 )),
             );
 
@@ -236,8 +243,8 @@ pub fn verify_argument_type<'arena, A>(
 
         if input_type.is_nullable() && !input_type.ignore_nullable_issues() {
             let target_name_str = invocation_target.guess_name(context);
-            let input_type_str = input_type.get_id();
-            let parameter_type_str = parameter_type.get_id();
+            let input_type_str = display_value_type(context, input_type, parameter_type);
+            let parameter_type_str = display_type(context, parameter_type);
             let call_site = Annotation::secondary(invocation_target.span())
                 .with_message(format!("Arguments to this {target_kind_str} are incorrect"));
             context.collector.report_with_code(
@@ -258,7 +265,7 @@ pub fn verify_argument_type<'arena, A>(
     if !parameter_type.accepts_false() {
         if input_type.is_false() {
             let target_name_str = invocation_target.guess_name(context);
-            let parameter_type_str = parameter_type.get_id();
+            let parameter_type_str = display_type(context, parameter_type);
             let call_site = Annotation::secondary(invocation_target.span())
                 .with_message(format!("Arguments to this {target_kind_str} are incorrect"));
             context.collector.report_with_code(
@@ -278,8 +285,8 @@ pub fn verify_argument_type<'arena, A>(
 
         if input_type.is_falsable() && !input_type.ignore_falsable_issues() {
             let target_name_str = invocation_target.guess_name(context);
-            let input_type_str = input_type.get_id();
-            let parameter_type_str = parameter_type.get_id();
+            let input_type_str = display_value_type(context, input_type, parameter_type);
+            let parameter_type_str = display_type(context, parameter_type);
             let call_site = Annotation::secondary(invocation_target.span())
                 .with_message(format!("Arguments to this {target_kind_str} are incorrect"));
             context.collector.report_with_code(
@@ -312,8 +319,8 @@ pub fn verify_argument_type<'arena, A>(
     }
 
     let target_name_str = invocation_target.guess_name(context);
-    let input_type_str = input_type.get_id();
-    let parameter_type_str = parameter_type.get_id();
+    let input_type_str = display_value_type(context, input_type, parameter_type);
+    let parameter_type_str = display_type(context, parameter_type);
     let call_site = Annotation::secondary(invocation_target.span())
         .with_message(format!("Arguments to this {target_kind_str} are incorrect"));
 
@@ -347,10 +354,11 @@ pub fn verify_argument_type<'arena, A>(
             .type_coerced_from_nested_mixed
             .unwrap_or(false)
         {
+            let mixed = display_type(context, &get_mixed());
             (
                 IssueCode::LessSpecificNestedArgumentType,
-                format!("Provided type `{input_type_str}` is too general due to nested `mixed`."),
-                "The structure contains `mixed`, making it incompatible.".to_string(),
+                format!("Provided type `{input_type_str}` is too general due to nested `{mixed}`."),
+                format!("The structure contains `{mixed}`, making it incompatible."),
             )
         } else {
             (
@@ -569,13 +577,13 @@ where
     else {
         return;
     };
-    let type_str = atomic_type.get_id();
+    let type_str = display_atomic(context, atomic_type);
 
     context.collector.report_with_code(
         IssueCode::InvalidArgument,
         Issue::error(format!("Cannot spread a value of type `{type_str}`: PHP# spreads only a list."))
             .with_annotation(Annotation::primary(span).with_message(format!("Type `{type_str}` is not a list")))
-            .with_note("Spec section 7 spreads an existing list into a call, as in `Money.sum(...prices)`.")
+            .with_note("PHP# spreads an existing list into a call, as in `Money.sum(...prices)`.")
             .with_help("Spread a list, such as a variadic parameter or a `list<int>` from plain PHP."),
     );
 }

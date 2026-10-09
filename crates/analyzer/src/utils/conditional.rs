@@ -5,7 +5,6 @@ use std::rc::Rc;
 use indexmap::IndexMap;
 
 use mago_codex::assertion::Assertion;
-use mago_codex::ttype::TType;
 use mago_codex::ttype::union::TUnion;
 use mago_reporting::Annotation;
 use mago_reporting::Issue;
@@ -27,6 +26,7 @@ use crate::context::scope::conditional_scope::IfConditionalScope;
 use crate::context::scope::if_scope::IfScope;
 use crate::error::AnalysisError;
 use crate::reconciler::reconcile_keyed_types;
+use crate::utils::names::display_type;
 
 pub(crate) fn analyze<'ctx, 'arena, A>(
     context: &mut Context<'ctx, 'arena, A>,
@@ -279,13 +279,14 @@ fn get_definitely_evaluated_expression_inside_if<'ast, 'arena>(
     condition
 }
 
+/// Reports a condition whose type makes it always false or always true. A PHP# file names the type as PHP# writes it.
 pub fn handle_paradoxical_condition<T, A>(context: &mut Context<'_, '_, A>, expression: &T, expression_type: &TUnion)
 where
     T: HasSpan,
     A: Arena,
 {
     if expression_type.is_always_falsy() {
-        let type_id = expression_type.get_id();
+        let type_id = display_type(context, expression_type);
         context.collector.report_with_code(
             IssueCode::ImpossibleCondition,
             Issue::warning(format!(
@@ -303,7 +304,7 @@ where
             ),
         );
     } else if expression_type.is_always_truthy() {
-        let type_id = expression_type.get_id();
+        let type_id = display_type(context, expression_type);
         context.collector.report_with_code(
             IssueCode::RedundantCondition,
             Issue::warning(format!(

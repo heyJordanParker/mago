@@ -32,6 +32,7 @@ use crate::reconciler::map_generic_constraint;
 use crate::reconciler::simple_assertion_reconciler::get_acceptable_type;
 use crate::reconciler::simple_assertion_reconciler::intersect_null;
 use crate::reconciler::trigger_issue_for_impossible;
+use crate::utils::names::display_type;
 
 pub(crate) fn reconcile<A>(
     context: &mut Context<'_, '_, A>,
@@ -928,7 +929,7 @@ where
         && let Some(key) = key
         && let Some(pos) = span
     {
-        let old_var_type_atom = existing_var_type.get_id();
+        let old_var_type_atom = word(display_type(context, existing_var_type));
         trigger_issue_for_impossible(context, old_var_type_atom, key, assertion, !did_remove_type, negated, pos);
     }
 
@@ -993,7 +994,7 @@ where
         && let Some(key) = key
         && let Some(pos) = span
     {
-        let old_var_type_atom = existing_var_type.get_id();
+        let old_var_type_atom = word(display_type(context, existing_var_type));
         trigger_issue_for_impossible(context, old_var_type_atom, key, assertion, !did_remove_type, negated, pos);
     }
 
@@ -1201,7 +1202,7 @@ where
         && let Some(key) = key
         && let Some(pos) = span
     {
-        let old_var_type_atom = existing_var_type.get_id();
+        let old_var_type_atom = word(display_type(context, existing_var_type));
         trigger_issue_for_impossible(context, old_var_type_atom, key, assertion, !did_remove_type, negated, pos);
     }
 
@@ -1458,7 +1459,8 @@ where
     if let Some(key) = key
         && let Some(pos) = span
     {
-        trigger_issue_for_impossible(context, existing_var_type.get_id(), key, assertion, true, negated, pos);
+        let old_var_type_atom = word(display_type(context, existing_var_type));
+        trigger_issue_for_impossible(context, old_var_type_atom, key, assertion, true, negated, pos);
     }
 
     get_mixed()

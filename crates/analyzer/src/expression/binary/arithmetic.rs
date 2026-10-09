@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use mago_codex::assertion::Assertion;
 use mago_codex::metadata::CodebaseMetadata;
-use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::atomic::array::key::ArrayKey;
@@ -28,8 +27,10 @@ use mago_reporting::Annotation;
 use mago_reporting::Issue;
 use mago_span::HasSpan;
 use mago_span::Span;
+use mago_syntax::cst::Access;
 use mago_syntax::cst::Binary;
 use mago_syntax::cst::BinaryOperator;
+use mago_syntax::cst::Expression;
 
 use crate::analyzable::Analyzable;
 use crate::artifacts::AnalysisArtifacts;
@@ -39,7 +40,10 @@ use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
 use crate::expression::binary::concat::fold_concat_operands;
 use crate::expression::binary::utils::analyze_instance_operator;
+use crate::expression::binary::utils::display_operand;
 use crate::expression::binary::utils::refuse_non_int_operands;
+use crate::utils::names::display_atomic;
+use crate::utils::names::display_type;
 
 #[inline]
 pub fn analyze_arithmetic_operation<'ctx, 'arena, A>(
@@ -112,17 +116,18 @@ where
             return Ok(());
         }
 
+        let left = display_type(context, &left_type);
+        let right = display_type(context, &right_type);
+
         context.collector.report_with_code(
             IssueCode::InvalidOperand,
-            Issue::error(format!(
-                "`+` cannot join `{}` and `{}`: it joins two strings or adds two numbers.",
-                left_type.get_id(),
-                right_type.get_id()
-            ))
-            .with_annotation(Annotation::primary(binary.span()).with_message("A string may meet another value here."))
-            .with_annotation(Annotation::secondary(operator).with_message("`+` used here."))
-            .with_note("Spec section 18 makes joining a string with any other value an error, so `\"1\" + 1` cannot produce `\"11\"`.")
-            .with_help("Put the value in a template written between backticks, as in `Total: ${count}`."),
+            Issue::error(format!("`+` cannot join `{left}` and `{right}`: it joins two strings or adds two numbers."))
+                .with_annotation(
+                    Annotation::primary(binary.span()).with_message("A string may meet another value here."),
+                )
+                .with_annotation(Annotation::secondary(operator).with_message("`+` used here."))
+                .with_note("PHP# joins a string only with another string, so `\"1\" + 1` cannot produce `\"11\"`.")
+                .with_help("Put the value in a template written between backticks, as in `Total: ${count}`."),
         );
 
         // The code meant to join, so the rest of it is checked as if the join gave a string.
@@ -145,17 +150,16 @@ where
         // Let's set result to mixed and return, similar to Psalm's behavior.
         final_result_type = Some(get_mixed());
     } else if left_type.is_nullable() && !left_type.ignore_nullable_issues() {
+        let left = display_type(context, &left_type);
+
         context.collector.report_with_code(
             IssueCode::PossiblyNullOperand,
-            Issue::warning(format!(
-                "Left operand in arithmetic operation might be `null` (type `{}`).",
-                left_type.get_id()
-            ))
-            .with_annotation(Annotation::primary(binary.lhs.span()).with_message("This might be `null`."))
-            .with_note("Performing arithmetic operations on `null` typically results in `0`.")
-            .with_help(
-                "Ensure the left operand is non-null before the operation, potentially using checks or assertions.",
-            ),
+            Issue::warning(format!("Left operand in arithmetic operation might be `null` (type `{left}`)."))
+                .with_annotation(Annotation::primary(binary.lhs.span()).with_message("This might be `null`."))
+                .with_note("Performing arithmetic operations on `null` typically results in `0`.")
+                .with_help(
+                    "Ensure the left operand is non-null before the operation, potentially using checks or assertions.",
+                ),
         );
     }
 
@@ -170,12 +174,11 @@ where
 
         final_result_type = Some(get_mixed());
     } else if right_type.is_nullable() && !right_type.ignore_nullable_issues() {
+        let right = display_type(context, &right_type);
+
         context.collector.report_with_code(
             IssueCode::PossiblyNullOperand,
-            Issue::warning(format!(
-                "Right operand in arithmetic operation might be `null` (type `{}`).",
-                right_type.get_id()
-            ))
+            Issue::warning(format!("Right operand in arithmetic operation might be `null` (type `{right}`)."))
             .with_annotation(Annotation::primary(binary.rhs.span()).with_message("This might be `null`"))
             .with_note("Performing arithmetic operations on `null` typically results in `0`.")
             .with_help(
@@ -213,12 +216,11 @@ where
         // We'll treat it as 0 in the loop below, but the warning is issued.
         // If *only* false, Psalm might bail; let's continue for now
     } else if left_type.is_falsable() && !left_type.ignore_falsable_issues() && !is_bitwise {
+        let left = display_type(context, &left_type);
+
         context.collector.report_with_code(
             IssueCode::PossiblyFalseOperand,
-            Issue::warning(format!(
-                "Left operand in arithmetic operation might be `false` (type `{}`).",
-                left_type.get_id()
-            ))
+            Issue::warning(format!("Left operand in arithmetic operation might be `false` (type `{left}`)."))
             .with_annotation(
                 Annotation::primary(binary.lhs.span())
                     .with_message("This might be `false`.")
@@ -250,12 +252,11 @@ where
             ),
         );
     } else if right_type.is_falsable() && !right_type.ignore_falsable_issues() && !is_bitwise {
+        let right = display_type(context, &right_type);
+
         context.collector.report_with_code(
             IssueCode::PossiblyFalseOperand,
-            Issue::warning(format!(
-                "Right operand in arithmetic operation might be `false` (type `{}`).",
-                right_type.get_id()
-            ))
+            Issue::warning(format!("Right operand in arithmetic operation might be `false` (type `{right}`)."))
             .with_annotation(
                 Annotation::primary(binary.rhs.span())
                     .with_message("This might be `false`.")
@@ -323,22 +324,7 @@ where
             let mut invalid_pair = false;
 
             if left_atomic.is_mixed() {
-                context.collector.report_with_code(
-                    IssueCode::MixedOperand,
-                    Issue::error(
-                        "Left operand in binary operation has type `mixed`."
-                    )
-                    .with_annotation(
-                        Annotation::primary(binary.lhs.span())
-                            .with_message("Operand is `mixed`.")
-                    )
-                    .with_note(
-                        "Performing operations on `mixed` is unsafe as the actual runtime type is unknown."
-                    )
-                    .with_help(
-                        "Ensure the left operand has a known type (e.g., `int`, `float`, `string`) using type hints, assertions, or checks."
-                    ),
-                );
+                report_mixed_operand(context, binary.lhs, &left_type, "Left");
 
                 pair_result_atomics.push(TAtomic::Mixed(TMixed::new()));
                 if !right_atomic.is_mixed() {
@@ -347,22 +333,7 @@ where
             }
 
             if right_atomic.is_mixed() {
-                context.collector.report_with_code(
-                    IssueCode::MixedOperand,
-                    Issue::error(
-                        "Right operand in binary operation has type `mixed`."
-                    )
-                    .with_annotation(
-                        Annotation::primary(binary.rhs.span())
-                            .with_message("Operand is `mixed`.")
-                    )
-                    .with_note(
-                        "Performing operations on `mixed` is unsafe as the actual runtime type is unknown."
-                    )
-                    .with_help(
-                        "Ensure the right operand has a known type (e.g., `int`, `float`, `string`) using type hints, assertions, or checks."
-                    ),
-                );
+                report_mixed_operand(context, binary.rhs, &right_type, "Right");
 
                 if !pair_result_atomics.iter().any(mago_codex::ttype::atomic::TAtomic::is_mixed) {
                     pair_result_atomics.push(TAtomic::Mixed(TMixed::new()));
@@ -389,7 +360,7 @@ where
                     has_valid_right_operand = true;
                 } else if left_atomic.is_array() {
                     invalid_right_messages.push((
-                        format!("Cannot add array to non-array type {}", right_atomic.get_id()),
+                        format!("Cannot add array to non-array type {}", display_atomic(context, &right_atomic)),
                         binary.rhs.span(),
                     ));
 
@@ -397,7 +368,7 @@ where
                     invalid_pair = true;
                 } else {
                     invalid_left_messages.push((
-                        format!("Cannot add {} to non-array type array", left_atomic.get_id()),
+                        format!("Cannot add {} to non-array type array", display_atomic(context, &left_atomic)),
                         binary.lhs.span(),
                     ));
 
@@ -453,26 +424,32 @@ where
                 }
             } else if left_atomic.is_numeric() {
                 invalid_right_messages.push((
-                    format!("Cannot perform arithmetic operation with non-numeric type {}", right_atomic.get_id()),
+                    format!(
+                        "Cannot perform arithmetic operation with non-numeric type {}",
+                        display_atomic(context, &right_atomic)
+                    ),
                     binary.rhs.span(),
                 ));
                 has_valid_left_operand = true;
                 invalid_pair = true;
             } else if right_atomic.is_numeric() {
                 invalid_left_messages.push((
-                    format!("Cannot perform arithmetic operation with non-numeric type {}", left_atomic.get_id()),
+                    format!(
+                        "Cannot perform arithmetic operation with non-numeric type {}",
+                        display_atomic(context, &left_atomic)
+                    ),
                     binary.lhs.span(),
                 ));
                 has_valid_right_operand = true;
                 invalid_pair = true;
             } else {
                 invalid_left_messages.push((
-                    format!("Cannot perform arithmetic operation on type {}", left_atomic.get_id()),
+                    format!("Cannot perform arithmetic operation on type {}", display_atomic(context, &left_atomic)),
                     binary.lhs.span(),
                 ));
 
                 invalid_right_messages.push((
-                    format!("Cannot perform arithmetic operation on type {}", right_atomic.get_id()),
+                    format!("Cannot perform arithmetic operation on type {}", display_atomic(context, &right_atomic)),
                     binary.rhs.span(),
                 ));
 
@@ -600,6 +577,50 @@ where
     }
 
     true
+}
+
+/// Reports the `side` operand of `mixed` type. In a PHP# file, a property read is named with the rule that keeps it
+/// `Any?`: spec section 21 narrows a local or a parameter after `is`, never a property.
+fn report_mixed_operand<A>(
+    context: &mut Context<'_, '_, A>,
+    operand: &Expression<'_>,
+    operand_type: &TUnion,
+    side: &str,
+) where
+    A: Arena,
+{
+    if context.dialect.is_sharp()
+        && matches!(operand.unparenthesized(), Expression::Access(Access::Property(_) | Access::NullSafeProperty(_)))
+    {
+        let written =
+            String::from_utf8_lossy(&context.source_file.contents[operand.span().to_range_usize()]).into_owned();
+
+        context.collector.report_with_code(
+            IssueCode::MixedOperand,
+            Issue::error(format!(
+                "`{written}` is `{}` here: a property is not narrowed, because it could change between the test and the use.",
+                display_operand(context, operand_type)
+            ))
+            .with_annotation(Annotation::primary(operand.span()).with_message("This property keeps its declared type."))
+            .with_note("PHP# narrows a local or a parameter after `is`, never a property.")
+            .with_help(format!(
+                "Copy the value into a local first: test it with a name, as in `if ({written} is int t)`, and use `t`."
+            )),
+        );
+
+        return;
+    }
+
+    context.collector.report_with_code(
+        IssueCode::MixedOperand,
+        Issue::error(format!("{side} operand in binary operation has type `mixed`."))
+            .with_annotation(Annotation::primary(operand.span()).with_message("Operand is `mixed`."))
+            .with_note("Performing operations on `mixed` is unsafe as the actual runtime type is unknown.")
+            .with_help(format!(
+                "Ensure the {} operand has a known type (e.g., `int`, `float`, `string`) using type hints, assertions, or checks.",
+                side.to_ascii_lowercase()
+            )),
+    );
 }
 
 #[inline]

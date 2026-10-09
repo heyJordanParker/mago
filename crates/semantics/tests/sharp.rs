@@ -71,6 +71,54 @@ fn extern_is_a_declaration_of_the_file_and_of_no_method_body() {
     assert_eq!(issues(code), ["13:9 This statement is not supported yet in PHP#."]);
 }
 
+/// Spec section 28: a law states a fact about the values of a class or an enum, and an interface has no values.
+#[test]
+fn a_law_is_a_member_of_a_class_or_an_enum_and_of_no_interface() {
+    let code = "namespace App.Shared;\n\npublic class Money\n{\n    law sameAmount(int a) => a == a;\n}\n\npublic enum Status\n{\n    case Open;\n\n    law openIsOpen(Status s) => Status.Open == Status.Open;\n}\n\npublic interface Priced\n{\n    law positive(int a) => a >= 0;\n}\n";
+
+    assert_eq!(issues(code), ["17:5 This class member is not supported yet in PHP#."]);
+}
+
+/// A law's parameters range over every value, so none has a default and none collects the rest of the arguments.
+#[test]
+fn a_law_parameter_with_a_default_or_a_spread_is_refused() {
+    let code = "namespace App.Shared;\n\npublic class Money\n{\n    law withDefault(int a = 1) => a == a;\n    law withRest(int ...rest) => true;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        [
+            "5:27 A law's parameters range over every value, so `a` cannot have a default.",
+            "6:22 A law's parameters range over every value, so `rest` cannot be variadic.",
+        ]
+    );
+    assert_eq!(
+        check("src/Report.sharp", code).into_iter().map(|issue| issue.notes).collect::<Vec<_>>(),
+        [
+            ["A law states a fact about every value of its parameters."],
+            ["A law states a fact about every value of its parameters."],
+        ]
+    );
+}
+
+/// A law has no `this`, so a bare member in it is written through the class name, as in a static method.
+#[test]
+fn a_bare_member_in_a_law_is_written_through_the_class_name() {
+    let code = "namespace App.Shared;\n\npublic class Money\n{\n    private int cents = 0;\n\n    law positive(Money a) => cents > 0;\n}\n";
+
+    assert_eq!(
+        issues(code),
+        ["7:30 Write `Money.cents`: a static method reaches the members of its class through the class name."]
+    );
+}
+
+/// A law and a method share their class's member names, so a name is declared once.
+#[test]
+fn a_law_and_a_method_named_alike_are_a_duplicate_member() {
+    let code = "namespace App.Shared;\n\npublic class Money\n{\n    public bool positive(int a) => a > 0;\n\n    law positive(int a) => a > 0 || a <= 0;\n}\n";
+
+    assert_eq!(issues(code), ["7:9 class method `Money.positive` has already been defined"]);
+}
+
 #[test]
 fn every_construct_outside_the_slice_is_not_supported_yet() {
     let code = "namespace App.Tenant;\n\nlet top = 1;\necho 1;\n\ninterface Shape\n{\n}\n\ntrait Named\n{\n}\n\nclass Report\n{\n    public int run(int extra)\n    {\n        switch (extra) {\n            default: return 1;\n        }\n        const made = new Report;\n        const partial = this.run(...);\n        const text = <<<TEXT\ntotal\nTEXT;\n        return extra;\n    }\n}\n";
@@ -804,7 +852,7 @@ fn an_interface_property_is_not_supported_yet_with_or_without_accessor_bodies() 
     assert_eq!(
         issues(code),
         [
-            "6:31 Interface virtual property `Named::label` must be abstract.",
+            "6:31 Interface virtual property `Named.label` must be abstract.",
             "5:5 This class member is not supported yet in PHP#.",
             "6:5 This class member is not supported yet in PHP#."
         ]
@@ -939,7 +987,7 @@ fn methods_whose_names_differ_only_in_case_are_an_error() {
     let code = "class Report\n{\n    public int run() { return 1; }\n\n    public int Run() { return 2; }\n}\n";
 
     // The PHP checks already reject this, so PHP# adds no second error.
-    assert_eq!(issues(code), ["5:16 class method `Report::Run` has already been defined"]);
+    assert_eq!(issues(code), ["5:16 class method `Report.Run` has already been defined"]);
 }
 
 #[test]
@@ -1690,7 +1738,7 @@ fn a_static_constructor_is_not_supported_yet() {
 fn a_method_without_a_body_reports_only_the_php_error() {
     let code = "namespace App.Tenant;\n\nclass Report\n{\n    public int run();\n}\n";
 
-    assert_eq!(issues(code), ["5:21 Non-Abstract method `Report::run` must have a concrete body."]);
+    assert_eq!(issues(code), ["5:21 Non-Abstract method `Report.run` must have a concrete body."]);
 }
 
 #[test]
@@ -1956,7 +2004,7 @@ fn a_void_field_reports_only_the_php_error() {
 
     assert_eq!(
         issues(code),
-        ["6:13 Property `Report::plain` cannot have type `void`.", "5:13 Type `void` cannot be nullable."]
+        ["6:13 Property `Report.plain` cannot have type `void`.", "5:13 Type `void` cannot be nullable."]
     );
 }
 
@@ -2132,7 +2180,7 @@ fn properties_outside_the_slice_are_not_supported_yet() {
     assert_eq!(
         issues(code),
         [
-            "8:12 Property `Report::d` cannot be declared abstract",
+            "8:12 Property `Report.d` cannot be declared abstract",
             "5:9 A property without `public`, `protected` or `private` is not supported yet in PHP#.",
             "6:23 A get-only static property is not supported yet in PHP#.",
             "7:20 This accessor is not supported yet in PHP#.",
@@ -2975,7 +3023,7 @@ fn position_current_as_a_constant_or_an_enum_case_value_keeps_the_constant_expre
     assert_eq!(
         issues(code),
         [
-            "5:34 Constant `Reports::HERE` value contains a non-constant expression.",
+            "5:34 Constant `Reports.HERE` value contains a non-constant expression.",
             "5:34 This expression is not supported yet in PHP#.",
             "10:17 This expression is not supported yet in PHP#.",
         ]
@@ -3463,6 +3511,102 @@ fn a_lambda_capturing_a_loop_variable_that_changes_is_not_supported_yet() {
         [
             "8:32 This capture of a loop variable that changes is not supported yet in PHP#.",
             "12:32 This capture of a loop variable that changes is not supported yet in PHP#.",
+        ]
+    );
+}
+
+/// Every semantic issue in the source, in the dialect its path names, as its message and its annotations' messages.
+fn worded(path: &'static str, code: &'static str) -> Vec<String> {
+    check(path, code)
+        .into_iter()
+        .map(|issue| {
+            std::iter::once(issue.message)
+                .chain(issue.annotations.into_iter().filter_map(|annotation| annotation.message))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        })
+        .collect()
+}
+
+/// A member defined twice is named as PHP# names a member, `Order.total`, and its class by the name the file writes,
+/// `Order`. The PHP twin keeps Mago's `Order::total`, `Order::$count` and `Demo\Order`.
+#[test]
+fn a_member_defined_twice_and_its_class_are_named_as_sharp_writes_them() {
+    let code = "namespace Demo;\n\npublic class Order\n{\n    private int count = 0;\n\n    private int count = 1;\n\n    public int total() => 1;\n\n    public int total() => 2;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    public int $count = 0;\n\n    public int $count = 1;\n\n    public function total(): int\n    {\n        return 1;\n    }\n\n    public function total(): int\n    {\n        return 2;\n    }\n}\n";
+
+    assert_eq!(
+        worded("src/Demo/Order.php", php),
+        [
+            "property `Order::$count` has already been defined | property `Order::$count` previously defined here. | class `Demo\\Order` defined here.",
+            "class method `Order::total` has already been defined | previous definition | class `Demo\\Order` defined here.",
+        ]
+    );
+    assert_eq!(
+        worded("src/Demo/Order.sharp", code),
+        [
+            "property `Order.count` has already been defined | property `Order.count` previously defined here. | class `Order` defined here.",
+            "class method `Order.total` has already been defined | previous definition | class `Order` defined here.",
+        ]
+    );
+}
+
+/// A class-level error names the class by the name the file writes: `Order` in a `.sharp` file, and its full name
+/// `Demo\Order` in the PHP twin.
+#[test]
+fn a_class_error_names_the_class_as_sharp_writes_it() {
+    let code = "namespace Demo;\n\npublic class Order\n{\n    case Open;\n\n    public abstract int total();\n}\n";
+    let php =
+        "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    case Open;\n\n    abstract public function total(): int;\n}\n";
+
+    assert_eq!(
+        worded("src/Demo/Order.php", php),
+        [
+            "Class `Order` cannot contain enum cases. | Enum case found in class. | Class `Demo\\Order` declared here.",
+            "Class `Order` contains an abstract method `total`, so the class must be declared abstract. | Class is missing the `abstract` modifier. | Abstract method `Order::total` declared here.",
+        ]
+    );
+    assert_eq!(
+        worded("src/Demo/Order.sharp", code),
+        [
+            "Class `Order` cannot contain enum cases. | Enum case found in class. | Class `Order` declared here.",
+            "Class `Order` contains an abstract method `total`, so the class must be declared abstract. | Class is missing the `abstract` modifier. | Abstract method `Order.total` declared here.",
+            "This class member is not supported yet in PHP#. | Not supported yet.",
+        ]
+    );
+}
+
+/// Spec section 14 gives no form that calls a lambda where it is written, and no form that reads a member of a `new`
+/// expression, so the errors for those PHP forms name no code to write in a `.sharp` file. The PHP twin keeps
+/// upstream's examples.
+#[test]
+fn an_error_for_a_php_form_without_a_sharp_form_names_no_php_code() {
+    let code = "namespace Demo;\n\nclass Order\n{\n    public int run()\n    {\n        const order = new Order[0]();\n        return () => { return 1; }();\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Order\n{\n    public function run(): int\n    {\n        $order = new Order[0]();\n        return function () { return 1; }();\n    }\n}\n";
+    let helps = |path, code| -> Vec<(String, Option<String>)> {
+        check(path, code).into_iter().map(|issue| (issue.message, issue.help)).collect()
+    };
+
+    assert_eq!(
+        helps("src/Demo/Order.php", php),
+        [
+            (
+                "`[` cannot follow a class name in a `new` expression.".to_owned(),
+                Some("Wrap the new expression in parentheses, e.g. `(new Foo())->bar()`.".to_owned())
+            ),
+            (
+                "Immediately invoked closure must be wrapped in parentheses.".to_owned(),
+                Some("Wrap the closure in parentheses before invoking it, e.g. `(function() { ... })()`.".to_owned())
+            ),
+        ]
+    );
+    assert_eq!(
+        helps("src/Demo/Order.sharp", code),
+        [
+            ("This expression is not supported yet in PHP#.".to_owned(), None),
+            ("`[` cannot follow a class name in a `new` expression.".to_owned(), None),
+            ("This expression is not supported yet in PHP#.".to_owned(), None),
+            ("Immediately invoked closure must be wrapped in parentheses.".to_owned(), None),
         ]
     );
 }

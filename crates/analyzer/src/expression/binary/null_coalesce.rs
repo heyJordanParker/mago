@@ -4,7 +4,6 @@ use std::rc::Rc;
 
 use mago_algebra::find_satisfying_assignments;
 use mago_codex::assertion::Assertion;
-use mago_codex::ttype::TType;
 use mago_codex::ttype::atomic::TAtomic;
 use mago_codex::ttype::combine_union_types;
 use mago_codex::ttype::get_mixed;
@@ -34,6 +33,7 @@ use crate::utils::conditional;
 use crate::utils::expression::get_direct_variable_id;
 use crate::utils::expression::is_variable;
 use crate::utils::misc::unwrap_expression;
+use crate::utils::names::display_type;
 
 /// Analyzes the null coalescing operator (`??`).
 ///
@@ -104,13 +104,13 @@ where
         && !lhs_type.possibly_undefined_from_try()
         && !is_static_var
     {
+        let lhs_type_str = display_type(context, lhs_type);
         let issue = context.as_null_check_error(
             Issue::help(
                 "Redundant null coalesce: left-hand side can never be `null` or undefined."
             )
             .with_annotation(Annotation::primary(binary.lhs.span()).with_message(format!(
-                "This expression (type `{}`) is never `null` or undefined",
-                lhs_type.get_id()
+                "This expression (type `{lhs_type_str}`) is never `null` or undefined"
             )))
             .with_annotation(
                 Annotation::secondary(binary.rhs.span()).with_message("This right-hand side will never be evaluated"),

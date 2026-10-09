@@ -116,16 +116,19 @@ const ANY: &[u8] = b"Any";
 /// - At file level: `namespace`, `import`, `class`, `interface` and `enum`. A file has at most one namespace, named
 ///   and written without braces.
 /// - A class: attributes, an optional `public`, `abstract` or `final`, a name, an optional `: Base, Interface` header,
-///   constants, fields, properties, methods and operators, with no other modifiers, `extends` or `implements`. The
-///   engine tells the base class from the interfaces when it links the class.
+///   constants, fields, properties, methods, operators and laws, with no other modifiers, `extends` or `implements`.
+///   The engine tells the base class from the interfaces when it links the class.
+/// - A law, spec section 28, in a class or an enum: `law`, a name, parameters checked as a method's and an expression
+///   body. `check_members` refuses a default and a variadic parameter, because a law's parameters range over every
+///   value.
 /// - A static class, `public static class Text`, as spec sections 26 and 29 write it: `static` and an optional
 ///   `public`, no header and no constructor, and only constants and static members. The bridge lowers it to a final
 ///   PHP class.
 /// - An interface: an optional `public`, a name, an optional `: Interface` header and methods, with no attributes,
 ///   other modifiers or `extends`. An interface method has parameters, a return type and no body, as spec section 29
 ///   writes `Money quote(Cart cart);`. A modifier on it is an error, because every interface method is public.
-/// - An enum: attributes, an optional `public`, a name, an optional `: string, Interface` header, constants, cases and
-///   methods, with no other modifiers or `implements`. A leading `int` or `string` in the header is the backing type,
+/// - An enum: attributes, an optional `public`, a name, an optional `: string, Interface` header, constants, cases,
+///   methods and laws, with no other modifiers or `implements`. A leading `int` or `string` in the header is the backing type,
 ///   and every class name is an interface. A constant follows a class constant's rules. A case has attributes as a
 ///   class has them, and is `case Active;` or, in a backed enum, `case Active = "a";`, whose value is a constant
 ///   expression. A case named `class`, compared ignoring case, is an error, as in PHP. A method follows a class's
@@ -564,7 +567,9 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
         (Node::PositionalArgument(argument), Attribute) => argument.ellipsis.is_none().then_some(Constant),
         (Node::NamedArgument(_), Attribute) => Some(Constant),
 
-        (Node::ClassLikeMember(ClassLikeMember::Method(_)), Class | Enum) => Some(place),
+        (Node::ClassLikeMember(ClassLikeMember::Method(_) | ClassLikeMember::Law(_)), Class | Enum) => Some(place),
+        // A law's parameters and body are checked as a method's. `check_members` refuses a default and a variadic one.
+        (Node::Law(_), Class | Enum) => Some(Method),
         (Node::ClassLikeMember(ClassLikeMember::Operator(_)), Class) => Some(Class),
         // An operator's parts are a method's, and `check_operator` decides its modifiers and its symbol, the one binary
         // operator a method's parts hold.
@@ -679,7 +684,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             context.report(
                 Issue::error("PHP# has no `mixed`: write `Any?`, or `Any` for a value that is never null.")
                     .with_annotation(Annotation::primary(mixed.span).with_message("Written here."))
-                    .with_note("Spec section 24 removes PHP's `mixed`: `Any` holds a value of any type but null, and `Any?` also allows null."),
+                    .with_note("PHP# removes PHP's `mixed`: `Any` holds a value of any type but null, and `Any?` also allows null."),
             );
 
             None
@@ -778,7 +783,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
                     "A `public` constructor parameter needs accessors: a public member is a property, as in `public int id { get; }`.",
                 )
                 .with_annotation(Annotation::primary(public.span()).with_message("Declared `public` here."))
-                .with_note("Spec section 9 makes a `public` parameter without accessors an error, as a public field is."),
+                .with_note("A `public` parameter without accessors is an error, as a public field is."),
                 parameter.span(),
                 Parameter,
                 context,
@@ -955,7 +960,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
                 node.span(),
                 form,
                 "write `printf` or `fwrite`.",
-                "Output is a function call in PHP#, as spec section 8 writes it.",
+                "Output is a function call in PHP#.",
                 context,
             );
 
@@ -970,7 +975,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             context.report(
                 Issue::error("PHP# calls `exit` as a function: write `exit(0)`.")
                     .with_annotation(Annotation::primary(exit.exit.span).with_message("Written here."))
-                    .with_note("`exit` is PHP 8.4's built-in function in PHP#, as spec section 8 writes it."),
+                    .with_note("`exit` is PHP 8.4's built-in function in PHP#."),
             );
 
             None
@@ -1022,7 +1027,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
                     "Write `{operand} is not {pattern}`: `!` applies to `{operand}` before `is` tests it."
                 ))
                 .with_annotation(Annotation::primary(is.span()).with_message("`!` takes the value before `is` tests it."))
-                .with_note("Spec section 21: `is` binds with the comparisons, so `!entity is HasDesign` reads as `(!entity) is HasDesign`, and a negative test is written `is not`."),
+                .with_note("`is` binds with the comparisons, so `!entity is HasDesign` reads as `(!entity) is HasDesign`, and a negative test is written `is not`."),
             );
 
             None
@@ -1048,7 +1053,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
                 context.report(
                     Issue::error("`as` converts to a type that is not nullable or `void`.")
                         .with_annotation(Annotation::primary(r#as.hint.span()).with_message("Written here."))
-                        .with_note("`as T` already gives `T?`: the value as a `T`, or null when it is not one, as spec section 21 says."),
+                        .with_note("`as T` already gives `T?`: the value as a `T`, or null when it is not one."),
                 );
 
                 None
@@ -2213,7 +2218,7 @@ fn report_comparison_chain(span: Span, groupings: &[String], context: &mut Conte
     context.report(
         Issue::error(format!("Comparisons do not chain: write {}.", groupings.join(" or ")))
             .with_annotation(Annotation::primary(span).with_message("Chained here."))
-            .with_note("Spec section 19 puts `<`, `<=`, `>`, `>=`, `is` and `as` in one row and `==`, `!=`, `===` and `<=>` in the next, and an operator takes an operand of its own row only in parentheses."),
+            .with_note("PHP#'s precedence table puts `<`, `<=`, `>`, `>=`, `is` and `as` in one row and `==`, `!=`, `===` and `<=>` in the next, and an operator takes an operand of its own row only in parentheses."),
     );
 }
 
@@ -2233,7 +2238,7 @@ fn report_not_beside_or(binary: &BinaryPattern, context: &mut Context<'_, '_, '_
     context.report(
         Issue::error(format!("Write `not ({} {or} {})`, or `{} {or} {}`.", whole[0], whole[1], own[0], own[1]))
             .with_annotation(Annotation::primary(binary.span()).with_message("`not` beside `or`."))
-            .with_note("Spec section 21: in a pattern, `not` beside `or` needs parentheses. C# reads `not Paid or Refunded` as `(not Paid) or Refunded`, where `or Refunded` adds nothing."),
+            .with_note("In a pattern, `not` beside `or` needs parentheses. C# reads `not Paid or Refunded` as `(not Paid) or Refunded`, where `or Refunded` adds nothing."),
     );
 }
 
@@ -2302,8 +2307,10 @@ fn check_pattern_match(pattern_match: &PatternMatch, is_expression: bool, contex
         None if !pattern_match.arms.iter().all(|arm| names_class_values(arm, context)) => {
             context.report(
                 Issue::error("A `match` needs a `default` arm.")
-                    .with_annotation(Annotation::primary(pattern_match.r#match.span).with_message("This `match` has none."))
-                    .with_note("Spec section 21: only a `match` on an enum may leave out `default`, when its arms cover every case.")
+                    .with_annotation(
+                        Annotation::primary(pattern_match.r#match.span).with_message("This `match` has none."),
+                    )
+                    .with_note("Only a `match` on an enum may leave out `default`, when its arms cover every case.")
                     .with_help("Add `default => …` as the last arm."),
             );
 
@@ -2744,7 +2751,7 @@ fn check_cast(unary_prefix: &UnaryPrefix, place: Place, context: &mut Context<'_
         operator.span(),
         cast.as_bytes(),
         instead,
-        "Spec section 24 keeps `(int)`, `(float)` and `(string)` between numbers, and removes PHP's other casts and its cast aliases.",
+        "PHP# keeps `(int)`, `(float)` and `(string)` between numbers, and removes PHP's other casts and its cast aliases.",
         context,
     );
 }
@@ -2861,7 +2868,7 @@ fn report_magic_constant(name: &[u8], span: Span, constant: Option<&MagicConstan
         span,
         name,
         instead,
-        "Spec section 27 removes PHP's magic constants and every other `__Something__` name: `Position` says where code sits in its source.",
+        "PHP# removes PHP's magic constants and every other `__Something__` name: `Position` says where code sits in its source.",
         context,
     );
 }
@@ -2913,7 +2920,7 @@ const fn supported(place: Place) -> &'static str {
     match place {
         Place::File => "At file level, PHP# supports `namespace`, `import`, `class`, `interface` and `enum`.",
         Place::Class => {
-            "A PHP# class has attributes, an optional `public`, `abstract` or `final`, a name, an optional `: Base, Interface` header, constants, fields, properties, methods and operators, with no other modifiers, `extends` or `implements`."
+            "A PHP# class has attributes, an optional `public`, `abstract` or `final`, a name, an optional `: Base, Interface` header, constants, fields, properties, methods, operators and laws, with no other modifiers, `extends` or `implements`."
         }
         Place::Interface => {
             "A PHP# interface has an optional `public`, a name, an optional `: Interface` header and methods, with no attributes, other modifiers, `extends`, constants or properties."
@@ -2922,7 +2929,7 @@ const fn supported(place: Place) -> &'static str {
             "A PHP# interface method has no modifier, parameters, a return type of `int`, `float`, `bool`, `string`, `Any`, `void`, a class, `List<T>`, `Map<TKey, TValue>` or `Self`, each but `void` nullable as in `int?`, or a union of them but `void`, as in `int|string`, and no body."
         }
         Place::Enum => {
-            "A PHP# enum has attributes, an optional `public`, a name, an optional `: string, Interface` header whose `int` or `string` comes first, constants, cases and methods, with no other modifiers or `implements`."
+            "A PHP# enum has attributes, an optional `public`, a name, an optional `: string, Interface` header whose `int` or `string` comes first, constants, cases, methods and laws, with no other modifiers or `implements`."
         }
         Place::FieldOrProperty => {
             "A PHP# field is `private` or `protected`, and a property has the accessors `get` and an optional `set`, each `;`, `=> expr;` or a block. Both may be `static`, and have a type of `int`, `float`, `bool`, `string`, `Any`, a class, `List<T>`, `Map<TKey, TValue>` or `Function<R(P)>`, nullable as in `int?` or not, or a union of them as in `int|string`, a name, and an optional initial value."
@@ -3493,7 +3500,7 @@ fn report_bare_member(span: Span, name: &[u8], context: &mut Context<'_, '_, '_>
     context.report(Issue::error(message).with_annotation(Annotation::primary(span).with_message("Used here.")));
 }
 
-/// The class of the static method whose body holds `span`, which has no `this`.
+/// The class of the static method or the law whose body holds `span`, which has no `this`.
 fn enclosing_static_method_class<'ast, 'arena>(
     program: &'ast Program<'arena>,
     span: Span,
@@ -3503,10 +3510,13 @@ fn enclosing_static_method_class<'ast, 'arena>(
     class
         .members
         .iter()
-        .any(|member| {
-            matches!(member, ClassLikeMember::Method(method)
-                if method.span().contains(&span.start)
-                    && method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Static(_))))
+        .any(|member| match member {
+            ClassLikeMember::Method(method) => {
+                method.span().contains(&span.start)
+                    && method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Static(_)))
+            }
+            ClassLikeMember::Law(law) => law.span().contains(&span.start),
+            _ => false,
         })
         .then_some(class)
 }
