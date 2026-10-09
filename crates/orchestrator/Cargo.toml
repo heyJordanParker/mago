@@ -29,6 +29,7 @@ mago-collector = { workspace = true }
 mago-analyzer = { workspace = true }
 mago-guard = { workspace = true }
 mago-sharp-bridge = { workspace = true }
+mago-sharp-lean = { workspace = true }
 foldhash = { workspace = true }
 tracing = { workspace = true }
 indicatif = { workspace = true }

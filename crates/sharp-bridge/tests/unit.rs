@@ -33,12 +33,15 @@ use mago_sharp_bridge::unit::Input;
 use mago_sharp_bridge::unit::Read;
 use mago_sharp_bridge::unit::Reads;
 use mago_sharp_bridge::unit::SHARP_UNIT_MAGIC;
+use mago_sharp_bridge::unit::compiled_path;
 use mago_sharp_bridge::unit::encode;
 use mago_sharp_bridge::unit::header;
+use mago_sharp_bridge::unit::is_stale;
 use mago_sharp_bridge::unit::key;
 use mago_sharp_bridge::unit::sharp_input;
 use mago_sharp_bridge::unit::sharp_unit_header;
 use mago_sharp_bridge::unit::source_hash;
+use mago_sharp_bridge::unit::stamp;
 use xxhash_rust::xxh3::xxh3_128;
 
 const SOURCE: &str = "namespace App.Tenant;\n\nclass Report\n{\n    public string title()\n    {\n        return \"weekly\";\n    }\n}\n";
@@ -306,6 +309,106 @@ fn header_refuses_a_short_file_a_wrong_magic_a_wrong_abi_and_a_wrong_length() {
     assert_eq!(header(&bytes[..bytes.len() - 1]), Err(FormatError::Length));
     assert_eq!(header(&changed(offset_of!(sharp_unit_header, node_count))), Err(FormatError::Length));
     assert_eq!(header(&changed(offset_of!(sharp_unit_header, facts_size))), Err(FormatError::Length));
+}
+
+fn write(root: &Path, name: &str, contents: &str) {
+    let path = root.join(name);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, contents).unwrap();
+}
+
+#[test]
+fn stamp_gives_the_size_and_hash_of_a_file_and_none_where_no_file_is() {
+    let directory = tempfile::tempdir().unwrap();
+    write(directory.path(), "app/Report.sharp", SOURCE);
+
+    let stamped = stamp(directory.path(), b"app/Report.sharp").unwrap().expect("a file is there");
+
+    assert_eq!(stamped.path, b"app/Report.sharp");
+    assert_eq!(stamped.size, SOURCE.len() as u64);
+    assert_eq!(stamped.hash, source_hash(SOURCE.as_bytes()));
+    assert_ne!(stamped.mtime_ns, 0);
+    assert_eq!(stamp(directory.path(), b"app/Missing.sharp").unwrap(), None);
+}
+
+#[test]
+fn compiled_path_mirrors_the_real_source_path_under_the_sharp_folder() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    write(&root, "app/Shared/Money.sharp", SOURCE);
+
+    assert_eq!(
+        compiled_path(&root, &root.join("app/Shared/Money.sharp")).unwrap(),
+        Some(root.join(".sharp/app/Shared/Money.sharpc"))
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn compiled_path_is_none_for_a_link_to_a_file_outside_the_root() {
+    let outside = tempfile::tempdir().unwrap();
+    write(outside.path(), "Money.sharp", SOURCE);
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    fs::create_dir_all(root.join("app")).unwrap();
+    std::os::unix::fs::symlink(outside.path().join("Money.sharp"), root.join("app/Money.sharp")).unwrap();
+
+    assert_eq!(compiled_path(&root, &root.join("app/Money.sharp")).unwrap(), None);
+}
+
+/// A compiled file of [`SOURCE`] whose inputs are the stamps of `names` in `root`, as `mago compile` writes it.
+fn compiled_with_inputs(root: &Path, names: &[&str]) -> Vec<u8> {
+    let inputs: Vec<Input> = names
+        .iter()
+        .map(|name| {
+            stamp(root, name.as_bytes()).unwrap().unwrap_or(Input {
+                path: name.as_bytes().to_vec(),
+                size: 0,
+                mtime_ns: 0,
+                hash: [0; 16],
+            })
+        })
+        .collect();
+
+    encode(&lowered(SOURCE), SOURCE.as_bytes(), KEY, &inputs, &[])
+}
+
+#[test]
+fn a_compiled_file_is_current_until_one_of_its_inputs_changes() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    write(root, "app/Report.sharp", SOURCE);
+    write(root, "app/Report.lean", "theorem a : True := trivial\n");
+    let bytes = compiled_with_inputs(root, &["app/Report.sharp", "app/Report.lean", "app/Absent.lean"]);
+
+    assert!(!is_stale(root, &bytes).unwrap(), "every input is as it was stamped");
+
+    write(root, "app/Report.lean", "theorem a : True := by trivial\n");
+    assert!(is_stale(root, &bytes).unwrap(), "an input's bytes changed");
+
+    write(root, "app/Report.lean", "theorem a : True := trivial\n");
+    assert!(!is_stale(root, &bytes).unwrap(), "rewriting the same bytes keeps it current");
+
+    write(root, "app/Absent.lean", "theorem b : True := trivial\n");
+    assert!(is_stale(root, &bytes).unwrap(), "a file appeared where an input was absent");
+
+    fs::remove_file(root.join("app/Absent.lean")).unwrap();
+    fs::remove_file(root.join("app/Report.lean")).unwrap();
+    assert!(is_stale(root, &bytes).unwrap(), "an input that was there is gone");
+}
+
+#[test]
+fn a_compiled_file_another_checker_build_wrote_or_that_is_no_compiled_file_is_stale() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    write(root, "app/Report.sharp", SOURCE);
+    let bytes = compiled_with_inputs(root, &["app/Report.sharp"]);
+    let mut other_build = bytes.clone();
+    other_build[offset_of!(sharp_unit_header, checker)] ^= 1;
+
+    assert!(!is_stale(root, &bytes).unwrap());
+    assert!(is_stale(root, &other_build).unwrap());
+    assert!(is_stale(root, b"not a compiled file").unwrap());
 }
 
 fn read(name: &str, fingerprint: u64) -> Read {

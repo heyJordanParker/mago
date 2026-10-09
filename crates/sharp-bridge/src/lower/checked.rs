@@ -105,19 +105,24 @@ impl<'program> CheckedProgram<'program> {
         Self { file, program, types: Types::new(names, artifacts, codebase, inline_forms) }
     }
 
-    pub(crate) fn file(&self) -> &'program File {
+    #[must_use]
+    pub fn file(&self) -> &'program File {
         self.file
     }
 
-    pub(crate) fn program(&self) -> &'program Program<'program> {
+    #[must_use]
+    pub fn program(&self) -> &'program Program<'program> {
         self.program
     }
 
-    pub(crate) fn names(&self) -> &ResolvedNames<'program> {
+    #[must_use]
+    pub fn names(&self) -> &ResolvedNames<'program> {
         self.types.names()
     }
 
-    pub(crate) fn types(&self) -> &Types<'program> {
+    /// The checker's types, which each back end reads the program's types through.
+    #[must_use]
+    pub fn types(&self) -> &Types<'program> {
         &self.types
     }
 }
