@@ -42,7 +42,7 @@ jobs:
               "msrv=" + (.rust_version // "")
             ] |
             join("\n")
-          ' | tee -a $GITHUB_OUTPUT
+          ' | tee -a "$GITHUB_OUTPUT"
     outputs:
       name: "mago"
       bin-name: "mago"
@@ -86,7 +86,7 @@ jobs:
 
       - name: Set version
         id: version
-        run: echo "VERSION=${{ needs.crate_metadata.outputs.version }}" >> $GITHUB_OUTPUT
+        run: echo "VERSION=${{ needs.crate_metadata.outputs.version }}" >> "$GITHUB_OUTPUT"
 
       - name: Create source archives
         id: source_package
@@ -98,14 +98,14 @@ jobs:
           rsync -a --exclude='.git' --exclude="${{ env.CICD_INTERMEDIATES_DIR }}" . "${STAGING}/mago-${VERSION}/"
           TAR_NAME="source-code.tar.gz"
           tar -czf "${STAGING}/${TAR_NAME}" -C "${STAGING}" "mago-${VERSION}"
-          echo "TAR_NAME=${TAR_NAME}" >> $GITHUB_OUTPUT
-          echo "TAR_PATH=${STAGING}/${TAR_NAME}" >> $GITHUB_OUTPUT
+          echo "TAR_NAME=${TAR_NAME}" >> "$GITHUB_OUTPUT"
+          echo "TAR_PATH=${STAGING}/${TAR_NAME}" >> "$GITHUB_OUTPUT"
           ZIP_NAME="source-code.zip"
           cd "${STAGING}"
           zip -r "${ZIP_NAME}" "mago-${VERSION}"
           cd -
-          echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_OUTPUT
-          echo "ZIP_PATH=${STAGING}/${ZIP_NAME}" >> $GITHUB_OUTPUT
+          echo "ZIP_NAME=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
+          echo "ZIP_PATH=${STAGING}/${ZIP_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Generate artifact attestation (source tar.gz)
         uses: actions/attest-build-provenance@v3
@@ -186,7 +186,7 @@ jobs:
       - name: set version env variable
         id: version
         shell: bash
-        run: echo "VERSION=${{ needs.crate_metadata.outputs.version }}" >> $GITHUB_OUTPUT
+        run: echo "VERSION=${{ needs.crate_metadata.outputs.version }}" >> "$GITHUB_OUTPUT"
 
       - name: Install Prerequisites
         if: contains(matrix.job.os, 'ubuntu')
@@ -195,9 +195,7 @@ jobs:
           sudo apt-get -y update
           sudo apt-get remove -y libssl-dev
           case ${{ matrix.job.target }} in
-            arm-unknown-linux-*) sudo apt-get -y install gcc-arm-linux-gnueabihf ;;
             aarch64-unknown-linux-gnu) sudo apt-get -y install gcc-aarch64-linux-gnu ;;
-            arm-unknown-linux-gnueabihf) sudo apt-get -y install gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf qemu-user ;;
             x86_64-unknown-linux-musl) sudo apt-get -y install musl-tools ;;
           esac
 
@@ -238,7 +236,7 @@ jobs:
       - name: overwrite build command env variable (for cross)
         if: startsWith(matrix.job.os, 'ubuntu') && !matrix.job.pgo
         shell: bash
-        run: echo "BUILD_CMD=cross" >> $GITHUB_ENV
+        run: echo "BUILD_CMD=cross" >> "$GITHUB_ENV"
 
       - name: Configure cross-rs container image for glibc 2.17
         if: contains(matrix.job.target, 'linux-gnu') && !matrix.job.pgo
@@ -251,7 +249,7 @@ jobs:
           esac
           if [[ -n "$IMAGE" ]]; then
             echo "Using custom image for glibc 2.17: $IMAGE"
-            echo "CROSS_IMAGE=$IMAGE" >> $GITHUB_ENV
+            echo "CROSS_IMAGE=$IMAGE" >> "$GITHUB_ENV"
           else
             echo "::warning:: No manylinux2014 image found for target ${{ matrix.job.target }}. Build will use default cross image, which may have a newer glibc."
           fi
@@ -313,8 +311,8 @@ jobs:
           BIN_NAME="${{ needs.crate_metadata.outputs.bin-name }}${EXE_suffix}"
           BIN_PATH="target/${{ matrix.job.target }}/release/${BIN_NAME}"
 
-          echo "BIN_PATH=${BIN_PATH}" >> $GITHUB_OUTPUT
-          echo "BIN_NAME=${BIN_NAME}" >> $GITHUB_OUTPUT
+          echo "BIN_PATH=${BIN_PATH}" >> "$GITHUB_OUTPUT"
+          echo "BIN_NAME=${BIN_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: check GLIBC version requirements
         if: contains(matrix.job.target, 'linux-gnu')
@@ -364,7 +362,7 @@ jobs:
           esac
 
           PKG_NAME="mago-${VERSION}-${TARGET}${PKG_SUFFIX}"
-          echo "PKG_NAME=${PKG_NAME}" >> $GITHUB_OUTPUT
+          echo "PKG_NAME=${PKG_NAME}" >> "$GITHUB_OUTPUT"
 
           PKG_STAGING="${{ env.CICD_INTERMEDIATES_DIR }}/package"
           ARCHIVE_DIR="${PKG_STAGING}/mago-${VERSION}-${TARGET}/"
@@ -387,7 +385,7 @@ jobs:
           esac
           popd >/dev/null
 
-          echo "PKG_PATH=${PKG_STAGING}/${PKG_NAME}" >> $GITHUB_OUTPUT
+          echo "PKG_PATH=${PKG_STAGING}/${PKG_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: create WASM tarball
         id: wasm_package
@@ -397,14 +395,14 @@ jobs:
           VERSION="${{ steps.version.outputs.VERSION }}"
           # Since WASM is universal, just name it 'mago-{VERSION}-wasm.tar.gz'
           WASM_PKG_NAME="mago-${VERSION}-wasm.tar.gz"
-          echo "WASM_PKG_NAME=${WASM_PKG_NAME}" >> $GITHUB_OUTPUT
+          echo "WASM_PKG_NAME=${WASM_PKG_NAME}" >> "$GITHUB_OUTPUT"
 
           WASM_STAGING="${{ env.CICD_INTERMEDIATES_DIR }}/wasm"
           pushd "${WASM_STAGING}" >/dev/null
           tar czf "${WASM_PKG_NAME}" mago_wasm.d.ts mago_wasm.js mago_wasm_bg.js mago_wasm_bg.wasm package.json
           popd >/dev/null
 
-          echo "WASM_PKG_PATH=${WASM_STAGING}/${WASM_PKG_NAME}" >> $GITHUB_OUTPUT
+          echo "WASM_PKG_PATH=${WASM_STAGING}/${WASM_PKG_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Generate artifact attestation (binary)
         uses: actions/attest-build-provenance@v3
