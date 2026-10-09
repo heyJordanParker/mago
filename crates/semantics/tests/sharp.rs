@@ -3093,6 +3093,8 @@ fn a_bound_that_is_not_a_class_an_interface_or_a_generic_class_type_is_an_error(
             .map(|line| format!("{line}:24 A bound is a class or an interface, as in `<TItem : DatabaseEntity>`."))
             .collect::<Vec<_>>()
     );
+    assert!(check("src/Report.sharp", code).iter().all(|issue| issue.notes
+        == ["PHP# bounds a type parameter by classes and interfaces, several joined with `&`."]));
 }
 
 /// A generic type goes wherever a type goes. `Map`'s key rule applies to `Map` alone, `Class<T>` takes a class, an

@@ -4256,6 +4256,11 @@ fn new_of_a_generic_class_without_type_arguments_names_them() {
             "13:39 missing-template-parameter `Pair` needs its type arguments, as in `Pair<TKey, TValue>`.",
         ]
     );
+    assert!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Report.sharp", sharp), &[("src/Demo/Paging.sharp", PAGING)])
+            .iter()
+            .all(|issue| issue.notes == ["A type and `new` name the type arguments of a generic class."]),
+    );
 }
 
 /// `OrderPage : PaginatedList<Order>` inherits the constructor that takes `List<TItem>`, and its header fixes `TItem` to
@@ -4478,7 +4483,7 @@ fn out_and_in_are_checked_on_every_member() {
     );
     assert!(
         analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Feed.sharp", sharp), &[]).iter().all(|issue| issue.notes
-            == ["Spec section 11.1: an `out` type parameter is only handed out, and an `in` type parameter is only taken in."]),
+            == ["An `out` type parameter is only handed out, and an `in` type parameter is only taken in."]),
     );
 }
 
@@ -4535,6 +4540,10 @@ fn a_variance_breaking_private_member_is_reachable_only_through_this() {
             "44:50 invalid-template-parameter `last` breaks `in TItem`, so it is reachable only through `this`.",
             "53:15 invalid-template-parameter `held` breaks `out TItem`, so it is written only through `this`.",
         ]
+    );
+    assert!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Cell.sharp", sharp), &[]).iter().all(|issue| issue.notes
+            == ["A private member may break the marker, and is then reachable only through `this`."]),
     );
 }
 

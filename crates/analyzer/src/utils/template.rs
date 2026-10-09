@@ -433,9 +433,7 @@ fn report_private_reach<A>(
             .with_annotation(
                 Annotation::primary(span).with_message(format!("`{member}` is reached here through another value")),
             )
-            .with_note(
-                "Spec section 11.1: a private member may break the marker, and is then reachable only through `this`.",
-            ),
+            .with_note("A private member may break the marker, and is then reachable only through `this`."),
     );
 }
 

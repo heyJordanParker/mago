@@ -558,7 +558,7 @@ fn enter(node: Node<'_, '_>, place: Place, context: &mut Context<'_, '_, '_>) ->
             context.report(
                 Issue::error("A bound is a class or an interface, as in `<TItem : DatabaseEntity>`.")
                     .with_annotation(Annotation::primary(bound.hint.span()).with_message("Bound written here."))
-                    .with_note("Spec section 11 bounds a type parameter by classes and interfaces, several joined with `&`."),
+                    .with_note("PHP# bounds a type parameter by classes and interfaces, several joined with `&`."),
             );
 
             None

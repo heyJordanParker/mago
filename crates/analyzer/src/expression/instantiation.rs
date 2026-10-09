@@ -633,7 +633,7 @@ where
             template_names.join(", ")
         ))
         .with_annotation(Annotation::primary(span).with_message(format!("`{class_name}` has type parameters")))
-        .with_note("Spec section 11: a type and `new` name the type arguments of a generic class."),
+        .with_note("A type and `new` name the type arguments of a generic class."),
     );
 }
 

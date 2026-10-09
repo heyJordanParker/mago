@@ -2194,9 +2194,7 @@ fn check_sharp_template_variance<A>(
                 "{} uses `{template_name}` here",
                 template_use.member
             )))
-            .with_note(
-                "Spec section 11.1: an `out` type parameter is only handed out, and an `in` type parameter is only taken in.",
-            ),
+            .with_note("An `out` type parameter is only handed out, and an `in` type parameter is only taken in."),
         );
     }
 }
