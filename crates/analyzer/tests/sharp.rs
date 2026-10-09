@@ -4290,6 +4290,58 @@ fn a_literal_of_the_declared_collection_is_accepted() {
     assert_eq!(issues(("src/Demo/Clean.sharp", sharp), &[]), Vec::<String>::new());
 }
 
+/// A call through a local declared as a `Function` takes only literals of the collections its parameters declare.
+#[test]
+fn a_literal_of_the_other_collection_passed_to_a_function_local_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Counter\n{\n    public int run()\n    {\n        Function<int(List<string>)> size = names => count(names);\n        return size([:]);\n    }\n}\n";
+
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counter.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        ["8:21 invalid-array-element `[:]` is an empty Map. An empty List is written `[]`."]
+    );
+}
+
+/// A call through a `Function` parameter takes only literals of the collections its parameters declare.
+#[test]
+fn a_literal_of_the_other_collection_passed_to_a_function_parameter_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Counter\n{\n    public int run(Function<int(Map<string, int>)> total) => total([]);\n}\n";
+
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counter.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        ["5:68 invalid-array-element `[]` is an empty List. An empty Map is written `[:]`."]
+    );
+}
+
+/// A call through a `Function` property takes only literals of the collections its parameters declare.
+#[test]
+fn a_literal_of_the_other_collection_passed_to_a_function_property_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Counter\n{\n    private Function<int(List<int>)> size;\n\n    public Counter()\n    {\n        this.size = sizes => count(sizes);\n    }\n\n    public int run() => this.size([0: 1]);\n}\n";
+
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counter.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        ["12:35 invalid-array-element A List literal is written `[a, b]`."]
+    );
+}
+
+/// A call through a local, a parameter or a property declared as a `Function` takes the literals its parameters
+/// declare, and a PHP `\Closure` declares no collection, so a call through one takes either literal.
+#[test]
+fn a_literal_of_the_declared_collection_passed_to_a_function_value_is_accepted() {
+    let hooks = "<?php\n\nnamespace Lib;\n\nfinal class Hooks\n{\n    public \\Closure $run;\n\n    public function __construct()\n    {\n        $this->run = fn (mixed ...$values): int => 0;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Hooks;\n\nclass Counter\n{\n    private Function<int(List<int>)> size;\n\n    public Counter()\n    {\n        this.size = sizes => count(sizes);\n    }\n\n    public int run(Function<int(Map<string, int>)> total, Hooks hooks)\n    {\n        Function<int(List<string>)> names = values => count(values);\n        hooks.run([:]);\n        return names([]) + names([\"a\"]) + total([:]) + total([\"a\": 1]) + this.size([]) + this.size([1, 2]);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Counter.sharp", sharp), &[("src/Lib/Hooks.php", hooks)]), Vec::<String>::new());
+}
+
 /// A `List` has `add`, `set`, `get` and `entries()`, and a `Map` has `delete` and `get`, each typed by the elements of
 /// the collection it is called on, as spec section 12 decides.
 #[test]
