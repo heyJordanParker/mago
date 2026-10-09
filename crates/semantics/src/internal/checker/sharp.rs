@@ -3179,7 +3179,7 @@ fn check_capitalized(name: &[u8], span: Span, context: &mut Context<'_, '_, '_>)
 }
 
 /// Checks the namespace, classes and imports of a PHP# file: each part of the namespace starts with a capital letter,
-/// and the classes and imports name no class twice, as the engine checks when it compiles the file. An import's
+/// and the classes and imports name no class twice, which the engine also checks when it compiles the file. An import's
 /// namespace keeps its letters, because it names a namespace another file declares, often a plain PHP one.
 #[inline]
 pub fn check_declarations(program: &Program, context: &mut Context<'_, '_, '_>) {
