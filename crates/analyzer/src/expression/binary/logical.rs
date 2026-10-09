@@ -38,6 +38,7 @@ use crate::formula::negate_or_synthesize;
 use crate::reconciler;
 use crate::utils::conditional;
 use crate::utils::expression::expression_has_observable_side_effect;
+use crate::utils::names::display_bool;
 use crate::utils::names::display_truth;
 use crate::utils::symbol_existence::extract_function_constant_existence;
 
@@ -452,7 +453,8 @@ where
 
     if lhs_type.is_always_truthy() {
         // true || x → true (no fix)
-        report_redundant_logical_operation(context, binary, "always true", "not evaluated", "`true`", None);
+        let left = format!("always {}", display_bool(context, true));
+        report_redundant_logical_operation(context, binary, &left, "not evaluated", "`true`", None);
         result_type = get_true();
         right_block_context.flags.set_has_returned(true);
         binary.rhs.analyze(context, &mut right_block_context, artifacts)?;
@@ -516,10 +518,11 @@ where
                 result_type = get_true();
             } else {
                 // false || x → x (remove left, keep right)
+                let left = format!("always {}", display_bool(context, false));
                 report_redundant_logical_operation(
                     context,
                     binary,
-                    "always false",
+                    &left,
                     "evaluated",
                     "the boolean value of the right-hand side",
                     Some(false), // remove left
