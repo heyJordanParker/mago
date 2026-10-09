@@ -41,6 +41,7 @@ use mago_syntax::cst::Array;
 use mago_syntax::cst::ArrayElement;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::LegacyArray;
+use mago_syntax::cst::PatternMatchArmBody;
 use mago_syntax::cst::UnaryPrefix;
 use mago_syntax::cst::UnaryPrefixOperator;
 use mago_syntax::cst::VariadicArrayElement;
@@ -105,9 +106,10 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for LegacyArray<'arena> {
     }
 }
 
-/// The type a PHP# list literal has at a place declared a `Set`: spec section 12 makes it the `Set` of its elements,
-/// which the lowering keys by each element. The literal keeps this type, so its place checks its elements. `None` for
-/// any other value or place.
+/// The type a PHP# literal has at a place declared a `Set`: spec section 12 makes a list literal the `Set` of its
+/// elements, which the lowering keys by each element. The literal keeps this type, so its place checks its elements. A
+/// `Map` literal there is refused by [`check_sharp_literal_kind`], and keeps the `Set` of its values, so its place adds
+/// no second issue. `None` for any other value or place.
 pub(crate) fn get_set_literal_type<A>(
     context: &Context<'_, '_, A>,
     artifacts: &mut AnalysisArtifacts,
@@ -124,11 +126,8 @@ where
         return None;
     }
 
-    let list @ TArray::List(_) = artifacts.get_expression_type(value)?.get_single_array()? else {
-        return None;
-    };
-
-    let (_, element_type) = get_array_parameters(list, context.codebase);
+    let literal = artifacts.get_expression_type(value)?.get_single_array()?;
+    let (_, element_type) = get_array_parameters(literal, context.codebase);
     let set_type = TUnion::from_atomic(TAtomic::Array(TArray::Set(Arc::new(element_type))));
     artifacts.set_expression_type(value, set_type.clone());
 
@@ -634,6 +633,77 @@ fn report_sharp_literal_spreads<A>(
         }
 
         own_part.get_or_insert(element.span());
+    }
+}
+
+/// Reports a PHP# literal written where the other collection is declared. `[]` and `[a, b]` are `List` literals, and
+/// `[:]` and `[key: value]` are `Map` literals, whatever their place declares. A place declared a `Set` takes a `List`
+/// literal, which becomes the `Set` of its elements, and refuses a `Map` literal. A literal reaches the place as `value`
+/// itself, or through the right side of `??`, either branch of `? :` or an arm of a `match`, at any depth. A literal of
+/// spreads names no collection of its own, and `report_sharp_literal_spreads` checks what it spreads.
+pub(crate) fn check_sharp_literal_kind<A>(context: &mut Context<'_, '_, A>, value: &Expression<'_>, declared: &TUnion)
+where
+    A: Arena,
+{
+    if !context.dialect.is_sharp() {
+        return;
+    }
+
+    let Some(collection) = declared.types.iter().find_map(|atomic| match atomic {
+        TAtomic::Array(array) => Some(array),
+        _ => None,
+    }) else {
+        return;
+    };
+
+    // The values still to look at, last first, so the literals are reported in the order they are written.
+    let mut values = vec![value];
+    while let Some(value) = values.pop() {
+        let literal = match value.unparenthesized() {
+            Expression::Array(literal) => literal,
+            Expression::Binary(binary) if binary.operator.is_null_coalesce() => {
+                values.push(binary.rhs);
+                continue;
+            }
+            Expression::Conditional(conditional) => {
+                values.push(conditional.r#else);
+                values.push(conditional.then.unwrap_or(conditional.condition));
+                continue;
+            }
+            Expression::PatternMatch(pattern_match) => {
+                values.extend(pattern_match.arms.iter().rev().filter_map(|arm| match arm.body() {
+                    PatternMatchArmBody::Expression(arm_value) => Some(*arm_value),
+                    PatternMatchArmBody::Block(_) => None,
+                }));
+                continue;
+            }
+            _ => continue,
+        };
+
+        let is_map_literal = match literal.elements.iter().find(|element| element.is_key_value() || element.is_value())
+        {
+            Some(element) => element.is_key_value(),
+            None if literal.elements.is_empty() => literal.colon.is_some(),
+            None => continue,
+        };
+
+        let message = match (is_map_literal, collection, literal.elements.is_empty()) {
+            (false, TArray::Keyed(_), true) => "`[]` is an empty List. An empty Map is written `[:]`.",
+            (false, TArray::Keyed(_), false) => "A Map literal is written `[key: value]`.",
+            (true, TArray::List(_), true) => "`[:]` is an empty Map. An empty List is written `[]`.",
+            (true, TArray::List(_), false) => "A List literal is written `[a, b]`.",
+            (true, TArray::Set(_), true) => "`[:]` is an empty Map. An empty Set is written `[]`.",
+            (true, TArray::Set(_), false) => "A Set literal is written `[a, b]`.",
+            _ => continue,
+        };
+
+        let declared_str = display_type(context, declared);
+        context.collector.report_with_code(
+            IssueCode::InvalidArrayElement,
+            Issue::error(message).with_annotation(
+                Annotation::primary(literal.span()).with_message(format!("Declared `{declared_str}`.")),
+            ),
+        );
     }
 }
 

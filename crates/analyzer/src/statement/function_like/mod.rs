@@ -68,6 +68,7 @@ use crate::context::block::BlockContext;
 use crate::context::block::ReferenceConstraint;
 use crate::context::block::ReferenceConstraintSource;
 use crate::error::AnalysisError;
+use crate::expression::array::check_sharp_literal_kind;
 use crate::expression::array::get_set_literal_type;
 use crate::resolver::property::localize_property_type;
 use crate::resolver::property::resolve_declared_property;
@@ -416,6 +417,9 @@ where
                     value,
                     return_type.map(|return_type| &return_type.type_union),
                 );
+                if let Some(return_type) = return_type {
+                    check_sharp_literal_kind(context, value, &return_type.type_union);
+                }
 
                 block_context.flags.set_inside_return(true);
                 value.analyze(context, block_context, &mut artifacts)?;
@@ -1650,6 +1654,8 @@ fn check_parameter_default_value<'ctx, 'arena, A>(
 ) where
     A: Arena,
 {
+    check_sharp_literal_kind(context, default_expression, declared_type);
+
     // A PHP# type holds null only when it is written with `?`, so its `Any` is checked and it has no implicitly
     // nullable parameter.
     let is_sharp = context.dialect.is_sharp();

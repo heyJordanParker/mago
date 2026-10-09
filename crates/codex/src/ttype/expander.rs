@@ -1063,10 +1063,13 @@ fn get_signature_of_function_like_metadata_with_options(
     };
 
     let is_closure = matches!(function_like_identifier, FunctionLikeIdentifier::Closure(_));
-    TCallableSignature::new(function_like_metadata.flags.is_pure(), is_closure)
-        .with_parameters(parameters)
-        .with_return_type(return_type)
-        .with_source(Some(*function_like_identifier))
+    TCallableSignature {
+        is_sharp: function_like_metadata.flags.is_sharp(),
+        ..TCallableSignature::new(function_like_metadata.flags.is_pure(), is_closure)
+            .with_parameters(parameters)
+            .with_return_type(return_type)
+            .with_source(Some(*function_like_identifier))
+    }
 }
 
 #[must_use]

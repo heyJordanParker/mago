@@ -3163,9 +3163,9 @@ pub fn check_class_name(class_name: &LocalIdentifier, context: &mut Context<'_, 
     }
 }
 
-/// Reports a type name a PHP# file gives that does not start with a capital letter, A to Z, as spec section 24 writes
-/// every type but the built-in ones. The parser reads the same letter to tell a type with type arguments, `Box<int>`,
-/// from a comparison.
+/// Reports a type name or a namespace part a PHP# file gives that does not start with a capital letter, A to Z, as
+/// spec section 24 writes every type but the built-in ones, and spec section 23 every part of a `namespace` line. The
+/// parser reads the same letter to tell a type with type arguments, `Box<int>`, from a comparison.
 fn check_capitalized(name: &[u8], span: Span, context: &mut Context<'_, '_, '_>) {
     if name.first().is_some_and(u8::is_ascii_uppercase) {
         return;
@@ -3175,17 +3175,32 @@ fn check_capitalized(name: &[u8], span: Span, context: &mut Context<'_, '_, '_>)
 
     context.report(
         Issue::error(format!(
-            "`{name}` must start with a capital letter: PHP# capitalizes every type except the built-in ones."
+            "`{name}` must start with a capital letter: PHP# capitalizes every namespace and every type except the built-in ones."
         ))
         .with_annotation(Annotation::primary(span).with_message("Named here.")),
     );
 }
 
-/// Checks the classes and imports of a PHP# file against each other, as the engine does when it compiles the file.
+/// Checks the namespace, classes and imports of a PHP# file: each part of the namespace starts with a capital letter,
+/// and the classes and imports name no class twice, which the engine also checks when it compiles the file. An import's
+/// namespace keeps its letters, because it names a namespace another file declares, often a plain PHP one.
 #[inline]
 pub fn check_declarations(program: &Program, context: &mut Context<'_, '_, '_>) {
     let (classes, imports) = declarations(program);
-    let namespace = first_namespace(program).and_then(|namespace| namespace.name.as_ref()).map(php_name);
+    let name = first_namespace(program).and_then(|namespace| namespace.name.as_ref());
+
+    if let Some(name) = name {
+        let mut start = 0;
+
+        for part in name.value().split(|&byte| byte == b'.') {
+            let end = start + part.len() as u32;
+
+            check_capitalized(part, name.span().subspan(start, end), context);
+            start = end + 1;
+        }
+    }
+
+    let namespace = name.map(php_name);
 
     for (index, import) in imports.iter().enumerate() {
         let imported_name = imported_name(import);
