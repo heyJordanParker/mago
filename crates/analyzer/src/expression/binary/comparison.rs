@@ -714,7 +714,7 @@ pub(crate) enum Refusal {
     Instance,
     /// `<=>` or an ordering with a side that may be `null`, an instance or any other value, which only `==` and `!=`
     /// lift.
-    NullableInstance,
+    NullableOperand,
     /// `==` or `!=` on two values of types that never match, a string ordered against another type, or an instance
     /// compared with a value its class's operator never takes, as `money < 5`.
     DifferentTypes,
@@ -804,7 +804,7 @@ pub(crate) fn sharp_refusal(
             if different_types {
                 Some(Refusal::DifferentTypes)
             } else if !has(Comparand::Any) && (lhs_type.can_be_null() || rhs_type.can_be_null()) {
-                Some(Refusal::NullableInstance)
+                Some(Refusal::NullableOperand)
             } else {
                 None
             }
@@ -885,7 +885,7 @@ pub(crate) fn report_sharp_refusal<A>(
             (
                 IssueCode::InvalidOperand,
                 Issue::error(format!("{pair}: it tests whether two class instances are the same object."))
-                    .with_note("Spec section 19: `==` compares every other value strictly.")
+                    .with_note("`==` compares every other value strictly.")
                     .with_help(format!("Use `{equality}` to compare the values.")),
             )
         }
@@ -912,32 +912,28 @@ pub(crate) fn report_sharp_refusal<A>(
                 let identity = if operator.is_negated_equality() { "!==" } else { "===" };
 
                 Issue::error(format!("{pair}: `{class}` declares no `operator ==`."))
-                    .with_note(
-                        "Spec section 19: `==` on a class instance exists only where its class declares `operator ==`.",
-                    )
+                    .with_note("`==` on a class instance exists only where its class declares `operator ==`.")
                     .with_help(format!("Use `{identity}` to test whether both sides are the same object."))
             } else {
                 Issue::error(format!("{pair}: `{class}` declares no `operator <=>`."))
                     .with_note(format!(
-                        "Spec section 19: `{op}` on a class instance exists only where its class declares `operator <=>`."
+                        "`{op}` on a class instance exists only where its class declares `operator <=>`."
                     ))
                     .with_help("Compare values the instances hold, such as their properties.")
             };
 
             (IssueCode::InvalidOperand, issue)
         }
-        Refusal::NullableInstance => (
+        Refusal::NullableOperand => (
             IssueCode::InvalidOperand,
             Issue::error(format!("{pair}: only `==` and `!=` take `null`, so test the value for `null` first."))
-                .with_note("Spec section 19 lifts `==` and `!=` over `null`, and no other operator.")
+                .with_note("PHP# lifts `==` and `!=` over `null`, and no other operator.")
                 .with_help("Test it with `!= null` before the comparison."),
         ),
         Refusal::DifferentTypes => (
             IssueCode::InvalidOperand,
             Issue::error(format!("{pair}."))
-                .with_note(
-                    "Spec section 19: PHP# compares values strictly, so values of two different types never match.",
-                )
+                .with_note("PHP# compares values strictly, so values of two different types never match.")
                 .with_help("Convert one side so both sides have the same type."),
         ),
     };

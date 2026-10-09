@@ -122,7 +122,7 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for UnaryPrefix<'arena> {
                 .with_annotation(
                     Annotation::primary(self.span()).with_message("This value is not an `int` or a `float`."),
                 )
-                .with_note("Spec section 24 makes `(int)`, `(float)` and `(string)` convert between numbers only.")
+                .with_note("`(int)`, `(float)` and `(string)` convert between numbers only.")
                 .with_help("Parse a string with `Int.parse` or `Float.parse`, and compare a value to get a `bool`."),
             );
 
