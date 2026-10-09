@@ -8966,6 +8966,30 @@ fn a_match_that_misses_cases_of_an_enum_imported_under_another_name_writes_them_
     );
 }
 
+/// An import of the enum's short name would clash with the file's import of another enum, so the missing arms are
+/// written with the alias the import needs.
+#[test]
+fn a_match_that_misses_cases_of_an_enum_whose_short_name_the_file_imports_writes_them_with_an_alias() {
+    let billing_status =
+        ("src/Billing/Status.php", "<?php\n\nnamespace Billing;\n\nenum Status\n{\n    case Due;\n}\n");
+    let sharp = "namespace Demo;\n\nimport Lib.Ticket;\nimport Billing.Status;\n\nclass Report\n{\n    public static string state(Ticket ticket) => match (ticket.status()) {\n    };\n}\n";
+
+    let issues = analyze(
+        &PLUGIN_REGISTRY,
+        settings(),
+        ("src/Demo/Report.sharp", sharp),
+        &[("src/Lib/Status.php", TICKETS), billing_status],
+    );
+
+    assert_eq!(
+        written_errors(sharp, &issues),
+        [
+            "match match-not-exhaustive This `match` misses `LibStatus.Open`, `LibStatus.Closed` and `LibStatus.Archived`. Add `import Lib.Status as LibStatus;` to the file.",
+            "match (ticket.status()) {\n    } empty-match-expression Match expression cannot be empty.",
+        ]
+    );
+}
+
 /// Iterating an enum value names the loop over its cases as the file writes it: the enum's bound short name, and the
 /// import when the file doesn't bind it. The PHP twin keeps upstream's text.
 #[test]
@@ -9968,6 +9992,71 @@ fn a_getter_calling_a_class_of_its_own_namespace_names_no_import() {
         effect_issues(&[kiosk, printer]),
         [
             "app/Shop/Kiosk.sharp:7:27 impure-getter: Getter `printed` calls `Printer.print`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern Printer.print;` when it has no effect, or name its effects after `uses`."
+        ]
+    );
+}
+
+/// An import of the class's short name would clash with the file's import of another class, and `Clock` in the
+/// `extern` would name that other class. So the help imports the class under the alias its full name gives, and the
+/// `extern` uses the alias. Following the help clears the error.
+#[test]
+fn a_getter_calling_a_class_whose_short_name_its_file_imports_names_an_aliased_import() {
+    let timer = (
+        "app/Shop/Timer.sharp",
+        "namespace App.Shop;\n\nimport App.Clock;\n\npublic class Timer\n{\n    public Timer(private Source source, private Clock clock) { }\n\n    public int started => this.source.clock().now();\n}\n",
+    );
+    let declared = (
+        "app/Shop/Timer.sharp",
+        "namespace App.Shop;\n\nimport App.Clock;\nimport Vendor.Clock as VendorClock;\n\nextern VendorClock.now;\n\npublic class Timer\n{\n    public Timer(private Source source, private Clock clock) { }\n\n    public int started => this.source.clock().now();\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[timer, CLOCK_SOURCE, VENDOR_CLOCK, APP_CLOCK]),
+        [
+            "app/Shop/Timer.sharp:9:27 impure-getter: Getter `started` calls `Vendor.Clock.now`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern VendorClock.now;` when it has no effect, or name its effects after `uses`. Add `import Vendor.Clock as VendorClock;` to the file."
+        ]
+    );
+    assert_eq!(effect_issues(&[declared, CLOCK_SOURCE, VENDOR_CLOCK, APP_CLOCK]), Vec::<String>::new());
+}
+
+/// A plain PHP namespace may start with a lowercase letter, and the alias is a PHP# type name, so it starts each part
+/// with a capital.
+#[test]
+fn an_aliased_import_capitalizes_each_part_of_a_lowercase_namespace() {
+    let clock = (
+        "src/vendor/Clock.php",
+        "<?php\n\nnamespace vendor;\n\nfinal class Clock\n{\n    public function now(): int\n    {\n        return time();\n    }\n}\n",
+    );
+    let source = (
+        "app/Shop/Source.sharp",
+        "namespace App.Shop;\n\nimport vendor.Clock;\n\npublic class Source\n{\n    public Source(private Clock time) { }\n\n    public Clock clock() => this.time;\n}\n",
+    );
+    let timer = (
+        "app/Shop/Timer.sharp",
+        "namespace App.Shop;\n\nimport App.Clock;\n\npublic class Timer\n{\n    public Timer(private Source source, private Clock clock) { }\n\n    public int started => this.source.clock().now();\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[timer, source, clock, APP_CLOCK]),
+        [
+            "app/Shop/Timer.sharp:9:27 impure-getter: Getter `started` calls `vendor.Clock.now`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern VendorClock.now;` when it has no effect, or name its effects after `uses`. Add `import vendor.Clock as VendorClock;` to the file."
+        ]
+    );
+}
+
+/// When the file binds the alias too, the help numbers it, as C#'s Roslyn numbers a name it generates, from 1 up to
+/// the first name the file leaves free.
+#[test]
+fn an_aliased_import_whose_alias_the_file_binds_takes_the_first_free_number() {
+    let timer = (
+        "app/Shop/Timer.sharp",
+        "namespace App.Shop;\n\nimport App.Clock;\nimport Lib.VendorClock;\n\npublic class Timer\n{\n    public Timer(private Source source, private Clock clock) { }\n\n    public int started => this.source.clock().now();\n}\n",
+    );
+
+    assert_eq!(
+        effect_issues(&[timer, CLOCK_SOURCE, VENDOR_CLOCK, APP_CLOCK]),
+        [
+            "app/Shop/Timer.sharp:10:27 impure-getter: Getter `started` calls `Vendor.Clock.now`, which has no `extern` declaration. Getters must be pure. Help: Declare it in a .sharp file: `extern VendorClock1.now;` when it has no effect, or name its effects after `uses`. Add `import Vendor.Clock as VendorClock1;` to the file."
         ]
     );
 }
