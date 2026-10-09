@@ -156,7 +156,7 @@ public function bar(
 | `break-promoted-properties-list` | boolean | `true` | Always break parameter lists with promoted properties. |
 | `parameter-attribute-on-new-line` | boolean | `true` | Put parameter attributes on their own line when the parameter list breaks (PER-CS 12.2). |
 | `line-before-binary-operator` | boolean | `true` | When a binary expression breaks, place the operator on the next line. |
-| `indent-binary-expression-continuation` | boolean | `false` | Indent continuation lines of binary expressions in assignments. Available since 1.19. |
+| `indent-binary-expression-continuation` | boolean | `false` | Indent continuation lines of binary expressions in assignments. |
 | `omit-redundant-arithmetic-binary-expression-parentheses` | boolean | `false` | Drop redundant parens around arithmetic when comparison or null coalesce already preserves meaning. |
 | `omit-redundant-bitwise-binary-expression-parentheses` | boolean | `false` | Drop redundant parens around bitwise sub-expressions when precedence already preserves meaning. |
 | `preserve-redundant-logical-binary-expression-parentheses` | boolean | `false` | Keep author-written parens around a logical sub-expression when its parent is also logical. |

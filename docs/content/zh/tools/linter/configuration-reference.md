@@ -78,8 +78,6 @@ no-global            = { exclude = ["**/*Test.php"] }
 - 普通路径(`"tests"`、`"tests/"`、`"src/Foo.php"`)以前缀匹配的方式针对项目根目录的相对路径进行匹配。
 - glob 模式(任何包含 `*`、`?`、`[` 或 `{` 的条目)使用与全局 `source.excludes` 相同的 glob 引擎,匹配完整的相对路径,并应用 `[source.glob]` 设置。
 
-逐规则 `exclude` 中使用 glob 模式需要 Mago 1.20 或更高版本。早期版本仅接受普通前缀路径。
-
 逐规则 `exclude` 与 `[linter].excludes` 不同:
 
 - `[linter].excludes` 会从所有规则中移除文件。
