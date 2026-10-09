@@ -8,11 +8,11 @@ nav_section = "Reference"
 
 ## Why the name "Mago"?
 
-The project was originally named "fennec", after the fennec fox native to North Africa. A name conflict with another tool forced a rename.
+The name comes from upstream Mago, which was first named "fennec", after the fennec fox native to North Africa. A name conflict with another tool forced a rename.
 
-We picked "Mago" to stay close to our roots at Carthage Software. Mago of Carthage was an ancient Carthaginian writer known as the "Father of Agriculture". As he cultivated the land, the tool aims to help developers cultivate their codebases.
+Carthage Software, upstream's maintainer, named it after Mago of Carthage, an ancient Carthaginian writer known as the "Father of Agriculture". As he cultivated the land, the tool aims to help developers cultivate their codebases.
 
-The name has a useful double meaning. In Spanish and Italian, "mago" means "magician" or "wizard". The logo captures both: a fennec fox in a wizard's hat and robe, with the ancient Carthaginian symbol of Tanit on its garments.
+The name has a useful double meaning. In Spanish and Italian, "mago" means "magician" or "wizard". The logo, drawn for upstream Mago, captures both: a fennec fox in a wizard's hat and robe, with the ancient Carthaginian symbol of Tanit on its garments.
 
 ## How do you pronounce Mago?
 

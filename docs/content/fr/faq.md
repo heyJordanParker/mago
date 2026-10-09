@@ -8,11 +8,11 @@ nav_section = "Référence"
 
 ## Pourquoi le nom « Mago » ?
 
-Le projet s'appelait à l'origine « fennec », d'après le fennec, renard du désert d'Afrique du Nord. Un conflit de nom avec un autre outil a forcé un changement.
+Le nom vient de Mago, le projet amont, qui s'appelait d'abord « fennec », d'après le fennec, renard du désert d'Afrique du Nord. Un conflit de nom avec un autre outil a forcé un changement.
 
-Nous avons choisi « Mago » pour rester proches de nos racines chez Carthage Software. Mago de Carthage était un écrivain carthaginois antique connu comme le « Père de l'Agriculture ». Tout comme il cultivait la terre, l'outil vise à aider les développeurs à cultiver leurs bases de code.
+Carthage Software, qui maintient le projet amont, l'a nommé d'après Mago de Carthage, un écrivain carthaginois antique connu comme le « Père de l'Agriculture ». Tout comme il cultivait la terre, l'outil vise à aider les développeurs à cultiver leurs bases de code.
 
-Le nom a un double sens utile. En espagnol et en italien, « mago » signifie « magicien » ou « sorcier ». Le logo capture les deux : un fennec coiffé d'un chapeau et d'une robe de sorcier, avec l'ancien symbole carthaginois de Tanit sur ses vêtements.
+Le nom a un double sens utile. En espagnol et en italien, « mago » signifie « magicien » ou « sorcier ». Le logo, dessiné pour le projet amont Mago, capture les deux : un fennec coiffé d'un chapeau et d'une robe de sorcier, avec l'ancien symbole carthaginois de Tanit sur ses vêtements.
 
 ## Comment prononce-t-on Mago ?
 
