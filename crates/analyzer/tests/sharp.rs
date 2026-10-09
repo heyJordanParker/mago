@@ -3971,11 +3971,80 @@ fn a_key_and_value_loop_reads_a_map_and_its_keys_as_the_map_types_them() {
 /// `tags = []` empties a `List<string>` and leaves it a `List`, as its methods are: its bare index read stays bare,
 /// and `for (const [k, v] of tags)` still reads the keys of a `Map`, which a `List` is not.
 #[test]
-#[ignore = "`[]` narrows a declared List to an empty keyed array, which the Map rules read as a Map, and `add` leaves it empty"]
 fn an_emptied_list_stays_a_list_for_an_index_read_and_a_key_and_value_loop() {
     let sharp = "namespace Demo;\n\nclass Tags\n{\n    public int count()\n    {\n        List<string> tags = [\"a\"];\n        tags = [];\n        tags.add(\"x\");\n        let total = 0;\n        for (const [index, tag] of tags) {\n            total += index + strlen(tag);\n        }\n        return total + strlen(tags[0]);\n    }\n}\n";
 
     assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["11:36 invalid-iterator"]);
+}
+
+/// A parameter and a property emptied by `[]` stay the `List`s they are declared, before any method fills them.
+#[test]
+fn an_emptied_list_parameter_or_property_stays_a_list() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public List<string> names = [\"a\"];\n\n    public int count(List<string> tags)\n    {\n        tags = [];\n        this.names = [];\n        let total = 0;\n        for (const [index, tag] of tags) {\n            total += index + strlen(tag);\n        }\n        for (const [index, name] of this.names) {\n            total += index + strlen(name);\n        }\n        return total + strlen(tags[0]) + strlen(this.names[0]);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["12:36 invalid-iterator", "15:37 invalid-iterator"]);
+}
+
+/// A static property emptied by `[]` stays the `List` it is declared, as an instance property does.
+#[test]
+fn an_emptied_static_list_property_stays_a_list() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public static List<string> names = [\"a\"];\n\n    public int count()\n    {\n        Tags.names = [];\n        let total = 0;\n        for (const [i, n] of Tags.names) {\n            total += i + strlen(n);\n        }\n        return total + strlen(Tags.names[0]);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["11:30 invalid-iterator"]);
+}
+
+/// A parameter's default `[]` and a returned `[]` narrow nothing: the parameter and the call are the `List`s they are
+/// declared.
+#[test]
+fn an_empty_list_default_or_return_stays_a_list() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public int count(List<string> tags = [])\n    {\n        let total = 0;\n        for (const [index, tag] of tags) {\n            total += index + strlen(tag);\n        }\n        for (const [index, tag] of this.none()) {\n            total += index + strlen(tag);\n        }\n        return total + strlen(tags[0]) + strlen(this.none()[0]);\n    }\n\n    private List<string> none()\n    {\n        return [];\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["8:36 invalid-iterator", "11:36 invalid-iterator"]);
+}
+
+/// `field = []` in an accessor empties the property's storage, which stays the `List` the property is declared.
+#[test]
+fn an_emptied_list_field_stays_a_list() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public List<string> names {\n        get;\n        set {\n            field = [];\n            for (const name of value) {\n                field.add(name + field[0]);\n            }\n        }\n    } = [];\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// `counts = []` empties a `Map<string, int>` and leaves it a `Map` of those types: `for (const [k, v] of counts)`
+/// reads its keys and values, and a bare `counts[k]` read is refused, as on any `Map`.
+#[test]
+fn an_emptied_map_keeps_the_map_rules() {
+    let sharp = "namespace Demo;\n\nclass Counts\n{\n    public int total()\n    {\n        Map<string, int> counts = [\"a\": 1];\n        counts = [:];\n        let total = 0;\n        for (const [name, count] of counts) {\n            total += strlen(name) + count;\n        }\n        counts.delete(\"a\");\n        return total + counts[\"b\"];\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Counts.sharp", sharp), &[]), ["14:24 possibly-undefined-array-index"]);
+}
+
+/// A `List` literal assigned to a `Map<int, string>` fills a `Map`: its keys are read by `[k, v]`, and a bare read is
+/// refused.
+#[test]
+fn a_list_literal_assigned_to_a_map_keeps_the_map_rules() {
+    let sharp = "namespace Demo;\n\nclass Names\n{\n    public int total(Map<int, string> names)\n    {\n        names = [\"a\"];\n        let total = 0;\n        for (const [id, name] of names) {\n            total += id + strlen(name);\n        }\n        return total + strlen(names[0]);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Names.sharp", sharp), &[]), ["12:31 possibly-undefined-array-index"]);
+}
+
+/// A method that changes a `List` leaves it the `List` it is declared, so an index past the literal it held reads it.
+#[test]
+fn a_changed_list_reads_past_the_literal_it_held() {
+    let sharp = "namespace Demo;\n\nclass Tags\n{\n    public int count(List<string> tags, Map<string, int> counts)\n    {\n        tags = [\"a\"];\n        tags.add(\"b\");\n        counts = [\"a\": 1];\n        counts.delete(\"a\");\n        return strlen(tags[1]) + (counts[\"a\"] ?? 0);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// PHP has no `List`: `$tags = []` narrows a `list<string>` parameter to an empty array, whose read gives no `string`.
+#[test]
+fn an_emptied_php_array_narrows_to_an_empty_array() {
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /** @param list<string> $tags */\n    public function first(array $tags): string\n    {\n        $tags = [];\n\n        return $tags[0];\n    }\n}\n";
+
+    assert_eq!(
+        issues(("src/Demo/Tags.php", php), &[]),
+        ["12:22 mismatched-array-index", "12:16 invalid-return-statement"]
+    );
 }
 
 /// A `List` has `add`, `set`, `get` and `entries()`, and a `Map` has `delete` and `get`, each typed by the elements of

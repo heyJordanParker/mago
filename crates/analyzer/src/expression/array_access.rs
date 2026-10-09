@@ -17,6 +17,7 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::resolver::method::get_declared_collection;
 use crate::utils::expression::array::get_array_target_type_given_index;
 use crate::utils::expression::expression_is_nullsafe;
 use crate::utils::expression::get_array_access_id;
@@ -130,18 +131,22 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for ArrayAccess<'arena> {
 /// Spec section 12 types a PHP# `Map` read `V?`, because a key is often missing. A bare read throws on a missing
 /// key, so a `Map` is read only where the read is handled: `??` and `?.` read a missing key as null, as `isset`
 /// does. A refused bare read keeps the type `V` it would have when it runs, so it is reported once. A `List` read
-/// stays bare, because a `List`'s keys run without gaps.
-pub(crate) fn check_sharp_map_read<A>(
-    access: &ArrayAccess<'_>,
-    context: &mut Context<'_, '_, A>,
+/// stays bare, because a `List`'s keys run without gaps. A place is the collection it is declared as, whatever
+/// literal it holds.
+pub(crate) fn check_sharp_map_read<'arena, A>(
+    access: &ArrayAccess<'arena>,
+    context: &mut Context<'_, 'arena, A>,
     block_context: &BlockContext<'_>,
     artifacts: &mut AnalysisArtifacts,
 ) where
     A: Arena,
 {
-    let is_map = artifacts.get_expression_type(access.array).is_some_and(|container| {
-        container.types.iter().any(|atomic| matches!(atomic, TAtomic::Array(TArray::Keyed(_))))
-    });
+    let is_map = match get_declared_collection(context, block_context, artifacts, access.array) {
+        Some(collection) => collection.is_keyed(),
+        None => artifacts.get_expression_type(access.array).is_some_and(|container| {
+            container.types.iter().any(|atomic| matches!(atomic, TAtomic::Array(TArray::Keyed(_))))
+        }),
+    };
     if !is_map {
         return;
     }
