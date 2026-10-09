@@ -613,9 +613,11 @@ fn report_sharp_literal_spreads<A>(
 }
 
 /// Reports a PHP# literal written where the other collection is declared. `[]` and `[a, b]` are `List` literals, and
-/// `[:]` and `[key: value]` are `Map` literals, whatever their place declares. A literal reaches the place as `value`
-/// itself, or through the right side of `??`, either branch of `? :` or an arm of a `match`, at any depth. A literal of
-/// spreads names no collection of its own, and `report_sharp_literal_spreads` checks what it spreads.
+/// `[:]` and `[key: value]` are `Map` literals, whatever their place declares. A `declared` type that holds both a
+/// `List` and a `Map` takes either literal, as `List.wrap`'s `T|List<T>` does once `T` is a `Map`. A literal reaches the
+/// place as `value` itself, or through the right side of `??`, either branch of `? :` or an arm of a `match`, at any
+/// depth. A literal of spreads names no collection of its own, and `report_sharp_literal_spreads` checks what it
+/// spreads.
 pub(crate) fn check_sharp_literal_kind<A>(context: &mut Context<'_, '_, A>, value: &Expression<'_>, declared: &TUnion)
 where
     A: Arena,
@@ -624,12 +626,16 @@ where
         return;
     }
 
-    let Some(collection) = declared.types.iter().find_map(|atomic| match atomic {
+    let mut collections = declared.types.iter().filter_map(|atomic| match atomic {
         TAtomic::Array(array) => Some(array),
         _ => None,
-    }) else {
+    });
+    let Some(collection) = collections.next() else {
         return;
     };
+    if collections.any(|other| other.is_list() != collection.is_list()) {
+        return;
+    }
 
     // The values still to look at, last first, so the literals are reported in the order they are written.
     let mut values = vec![value];

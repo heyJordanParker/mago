@@ -5135,6 +5135,94 @@ fn a_sharp_parents_method_called_on_a_php_subclass_keeps_its_parameter_collectio
     );
 }
 
+/// A `List`'s `add` takes only a literal of the collection its elements declare, though PHP# declares the method in a
+/// plain PHP stub: a `List<List<int>>` takes `[]` and refuses `[:]`.
+#[test]
+fn a_map_literal_added_to_a_list_of_lists_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Grid\n{\n    public void fill(List<List<int>> rows)\n    {\n        rows.add([]);\n        rows.add([:]);\n    }\n}\n";
+
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Grid.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        ["8:18 invalid-array-element `[:]` is an empty Map. An empty List is written `[]`."]
+    );
+}
+
+/// PHP has one empty array, so a `list<list<int>>` takes `[]` as an appended element.
+#[test]
+fn an_empty_php_array_appended_to_a_list_of_lists_is_accepted() {
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Grid\n{\n    /**\n     * @param list<list<int>> $rows\n     *\n     * @return list<list<int>>\n     */\n    public function fill(array $rows): array\n    {\n        $rows[] = [];\n        $rows[] = [];\n\n        return $rows;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Grid.php", php), &[]), Vec::<String>::new());
+}
+
+/// A `List`'s `set` takes only a literal of the collection its elements declare: a `List<List<int>>` takes `[1]` and
+/// refuses `[:]`.
+#[test]
+fn a_map_literal_set_into_a_list_of_lists_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Grid\n{\n    public void fill(List<List<int>> rows)\n    {\n        rows.set(0, [1]);\n        rows.set(0, [:]);\n    }\n}\n";
+
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Grid.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        ["8:21 invalid-array-element `[:]` is an empty Map. An empty List is written `[]`."]
+    );
+}
+
+/// PHP has one empty array, so a `list<list<int>>` takes `[]` as a replaced element.
+#[test]
+fn an_empty_php_array_set_into_a_list_of_lists_is_accepted() {
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Grid\n{\n    /**\n     * @param list<list<int>> $rows\n     *\n     * @return list<list<int>>\n     */\n    public function fill(array $rows): array\n    {\n        $rows[0] = [1];\n        $rows[0] = [];\n\n        return $rows;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Grid.php", php), &[]), Vec::<String>::new());
+}
+
+/// `List.wrap`'s value is `T|List<T>`, so `[:]` may be the `T` it wraps, and `wrap` itself refuses every value that can
+/// be a collection. A `Map` literal passed to it is refused once, by `wrap`, and not again as a literal of the wrong
+/// collection.
+#[test]
+fn list_wrap_of_a_map_literal_is_refused_once() {
+    let sharp = "namespace Demo;\n\nclass Grid\n{\n    public List<List<int>> rows() => List.wrap([:]);\n}\n";
+
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Grid.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        [
+            "5:48 invalid-argument T is Map<never, never>, itself a map; write `[:] is Map<never, never> one ? [one] : [:]`"
+        ]
+    );
+}
+
+/// Plain PHP calls `\Sharp\List::wrap` with an empty array under PHP's rules, with no PHP# refusal.
+#[test]
+fn list_wrap_of_an_empty_php_array_called_from_php_keeps_the_php_checks() {
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Grid\n{\n    /** @return list<list<int>> */\n    public function rows(): array\n    {\n        return \\Sharp\\List::wrap([]);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Grid.php", php), &[]), Vec::<String>::new());
+}
+
+/// A return or a parameter that declares both a `List` and a `Map` takes a literal of either collection.
+#[test]
+fn a_literal_where_a_list_or_a_map_is_declared_is_accepted() {
+    let sharp = "namespace Demo;\n\nclass Grid\n{\n    public List<int>|Map<string, int> none() => [:];\n\n    public List<int>|Map<string, int> empty() => [];\n\n    public int fill() => Grid.size([:]) + Grid.size([]);\n\n    private static int size(List<int>|Map<string, int> cells) => count(cells);\n}\n";
+
+    assert_eq!(issues(("src/Demo/Grid.sharp", sharp), &[]), Vec::<String>::new());
+}
+
+/// PHP has one empty array, so a return or a parameter typed `list<int>|array<string, int>` takes `[]`.
+#[test]
+fn an_empty_php_array_where_a_list_or_a_string_keyed_array_is_declared_is_accepted() {
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Grid\n{\n    /** @return list<int>|array<string, int> */\n    public function none(): array\n    {\n        return [];\n    }\n\n    /** @return list<int>|array<string, int> */\n    public function empty(): array\n    {\n        return [];\n    }\n\n    public function fill(): int\n    {\n        return self::size([]) + self::size([]);\n    }\n\n    /** @param list<int>|array<string, int> $cells */\n    private static function size(array $cells): int\n    {\n        return count($cells);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Grid.php", php), &[]), Vec::<String>::new());
+}
+
 /// A plain PHP class's `array` property names neither a `List` nor a `Map`, so PHP# assigns it either literal, as an
 /// instance property and as a static one.
 #[test]

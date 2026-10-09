@@ -569,6 +569,13 @@ pub(crate) fn sharp_collection_name(object: &TObject) -> Option<&'static str> {
     }
 }
 
+/// A class under `Sharp\` that the prelude declares as a plain PHP stub.
+// Deleted once the standard library's `.sharp` sources replace the prelude stubs (php-sharp issue #60).
+#[must_use]
+pub(crate) fn is_prelude_stub(class: Word) -> bool {
+    class.as_bytes().len() > 6 && class.as_bytes()[..6].eq_ignore_ascii_case(b"sharp\\")
+}
+
 /// Produces a user-facing display string for a `FunctionLikeIdentifier`: a method reads `Order::total` in PHP and
 /// `Order.total` in a `.sharp` file.
 #[must_use]
