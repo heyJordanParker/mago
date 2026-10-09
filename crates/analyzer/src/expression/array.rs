@@ -40,6 +40,7 @@ use mago_syntax::cst::Array;
 use mago_syntax::cst::ArrayElement;
 use mago_syntax::cst::Expression;
 use mago_syntax::cst::LegacyArray;
+use mago_syntax::cst::PatternMatchArmBody;
 use mago_syntax::cst::UnaryPrefix;
 use mago_syntax::cst::UnaryPrefixOperator;
 use mago_syntax::cst::VariadicArrayElement;
@@ -54,6 +55,7 @@ use crate::code::IssueCode;
 use crate::context::Context;
 use crate::context::block::BlockContext;
 use crate::error::AnalysisError;
+use crate::statement::function_like::map_key_error;
 use crate::utils::expression::get_block_expression_id;
 use crate::utils::misc::unwrap_expression;
 use crate::utils::names::display_atomic;
@@ -191,20 +193,22 @@ where
                             item_key_type.clone()
                         } else if !item_key_type.is_always_array_key(true) {
                             let item_key_type_id = display_type(context, item_key_type);
+                            let key_span = key_value_array_element.key.span();
 
-                            context.collector.report_with_code(
-                                IssueCode::InvalidArrayElementKey,
+                            // PHP# casts only between numbers, so its literal names the rule a `Map` type keeps.
+                            let issue = if context.dialect.is_sharp() {
+                                map_key_error(&item_key_type_id, key_span)
+                            } else {
                                 Issue::error("Invalid array key type.")
-                                    .with_annotation(
-                                        Annotation::primary(key_value_array_element.key.span()).with_message(format!(
-                                            "This has type `{item_key_type_id}`, which cannot be cast to a string or integer.",
-                                        )),
-                                    )
+                                    .with_annotation(Annotation::primary(key_span).with_message(format!(
+                                        "This has type `{item_key_type_id}`, which cannot be cast to a string or integer.",
+                                    )))
                                     .with_note(format!(
                                         "In PHP, array keys must be strings or integers. While types like `bool` or `float` are automatically cast, a value of type `{item_key_type_id}` cannot be.",
                                     ))
-                                    .with_help("Ensure the array key is either a string or an integer."),
-                            );
+                                    .with_help("Ensure the array key is either a string or an integer.")
+                            };
+                            context.collector.report_with_code(IssueCode::InvalidArrayElementKey, issue);
 
                             get_arraykey()
                         } else {
@@ -605,6 +609,74 @@ fn report_sharp_literal_spreads<A>(
         }
 
         own_part.get_or_insert(element.span());
+    }
+}
+
+/// Reports a PHP# literal written where the other collection is declared. `[]` and `[a, b]` are `List` literals, and
+/// `[:]` and `[key: value]` are `Map` literals, whatever their place declares. A literal reaches the place as `value`
+/// itself, or through the right side of `??`, either branch of `? :` or an arm of a `match`, at any depth. A literal of
+/// spreads names no collection of its own, and `report_sharp_literal_spreads` checks what it spreads.
+pub(crate) fn check_sharp_literal_kind<A>(context: &mut Context<'_, '_, A>, value: &Expression<'_>, declared: &TUnion)
+where
+    A: Arena,
+{
+    if !context.dialect.is_sharp() {
+        return;
+    }
+
+    let Some(collection) = declared.types.iter().find_map(|atomic| match atomic {
+        TAtomic::Array(array) => Some(array),
+        _ => None,
+    }) else {
+        return;
+    };
+
+    // The values still to look at, last first, so the literals are reported in the order they are written.
+    let mut values = vec![value];
+    while let Some(value) = values.pop() {
+        let literal = match value.unparenthesized() {
+            Expression::Array(literal) => literal,
+            Expression::Binary(binary) if binary.operator.is_null_coalesce() => {
+                values.push(binary.rhs);
+                continue;
+            }
+            Expression::Conditional(conditional) => {
+                values.push(conditional.r#else);
+                values.push(conditional.then.unwrap_or(conditional.condition));
+                continue;
+            }
+            Expression::PatternMatch(pattern_match) => {
+                values.extend(pattern_match.arms.iter().rev().filter_map(|arm| match arm.body() {
+                    PatternMatchArmBody::Expression(arm_value) => Some(*arm_value),
+                    PatternMatchArmBody::Block(_) => None,
+                }));
+                continue;
+            }
+            _ => continue,
+        };
+
+        let is_map_literal = match literal.elements.iter().find(|element| element.is_key_value() || element.is_value())
+        {
+            Some(element) => element.is_key_value(),
+            None if literal.elements.is_empty() => literal.colon.is_some(),
+            None => continue,
+        };
+
+        let message = match (is_map_literal, collection.is_list(), literal.elements.is_empty()) {
+            (false, false, true) => "`[]` is an empty List. An empty Map is written `[:]`.",
+            (false, false, false) => "A Map literal is written `[key: value]`.",
+            (true, true, true) => "`[:]` is an empty Map. An empty List is written `[]`.",
+            (true, true, false) => "A List literal is written `[a, b]`.",
+            _ => continue,
+        };
+
+        let declared_str = display_type(context, declared);
+        context.collector.report_with_code(
+            IssueCode::InvalidArrayElement,
+            Issue::error(message).with_annotation(
+                Annotation::primary(literal.span()).with_message(format!("Declared `{declared_str}`.")),
+            ),
+        );
     }
 }
 

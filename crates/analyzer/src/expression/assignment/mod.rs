@@ -51,6 +51,7 @@ use crate::context::block::ReferenceConstraintSource;
 use crate::context::scope::var_has_root;
 use crate::context::scope::var_references_dynamic;
 use crate::error::AnalysisError;
+use crate::expression::array::check_sharp_literal_kind;
 use crate::expression::constant_access::field_storage;
 use crate::expression::find_expression_logic_issues;
 use crate::formula::get_formula;
@@ -219,12 +220,20 @@ where
     };
 
     // PHP# `[]` and `[:]` name no element type, and PHP types both as one empty array. A place declared as a `List` or
-    // a `Map` keeps that collection when one empties it, as its declaration does, so its rules and elements stay.
-    let source_type = match (assignment_operator, source_type.types.as_ref()) {
-        (None, [TAtomic::Array(array)]) if context.dialect.is_sharp() && array.is_empty() => {
+    // a `Map` takes only a literal of its own collection, from `=` and from `??=`, which stores its right side as it
+    // is, and keeps that collection when one empties it, as its declaration does, so its rules and elements stay.
+    let declared_collection = match assignment_operator {
+        None | Some(AssignmentOperator::Coalesce(_)) if context.dialect.is_sharp() => {
             get_declared_collection(context, block_context, artifacts, target_expression)
-                .map_or(source_type, |collection| Rc::new(TUnion::from_atomic(TAtomic::Array(collection))))
+                .map(|collection| Rc::new(TUnion::from_atomic(TAtomic::Array(collection))))
         }
+        _ => None,
+    };
+    if let (Some(declared_collection), Some(source_expression)) = (&declared_collection, source_expression) {
+        check_sharp_literal_kind(context, source_expression, declared_collection);
+    }
+    let source_type = match (declared_collection, source_type.types.as_ref()) {
+        (Some(declared_collection), [TAtomic::Array(array)]) if array.is_empty() => declared_collection,
         _ => source_type,
     };
 
