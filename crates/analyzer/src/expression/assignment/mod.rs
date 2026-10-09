@@ -54,6 +54,7 @@ use crate::error::AnalysisError;
 use crate::expression::constant_access::field_storage;
 use crate::expression::find_expression_logic_issues;
 use crate::formula::get_formula;
+use crate::resolver::method::get_declared_collection;
 use crate::resolver::static_property::StaticProperty;
 use crate::statement::function_like::expect_function_type;
 use crate::utils::docblock::check_docblock_type_incompatibility;
@@ -215,6 +216,16 @@ where
         }
     } else {
         Rc::new(get_mixed())
+    };
+
+    // PHP# `[]` and `[:]` name no element type, and PHP types both as one empty array. A place declared as a `List` or
+    // a `Map` keeps that collection when one empties it, as its declaration does, so its rules and elements stay.
+    let source_type = match (assignment_operator, source_type.types.as_ref()) {
+        (None, [TAtomic::Array(array)]) if context.dialect.is_sharp() && array.is_empty() => {
+            get_declared_collection(context, block_context, artifacts, target_expression)
+                .map_or(source_type, |collection| Rc::new(TUnion::from_atomic(TAtomic::Array(collection))))
+        }
+        _ => source_type,
     };
 
     if let (Some(target_variable_id), None) = (&target_variable_id, assignment_operator)

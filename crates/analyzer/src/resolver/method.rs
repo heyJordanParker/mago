@@ -1150,11 +1150,11 @@ where
     true
 }
 
-/// The collection type the place a PHP# collection method is called on is declared with: a typed local, a parameter,
-/// a property, or `field`, the storage of the property whose accessor is running. The method takes values of that
-/// type, as `$list[] = $x` is checked against the declared property, so a value the analyzer saw assigned last, such
-/// as `[]` or a list of one implementation, narrows nothing.
-fn get_declared_collection<'arena, A>(
+/// The collection type the place `object` is declared with: a typed local, a parameter, a property, or `field`, the
+/// storage of the property whose accessor is running. A PHP# collection is the `List` or `Map` its place declares, so
+/// its methods, its index reads and its `[k, v]` loops follow that type. A value the analyzer saw assigned last, such
+/// as a list of one implementation, or a `List` literal in a `Map<int, V>`, narrows neither its kind nor its elements.
+pub(crate) fn get_declared_collection<'arena, A>(
     context: &Context<'_, 'arena, A>,
     block_context: &BlockContext<'_>,
     artifacts: &AnalysisArtifacts,
