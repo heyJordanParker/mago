@@ -5485,6 +5485,21 @@ fn a_list_is_passed_as_a_set_only_to_a_body_that_makes_it_one() {
     assert_eq!(issues(("src/Demo/Caller.php", php), &[("src/Demo/Tags.sharp", sharp)]), Vec::<String>::new());
 }
 
+/// `Sharp\Set` is the engine's class that makes each `Set` parameter a `Set`, which only the lowering calls, as
+/// `Sharp\Collection` is the class each collection method runs on. Neither is a class PHP# code imports and calls, so
+/// `Set.from` is an unknown method, as `\Sharp\Set::from` is in PHP.
+#[test]
+fn the_engines_set_class_is_not_a_class_sharp_code_calls() {
+    let sharp = "namespace Demo;\n\nimport Sharp.Set;\n\nclass Tags\n{\n    public int count(List<string> tags)\n    {\n        const made = Set.from(tags);\n        return count(made);\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nfinal class Tags\n{\n    /** @param list<string> $tags */\n    public function count(array $tags): int\n    {\n        $made = \\Sharp\\Set::from($tags);\n        return count($made);\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Tags.sharp", sharp), &[]), ["9:26 non-existent-method", "10:22 mixed-argument"]);
+    assert_eq!(
+        issues(("src/Demo/Tags.php", php), &[]),
+        ["10:29 non-existent-method", "10:9 mixed-assignment", "11:22 mixed-argument"]
+    );
+}
+
 /// A `match` gives the value of its arm, so a list literal there is a `List`, which a place declared `Set` refuses.
 #[test]
 fn a_list_literal_in_a_match_arm_where_a_set_is_declared_is_refused() {

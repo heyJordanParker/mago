@@ -62,21 +62,6 @@ final class List
     public static function wrap(mixed $value): array {}
 }
 
-final class Set
-{
-    /**
-     * The set `$values` makes: each value keyed by itself, or by its backing value when it is a backed enum, in the
-     * order of its first appearance. A set comes back as it is. A method that takes a PHP# `Set` runs this on it first.
-     *
-     * @template T of int|string|\BackedEnum
-     *
-     * @param array<array-key, T> $values
-     *
-     * @return array<array-key, T>
-     */
-    public static function from(array $values): array {}
-}
-
 /**
  * The methods a PHP# `List<T>` has. The analyzer checks a call on a list against them, and the engine runs them on
  * `Sharp\Collection`. A method without `@mutation-free` changes the list.
