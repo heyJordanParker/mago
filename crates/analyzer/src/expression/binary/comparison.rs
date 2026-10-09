@@ -619,20 +619,13 @@ fn check_comparison_operand<'ast, 'arena, A>(
                 .with_help("Ensure this operand has a known, comparable type before using this comparison operator."),
         );
     } else if operand_type.is_false() {
-        let rules = if context.dialect.is_sharp() {
-            "PHP compares `false` with other types according to specific rules (e.g., `false < 1` is `true`). This can hide bugs.".to_owned()
-        } else {
-            format!(
-                "PHP compares `false` with other types according to specific rules (e.g., `false == 0` is true using `{op_str}`). This can hide bugs."
-            )
-        };
         context.collector.report_with_code(
             IssueCode::FalseOperand,
             Issue::error(format!(
                "{side} operand in `{op_str}` comparison is `false`."
             ))
             .with_annotation(Annotation::primary(operand.span()).with_message("This is `false`"))
-            .with_note(rules)
+            .with_note(format!("PHP compares `false` with other types according to specific rules (e.g., `false == 0` is true using `{op_str}`). This can hide bugs."))
             .with_help("Ensure this operand is not `false` or explicitly handle the `false` case if it represents a distinct state (e.g., an error from a function)."),
         );
     } else if operand_type.is_falsable() && !operand_type.ignore_falsable_issues() {
@@ -670,6 +663,14 @@ enum Comparand {
     Instance,
     Collection,
     Any,
+}
+
+impl Comparand {
+    /// Whether a value of this comparand has no order: only numbers, strings and classes that declare `operator <=>`
+    /// have one, so `<`, `<=`, `>`, `>=` and `<=>` refuse a `bool`, an enum case and a collection.
+    const fn is_unordered(self) -> bool {
+        matches!(self, Comparand::Bool | Comparand::Enum(_) | Comparand::Collection)
+    }
 }
 
 /// The comparands of the values of `union`, leaving out `null`, which `==` lifts.
@@ -716,6 +717,8 @@ pub(crate) enum Refusal {
     /// `<=>` or an ordering with a side that may be `null`, an instance or any other value, which only `==` and `!=`
     /// lift.
     NullableOperand,
+    /// `<=>` or an ordering with a side that may be a `bool`, an enum case or a collection, which have no order.
+    UnorderedOperand,
     /// `==` or `!=` on two values of types that never match, a string ordered against another type, or an instance
     /// compared with a value its class's operator never takes, as `money < 5`.
     DifferentTypes,
@@ -736,9 +739,9 @@ pub(crate) fn mixes_numbers(lhs_type: &TUnion, rhs_type: &TUnion, codebase: &Cod
 
 /// Why a PHP# file may not compare a value of `lhs_type` with one of `rhs_type` by `operator`, or `None` when it may:
 /// `==` or `!=` on two values spec section 19 cannot compare strictly, `===` or `!==` on a value that is no class
-/// instance, an ordering of a string against any other type, an ordering with a side that may be `null`, and a
-/// comparison of instances whose class declares no operator for it, or whose operator never takes the other side, are
-/// refused.
+/// instance, an ordering with a side that may be a `bool`, an enum case or a collection, an ordering of a string against
+/// any other type, an ordering with a side that may be `null`, and a comparison of instances whose class declares no
+/// operator for it, or whose operator never takes the other side, are refused.
 pub(crate) fn sharp_refusal(
     operator: &BinaryOperator<'_>,
     lhs_type: &TUnion,
@@ -784,13 +787,17 @@ pub(crate) fn sharp_refusal(
             }
         }
         // PHP# orders an instance by the `operator <=>` its class declares, and a string by its bytes, so only against a
-        // string. Only `==` and `!=` take `null`, so a side that may be `null` is refused whatever its type. An `Any?`
-        // keeps its own report.
+        // string. A `bool`, an enum case and a collection have no order, even against an `Any?`. Only `==` and `!=` take
+        // `null`, so a side that may be `null` is refused whatever its type. An `Any?` keeps its own report.
         BinaryOperator::LessThan(_)
         | BinaryOperator::LessThanOrEqual(_)
         | BinaryOperator::GreaterThan(_)
         | BinaryOperator::GreaterThanOrEqual(_)
         | BinaryOperator::Spaceship(_) => {
+            if lhs.iter().chain(&rhs).any(|comparand| comparand.is_unordered()) {
+                return Some(Refusal::UnorderedOperand);
+            }
+
             let different_types = if has(Comparand::Instance) {
                 let Some(method) = get_comparison_method(operator, lhs_type, rhs_type, codebase) else {
                     return Some(Refusal::Instance);
@@ -878,6 +885,14 @@ pub(crate) fn report_sharp_refusal<A>(
     let (lhs_name, rhs_name) = (display_operand(context, lhs_type), display_operand(context, rhs_type));
     let op = BytesDisplay(operator.as_bytes());
     let pair = format!("`{op}` cannot compare `{lhs_name}` with `{rhs_name}`");
+    // The part of an operand that holds a refused comparand, the left one first, as `Cart` of a `Cart|int`.
+    let part = |refused: fn(Comparand) -> bool| {
+        let holds =
+            |atomic: &&TAtomic| comparands(&TUnion::from_atomic((*atomic).clone()), codebase).into_iter().any(refused);
+        let side = if lhs_type.types.iter().any(|atomic| holds(&atomic)) { lhs_type } else { rhs_type };
+
+        display_operand(context, &TUnion::from_vec(side.types.iter().filter(holds).cloned().collect()))
+    };
 
     let (code, issue) = match refusal {
         Refusal::Identity => {
@@ -899,15 +914,7 @@ pub(crate) fn report_sharp_refusal<A>(
             .with_help("Compare the elements one by one."),
         ),
         Refusal::Instance => {
-            // The message names the part of the operand that compares as an instance, as `Cart` of a `Cart|int`.
-            let is_instance = |atomic: &&TAtomic| {
-                comparands(&TUnion::from_atomic((*atomic).clone()), codebase).contains(&Comparand::Instance)
-            };
-            let class_type = if lhs_type.types.iter().any(|atomic| is_instance(&atomic)) { lhs_type } else { rhs_type };
-            let class = display_operand(
-                context,
-                &TUnion::from_vec(class_type.types.iter().filter(is_instance).cloned().collect()),
-            );
+            let class = part(|comparand| comparand == Comparand::Instance);
 
             let issue = if matches!(operator, BinaryOperator::Equal(_) | BinaryOperator::NotEqual(_)) {
                 let identity = if operator.is_negated_equality() { "!==" } else { "===" };
@@ -930,6 +937,15 @@ pub(crate) fn report_sharp_refusal<A>(
             Issue::error(format!("{pair}: only `==` and `!=` take `null`, so test the value for `null` first."))
                 .with_note("PHP# lifts `==` and `!=` over `null`, and no other operator.")
                 .with_help("Test it with `!= null` before the comparison."),
+        ),
+        Refusal::UnorderedOperand => (
+            IssueCode::InvalidOperand,
+            Issue::error(format!(
+                "`{op}` orders numbers, strings and classes that declare `operator <=>`, and `{}` is none of them.",
+                part(Comparand::is_unordered)
+            ))
+            .with_note("A `bool`, an enum case and a collection have no order.")
+            .with_help("Order a number or a string taken from the value instead."),
         ),
         Refusal::DifferentTypes => (
             IssueCode::InvalidOperand,

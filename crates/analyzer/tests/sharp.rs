@@ -2094,8 +2094,8 @@ fn a_null_or_type_check_that_always_or_never_holds_speaks_of_its_bool() {
     );
 }
 
-/// A comparison that always or never holds, and an ordering of `false`, write `true` and `false` as PHP# writes them.
-/// PHP# refuses `false == 0`, so the ordering names the rule it keeps. PHP keeps its own wording.
+/// A comparison that always or never holds writes `true` and `false` as PHP# writes them. A `bool` has no order, so
+/// PHP# refuses an ordering of `false` before any PHP rule for `false` is named. PHP keeps its own wording.
 #[test]
 fn a_comparison_that_always_or_never_holds_speaks_of_its_bool() {
     let store = (
@@ -2107,7 +2107,11 @@ fn a_comparison_that_always_or_never_holds_speaks_of_its_bool() {
     let comparisons = |analyzed| -> Vec<String> {
         worded(analyzed, &[store])
             .into_iter()
-            .filter(|line| line.contains(" redundant-comparison ") || line.contains(" false-operand "))
+            .filter(|line| {
+                line.contains(" redundant-comparison ")
+                    || line.contains(" false-operand ")
+                    || line.contains(" invalid-operand ")
+            })
             .collect()
     };
 
@@ -2126,9 +2130,8 @@ fn a_comparison_that_always_or_never_holds_speaks_of_its_bool() {
         [
             "7:53 redundant-comparison Redundant `!=` comparison: left-hand side is never equal to (always `false` for !=) right-hand side. | Left operand is `1` | Right operand is `1` | The `!=` operator will always return `false` in this case. | Consider simplifying or removing this comparison as it always evaluates to `false`.",
             "8:54 redundant-comparison Redundant `!=` comparison: left-hand side is always not equal to (always `true` for !=) right-hand side. | Left operand is `1` | Right operand is `2` | The `!=` operator will always return `true` in this case. | Consider simplifying or removing this comparison as it always evaluates to `true`.",
-            "9:40 false-operand Left operand in `<` comparison is `false`. | This is `false` | PHP compares `false` with other types according to specific rules (e.g., `false < 1` is `true`). This can hide bugs. | Ensure this operand is not `false` or explicitly handle the `false` case if it represents a distinct state (e.g., an error from a function).",
-            "9:40 redundant-comparison Redundant `<` comparison: left-hand side is always less than right-hand side. | Left operand is `false` | Right operand is `1` | The `<` operator will always return `true` in this case. | Consider simplifying or removing this comparison as it always evaluates to `true`.",
-            "10:40 false-operand Left operand in spaceship comparison (`<=>`) is `false`. | This is `false` | PHP compares `false` with other types according to specific rules (e.g., `false < 1` is `true`). | Ensure this comparison with `false` is intended, or provide a non-false operand.",
+            "9:40 invalid-operand `<` orders numbers, strings and classes that declare `operator <=>`, and `bool` is none of them. | This is `bool`. | This is `int`. | A `bool`, an enum case and a collection have no order. | Order a number or a string taken from the value instead.",
+            "10:40 invalid-operand `<=>` orders numbers, strings and classes that declare `operator <=>`, and `bool` is none of them. | This is `bool`. | This is `int`. | A `bool`, an enum case and a collection have no order. | Order a number or a string taken from the value instead.",
         ]
     );
 }
@@ -2271,7 +2274,7 @@ fn a_literal_keyed_by_a_value_that_cannot_key_a_map_names_the_map_key_rule() {
     assert_eq!(
         keys(("src/Demo/Report.sharp", sharp)),
         [
-            "7:44 invalid-array-element-key A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value, and `Object` has none. | `Object` keys this `Map`. | Key the `Map` by an `int`, a `string` or a backed enum, such as `enum Status: string`.",
+            "7:44 invalid-array-element-key A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value, and `Object` has none. | `Object` keys this `Map`. | Key the `Map` by an `int`, a `string` or a backed enum, such as `enum Status : string`.",
         ]
     );
 }
@@ -3046,6 +3049,89 @@ fn ordering_a_nullable_value_is_refused_until_it_is_tested_for_null() {
             "13:43 invalid-operand `>=` cannot compare `string` with `string?`: only `==` and `!=` take `null`, so test the value for `null` first. | Test it with `!= null` before the comparison.",
         ]
     );
+}
+
+/// A `bool` has no order, so an ordering of `true` is refused, and so is one of a plain PHP value typed `int|false`,
+/// whose type holds a `bool`. PHP keeps its loose `<`.
+#[test]
+fn ordering_a_bool_is_refused() {
+    let store = (
+        "src/Lib/Store.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Store\n{\n    public static function count(): int|false { return 1; }\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Store;\n\nclass Report\n{\n    public static bool a() => true < 1;\n\n    public static bool b() => Store.count() < 1;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Store;\n\nclass Report\n{\n    public static function a(): bool { return true < 1; }\n\n    public static function b(): bool { return Store::count() < 1; }\n}\n";
+
+    assert_eq!(
+        worded(("src/Demo/Report.php", php), &[store]),
+        [
+            "9:47 redundant-comparison Redundant `<` comparison: left-hand side is never less than right-hand side. | Left operand is `true` | Right operand is `int(1)` | The `<` operator will always return `false` in this case. | Consider simplifying or removing this comparison as it always evaluates to `false`.",
+            "11:47 possibly-false-operand Left operand in `<` comparison might be `false` (type `false|int`). | This might be `false` | If this operand is `false` at runtime, PHP's specific comparison rules for `false` with `<` will apply. | Ensure this operand is non-false or that comparison with `false` is intended and handled safely.",
+        ]
+    );
+    assert_eq!(
+        worded(("src/Demo/Report.sharp", sharp), &[store]),
+        [
+            "7:31 invalid-operand `<` orders numbers, strings and classes that declare `operator <=>`, and `bool` is none of them. | This is `bool`. | This is `int`. | A `bool`, an enum case and a collection have no order. | Order a number or a string taken from the value instead.",
+            "9:31 invalid-operand `<` orders numbers, strings and classes that declare `operator <=>`, and `bool` is none of them. | This is `bool|int`. | This is `int`. | A `bool`, an enum case and a collection have no order. | Order a number or a string taken from the value instead.",
+        ]
+    );
+}
+
+/// An enum case has no order, so `<` and `<=>` on two cases are refused. PHP orders two cases as always `false`.
+#[test]
+fn ordering_an_enum_case_is_refused() {
+    let sharp = "namespace Demo;\n\nimport Lib.Status;\n\nclass Report\n{\n    public static bool a() => Status.Active < Status.Closed;\n\n    public static int b(Status left, Status right) => left <=> right;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Status;\n\nclass Report\n{\n    public static function a(): bool { return Status::Active < Status::Closed; }\n\n    public static function b(Status $left, Status $right): int { return $left <=> $right; }\n}\n";
+    let status = ("src/Lib/Status.php", STATUS);
+
+    assert_eq!(worded(("src/Demo/Report.php", php), &[status]), Vec::<String>::new());
+    assert_eq!(
+        worded(("src/Demo/Report.sharp", sharp), &[status]),
+        [
+            "7:31 invalid-operand `<` orders numbers, strings and classes that declare `operator <=>`, and `Status` is none of them. | This is `Status`. | This is `Status`. | A `bool`, an enum case and a collection have no order. | Order a number or a string taken from the value instead.",
+            "9:55 invalid-operand `<=>` orders numbers, strings and classes that declare `operator <=>`, and `Status` is none of them. | This is `Status`. | This is `Status`. | A `bool`, an enum case and a collection have no order. | Order a number or a string taken from the value instead.",
+        ]
+    );
+}
+
+/// A `List` has no order, so an ordering of two lists is refused. PHP orders two arrays by its own rules.
+#[test]
+fn ordering_a_collection_is_refused() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static bool a(List<int> lines, List<int> other) => lines < other;\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Report\n{\n    /** @param list<int> $lines @param list<int> $other */\n    public static function a(array $lines, array $other): bool { return $lines < $other; }\n}\n";
+
+    assert_eq!(worded(("src/Demo/Report.php", php), &[]), Vec::<String>::new());
+    assert_eq!(
+        worded(("src/Demo/Report.sharp", sharp), &[]),
+        [
+            "5:63 invalid-operand `<` orders numbers, strings and classes that declare `operator <=>`, and `List<int>` is none of them. | This is `List<int>`. | This is `List<int>`. | A `bool`, an enum case and a collection have no order. | Order a number or a string taken from the value instead.",
+        ]
+    );
+}
+
+/// An `Any` or `Any?` ordered against a number keeps its own report, as it must be checked with `is` first. Against a
+/// `bool` the ordering is refused, as no check makes a `bool` ordered.
+#[test]
+fn ordering_an_any_keeps_its_report_unless_the_other_side_has_no_order() {
+    let sharp = "namespace Demo;\n\nclass Report\n{\n    public static bool a(Any value) => value < 1;\n\n    public static bool b(Any? value) => value <= 1;\n\n    public static bool c(Any value) => value < true;\n}\n";
+
+    assert_eq!(
+        refusals(("src/Demo/Report.sharp", sharp), &[]),
+        [
+            "5:40 mixed-operand Left operand in `<` comparison has `mixed` type. | Ensure this operand has a known, comparable type before using this comparison operator.",
+            "7:41 mixed-operand Left operand in `<=` comparison has `mixed` type. | Ensure this operand has a known, comparable type before using this comparison operator.",
+            "9:40 invalid-operand `<` orders numbers, strings and classes that declare `operator <=>`, and `bool` is none of them. | Order a number or a string taken from the value instead.",
+        ]
+    );
+}
+
+/// Numbers, strings and instances of a class that declares `operator <=>` keep their order.
+#[test]
+fn numbers_strings_and_a_class_declaring_operator_spaceship_still_order() {
+    let sharp = "namespace App;\n\npublic class Ranking\n{\n    public bool a() => 1 < 2;\n\n    public bool b() => \"a\" < \"b\";\n\n    public bool c() => 1.5 <= 2;\n\n    public bool d(Money low, Money high) => low < high;\n\n    public int e(Money low, Money high) => low <=> high;\n}\n";
+
+    assert_eq!(errors(("src/App/Ranking.sharp", sharp), &[MONEY_OPERATORS]), Vec::<String>::new());
 }
 
 /// Spec section 19: `==` and `!=` on a nullable type are lifted, so null equals only null, and an `Any?` compares by
@@ -5415,12 +5501,12 @@ fn a_map_key_type_without_a_backing_value_is_an_error() {
     let sharp = "namespace Demo;\n\nimport Lib.Line;\nimport Lib.Pure;\n\nclass Tally\n{\n    public Map<Line, int> lines = [:];\n\n    public Map<Pure, int> count(Map<Line, int> counts)\n    {\n        Map<Pure, int> local = [:];\n        return local;\n    }\n}\n";
 
     assert_eq!(
-        issues(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
+        refusals(("src/Demo/Tally.sharp", sharp), &[("src/Lib/Status.php", STATUS)]),
         [
-            "8:12 template-constraint-violation",
-            "10:12 template-constraint-violation",
-            "10:33 template-constraint-violation",
-            "12:9 template-constraint-violation"
+            "8:12 template-constraint-violation A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value, and `Line` has none. | Key the `Map` by an `int`, a `string` or a backed enum, such as `enum Status : string`.",
+            "10:12 template-constraint-violation A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value, and `Pure` has none. | Key the `Map` by an `int`, a `string` or a backed enum, such as `enum Status : string`.",
+            "10:33 template-constraint-violation A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value, and `Line` has none. | Key the `Map` by an `int`, a `string` or a backed enum, such as `enum Status : string`.",
+            "12:9 template-constraint-violation A `Map`'s keys are `int`, `string` or a type with an `int` or `string` backing value, and `Pure` has none. | Key the `Map` by an `int`, a `string` or a backed enum, such as `enum Status : string`.",
         ]
     );
 }

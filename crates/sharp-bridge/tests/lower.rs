@@ -4344,11 +4344,12 @@ fn a_string_plus_equals_a_class_value_is_a_concatenating_assignment() {
 
 /// ```php
 /// $this->total = \intdiv($this->total, 2);
-/// ($receiver#1 = $this->next())->total = \intdiv($receiver#1->total, 2);
+/// $receiver#1->total = \intdiv(($receiver#1 = $this->next())->total, 2);
 /// ```
 ///
 /// `/=` on an int property reads and writes the property once each. A receiver that is not a local or `this` goes
-/// into a hidden variable, which the write sets before the read, so the receiver runs once.
+/// into a hidden variable, which the read sets and the write reads, so the receiver runs once. PHP refuses an
+/// assignment as the object of a written property, and reads the variable it writes through after the value.
 #[test]
 fn int_division_assignment_to_a_property_runs_its_receiver_once() {
     let lowered = Lowered::new(
@@ -4374,23 +4375,114 @@ fn int_division_assignment_to_a_property_runs_its_receiver_once() {
                     ZVAL 2
               ASSIGN
                 PROP
-                  ASSIGN
-                    VAR
-                      ZVAL "receiver#1"
-                    METHOD_CALL
-                      VAR
-                        ZVAL "this"
-                      ZVAL "next"
-                      ARG_LIST
+                  VAR
+                    ZVAL "receiver#1"
                   ZVAL "total"
                 CALL
                   ZVAL "intdiv"
                   ARG_LIST
                     PROP
-                      VAR
-                        ZVAL "receiver#1"
+                      ASSIGN
+                        VAR
+                          ZVAL "receiver#1"
+                        METHOD_CALL
+                          VAR
+                            ZVAL "this"
+                          ZVAL "next"
+                          ARG_LIST
                       ZVAL "total"
                     ZVAL 2
+        "#}
+    );
+}
+
+/// ```php
+/// $this->next()->total += 2;
+/// $this->next()->total %= 3;
+/// $this->next()->total |= 4;
+/// $receiver#1->total = \intdiv(
+///     ($receiver#1 = $this->next())->total,
+///     $receiver#2->total = \intdiv(($receiver#2 = $this->next())->total, 2),
+/// );
+/// ```
+///
+/// Only `/=` on ints lowers to an assignment of its own. Every other compound operator on an int is PHP's own, which
+/// runs a call receiver once. A `/=` inside the value of another keeps its own hidden variable, so the outer write
+/// goes through the receiver the outer read set.
+#[test]
+fn a_compound_assignment_on_a_call_receiver_writes_through_the_receiver_its_read_set() {
+    let lowered = Lowered::new(
+        "namespace App.Tenant;\n\nclass Report\n{\n    public int total { get => field; set => field = value; } = 8;\n\n    public void run()\n    {\n        this.next().total += 2;\n        this.next().total %= 3;\n        this.next().total |= 4;\n        this.next().total /= (this.next().total /= 2);\n    }\n\n    private Report next() => this;\n}\n",
+    );
+
+    assert_eq!(
+        lowered.body(),
+        indoc! {r#"
+            STMT_LIST
+              ASSIGN_OP [1]
+                PROP
+                  METHOD_CALL
+                    VAR
+                      ZVAL "this"
+                    ZVAL "next"
+                    ARG_LIST
+                  ZVAL "total"
+                ZVAL 2
+              ASSIGN_OP [5]
+                PROP
+                  METHOD_CALL
+                    VAR
+                      ZVAL "this"
+                    ZVAL "next"
+                    ARG_LIST
+                  ZVAL "total"
+                ZVAL 3
+              ASSIGN_OP [9]
+                PROP
+                  METHOD_CALL
+                    VAR
+                      ZVAL "this"
+                    ZVAL "next"
+                    ARG_LIST
+                  ZVAL "total"
+                ZVAL 4
+              ASSIGN
+                PROP
+                  VAR
+                    ZVAL "receiver#1"
+                  ZVAL "total"
+                CALL
+                  ZVAL "intdiv"
+                  ARG_LIST
+                    PROP
+                      ASSIGN
+                        VAR
+                          ZVAL "receiver#1"
+                        METHOD_CALL
+                          VAR
+                            ZVAL "this"
+                          ZVAL "next"
+                          ARG_LIST
+                      ZVAL "total"
+                    ASSIGN
+                      PROP
+                        VAR
+                          ZVAL "receiver#2"
+                        ZVAL "total"
+                      CALL
+                        ZVAL "intdiv"
+                        ARG_LIST
+                          PROP
+                            ASSIGN
+                              VAR
+                                ZVAL "receiver#2"
+                              METHOD_CALL
+                                VAR
+                                  ZVAL "this"
+                                ZVAL "next"
+                                ARG_LIST
+                            ZVAL "total"
+                          ZVAL 2
         "#}
     );
 }
@@ -9199,11 +9291,11 @@ fn arithmetic_on_instances_calls_the_declared_operators() {
 
 /// ```php
 /// $this->total = \App\Money::op_Addition($this->total, $price);
-/// ($receiver#1 = $this->current())->total = \App\Money::op_Addition($receiver#1->total, $price);
+/// $receiver#1->total = \App\Money::op_Addition(($receiver#1 = $this->current())->total, $price);
 /// ```
 ///
 /// `+=` on an instance assigns what `operator +` returns. A receiver that is not a local or `this` goes into a hidden
-/// variable, which the write sets before the read, so the receiver runs once.
+/// variable, which the read sets and the write reads, so the receiver runs once.
 #[test]
 fn a_compound_assignment_to_an_instance_assigns_the_operator_result_and_runs_its_receiver_once() {
     assert_eq!(
@@ -9227,22 +9319,22 @@ fn a_compound_assignment_to_an_instance_assigns_the_operator_result_and_runs_its
                       ZVAL "price"
               ASSIGN
                 PROP
-                  ASSIGN
-                    VAR
-                      ZVAL "receiver#1"
-                    METHOD_CALL
-                      VAR
-                        ZVAL "this"
-                      ZVAL "current"
-                      ARG_LIST
+                  VAR
+                    ZVAL "receiver#1"
                   ZVAL "total"
                 STATIC_CALL
                   ZVAL "App\\Money"
                   ZVAL "op_Addition"
                   ARG_LIST
                     PROP
-                      VAR
-                        ZVAL "receiver#1"
+                      ASSIGN
+                        VAR
+                          ZVAL "receiver#1"
+                        METHOD_CALL
+                          VAR
+                            ZVAL "this"
+                          ZVAL "current"
+                          ARG_LIST
                       ZVAL "total"
                     VAR
                       ZVAL "price"
