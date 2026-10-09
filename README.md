@@ -12,7 +12,6 @@
 
 [![CI Status](https://github.com/heyJordanParker/mago-sharp/actions/workflows/ci.yml/badge.svg)](https://github.com/heyJordanParker/mago-sharp/actions/workflows/ci.yml)
 [![CD Status](https://github.com/heyJordanParker/mago-sharp/actions/workflows/cd.yml/badge.svg)](https://github.com/heyJordanParker/mago-sharp/actions/workflows/cd.yml)
-[![Crates.io](https://img.shields.io/crates/v/mago.svg)](https://crates.io/crates/mago)
 [![Latest Stable Version for PHP](https://poser.pugx.org/heyjordanparker/mago-sharp/v)](https://packagist.org/packages/heyjordanparker/mago-sharp)
 [![Total Composer Downloads](http://poser.pugx.org/heyjordanparker/mago-sharp/downloads)](https://packagist.org/packages/heyjordanparker/mago-sharp)
 [![License](https://img.shields.io/crates/l/mago.svg)](https://github.com/heyJordanParker/mago-sharp/blob/master/LICENSE-MIT)
@@ -36,20 +35,20 @@
 The most common way to install Mago on macOS and Linux is by using our shell script:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -sSf https://carthage.software/mago.sh | bash
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/heyJordanParker/mago-sharp/master/scripts/install.sh | bash
 ```
 
 To install a specific version:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -sSf https://carthage.software/mago.sh | bash -s -- --version=1.51.0
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/heyJordanParker/mago-sharp/master/scripts/install.sh | bash -s -- --version=0.2.0
 ```
 
-For all other installation methods, including Homebrew, Composer, and Cargo, please refer to our official **[Installation Guide](https://mago.carthage.software/latest/en/guide/installation/)**.
+For all other installation methods, including Composer, please refer to the **[Installation Guide](docs/content/en/guide/installation.md)**.
 
 ## Getting Started
 
-To get started with Mago and learn how to configure your project, please visit our **[Getting Started Guide](https://mago.carthage.software/latest/en/guide/getting-started/)** in the official documentation.
+To get started with Mago and learn how to configure your project, please visit the **[Getting Started Guide](docs/content/en/guide/getting-started.md)**.
 
 ## Features
 

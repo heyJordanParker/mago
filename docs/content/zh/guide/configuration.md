@@ -23,41 +23,39 @@ Mago 从单一文件读取配置,通常是项目根目录下的 `mago.toml`。�
 
 ## 编辑器 Schema
 
-每个发布都会发布一个描述完整配置树的 JSON Schema。能识别该 Schema 的编辑器可以为 `mago.{toml,yaml,yml,json}` 提供自动补全、悬停文档与内联校验。
+Mago 用一份 JSON Schema 描述完整的配置树。能识别该 Schema 的编辑器可以为 `mago.{toml,yaml,yml,json}` 提供自动补全、悬停文档与内联校验。
 
-Schema 托管在:
-
-- `https://mago.carthage.software/<version>/schema.json`,对应某个具体版本(如 `1.51.0`)。
-- `https://mago.carthage.software/latest/schema.json`,最新的稳定版本。
-- `https://mago.carthage.software/main/schema.json`,来自 `main` 分支的开发构建。
-
-请将 URL 固定到你已安装的 Mago 版本,这样 Schema 与二进制就能保持同步。`mago init` 会把固定版本的 URL 写入它生成的配置文件中。
+通过 Composer(`heyjordanparker/mago-sharp`)安装 Mago 时,第一次运行 `mago` 会把与已安装版本匹配的 Schema 写入 `vendor/heyjordanparker/mago-sharp/schema.json`。用相对路径引用它,Schema 就会始终跟随已安装的版本。该文件存在时,`mago init` 会写入这条引用。
 
 引用方式因格式而异:
 
 ```toml
-#:schema https://mago.carthage.software/1.51.0/schema.json
-version = "1"
+#:schema vendor/heyjordanparker/mago-sharp/schema.json
+version = "0"
 php-version = "8.3"
 ```
 
 ```yaml
-# yaml-language-server: $schema=https://mago.carthage.software/1.51.0/schema.json
-version: "1"
+# yaml-language-server: $schema=vendor/heyjordanparker/mago-sharp/schema.json
+version: "0"
 php-version: "8.3"
 ```
 
 ```json
 {
-  "$schema": "https://mago.carthage.software/1.51.0/schema.json",
-  "version": "1",
+  "$schema": "vendor/heyjordanparker/mago-sharp/schema.json",
+  "version": "0",
   "php-version": "8.3"
 }
 ```
 
 对于 TOML,该注释会被 [Taplo](https://taplo.tamasfe.dev/) 语言服务器读取,VS Code 的「Even Better TOML」扩展和 JetBrains 的 TOML 支持均基于它。对于 YAML,该注释会被 [Red Hat YAML 语言服务器](https://github.com/redhat-developer/yaml-language-server) 读取。对于 JSON,所有现代编辑器都原生识别 `$schema`。Mago 本身会忽略 `$schema` 键以及这些魔法注释,它们仅用于编辑器工具。
 
-如果你需要在 CI 中重新生成 Schema(例如,以编程方式校验配置文件),`mago config --schema` 会把它打印到 stdout。
+不使用 Composer 时,`mago config --schema` 会把已安装二进制的 Schema 打印到 stdout。把它保存在配置文件旁边并改为引用该文件,每次升级后重新生成,这样 Schema 与二进制就能保持同步:
+
+```sh
+mago config --schema > mago.schema.json
+```
 
 ## 用 `extends` 共享配置
 
@@ -126,7 +124,7 @@ excludes = ["build"]   # 追加后 -> ["vendor", "node_modules", "build"]
 这些键位于 `mago.toml` 的根层。
 
 ```toml
-version = "1"
+version = "0"
 php-version = "8.2"
 threads = 8
 stack-size = 8388608     # 8 MiB
@@ -135,7 +133,7 @@ editor-url = "phpstorm://open?file=%file%&line=%line%&column=%column%"
 
 | 选项 | 类型 | 默认值 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `version` | string | 无 | 锁定本项目所基于的 Mago 版本。接受主版本(`"1"`)、次版本(`"1.51"`)或精确版本(`"1.51.0"`)的锁定。参见 [版本锁定](#version-pinning)。 |
+| `version` | string | 无 | 锁定本项目所基于的 Mago 版本。接受主版本(`"0"`)、次版本(`"0.2"`)或精确版本(`"0.2.0"`)的锁定。参见 [版本锁定](#version-pinning)。 |
 | `php-version` | string | 最新稳定版 | Mago 在解析与分析时应针对的 PHP 版本。`mago init` 会尽可能从 `composer.json` 自动检测。 |
 | `allow-unsupported-php-version` | boolean | `false` | 允许 Mago 运行在它官方不支持的 PHP 版本上。不建议使用。 |
 | `no-version-check` | boolean | `false` | 在已安装二进制与锁定版本不一致时关闭警告。主版本不一致始终是致命错误。 |
@@ -149,9 +147,9 @@ editor-url = "phpstorm://open?file=%file%&line=%line%&column=%column%"
 
 三种锁定级别:
 
-- **主版本锁定**(`version = "1"`):任何 `1.x.y` 都满足。升级到 `2.x` 会硬性报错,因为新主版本可能带来不兼容的默认值、schema 变化或规则行为。这是 `mago init` 默认写入的级别。
-- **次版本锁定**(`version = "1.51"`):任何 `1.51.y` 都满足。漂移到不同的次版本会发出警告;跨主版本仍然是致命错误。
-- **精确锁定**(`version = "1.51.0"`):任何漂移都会发出警告;跨主版本仍然是致命错误。
+- **主版本锁定**(`version = "0"`):任何 `0.x.y` 都满足。升级到 `1.x` 会硬性报错,因为新主版本可能带来不兼容的默认值、schema 变化或规则行为。这是 `mago init` 默认写入的级别。
+- **次版本锁定**(`version = "0.2"`):任何 `0.2.y` 都满足。漂移到不同的次版本会发出警告;跨主版本仍然是致命错误。
+- **精确锁定**(`version = "0.2.0"`):任何漂移都会发出警告;跨主版本仍然是致命错误。
 
 警告可通过 `--no-version-check`、`MAGO_NO_VERSION_CHECK` 环境变量,或配置中的 `no-version-check = true` 关闭。这些都不会影响主版本漂移,而后者正是版本锁定的全部意义所在。
 
@@ -161,7 +159,7 @@ editor-url = "phpstorm://open?file=%file%&line=%line%&column=%column%"
 mago self-update --to-project-version
 ```
 
-对于精确锁定,会直接解析到对应的发布 tag。对于主版本或次版本锁定,Mago 会扫描近期的 GitHub 发布,安装满足锁定的最高版本。所以即便 2.0 已经发布,`version = "1"` 仍会安装最新的 1.x。
+对于精确锁定,会直接解析到对应的发布 tag。对于主版本或次版本锁定,Mago 会扫描近期的 GitHub 发布,安装满足锁定的最高版本。所以即便 1.0 已经发布,`version = "0"` 仍会安装最新的 0.x。
 
 `version` 目前是可选项。未来某个 Mago 版本可能在未设置时开始警告,以提醒项目为最终的 2.0 升级做准备。
 

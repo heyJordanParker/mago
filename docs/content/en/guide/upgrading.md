@@ -6,7 +6,7 @@ nav_section = "Guide"
 +++
 # Upgrading
 
-`mago self-update` replaces the running binary with a newer release. Use it for installs that came from the shell script, Homebrew, Cargo, or a manual download.
+`mago self-update` replaces the running binary with a newer release. Use it for installs that came from the shell script or a manual download.
 
 > Composer installs are different. The Composer wrapper pins a binary that matches the Composer package version, so you upgrade Mago with `composer update` rather than `self-update`.
 
@@ -30,7 +30,7 @@ mago self-update --no-confirm     # skip the prompt
 Pin a specific version:
 
 ```sh
-mago self-update --tag 1.51.0
+mago self-update --tag 0.2.0
 ```
 
 ## Sync with the project's version pin
@@ -41,7 +41,7 @@ If your `mago.toml` uses [version pinning](/guide/configuration/#version-pinning
 mago self-update --to-project-version
 ```
 
-For an exact pin (`version = "1.51.0"`), this resolves directly to that release tag. For a major or minor pin, Mago scans recent GitHub releases and installs the highest one that still satisfies the pin. So `version = "1"` with 2.0 already shipped still installs the latest 1.x release. `version = "1.14"` with 1.19.x in the wild walks back to the latest 1.14.x.
+For an exact pin (`version = "0.2.0"`), this resolves directly to that release tag. For a major or minor pin, Mago scans recent GitHub releases and installs the highest one that still satisfies the pin. So `version = "0"` with 1.0 already shipped still installs the latest 0.x release. `version = "0.1"` with 0.2.x in the wild walks back to the latest 0.1.x.
 
 The command fails only if no published release satisfies the pin at all.
 
