@@ -2013,6 +2013,33 @@ fn a_match_arm_that_never_or_always_matches_speaks_of_its_bool() {
     );
 }
 
+/// A `??` on a key the shape never holds writes the `bool` of the check as PHP# writes it. PHP keeps its own wording.
+#[test]
+fn a_fallback_on_a_missing_key_speaks_of_its_bool() {
+    let store = (
+        "src/Lib/Store.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Store\n{\n    /** @return array{a: int} */\n    public static function shape(): array { return ['a' => 1]; }\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Store;\n\nclass Report\n{\n    public static int missing() { const m = Store.shape(); return m[\"b\"] ?? 0; }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Store;\n\nclass Report\n{\n    public static function missing(): int { $m = Store::shape(); return $m['b'] ?? 0; }\n}\n";
+    let checks = |analyzed| -> Vec<String> {
+        worded(analyzed, &[store]).into_iter().filter(|line| line.contains(" impossible-nonnull-entry-check ")).collect()
+    };
+
+    assert_eq!(
+        checks(("src/Demo/Report.php", php)),
+        [
+            "9:76 impossible-nonnull-entry-check Impossible `isset` check on key `'b'` accessed on `array{'a': int}`. | `isset` on key `'b'` will always be false here. | The analysis determined that the key `'b'` definitely does not exist in this array, so checking `isset` is unnecessary. | Remove the redundant `isset` check.",
+        ]
+    );
+    assert_eq!(
+        checks(("src/Demo/Report.sharp", sharp)),
+        [
+            "7:69 impossible-nonnull-entry-check Impossible `isset` check on key `'b'` accessed on `Map<\"a\", int>`. | `isset` on key `'b'` will always be `false` here. | The analysis determined that the key `'b'` definitely does not exist in this array, so checking `isset` is unnecessary. | Remove the redundant `isset` check.",
+        ]
+    );
+}
+
 /// An operand that may be `false`, from a PHP method, asks for a check of `false`. PHP# has no falsiness, and keeps
 /// `(int)` between numbers, so no cast turns `false` into one. PHP keeps its own wording.
 #[test]
