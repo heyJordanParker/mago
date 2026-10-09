@@ -1975,6 +1975,34 @@ fn a_loop_over_a_value_that_may_be_false_asks_for_a_check_of_false() {
     );
 }
 
+/// A PHP method's `@psalm-assert non-empty-mixed` is named by the type its docblock writes. PHP# has no name for it,
+/// and `Any` would drop the non-empty that makes the assertion hold. PHP keeps Mago's `truthy-mixed`.
+#[test]
+fn an_assertion_of_non_empty_mixed_names_the_type_its_docblock_writes() {
+    let check = (
+        "src/Lib/Check.php",
+        "<?php\n\nnamespace Lib;\n\nfinal class Check\n{\n    /**\n     * @psalm-pure\n     *\n     * @psalm-assert non-empty-mixed $value\n     */\n    public static function filled(mixed $value): void {}\n}\n",
+    );
+    let sharp = "namespace Demo;\n\nimport Lib.Check;\n\nclass Report\n{\n    public static void run() { const one = 1; Check.filled(one); }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nuse Lib\\Check;\n\nclass Report\n{\n    public static function run(): void { $one = 1; Check::filled($one); }\n}\n";
+    let redundant = |analyzed| -> Vec<String> {
+        worded(analyzed, &[check]).into_iter().filter(|line| line.contains(" redundant-type-comparison ")).collect()
+    };
+
+    assert_eq!(
+        redundant(("src/Demo/Report.sharp", sharp)),
+        [
+            "7:47 redundant-type-comparison Redundant type assertion: `one` is already `1`. | Argument `one` already has type `1` | The assertion against `non-empty-mixed` always holds because `one` is `1`. | Consider removing this assertion or replacing it with `default` if used in a `match` arm.",
+        ]
+    );
+    assert_eq!(
+        redundant(("src/Demo/Report.php", php)),
+        [
+            "9:52 redundant-type-comparison Redundant type assertion: `$one` is already `int(1)`. | Argument `$one` already has type `int(1)` | The assertion against `truthy-mixed` always holds because `$one` is `int(1)`. | Consider removing this assertion or replacing it with `default` if used in a `match` arm.",
+        ]
+    );
+}
+
 /// A condition that contradicts or repeats an earlier one names its variables and types as PHP# writes them. The
 /// earlier condition reads as the `||` it is. PHP keeps its own wording.
 #[test]

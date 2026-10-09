@@ -317,14 +317,23 @@ where
 /// as [`sharp_class_like_name`] names it, a type parameter by its name, an intersection as `A & B`, a function type as
 /// `Function<void(int)>`, `Class<Order>`, `Object`, `Iterable<int>`, and a literal as `1` or `"text"`. A refinement that
 /// PHP# cannot write is the type that holds it, such as `int` for a `positive-int` and `int|string` for an
-/// `array-key`, and is named once. `numeric`, `scalar` and `never` have no PHP# name and keep Mago's.
+/// `array-key`, and is named once. `numeric`, `scalar` and `never` have no PHP# name and keep Mago's. A PHP docblock's
+/// `non-empty-mixed` has no PHP# name either, and keeps the name its docblock writes, as Mago's `truthy-mixed` speaks
+/// of a truthiness PHP# does not have.
 #[must_use]
 pub(crate) fn display_sharp_type<A>(context: &Context<'_, '_, A>, union: &TUnion) -> String
 where
     A: Arena,
 {
     if let Some(TAtomic::Mixed(mixed)) = union.types.iter().find(|atomic| atomic.is_mixed()) {
-        return if mixed.is_non_null() { "Any" } else { "Any?" }.to_owned();
+        return if mixed.is_truthy() {
+            "non-empty-mixed"
+        } else if mixed.is_non_null() {
+            "Any"
+        } else {
+            "Any?"
+        }
+        .to_owned();
     }
 
     let mut parts: Vec<String> = Vec::new();
