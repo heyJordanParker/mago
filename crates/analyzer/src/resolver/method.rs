@@ -54,7 +54,6 @@ use crate::resolver::property::resolve_declared_property;
 use crate::resolver::selector::resolve_member_selector;
 use crate::utils::expression::analyze_member_object;
 use crate::utils::expression::get_bare_name_variable_id;
-use crate::utils::expression::is_this;
 use crate::utils::names::display_atomic;
 use crate::utils::names::display_class_like_name;
 use crate::utils::names::display_code_member;
@@ -1201,12 +1200,10 @@ where
                 is_sharp.then(|| context.codebase.get_property_type(class, property_name.as_bytes()))?
             };
 
-            // `Class.name` is a static property of the class it names, and `this` keeps no expression type: its
-            // class is the scope's.
+            // `Class.name` is a static property of the class it names. Any other object is analyzed before its
+            // property's collection is asked for, so its class is its expression type.
             if let Some(class) = context.resolved_names.static_property_class(access) {
                 property_type(context.resolved_names.get(&class.name))?.clone()
-            } else if is_this(access.object, context.resolved_names) {
-                property_type(block_context.scope.get_class_like_name()?.as_bytes())?.clone()
             } else {
                 artifacts.get_expression_type(access.object)?.types.iter().find_map(|atomic| match atomic {
                     TAtomic::Object(object) => property_type(object.get_name()?.as_bytes()).cloned(),
