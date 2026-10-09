@@ -6,8 +6,12 @@
 
 #![allow(clippy::big_endian_bytes, clippy::little_endian_bytes)]
 
+use std::io;
 use std::mem::offset_of;
 use std::mem::size_of;
+use std::path::Path;
+use std::path::PathBuf;
+use std::time::UNIX_EPOCH;
 
 use mago_build_id::BUILD_ID;
 use xxhash_rust::xxh3::Xxh3;
@@ -23,6 +27,9 @@ use crate::store_text;
 compile_error!("a .sharpc file is little-endian, and the engine reads it by casting its bytes");
 
 pub const SHARP_UNIT_MAGIC: [u8; 8] = *b"SHARPC\0\0";
+
+/// The folder at the workspace root, and at each package root, that holds every compiled file.
+pub const COMPILED_FOLDER: &str = ".sharp";
 
 /// The first bytes of a `.sharpc` file. Every 16-byte hash is xxh3-128 in canonical big-endian order.
 #[repr(C)]
@@ -279,6 +286,89 @@ pub fn header(bytes: &[u8]) -> Result<Header, FormatError> {
         source_hash: header.source_hash,
         source_size: header.source_size,
     })
+}
+
+/// The size, modification time and hash of the file at the workspace-relative `path` under `root`, or none when no
+/// file is there.
+///
+/// # Errors
+///
+/// Returns the error of reading the file, other than its absence.
+pub fn stamp(root: &Path, path: &[u8]) -> io::Result<Option<Input>> {
+    let full = root.join(String::from_utf8_lossy(path).as_ref());
+    let contents = match std::fs::read(&full) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mtime_ns = match std::fs::metadata(&full)?.modified()?.duration_since(UNIX_EPOCH) {
+        Ok(after) => i64::try_from(after.as_nanos()).unwrap_or(i64::MAX),
+        Err(before) => i64::try_from(before.duration().as_nanos()).map_or(i64::MIN, |nanos| -nanos),
+    };
+
+    Ok(Some(Input { path: path.to_vec(), size: contents.len() as u64, mtime_ns, hash: source_hash(&contents) }))
+}
+
+/// Where the compiled file of `source` lives, or none when `source` is a link to a file outside `root`.
+///
+/// The compiled file sits in the `.sharp` folder at the canonical `root`, at the real path of `source` relative to
+/// `root`, with `.sharp` replaced by `.sharpc`.
+///
+/// # Errors
+///
+/// Returns the error of resolving the real path of `source`.
+pub fn compiled_path(root: &Path, source: &Path) -> io::Result<Option<PathBuf>> {
+    let real = source.canonicalize()?;
+
+    Ok(real.strip_prefix(root).ok().map(|relative| root.join(COMPILED_FOLDER).join(relative).with_extension("sharpc")))
+}
+
+/// Returns `true` when the compiled file `bytes` cannot stand for its source any more.
+///
+/// That is when it is no compiled file this bridge reads, another checker build wrote it, or one of its inputs under
+/// `root` differs from its stamp. An input differs when its size or hash changed, when it is gone, or when a file
+/// appeared where it was absent.
+///
+/// # Errors
+///
+/// Returns the error of reading an input.
+pub fn is_stale(root: &Path, bytes: &[u8]) -> io::Result<bool> {
+    let Ok(header) = header(bytes) else {
+        return Ok(true);
+    };
+    if header.checker != BUILD_ID.to_be_bytes() {
+        return Ok(true);
+    }
+
+    let word = |offset: usize| -> usize {
+        let mut word = [0; 4];
+        word.copy_from_slice(&bytes[offset..offset + 4]);
+        u32::from_le_bytes(word) as usize
+    };
+    let count = word(offset_of!(sharp_unit_header, input_count));
+    let texts = size_of::<sharp_unit_header>()
+        + size_of::<sharp_input>() * count
+        + size_of::<sharp_node>() * word(offset_of!(sharp_unit_header, node_count))
+        + size_of::<u32>() * word(offset_of!(sharp_unit_header, children_count));
+    for index in 0..count {
+        let input = size_of::<sharp_unit_header>() + size_of::<sharp_input>() * index;
+        let path_at = input + offset_of!(sharp_input, path);
+        let path = &bytes[texts + word(path_at + offset_of!(sharp_str, offset))..]
+            [..word(path_at + offset_of!(sharp_str, len))];
+        let mut size = [0; 8];
+        size.copy_from_slice(&bytes[input + offset_of!(sharp_input, size)..][..8]);
+        let hash = &bytes[input + offset_of!(sharp_input, hash)..][..16];
+
+        let current = match stamp(root, path)? {
+            Some(stamped) => (stamped.size, stamped.hash),
+            None => (0, [0; 16]),
+        };
+        if current != (u64::from_le_bytes(size), hash.try_into().unwrap_or([0; 16])) {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 /// The length of the file `header` describes.

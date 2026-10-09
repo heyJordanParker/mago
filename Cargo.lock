@@ -1438,6 +1438,7 @@ dependencies = [
  "mago-reporting",
  "mago-server",
  "mago-sharp-bridge",
+ "mago-sharp-lean",
  "mago-syntax",
  "mago-syntax-core",
  "mago-text-edit",
@@ -1794,6 +1795,7 @@ dependencies = [
  "mago-reporting",
  "mago-semantics",
  "mago-sharp-bridge",
+ "mago-sharp-lean",
  "mago-syntax",
  "mago-word",
  "rayon",
@@ -1888,6 +1890,7 @@ dependencies = [
  "mago-orchestrator",
  "mago-reporting",
  "mago-sharp-bridge",
+ "mago-sharp-lean",
  "mago-syntax",
 ]
 
@@ -1915,6 +1918,30 @@ dependencies = [
  "stacker",
  "tempfile",
  "xxhash-rust",
+]
+
+[[package]]
+name = "mago-sharp-lean"
+version = "0.2.0"
+dependencies = [
+ "foldhash",
+ "mago-analyzer",
+ "mago-build-id",
+ "mago-codex",
+ "mago-composer",
+ "mago-database",
+ "mago-extension",
+ "mago-names",
+ "mago-reporting",
+ "mago-sharp-bridge",
+ "mago-span",
+ "mago-syntax",
+ "mago-word",
+ "rayon",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml 1.1.5+spec-1.1.0",
 ]
 
 [[package]]

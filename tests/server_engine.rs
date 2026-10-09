@@ -290,16 +290,19 @@ fn compiled(server: &mut Server) -> (BTreeMap<String, Option<Input>>, Vec<u8>) {
     let database = server.database().read_only();
     let mut inputs = BTreeMap::new();
     let compiled = server
-        .compile(|path| {
-            let input = database.get(&FileId::new(path)).ok().map(|file| Input {
-                path: path.to_vec(),
-                size: file.contents.len() as u64,
-                mtime_ns: 0,
-                hash: source_hash(&file.contents),
-            });
-            inputs.insert(String::from_utf8_lossy(path).into_owned(), input.clone());
-            Ok(input)
-        })
+        .compile(
+            |path| {
+                let input = database.get(&FileId::new(path)).ok().map(|file| Input {
+                    path: path.to_vec(),
+                    size: file.contents.len() as u64,
+                    mtime_ns: 0,
+                    hash: source_hash(&file.contents),
+                });
+                inputs.insert(String::from_utf8_lossy(path).into_owned(), input.clone());
+                Ok(input)
+            },
+            |_| Ok(Default::default()),
+        )
         .expect("the compile runs");
     let [(_, Compilation::Accepted(bytes))] = compiled.as_slice() else {
         panic!("the PHP# file is not accepted: {compiled:?}");

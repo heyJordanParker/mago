@@ -190,6 +190,7 @@ mago-orchestrator = { path = "crates/orchestrator", version = "0.2.0" }
 mago-server = { path = "crates/server", version = "0.2.0" }
 mago-extension = { path = "crates/extension", version = "0.2.0" }
 mago-sharp-bridge = { path = "crates/sharp-bridge", version = "0.2.0" }
+mago-sharp-lean = { path = "crates/sharp-lean", version = "0.2.0" }
 mago-build-id = { path = "crates/build-id", version = "0.2.0" }
 tracing = { version = "0.1.40" }
 foldhash = "0.2"
@@ -278,6 +279,7 @@ mago-guard = { workspace = true, features = ["serde"] }
 mago-orchestrator = { workspace = true }
 mago-server = { workspace = true }
 mago-sharp-bridge = { workspace = true }
+mago-sharp-lean = { workspace = true }
 mago-extension = { workspace = true }
 serde = { workspace = true }
 clap = { workspace = true }
