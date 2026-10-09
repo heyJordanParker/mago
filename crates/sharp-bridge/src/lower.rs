@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use mago_allocator::LocalArena;
 use mago_codex::ttype::atomic::TAtomic;
+use mago_codex::ttype::atomic::array::TArray;
 use mago_codex::ttype::union::TUnion;
 use mago_names::ResolvedNames;
 use mago_names::binding::Binding;
@@ -65,12 +66,14 @@ use mago_syntax::cst::ModifierSequenceExt;
 use mago_syntax::cst::NamedArgument;
 use mago_syntax::cst::NamespaceBody;
 use mago_syntax::cst::Node;
+use mago_syntax::cst::NullSafePropertyAccess;
 use mago_syntax::cst::NullableHint;
 use mago_syntax::cst::Operator;
 use mago_syntax::cst::PartialArgument;
 use mago_syntax::cst::PartialArgumentList;
 use mago_syntax::cst::PositionalArgument;
 use mago_syntax::cst::Property;
+use mago_syntax::cst::PropertyAccess;
 use mago_syntax::cst::PropertyHook;
 use mago_syntax::cst::PropertyHookBody;
 use mago_syntax::cst::PropertyHookConcreteBody;
@@ -139,6 +142,7 @@ use crate::sharp_kind::SHARP_AST_GREATER_EQUAL;
 use crate::sharp_kind::SHARP_AST_IF;
 use crate::sharp_kind::SHARP_AST_IF_ELEM;
 use crate::sharp_kind::SHARP_AST_INSTANCEOF;
+use crate::sharp_kind::SHARP_AST_ISSET;
 use crate::sharp_kind::SHARP_AST_MAGIC_CONST;
 use crate::sharp_kind::SHARP_AST_MATCH;
 use crate::sharp_kind::SHARP_AST_MATCH_ARM;
@@ -295,6 +299,31 @@ impl Lines {
 
         (line, offset - self.0[line as usize - 1] + 1)
     }
+}
+
+/// A value the PHP of a `Set` reads more than once, and the hidden variable that holds it, if any.
+struct Reread<'value, 'ast> {
+    expression: &'value Expression<'ast>,
+    hidden: Option<Vec<u8>>,
+    /// Whether a read assigned the hidden variable.
+    assigned: bool,
+}
+
+impl<'value, 'ast> Reread<'value, 'ast> {
+    /// `expression`, lowered again at each read.
+    fn once(expression: &'value Expression<'ast>) -> Self {
+        Self { expression, hidden: None, assigned: false }
+    }
+}
+
+/// The receiver of a `Set` method call.
+enum SetReceiver<'receiver, 'ast> {
+    /// A local, `field` or a static property, which lowering again reads and writes the same `Set`.
+    Place(&'receiver Expression<'ast>),
+    /// A property of an object, which the method reads again.
+    Property(Reread<'receiver, 'ast>, &'receiver ClassLikeMemberSelector<'ast>),
+    /// Any other value, which lives nowhere, so a change changes a copy.
+    Value(Reread<'receiver, 'ast>),
 }
 
 /// Lowers one checked file. Every node is pushed after its children, and each node's children are contiguous.
@@ -600,7 +629,8 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
     /// PHP writes `function`: the return type, or the name of the constructor, which runs as `__construct` and has
     /// no return type. Its body starts with `first_statements`: the class's initial values that are not constant in
     /// the constructor, or the call of an `extern` method's native function, which is that method's whole body. Any
-    /// other abstract method has no statement list.
+    /// other abstract method has no statement list. A method with statements makes each `Set` parameter a `Set` before
+    /// them.
     fn method(&mut self, method: &Method, flags: u32, first_statements: &[u32]) -> u32 {
         if flags & (ZEND_ACC_PUBLIC | ZEND_ACC_PROTECTED | ZEND_ACC_PRIVATE) == 0 {
             unreachable!("check_slice refuses a method without an access modifier");
@@ -613,7 +643,13 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         }
 
         let parameters = self.node(SHARP_AST_PARAM_LIST, 0, self.line(&method.parameter_list), &parameters);
-        let body = self.method_body(&method.body, method.returns_value(), first_statements.to_vec());
+        let mut statements = if matches!(method.body, MethodBody::Abstract(_)) && first_statements.is_empty() {
+            Vec::new()
+        } else {
+            self.set_parameters(&method.parameter_list)
+        };
+        statements.extend_from_slice(first_statements);
+        let body = self.method_body(&method.body, method.returns_value(), statements);
         let (start, return_type) = match &method.return_type_hint {
             Some(return_type_hint) => (return_type_hint.span(), self.hint(&return_type_hint.hint)),
             None => (method.name.span, NULL),
@@ -1471,6 +1507,10 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             // A link whose chain's conditional tests the receiver is the property call or the static call through a
             // class value that `untested_link` found.
             Expression::Call(Call::NullSafeMethod(call)) => {
+                if let Some(set_call) = self.set_call(expression, call.object, &call.argument_list, true) {
+                    return set_call;
+                }
+
                 let tested = self.tested_links.contains(&expression.span());
                 if tested && let Some((class, _)) = self.class_value(call.object) {
                     let method = self.member(&call.method);
@@ -1522,6 +1562,7 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             Expression::CompositeString(CompositeString::Interpolated(template)) => self.template(template),
             Expression::ArrowFunction(arrow_function) => self.arrow_function(arrow_function),
             Expression::Closure(closure) => self.closure(closure),
+            Expression::Array(array) if self.is_set(expression) => self.set_literal(array),
             Expression::Array(array) => self.array(array),
             Expression::ArrayAccess(access) => {
                 let value = self.expression(access.array);
@@ -2023,10 +2064,17 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         self.node(kind, 0, self.line(element), &value_and_key)
     }
 
-    /// A key going into a `Map`, in a literal, an index or an argument a `Map` method takes as a key. A `Map` keyed by
-    /// a backed enum holds each case as its backing value, so a case goes in as its `->value`.
+    /// A key going into a `Map`, in a literal, an index or an argument a `Map` method takes as a key, or an element
+    /// going into a `Set` as its key.
     fn key(&mut self, key: &Expression) -> u32 {
         let lowered = self.expression(key);
+
+        self.stored_key(key, lowered)
+    }
+
+    /// `lowered`, a read of `key`, as the key a `Map` or a `Set` holds. One keyed by a backed enum holds each case as its
+    /// backing value, so a case goes in as its `->value`.
+    fn stored_key(&mut self, key: &Expression, lowered: u32) -> u32 {
         if self.backed_enum(self.types.expression_type(key)).is_none() {
             return lowered;
         }
@@ -2101,6 +2149,301 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
         let arguments = self.node(SHARP_AST_ARG_LIST, 0, line, &parts);
 
         self.node(SHARP_AST_CALL, 0, line, &[function, arguments])
+    }
+
+    /// Whether the analysis gave `expression` a `Set` type, as it gives a list literal where a `Set` is declared.
+    fn is_set(&self, expression: &Expression) -> bool {
+        self.types
+            .expression_type(expression)
+            .types
+            .iter()
+            .any(|atomic| matches!(atomic, TAtomic::Array(TArray::Set(_))))
+    }
+
+    /// Spec section 12 stores a `Set` as the array of its elements, each under its key, so a `Set` literal is
+    /// `["vip" => "vip"]`. One with a spread is `\Sharp\Set::from` of the list literal.
+    fn set_literal(&mut self, array: &Array) -> u32 {
+        let line = self.line(array);
+        if array.elements.iter().any(|element| matches!(element, ArrayElement::Variadic(_))) {
+            let list = self.array(array);
+
+            return self.set_from(line, list);
+        }
+
+        let mut entries = Vec::new();
+        for element in &array.elements {
+            let ArrayElement::Value(element) = element else {
+                unreachable!("the checker refuses a `Map` literal where a `Set` is declared");
+            };
+            let mut value = self.reread(element.value, "element");
+            let key = self.set_key(&mut value);
+            let read = self.read(&mut value);
+            self.release(value);
+            entries.push(self.node(SHARP_AST_ARRAY_ELEM, 0, self.line(element), &[read, key]));
+        }
+
+        self.node(SHARP_AST_ARRAY, ZEND_ARRAY_SYNTAX_SHORT, line, &entries)
+    }
+
+    /// `\Sharp\Set::from(value)`, the `Set` of the elements of the array `value`.
+    fn set_from(&mut self, line: u32, value: u32) -> u32 {
+        let class = self.string(ZEND_NAME_FQ, line, b"Sharp\\Set");
+        let method = self.string(0, line, b"from");
+        let arguments = self.node(SHARP_AST_ARG_LIST, 0, line, &[value]);
+
+        self.node(SHARP_AST_STATIC_CALL, 0, line, &[class, method, arguments])
+    }
+
+    /// `$p = \Sharp\Set::from($p);` for each `Set` parameter, and `$this->p = \Sharp\Set::from($this->p);` for a
+    /// promoted one, since plain PHP and a `List` argument pass any array of the elements. A nullable one stays null.
+    fn set_parameters(&mut self, parameters: &FunctionLikeParameterList) -> Vec<u32> {
+        let mut statements = Vec::new();
+        for parameter in &parameters.parameters {
+            let Some(nullable) = set_parameter(parameter) else {
+                continue;
+            };
+            let line = self.line(parameter);
+            let value = self.parameter_place(parameter);
+            let mut set = self.set_from(line, value);
+            if nullable {
+                let value = self.parameter_place(parameter);
+                let is_null = self.is_null(line, value);
+                let null = self.zval(line, sharp_value::SHARP_NULL, |_| {});
+                set = self.node(SHARP_AST_CONDITIONAL, 0, line, &[is_null, null, set]);
+            }
+            let place = self.parameter_place(parameter);
+            statements.push(self.node(SHARP_AST_ASSIGN, 0, line, &[place, set]));
+        }
+
+        statements
+    }
+
+    /// Where `parameter` holds its value in the body: its variable, or its property when it is promoted.
+    fn parameter_place(&mut self, parameter: &FunctionLikeParameter) -> u32 {
+        let variable = &parameter.variable;
+        if !parameter.is_promoted_property() {
+            return self.variable(variable.span, variable.name);
+        }
+
+        let line = self.line(variable.span);
+        let this = self.variable(variable.span, b"this");
+        let property = self.string(0, line, variable.name);
+
+        self.node(SHARP_AST_PROP, 0, line, &[this, property])
+    }
+
+    /// The PHP a call of a `Set` method runs on the array (spec section 12), or none for a method that runs on
+    /// `Sharp\Collection`. Until the engine runs `Set` methods (php-sharp #57), each method that finds or changes an
+    /// element by its key is the PHP that does it: `contains(x)` is `isset($s[K])`, `add(x)` is
+    /// `!isset($s[K]) && ($s += [K => x])`, `remove(x)` is `isset($s[K]) && $s->delete(K) === null`, which runs
+    /// `Sharp\Collection`'s `delete`, and `clear()` is `$s = []`. `count()` is `\count($s)`, `toList()` is
+    /// `\array_values($s)`, and `filter(f)` is `$s->filterValues(f)`, which keeps the keys. A change reaches a
+    /// property through the property, which runs its hooks, and a value that lives nowhere changes as a copy. A
+    /// null-safe call tests its receiver first and gives null for null.
+    fn set_call(
+        &mut self,
+        call: &Expression,
+        receiver: &Expression,
+        arguments: &ArgumentList,
+        null_safe: bool,
+    ) -> Option<u32> {
+        let method = self.types.set_method(call)?;
+        let changes = match method.as_slice() {
+            b"add" | b"remove" => true,
+            b"contains" | b"clear" | b"count" | b"tolist" | b"filter" => false,
+            _ => return None,
+        };
+        let line = self.line(call);
+        let element = || {
+            arguments
+                .arguments
+                .first()
+                .map(Argument::value)
+                .unwrap_or_else(|| unreachable!("the checker refuses a `Set` method call without its element"))
+        };
+
+        let mut set = self.set_receiver(receiver, changes || null_safe);
+        let test = null_safe.then(|| {
+            let receiver = self.read_set(&mut set, line, true);
+
+            self.is_null(line, receiver)
+        });
+        let lowered = match method.as_slice() {
+            b"contains" => {
+                let set = self.read_set(&mut set, line, false);
+                let key = self.key(element());
+                let entry = self.node(SHARP_AST_DIM, 0, line, &[set, key]);
+
+                self.node(SHARP_AST_ISSET, 0, line, &[entry])
+            }
+            b"add" => {
+                let mut element = self.reread(element(), "element");
+                let held = self.read_set(&mut set, line, false);
+                let key = self.set_key(&mut element);
+                let entry = self.node(SHARP_AST_DIM, 0, line, &[held, key]);
+                let held = self.node(SHARP_AST_ISSET, 0, line, &[entry]);
+                let absent = self.node(SHARP_AST_UNARY_OP, ZEND_BOOL_NOT, line, &[held]);
+                let place = self.read_set(&mut set, line, false);
+                let key = self.set_key(&mut element);
+                let value = self.read(&mut element);
+                self.release(element);
+                let entry = self.node(SHARP_AST_ARRAY_ELEM, 0, line, &[value, key]);
+                let entries = self.node(SHARP_AST_ARRAY, ZEND_ARRAY_SYNTAX_SHORT, line, &[entry]);
+                let added = self.node(SHARP_AST_ASSIGN_OP, ZEND_ADD, line, &[place, entries]);
+
+                self.node(SHARP_AST_AND, 0, line, &[absent, added])
+            }
+            b"remove" => {
+                let mut element = self.reread(element(), "element");
+                let held = self.read_set(&mut set, line, false);
+                let key = self.set_key(&mut element);
+                let entry = self.node(SHARP_AST_DIM, 0, line, &[held, key]);
+                let held = self.node(SHARP_AST_ISSET, 0, line, &[entry]);
+                let place = self.read_set(&mut set, line, false);
+                let delete = self.string(0, line, b"delete");
+                let key = self.set_key(&mut element);
+                self.release(element);
+                let arguments = self.node(SHARP_AST_ARG_LIST, 0, line, &[key]);
+                let deleted = self.node(SHARP_AST_METHOD_CALL, 0, line, &[place, delete, arguments]);
+                let null = self.zval(line, sharp_value::SHARP_NULL, |_| {});
+                let deleted = self.node(SHARP_AST_BINARY_OP, ZEND_IS_IDENTICAL, line, &[deleted, null]);
+
+                self.node(SHARP_AST_AND, 0, line, &[held, deleted])
+            }
+            b"clear" => {
+                let place = self.read_set(&mut set, line, false);
+                if matches!(set, SetReceiver::Value(Reread { hidden: None, .. })) {
+                    // The receiver lives nowhere, so clearing it changes nothing anyone reads.
+                    place
+                } else {
+                    let empty = self.node(SHARP_AST_ARRAY, ZEND_ARRAY_SYNTAX_SHORT, line, &[]);
+
+                    self.node(SHARP_AST_ASSIGN, 0, line, &[place, empty])
+                }
+            }
+            b"count" | b"tolist" => {
+                let function = if method == b"count" { b"count".as_slice() } else { b"array_values" };
+                let set = self.read_set(&mut set, line, false);
+                let function = self.string(ZEND_NAME_FQ, line, function);
+                let arguments = self.node(SHARP_AST_ARG_LIST, 0, line, &[set]);
+
+                self.node(SHARP_AST_CALL, 0, line, &[function, arguments])
+            }
+            _ => {
+                let set = self.read_set(&mut set, line, false);
+                let filter = self.string(0, line, b"filterValues");
+                let arguments = self.arguments(arguments, &[]);
+
+                self.node(SHARP_AST_METHOD_CALL, 0, line, &[set, filter, arguments])
+            }
+        };
+        self.release_set(set);
+
+        Some(match test {
+            Some(test) => {
+                let null = self.zval(line, sharp_value::SHARP_NULL, |_| {});
+
+                self.node(SHARP_AST_CONDITIONAL, ZEND_PARENTHESIZED_CONDITIONAL, line, &[test, null, lowered])
+            }
+            None => lowered,
+        })
+    }
+
+    /// The receiver of a `Set` method call. A method that reads it `twice` holds a value or an object that runs
+    /// something in a hidden variable.
+    fn set_receiver<'receiver, 'ast>(
+        &mut self,
+        receiver: &'receiver Expression<'ast>,
+        twice: bool,
+    ) -> SetReceiver<'receiver, 'ast> {
+        let receiver = receiver.unparenthesized();
+        let hold = |lowering: &mut Self, value: &'receiver Expression<'ast>| {
+            if twice { lowering.reread(value, "receiver") } else { Reread::once(value) }
+        };
+
+        match receiver {
+            Expression::ConstantAccess(name)
+                if matches!(self.names.binding(&name.name), Some(Binding::Local(_) | Binding::Field)) =>
+            {
+                SetReceiver::Place(receiver)
+            }
+            Expression::Access(Access::Property(access)) if self.names.static_property_class(access).is_some() => {
+                SetReceiver::Place(receiver)
+            }
+            Expression::Access(Access::Property(PropertyAccess { object, property, .. }))
+            | Expression::Access(Access::NullSafeProperty(NullSafePropertyAccess { object, property, .. }))
+                if !self.is_class_value(object) =>
+            {
+                SetReceiver::Property(hold(self, object), property)
+            }
+            _ => SetReceiver::Value(hold(self, receiver)),
+        }
+    }
+
+    /// A read of the `Set` a method call runs on, which is also where the method writes it. The read that tests a
+    /// null-safe call's receiver reads a property with `?->`.
+    fn read_set(&mut self, set: &mut SetReceiver, line: u32, null_safe: bool) -> u32 {
+        match set {
+            SetReceiver::Place(place) => self.target(place),
+            SetReceiver::Property(object, property) => {
+                let object = self.read(object);
+                let property = self.member(property);
+                let kind = if null_safe { SHARP_AST_NULLSAFE_PROP } else { SHARP_AST_PROP };
+
+                self.node(kind, 0, line, &[object, property])
+            }
+            SetReceiver::Value(value) => self.read(value),
+        }
+    }
+
+    fn release_set(&mut self, set: SetReceiver) {
+        match set {
+            SetReceiver::Place(_) => {}
+            SetReceiver::Property(object, _) => self.release(object),
+            SetReceiver::Value(value) => self.release(value),
+        }
+    }
+
+    /// `value`, which the PHP of a `Set` reads more than once. One that reads the same and runs nothing when lowered
+    /// again is lowered at each read. Any other is held in the hidden variable `name#N`, which its first read assigns.
+    fn reread<'value, 'ast>(&mut self, value: &'value Expression<'ast>, name: &str) -> Reread<'value, 'ast> {
+        if self.is_pure(value) || value.is_constant(&PHPVersion::PHP85, false) {
+            return Reread::once(value);
+        }
+
+        self.temporaries += 1;
+
+        Reread { expression: value, hidden: Some(format!("{name}#{}", self.temporaries).into_bytes()), assigned: false }
+    }
+
+    /// A read of `value`, whose first read assigns its hidden variable.
+    fn read(&mut self, value: &mut Reread) -> u32 {
+        let Some(name) = value.hidden.clone() else {
+            return self.expression(value.expression);
+        };
+        let variable = self.variable(value.expression.span(), &name);
+        if value.assigned {
+            return variable;
+        }
+
+        value.assigned = true;
+        let lowered = self.expression(value.expression);
+
+        self.node(SHARP_AST_ASSIGN, 0, self.line(value.expression), &[variable, lowered])
+    }
+
+    /// A read of the element `value` as the key a `Set` holds it under.
+    fn set_key(&mut self, value: &mut Reread) -> u32 {
+        let read = self.read(value);
+
+        self.stored_key(value.expression, read)
+    }
+
+    /// Frees the hidden variable of `value`, the last one taken, for the forms after it.
+    fn release(&mut self, value: Reread) {
+        if value.hidden.is_some() {
+            self.temporaries -= 1;
+        }
     }
 
     /// A template without `${…}` is its text, as php-src's grammar builds a string without interpolation. Any other
@@ -2224,6 +2567,9 @@ impl<'lowering, 'arena> Lowering<'lowering, 'arena> {
             && is_current_position(self.names.get(&class.name), call)
         {
             return self.current_position(class, call);
+        }
+        if let Some(set_call) = self.set_call(expression, call.object, &call.argument_list, false) {
+            return set_call;
         }
         if let Some(inlined) = self.inlined_call(expression, call) {
             return inlined;
@@ -2515,6 +2861,17 @@ fn class_flags(modifiers: &Sequence<Modifier>) -> u32 {
 fn is_default(property: &Property, value: &Expression) -> bool {
     !matches!(property, Property::Hooked(hooked) if is_readonly(&hooked.hook_list))
         && value.is_constant(&PHPVersion::PHP85, false)
+}
+
+/// Whether `parameter` is a `Set`, as `Some` of whether it is nullable.
+fn set_parameter(parameter: &FunctionLikeParameter) -> Option<bool> {
+    match &parameter.hint {
+        Some(Hint::Generic(generic)) if generic.name.value == b"Set" => Some(false),
+        Some(Hint::Nullable(NullableHint { hint: Hint::Generic(generic), .. })) if generic.name.value == b"Set" => {
+            Some(true)
+        }
+        _ => None,
+    }
 }
 
 /// Whether a property runs as `readonly`: a get-only auto-property, which spec section 6.1 sets in the constructor.

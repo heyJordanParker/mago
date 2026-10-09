@@ -109,7 +109,8 @@ impl<'ast, 'arena> Analyzable<'ast, 'arena> for LegacyArray<'arena> {
 /// The type a PHP# literal has at a place declared a `Set`: spec section 12 makes a list literal the `Set` of its
 /// elements, which the lowering keys by each element. The literal keeps this type, so its place checks its elements. A
 /// `Map` literal there is refused by [`check_sharp_literal_kind`], and keeps the `Set` of its values, so its place adds
-/// no second issue. `None` for any other value or place.
+/// no second issue. `None` for any other value or place. The literal inside any parentheses gets the type too, since
+/// the lowering reads it there.
 pub(crate) fn get_set_literal_type<A>(
     context: &Context<'_, '_, A>,
     artifacts: &mut AnalysisArtifacts,
@@ -119,16 +120,18 @@ pub(crate) fn get_set_literal_type<A>(
 where
     A: Arena,
 {
+    let literal = unwrap_expression(value);
     if !context.dialect.is_sharp()
-        || !matches!(unwrap_expression(value), Expression::Array(_))
+        || !matches!(literal, Expression::Array(_))
         || !declared_type.types.iter().any(|atomic| matches!(atomic, TAtomic::Array(TArray::Set(_))))
     {
         return None;
     }
 
-    let literal = artifacts.get_expression_type(value)?.get_single_array()?;
-    let (_, element_type) = get_array_parameters(literal, context.codebase);
+    let array = artifacts.get_expression_type(value)?.get_single_array()?;
+    let (_, element_type) = get_array_parameters(array, context.codebase);
     let set_type = TUnion::from_atomic(TAtomic::Array(TArray::Set(Arc::new(element_type))));
+    artifacts.set_expression_type(literal, set_type.clone());
     artifacts.set_expression_type(value, set_type.clone());
 
     Some(set_type)
