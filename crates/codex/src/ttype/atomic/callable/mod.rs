@@ -26,6 +26,8 @@ pub struct TCallableSignature {
     pub is_pure: bool,
     /// `true` if this signature specifically represents a closure instance.
     pub is_closure: bool,
+    /// `true` if PHP# wrote this signature as a `Function<…>` type, so its parameters are PHP# types.
+    pub is_sharp: bool,
     /// Ordered list of parameters expected by the callable signature.
     pub parameters: Vec<TCallableParameter>,
     /// The return type of the callable, if specified. `None` implies `mixed` or unknown.
@@ -75,7 +77,15 @@ impl TCallableSignature {
     #[inline]
     #[must_use]
     pub fn new(is_pure: bool, is_closure: bool) -> Self {
-        Self { is_pure, is_closure, parameters: Vec::new(), return_type: None, source: None, constraints: Vec::new() }
+        Self {
+            is_pure,
+            is_closure,
+            is_sharp: false,
+            parameters: Vec::new(),
+            return_type: None,
+            source: None,
+            constraints: Vec::new(),
+        }
     }
 
     #[must_use]

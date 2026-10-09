@@ -4342,6 +4342,138 @@ fn a_literal_of_the_declared_collection_passed_to_a_function_value_is_accepted()
     assert_eq!(issues(("src/Demo/Counter.sharp", sharp), &[("src/Lib/Hooks.php", hooks)]), Vec::<String>::new());
 }
 
+/// A PHP closure's docblock names PHP types, and a plain PHP `array` names neither a `List` nor a `Map`, so a call
+/// through one takes either literal, as a PHP method's `array` parameter does.
+#[test]
+fn a_php_closure_whose_docblock_names_a_php_array_takes_either_literal() {
+    let hooks = "<?php\n\nnamespace Lib;\n\nfinal class Hooks\n{\n    /** @var \\Closure(array): int */\n    public \\Closure $run;\n\n    public function __construct()\n    {\n        $this->run = fn (array $values): int => count($values);\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Hooks;\n\nclass Counter\n{\n    public int run(Hooks hooks) => hooks.run([]) + hooks.run([:]);\n}\n";
+
+    assert_eq!(issues(("src/Demo/Counter.sharp", sharp), &[("src/Lib/Hooks.php", hooks)]), Vec::<String>::new());
+}
+
+/// A `Function` value and a PHP closure of the same signature are assignable to each other both ways: whether PHP#
+/// wrote a signature decides only which literals a call through it takes.
+#[test]
+fn a_function_value_and_a_php_closure_of_the_same_signature_are_assignable_both_ways() {
+    let tools = "<?php\n\nnamespace Lib;\n\nfinal class Tools\n{\n    /** @param \\Closure(list<string>): int $count */\n    public static function apply(\\Closure $count): int\n    {\n        return $count(['a']);\n    }\n\n    /** @return \\Closure(list<string>): int */\n    public static function make(): \\Closure\n    {\n        return fn (array $names): int => count($names);\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Tools;\n\nclass Counter\n{\n    public int run(Function<int(List<string>)> size)\n    {\n        Function<int(List<string>)> made = Tools.make();\n        return Tools.apply(size) + Counter.take(Tools.make()) + made([\"a\"]);\n    }\n\n    private static int take(Function<int(List<string>)> count) => count([\"b\"]);\n}\n";
+
+    assert_eq!(issues(("src/Demo/Counter.sharp", sharp), &[("src/Lib/Tools.php", tools)]), Vec::<String>::new());
+}
+
+/// A `Function` value and a PHP closure with the same parameters have one type id, so a value that may be either holds
+/// only the signature combined last: the `else` branch's. A call through it checks literals by that one, so the PHP#
+/// value in the `else` branch refuses `[:]`, and the PHP closure in the `else` branch takes it.
+#[test]
+fn a_value_that_may_be_a_function_value_or_a_php_closure_of_one_signature_holds_the_last_one() {
+    let hooks = "<?php\n\nnamespace Lib;\n\nfinal class Hooks\n{\n    /** @var \\Closure(list<string>): int */\n    public \\Closure $names;\n\n    public function __construct()\n    {\n        $this->names = fn (array $names): int => count($names);\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Hooks;\n\nclass Counter\n{\n    public int sharpFirst(bool pick, Function<int(List<string>)> size, Hooks hooks)\n    {\n        const either = pick ? size : hooks.names;\n        return either([:]);\n    }\n\n    public int phpFirst(bool pick, Function<int(List<string>)> size, Hooks hooks)\n    {\n        const either = pick ? hooks.names : size;\n        return either([:]);\n    }\n}\n";
+
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counter.sharp", sharp), &[("src/Lib/Hooks.php", hooks)])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        ["16:23 invalid-array-element `[:]` is an empty Map. An empty List is written `[]`."]
+    );
+}
+
+/// A `Function` value keeps the collections its parameters declare when a `let` local copies it, when a template
+/// passes it through, and when a `List` of `Function` values gives it back.
+#[test]
+fn a_function_value_keeps_its_parameter_collections_through_a_copy_a_template_and_a_list() {
+    let pass = "<?php\n\nnamespace Lib;\n\nfinal class Pass\n{\n    /**\n     * @template T\n     * @param T $value\n     * @return T\n     */\n    public static function keep(mixed $value): mixed\n    {\n        return $value;\n    }\n}\n";
+    let sharp = "namespace Demo;\n\nimport Lib.Pass;\n\nclass Counter\n{\n    public int run(Function<int(List<string>)> size)\n    {\n        let copy = size;\n        const kept = Pass.keep(size);\n        List<Function<int(List<string>)>> all = [size];\n        int total = copy([:]) + kept([:]);\n        for (const each of all) {\n            total += each([:]);\n        }\n        return total;\n    }\n}\n";
+
+    let message = "invalid-array-element `[:]` is an empty Map. An empty List is written `[]`.";
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counter.sharp", sharp), &[("src/Lib/Pass.php", pass)])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        [format!("12:26 {message}"), format!("12:38 {message}"), format!("14:27 {message}")]
+    );
+}
+
+/// The right side of `??` flows into the place its value is assigned to, so its literal is checked as the place's.
+#[test]
+fn a_list_literal_on_the_right_of_null_coalescing_where_a_map_is_declared_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Options\n{\n    public Map<string, int> run(Map<string, int>? given)\n    {\n        Map<string, int> options = given ?? [];\n        return options;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Options\n{\n    public function run(?array $given): array\n    {\n        $options = $given ?? [];\n        return $options;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Options.php", php), &[]), Vec::<String>::new());
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Options.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        ["7:45 invalid-array-element `[]` is an empty List. An empty Map is written `[:]`."]
+    );
+}
+
+/// Both branches of `? :` flow into the place, through any nesting, so each branch's literal is checked as the
+/// place's.
+#[test]
+fn a_list_literal_in_a_ternary_branch_where_a_map_is_declared_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Counts\n{\n    public Map<string, int> run(bool ready, Map<string, int>? given, Map<string, int> seed)\n    {\n        Map<string, int> counts = ready ? [] : seed;\n        Map<string, int> nested = ready ? seed : (given ?? []);\n        return ready ? counts : nested;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Counts\n{\n    public function run(bool $ready, ?array $given, array $seed): array\n    {\n        $counts = $ready ? [] : $seed;\n        $nested = $ready ? $seed : ($given ?? []);\n        return $ready ? $counts : $nested;\n    }\n}\n";
+
+    let message = "invalid-array-element `[]` is an empty List. An empty Map is written `[:]`.";
+    assert_eq!(issues(("src/Demo/Counts.php", php), &[]), Vec::<String>::new());
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counts.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        [format!("7:43 {message}"), format!("8:60 {message}")]
+    );
+}
+
+/// Every arm of a `match` flows into the place, so each arm's literal is checked as the place's.
+#[test]
+fn a_list_literal_in_a_match_arm_where_a_map_is_returned_is_an_error() {
+    let kind_sharp = "namespace Demo;\n\npublic enum Kind\n{\n    case None;\n    case Some;\n}\n";
+    let kind_php = "<?php\n\nnamespace Demo;\n\nenum Kind\n{\n    case None;\n    case Some;\n}\n";
+    let sharp = "namespace Demo;\n\nclass Counts\n{\n    public Map<string, int> run(Kind kind, Map<string, int> seed)\n    {\n        return match (kind) { Kind.None => [], default => seed };\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Counts\n{\n    public function run(Kind $kind, array $seed): array\n    {\n        return match ($kind) { Kind::None => [], default => $seed };\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Counts.php", php), &[("src/Demo/Kind.php", kind_php)]), Vec::<String>::new());
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counts.sharp", sharp), &[("src/Demo/Kind.sharp", kind_sharp)])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        ["7:44 invalid-array-element `[]` is an empty List. An empty Map is written `[:]`."]
+    );
+}
+
+/// `??=` stores its right side unchanged when the place is null, so its literal is checked as the place's.
+#[test]
+fn a_list_literal_assigned_with_null_coalescing_to_a_map_is_an_error() {
+    let sharp = "namespace Demo;\n\nclass Counts\n{\n    public Map<string, int> run(Map<string, int>? counts)\n    {\n        counts ??= [];\n        return counts;\n    }\n}\n";
+    let php = "<?php\n\nnamespace Demo;\n\nclass Counts\n{\n    public function run(?array $counts): array\n    {\n        $counts ??= [];\n        return $counts;\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Counts.php", php), &[]), Vec::<String>::new());
+    assert_eq!(
+        analyze(&PLUGIN_REGISTRY, settings(), ("src/Demo/Counts.sharp", sharp), &[])
+            .iter()
+            .map(|issue| format!("{} {}", located(sharp, issue), issue.message))
+            .collect::<Vec<_>>(),
+        ["7:20 invalid-array-element `[]` is an empty List. An empty Map is written `[:]`."]
+    );
+}
+
+/// A literal of the declared collection compiles on the right of `??` and `??=`, in a `? :` branch and in a `match`
+/// arm.
+#[test]
+fn a_literal_of_the_declared_collection_in_a_coalesce_ternary_or_match_is_accepted() {
+    let kind = "namespace Demo;\n\npublic enum Kind\n{\n    case None;\n    case Some;\n}\n";
+    let sharp = "namespace Demo;\n\nclass Clean\n{\n    public Map<string, int> run(Map<string, int>? given, Map<string, int>? later, bool ready, Kind kind)\n    {\n        later ??= [:];\n        Map<string, int> options = given ?? [:];\n        Map<string, int> counts = ready ? [:] : later;\n        return match (kind) { Kind.None => [:], default => ready ? counts : options };\n    }\n}\n";
+
+    assert_eq!(issues(("src/Demo/Clean.sharp", sharp), &[("src/Demo/Kind.sharp", kind)]), Vec::<String>::new());
+}
+
 /// A `List` has `add`, `set`, `get` and `entries()`, and a `Map` has `delete` and `get`, each typed by the elements of
 /// the collection it is called on, as spec section 12 decides.
 #[test]

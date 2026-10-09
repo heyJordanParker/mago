@@ -650,10 +650,10 @@ where
                     && contains_parameter_variable(&final_parameter_type);
 
             if !check_is_deferred_to_partial_invocation {
-                // A plain PHP `array` parameter names neither a `List` nor a `Map`, so only a PHP# method's parameter
-                // decides, or a function value's, whose `Function` type writes it. A PHP `\Closure` or `callable`
-                // takes `mixed`, which names neither.
-                if matches!(invocation.target, InvocationTarget::Callable { .. })
+                // A plain PHP `array` parameter names neither a `List` nor a `Map`, so only a parameter PHP# wrote
+                // decides: a PHP# method's, or a function value's whose `Function<…>` type PHP# wrote. A PHP method's
+                // or a PHP closure's parameter takes either literal, whatever its docblock says.
+                if matches!(&invocation.target, InvocationTarget::Callable { signature, .. } if signature.is_sharp)
                     || base_class_metadata.is_some_and(|class| class.flags.is_sharp())
                 {
                     check_sharp_literal_kind(context, argument_expression, &final_parameter_type);

@@ -220,10 +220,10 @@ where
     };
 
     // PHP# `[]` and `[:]` name no element type, and PHP types both as one empty array. A place declared as a `List` or
-    // a `Map` takes only a literal of its own collection, and keeps that collection when one empties it, as its
-    // declaration does, so its rules and elements stay.
+    // a `Map` takes only a literal of its own collection, from `=` and from `??=`, which stores its right side as it
+    // is, and keeps that collection when one empties it, as its declaration does, so its rules and elements stay.
     let declared_collection = match assignment_operator {
-        None if context.dialect.is_sharp() => {
+        None | Some(AssignmentOperator::Coalesce(_)) if context.dialect.is_sharp() => {
             get_declared_collection(context, block_context, artifacts, target_expression)
                 .map(|collection| Rc::new(TUnion::from_atomic(TAtomic::Array(collection))))
         }
